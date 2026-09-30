@@ -5,6 +5,7 @@ members = [
     "crates/adapters/codex",
     "crates/conductor",
     "crates/core",
+    "crates/tui",
 ]
 resolver = "3"
 

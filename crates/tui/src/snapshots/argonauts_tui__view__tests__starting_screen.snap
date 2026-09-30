@@ -1,0 +1,16 @@
+---
+source: crates/argonauts-tui/src/view.rs
+expression: "render(&app_for(&s, Verbosity::Normal), s.now(), WIDTH, 12)"
+---
+" argonauts · ~/code/api · solo · run-20260929-101500-a1b2        claude-code/haiku · $0.00 of $3.00 "
+"                                                                                                    "
+" › Create a file named hello.txt containing the word hi                                             "
+"                                                                                                    "
+" ● Recorded · commit 3f9c2e1 on main                                                                "
+" ⠙ Creating the worktree…                                                                           "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+" ›                                                           Ctrl+C stop · PgUp scroll · / commands "

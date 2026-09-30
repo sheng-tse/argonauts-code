@@ -1,0 +1,24 @@
+[package]
+name = "argonauts-tui"
+description = "Argonauts terminal interface: the live main screen and the plain renderer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+argonauts-core.workspace = true
+crossterm.workspace = true
+dirs.workspace = true
+nix = { workspace = true, features = ["term"] }
+ratatui.workspace = true
+serde_json.workspace = true
+strip-ansi-escapes.workspace = true
+time.workspace = true
+tokio.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

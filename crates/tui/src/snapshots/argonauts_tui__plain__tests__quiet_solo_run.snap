@@ -1,0 +1,15 @@
+---
+source: crates/argonauts-tui/src/plain.rs
+expression: "render_all(&solo_run_events(), Verbosity::Quiet).join(\"\\n\")"
+---
+argonauts: run run-20260929-101500-a1b2, solo, claude-code/haiku, effort low
+repo: ~/code/api at 3f9c2e1 on main
+task: Create a file named hello.txt containing the word hi
+claude-code: session ended, exit 0, 38.4 s, 9.4k tokens
+report: done, Created hello.txt containing the word hi.
+merge card card-001: argonauts/run-20260929-101500-a1b2/card-001 into main, 1 file, +1 −0
+gates: 1 of 1 passed
+spent: $0.01 of $3.00
+decision by config: leave the branch
+run finished: branch left
+  merge.mode is leave

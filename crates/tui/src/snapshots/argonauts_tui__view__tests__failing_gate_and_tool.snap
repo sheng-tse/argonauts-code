@@ -1,0 +1,20 @@
+---
+source: crates/argonauts-tui/src/view.rs
+expression: "render(&app_for(&s, Verbosity::Normal), s.now(), WIDTH, 16)"
+---
+" argonauts · ~/code/api · solo · run-20260929-101500-a1b2        claude-code/haiku · $0.00 of $3.00 "
+"                                                                                                    "
+" › Fix the flaky store test                                                                         "
+"                                                                                                    "
+" ● Recorded · commit 3f9c2e1 on main                                                                "
+" ✗ claude-code/haiku · owner · card-001 · failed, exit 1                             0m 38s · 0 tok "
+"   ⎿ Run 1 command · 1 failed                                                                       "
+"   ⎿ ✗ rate limit error · 429 from the API                                                          "
+" ✗ Gates · 1 of 1 failed                                                                            "
+"   ⎿ ✗ npm test · exit 1 · 0.0 s                                                                    "
+"       FAIL store.test.ts                                                                           "
+"       1 failed                                                                                     "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+" ›                                                           Ctrl+C stop · PgUp scroll · / commands "
