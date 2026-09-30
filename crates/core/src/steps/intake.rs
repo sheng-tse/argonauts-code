@@ -1,0 +1,80 @@
+//! Steps the app controller runs: reading a new request, and chat answers.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::{Step, StepName};
+
+/// Reads a new request in the default agent's read-only chat session.
+pub struct TriageEstimate;
+
+impl Step for TriageEstimate {
+    const NAME: StepName = StepName::TriageEstimate;
+    type Input = IntakeInput;
+    type Output = IntakeReply;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct IntakeInput {
+    pub request: String,
+    /// "2 uncommitted files are not included", when that applies.
+    pub uncommitted_note: Option<String>,
+}
+
+/// Code reads `kind` and picks the branch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct IntakeReply {
+    pub kind: ReplyKind,
+    /// The answer to show. For a change, a one-paragraph plan of attack.
+    pub answer_markdown: String,
+    /// Present for `change` and `unclear`.
+    pub estimate: Option<ChangeEstimate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyKind {
+    /// A chat message or a question. No run starts.
+    Answer,
+    /// A change to the repo.
+    Change,
+    /// It could be either; the app offers `[s] solo [c] crew [n] no`.
+    Unclear,
+}
+
+/// Facts the triage rules read. The agent never picks the mode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ChangeEstimate {
+    /// A task type recipes can match, such as `docs`, `bugfix`, or `api-feature`.
+    pub task_type: String,
+    /// One line describing the change.
+    pub summary: String,
+    pub files_likely: Vec<String>,
+    /// How many files, when the list is only a sample.
+    pub file_count: u32,
+    /// Labels such as `architecture`, `migration`, `security`, `storage`, `api`.
+    pub risk_labels: Vec<String>,
+    pub tests_exist: bool,
+    pub unknowns: Vec<String>,
+}
+
+/// An answer only, never a run (`/ask`, or `/ask` during a run with the narrator off).
+pub struct ChatAnswer;
+
+impl Step for ChatAnswer {
+    const NAME: StepName = StepName::ChatAnswer;
+    type Input = ChatAnswerInput;
+    type Output = ChatAnswerOutput;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ChatAnswerInput {
+    pub question: String,
+    /// The zero-token status summary of the current run, if any.
+    pub run_status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ChatAnswerOutput {
+    pub answer_markdown: String,
+}

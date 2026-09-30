@@ -1,0 +1,594 @@
+//! LLM steps: every judgment call is a schema-checked step whose output feeds a fixed rule.
+//! Code, never the model, decides what happens next.
+
+pub mod card;
+pub mod design;
+pub mod goal;
+pub mod intake;
+pub mod judgment;
+pub mod narrate;
+pub mod plan;
+mod runner;
+
+pub use runner::{SchemaStepRunner, last_json_object};
+
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+
+use crate::events::session::SessionEnd;
+use crate::future::BoxFuture;
+use crate::worker::{SessionControl, SessionSpec, Worker, WorkerError, WorkerEvent};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StepName {
+    TriageEstimate,
+    ChatAnswer,
+    Restate,
+    Differ,
+    Draft,
+    Map,
+    Critique,
+    Revise,
+    ProposeSpike,
+    SpikeReport,
+    Judge,
+    PlanToCards,
+    Predict,
+    Build,
+    AcceptanceTests,
+    Review,
+    Adjudicate,
+    ResolveConflict,
+    Coordinate,
+    Retro,
+    ModelApprover,
+    Narrate,
+    DesignWorkflow,
+}
+
+pub trait Step {
+    const NAME: StepName;
+    /// What the prompt template renders from.
+    type Input: Serialize + JsonSchema;
+    /// What the worker must return, checked against [`output_schema`].
+    type Output: Serialize + DeserializeOwned + JsonSchema;
+}
+
+pub struct StepRequest {
+    pub worker: Arc<dyn Worker>,
+    /// Its prompt already holds the rendered input, and its `json_schema` is the output schema.
+    pub spec: SessionSpec,
+    /// Retries in the same session when the output doesn't match. Default 1.
+    pub retries_on_mismatch: u8,
+    /// Steering commands for the running session, passed on as they arrive.
+    pub control: Option<mpsc::Receiver<SessionControl>>,
+    /// Cancelling stops the session at once, and the step ends with the session's end.
+    pub cancel: CancellationToken,
+}
+
+impl StepRequest {
+    /// A request with no steering and its own cancel token.
+    pub fn new(worker: Arc<dyn Worker>, spec: SessionSpec) -> Self {
+        Self {
+            worker,
+            spec,
+            retries_on_mismatch: 1,
+            control: None,
+            cancel: CancellationToken::new(),
+        }
+    }
+}
+
+/// Called with every event of the step's session. It runs on the runner's task and must not
+/// block, so forward into an unbounded channel or streamed text is lost.
+pub type StepObserver = Box<dyn FnMut(&WorkerEvent) + Send>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepOutcome {
+    /// The output, valid against the schema.
+    pub value: Value,
+    /// How the last session ended.
+    pub end: SessionEnd,
+    /// Sessions or turns used, 1 when the first answer matched.
+    pub attempts: u8,
+}
+
+/// Why a step produced no usable output. Each step has a fixed fallback for these.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum StepError {
+    #[error("worker: {0}")]
+    Worker(#[from] WorkerError),
+    #[error("the session ended early: {0:?}")]
+    Session(Box<SessionEnd>),
+    #[error("output didn't match the schema: {errors:?}")]
+    SchemaMismatch {
+        raw: Option<String>,
+        errors: Vec<String>,
+    },
+}
+
+pub trait StepRunner: Send + Sync {
+    fn run(
+        &self,
+        request: StepRequest,
+        observer: StepObserver,
+    ) -> BoxFuture<'_, Result<StepOutcome, StepError>>;
+}
+
+/// The strict JSON Schema for `S::Output`, accepted by every vendor's structured output mode.
+pub fn output_schema<S: Step>() -> Value {
+    strict_schema(schemars::schema_for!(S::Output).to_value())
+}
+
+/// Rewrites a schema into the subset every vendor's strict mode accepts.
+///
+/// Every object lists all its properties as required and gets `additionalProperties: false`
+/// (Codex strict mode needs both). A field with a serde default doesn't get `null` added,
+/// because serde fills in defaults only for missing fields and would reject a `null`. `oneOf`
+/// becomes `anyOf`, which means the same for the tagged enums schemars writes. A type that
+/// refers to itself keeps its `$ref` from the second level down.
+pub fn strict_schema(schema: Value) -> Value {
+    let mut root = match schema {
+        Value::Object(map) => map,
+        other => return other,
+    };
+    let mut defs = Map::new();
+    for key in ["$defs", "definitions"] {
+        if let Some(Value::Object(found)) = root.remove(key) {
+            defs.extend(found);
+        }
+    }
+    let mut strict = Strict {
+        defs,
+        expanding: Vec::new(),
+        recursive: Map::new(),
+    };
+    let mut out = strict.node(&Value::Object(root));
+    if !strict.recursive.is_empty()
+        && let Value::Object(map) = &mut out
+    {
+        map.insert("$defs".to_owned(), Value::Object(strict.recursive));
+    }
+    out
+}
+
+/// Keywords every vendor's structured output mode accepts, kept as they are.
+const KEPT_KEYWORDS: &[&str] = &["type", "enum", "description"];
+
+struct Strict {
+    defs: Map<String, Value>,
+    /// Definitions being inlined right now, to spot a type that contains itself.
+    expanding: Vec<String>,
+    /// Definitions of self-referring types, which stay as `$ref`.
+    recursive: Map<String, Value>,
+}
+
+impl Strict {
+    fn node(&mut self, node: &Value) -> Value {
+        let Value::Object(map) = node else {
+            // `true` means any value, which strict modes can't express; an empty schema is the
+            // closest they accept. `false` never validates and never appears in step outputs.
+            return match node {
+                Value::Bool(true) => json!({}),
+                other => other.clone(),
+            };
+        };
+        if let Some(Value::String(reference)) = map.get("$ref") {
+            return self.inline(reference, map);
+        }
+        let mut out = Map::new();
+        for (key, value) in map {
+            match key.as_str() {
+                key if KEPT_KEYWORDS.contains(&key) => {
+                    out.insert(key.to_owned(), value.clone());
+                }
+                "const" => {
+                    out.insert("enum".to_owned(), json!([value]));
+                }
+                "properties" => {
+                    let properties = value
+                        .as_object()
+                        .map(|props| {
+                            props
+                                .iter()
+                                .map(|(name, prop)| (name.clone(), self.node(prop)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    out.insert("properties".to_owned(), Value::Object(properties));
+                }
+                "items" => {
+                    out.insert("items".to_owned(), self.node(value));
+                }
+                "prefixItems" => {
+                    // Tuples: strict modes know only one item schema, so allow any of them.
+                    let items: Vec<Value> = value
+                        .as_array()
+                        .map(|items| items.iter().map(|item| self.node(item)).collect())
+                        .unwrap_or_default();
+                    out.insert("items".to_owned(), json!({ "anyOf": items }));
+                }
+                "anyOf" | "oneOf" => {
+                    let options: Vec<Value> = value
+                        .as_array()
+                        .map(|options| options.iter().map(|o| self.node(o)).collect())
+                        .unwrap_or_default();
+                    out.insert("anyOf".to_owned(), Value::Array(options));
+                }
+                "allOf" => {
+                    for part in value.as_array().into_iter().flatten() {
+                        if let Value::Object(part) = self.node(part) {
+                            merge_into(&mut out, part);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if is_object_schema(&out) {
+            let names: Vec<Value> = out
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|props| props.keys().cloned().map(Value::String).collect())
+                .unwrap_or_default();
+            out.entry("properties".to_owned())
+                .or_insert_with(|| Value::Object(Map::new()));
+            out.insert("required".to_owned(), Value::Array(names));
+            out.insert("additionalProperties".to_owned(), Value::Bool(false));
+        }
+        Value::Object(out)
+    }
+
+    /// Replaces a `$ref` with its definition, keeping sibling keywords such as `description`.
+    fn inline(&mut self, reference: &str, map: &Map<String, Value>) -> Value {
+        let name = reference.rsplit('/').next().unwrap_or(reference).to_owned();
+        let Some(target) = self.defs.get(&name).cloned() else {
+            // A reference to nothing we know can't be inlined; drop it rather than send it.
+            return json!({});
+        };
+        if self.expanding.contains(&name) {
+            if !self.recursive.contains_key(&name) {
+                self.recursive.insert(name.clone(), Value::Null);
+                self.expanding.push(name.clone());
+                let expanded = self.node(&target);
+                self.expanding.pop();
+                self.recursive.insert(name.clone(), expanded);
+            }
+            return json!({ "$ref": format!("#/$defs/{name}") });
+        }
+        let mut merged = target.as_object().cloned().unwrap_or_default();
+        for (key, value) in map {
+            if key != "$ref" {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+        self.expanding.push(name);
+        let out = self.node(&Value::Object(merged));
+        self.expanding.pop();
+        out
+    }
+}
+
+fn is_object_schema(map: &Map<String, Value>) -> bool {
+    let typed_object = match map.get("type") {
+        Some(Value::String(kind)) => kind == "object",
+        Some(Value::Array(kinds)) => kinds.iter().any(|k| k == "object"),
+        _ => false,
+    };
+    typed_object || map.contains_key("properties")
+}
+
+/// Merges an `allOf` part. Properties add up; other keys keep the first value seen.
+fn merge_into(out: &mut Map<String, Value>, part: Map<String, Value>) {
+    for (key, value) in part {
+        match (out.get_mut(&key), value) {
+            (Some(Value::Object(existing)), Value::Object(more)) if key == "properties" => {
+                existing.extend(more);
+            }
+            (None, value) => {
+                out.insert(key, value);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn decode<S: Step>(outcome: &StepOutcome) -> Result<S::Output, StepError> {
+    serde_json::from_value(outcome.value.clone()).map_err(|err| StepError::SchemaMismatch {
+        raw: Some(outcome.value.to_string()),
+        errors: vec![err.to_string()],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::steps::{card, goal, intake, judgment, narrate, plan};
+
+    /// Keywords Codex's strict mode (and so every vendor) rejects or ignores.
+    const FORBIDDEN: &[&str] = &[
+        "$schema",
+        "$ref",
+        "$defs",
+        "definitions",
+        "oneOf",
+        "allOf",
+        "not",
+        "const",
+        "format",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "title",
+        "default",
+        "examples",
+        "patternProperties",
+        "propertyNames",
+        "minProperties",
+        "maxProperties",
+    ];
+
+    fn strict_problems(schema: &Value, path: &str, problems: &mut Vec<String>) {
+        let Value::Object(map) = schema else {
+            problems.push(format!("{path}: not an object schema"));
+            return;
+        };
+        for key in map.keys() {
+            if FORBIDDEN.contains(&key.as_str()) {
+                problems.push(format!("{path}: keyword {key}"));
+            }
+        }
+        if is_object_schema(map) {
+            if map.get("additionalProperties") != Some(&Value::Bool(false)) {
+                problems.push(format!("{path}: additionalProperties isn't false"));
+            }
+            let properties = map.get("properties").and_then(Value::as_object);
+            let names: Vec<&String> = properties.map(|p| p.keys().collect()).unwrap_or_default();
+            let required: Vec<&str> = map
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|r| r.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if names.len() != required.len()
+                || names.iter().any(|n| !required.contains(&n.as_str()))
+            {
+                problems.push(format!("{path}: not every property is required"));
+            }
+            for (name, prop) in properties.into_iter().flatten() {
+                strict_problems(prop, &format!("{path}.{name}"), problems);
+            }
+        }
+        if let Some(items) = map.get("items") {
+            strict_problems(items, &format!("{path}[]"), problems);
+        }
+        if let Some(Value::Array(options)) = map.get("anyOf") {
+            for (i, option) in options.iter().enumerate() {
+                strict_problems(option, &format!("{path}|{i}"), problems);
+            }
+        }
+    }
+
+    fn assert_strict<S: Step>() {
+        let schema = output_schema::<S>();
+        assert_eq!(
+            schema["type"],
+            "object",
+            "{:?}: the root must be an object",
+            S::NAME
+        );
+        let mut problems = Vec::new();
+        strict_problems(&schema, "$", &mut problems);
+        assert!(
+            problems.is_empty(),
+            "{:?}: {problems:#?}\n{schema:#}",
+            S::NAME
+        );
+        assert!(jsonschema::validator_for(&schema).is_ok(), "{:?}", S::NAME);
+    }
+
+    #[test]
+    fn every_step_output_schema_meets_codex_strict_rules() {
+        assert_strict::<intake::TriageEstimate>();
+        assert_strict::<intake::ChatAnswer>();
+        assert_strict::<goal::Restate>();
+        assert_strict::<goal::Differ>();
+        assert_strict::<plan::Draft>();
+        assert_strict::<plan::Map>();
+        assert_strict::<plan::Critique>();
+        assert_strict::<plan::Revise>();
+        assert_strict::<plan::ProposeSpike>();
+        assert_strict::<plan::SpikeReportStep>();
+        assert_strict::<plan::Judge>();
+        assert_strict::<plan::PlanToCards>();
+        assert_strict::<plan::Coordinate>();
+        assert_strict::<card::Predict>();
+        assert_strict::<card::Build>();
+        assert_strict::<card::ResolveConflict>();
+        assert_strict::<card::AcceptanceTests>();
+        assert_strict::<card::Retro>();
+        assert_strict::<judgment::Review>();
+        assert_strict::<judgment::Adjudicate>();
+        assert_strict::<judgment::ModelApprover>();
+        assert_strict::<narrate::Narrate>();
+    }
+
+    /// Finds maps (objects whose `additionalProperties` is a schema), which `strict_schema`
+    /// would turn into objects that must stay empty.
+    fn maps_in(node: &Value, path: &str, found: &mut Vec<String>) {
+        match node {
+            Value::Object(map) => {
+                if map
+                    .get("additionalProperties")
+                    .is_some_and(Value::is_object)
+                {
+                    found.push(path.to_owned());
+                }
+                for (key, child) in map {
+                    maps_in(child, &format!("{path}.{key}"), found);
+                }
+            }
+            Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    maps_in(child, &format!("{path}[{i}]"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn no_step_output_holds_a_map() {
+        fn raw<S: Step>() -> (StepName, Value) {
+            (S::NAME, schemars::schema_for!(S::Output).to_value())
+        }
+        for (name, schema) in [
+            raw::<intake::TriageEstimate>(),
+            raw::<intake::ChatAnswer>(),
+            raw::<goal::Restate>(),
+            raw::<goal::Differ>(),
+            raw::<plan::Draft>(),
+            raw::<plan::Map>(),
+            raw::<plan::Critique>(),
+            raw::<plan::Revise>(),
+            raw::<plan::ProposeSpike>(),
+            raw::<plan::SpikeReportStep>(),
+            raw::<plan::Judge>(),
+            raw::<plan::PlanToCards>(),
+            raw::<plan::Coordinate>(),
+            raw::<card::Predict>(),
+            raw::<card::Build>(),
+            raw::<card::ResolveConflict>(),
+            raw::<card::AcceptanceTests>(),
+            raw::<card::Retro>(),
+            raw::<judgment::Review>(),
+            raw::<judgment::Adjudicate>(),
+            raw::<judgment::ModelApprover>(),
+            raw::<narrate::Narrate>(),
+        ] {
+            let mut found = Vec::new();
+            maps_in(&schema, "$", &mut found);
+            assert!(
+                found.is_empty(),
+                "{name:?} has a map, which strict mode can't express: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_step_input_schema_generates() {
+        fn input<S: Step>() -> Value {
+            schemars::schema_for!(S::Input).to_value()
+        }
+        for schema in [
+            input::<intake::TriageEstimate>(),
+            input::<goal::Restate>(),
+            input::<plan::Judge>(),
+            input::<card::Build>(),
+            input::<judgment::ModelApprover>(),
+            input::<narrate::Narrate>(),
+        ] {
+            assert!(jsonschema::validator_for(&schema).is_ok());
+        }
+    }
+
+    #[test]
+    fn strict_schema_rewrites_the_usual_schemars_shapes() {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "Out",
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer", "format": "uint32", "minimum": 0},
+                "note": {"type": ["string", "null"]},
+                "kind": {"$ref": "#/$defs/Kind", "description": "what kind"},
+                "child": {"anyOf": [{"$ref": "#/$defs/Child"}, {"type": "null"}]},
+                "tags": {"type": "array", "items": {"type": "string"}, "default": []}
+            },
+            "required": ["count"],
+            "$defs": {
+                "Kind": {"oneOf": [
+                    {"type": "string", "const": "a", "description": "A"},
+                    {"type": "string", "const": "b"}
+                ]},
+                "Child": {"type": "object", "properties": {"x": {"type": "number", "format": "double"}},
+                          "required": ["x"]}
+            }
+        });
+        let strict = strict_schema(schema);
+        assert_eq!(
+            strict,
+            json!({
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer"},
+                    "note": {"type": ["string", "null"]},
+                    "kind": {"description": "what kind", "anyOf": [
+                        {"type": "string", "enum": ["a"], "description": "A"},
+                        {"type": "string", "enum": ["b"]}
+                    ]},
+                    "child": {"anyOf": [
+                        {"type": "object", "properties": {"x": {"type": "number"}},
+                         "required": ["x"], "additionalProperties": false},
+                        {"type": "null"}
+                    ]},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                },
+                // serde_json keeps keys sorted, so `required` lists them in that order too.
+                "required": ["child", "count", "kind", "note", "tags"],
+                "additionalProperties": false
+            })
+        );
+    }
+
+    #[test]
+    fn strict_schema_keeps_a_self_referring_type_as_one_definition() {
+        let schema = json!({
+            "$ref": "#/$defs/Node",
+            "$defs": {"Node": {"type": "object", "properties": {
+                "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}
+            }}}
+        });
+        let strict = strict_schema(schema);
+        assert_eq!(
+            strict["properties"]["children"]["items"],
+            json!({"$ref": "#/$defs/Node"})
+        );
+        assert_eq!(
+            strict["$defs"]["Node"]["additionalProperties"],
+            json!(false)
+        );
+        assert!(jsonschema::validator_for(&strict).is_ok());
+    }
+
+    #[test]
+    fn valid_outputs_still_validate_after_the_rewrite() {
+        let schema = output_schema::<narrate::Narrate>();
+        let output = narrate::NarrateOutput {
+            lines: vec!["Card 2 passed its gates.".into()],
+        };
+        let value = serde_json::to_value(&output).unwrap();
+        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
+
+        let schema = output_schema::<intake::TriageEstimate>();
+        let reply =
+            json!({"kind": "unclear", "answer_markdown": "Could be either.", "estimate": null});
+        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&reply));
+        let wrong =
+            json!({"kind": "unclear", "answer_markdown": "x", "estimate": null, "extra": 1});
+        assert!(!jsonschema::validator_for(&schema).unwrap().is_valid(&wrong));
+    }
+}

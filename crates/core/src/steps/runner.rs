@@ -1,0 +1,565 @@
+//! The core [`StepRunner`]: checks each session's output against the schema and, on a
+//! mismatch, asks the same session once more with the errors.
+
+use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+use super::{StepError, StepObserver, StepOutcome, StepRequest, StepRunner};
+use crate::Spend;
+use crate::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
+use crate::future::BoxFuture;
+use crate::worker::{SessionControl, SessionSpec, Worker};
+
+/// Holds no state, so one runner can be shared by every run.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SchemaStepRunner;
+
+impl StepRunner for SchemaStepRunner {
+    fn run(
+        &self,
+        request: StepRequest,
+        mut observer: StepObserver,
+    ) -> BoxFuture<'_, Result<StepOutcome, StepError>> {
+        Box::pin(async move {
+            let StepRequest {
+                worker,
+                mut spec,
+                retries_on_mismatch,
+                mut control,
+                cancel,
+            } = request;
+            let validator = match spec.json_schema.as_ref().map(jsonschema::validator_for) {
+                Some(Ok(validator)) => Some(validator),
+                Some(Err(err)) => {
+                    return Err(StepError::SchemaMismatch {
+                        raw: None,
+                        errors: vec![format!("the step's own schema is invalid: {err}")],
+                    });
+                }
+                None => None,
+            };
+            let mut attempts: u8 = 0;
+            loop {
+                attempts = attempts.saturating_add(1);
+                let end = run_session(
+                    worker.as_ref(),
+                    spec.clone(),
+                    &mut observer,
+                    control.as_mut(),
+                    &cancel,
+                )
+                .await?;
+                let output = output_of(&end);
+                let errors = match (&output, &validator) {
+                    (Some(value), Some(validator)) => validator
+                        .iter_errors(value)
+                        .map(|err| describe_error(&err.instance_path().to_string(), &err))
+                        .collect(),
+                    (Some(_), None) => Vec::new(),
+                    (None, _) => vec!["the answer held no JSON object".to_owned()],
+                };
+                if let Some(value) = output.clone()
+                    && errors.is_empty()
+                {
+                    return Ok(StepOutcome {
+                        value,
+                        end,
+                        attempts,
+                    });
+                }
+                // A session that stopped early can't take a retry; its end says why.
+                if end.reason != EndReason::Completed || cancel.is_cancelled() {
+                    return Err(StepError::Session(Box::new(end)));
+                }
+                let retries_used = attempts - 1;
+                let Some(vendor_session) = end.vendor_session.clone() else {
+                    return Err(mismatch(&end, output, errors));
+                };
+                if retries_used >= retries_on_mismatch {
+                    return Err(mismatch(&end, output, errors));
+                }
+                spec.resume = Some(vendor_session);
+                spec.prompt = vec![retry_part(&errors)];
+            }
+        })
+    }
+}
+
+/// The handle's `control` stays alive until the end, because dropping it stops the session.
+async fn run_session(
+    worker: &dyn Worker,
+    spec: SessionSpec,
+    observer: &mut StepObserver,
+    mut steering: Option<&mut mpsc::Receiver<SessionControl>>,
+    cancel: &CancellationToken,
+) -> Result<SessionEnd, StepError> {
+    let mut handle = worker.start(spec).await?;
+    let mut stop_sent = false;
+    loop {
+        tokio::select! {
+            event = handle.events.recv() => match event {
+                Some(event) => observer(&event),
+                None => break,
+            },
+            () = cancel.cancelled(), if !stop_sent => {
+                stop_sent = true;
+                // A full or closed channel means the session is already on its way out.
+                let _ = handle.control.try_send(SessionControl::Stop);
+            }
+            command = next_command(&mut steering), if !stop_sent => match command {
+                Some(command) => {
+                    let _ = handle.control.send(command).await;
+                }
+                None => steering = None,
+            },
+        }
+    }
+    Ok(handle.ended.await.unwrap_or_else(|_| SessionEnd {
+        vendor_session: None,
+        exit_code: None,
+        signal: None,
+        duration_ms: 0,
+        reason: EndReason::Crashed {
+            message: "the worker ended the session without saying how".to_owned(),
+        },
+        spend: Spend::default(),
+        tool_calls: 0,
+        result_text: None,
+        structured: None,
+        last_message: None,
+        raw_log: None,
+    }))
+}
+
+/// The next steering command, or never when nobody steers.
+async fn next_command(
+    steering: &mut Option<&mut mpsc::Receiver<SessionControl>>,
+) -> Option<SessionControl> {
+    match steering {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The structured output, or else the last JSON object in the final text or last message.
+fn output_of(end: &SessionEnd) -> Option<Value> {
+    if let Some(structured) = &end.structured
+        && structured.is_object()
+    {
+        return Some(structured.clone());
+    }
+    [&end.result_text, &end.last_message]
+        .into_iter()
+        .flatten()
+        .find_map(|text| last_json_object(text))
+}
+
+/// The last complete top-level JSON object in `text`, such as one inside a ```json fence.
+pub fn last_json_object(text: &str) -> Option<Value> {
+    let mut last = None;
+    let mut from = 0;
+    while let Some(offset) = text[from..].find('{') {
+        let start = from + offset;
+        let mut values = serde_json::Deserializer::from_str(&text[start..]).into_iter::<Value>();
+        match values.next() {
+            Some(Ok(value @ Value::Object(_))) => {
+                from = start + values.byte_offset();
+                last = Some(value);
+            }
+            _ => from = start + 1,
+        }
+    }
+    last
+}
+
+fn describe_error(path: &str, err: &impl std::fmt::Display) -> String {
+    if path.is_empty() {
+        err.to_string()
+    } else {
+        format!("{path}: {err}")
+    }
+}
+
+fn mismatch(end: &SessionEnd, output: Option<Value>, errors: Vec<String>) -> StepError {
+    let raw = output
+        .map(|value| value.to_string())
+        .or_else(|| end.result_text.clone())
+        .or_else(|| end.last_message.clone());
+    StepError::SchemaMismatch { raw, errors }
+}
+
+fn retry_part(errors: &[String]) -> InputPart {
+    let mut text = String::from(
+        "Your last answer didn't match the required JSON schema. Fix these problems and reply \
+         with only the corrected JSON object:\n",
+    );
+    for error in errors {
+        text.push_str("- ");
+        text.push_str(error);
+        text.push('\n');
+    }
+    InputPart {
+        kind: InputPartKind::Message,
+        label: "schema errors".to_owned(),
+        approx_tokens: (text.len() / 4) as u32,
+        text,
+        source: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::json;
+    use tokio::sync::{mpsc, oneshot};
+
+    use crate::AgentEvent;
+    use crate::CommandSpec;
+    use crate::names::{RoleName, SessionKey, VendorId, WorkerRef};
+    use crate::settings::sessions::{Compaction, NativeFanout, SessionLifetime};
+    use crate::steps::intake::{IntakeReply, ReplyKind, TriageEstimate};
+    use crate::steps::{decode, output_schema};
+    use crate::worker::{
+        Access, SandboxProfile, SessionControl, SessionHandle, SessionLimits, SteerSupport,
+        SubagentVisibility, WorkerCapabilities, WorkerError, WorkerEvent, WorkerKind,
+    };
+
+    /// Plays one scripted ending per session start and remembers every spec.
+    struct Scripted {
+        worker: WorkerRef,
+        endings: Mutex<Vec<SessionEnd>>,
+        specs: Mutex<Vec<SessionSpec>>,
+    }
+
+    impl Scripted {
+        fn new(endings: Vec<SessionEnd>) -> Arc<Self> {
+            Arc::new(Self {
+                worker: WorkerRef::new("fake", None),
+                endings: Mutex::new(endings),
+                specs: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl Worker for Scripted {
+        fn worker_ref(&self) -> &WorkerRef {
+            &self.worker
+        }
+        fn kind(&self) -> WorkerKind {
+            WorkerKind::Harness
+        }
+        fn vendor(&self) -> VendorId {
+            self.worker.vendor()
+        }
+        fn family(&self) -> String {
+            "fake".to_owned()
+        }
+        fn capabilities(&self) -> WorkerCapabilities {
+            WorkerCapabilities {
+                streams_text: true,
+                steer: SteerSupport::NextTurnOnly,
+                resume: true,
+                structured_output: false,
+                subagents: SubagentVisibility::None,
+                native_budget_cap: false,
+                takeover: false,
+                can_build: false,
+                status_tool: false,
+            }
+        }
+        fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, WorkerError>> {
+            let key = spec.key.clone();
+            self.specs.lock().unwrap().push(spec);
+            let next = {
+                let mut endings = self.endings.lock().unwrap();
+                (!endings.is_empty()).then(|| endings.remove(0))
+            };
+            Box::pin(async move {
+                let Some(end) = next else {
+                    return Err(WorkerError::Refused("no more scripted sessions".into()));
+                };
+                let (events_tx, events) = mpsc::channel(8);
+                let (control, _control_rx) = mpsc::channel::<SessionControl>(1);
+                let (ended_tx, ended) = oneshot::channel();
+                let text = end.result_text.clone().unwrap_or_default();
+                events_tx
+                    .send(WorkerEvent::Agent(AgentEvent::TextDelta {
+                        text,
+                        parent: None,
+                    }))
+                    .await
+                    .unwrap();
+                drop(events_tx);
+                ended_tx.send(end).unwrap();
+                Ok(SessionHandle {
+                    key,
+                    events,
+                    control,
+                    ended,
+                })
+            })
+        }
+        fn takeover_command(&self, _vendor_session: &str, _workdir: &Path) -> Option<CommandSpec> {
+            None
+        }
+    }
+
+    fn ending(reason: EndReason, text: Option<&str>, structured: Option<Value>) -> SessionEnd {
+        SessionEnd {
+            vendor_session: Some("vendor-1".into()),
+            exit_code: Some(0),
+            signal: None,
+            duration_ms: 5,
+            reason,
+            spend: Spend::default(),
+            tool_calls: 0,
+            result_text: text.map(str::to_owned),
+            structured,
+            last_message: None,
+            raw_log: None,
+        }
+    }
+
+    fn spec() -> SessionSpec {
+        SessionSpec {
+            run: None,
+            card: None,
+            key: SessionKey::numbered(1),
+            role: RoleName::Default,
+            step: Some(super::super::StepName::TriageEstimate),
+            worker: WorkerRef::new("fake", None),
+            effort: None,
+            access: Access::ReadOnly,
+            workdir: PathBuf::from("/repo"),
+            session_dir: PathBuf::from("/state/s-001"),
+            prompt: vec![InputPart {
+                kind: InputPartKind::Prompt,
+                label: "prompt".into(),
+                text: "hi".into(),
+                approx_tokens: 1,
+                source: None,
+            }],
+            json_schema: Some(output_schema::<TriageEstimate>()),
+            resume: None,
+            lifetime: SessionLifetime::Card,
+            keep_input_open: false,
+            limits: SessionLimits::default(),
+            goal_sha256: None,
+            sandbox: SandboxProfile::default(),
+            compaction: Compaction::Inherit,
+            native_fanout: NativeFanout::default(),
+            status_file: None,
+            env: Vec::new(),
+        }
+    }
+
+    fn answer() -> Value {
+        json!({"kind": "answer", "answer_markdown": "Hello!", "estimate": null})
+    }
+
+    async fn run(worker: Arc<Scripted>) -> (Result<StepOutcome, StepError>, usize) {
+        let seen = Arc::new(Mutex::new(0usize));
+        let counter = seen.clone();
+        let observer: StepObserver = Box::new(move |_event| *counter.lock().unwrap() += 1);
+        let request = StepRequest::new(worker, spec());
+        let result = SchemaStepRunner.run(request, observer).await;
+        let seen = *seen.lock().unwrap();
+        (result, seen)
+    }
+
+    #[tokio::test]
+    async fn structured_output_that_matches_is_returned_and_decodes() {
+        let worker = Scripted::new(vec![ending(EndReason::Completed, None, Some(answer()))]);
+        let (result, seen) = run(worker).await;
+        let outcome = result.unwrap();
+        assert_eq!(outcome.attempts, 1);
+        assert_eq!(seen, 1, "every event reaches the observer");
+        let reply: IntakeReply = decode::<TriageEstimate>(&outcome).unwrap();
+        assert_eq!(reply.kind, ReplyKind::Answer);
+    }
+
+    #[tokio::test]
+    async fn the_last_json_object_in_the_text_counts_when_there_is_no_structured_output() {
+        let text = format!("Sure.\n```json\n{}\n```\n", answer());
+        let worker = Scripted::new(vec![ending(EndReason::Completed, Some(&text), None)]);
+        let (result, _) = run(worker).await;
+        assert_eq!(result.unwrap().value, answer());
+    }
+
+    #[tokio::test]
+    async fn a_mismatch_resumes_the_same_session_once_with_the_errors() {
+        let wrong = json!({"kind": "maybe", "answer_markdown": "?", "estimate": null});
+        let worker = Scripted::new(vec![
+            ending(EndReason::Completed, None, Some(wrong)),
+            ending(EndReason::Completed, None, Some(answer())),
+        ]);
+        let (result, _) = run(worker.clone()).await;
+        assert_eq!(result.unwrap().attempts, 2);
+        let specs = worker.specs.lock().unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[1].resume.as_deref(), Some("vendor-1"));
+        assert_eq!(specs[1].prompt.len(), 1);
+        assert!(
+            specs[1].prompt[0].text.contains("kind"),
+            "{}",
+            specs[1].prompt[0].text
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_mismatch_is_an_error_with_the_raw_output() {
+        let wrong = json!({"kind": "maybe"});
+        let worker = Scripted::new(vec![
+            ending(EndReason::Completed, None, Some(wrong.clone())),
+            ending(EndReason::Completed, None, Some(wrong.clone())),
+        ]);
+        let (result, _) = run(worker).await;
+        match result {
+            Err(StepError::SchemaMismatch { raw, errors }) => {
+                assert_eq!(raw, Some(wrong.to_string()));
+                assert!(!errors.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_that_stops_early_is_a_session_error() {
+        let limit = EndReason::UsageLimit { resets_at: None };
+        let worker = Scripted::new(vec![ending(limit.clone(), None, None)]);
+        let (result, _) = run(worker).await;
+        match result {
+            Err(StepError::Session(end)) => assert_eq!(end.reason, limit),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_refuses_is_a_worker_error() {
+        let worker = Scripted::new(Vec::new());
+        let (result, _) = run(worker).await;
+        assert!(matches!(
+            result,
+            Err(StepError::Worker(WorkerError::Refused(_)))
+        ));
+    }
+
+    /// A session that runs until it's told to stop, and remembers what it was sent.
+    struct Waiting {
+        worker: WorkerRef,
+        received: Arc<Mutex<Vec<SessionControl>>>,
+    }
+
+    impl Worker for Waiting {
+        fn worker_ref(&self) -> &WorkerRef {
+            &self.worker
+        }
+        fn kind(&self) -> WorkerKind {
+            WorkerKind::Harness
+        }
+        fn vendor(&self) -> VendorId {
+            self.worker.vendor()
+        }
+        fn family(&self) -> String {
+            "fake".to_owned()
+        }
+        fn capabilities(&self) -> WorkerCapabilities {
+            Scripted::new(Vec::new()).capabilities()
+        }
+        fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, WorkerError>> {
+            let received = self.received.clone();
+            Box::pin(async move {
+                let (events_tx, events) = mpsc::channel(8);
+                let (control, mut control_rx) = mpsc::channel::<SessionControl>(4);
+                let (ended_tx, ended) = oneshot::channel();
+                tokio::spawn(async move {
+                    // A closed control channel counts as Stop, as the worker contract says.
+                    while let Some(message) = control_rx.recv().await {
+                        let stop = message == SessionControl::Stop;
+                        received.lock().unwrap().push(message);
+                        if stop {
+                            break;
+                        }
+                    }
+                    drop(events_tx);
+                    let _ = ended_tx.send(ending(EndReason::Stopped, None, None));
+                });
+                Ok(SessionHandle {
+                    key: spec.key,
+                    events,
+                    control,
+                    ended,
+                })
+            })
+        }
+        fn takeover_command(&self, _vendor_session: &str, _workdir: &Path) -> Option<CommandSpec> {
+            None
+        }
+    }
+
+    fn waiting() -> Arc<Waiting> {
+        Arc::new(Waiting {
+            worker: WorkerRef::new("fake", None),
+            received: Arc::new(Mutex::new(Vec::new())),
+        })
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_step_stops_its_session() {
+        let worker = waiting();
+        let request = StepRequest::new(worker.clone(), spec());
+        let cancel = request.cancel.clone();
+        let step = tokio::spawn(async move {
+            SchemaStepRunner
+                .run(request, Box::new(|_event: &WorkerEvent| {}))
+                .await
+        });
+        cancel.cancel();
+        match step.await.unwrap() {
+            Err(StepError::Session(end)) => assert_eq!(end.reason, EndReason::Stopped),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(*worker.received.lock().unwrap(), vec![SessionControl::Stop]);
+    }
+
+    #[tokio::test]
+    async fn steering_commands_reach_the_running_session() {
+        let worker = waiting();
+        let (steer, steering) = mpsc::channel(4);
+        let mut request = StepRequest::new(worker.clone(), spec());
+        request.control = Some(steering);
+        let step = tokio::spawn(async move {
+            SchemaStepRunner
+                .run(request, Box::new(|_event: &WorkerEvent| {}))
+                .await
+        });
+        steer.send(SessionControl::WrapUp).await.unwrap();
+        steer.send(SessionControl::Stop).await.unwrap();
+        assert!(matches!(step.await.unwrap(), Err(StepError::Session(_))));
+        assert_eq!(
+            *worker.received.lock().unwrap(),
+            vec![SessionControl::WrapUp, SessionControl::Stop]
+        );
+    }
+
+    #[test]
+    fn last_json_object_finds_top_level_objects_only() {
+        assert_eq!(last_json_object("no json here"), None);
+        assert_eq!(
+            last_json_object(r#"{"a":{"b":1}}"#),
+            Some(json!({"a": {"b": 1}}))
+        );
+        assert_eq!(
+            last_json_object(r#"first {"a":1} then {"b":[{"c":2}]} done"#),
+            Some(json!({"b": [{"c": 2}]}))
+        );
+        assert_eq!(
+            last_json_object(r#"{"a":1} and a broken { one"#),
+            Some(json!({"a": 1}))
+        );
+    }
+}

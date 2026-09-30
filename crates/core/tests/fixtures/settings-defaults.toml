@@ -1,0 +1,394 @@
+preset = "peer-crew"
+workflow = "peer-crew"
+default_agent = "claude-code"
+crew = [
+    "claude-code",
+    "codex",
+    "antigravity-cli",
+]
+compaction = "inherit"
+
+[agents.antigravity-cli]
+enabled = true
+auth = "subscription"
+extra_args = []
+exclude_paths = []
+
+[agents.claude-code]
+enabled = true
+auth = "subscription"
+extra_args = []
+exclude_paths = []
+
+[agents.codex]
+enabled = true
+auth = "subscription"
+extra_args = []
+exclude_paths = []
+
+[agents.opencode]
+enabled = true
+auth = "subscription"
+extra_args = []
+exclude_paths = []
+
+[endpoints]
+
+[roles]
+
+[handoff]
+mode = "ask"
+fallback = []
+ask_timeout = "none"
+allow_api_billing = false
+return_to_original = false
+broken_work = "continue"
+strategy = "first"
+race_count = 2
+on_return = "ask"
+checkpoint = true
+merge_rule = "upgrade_review"
+unknown_tier = "weaker"
+max_handoffs = 3
+
+[handoff.replace]
+
+[intake]
+include_uncommitted = false
+
+[triage]
+use_recipes = true
+solo_max_files = 3
+solo_requires_tests = true
+crew_min_files = 8
+crew_labels = [
+    "architecture",
+    "migration",
+    "security",
+]
+otherwise = "solo_then_crew"
+
+[solo]
+restate_first = false
+review = false
+attempts = 1
+
+[goal]
+differs = 2
+max_questions = 3
+always_ask = [
+    "scope",
+    "security",
+    "data",
+    "cost",
+]
+majority_assumptions = true
+
+[drafting]
+by = "crew"
+blind = true
+
+[mapping]
+quote_check = true
+remap_after_revision = true
+
+[critique]
+rounds = 1
+critic = "rotate"
+checklist = [
+    "Does it meet every success criterion?",
+    "What breaks first under load or failure?",
+    "What is hard to test?",
+    "What is more complex than it needs to be?",
+    "What does it cost to run?",
+]
+
+[spikes]
+enabled = true
+budget_usd = 2.0
+time_box_min = 15.0
+
+[judging]
+method = "cross"
+anonymize = true
+both_orders = true
+rubric = [
+    "correctness_risk",
+    "completeness",
+    "testability",
+    "simplicity",
+    "cost",
+]
+clear_winner_margin = 1.0
+reserve_non_drafting_seat = false
+
+[divide]
+contracts_first = true
+acceptance_tests_by = "reviewer"
+chores = "rotate"
+max_cards = 12
+predictions = true
+single_owner = false
+
+[review]
+assign = "ring"
+other_family = true
+per_card = 1
+blind = false
+max_change_rounds = 2
+max_diff_lines = 4000
+
+[gates]
+run = []
+full_suite = []
+timeout = "30m"
+setup = []
+copy_untracked = []
+
+[routing]
+algorithm = "bandit"
+explore_rate = 0.1
+skip_quota_above = 0.9
+no_explore_labels = [
+    "security",
+    "migration",
+]
+tie_band = 0.05
+
+[approvals]
+goal_changes = "ask"
+spot_check_sample = 0.1
+pause_auto_when_spot_checks_waiting = 5
+suggest_auto_after_matches = 20
+presence = "warn"
+refuse_ancestor_env = [
+    "OPENCLAW_SHELL",
+    "HERMES_SESSION_ID",
+]
+
+[approvals.goal]
+mode = "supervised"
+decide_with = "rules"
+otherwise = "ask"
+
+[approvals.goal.rules]
+
+[approvals.plan]
+mode = "supervised"
+decide_with = "rules"
+otherwise = "ask"
+
+[approvals.plan.rules]
+max_score_spread = 1.0
+min_winner_margin = 1.5
+
+[approvals.merge]
+mode = "supervised"
+decide_with = "rules"
+otherwise = "ask"
+
+[approvals.merge.rules]
+min_changed_line_coverage = 0.8
+max_combined_diff_lines = 400
+allow_debt = false
+
+[approvals.recipe_promotion]
+mode = "supervised"
+decide_with = "rules"
+otherwise = "ask"
+
+[approvals.recipe_promotion.rules]
+change_classes = [
+    "checklist_item",
+    "drafting_prompt",
+]
+min_days_between = 14
+
+[approvals.escalation]
+mode = "supervised"
+decide_with = "rules"
+otherwise = "ask"
+
+[approvals.escalation.rules]
+max_extra_attempts = 1
+
+[approvals.budget]
+mode = "supervised"
+decide_with = "rules"
+otherwise = "ask"
+
+[approvals.budget.rules]
+use_reserve = true
+
+[approvals.change_request]
+mode = "supervised"
+decide_with = "rules"
+otherwise = "ask"
+
+[approvals.change_request.rules]
+
+[approvals.approver]
+model_rules = "approval-rules.md"
+different_family = true
+
+[limits]
+protected_paths = [
+    ".github/**",
+    ".gitlab-ci.yml",
+    "**/package-lock.json",
+    "**/Cargo.lock",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+]
+dependency_allowlist = []
+usd_per_day = 40.0
+auto_merges_per_day = 3
+irreversible_allowlist = []
+evolution_usd_per_month = 1000.0
+
+[sandbox]
+mode = "os"
+network = false
+fail_closed = true
+extra_writable = []
+untrusted_repos = "container"
+user_hooks = "inherit"
+
+[budget]
+enabled = true
+run_usd = 20.0
+per_card_usd = 3.0
+soft_stop = 0.85
+on_hit = "ask"
+from_history = true
+history_min = 5
+
+[budget.lines]
+goal_and_plan = 0.15
+spikes = 0.1
+contracts = 0.1
+cards = 0.4
+review = 0.1
+integration = 0.05
+reserve = 0.1
+
+[watchdogs]
+max_tool_calls = 150
+wall_clock_min = 30.0
+inactivity_min = 15.0
+repeat_limit = 10
+
+[health]
+degraded_after = 2
+down_after = 3
+down_sessions = 2
+window = "2m"
+cooldown = "5m"
+
+[sessions]
+lifetime = "card"
+rotate_at = "200k"
+chat_resumes = true
+
+[native_fanout]
+max = 3
+
+[concurrency]
+max_sessions = 6
+max_per_vendor = 3
+
+[visibility]
+drafts_hidden_until_sealed = true
+reviews_hidden_until_adjudicated = true
+judges_see_authors = false
+
+[visibility.status_summary]
+
+[merge]
+mode = "ask"
+pr_draft = false
+
+[workflows]
+lead_designs = true
+allow_composed = true
+max_depth = 2
+adapt_at_phase_ends = true
+
+[evolution]
+evolvable = [
+    "critique.rounds",
+    "critique.checklist",
+    "prompts.drafting",
+    "divide.max_cards",
+    "budget.per_card_usd",
+]
+propose_every = 1
+min_gain_points = 10.0
+max_cost_increase = 0.1
+canary_runs = 5
+
+[evolution.replay]
+tasks = 30
+runs_per_task = 3
+prefix_replay = true
+
+[ui]
+verbosity = "full"
+narrator = "on_demand"
+keys = "default"
+takeover = "here"
+screen_reader = false
+motion = "normal"
+color = "auto"
+bell = true
+live_area_max = 0.6
+verbs = "voyage"
+turn_duration = true
+recaps = true
+recap_after = "2m"
+theme = "auto"
+glyphs = "unicode"
+ambiguous_width = 1
+
+[ui.keymap]
+
+[ui.panel]
+vendor_internals = "discovered"
+agents = false
+max_rows = 5
+
+[narrator]
+interval = "45s"
+spend_cap = "0.50 usd"
+
+[supervisor]
+park_grace = "10s"
+snapshot_every = 5000
+journal_deltas_per_second = 10
+
+[runs]
+remind_parked_days = 7
+
+[notifications]
+bell = true
+os = true
+
+[notifications.chat]
+command = []
+on = [
+    "needs_you",
+    "finished",
+    "vendor_down",
+]
+
+[mcp]
+status_tool = true
+start_runs = "trusted-repos"
+guidance = true
+pause = true
+share = "summaries"
+run_budget = "60m"
+runs_per_day = 5
+
+[registry]
+discover = true

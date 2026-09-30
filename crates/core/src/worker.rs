@@ -1,0 +1,258 @@
+//! Workers: harness agents (through the `Adapter` trait) and direct model endpoints, behind one
+//! interface.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
+
+use crate::events::VendorEvent;
+use crate::events::session::{InputPart, QueuedMessage, SessionEnd, SessionEvent};
+use crate::future::BoxFuture;
+use crate::names::{RoleName, SessionKey, VendorId, WorkerRef};
+use crate::settings::budget::BudgetAmount;
+use crate::settings::sessions::{Compaction, NativeFanout, SessionLifetime};
+use crate::steps::StepName;
+use crate::{AgentEvent, CardId, CommandSpec, DEFAULT_SOFT_RATIO, RunId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerKind {
+    /// A coding agent with its own tool loop: Claude Code, Codex, agy, OpenCode.
+    Harness,
+    /// An OpenAI-compatible model API with no tools.
+    Endpoint,
+}
+
+/// What a session may do. Enforced by harness flags and the OS sandbox, not the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    /// The only access an endpoint has.
+    NoTools,
+    ReadOnly,
+    /// Edits its worktree and runs commands in the sandbox. Needs the goal hash.
+    Build,
+    /// Like build, for a time-boxed spike worktree.
+    Spike,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionSpec {
+    /// `None` for chat and narrator sessions.
+    pub run: Option<RunId>,
+    pub card: Option<CardId>,
+    pub key: SessionKey,
+    pub role: RoleName,
+    pub step: Option<StepName>,
+    pub worker: WorkerRef,
+    /// Such as `low`, from `roles.<role>.effort`, else `agents.<harness>.effort`. Unset uses the
+    /// CLI's default.
+    pub effort: Option<String>,
+    pub access: Access,
+    /// The card's worktree for build and spike sessions, the run's base worktree for read-only
+    /// sessions, and an empty scratch directory for no-tools sessions. Only chat and triage read
+    /// your main checkout.
+    pub workdir: PathBuf,
+    /// Private files outside the worktree: schema file, raw log, status file.
+    pub session_dir: PathBuf,
+    /// Sent concatenated and recorded as input.
+    pub prompt: Vec<InputPart>,
+    /// Enforced where the worker supports it.
+    pub json_schema: Option<serde_json::Value>,
+    /// Vendor session to resume. Every launch flag is passed again.
+    pub resume: Option<String>,
+    pub lifetime: SessionLifetime,
+    /// Keep the input open so messages can be steered in (Claude Code, agy stream input).
+    pub keep_input_open: bool,
+    pub limits: SessionLimits,
+    /// SHA-256 of the approved goal. Required for `Build` and `Spike`.
+    pub goal_sha256: Option<String>,
+    pub sandbox: SandboxProfile,
+    pub compaction: Compaction,
+    /// Cap on the harness's own subagents.
+    pub native_fanout: NativeFanout,
+    /// Read by the agent's `argonauts_status` MCP tool, pre-filtered for the role. `None` turns
+    /// the tool off.
+    pub status_file: Option<PathBuf>,
+    /// The worker always sets `ARGONAUTS_SESSION=<key>`, which refuses approvals, over anything
+    /// given here.
+    pub env: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionLimits {
+    /// `None` when budgets are off.
+    pub budget: Option<BudgetAmount>,
+    /// Share of any limit that sends the wrap-up message.
+    pub soft_stop: f64,
+    /// Wall-clock minutes.
+    pub max_minutes: Option<f64>,
+    pub max_tool_calls: Option<u64>,
+    /// Idle minutes with no events, CPU, or output.
+    pub inactivity_min: Option<f64>,
+    /// The same call this many times in a row gets a nudge.
+    pub repeat_limit: Option<u32>,
+    /// The vendor's native cap as a backstop, set a little above `budget`, such as
+    /// `--max-budget-usd`.
+    pub native_cap_usd: Option<f64>,
+}
+
+impl Default for SessionLimits {
+    /// No limits, but the usual soft stop, so a wrap-up never goes out at the start.
+    fn default() -> Self {
+        Self {
+            budget: None,
+            soft_stop: DEFAULT_SOFT_RATIO,
+            max_minutes: None,
+            max_tool_calls: None,
+            inactivity_min: None,
+            repeat_limit: None,
+            native_cap_usd: None,
+        }
+    }
+}
+
+/// Every harness session runs in an OS sandbox or a container, whatever its access. Read-only
+/// and no-tools sessions may write only to temp and the harness's own state directory. The
+/// default is the OS sandbox with nothing writable, which fails closed.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SandboxProfile {
+    pub mode: SandboxMode,
+    /// Such as the worktree, temp, and build caches.
+    pub writable: Vec<PathBuf>,
+    /// Extra readable paths inside denied areas, such as the session's status file.
+    pub readable: Vec<PathBuf>,
+    /// Paths that must stay unreadable: `~/.argonauts/state`, other worktrees, other vendors'
+    /// credential stores, `~/.ssh`.
+    pub deny_read: Vec<PathBuf>,
+    /// Network for commands the agent runs. The harness still reaches its model API.
+    pub network: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxMode {
+    /// No sandbox. Endpoint sessions only; `HardLimits::check_session` flags it on a harness.
+    None,
+    /// Seatbelt on macOS, Landlock plus seccomp on Linux.
+    #[default]
+    Os,
+    /// Only the worktree mounted.
+    Container,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkerEvent {
+    Agent(AgentEvent),
+    Session(SessionEvent),
+    Vendor(VendorEvent),
+}
+
+/// Dropping `control` (with every clone of it) counts as `Stop`: the worker interrupts the
+/// session and reaps its process group, so a cancelled turn or a dropped future never leaves a
+/// vendor process spending. Keep `control` for as long as the session should run.
+pub struct SessionHandle {
+    pub key: SessionKey,
+    /// Closed when the session ends.
+    pub events: mpsc::Receiver<WorkerEvent>,
+    pub control: mpsc::Sender<SessionControl>,
+    /// How it ended. Always sent, even when it never started, and only after the last event,
+    /// once the events sender is dropped, so the final diff and result come first.
+    pub ended: oneshot::Receiver<SessionEnd>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionControl {
+    /// Deliver a message now (after the current tool call) or at the next turn.
+    Deliver(QueuedMessage),
+    /// Send the fixed wrap-up message now.
+    WrapUp,
+    /// Let the current tool call finish, end the turn, then stop.
+    StopAfterTool,
+    /// Interrupt the turn, then kill the process tree.
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct WorkerCapabilities {
+    pub streams_text: bool,
+    pub steer: SteerSupport,
+    pub resume: bool,
+    /// Enforces an output schema natively.
+    pub structured_output: bool,
+    pub subagents: SubagentVisibility,
+    pub native_budget_cap: bool,
+    pub takeover: bool,
+    /// Has tools and a sandbox path.
+    pub can_build: bool,
+    /// The `argonauts_status` MCP tool can be given to its sessions. Where it can't (agy, and
+    /// Codex until a per-run route is verified), the summary is injected at session start and
+    /// again with each delivered message and resume.
+    #[serde(default)]
+    pub status_tool: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerSupport {
+    /// Through the open input stream, after the current tool call.
+    Input,
+    /// Interrupt, then resume the session with the message (Codex).
+    InterruptResume,
+    /// Only at the next turn; the input side says so.
+    NextTurnOnly,
+}
+
+/// How much of a harness's own subagents the run tree can show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentVisibility {
+    /// Every child and its steps (Claude Code).
+    Full,
+    /// Each child with a link to its own log (agy).
+    Linked,
+    /// One row per thread with status and last message (Codex exec).
+    ThreadsOnly,
+    None,
+}
+
+/// A worker: one harness adapter plus model, or one endpoint plus model.
+pub trait Worker: Send + Sync {
+    fn worker_ref(&self) -> &WorkerRef;
+    fn kind(&self) -> WorkerKind;
+    fn vendor(&self) -> VendorId;
+    /// From the registry. Review and judging rules compare families.
+    fn family(&self) -> String;
+    fn capabilities(&self) -> WorkerCapabilities;
+    /// An error means the conductor couldn't start it at all, such as a build session with no
+    /// goal hash or no working sandbox (fail closed). Vendor failures are normal endings,
+    /// reported through `SessionHandle::ended`.
+    fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, WorkerError>>;
+    /// Opens the session in the vendor's own UI, for take-over.
+    fn takeover_command(&self, vendor_session: &str, workdir: &Path) -> Option<CommandSpec>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WorkerError {
+    #[error("unknown worker {0}")]
+    Unknown(WorkerRef),
+    #[error("{0} is not installed")]
+    NotInstalled(String),
+    /// Disabled for new work, such as after a broken CLI update.
+    #[error("{worker} is disabled: {reason}")]
+    Disabled { worker: WorkerRef, reason: String },
+    /// A rule refused the session, such as build without a goal hash or sandbox.
+    #[error("refused: {0}")]
+    Refused(String),
+    /// Something local failed, such as writing the schema file.
+    #[error("{0}")]
+    Io(String),
+}
+
+pub trait WorkerDirectory: Send + Sync {
+    fn get(&self, worker: &WorkerRef) -> Result<Arc<dyn Worker>, WorkerError>;
+    /// Every configured worker that is installed and enabled.
+    fn available(&self) -> Vec<WorkerRef>;
+}
