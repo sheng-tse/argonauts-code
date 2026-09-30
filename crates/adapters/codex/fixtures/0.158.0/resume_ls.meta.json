@@ -1,0 +1,33 @@
+{
+  "adapter": "codex",
+  "args": [
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--cd",
+    "<workdir>",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--model",
+    "gpt-5.6-luna",
+    "--config",
+    "model_reasoning_effort=\"low\"",
+    "resume",
+    "01a0ec49-a390-73f0-a8cb-11fbaf0fce20",
+    "-"
+  ],
+  "cli_version": "0.158.0",
+  "duration_ms": 7910,
+  "effort": "low",
+  "exit_code": 0,
+  "model": "gpt-5.6-luna",
+  "output_schema": false,
+  "program": "codex",
+  "prompt": "Run `ls` and reply with the number of files",
+  "recorded_at": "2026-09-29T08:31:15Z",
+  "resumed_from": "build_hello",
+  "role": "read-only",
+  "stdin": "<prompt>"
+}

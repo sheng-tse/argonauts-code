@@ -1,0 +1,31 @@
+{
+  "adapter": "codex",
+  "args": [
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--cd",
+    "<workdir>",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--model",
+    "gpt-5.6-luna",
+    "--config",
+    "model_reasoning_effort=\"low\"",
+    "-"
+  ],
+  "cli_version": "0.158.0",
+  "duration_ms": 5030,
+  "effort": "low",
+  "exit_code": 0,
+  "model": "gpt-5.6-luna",
+  "output_schema": false,
+  "program": "codex",
+  "prompt": "Reply with exactly the word: ok",
+  "recorded_at": "2026-09-29T08:30:35Z",
+  "resumed_from": null,
+  "role": "read-only",
+  "stdin": "<prompt>"
+}

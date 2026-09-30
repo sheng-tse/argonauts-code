@@ -38,6 +38,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "argonauts-adapter-antigravity-cli"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "argonauts-core",
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
+name = "argonauts-adapter-claude-code"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "argonauts-core",
+ "serde_json",
+ "time",
+]
+
+[[package]]
+name = "argonauts-adapter-codex"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "argonauts-core",
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
 name = "argonauts-core"
 version = "0.0.1"
 dependencies = [

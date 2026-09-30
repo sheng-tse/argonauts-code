@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a0ec49-a390-73f0-a8cb-11fbaf0fce20"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc ls","aggregated_output":"README.md\nhello.txt\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"2 files"}}
+{"type":"turn.completed","usage":{"input_tokens":56847,"cached_input_tokens":35072,"cache_write_input_tokens":0,"output_tokens":256,"reasoning_output_tokens":37}}

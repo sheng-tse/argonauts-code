@@ -1,5 +1,8 @@
 [workspace]
 members = [
+    "crates/adapters/antigravity-cli",
+    "crates/adapters/claude-code",
+    "crates/adapters/codex",
     "crates/core",
 ]
 resolver = "3"

@@ -1,0 +1,2 @@
+error: API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model gemini-3.6-flash-low on the server
+AGY_ERROR: {"short_error":"API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model gemini-3.6-flash-low on the server","retryable":false,"error_id":"844557f9-77d9-49e9-810a-944f4e10d04d-2-2010"}
