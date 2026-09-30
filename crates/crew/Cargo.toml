@@ -1,0 +1,15 @@
+[package]
+name = "argonauts-crew"
+description = "Argonauts run engine: triage, goal alignment, planning, dividing, card pipelines, integration, and the retro."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+argonauts-core.workspace = true
+
+[dev-dependencies]
+argonauts-testkit.workspace = true
+tokio.workspace = true

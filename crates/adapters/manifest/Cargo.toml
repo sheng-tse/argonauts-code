@@ -1,0 +1,12 @@
+[package]
+name = "argonauts-adapter-manifest"
+description = "Harness manifests for Argonauts: a generic adapter for agents that speak its JSONL protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+argonauts-core.workspace = true

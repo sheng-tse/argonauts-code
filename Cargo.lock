@@ -47,6 +47,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "argonauts-adapter-acp"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "argonauts-core",
+ "tokio",
+]
+
+[[package]]
 name = "argonauts-adapter-antigravity-cli"
 version = "0.0.1"
 dependencies = [
@@ -76,6 +85,22 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+]
+
+[[package]]
+name = "argonauts-adapter-manifest"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "argonauts-core",
+]
+
+[[package]]
+name = "argonauts-adapter-opencode"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "argonauts-core",
 ]
 
 [[package]]
@@ -114,6 +139,42 @@ dependencies = [
  "tokio-util",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "argonauts-crew"
+version = "0.0.1"
+dependencies = [
+ "argonauts-core",
+ "argonauts-testkit",
+ "tokio",
+]
+
+[[package]]
+name = "argonauts-endpoints"
+version = "0.0.1"
+dependencies = [
+ "argonauts-core",
+ "tokio",
+]
+
+[[package]]
+name = "argonauts-mcp"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "argonauts-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "argonauts-policy"
+version = "0.0.1"
+dependencies = [
+ "argonauts-core",
+ "time",
+ "tokio",
 ]
 
 [[package]]
