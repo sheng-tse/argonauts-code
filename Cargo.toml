@@ -6,6 +6,8 @@ members = [
     "crates/adapters/codex",
     "crates/adapters/manifest",
     "crates/adapters/opencode",
+    "crates/app",
+    "crates/cli",
     "crates/conductor",
     "crates/core",
     "crates/crew",
@@ -13,6 +15,7 @@ members = [
     "crates/mcp",
     "crates/policy",
     "crates/registry",
+    "crates/scenarios",
     "crates/testkit",
     "crates/tui",
 ]

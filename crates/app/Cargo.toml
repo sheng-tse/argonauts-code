@@ -1,0 +1,29 @@
+[package]
+name = "argonauts-app"
+description = "Argonauts app controller and run host: the chat app, routing, triage, and the per-run supervisor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+argonauts-adapter-antigravity-cli.workspace = true
+argonauts-adapter-claude-code.workspace = true
+argonauts-adapter-codex.workspace = true
+argonauts-adapter-manifest.workspace = true
+argonauts-adapter-opencode.workspace = true
+argonauts-conductor.workspace = true
+argonauts-core.workspace = true
+argonauts-crew.workspace = true
+argonauts-endpoints.workspace = true
+argonauts-mcp.workspace = true
+argonauts-policy.workspace = true
+argonauts-registry.workspace = true
+argonauts-tui.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+argonauts-testkit.workspace = true
+tempfile.workspace = true

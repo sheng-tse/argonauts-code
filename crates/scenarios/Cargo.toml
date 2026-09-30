@@ -1,0 +1,21 @@
+[package]
+name = "argonauts-scenarios"
+description = "Real-binary scenario tests for Argonauts: the argonauts binary in a pty with fake vendor CLIs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+argonauts-core.workspace = true
+argonauts-testkit.workspace = true
+
+[dev-dependencies]
+regex.workspace = true
+rmcp = { workspace = true, features = ["client"] }
+serde_json.workspace = true
+tempfile.workspace = true
+time.workspace = true
+tokio.workspace = true
