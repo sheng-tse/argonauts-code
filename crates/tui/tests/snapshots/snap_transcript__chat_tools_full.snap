@@ -1,0 +1,22 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+❯ why does the export test fail?
+
+● Read(src/export.rs)
+  ⎿  Read 3 lines
+
+● Bash(cargo test export)
+  ⎿  Error: Exit code 101
+     test export_header ... FAILED
+     assertion failed: header == "id,name"
+
+● Update(tests/export.rs)
+  ⎿  Added 1 line, removed 1 line
+        -"id,name"
+        +"id,name,email"
+
+● The test expected the old header, so I added the email column.
+
+✻ Sailed for 12s · done 10:42 AM

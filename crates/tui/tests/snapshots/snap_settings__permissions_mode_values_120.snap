@@ -1,0 +1,15 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "picker_lines(picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Whose rules guard the agents
+  Whose rules guard the agents: the OS sandbox, a container, each AI tool's own, or none at all. A role's own setting
+  wins
+
+  ❯ 1. Argonauts' (OS sandbox) ✓   Argonauts' rules, kept by your OS's own sandbox
+    2. Argonauts' (container)      Argonauts' rules, in a container that holds only the agent's copy
+    3. each AI tool's own          Each AI tool's own sandbox and approvals, with Argonauts' off
+    4. none                        No protection at all, neither Argonauts' nor the tool's
+
+  Enter to choose · ↑↓ to move · type to filter · Esc to close

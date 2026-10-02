@@ -1,0 +1,42 @@
+[[model]]
+id = "claude-code/opus"          # worker/model
+family = "claude"
+kind = "harness"                 # harness | endpoint
+access = "subscription"          # subscription | api-key | local
+tools = true
+cost = { unit = "quota" }        # quota | usd | none, with input_per_mtok, output_per_mtok, cached_input_per_mtok
+strengths = ["refactor"]
+good_for = ["owner"]
+efforts = ["low", "medium", "high", "xhigh", "max"]   # the levels it accepts; empty or absent means unknown
+tier = 5                         # optional: your own strength rating, 1 to 5, for quality debt after a handoff
+
+[[model]]
+id = "codex/<model>"
+family = "gpt"
+kind = "harness"
+access = "local"
+cost = { unit = "none" }
+launch = { oss = true, local_provider = "ollama" }
+
+[[harness]]                      # a manifest harness speaks Argonauts' JSONL protocol
+id = "my-agent"
+display_name = "My Agent"
+binary = "my-agent"
+read_only_args = ["--read-only", "--model", "{model}"]
+build_args = ["--model", "{model}"]
+family = "<family>"
+
+[[harness]]                      # an ACP profile: data only, no adapter code
+id = "my-acp-agent"
+display_name = "My ACP Agent"
+binary = "/opt/my-acp-agent/bin/agent"   # absolute, outside the repo
+read_only_args = ["acp"]
+build_args = ["acp"]
+family = "from-model"
+transport = "acp"
+errors = [{ pattern = "quota exceeded", category = "usage_limit" }]   # harness-level keys go above [harness.acp]
+
+[harness.acp]
+modes = { read_only = "plan", build = "default" }
+report = "mcp-tool"
+resume = "none"

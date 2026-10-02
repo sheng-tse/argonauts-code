@@ -1,0 +1,8 @@
+---
+source: crates/tui/src/bottom/tests.rs
+expression: screen(&view)
+---
+──────────────────────────────────────────────────────────────────── peer-crew ─
+❯ ▏Try "review the last commit"
+────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts

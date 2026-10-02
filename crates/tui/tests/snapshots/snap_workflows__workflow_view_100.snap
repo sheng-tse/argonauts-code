@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+argonauts-ui-kit                                                                  [ Run ]  Library
+Build a standalone Rust UI kit prototype that matches Claude Code: inl…  8/12 agents · 2h44m · $4.10
+
+╭ Phases ──────────┬ Build · 7 agents ─────────────────────────────────────────────────────────────╮
+│   ✓ Scaffold 1/1 │   ✓ build:a-terminal-bottom  Opus on Claude Code · 381k tok · $0.84     6m02s │
+│ ❯ 2 Build    2/4 │   ✓ build:b-history-cells    GPT 5.6 on Codex · 747k tok · $1.12        1h21m │
+│   · Merge    0/1 │   ◇ build:c-demo-tests       workflow · 2/4 agents · Opus on Claude …  12m00s │
+│   · Look     0/1 │   ✗ build:d-plain-mode       Gemini 3.6 on agy · 95.2k tok             31m45s │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+│                  │                                                                               │
+╰──────────────────┴───────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · tab switch pane · → open · x stop · p pause · l library · esc back

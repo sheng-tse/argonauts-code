@@ -10,6 +10,8 @@ use anyhow::Context as _;
 use argonauts_core::events::RunEvent;
 use argonauts_testkit::{FakeVendors, Pty, PtyCommand, TempRepo, Trace, argonauts_bin, journal};
 
+mod leftovers;
+
 pub const WAIT: Duration = Duration::from_secs(20);
 
 pub const ROWS: u16 = 32;
@@ -21,6 +23,8 @@ pub fn scenario_file(relative: &str) -> PathBuf {
         .join(relative)
 }
 
+/// A repo with fake vendors. Dropping it stops the supervisors and fake vendors it left
+/// running, then removes its folder.
 pub struct Scenario {
     /// The repository and its private homes.
     pub repo: TempRepo,
@@ -82,6 +86,12 @@ impl Scenario {
     }
 }
 
+impl Drop for Scenario {
+    fn drop(&mut self) {
+        leftovers::stop(self);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +121,60 @@ mod tests {
             .collect();
         assert!(called.contains(&"codex".to_owned()), "{called:?}");
         scenario.shot(&pty, "doctor").unwrap();
+    }
+
+    #[test]
+    fn a_dropped_scenario_stops_the_supervisors_it_left() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::process::CommandExt as _;
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("versions.toml");
+        FakeScenario::default().save(&path).unwrap();
+        let scenario = Scenario::from_file(&path).unwrap();
+        // A stand-in for `argonauts supervise`, leading its own group as the real one does,
+        // with a child in that group.
+        let script = dir.path().join("argonauts");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30 &\nwait\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut supervisor = std::process::Command::new(&script)
+            .arg("supervise")
+            .arg("--repo")
+            .arg(scenario.repo.root())
+            .args(["--run", "run-20261001-120000-00ab"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = supervisor.id();
+        let in_group = || {
+            let output = std::process::Command::new("/bin/ps")
+                .args(["-axo", "pgid=,stat="])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| !line.contains('Z'))
+                .filter(|line| line.split_whitespace().next() == Some(&group.to_string()))
+                .count()
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while in_group() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the stand-in never started its child"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        drop(scenario);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while supervisor.try_wait().unwrap().is_none() || in_group() > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the supervisor or its group outlived the scenario"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

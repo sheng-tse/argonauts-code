@@ -175,6 +175,7 @@ pub fn engine_context_in(
         vendor_events: services.health.subscribe(),
         services: services.services(),
         shutdown: CancellationToken::new(),
+        reopen: false,
     };
     (context, sink, commands)
 }
@@ -466,7 +467,10 @@ fn simple_packet(card: &CardSpec) -> HandoffPacket {
         gates: Vec::new(),
         why_stopped: String::new(),
         last_words: None,
+        last_message: None,
         budget_left: None,
+        transcript: None,
+        summary: None,
     }
 }
 
@@ -659,6 +663,7 @@ impl ScriptedGates {
             output_tail: summary.to_owned(),
             violations: Vec::new(),
             sandboxed: true,
+            skipped: false,
         });
     }
 
@@ -681,14 +686,26 @@ impl GateRunner for ScriptedGates {
             output_tail: String::new(),
             violations: Vec::new(),
             sandboxed: true,
+            skipped: false,
         });
         lock(&self.requests).push(request);
         Box::pin(async move { outcome })
     }
 }
 
+/// The model id prefixes that name a family.
+const MODEL_FAMILIES: &[&str] = &["claude", "gpt", "gemini"];
+
+/// The family of a built-in harness's default model, as the real registry knows it.
+const HARNESS_FAMILIES: &[(&str, &str)] = &[
+    ("claude-code", "claude"),
+    ("codex", "gpt"),
+    ("antigravity-cli", "gemini"),
+];
+
 /// A registry of fixed entries. Families come from the entry, else from the model id's
-/// prefix (`claude`, `gpt`, `gemini`), else `unknown`.
+/// prefix (`claude`, `gpt`, `gemini`), else from the harness's default family as the real
+/// registry falls back, else `unknown`.
 #[derive(Default)]
 pub struct StaticRegistry {
     entries: Mutex<Vec<ModelEntry>>,
@@ -720,11 +737,17 @@ impl ModelRegistry for StaticRegistry {
             return entry.family;
         }
         let model = worker.model.as_deref().unwrap_or_default();
-        ["claude", "gpt", "gemini"]
-            .into_iter()
-            .find(|family| model.starts_with(family))
-            .unwrap_or("unknown")
-            .to_owned()
+        let by_model = MODEL_FAMILIES
+            .iter()
+            .find(|family| model.starts_with(*family))
+            .copied();
+        let by_harness = || {
+            HARNESS_FAMILIES
+                .iter()
+                .find(|(harness, _)| *harness == worker.worker)
+                .map(|&(_, family)| family)
+        };
+        by_model.or_else(by_harness).unwrap_or("unknown").to_owned()
     }
 
     fn list(&self) -> Vec<ModelEntry> {

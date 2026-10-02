@@ -1,0 +1,10 @@
+---
+source: crates/tui/tests/cells.rs
+expression: text(&lines)
+---
+● Bash(cargo test -p ui-kit)
+  ⎿  $ cargo test -p ui-kit
+     running 26 tests
+     test text::wrap::tests::hangs ... ok
+     test format::tests::tokens ... ok
+     … +24 lines (ctrl+o to expand)

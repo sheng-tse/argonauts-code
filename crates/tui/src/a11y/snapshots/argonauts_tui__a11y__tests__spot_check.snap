@@ -1,0 +1,12 @@
+---
+source: crates/tui/src/a11y/tests.rs
+expression: "queued.lines.join(\"\\n\")"
+---
+card: cp-001 decided on its own, queued for a spot check
+spot check: merge, run-01
+  Merged run-01 into main, decided by your rules
+  Was this the right call?
+  1. Agree
+  2. Overrule
+  3. Show the evidence
+answer: type a number.

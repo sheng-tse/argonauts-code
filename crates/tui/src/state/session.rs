@@ -1,0 +1,359 @@
+use argonauts_core::AgentEvent;
+use argonauts_core::events::session::{
+    EndReason, FileDiff, QueuedMessage, SessionEnd, SessionInput, SessionStarted, SubagentUpdate,
+};
+use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::settings::sessions::SessionSettings;
+use argonauts_core::views::ContextUse;
+use argonauts_core::workflow::StepRef;
+use argonauts_core::{CardId, RetryReason, TodoItem};
+use time::OffsetDateTime;
+
+/// One agent session of a run, everything the live block, the panel, the crew view, and the
+/// session view show about it.
+#[derive(Debug, Clone)]
+pub struct SessionState {
+    pub key: SessionKey,
+    /// 1 to 9, the key that opens its session view.
+    pub follow: Option<u8>,
+    pub worker: WorkerRef,
+    /// Adapter or endpoint id, such as `claude-code` or `ollama`.
+    pub vendor: String,
+    pub role: RoleName,
+    pub card: Option<CardId>,
+    pub workflow_step: Option<StepRef>,
+    pub status: SessionStatus,
+    pub started: OffsetDateTime,
+    pub ended: Option<OffsetDateTime>,
+    /// When the last event from it arrived, for the stall hint.
+    pub last_event: OffsetDateTime,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: Option<f64>,
+    pub context: Option<ContextUse>,
+    /// The model's whole window when the stream said, which can be larger than the cap.
+    pub context_window: Option<u64>,
+    /// Fresh sessions it has rotated to (`Card::Attempt` with cause rotation).
+    pub rotations: u32,
+    pub todos: Vec<TodoItem>,
+    /// Every tool call, oldest first.
+    pub tools: Vec<ToolRecord>,
+    /// Whole messages, oldest first. Codex's arrive whole; Claude Code's are joined deltas.
+    pub messages: Vec<String>,
+    /// The text streaming now, since the last whole message.
+    pub streaming: String,
+    pub diffs: Vec<FileDiff>,
+    /// The latest update per child, in first-seen order.
+    pub subagents: Vec<SubagentUpdate>,
+    /// What Argonauts sent it (`Session::Input`), for the session view's input side.
+    pub inputs: Vec<SessionInput>,
+    pub queued: Vec<QueuedMessage>,
+    pub retry: Option<Retrying>,
+    pub standing_in_for: Option<WorkerRef>,
+    pub end: Option<Box<SessionEnd>>,
+    /// Vendor lines no parser understood, drawn as `? unknown event`.
+    pub unknown: Vec<serde_json::Value>,
+    /// What its last event says it's doing, for the working line's words.
+    pub doing: Doing,
+    /// The vendor's own session id, for resuming.
+    pub vendor_session: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionStatus {
+    #[default]
+    Starting,
+    Working,
+    /// Waiting on other work, such as a card it depends on.
+    Waiting,
+    /// Waiting on a timer, such as a usage reset.
+    Sleeping,
+    Done,
+    Failed,
+    Stopped,
+}
+
+/// What an agent is busy with, as far as its stream says. The screen times each spell itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Doing {
+    #[default]
+    Nothing,
+    Thinking,
+    RunningTool,
+    /// Answer text is streaming.
+    Writing,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Retrying {
+    pub reason: RetryReason,
+    pub delay_ms: Option<u64>,
+    pub attempt: u32,
+    pub since: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolRecord {
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+    /// A subagent's id when the call is inside one.
+    pub parent: Option<String>,
+    /// `None` while it runs.
+    pub ok: Option<bool>,
+    pub output: Option<String>,
+}
+
+impl SessionState {
+    pub fn new(
+        key: SessionKey,
+        worker: WorkerRef,
+        vendor: impl Into<String>,
+        role: RoleName,
+        started: OffsetDateTime,
+    ) -> Self {
+        Self {
+            key,
+            follow: None,
+            worker,
+            vendor: vendor.into(),
+            role,
+            card: None,
+            workflow_step: None,
+            status: SessionStatus::Starting,
+            started,
+            ended: None,
+            last_event: started,
+            tokens_in: 0,
+            tokens_out: 0,
+            cost_usd: None,
+            context: None,
+            context_window: None,
+            rotations: 0,
+            todos: Vec::new(),
+            tools: Vec::new(),
+            messages: Vec::new(),
+            streaming: String::new(),
+            diffs: Vec::new(),
+            subagents: Vec::new(),
+            inputs: Vec::new(),
+            queued: Vec::new(),
+            retry: None,
+            standing_in_for: None,
+            end: None,
+            unknown: Vec::new(),
+            doing: Doing::Nothing,
+            vendor_session: None,
+        }
+    }
+
+    pub(super) fn started(
+        key: SessionKey,
+        started: &SessionStarted,
+        card: Option<CardId>,
+        at: OffsetDateTime,
+    ) -> Self {
+        let mut session = Self::new(
+            key,
+            started.worker.clone(),
+            started.vendor.0.clone(),
+            started.role,
+            at,
+        );
+        session.follow = started.follow_key;
+        session.card = card;
+        session.workflow_step = started.workflow_step.clone();
+        session.vendor_session = started.resumed_from.clone();
+        session
+    }
+
+    pub fn tokens(&self) -> u64 {
+        self.tokens_in + self.tokens_out
+    }
+
+    /// Whether it's the session of `worker`, which an event may name without the model the
+    /// session filled in from its settings or its start.
+    pub fn is_worker(&self, worker: &WorkerRef) -> bool {
+        self.worker.worker == worker.worker
+            && (worker.model.is_none() || self.worker.model == worker.model)
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(
+            self.status,
+            SessionStatus::Starting
+                | SessionStatus::Working
+                | SessionStatus::Waiting
+                | SessionStatus::Sleeping
+        )
+    }
+
+    /// Folds one event from its stream in.
+    pub(super) fn apply_agent(&mut self, event: &AgentEvent, at: OffsetDateTime) {
+        self.last_event = at;
+        if self.status == SessionStatus::Starting {
+            self.status = SessionStatus::Working;
+        }
+        if !matches!(
+            event,
+            AgentEvent::Retry { .. }
+                | AgentEvent::Usage { .. }
+                | AgentEvent::ContextFill { .. }
+                | AgentEvent::QuotaSignal { .. }
+                | AgentEvent::Quota { .. }
+        ) {
+            self.retry = None;
+        }
+        match event {
+            AgentEvent::Init {
+                session_id, model, ..
+            } => {
+                if session_id.is_some() {
+                    self.vendor_session.clone_from(session_id);
+                }
+                if self.worker.model.is_none() {
+                    self.worker.model.clone_from(model);
+                }
+            }
+            AgentEvent::TextDelta { text, parent: None } => {
+                self.streaming.push_str(text);
+                self.doing = Doing::Writing;
+            }
+            AgentEvent::Message { text, parent: None } => {
+                self.streaming.clear();
+                self.messages.push(text.clone());
+                self.doing = Doing::Nothing;
+            }
+            AgentEvent::TextDelta { .. } | AgentEvent::Message { .. } => {}
+            AgentEvent::Reasoning { .. } => self.doing = Doing::Thinking,
+            AgentEvent::ToolStarted {
+                id,
+                name,
+                input,
+                parent,
+            } => {
+                self.finish_streaming();
+                self.tools.push(ToolRecord {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                    parent: parent.clone(),
+                    ok: None,
+                    output: None,
+                });
+                self.doing = Doing::RunningTool;
+            }
+            AgentEvent::ToolFinished { id, ok, output, .. } => {
+                if let Some(tool) = self.tools.iter_mut().rev().find(|tool| tool.id == *id) {
+                    tool.ok = Some(*ok);
+                    tool.output.clone_from(output);
+                }
+                let still_running = self.tools.iter().any(|tool| tool.ok.is_none());
+                if !still_running {
+                    self.doing = Doing::Nothing;
+                }
+            }
+            AgentEvent::FileChanged { .. } => {}
+            AgentEvent::Todo { items } => self.todos.clone_from(items),
+            AgentEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                cumulative,
+                ..
+            } => {
+                if *cumulative {
+                    self.tokens_in = *input_tokens;
+                    self.tokens_out = *output_tokens;
+                    if cost_usd.is_some() {
+                        self.cost_usd = *cost_usd;
+                    }
+                } else {
+                    self.tokens_in += input_tokens;
+                    self.tokens_out += output_tokens;
+                    if let Some(cost) = cost_usd {
+                        self.cost_usd = Some(self.cost_usd.unwrap_or(0.0) + cost);
+                    }
+                }
+            }
+            AgentEvent::ContextFill { used, size } => {
+                if size.is_some() {
+                    self.context_window = *size;
+                }
+                self.context = Some(ContextUse {
+                    used: *used,
+                    cap: context_cap(self.context_window),
+                });
+            }
+            AgentEvent::Retry { reason, delay_ms } => {
+                let attempt = self.retry.as_ref().map_or(1, |retry| retry.attempt + 1);
+                self.retry = Some(Retrying {
+                    reason: reason.clone(),
+                    delay_ms: *delay_ms,
+                    attempt,
+                    since: at,
+                });
+            }
+            AgentEvent::QuotaSignal { .. } | AgentEvent::Quota { .. } => {}
+            AgentEvent::Subagent { update } => {
+                match self.subagents.iter_mut().find(|sub| sub.id == update.id) {
+                    Some(known) => *known = update.clone(),
+                    None => self.subagents.push(update.clone()),
+                }
+            }
+            AgentEvent::Error { .. } => {}
+            AgentEvent::Result { .. } => {
+                self.finish_streaming();
+                self.doing = Doing::Nothing;
+            }
+            AgentEvent::Unknown { raw } => self.unknown.push(raw.clone()),
+        }
+    }
+
+    pub(super) fn apply_diff(&mut self, diff: &FileDiff) {
+        match self.diffs.iter_mut().find(|known| known.path == diff.path) {
+            Some(known) => *known = diff.clone(),
+            None => self.diffs.push(diff.clone()),
+        }
+    }
+
+    pub(super) fn end(&mut self, end: &SessionEnd, at: OffsetDateTime) {
+        self.finish_streaming();
+        self.status = match end.reason {
+            EndReason::Completed => SessionStatus::Done,
+            EndReason::Paused | EndReason::Stopped | EndReason::BudgetHit { .. } => {
+                SessionStatus::Stopped
+            }
+            _ => SessionStatus::Failed,
+        };
+        self.ended = Some(at);
+        self.last_event = at;
+        self.retry = None;
+        self.doing = Doing::Nothing;
+        if self.cost_usd.is_none() && end.spend.cost_usd > 0.0 {
+            self.cost_usd = Some(end.spend.cost_usd);
+        }
+        self.end = Some(Box::new(end.clone()));
+    }
+
+    /// Text that stops streaming without a whole message still counts as said.
+    fn finish_streaming(&mut self) {
+        if !self.streaming.trim().is_empty() {
+            self.messages.push(std::mem::take(&mut self.streaming));
+        }
+        self.streaming.clear();
+    }
+}
+
+/// Where a session rotates: `sessions.rotate_at`, 200k tokens by default, or the window when
+/// that's smaller. `ViewData::Context` brings the configured caps when `/context` opens.
+fn context_cap(window: Option<u64>) -> u64 {
+    const FALLBACK: u64 = 200_000;
+    let cap = SessionSettings::default()
+        .rotate_at
+        .tokens(window)
+        .ok()
+        .flatten()
+        .unwrap_or(FALLBACK);
+    window.map_or(cap, |window| cap.min(window))
+}

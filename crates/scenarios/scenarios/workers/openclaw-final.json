@@ -1,0 +1,1 @@
+{"status":"ok","final":"Created hello.txt with the word hi.\n\n{\"status\":\"done\",\"summary\":\"Created hello.txt containing the word hi.\",\"files_changed\":[\"hello.txt\"],\"tests_run\":[],\"concerns\":[]}","sessionId":"oc-workers-1","model":"fake-local","usage":{"input":900,"output":40},"costUsd":0}

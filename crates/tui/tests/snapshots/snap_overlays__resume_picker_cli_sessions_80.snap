@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, 24, &state)"
+---
+Resume a conversation, a run, or a session
+Pick one to carry on. Parked runs nev…  1 conversation · 2 runs · 2 Claude Code…
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│     Kind     Id                      Title          State        When  Spent │
+│ ❯   session  claude-code:0a1b2c3d-1  Explain the …           just now        │
+│     chat     chat-002                what does ex…             2h ago        │
+│     run      run-02                  Fix the flak…  crashed    3h ago  $0.46 │
+│     session  claude-code:0a1b2c3d-2  Rename the C…             1d ago        │
+│   ◆ run      run-03                  Add a --json…  parked     2d ago  $0.46 │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ resume · esc back

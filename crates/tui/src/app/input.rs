@@ -1,0 +1,613 @@
+//! Keys go to the transcript overlay when it is open, then to an open settings picker, a
+//! focused card, the answered handoff pick's line when ↑ picked it, a second Esc that clears
+//! the input, the focused agent panel, the open menu,
+//! vim's modes, the global keys, and last the composer. A picker or a focused card lets only the
+//! quit keys past it. A run's card never takes the keys by itself, so typing reaches the input
+//! until ↑ or Tab on an empty input hands them over; a card you set off yourself opens with them.
+//! What the named keys do comes from the [`Keymap`].
+//!
+//! [`Keymap`]: crate::keymap::Keymap
+
+use std::io::Write;
+use std::time::{Duration, Instant};
+
+use argonauts_core::app::UiCommand;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::layout::{Position, Size};
+
+use super::{OverlayEvent, QuitArm, TranscriptOverlay, Ui, UiAction};
+use crate::bottom::{
+    CardEvent, CardPrompt, ComposerEvent, Hint, MenuEvent, PanelEvent, PickerEvent, REMEMBER_KEY,
+};
+use crate::keymap::{Action, KeySpec, Layer};
+use crate::views::list;
+
+/// How long a first Ctrl+C, Ctrl+D, or Esc waits for the second.
+pub const QUIT_WINDOW: Duration = Duration::from_secs(1);
+
+/// Shown after the first Esc on a draft.
+pub const CLEAR_HINT: &str = "Esc again to clear";
+
+impl<W: Write> Ui<W> {
+    /// Keys go to the top view while one is open, drawn against an empty app state; the
+    /// runtime passes its state through [`handle_event_in`](Self::handle_event_in).
+    pub fn handle_event(&mut self, event: Event, now: Instant) -> Vec<UiAction> {
+        if self.views.is_empty() {
+            return self.handle_chat_event(event, now);
+        }
+        let state = crate::state::AppState::default();
+        self.handle_event_in(event, now, &state)
+    }
+
+    pub(super) fn handle_chat_event(&mut self, event: Event, now: Instant) -> Vec<UiAction> {
+        let mut actions = Vec::new();
+        let bottom = &mut self.model.bottom;
+        bottom.composer.adopt_vim_mode(bottom.mode.vim);
+        match event {
+            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                self.handle_key(key, now, &mut actions);
+            }
+            Event::Key(_) | Event::Mouse(_) => {}
+            Event::Paste(text) => self.handle_paste(&text, &mut actions),
+            Event::Resize(columns, rows) => self.resize(Size::new(columns, rows), None),
+            Event::FocusGained => actions.push(UiAction::Focus(true)),
+            Event::FocusLost => actions.push(UiAction::Focus(false)),
+        }
+        self.show_vim_mode();
+        actions
+    }
+
+    /// The composer keeps vim's mode, and the mode line draws `mode.vim`, which settings also
+    /// set to turn vim keys on or off. The composer takes that before each event and hands its
+    /// own mode back after, so the mode line always shows the mode the next key meets.
+    fn show_vim_mode(&mut self) {
+        let bottom = &mut self.model.bottom;
+        let mode = bottom.composer.vim_mode();
+        if bottom.mode.vim != mode {
+            bottom.mode.vim = mode;
+            self.dirty = true;
+        }
+    }
+
+    /// `cursor` is where the terminal reports its cursor now, if the host could ask. Terminals
+    /// that rewrap scrollback move the live region with it, and the cursor tells by how much.
+    pub fn resize(&mut self, size: Size, cursor: Option<Position>) {
+        // Resizing only records the new size, so it has nothing to fail on.
+        let _ = self.terminal.resize(size, cursor);
+        self.dirty = true;
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) {
+        if self.overlay.is_some() {
+            if self.keymap.action_for(Layer::Overlay, &key) == Some(Action::Transcript) {
+                self.close_overlay();
+                return;
+            }
+            let key = list::standard(key, self.model.bottom.mode.vim.is_some(), KeyCode::Esc);
+            match self.overlay.as_mut().map(|overlay| overlay.handle_key(key)) {
+                Some(OverlayEvent::Close) => self.close_overlay(),
+                Some(OverlayEvent::Scrolled) => self.dirty = true,
+                Some(OverlayEvent::Ignored) | None => {}
+            }
+            return;
+        }
+        if self.model.bottom.picker.is_some() {
+            if !self.picker_key(key, actions) {
+                self.quit_key(key, now, actions);
+            }
+            return;
+        }
+        if self.model.bottom.focused_card().is_some() {
+            if !self.card_key(key, actions) {
+                self.quit_key(key, now, actions);
+            }
+            return;
+        }
+        if self.model.bottom.pick_selected() && self.answered_pick_key(key, now, actions) {
+            return;
+        }
+        if self.clear_key(key, now)
+            || self.panel_key(key, actions)
+            || self.menu_key(key, now, actions)
+            || self.vim_key(key, actions)
+            || self.global_key(key, now, actions)
+        {
+            return;
+        }
+        self.composer_key(key, now, actions);
+    }
+
+    /// Vim's modes, when vim keys are on. Esc in INSERT only leaves INSERT, as in Claude Code,
+    /// so a habit of pressing Esc twice never stops a run. Esc in VISUAL, or after a command's
+    /// first key such as `d`, only goes back to NORMAL. In NORMAL and VISUAL, letters are
+    /// commands and never typed; Enter, arrows, and modified keys go on as usual.
+    fn vim_key(&mut self, key: KeyEvent, actions: &mut Vec<UiAction>) -> bool {
+        let bottom = &mut self.model.bottom;
+        if bottom.mode.vim.is_none() || !bottom.composer_has_focus() {
+            return false;
+        }
+        match bottom.composer.vim_key(key) {
+            None => return false,
+            Some(ComposerEvent::Edited) => bottom.menus.text_changed(),
+            Some(ComposerEvent::Submitted { text, shown }) => {
+                actions.push(UiAction::Submit { text, shown });
+            }
+            Some(_) => {}
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// A second Esc soon after the first clears the draft into history, like Claude Code's
+    /// double tap. Any other key lets the first one go.
+    fn clear_key(&mut self, key: KeyEvent, now: Instant) -> bool {
+        let Some(until) = self.disarm_clear() else {
+            return false;
+        };
+        let bottom = &mut self.model.bottom;
+        let esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
+        if !esc || now >= until || !bottom.composer_has_focus() || bottom.composer.is_empty() {
+            return false;
+        }
+        let draft = bottom.composer.text().to_owned();
+        bottom.composer.remember(draft);
+        bottom.composer.clear();
+        bottom.menus.text_changed();
+        self.dirty = true;
+        true
+    }
+
+    fn disarm_clear(&mut self) -> Option<Instant> {
+        let until = self.clear_armed.take()?;
+        let bottom = &mut self.model.bottom;
+        if bottom
+            .hint
+            .as_ref()
+            .is_some_and(|hint| hint.text == CLEAR_HINT)
+        {
+            bottom.hint = None;
+            self.dirty = true;
+        }
+        Some(until)
+    }
+
+    fn arm_clear(&mut self, now: Instant) {
+        let until = now + QUIT_WINDOW;
+        self.clear_armed = Some(until);
+        self.model.bottom.hint = Some(Hint {
+            text: CLEAR_HINT.to_owned(),
+            until,
+        });
+    }
+
+    /// `?` on an empty prompt opens the shortcuts panel until the next key. Esc hides the `/`
+    /// or `@` menu, and counts as the first press of the double tap that clears the input.
+    fn menu_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
+        let bottom = &mut self.model.bottom;
+        if !bottom.composer_has_focus() {
+            return false;
+        }
+        if bottom.menus.shortcuts_open {
+            bottom.menus.shortcuts_open = false;
+            self.dirty = true;
+            if key.code == KeyCode::Esc {
+                return true;
+            }
+        }
+        if self.keymap.is(Action::Shortcuts, &key)
+            && bottom.composer.is_empty()
+            && !bottom.menus.shortcuts.is_empty()
+        {
+            bottom.menus.shortcuts_open = true;
+            self.dirty = true;
+            return true;
+        }
+        let text = bottom.composer.text().to_owned();
+        match bottom.menus.handle_key(key, &text) {
+            MenuEvent::Moved if key.code == KeyCode::Esc => self.arm_clear(now),
+            MenuEvent::Moved => {}
+            MenuEvent::Complete(text) => bottom.composer.set_text(&text),
+            MenuEvent::Run(command) => {
+                bottom.composer.clear();
+                bottom.composer.remember(command.clone());
+                bottom.composer.end_example();
+                actions.push(UiAction::submit(command));
+            }
+            MenuEvent::Unhandled => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// An open picker takes the keys it knows, so typing filters it and never reaches the
+    /// composer under it.
+    fn picker_key(&mut self, key: KeyEvent, actions: &mut Vec<UiAction>) -> bool {
+        let Some(picker) = self.model.bottom.picker.as_mut() else {
+            return false;
+        };
+        match picker.handle_key(key) {
+            PickerEvent::Unhandled => return false,
+            event => actions.push(UiAction::Picker(event)),
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn card_key(&mut self, key: KeyEvent, actions: &mut Vec<UiAction>) -> bool {
+        let vim = self.model.bottom.mode.vim.is_some();
+        let Some(card) = self.model.bottom.card.as_mut().filter(|card| card.focused) else {
+            return false;
+        };
+        let id = card.id;
+        let key = if vim { card.vim_key(key) } else { key };
+        match card.handle_key(key) {
+            CardEvent::Answered {
+                index,
+                note,
+                checked,
+            } => {
+                self.model.bottom.card = None;
+                actions.push(UiAction::Answer {
+                    card: id,
+                    option: index,
+                    note,
+                    checked,
+                });
+            }
+            CardEvent::OpenView { index } => actions.push(UiAction::OpenView {
+                card: id,
+                option: index,
+            }),
+            CardEvent::Pinned => actions.push(UiAction::SetAside { card: id }),
+            CardEvent::BackToInput | CardEvent::Moved => {}
+            CardEvent::Unhandled => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// On the answered handoff pick's line, `m` or Enter saves the pick as a rule, Esc lets it
+    /// go, and ↓ goes back to the input. ↑ goes on to the prompt history, and any other key
+    /// leaves the line and does what it does in the input.
+    fn answered_pick_key(
+        &mut self,
+        key: KeyEvent,
+        now: Instant,
+        actions: &mut Vec<UiAction>,
+    ) -> bool {
+        let bottom = &mut self.model.bottom;
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let Some(pick) = bottom.answered_pick.as_mut() else {
+            return false;
+        };
+        self.dirty = true;
+        match key.code {
+            KeyCode::Char(REMEMBER_KEY) | KeyCode::Enter if plain => {
+                let (run, id) = (pick.run.clone(), pick.id.clone());
+                bottom.answered_pick = None;
+                actions.push(UiAction::Command(UiCommand::RememberPick { run, id }));
+                true
+            }
+            KeyCode::Esc => {
+                bottom.answered_pick = None;
+                true
+            }
+            KeyCode::Down => {
+                pick.selected = false;
+                true
+            }
+            KeyCode::Up => {
+                pick.selected = false;
+                self.composer_key(key, now, actions);
+                true
+            }
+            _ => {
+                pick.selected = false;
+                false
+            }
+        }
+    }
+
+    fn panel_key(&mut self, key: KeyEvent, actions: &mut Vec<UiAction>) -> bool {
+        let bottom = &mut self.model.bottom;
+        if !bottom.agents.has_focus() && bottom.workflows.selected.is_none() {
+            return false;
+        }
+        let key = list::standard(key, bottom.mode.vim.is_some(), KeyCode::Esc);
+        match bottom.panel_key(key) {
+            PanelEvent::Open(agent) => actions.push(UiAction::OpenAgent(agent)),
+            PanelEvent::Stop { agent, .. } => actions.push(UiAction::StopAgent(agent)),
+            PanelEvent::StopRun(run) => actions.push(UiAction::StopRun(run)),
+            PanelEvent::OpenWorkflow(run) => actions.push(UiAction::OpenWorkflow(run)),
+            PanelEvent::PastEnd => actions.push(UiAction::OpenTree),
+            PanelEvent::Leave | PanelEvent::Moved | PanelEvent::StopAsked => {}
+            PanelEvent::Unhandled => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Past an open picker or a focused card, only the quit keys do anything.
+    fn quit_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) {
+        for action in self.keymap.actions_for(Layer::Global, &key) {
+            if matches!(action, Action::ClearOrExit | Action::Exit)
+                && self.global_action(action, &key, now, actions)
+            {
+                self.dirty = true;
+                return;
+            }
+        }
+    }
+
+    /// Tries each action bound to `key` until one applies here, such as ↑ taking queued
+    /// messages back, or else giving a waiting card the keys.
+    fn global_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
+        let bottom = &self.model.bottom;
+        let panel_focused = bottom.agents.has_focus() || bottom.workflows.selected.is_some();
+        if let Some(n) = follow_digit(&key).filter(|_| panel_focused) {
+            actions.push(UiAction::Follow(n));
+            self.dirty = true;
+            return true;
+        }
+        for action in self.keymap.actions_for(Layer::Global, &key) {
+            if self.global_action(action, &key, now, actions) {
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn global_action(
+        &mut self,
+        action: Action,
+        key: &KeyEvent,
+        now: Instant,
+        actions: &mut Vec<UiAction>,
+    ) -> bool {
+        let bottom = &mut self.model.bottom;
+        let empty = bottom.composer.is_empty();
+        match action {
+            Action::ClearOrExit if empty => self.arm_quit(action, key, now, actions),
+            Action::ClearOrExit => {
+                bottom.composer.clear();
+                // Clearing arms the exit too, so the second press leaves. It
+                // always arms afresh, so text typed while armed is cleared, never a way out.
+                self.quit = None;
+                self.arm_quit(action, key, now, actions);
+            }
+            Action::Exit if empty => self.arm_quit(action, key, now, actions),
+            Action::Transcript => self.open_overlay(),
+            Action::WorkflowView => actions.push(UiAction::OpenTree),
+            Action::Editor => actions.push(UiAction::EditDraft),
+            Action::CycleApprovalMode => {
+                bottom.mode.approval = bottom.mode.approval.next();
+                actions.push(UiAction::ModeChanged(bottom.mode.approval));
+            }
+            // A waiting card not yet set aside takes the first press. Then it interrupts
+            // whatever works. A card that Esc would answer waits for its focus, so Esc in the
+            // input never answers one for you.
+            Action::Interrupt => {
+                if let Some(card) = bottom
+                    .card
+                    .as_mut()
+                    .filter(|card| !card.pinned && !card.esc_answers)
+                {
+                    set_aside(card);
+                    actions.push(UiAction::SetAside { card: card.id });
+                } else if bottom.working.is_some() {
+                    actions.push(UiAction::Interrupt);
+                } else {
+                    return false;
+                }
+            }
+            Action::CrewView if empty => actions.push(UiAction::OpenCrewView),
+            Action::TakeBack
+                if bottom.composer.cursor_on_first_row() && !bottom.queued.is_empty() =>
+            {
+                actions.push(UiAction::TakeBack(bottom.queued.clone()));
+            }
+            // Open or set aside, a waiting card gets the keys from an empty input.
+            Action::FocusCard if empty && bottom.card.is_some() => {
+                if let Some(card) = bottom.card.as_mut() {
+                    card.focus();
+                }
+            }
+            // With no card, the last handoff pick's line gets them, before the history.
+            Action::FocusCard
+                if empty
+                    && !bottom.composer.is_browsing_history()
+                    && bottom.answered_pick.is_some() =>
+            {
+                if let Some(pick) = bottom.answered_pick.as_mut() {
+                    pick.selected = true;
+                }
+            }
+            Action::AgentPanel
+                if empty
+                    && !bottom.composer.is_browsing_history()
+                    && !(bottom.agents.is_empty() && bottom.workflows.rows.is_empty()) =>
+            {
+                bottom.focus_panel();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn composer_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) {
+        // Rebound keys reach the composer as the key it knows for their action, and a key whose
+        // action moved elsewhere does nothing.
+        let key = match self.keymap.action_for(Layer::Composer, &key) {
+            Some(action) => native_composer_key(action).unwrap_or(key),
+            None if native_composer_action(&key).is_some() => return,
+            None => key,
+        };
+        let bottom = &mut self.model.bottom;
+        match bottom.composer.handle_key(key) {
+            ComposerEvent::Submitted { text, shown } => {
+                bottom.answered_pick = None;
+                actions.push(UiAction::Submit { text, shown });
+            }
+            ComposerEvent::Edited => bottom.menus.text_changed(),
+            ComposerEvent::Moved => {}
+            // With vim keys, Esc is how you get back to NORMAL, so pressing it twice is a
+            // habit there and never clears; `cc` or `dd` does.
+            ComposerEvent::Unhandled
+                if key.code == KeyCode::Esc
+                    && key.modifiers.is_empty()
+                    && bottom.mode.vim.is_none()
+                    && !bottom.composer.is_empty() =>
+            {
+                self.arm_clear(now);
+                self.dirty = true;
+                return;
+            }
+            // Enter on an empty prompt still means something while a run pauses or parks.
+            ComposerEvent::Unhandled
+                if key.code == KeyCode::Enter
+                    && key.modifiers.is_empty()
+                    && bottom.composer.is_empty() =>
+            {
+                bottom.answered_pick = None;
+                actions.push(UiAction::submit(""));
+                return;
+            }
+            ComposerEvent::AtTop | ComposerEvent::Unhandled => return,
+        }
+        // Typing goes back to the prompt, so a focused panel lets go.
+        bottom.agents.blur();
+        bottom.workflows.blur();
+        self.dirty = true;
+    }
+
+    /// A paste goes where typing would: an open picker, a focused card's note, or the composer.
+    fn handle_paste(&mut self, text: &str, actions: &mut Vec<UiAction>) {
+        self.disarm_clear();
+        let bottom = &mut self.model.bottom;
+        if let Some(picker) = bottom.picker.as_mut() {
+            if picker.handle_paste(text) == PickerEvent::Moved {
+                actions.push(UiAction::Picker(PickerEvent::Moved));
+            }
+            self.dirty = true;
+            return;
+        }
+        let into_note = bottom
+            .card
+            .as_mut()
+            .is_some_and(|card| card.handle_paste(text));
+        if !into_note {
+            bottom.composer.handle_paste(text);
+            bottom.menus.text_changed();
+            bottom.agents.blur();
+        }
+        self.dirty = true;
+    }
+
+    pub(super) fn arm_quit(
+        &mut self,
+        action: Action,
+        key: &KeyEvent,
+        now: Instant,
+        actions: &mut Vec<UiAction>,
+    ) {
+        if self
+            .quit
+            .is_some_and(|quit| quit.action == action && now < quit.until)
+        {
+            self.quit = None;
+            self.model.bottom.hint = None;
+            actions.push(UiAction::Quit);
+            return;
+        }
+        let until = now + QUIT_WINDOW;
+        self.quit = Some(QuitArm { action, until });
+        let mut text = format!("Press {} again to exit", hint_name(key));
+        if let Some(note) = self
+            .model
+            .bottom
+            .exit_note
+            .as_deref()
+            .filter(|n| !n.is_empty())
+        {
+            text.push_str(" · ");
+            text.push_str(note);
+        }
+        self.model.bottom.hint = Some(Hint { text, until });
+    }
+
+    fn open_overlay(&mut self) {
+        self.overlay = Some(TranscriptOverlay::new());
+        self.dirty = true;
+    }
+
+    fn close_overlay(&mut self) {
+        self.overlay = None;
+        self.dirty = true;
+    }
+}
+
+/// Folds a waiting card into its pinned line, as Esc on a focused card does.
+fn set_aside(card: &mut CardPrompt) {
+    card.pinned = true;
+    card.focused = false;
+    card.note = None;
+    card.armed = None;
+    card.checklist = None;
+}
+
+/// 1 to 9 follow an agent from the focused panel.
+fn follow_digit(key: &KeyEvent) -> Option<u8> {
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+        return None;
+    }
+    c.to_digit(10)
+        .and_then(|digit| u8::try_from(digit).ok())
+        .filter(|digit| (1..=9).contains(digit))
+}
+
+/// The key the composer itself uses for a composer action.
+fn native_composer_key(action: Action) -> Option<KeyEvent> {
+    match action {
+        Action::Submit => Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Action::Newline => Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+        Action::HistorySearch => Some(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+        _ => None,
+    }
+}
+
+/// What the composer would do with `key` on its own, for the keys the keymap can move.
+fn native_composer_action(key: &KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift_or_alt = key
+        .modifiers
+        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Enter if shift_or_alt => Some(Action::Newline),
+        KeyCode::Enter if !ctrl => Some(Action::Submit),
+        KeyCode::Char('j') if ctrl => Some(Action::Newline),
+        KeyCode::Char('r') if ctrl => Some(Action::HistorySearch),
+        _ => None,
+    }
+}
+
+/// The key as Claude Code names it in the exit hint, such as `Ctrl-C`.
+fn hint_name(key: &KeyEvent) -> String {
+    let spec = KeySpec::from_event(key).to_string();
+    let parts: Vec<String> = spec
+        .split('+')
+        .map(|part| {
+            let mut chars = part.chars();
+            match (chars.next(), chars.as_str()) {
+                (Some(first), rest) => first.to_uppercase().chain(rest.chars()).collect(),
+                (None, _) => String::new(),
+            }
+        })
+        .collect();
+    parts.join("-")
+}

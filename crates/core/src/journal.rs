@@ -184,8 +184,9 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 /// Follows the journal from `from_seq`. A complete line that doesn't parse, such as an event
 /// from a newer Argonauts, comes through as a warning `Note`; a torn last line is waited for.
-/// A thread does the reading, so no Tokio runtime is needed. It stops when the receiver drops
-/// or after `Finished`, which is always the last event.
+/// A thread does the reading, so no Tokio runtime is needed. It stops when the receiver drops,
+/// or at the end of the log once it passed a `Finished` that no `Resumed` follows: a stopped run
+/// can be reopened, so a `Finished` is the last event only until then.
 pub fn tail(path: &Path, from_seq: u64) -> mpsc::Receiver<RunEvent> {
     let (sender, receiver) = mpsc::channel(TAIL_BUFFER);
     let path = path.to_owned();
@@ -200,6 +201,7 @@ fn follow(path: &Path, from_seq: u64, sender: &mpsc::Sender<RunEvent>) {
     let mut reader: Option<BufReader<File>> = None;
     // Bytes of a line whose newline hasn't been written yet.
     let mut partial = Vec::new();
+    let mut finished = false;
     loop {
         if sender.is_closed() {
             return;
@@ -226,9 +228,12 @@ fn follow(path: &Path, from_seq: u64, sender: &mpsc::Sender<RunEvent>) {
                         if event.seq < from_seq {
                             continue;
                         }
-                        let finished =
-                            matches!(event.kind, RunEventKind::Run(RunLifecycle::Finished { .. }));
-                        if sender.blocking_send(event).is_err() || finished {
+                        match event.kind {
+                            RunEventKind::Run(RunLifecycle::Finished { .. }) => finished = true,
+                            RunEventKind::Run(RunLifecycle::Resumed(_)) => finished = false,
+                            _ => {}
+                        }
+                        if sender.blocking_send(event).is_err() {
                             return;
                         }
                     }
@@ -238,6 +243,9 @@ fn follow(path: &Path, from_seq: u64, sender: &mpsc::Sender<RunEvent>) {
                     }
                 }
             }
+        }
+        if finished {
+            return;
         }
         if !read_any {
             thread::sleep(TAIL_POLL);
@@ -317,7 +325,7 @@ impl RunLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::run::{ParkReason, RunOutcome};
+    use crate::events::run::{ParkReason, ResumeCause, RunOutcome, RunResumed};
     use crate::{Note, NoteLevel};
     use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
@@ -468,6 +476,43 @@ mod tests {
         assert!(
             receive(&mut receiver).is_none(),
             "the tail ends after Finished"
+        );
+    }
+
+    #[test]
+    fn tail_follows_a_stopped_run_that_was_reopened() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = RunLock::try_acquire(dir.path()).unwrap().unwrap();
+        let path = dir.path().join(run_files::EVENTS);
+        let mut journal = Journal::open(&path, &lock).unwrap();
+        let stopped = RunEventKind::Run(RunLifecycle::Finished {
+            outcome: RunOutcome::Stopped,
+            detail: None,
+        });
+        let resumed = RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
+            cause: ResumeCause::User,
+            settings_changed: false,
+            harness_versions_changed: Vec::new(),
+            main_moved_by: None,
+            sessions: Vec::new(),
+        }));
+        for kind in [note("a"), stopped, resumed, note("b")] {
+            journal
+                .append(&run(), None, None, "conductor", kind)
+                .unwrap();
+        }
+        let mut receiver = tail(&path, 0);
+        for seq in 0..4 {
+            assert_eq!(receive(&mut receiver).unwrap().seq, seq);
+        }
+
+        journal
+            .append(&run(), None, None, "conductor", finished())
+            .unwrap();
+        assert_eq!(receive(&mut receiver).unwrap().seq, 4);
+        assert!(
+            receive(&mut receiver).is_none(),
+            "the tail ends after the last Finished"
         );
     }
 

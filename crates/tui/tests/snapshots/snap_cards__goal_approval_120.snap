@@ -1,0 +1,33 @@
+---
+source: crates/tui/tests/snap_cards.rs
+expression: text(&lines)
+---
+● Goal · version 1
+  Add a --json flag to the export command
+
+  Done when
+    G1 `export --json` writes one JSON object per row
+
+  In scope
+    the export command
+
+  Out of scope
+    the import command
+
+  Assumed
+    Rows keep their CSV column order
+      a detail, and 2 of 3 read it that way
+
+  .argonauts/goal/run-01.md
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Approve this goal?
+  Add a --json flag to the export command
+
+  ❯ 1. Approve the goal
+    2. Approve with edits
+    3. Send back for another round
+    4. Abandon
+    5. Show the details
+
+  Enter to choose · Tab to add a note · Esc to set aside

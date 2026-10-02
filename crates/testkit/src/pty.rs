@@ -13,6 +13,10 @@ use anyhow::{Context as _, anyhow, bail};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use regex::Regex;
 
+use self::emulator::Emulator;
+
+mod emulator;
+
 /// Where `dump` writes screens, when set.
 pub const SHOTS_ENV: &str = "ARGONAUTS_SHOTS_DIR";
 
@@ -149,7 +153,7 @@ impl Screen {
 }
 
 struct Terminal {
-    parser: vt100::Parser,
+    emulator: Emulator,
     raw: Vec<u8>,
     closed: bool,
 }
@@ -170,6 +174,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// macOS's `openpty` now and then fails when several test threads call it at once.
+static OPENING: Mutex<()> = Mutex::new(());
+
 impl Pty {
     pub fn spawn(command: PtyCommand) -> anyhow::Result<Self> {
         let size = PtySize {
@@ -178,9 +185,11 @@ impl Pty {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let pair = native_pty_system()
-            .openpty(size)
-            .map_err(|err| anyhow!("opening a pty: {err}"))?;
+        let pair = {
+            let _one_at_a_time = lock(&OPENING);
+            native_pty_system().openpty(size)
+        }
+        .map_err(|err| anyhow!("opening a pty: {err}"))?;
         let mut builder = CommandBuilder::new(&command.program);
         builder.args(&command.args);
         if let Some(cwd) = &command.cwd {
@@ -211,7 +220,7 @@ impl Pty {
                 .map_err(|err| anyhow!("writing the pty: {err}"))?,
         ));
         let terminal = Arc::new(Mutex::new(Terminal {
-            parser: vt100::Parser::new(command.rows, command.cols, SCROLLBACK),
+            emulator: Emulator::new(command.rows, command.cols, SCROLLBACK),
             raw: Vec::new(),
             closed: false,
         }));
@@ -248,21 +257,13 @@ impl Pty {
         writer.flush().context("typing into the pty")
     }
 
+    /// Rows scrolled off the top of the screen, or off a scroll region starting at the top
+    /// row, are in the scrollback, as xterm and iTerm2 keep them.
     pub fn screen(&self) -> Screen {
-        let mut terminal = lock(&self.terminal);
-        let (rows, cols) = terminal.parser.screen().size();
-        let screen = terminal.parser.screen_mut();
-        screen.set_scrollback(usize::MAX);
-        let depth = screen.scrollback();
-        // Walk up the scrollback one line at a time; each offset shows that line on top.
-        let mut scrollback = Vec::with_capacity(depth);
-        for offset in (1..=depth).rev() {
-            screen.set_scrollback(offset);
-            if let Some(line) = screen.rows(0, cols).next() {
-                scrollback.push(line.trim_end().to_owned());
-            }
-        }
-        screen.set_scrollback(0);
+        let terminal = lock(&self.terminal);
+        let scrollback = terminal.emulator.scrollback().map(str::to_owned).collect();
+        let screen = terminal.emulator.screen();
+        let (rows, cols) = screen.size();
         let visible = screen
             .rows(0, cols)
             .take(usize::from(rows))
@@ -330,10 +331,7 @@ impl Pty {
                 pixel_height: 0,
             })
             .map_err(|err| anyhow!("resizing the pty: {err}"))?;
-        lock(&self.terminal)
-            .parser
-            .screen_mut()
-            .set_size(rows, cols);
+        lock(&self.terminal).emulator.set_size(rows, cols);
         self.size = (rows, cols);
         Ok(())
     }
@@ -393,8 +391,8 @@ fn read_output(
                 let replies = {
                     let mut terminal = lock(terminal);
                     terminal.raw.extend_from_slice(chunk);
-                    terminal.parser.process(chunk);
-                    let cursor = terminal.parser.screen().cursor_position();
+                    terminal.emulator.process(chunk);
+                    let cursor = terminal.emulator.screen().cursor_position();
                     responder.replies(chunk, cursor)
                 };
                 if !replies.is_empty() {

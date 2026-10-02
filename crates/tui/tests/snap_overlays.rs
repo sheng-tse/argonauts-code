@@ -1,0 +1,1410 @@
+mod common;
+
+use std::path::PathBuf;
+
+use argonauts_core::api::{DiffView, RawView, RunState as RunPhase, RunSummary};
+use argonauts_core::app::{
+    AgentReady, AnswerTarget, ChatSummary, StatusLine, UiCommand, ViewRequest,
+};
+use argonauts_core::crew_panel::{CrewPanel, CrewTab};
+use argonauts_core::events::checkpoint::CheckpointOpened;
+use argonauts_core::events::run::{Party, RunMode};
+use argonauts_core::events::session::{
+    Delivery, FileDiff, QueuedMessage, SessionInput, SubagentKind, SubagentStatus, SubagentUpdate,
+};
+use argonauts_core::input::{MentionTarget, ResumeTarget, SlashCommand};
+use argonauts_core::names::{ChatId, MessageId, RoleName, SessionKey, VendorId, WorkerRef};
+use argonauts_core::vendor_sessions::VendorSession;
+use argonauts_core::views::ContextUse;
+use argonauts_core::{CardId, DiffStat, RunId, Spend};
+use argonauts_tui::format::WallClock;
+use argonauts_tui::keymap::Keymap;
+use argonauts_tui::stability::{WIDTHS, assert_frames, buffer_text, samples};
+use argonauts_tui::state::{
+    AppState, CardRow, OpenCheckpoint, RunState, SessionState, SessionStatus, ToolRecord, Welcome,
+};
+use argonauts_tui::theme::{Role, Theme};
+use argonauts_tui::views::crew::CrewView;
+use argonauts_tui::views::help::HelpView;
+use argonauts_tui::views::pager::Pager;
+use argonauts_tui::views::resume::ResumePicker;
+use argonauts_tui::views::session::SessionView;
+use argonauts_tui::views::{View, ViewCtx, ViewOutcome};
+use common::{t0, theme};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use serde_json::json;
+use time::macros::datetime;
+use time::{Duration, OffsetDateTime};
+
+const SIZES: [(u16, u16); 2] = [(100, 32), (80, 24)];
+
+const WALL: OffsetDateTime = datetime!(2026-09-30 12:00 UTC);
+
+fn run_id() -> RunId {
+    RunId::new("run-01").unwrap()
+}
+
+fn key(s: &str) -> SessionKey {
+    SessionKey::parse(s).unwrap()
+}
+
+fn worker(s: &str) -> WorkerRef {
+    s.parse().unwrap()
+}
+
+fn ctx<'a>(theme: &'a Theme, state: &'a AppState) -> ViewCtx<'a> {
+    ViewCtx {
+        theme,
+        state,
+        now: t0(),
+    }
+}
+
+fn press(view: &mut dyn View, code: KeyCode, state: &AppState) -> ViewOutcome {
+    let theme = theme();
+    view.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctx(&theme, state))
+}
+
+fn draw(view: &mut dyn View, width: u16, height: u16, state: &AppState) -> Buffer {
+    let theme = theme();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            view.render(area, frame.buffer_mut(), &ctx(&theme, state));
+        })
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// The screen as text, trailing spaces trimmed, after the frame check.
+fn screen(view: &mut dyn View, width: u16, height: u16, state: &AppState) -> String {
+    let buf = draw(view, width, height, state);
+    assert_frames(&buf);
+    buffer_text(&buf)
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn row_with<'a>(text: &'a str, needle: &str) -> &'a str {
+    text.lines()
+        .find(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} in:\n{text}"))
+}
+
+fn position(text: &str, needle: &str) -> usize {
+    text.lines()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} in:\n{text}"))
+}
+
+fn session(
+    key_: &str,
+    by: &str,
+    role: RoleName,
+    card: u32,
+    status: SessionStatus,
+    ago_secs: i64,
+) -> SessionState {
+    let worker = worker(by);
+    let vendor = worker.worker.clone();
+    let mut session = SessionState::new(
+        key(key_),
+        worker,
+        vendor,
+        role,
+        WALL - Duration::seconds(ago_secs),
+    );
+    session.card = Some(CardId::numbered(card));
+    session.status = status;
+    session
+}
+
+fn tool(id: &str, name: &str, input: serde_json::Value, done: Option<(bool, &str)>) -> ToolRecord {
+    ToolRecord {
+        id: id.into(),
+        name: name.into(),
+        input,
+        parent: None,
+        ok: done.map(|(ok, _)| ok),
+        output: done.map(|(_, output)| output.to_owned()),
+    }
+}
+
+fn reading(vendor: &str, used: f64, resets: Option<&str>) -> serde_json::Value {
+    json!({"vendor": vendor, "status": if used >= 0.9 { "warning" } else { "allowed" },
+           "used": used, "resets_at": resets, "window": "five_hour",
+           "source": "rate_limit_event", "observed_at": "2026-09-30T11:59:00Z", "detail": null})
+}
+
+fn question(id: &str, from: &str, card: &str, text: &str) -> OpenCheckpoint {
+    let option = |key: &str, label: &str, recommended: bool| {
+        json!({"key": key, "label": label, "action": {"action": "choose", "value": label},
+               "recommended": recommended, "detail": null})
+    };
+    let opened: CheckpointOpened = serde_json::from_value(json!({
+        "id": id, "kind": "question", "title": "Question checkpoint · run-01", "card": card,
+        "packet": {"kind": "question", "from": from, "card": card, "text": text,
+                   "options": ["Yes, keep it", "No, JSON only"]},
+        "evidence_sha256": "e3b0c442", "mode": "supervised", "decide_with": "rules",
+        "options": [option("a", "Yes, keep it", true), option("b", "No, JSON only", false)],
+        "free_text": "answer", "needs_you": true}))
+    .unwrap();
+    OpenCheckpoint {
+        opened: Box::new(opened),
+        set_aside: false,
+        replayed: false,
+    }
+}
+
+fn session_input(parts: &[(&str, &str)]) -> SessionInput {
+    let parts: Vec<serde_json::Value> = parts
+        .iter()
+        .map(|(label, text)| {
+            json!({"kind": "card", "label": label, "text": text,
+                   "approx_tokens": text.len() / 4, "source": null})
+        })
+        .collect();
+    serde_json::from_value(json!({
+        "launch": {"program": "codex", "args": ["exec", "--json", "<prompt>"],
+                   "cwd": "/wt/card-002", "env_set": ["ARGONAUTS_SESSION"], "env_removed": [],
+                   "prompt_via": "stdin", "sandbox": "worktree"},
+        "parts": parts, "queued": []}))
+    .unwrap()
+}
+
+/// A crew of four at work: one asks you `asks`, one writes, one waits on a review, and one is
+/// done and stood in for another.
+fn crew_state(asks: &str) -> AppState {
+    let mut run = RunState::new(run_id());
+    run.title = "Add a --json flag to export".into();
+    run.started = Some(WALL - Duration::minutes(20));
+    for (n, title) in [
+        (1, "Rename the CSV writer"),
+        (2, "Add the JSON writer"),
+        (3, "Wire the --json flag"),
+    ] {
+        run.cards.insert(
+            CardId::numbered(n),
+            CardRow::new(CardId::numbered(n), title),
+        );
+    }
+    let mut claude = session(
+        "s-001",
+        "claude-code/opus",
+        RoleName::Owner,
+        3,
+        SessionStatus::Working,
+        340,
+    );
+    claude.follow = Some(1);
+    claude.tokens_out = 71_000;
+    claude.tools = vec![
+        tool(
+            "t-1",
+            "Read",
+            json!({"file_path": "src/mw/limit.ts"}),
+            Some((true, "export function limit() {}")),
+        ),
+        tool(
+            "t-2",
+            "Edit",
+            json!({"file_path": "src/mw/limit.ts", "old_string": "a", "new_string": "b"}),
+            None,
+        ),
+    ];
+    let mut codex = session(
+        "s-002",
+        "codex/gpt-5.6",
+        RoleName::Owner,
+        2,
+        SessionStatus::Working,
+        120,
+    );
+    codex.follow = Some(2);
+    codex.tokens_out = 12_400;
+    let mut agy = session(
+        "s-003",
+        "antigravity-cli/gemini-3.6-pro",
+        RoleName::Reviewer,
+        3,
+        SessionStatus::Waiting,
+        70,
+    );
+    agy.follow = Some(3);
+    agy.tokens_out = 4_000;
+    let mut done = session(
+        "s-004",
+        "codex/gpt-5.6",
+        RoleName::Owner,
+        1,
+        SessionStatus::Done,
+        770,
+    );
+    done.ended = Some(WALL - Duration::seconds(190));
+    done.tokens_out = 61_000;
+    done.messages = vec!["Integrated card-001.".into()];
+    done.standing_in_for = Some(worker("claude-code/opus"));
+    for session in [claude, codex, agy, done] {
+        run.session_order.push(session.key.clone());
+        run.sessions.insert(session.key.clone(), session);
+    }
+    run.checkpoints
+        .push(question("cp-001", "codex/gpt-5.6", "card-002", asks));
+
+    let mut state = AppState::default();
+    state.attached = Some(run_id());
+    state.runs.insert(run_id(), run);
+    state.welcome = Some(Welcome {
+        version: "0.1.0".into(),
+        repo: "~/code/export".into(),
+        preset: "peer-crew".into(),
+        default_agent: None,
+        agents: ["claude-code", "codex", "antigravity-cli", "opencode"]
+            .into_iter()
+            .map(|id| AgentReady {
+                id: id.into(),
+                version: None,
+                ready: true,
+                note: None,
+            })
+            .collect(),
+        runs_going: 1,
+        example_prompt: None,
+    });
+    let status: StatusLine = serde_json::from_value(json!({
+        "title": "Argonauts", "repo": "~/code/export", "preset": "peer-crew", "run": "run-01",
+        "default_agent": "claude-code/opus",
+        "quotas": [
+            {"label": "Claude", "reading": reading("claude-code", 0.72, Some("2026-09-30T15:10:00Z")), "health": "healthy"},
+            {"label": "Codex", "reading": reading("codex", 0.41, Some("2026-09-30T13:45:00Z")), "health": "healthy"},
+            {"label": "agy", "reading": reading("antigravity-cli", 0.9, None), "health": "healthy"}],
+        "spent": null, "limit": null, "narrator": "on_demand", "approval_mode": "supervised"}))
+    .unwrap();
+    state.status = Some(status);
+    state
+}
+
+fn open_crew(state: &AppState) -> CrewView {
+    let mut view = CrewView::new(state);
+    view.clock = WallClock::pinned(WALL);
+    view
+}
+
+fn summary(run: &str, title: &str, state: RunPhase, remind: bool, hours_ago: i64) -> RunSummary {
+    RunSummary {
+        run: RunId::new(run).unwrap(),
+        title: title.into(),
+        mode: RunMode::Crew,
+        preset: "peer-crew".into(),
+        state,
+        stopped_at: "merge checkpoint".into(),
+        updated: WALL - Duration::hours(hours_ago),
+        spent: Spend {
+            output_tokens: 9_000,
+            cost_usd: 0.46,
+            ..Spend::default()
+        },
+        sessions_to_resume: 2,
+        waiting: Vec::new(),
+        live: state == RunPhase::Running,
+        remind,
+    }
+}
+
+/// What the controller lists beside this screen's agents: a conversation, a Codex session of
+/// its own, this run (which the screen's agents stand for), and two runs in another repo.
+/// `text` is the other repo's waiting run's title.
+fn fetched_panel(text: &str) -> CrewPanel {
+    serde_json::from_value(json!({
+        "repo": "~/code/export",
+        "rows": [
+            {"target": {"kind": "conversation", "chat": "chat-003"}, "state": "ready",
+             "title": "How does the export pick a format?", "repo": "~/code/export",
+             "worker": "claude-code/opus",
+             "latest": "It reads --format, then the file's extension.",
+             "updated": "2026-09-30T11:20:00Z",
+             "details": {"last_message": "It reads --format first.\n\nWithout it, the file's extension picks: .json for JSON, anything else for CSV.",
+                         "prompt": "How does the export pick a format?"}},
+            {"target": {"kind": "vendor_session", "session": {"vendor": "codex", "id": "019a2f"}},
+             "state": "ready", "title": "Explain the input handling", "repo": "~/code/export",
+             "worker": "codex/gpt-5.6", "latest": "It reads keys in one loop.",
+             "updated": "2026-09-29T12:00:00Z",
+             "details": {"branch": "main", "prompt": "Explain the input handling"}},
+            {"target": {"kind": "run", "run": "run-01"}, "state": "working",
+             "title": "Add a --json flag to export", "repo": "~/code/export",
+             "run": {"id": "run-01", "title": "Add a --json flag to export"},
+             "latest": "running", "updated": "2026-09-30T11:59:00Z"},
+            {"target": {"kind": "run", "run": "run-07"}, "state": "needs_you",
+             "title": text, "repo": "~/code/api",
+             "run": {"id": "run-07", "title": text},
+             "latest": "plan checkpoint, waiting for you", "updated": "2026-09-29T06:00:00Z",
+             "details": {"spent": {"input_tokens": 40000, "output_tokens": 9000,
+                 "cached_tokens": 0, "cost_usd": 0.46, "cost_partial": false,
+                 "cost_estimated": false}}},
+            {"target": {"kind": "run", "run": "run-06"}, "state": "done",
+             "title": "Tidy the README", "repo": "~/code/api",
+             "run": {"id": "run-06", "title": "Tidy the README"},
+             "latest": "merged", "updated": "2026-09-28T10:00:00Z"}
+        ]
+    }))
+    .unwrap()
+}
+
+/// The crew of four, with what the controller listed, and the asking agent's card, context,
+/// and prompt filled in for the details.
+fn panel_state(asks: &str, other: &str) -> AppState {
+    let mut state = crew_state(asks);
+    let run = state.runs.get_mut(&run_id()).unwrap();
+    let codex = run.sessions.get_mut(&key("s-002")).unwrap();
+    codex.context = Some(ContextUse {
+        used: 41_000,
+        cap: 200_000,
+    });
+    codex.inputs = vec![session_input(&[(
+        "card",
+        "Add a JSON writer beside the CSV one. Keep the CSV output byte for byte.",
+    )])];
+    state.crew_panel = Some(fetched_panel(other));
+    state
+}
+
+/// The crew panel's sizes: the details sit beside the list from 120 columns.
+const PANEL_SIZES: [(u16, u16); 4] = [(80, 24), (100, 32), (120, 32), (200, 40)];
+
+#[test]
+fn crew_view_says_what_a_run_waits_on_and_what_each_step_does() {
+    let mut state = crew_state("Keep a CSV fallback?");
+    let run = state.runs.get_mut(&run_id()).unwrap();
+    // A merge waits on you with no agent of its own.
+    let mut merge = question(
+        "cp-009",
+        "codex/gpt-5.6",
+        "card-001",
+        "Merge this run into main?",
+    );
+    merge.opened.card = None;
+    merge.opened.title = "Merge this run into main?".into();
+    run.checkpoints.push(merge);
+    for (key, role) in [("s-005", RoleName::Restater), ("s-006", RoleName::Drafter)] {
+        let mut step = session(key, "claude-code/haiku", role, 1, SessionStatus::Done, 900);
+        step.card = None;
+        run.session_order.push(step.key.clone());
+        run.sessions.insert(step.key.clone(), step);
+    }
+    for (width, height) in PANEL_SIZES {
+        let mut view = open_crew(&state);
+        insta::assert_snapshot!(
+            format!("crew_view_asks_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut view = open_crew(&state);
+    let wide = screen(&mut view, 200, 40, &state);
+    // The card's row names the work and asks its question once, instead of saying its title
+    // twice; the step agents with no card say which step they are.
+    let merge_row = wide
+        .lines()
+        .find(|line| line.contains("asks: Merge this run into main?"))
+        .unwrap_or_else(|| panic!("{wide}"));
+    assert!(merge_row.contains("Add a --json flag to export"), "{wide}");
+    assert_eq!(
+        wide.matches("Merge this run into main?").count(),
+        2,
+        "row and details"
+    );
+    for title in [
+        "Restater · Add a --json flag to export",
+        "Drafter · Add a --json flag to export",
+    ] {
+        assert!(wide.contains(title), "{title}\n{wide}");
+    }
+}
+
+#[test]
+fn the_title_column_grows_with_the_screen() {
+    let mut state = crew_state("Keep a CSV fallback?");
+    let run = state.runs.get_mut(&run_id()).unwrap();
+    let long = "Rename the CSV writer so the JSON one can share it";
+    run.cards.get_mut(&CardId::numbered(1)).unwrap().title = long.into();
+    let mut view = open_crew(&state);
+    let narrow = screen(&mut view, 120, 32, &state);
+    assert!(!narrow.contains(long), "{narrow}");
+    let mut view = open_crew(&state);
+    let wide = screen(&mut view, 200, 40, &state);
+    assert!(wide.contains(long), "{wide}");
+}
+
+#[test]
+fn crew_view() {
+    let state = panel_state("Keep a CSV fallback?", "Fix the login redirect");
+    for (width, height) in PANEL_SIZES {
+        let mut view = open_crew(&state);
+        insta::assert_snapshot!(
+            format!("crew_view_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut view = open_crew(&state);
+    let text = screen(&mut view, 100, 32, &state);
+
+    // Quotas sit on one line at the top right, and the tabs count their rows.
+    let title = text.lines().next().unwrap();
+    assert!(title.starts_with("argonauts › crew"), "{text}");
+    assert!(
+        title.ends_with("Claude 72% · Codex 41% · agy 90%"),
+        "{text}"
+    );
+    let tabs = text.lines().nth(1).unwrap();
+    assert_eq!(
+        tabs,
+        "  Needs you 2    Working 2    Ready 2    Done 2  [ All 8 ]"
+    );
+
+    // This repo first, its run's agents most urgent first, then its conversations and CLI
+    // sessions; the controller's row for the run on screen gives way to its agents.
+    let order = [
+        "~/code/export",
+        "Add a --json flag to export",
+        "Add the JSON writer",
+        "Wire the --json flag",
+        "Conversations and CLI sessions",
+        "How does the export",
+        "Explain the input handling",
+        "~/code/api",
+        "Fix the login redirect",
+        "Tidy the README",
+    ]
+    .map(|needle| position(&text, needle));
+    assert!(order.is_sorted(), "{order:?}\n{text}");
+    assert!(!text.contains("running"), "{text}");
+    let asks = row_with(&text, "asks: Keep a CSV fallback?");
+    for cell in ["❯ ◆ Add the JSON writer", "GPT 5.6 on Codex", "2m ago"] {
+        assert!(asks.contains(cell), "{cell}:\n{text}");
+    }
+    let writing = row_with(&text, "Update(src/mw/limit.ts)");
+    assert!(writing.contains("● Wire the --json flag"), "{text}");
+    assert!(writing.contains("Opus on Claude Code") && writing.contains("5m ago"));
+    assert!(row_with(&text, "It reads keys in one loop.").contains("◎ Explain the input"));
+    assert!(row_with(&text, "Integrated card-001.").contains("✓ Rename the CSV writer"));
+    assert!(row_with(&text, "plan checkpoint").contains("◆ Fix the login"));
+    let footer = text.lines().last().unwrap();
+    assert_eq!(
+        footer,
+        "↑↓ move · → open · Space details · Tab filter · x stop · ? keys · esc back"
+    );
+
+    // At 120 columns the details sit beside the list, as in Codex.
+    let wide = screen(&mut view, 120, 32, &state);
+    for needle in [
+        "│ Add the JSON writer",
+        "│ ◆ Needs you",
+        "│ Last message",
+        "│ asks: Keep a CSV fallback?",
+        "│ Repo     ~/code/export",
+        "│ Run      run-01 · Add a --json flag",
+        "│          to export",
+        "│ Card     card-002",
+        "│ Model    GPT 5.6 on Codex",
+        "(codex/gpt-5.6)",
+        "│ Tokens   0 in · 12.4k out",
+        "│ Context  41k of 200k (21%)",
+        "│ Branch   argonauts/run-01/card-002",
+        "│ Prompt",
+        "│ Add a JSON writer beside the CSV",
+    ] {
+        assert!(wide.contains(needle), "{needle}:\n{wide}");
+    }
+    assert!(!wide.contains("Space details"), "{wide}");
+
+    // Under 120 columns Space shows them under the list, and Esc hides them first.
+    press(&mut view, KeyCode::Char(' '), &state);
+    let narrow = screen(&mut view, 100, 32, &state);
+    insta::assert_snapshot!("crew_view_details_100", narrow);
+    assert!(position(&narrow, "Explain the input") < position(&narrow, "Branch   argonauts"));
+    assert!(matches!(
+        press(&mut view, KeyCode::Esc, &state),
+        ViewOutcome::Consumed
+    ));
+    assert!(!screen(&mut view, 100, 32, &state).contains("Branch   argonauts"));
+
+    // Enter on the ◆ row answers its card; → on a working row opens its session.
+    let answer = press(&mut view, KeyCode::Enter, &state);
+    assert!(
+        matches!(&answer, ViewOutcome::AnswerCard(AnswerTarget::Checkpoint { id, .. }) if id.as_str() == "cp-001"),
+        "{answer:?}"
+    );
+    press(&mut view, KeyCode::Down, &state);
+    let open = press(&mut view, KeyCode::Right, &state);
+    let ViewOutcome::Open(mut session) = open else {
+        panic!("{open:?}");
+    };
+    assert!(screen(session.as_mut(), 100, 32, &state).contains("Opus on Claude Code · owner"));
+
+    // x asks first, and the second x stops that agent.
+    assert!(matches!(
+        press(&mut view, KeyCode::Char('x'), &state),
+        ViewOutcome::Consumed
+    ));
+    assert!(
+        screen(&mut view, 100, 32, &state)
+            .contains("x again to stop Opus on Claude Code · esc to keep")
+    );
+    let stop = press(&mut view, KeyCode::Char('x'), &state);
+    assert!(
+        matches!(&stop, ViewOutcome::Send(UiCommand::StopAgent { session, .. }) if session.as_str() == "s-001"),
+        "{stop:?}"
+    );
+
+    // ? shows the keys in place of the list, and ? or Esc hides them.
+    press(&mut view, KeyCode::Char('?'), &state);
+    let keys = screen(&mut view, 100, 32, &state);
+    assert!(
+        keys.contains("Tab, Shift+Tab  the next or the previous tab"),
+        "{keys}"
+    );
+    assert!(!keys.contains("Wire the --json flag"), "{keys}");
+    press(&mut view, KeyCode::Esc, &state);
+    assert!(screen(&mut view, 100, 32, &state).contains("Wire the --json flag"));
+
+    // Tab and Shift+Tab cycle the tabs, each with its rows only.
+    press(&mut view, KeyCode::Tab, &state);
+    assert_eq!(view.tab, CrewTab::NeedsYou);
+    let needs_you = screen(&mut view, 100, 32, &state);
+    assert!(needs_you.contains("[ Needs you 2 ]"), "{needs_you}");
+    assert!(needs_you.contains("Fix the login redirect"), "{needs_you}");
+    assert!(!needs_you.contains("Wire the --json flag"), "{needs_you}");
+    press(&mut view, KeyCode::Tab, &state);
+    press(&mut view, KeyCode::Tab, &state);
+    assert_eq!(view.tab, CrewTab::Ready);
+    let ready = screen(&mut view, 100, 32, &state);
+    assert!(position(&ready, "How does the export") < position(&ready, "Explain the input"));
+    assert!(!ready.contains("~/code/api"), "{ready}");
+    // Enter carries on a conversation or a CLI session in the chat.
+    let chat = press(&mut view, KeyCode::Enter, &state);
+    assert!(
+        matches!(&chat, ViewOutcome::SendToChat(UiCommand::Slash { command: SlashCommand::Resume { target: Some(ResumeTarget::Conversation(chat)) } }) if chat.as_str() == "chat-003"),
+        "{chat:?}"
+    );
+    press(&mut view, KeyCode::Down, &state);
+    let codex = press(&mut view, KeyCode::Enter, &state);
+    assert!(
+        matches!(&codex, ViewOutcome::SendToChat(UiCommand::Slash { command: SlashCommand::Resume { target: Some(ResumeTarget::VendorSession(session)) } }) if session.to_string() == "codex:019a2f"),
+        "{codex:?}"
+    );
+    press(&mut view, KeyCode::BackTab, &state);
+    press(&mut view, KeyCode::BackTab, &state);
+    press(&mut view, KeyCode::BackTab, &state);
+    assert_eq!(view.tab, CrewTab::All);
+
+    // A run in another repo says where to go; ← goes back to the chat.
+    for _ in 0..7 {
+        press(&mut view, KeyCode::Down, &state);
+    }
+    let elsewhere = press(&mut view, KeyCode::Enter, &state);
+    assert!(
+        matches!(&elsewhere, ViewOutcome::Notice(text) if text.contains("runs in ~/code/api")),
+        "{elsewhere:?}"
+    );
+    assert!(matches!(
+        press(&mut view, KeyCode::Left, &state),
+        ViewOutcome::Close
+    ));
+}
+
+#[test]
+fn crew_view_keeps_the_highlighted_row_as_rows_move() {
+    let mut state = panel_state("Keep a CSV fallback?", "Fix the login redirect");
+    let mut view = open_crew(&state);
+    screen(&mut view, 100, 32, &state);
+    press(&mut view, KeyCode::Down, &state);
+    let before = screen(&mut view, 100, 32, &state);
+    assert!(
+        row_with(&before, "❯").contains("Wire the --json flag"),
+        "{before}"
+    );
+    // The question is answered, so the writer moves up to the top.
+    state.runs.get_mut(&run_id()).unwrap().checkpoints.clear();
+    let after = screen(&mut view, 100, 32, &state);
+    assert!(
+        row_with(&after, "❯").contains("Wire the --json flag"),
+        "{after}"
+    );
+    assert!(after.contains("Needs you 1"), "{after}");
+
+    // Before the controller answers, the panel says it's still asking.
+    state.crew_panel = None;
+    let asking = screen(&mut view, 100, 32, &state);
+    assert!(
+        asking.contains("Listing conversations and CLI sessions…"),
+        "{asking}"
+    );
+    assert!(!asking.contains("~/code/api"), "{asking}");
+}
+
+/// The session the output snapshots follow: tool calls with results, a diff, subagents, a
+/// message, and a queued steer. `text` is its message.
+fn session_state(text: &str) -> AppState {
+    let mut state = crew_state(text);
+    let run = state.runs.get_mut(&run_id()).unwrap();
+    let codex = run.sessions.get_mut(&key("s-002")).unwrap();
+    codex.messages = vec![text.to_owned()];
+    codex.tools = vec![
+        tool(
+            "t-1",
+            "Read",
+            json!({"file_path": "src/export.rs"}),
+            Some((true, "fn write(&self) {}\nfn write_csv(&self) {}")),
+        ),
+        tool(
+            "t-2",
+            "Bash",
+            json!({"command": "cargo test -- export"}),
+            Some((true, "test export::csv ... ok\ntest export::json ... ok")),
+        ),
+        tool(
+            "t-3",
+            "Edit",
+            json!({"file_path": "src/export.rs", "old_string": "self.write_csv(out)",
+                   "new_string": "match self.format {"}),
+            None,
+        ),
+    ];
+    codex.diffs = vec![FileDiff {
+        path: "src/export.rs".into(),
+        added: 2,
+        removed: 1,
+        hunk: "@@ -10,3 +10,4 @@\n fn write(&self) {\n-        self.write_csv(out)\n+        match self.format {\n+            Format::Json => self.write_json(out),\n }".into(),
+        truncated: false,
+    }];
+    codex.subagents = vec![
+        SubagentUpdate {
+            id: "sub-1".into(),
+            parent: None,
+            kind: SubagentKind::Subagent,
+            label: Some("explorer".into()),
+            prompt: Some("Find every CSV writer".into()),
+            status: SubagentStatus::Done,
+            last_message: Some("Two writers, both in src/export.rs".into()),
+            log_uri: None,
+            steps_visible: true,
+        },
+        SubagentUpdate {
+            id: "thread-2".into(),
+            parent: Some("sub-1".into()),
+            kind: SubagentKind::Thread,
+            label: None,
+            prompt: Some("Check the tests".into()),
+            status: SubagentStatus::Running,
+            last_message: None,
+            log_uri: None,
+            steps_visible: false,
+        },
+    ];
+    codex.queued = vec![QueuedMessage {
+        id: MessageId::numbered(1),
+        from: Party::User,
+        to: MentionTarget::Number(2),
+        text: "use serde_json".into(),
+        queued_at: WALL,
+        delivery: Delivery::Steer,
+    }];
+    codex.inputs = vec![session_input(&[
+        (
+            "card",
+            "You own card-002: Add the JSON writer.\nKeep the CSV path working.",
+        ),
+        ("goal", "Export takes --json and prints valid JSON."),
+        ("notes", "Use serde_json.\nNo new dependencies."),
+    ])];
+    state
+}
+
+fn session_view() -> SessionView {
+    let mut view = SessionView::new(run_id(), key("s-002"));
+    view.clock = WallClock::pinned(WALL);
+    view
+}
+
+#[test]
+fn session_view_output() {
+    let state = session_state("The JSON writer goes beside the CSV one.");
+    for (width, height) in SIZES {
+        let mut view = session_view();
+        insta::assert_snapshot!(
+            format!("session_view_output_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut view = session_view();
+    let text = screen(&mut view, 100, 60, &state);
+    assert!(
+        text.starts_with("● GPT 5.6 on Codex · owner · card-002 (Add the JSON writer) · 2m00s")
+    );
+    for needle in [
+        "Read(src/export.rs)",
+        "fn write(&self) {}",
+        "test export::json ... ok",
+        "Update(src/export.rs)",
+        "self.write_json(out)",
+        "2 subagents",
+        "explorer · done · Two writers",
+        "its steps don't stream here",
+        "The JSON writer goes beside the CSV one.",
+        "⎿ Queued use serde_json",
+        "arrives after the current tool call",
+        "following",
+    ] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    // The subagent's thread hangs under it.
+    assert!(position(&text, "explorer") < position(&text, "Check the tests"));
+
+    // s steers, and the line shows until the message is queued.
+    press(&mut view, KeyCode::Char('s'), &state);
+    for c in "keep the CSV path".chars() {
+        press(&mut view, KeyCode::Char(c), &state);
+    }
+    assert!(screen(&mut view, 100, 32, &state).contains("steer ❯ keep the CSV path"));
+    let steer = press(&mut view, KeyCode::Enter, &state);
+    assert!(
+        matches!(&steer, ViewOutcome::Send(UiCommand::Steer { session, text, .. })
+            if session.as_str() == "s-002" && text == "keep the CSV path"),
+        "{steer:?}"
+    );
+    assert!(screen(&mut view, 100, 60, &state).contains("⎿ Sent keep the CSV path"));
+
+    let raw = press(&mut view, KeyCode::Char('r'), &state);
+    assert!(
+        matches!(&raw, ViewOutcome::Request(ViewRequest::Raw { session, .. }) if session.as_str() == "s-002"),
+        "{raw:?}"
+    );
+    let diff = press(&mut view, KeyCode::Char('d'), &state);
+    assert!(
+        matches!(&diff, ViewOutcome::Request(ViewRequest::Diff { card, .. }) if card.as_str() == "card-002"),
+        "{diff:?}"
+    );
+    let take = press(&mut view, KeyCode::Char('t'), &state);
+    assert!(
+        matches!(&take, ViewOutcome::ConfirmTakeOver { card, .. } if card.as_str() == "card-002"),
+        "{take:?}"
+    );
+    // Opened by a follow key, ← opens the crew view in its place.
+    assert!(matches!(
+        press(&mut view, KeyCode::Left, &state),
+        ViewOutcome::Replace(_)
+    ));
+    let mut from_crew = SessionView::from_crew(run_id(), key("s-002"));
+    assert!(matches!(
+        press(&mut from_crew, KeyCode::Left, &state),
+        ViewOutcome::Close
+    ));
+}
+
+#[test]
+fn follow_mode_keeps_the_live_end_on_screen() {
+    let mut state = session_state("first");
+    let mut view = session_view();
+    let first = screen(&mut view, 80, 24, &state);
+    assert!(first.contains("⎿ Queued use serde_json"), "{first}");
+    view.handle_key(
+        KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+        &ctx(&theme(), &state),
+    );
+    let paused = screen(&mut view, 80, 24, &state);
+    assert!(paused.contains("paused · End follows"), "{paused}");
+    assert!(!paused.contains("⎿ Queued use serde_json"), "{paused}");
+    // New output arrives while paused; the rows you read stay put.
+    let codex = state
+        .runs
+        .get_mut(&run_id())
+        .unwrap()
+        .sessions
+        .get_mut(&key("s-002"))
+        .unwrap();
+    codex.messages.push("Streamed while you read.".into());
+    codex.last_event = WALL;
+    assert_eq!(
+        screen(&mut view, 80, 24, &state).lines().nth(3),
+        paused.lines().nth(3)
+    );
+    press(&mut view, KeyCode::End, &state);
+    let live = screen(&mut view, 80, 24, &state);
+    assert!(live.contains("Streamed while you read."), "{live}");
+    assert!(live.contains("following"), "{live}");
+}
+
+#[test]
+fn session_view_input_side() {
+    let state = session_state("text");
+    for (width, height) in SIZES {
+        let mut view = session_view();
+        press(&mut view, KeyCode::Char('i'), &state);
+        insta::assert_snapshot!(
+            format!("session_view_input_side_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut view = session_view();
+    press(&mut view, KeyCode::Char('i'), &state);
+    let text = screen(&mut view, 100, 32, &state);
+    assert!(text.contains("$ codex exec --json '<prompt>'"), "{text}");
+    assert!(text.contains("cwd /wt/card-002 · prompt on stdin · sandbox worktree"));
+    // Each line of each part ends its own row, word for word and in order.
+    let mut last = 0;
+    for line in [
+        "You own card-002: Add the JSON writer.",
+        "Keep the CSV path working.",
+        "Export takes --json and prints valid JSON.",
+        "Use serde_json.",
+        "No new dependencies.",
+    ] {
+        let row = text
+            .lines()
+            .position(|row| row.ends_with(line))
+            .unwrap_or_else(|| panic!("{line:?}:\n{text}"));
+        assert!(row >= last, "{line:?} in order:\n{text}");
+        last = row;
+    }
+    assert!(row_with(&text, "❯ card").contains("~16 tok"));
+    assert!(position(&text, "Queued") > last);
+
+    // ↓ selects the next part, and → expands a long one.
+    let mut long = session_state("text");
+    let body = (1..=9)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    long.runs
+        .get_mut(&run_id())
+        .unwrap()
+        .sessions
+        .get_mut(&key("s-002"))
+        .unwrap()
+        .inputs = vec![session_input(&[("card", "short"), ("rules", &body)])];
+    let mut view = session_view();
+    press(&mut view, KeyCode::Char('i'), &long);
+    press(&mut view, KeyCode::Down, &long);
+    let folded = screen(&mut view, 100, 32, &long);
+    assert!(folded.contains("… +3 lines · → expands"), "{folded}");
+    assert!(!folded.contains("line 9"));
+    press(&mut view, KeyCode::Right, &long);
+    assert!(screen(&mut view, 100, 32, &long).contains("line 9"));
+    press(&mut view, KeyCode::Char('i'), &long);
+    assert!(screen(&mut view, 100, 32, &long).contains("[ Output ]"));
+}
+
+fn picker() -> ResumePicker {
+    let mut view = ResumePicker::new(vec![
+        summary(
+            "run-03",
+            "Add a --json flag to export",
+            RunPhase::Parked,
+            true,
+            50,
+        ),
+        summary(
+            "run-02",
+            "Fix the flaky export test",
+            RunPhase::Crashed,
+            false,
+            3,
+        ),
+        summary(
+            "run-01",
+            "Rename the CSV writer",
+            RunPhase::Merged,
+            false,
+            0,
+        ),
+    ]);
+    view.clock = WallClock::pinned(WALL);
+    view
+}
+
+#[test]
+fn resume_picker_rows() {
+    let state = crew_state("text");
+    for (width, height) in SIZES {
+        let mut view = picker();
+        insta::assert_snapshot!(
+            format!("resume_picker_rows_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut view = picker();
+    let text = screen(&mut view, 100, 32, &state);
+    assert!(text.contains("Parked runs never expire, so resume it or stop it"));
+    let parked = row_with(&text, "Add a --json flag to export");
+    assert!(parked.contains('◆'), "{text}");
+    for cell in [
+        "run-03",
+        "parked",
+        "merge checkpoint",
+        "2d ago",
+        "$0.46",
+        "2",
+    ] {
+        assert!(parked.contains(cell), "{cell}:\n{text}");
+    }
+    assert!(!row_with(&text, "Fix the flaky export test").contains('◆'));
+    assert!(text.contains("⏎ resume · x stop · d diff · r raw · esc back"));
+
+    press(&mut view, KeyCode::Down, &state);
+    let resume = press(&mut view, KeyCode::Enter, &state);
+    assert!(
+        matches!(&resume, ViewOutcome::Send(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"),
+        "{resume:?}"
+    );
+    // The run on screen can be stopped; another run is resumed first.
+    press(&mut view, KeyCode::Down, &state);
+    press(&mut view, KeyCode::Char('x'), &state);
+    assert!(screen(&mut view, 100, 32, &state).contains("x again to stop run-01 · esc to keep"));
+    assert!(matches!(
+        press(&mut view, KeyCode::Char('x'), &state),
+        ViewOutcome::Send(UiCommand::Stop)
+    ));
+    press(&mut view, KeyCode::Up, &state);
+    press(&mut view, KeyCode::Char('x'), &state);
+    assert!(matches!(
+        press(&mut view, KeyCode::Char('x'), &state),
+        ViewOutcome::Notice(_)
+    ));
+    // Esc keeps a run a first x asked about.
+    press(&mut view, KeyCode::Char('x'), &state);
+    assert!(matches!(
+        press(&mut view, KeyCode::Esc, &state),
+        ViewOutcome::Consumed
+    ));
+    assert!(matches!(
+        press(&mut view, KeyCode::Esc, &state),
+        ViewOutcome::Close
+    ));
+
+    // d and r ask for the diff and raw log of what this screen knows of the run.
+    press(&mut view, KeyCode::Down, &state);
+    let diff = press(&mut view, KeyCode::Char('d'), &state);
+    assert!(
+        matches!(&diff, ViewOutcome::Request(ViewRequest::Diff { .. })),
+        "{diff:?}"
+    );
+    let raw = press(&mut view, KeyCode::Char('r'), &state);
+    assert!(
+        matches!(&raw, ViewOutcome::Request(ViewRequest::Raw { .. })),
+        "{raw:?}"
+    );
+    press(&mut view, KeyCode::Up, &state);
+    assert!(matches!(
+        press(&mut view, KeyCode::Char('r'), &state),
+        ViewOutcome::Notice(_)
+    ));
+}
+
+fn cli_session(id: &str, title: &str, branch: Option<&str>, hours_ago: i64) -> VendorSession {
+    VendorSession {
+        vendor: VendorId("claude-code".into()),
+        id: id.into(),
+        title: title.into(),
+        prompt: Some(title.into()),
+        folder: PathBuf::from("/work/shop"),
+        updated: WALL - Duration::hours(hours_ago),
+        model: Some("claude-opus-5-5".into()),
+        branch: branch.map(Into::into),
+        last_message: None,
+    }
+}
+
+fn picker_with_sessions(title: &str) -> ResumePicker {
+    let mut view = ResumePicker::listing(
+        vec![
+            summary(
+                "run-02",
+                "Fix the flaky export test",
+                RunPhase::Crashed,
+                false,
+                3,
+            ),
+            summary(
+                "run-03",
+                "Add a --json flag to export",
+                RunPhase::Parked,
+                true,
+                50,
+            ),
+        ],
+        vec![ChatSummary {
+            chat: ChatId::numbered(2),
+            title: "what does export do?".into(),
+            updated: WALL - Duration::hours(2),
+            worker: Some(worker("claude-code")),
+            turns: 3,
+        }],
+        vec![
+            cli_session(
+                "0a1b2c3d-1111-4aaa-8bbb-000000000001",
+                title,
+                Some("main"),
+                0,
+            ),
+            cli_session(
+                "0a1b2c3d-2222-4aaa-8bbb-000000000002",
+                "Rename the CSV writer",
+                None,
+                26,
+            ),
+        ],
+    );
+    view.clock = WallClock::pinned(WALL);
+    view
+}
+
+#[test]
+fn resume_picker_with_cli_sessions() {
+    let state = crew_state("text");
+    for width in [80, 100, 120, 200] {
+        let mut view = picker_with_sessions("Explain the input loop");
+        insta::assert_snapshot!(
+            format!("resume_picker_cli_sessions_{width}"),
+            screen(&mut view, width, 24, &state)
+        );
+    }
+    let mut view = picker_with_sessions("Explain the input loop");
+    let text = screen(&mut view, 120, 24, &state);
+    assert!(text.contains("1 conversation · 2 runs · 2 Claude Code sessions"));
+    let newest = row_with(&text, "claude-code:0a1b2c3d-1");
+    for cell in [
+        "session",
+        "Explain the inpu",
+        "Claude Code on main",
+        "just now",
+    ] {
+        assert!(newest.contains(cell), "{cell}:\n{text}");
+    }
+    assert!(position(&text, "claude-code:0a1b2c3d-1") < position(&text, "chat-002"));
+    assert!(text.contains("⏎ resume · esc back"));
+    let resume = press(&mut view, KeyCode::Enter, &state);
+    assert!(
+        matches!(&resume, ViewOutcome::Send(UiCommand::Slash { .. })),
+        "{resume:?}"
+    );
+
+    // Every width holds its frame whatever the titles hold.
+    for sample in samples::all() {
+        for width in WIDTHS {
+            let mut view = picker_with_sessions(&sample);
+            screen(&mut view, width, 24, &state);
+        }
+    }
+}
+
+fn diff_data(text: &str) -> DiffView {
+    DiffView {
+        card: CardId::numbered(2),
+        stat: DiffStat {
+            files_changed: 1,
+            insertions: 3,
+            deletions: 1,
+        },
+        text: text.into(),
+        path: PathBuf::from("/state/cards/card-002/diff"),
+    }
+}
+
+const DIFF: &str = "diff --git a/src/export.rs b/src/export.rs
+index 3f1c2d0..9a8b7c6 100644
+--- a/src/export.rs
++++ b/src/export.rs
+@@ -10,3 +10,5 @@ impl Export {
+     fn write(&self, out: &mut dyn Write) -> Result<()> {
+-        self.write_csv(out)
++        match self.format {
++            Format::Csv => self.write_csv(out),
++            Format::Json => self.write_json(out),
+     }";
+
+#[test]
+fn diff_pager() {
+    let state = AppState::default();
+    for (width, height) in SIZES {
+        let mut view = Pager::diff(diff_data(DIFF));
+        insta::assert_snapshot!(
+            format!("diff_pager_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut view = Pager::diff(diff_data(DIFF));
+    let buf = draw(&mut view, 100, 32, &state);
+    let text = buffer_text(&buf);
+    assert!(text.contains("Diff · card-002"));
+    assert!(text.contains("1 file changed · +3 −1"));
+    let theme = theme();
+    let style_of = |needle: &str| {
+        let row = text.lines().position(|row| row.contains(needle)).unwrap();
+        let col = text.lines().nth(row).unwrap().find(needle).unwrap();
+        let x = text.lines().nth(row).unwrap()[..col].chars().count() as u16;
+        buf[(x, row as u16)].style()
+    };
+    assert_eq!(
+        style_of("+        match").bg,
+        theme.style(Role::AddedRow).bg
+    );
+    assert_eq!(
+        style_of("-        self.write_csv").bg,
+        theme.style(Role::RemovedRow).bg
+    );
+    assert_eq!(style_of("@@ -10,3").fg, theme.style(Role::Accent).fg);
+
+    // It scrolls, and says which rows show.
+    let long = (0..80)
+        .map(|n| format!("+line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut view = Pager::diff(diff_data(&long));
+    assert!(screen(&mut view, 80, 24, &state).contains("1-18 of 80 ↓"));
+    press(&mut view, KeyCode::PageDown, &state);
+    assert!(screen(&mut view, 80, 24, &state).contains("19-36 of 80 ↓"));
+    press(&mut view, KeyCode::End, &state);
+    let end = screen(&mut view, 80, 24, &state);
+    assert!(
+        end.contains("63-80 of 80") && end.contains("+line 79"),
+        "{end}"
+    );
+    assert!(matches!(
+        press(&mut view, KeyCode::Esc, &state),
+        ViewOutcome::Close
+    ));
+}
+
+fn raw_data(lines: &[&str]) -> RawView {
+    RawView {
+        session: key("s-002"),
+        lines: lines.iter().map(|line| (*line).to_owned()).collect(),
+        truncated: true,
+        path: PathBuf::from("/state/raw/s-002.jsonl"),
+        vendor_transcript: None,
+    }
+}
+
+#[test]
+fn raw_pager_is_sanitized() {
+    let state = AppState::default();
+    let lines = [
+        "{\"type\":\"thread.started\",\"thread_id\":\"th_01\"}",
+        "\u{1b}[31mred text\u{1b}[0m and \u{1b}]0;owned title\u{7}a title",
+        "\u{1b}[2J\u{1b}[Hcleared\rreturned\ttabbed",
+        "bidi \u{202e}reversed\u{202c} end \u{9b}31mC1",
+    ];
+    for (width, height) in SIZES {
+        let mut view = Pager::raw(raw_data(&lines));
+        insta::assert_snapshot!(
+            format!("raw_pager_is_sanitized_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut view = Pager::raw(raw_data(&lines));
+    let buf = draw(&mut view, 100, 32, &state);
+    for cell in buf.content() {
+        assert!(
+            !cell
+                .symbol()
+                .chars()
+                .any(|c| c.is_control() || c == '\u{202e}'),
+            "{:?} reached the screen",
+            cell.symbol()
+        );
+    }
+    let text = buffer_text(&buf);
+    assert!(text.contains("red text and a title"), "{text}");
+    assert!(!text.contains("owned title"), "{text}");
+    assert!(text.contains("thread.started"), "{text}");
+    assert!(text.contains("the last 4 lines"), "{text}");
+}
+
+#[test]
+fn help_view() {
+    let state = AppState::default();
+    for (width, height) in SIZES {
+        let mut view = HelpView::new(Keymap::default());
+        insta::assert_snapshot!(
+            format!("help_view_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+    let mut keymap = Keymap::default();
+    keymap.rebind(
+        argonauts_tui::keymap::Action::Transcript,
+        vec![argonauts_tui::keymap::KeySpec::parse("ctrl+y").unwrap()],
+    );
+    let mut view = HelpView::new(keymap);
+    let mut seen = String::new();
+    for _ in 0..20 {
+        seen.push_str(&screen(&mut view, 100, 32, &state));
+        press(&mut view, KeyCode::PageDown, &state);
+    }
+    assert!(seen.contains("ctrl+y"), "the keymap in effect:\n{seen}");
+    let every = argonauts_core::input::SLASH_COMMANDS
+        .iter()
+        .chain(argonauts_core::input::SHARED_COMMANDS);
+    for command in every {
+        assert!(
+            seen.contains(&format!("/{}", command.name)),
+            "/{}",
+            command.name
+        );
+    }
+    assert!(matches!(
+        press(&mut view, KeyCode::Esc, &state),
+        ViewOutcome::Close
+    ));
+}
+
+#[test]
+fn overlays_hold_their_frames_at_every_width() {
+    let long_word = samples::long_word();
+    let texts = [
+        samples::CJK,
+        samples::EMOJI,
+        samples::LONG_PATH,
+        samples::EMPTY,
+        long_word.as_str(),
+    ];
+    for text in texts {
+        let state = session_state(text);
+        let mut listed = state.clone();
+        listed.crew_panel = Some(fetched_panel(text));
+        let diff = format!("@@ -1 +1 @@\n-{text}\n+{text}\n {}", samples::CJK);
+        let raw = [text, samples::EMOJI];
+        for width in WIDTHS {
+            for height in [12, 24] {
+                let mut crew = open_crew(&state);
+                assert_frames(&draw(&mut crew, width, height, &state));
+                press(&mut crew, KeyCode::Down, &state);
+                press(&mut crew, KeyCode::Char(' '), &state);
+                assert_frames(&draw(&mut crew, width, height, &state));
+
+                let mut panel = open_crew(&listed);
+                assert_frames(&draw(&mut panel, width, height, &listed));
+                for _ in 0..6 {
+                    press(&mut panel, KeyCode::Down, &listed);
+                }
+                press(&mut panel, KeyCode::Char(' '), &listed);
+                assert_frames(&draw(&mut panel, width, height, &listed));
+                press(&mut panel, KeyCode::Char('?'), &listed);
+                assert_frames(&draw(&mut panel, width, height, &listed));
+
+                let mut output = session_view();
+                assert_frames(&draw(&mut output, width, height, &state));
+                press(&mut output, KeyCode::PageUp, &state);
+                assert_frames(&draw(&mut output, width, height, &state));
+                press(&mut output, KeyCode::Char('i'), &state);
+                press(&mut output, KeyCode::Right, &state);
+                assert_frames(&draw(&mut output, width, height, &state));
+
+                let mut resume = picker();
+                resume.runs[0].title = text.into();
+                resume.runs[1].stopped_at = text.into();
+                assert_frames(&draw(&mut resume, width, height, &state));
+
+                assert_frames(&draw(
+                    &mut Pager::diff(diff_data(&diff)),
+                    width,
+                    height,
+                    &state,
+                ));
+                assert_frames(&draw(
+                    &mut Pager::raw(raw_data(&raw)),
+                    width,
+                    height,
+                    &state,
+                ));
+                assert_frames(&draw(
+                    &mut Pager::text(text, vec![text.to_owned()]),
+                    width,
+                    height,
+                    &state,
+                ));
+                assert_frames(&draw(
+                    &mut HelpView::new(Keymap::default()),
+                    width,
+                    height,
+                    &state,
+                ));
+            }
+        }
+    }
+    // Columns hold while the selection moves.
+    let state = crew_state("text");
+    let mut view = open_crew(&state);
+    let before = screen(&mut view, 100, 24, &state);
+    press(&mut view, KeyCode::Down, &state);
+    let after = screen(&mut view, 100, 24, &state);
+    let column = |text: &str, needle: &str| {
+        let row = row_with(text, needle);
+        row.find(needle).map(|at| row[..at].chars().count())
+    };
+    assert_eq!(column(&before, "Update(src"), column(&after, "Update(src"));
+    assert_eq!(column(&before, "[ All 4 ]"), column(&after, "[ All 4 ]"));
+}
+
+#[test]
+fn rewind_picker() {
+    use argonauts_core::views::CheckpointRow;
+    use argonauts_tui::views::rewind::RewindPicker;
+    let row = |card: &str, n, to: &str, reverted_here| CheckpointRow {
+        card: CardId::new(card).unwrap(),
+        n,
+        at: WALL - Duration::hours(2),
+        commit: "0123456789abcdef".to_owned(),
+        from: worker("claude-code/opus"),
+        to: vec![worker(to)],
+        reason: "usage limit, resets at 3:45 PM".to_owned(),
+        reverted_here,
+    };
+    let state = AppState::default();
+    for (width, height) in SIZES {
+        let mut view = RewindPicker::new(
+            run_id(),
+            None,
+            vec![
+                row("card-001", 1, "codex", true),
+                row("card-002", 1, "antigravity-cli", false),
+                row("card-001", 2, "opencode", false),
+            ],
+        );
+        view.clock = WallClock::pinned(WALL);
+        insta::assert_snapshot!(
+            format!("rewind_picker_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+}
+
+#[test]
+fn status_view() {
+    use argonauts_core::api::StatusSummary;
+    use argonauts_tui::views::status::StatusView;
+    let state = AppState::default();
+    let summary = StatusSummary {
+        run: Some(run_id()),
+        goal: vec![
+            "Export reports as CSV".to_owned(),
+            "Every report has a CSV button".to_owned(),
+        ],
+        plan: Some("Two cards: the writer, then the button".to_owned()),
+        recent: vec!["card-001 merged".to_owned()],
+        waiting: vec!["the merge of card-002".to_owned()],
+        ..StatusSummary::default()
+    };
+    for (width, height) in SIZES {
+        let mut view = StatusView::new(summary.clone());
+        insta::assert_snapshot!(
+            format!("status_view_{width}"),
+            screen(&mut view, width, height, &state)
+        );
+    }
+}

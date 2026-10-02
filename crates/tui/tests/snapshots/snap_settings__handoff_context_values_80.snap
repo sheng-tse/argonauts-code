@@ -1,0 +1,17 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "picker_lines(picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────
+  What the replacement is told
+  What the replacement is told: the card only (fresh), the handoff note, the
+  note and the old session's transcript, or the note and a summary of it. A
+  role's own setting wins
+
+    1. fresh             The card only
+    2. note              The handoff note: why it stopped and what's left
+    3. note+transcript   The note, and the old session's transcript as a file
+  ❯ 4. note+summary ✓    The note, with a summary of the old session
+    5. Reset             remove it from this project's file
+
+  Enter to choose · ↑↓ to move · type to filter · Esc to close

@@ -1,210 +1,158 @@
-//! Placeholder boards, limits service, handoff planner, and gate runner. They fail closed, and
-//! anything with no safe answer panics saying it isn't built.
+//! The conductor's services as the app builds them: the quota and health boards, the limits
+//! service, the handoff planner, and the gate runner.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use argonauts_core::Paths;
-use argonauts_core::events::card::{CardSpec, GateKind, GateOutcome};
-use argonauts_core::events::run::ParkReason;
-use argonauts_core::events::{RunEvent, VendorEvent};
-use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{
-    Candidate, CandidateQuery, GateRequest, GateRunner, HandoffPacket, HandoffPlanner, HealthBoard,
-    HealthSignal, HealthState, LimitsService, QuotaBoard, QuotaReading, RecoveryAction,
-    StopContext, TrackRecords, VendorHealth,
+    GateRunner, HandoffPlanner, HealthBoard, LimitsService, QuotaBoard, TrackRecords,
 };
-use argonauts_core::names::{RoleName, VendorId, WorkerRef};
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
-use argonauts_core::worker::SessionLimits;
-use time::OffsetDateTime;
-use tokio::sync::broadcast;
+use argonauts_core::settings::sessions::HealthSettings;
 
-const NOT_BUILT: &str = "is not implemented yet";
+use crate::gates::SandboxedGates;
+use crate::handoff::Planner;
+use crate::health::FileHealthBoard;
+use crate::quota::FileQuotaBoard;
+use crate::recovery::Limits;
+use crate::sandbox;
+use crate::slots::Slots;
 
-/// Shared by every process through `~/.argonauts/vendors.json`.
+/// Shared by every process through `~/.argonauts/vendors.json`, with the built-in `health.*`
+/// thresholds.
 pub fn boards(home: &Paths) -> (Arc<dyn QuotaBoard>, Arc<dyn HealthBoard>) {
-    let _ = home;
-    let (events, _) = broadcast::channel(16);
+    boards_with(home, &HealthSettings::default())
+}
+
+/// Like [`boards`], with your `health.*` thresholds.
+pub fn boards_with(
+    home: &Paths,
+    health: &HealthSettings,
+) -> (Arc<dyn QuotaBoard>, Arc<dyn HealthBoard>) {
     (
-        Arc::new(EmptyQuotaBoard),
-        Arc::new(UncheckedHealthBoard { events }),
+        Arc::new(FileQuotaBoard::new(home)),
+        Arc::new(FileHealthBoard::new(home, health)),
     )
 }
 
+/// The registry lets a retired model hand off to its successor and the retry ladder tell
+/// families apart.
 pub fn limits_service(
     settings: Arc<Settings>,
+    registry: Arc<dyn ModelRegistry>,
     quota: Arc<dyn QuotaBoard>,
     health: Arc<dyn HealthBoard>,
     handoff: Arc<dyn HandoffPlanner>,
 ) -> Arc<dyn LimitsService> {
-    let _ = (settings, quota, health, handoff);
-    Arc::new(EscalatingLimits)
+    Arc::new(Limits::new(settings, quota, health, handoff).with_registry(registry))
 }
 
+/// `spread` weighs the concurrency slots every process shares under `~/.argonauts/`. Without a
+/// home to find them in, it goes by quota and track record alone. With the run's folder, a
+/// handoff's packet comes with the old session's transcript.
 pub fn handoff_planner(
     settings: Arc<Settings>,
     registry: Arc<dyn ModelRegistry>,
     quota: Arc<dyn QuotaBoard>,
     health: Arc<dyn HealthBoard>,
     records: Arc<dyn TrackRecords>,
+    run_dir: Option<PathBuf>,
 ) -> Arc<dyn HandoffPlanner> {
-    let _ = (settings, registry, quota, health, records);
-    Arc::new(NoCandidates)
+    let slots = match Paths::from_env() {
+        Ok(home) => Some(Slots::new(&home, &settings.concurrency)),
+        Err(error) => {
+            tracing::warn!(%error, "spread can't see the concurrency slots");
+            None
+        }
+    };
+    let mut planner = Planner::new(settings, registry, quota, health, records);
+    if let Some(run_dir) = run_dir {
+        planner = planner.with_run_dir(run_dir);
+    }
+    Arc::new(match slots {
+        Some(slots) => planner.with_slots(Arc::new(slots)),
+        None => planner,
+    })
 }
 
 pub fn gate_runner(settings: Arc<Settings>) -> Arc<dyn GateRunner> {
-    let _ = settings;
-    Arc::new(FailingGates)
-}
-
-/// Holds no readings. Recording one would silently drop it, so that panics instead.
-struct EmptyQuotaBoard;
-
-impl QuotaBoard for EmptyQuotaBoard {
-    fn observe(&self, reading: QuotaReading) {
-        let _ = reading;
-        unimplemented!("the quota board {NOT_BUILT}");
-    }
-
-    fn get(&self, vendor: &VendorId) -> Option<QuotaReading> {
-        let _ = vendor;
-        None
-    }
-
-    fn all(&self) -> Vec<QuotaReading> {
-        Vec::new()
-    }
-
-    fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>> {
-        let _ = vendor;
-        Box::pin(async { None })
-    }
-}
-
-struct UncheckedHealthBoard {
-    /// Kept so subscribers wait quietly instead of seeing a closed channel.
-    events: broadcast::Sender<VendorEvent>,
-}
-
-impl HealthBoard for UncheckedHealthBoard {
-    fn observe(&self, signal: HealthSignal) {
-        let _ = signal;
-        unimplemented!("the health board {NOT_BUILT}");
-    }
-
-    fn state(&self, vendor: &VendorId) -> VendorHealth {
-        VendorHealth {
-            vendor: vendor.clone(),
-            state: HealthState::Healthy,
-            since: OffsetDateTime::now_utc(),
-            reason: None,
-            next_test_at: None,
-            disabled: Some(format!("the health board {NOT_BUILT}")),
-        }
-    }
-
-    fn all(&self) -> Vec<VendorHealth> {
-        Vec::new()
-    }
-
-    fn subscribe(&self) -> broadcast::Receiver<VendorEvent> {
-        self.events.subscribe()
-    }
-
-    fn test_result(&self, vendor: &VendorId, ok: bool) {
-        let _ = (vendor, ok);
-        unimplemented!("the health board {NOT_BUILT}");
-    }
-}
-
-/// Escalates every stop, so a card never continues on an unplanned recovery.
-struct EscalatingLimits;
-
-impl LimitsService for EscalatingLimits {
-    fn session_limits(&self, card: Option<&CardSpec>, role: RoleName) -> SessionLimits {
-        let _ = (card, role);
-        unimplemented!("session limits {NOT_BUILT}");
-    }
-
-    fn after_stop<'a>(&'a self, context: &'a StopContext) -> BoxFuture<'a, RecoveryAction> {
-        let _ = context;
-        Box::pin(async {
-            RecoveryAction::Escalate {
-                reason: format!("the limits service {NOT_BUILT}"),
-            }
-        })
-    }
-
-    fn all_out(&self, workers: &[WorkerRef]) -> Option<ParkReason> {
-        let _ = workers;
-        unimplemented!("the all-vendors-out check {NOT_BUILT}");
-    }
-}
-
-struct NoCandidates;
-
-impl HandoffPlanner for NoCandidates {
-    fn candidates(&self, query: &CandidateQuery) -> Vec<Candidate> {
-        let _ = query;
-        Vec::new()
-    }
-
-    fn packet(&self, card: &CardSpec, events: &[RunEvent]) -> HandoffPacket {
-        let _ = (card, events);
-        unimplemented!("handoff packets {NOT_BUILT}");
-    }
-}
-
-struct FailingGates;
-
-impl GateRunner for FailingGates {
-    fn run(&self, request: GateRequest) -> BoxFuture<'_, GateOutcome> {
-        Box::pin(async move {
-            GateOutcome {
-                name: request.name,
-                kind: GateKind::Command,
-                passed: false,
-                command: Some(request.command),
-                exit_code: None,
-                duration_ms: 0,
-                summary: format!("the sandboxed gate runner {NOT_BUILT}"),
-                output_tail: String::new(),
-                violations: Vec::new(),
-                sandboxed: false,
-            }
-        })
-    }
+    let sandbox = sandbox::for_settings(&settings.sandbox);
+    Arc::new(SandboxedGates::new(settings, sandbox))
 }
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::Spend;
+    use argonauts_core::events::card::CardState;
+    use argonauts_core::events::session::{EndReason, SessionEnd};
+    use argonauts_core::limits::{RecoveryAction, StopContext};
+    use argonauts_core::names::RoleName;
+
     use super::*;
-    use argonauts_core::worker::SandboxProfile;
-    use argonauts_core::{CardId, RunId};
-    use std::time::Duration;
+    use crate::handoff::testing::{CARD, Fixture, card, model, run, worker};
 
     #[tokio::test]
-    async fn the_placeholders_fail_closed() {
-        let home = Paths::new("/nowhere");
-        let (quota, health) = boards(&home);
-        let vendor = VendorId("codex".into());
-        assert!(quota.get(&vendor).is_none());
-        assert!(health.state(&vendor).disabled.is_some());
-        let gates = gate_runner(Arc::new(Settings::default()));
-        let outcome = gates
-            .run(GateRequest {
-                run: RunId::new("run-01").unwrap(),
-                card: CardId::numbered(1),
-                name: "tests".into(),
-                command: vec!["cargo".into(), "test".into()],
-                workdir: "/nowhere".into(),
-                sandbox: SandboxProfile::default(),
-                timeout: Duration::from_secs(1),
-                setup: false,
-            })
-            .await;
-        assert!(!outcome.passed);
-        assert!(outcome.summary.contains("not implemented"));
+    async fn a_retired_model_hands_off_to_its_successor() {
+        let fixture = Fixture::with_models();
+        let mut retired = model("claude-code", "opus-4", "claude");
+        retired.retired = true;
+        retired.successor = Some("opus-5".to_owned());
+        fixture.registry.add(retired);
+        fixture
+            .registry
+            .add(model("claude-code", "opus-5", "claude"));
+
+        let settings = Arc::new(fixture.settings.clone());
+        let planner = handoff_planner(
+            settings.clone(),
+            fixture.registry.clone(),
+            fixture.quota.clone(),
+            fixture.health.clone(),
+            fixture.records.clone(),
+            None,
+        );
+        let limits = limits_service(
+            settings,
+            fixture.registry.clone(),
+            fixture.quota.clone(),
+            fixture.health.clone(),
+            planner,
+        );
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let events = dir.path().join("events.jsonl");
+        std::fs::write(&events, "").expect("the journal is written");
+        let context = StopContext {
+            run: run(),
+            card: card(CARD),
+            state: CardState::Running,
+            role: RoleName::Owner,
+            worker: worker("claude-code/opus-4"),
+            end: SessionEnd {
+                vendor_session: None,
+                exit_code: Some(1),
+                signal: None,
+                duration_ms: 1_000,
+                reason: EndReason::ModelUnavailable {
+                    model: "opus-4".to_owned(),
+                },
+                spend: Spend::default(),
+                tool_calls: 0,
+                result_text: None,
+                structured: None,
+                last_message: None,
+                raw_log: None,
+            },
+            attempts: Vec::new(),
+            reassigned_once: false,
+            events,
+        };
+
+        match limits.after_stop(&context).await {
+            RecoveryAction::HandOff { to, .. } => assert_eq!(to.to_string(), "claude-code/opus-5"),
+            other => panic!("expected a handoff to the successor, got {other:?}"),
+        }
     }
 }

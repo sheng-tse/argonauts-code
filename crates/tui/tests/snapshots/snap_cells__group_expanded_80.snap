@@ -1,0 +1,20 @@
+---
+source: crates/tui/tests/cells.rs
+expression: text(&lines)
+---
+● Read(src/export.rs)
+  ⎿  Read 212 lines
+
+● Read(src/cli.rs)
+  ⎿  Read 212 lines
+
+● Read(tests/export.rs)
+  ⎿  Read 212 lines
+
+● Bash(cargo build)
+  ⎿  $ cargo build
+     Finished `dev` profile in 2.41s
+
+● Bash(cargo test export)
+  ⎿  $ cargo test export
+     Finished `dev` profile in 2.41s

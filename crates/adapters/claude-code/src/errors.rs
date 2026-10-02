@@ -28,11 +28,16 @@ pub(crate) fn from_api_error(code: &str, text: &str) -> ErrorCategory {
         "server_error" => ErrorCategory::Server,
         _ => ErrorCategory::Unknown,
     };
-    // A subscription's usage limit arrives as `rate_limit`; only the text tells them apart.
+    // A subscription's usage limit arrives as `rate_limit`, and a full context as
+    // `invalid_request`; only the text tells them apart.
     match (category, from_text(text)) {
         (
             ErrorCategory::RateLimit,
             Some(refined @ (ErrorCategory::UsageLimit | ErrorCategory::Billing)),
+        )
+        | (
+            ErrorCategory::InvalidRequest,
+            Some(refined @ (ErrorCategory::ContextFull | ErrorCategory::ModelUnavailable)),
         ) => refined,
         (ErrorCategory::Unknown, Some(refined)) => refined,
         _ => category,
@@ -60,6 +65,17 @@ pub(crate) fn from_result(result: &Value, message: &str) -> ErrorCategory {
     if let Some(category) = str_at(result, "terminal_reason").and_then(from_terminal_reason) {
         return category;
     }
+    // A status is broader than its message: a full context is a 400 and a usage limit a 429.
+    let from_message = from_text(message);
+    if let Some(
+        specific @ (ErrorCategory::ContextFull
+        | ErrorCategory::ModelUnavailable
+        | ErrorCategory::UsageLimit
+        | ErrorCategory::Billing),
+    ) = from_message
+    {
+        return specific;
+    }
     if let Some(category) = from_http_status(u64_at(result, "api_error_status")) {
         return category;
     }
@@ -71,7 +87,7 @@ pub(crate) fn from_result(result: &Value, message: &str) -> ErrorCategory {
             ErrorCategory::Cli
         };
     }
-    from_text(message).unwrap_or(ErrorCategory::Unknown)
+    from_message.unwrap_or(ErrorCategory::Unknown)
 }
 
 fn from_terminal_reason(reason: &str) -> Option<ErrorCategory> {
@@ -133,7 +149,12 @@ const TEXT_HINTS: &[(ErrorCategory, &[&str])] = &[
     ),
     (
         ErrorCategory::ContextFull,
-        &["prompt is too long", "context window", "context length"],
+        &[
+            "prompt is too long",
+            "context window",
+            "context length",
+            "context limit",
+        ],
     ),
     (
         ErrorCategory::ModelUnavailable,
@@ -317,6 +338,44 @@ mod tests {
             assert_eq!(from_text(text), Some(want), "{text}");
         }
         assert_eq!(from_text("something odd happened"), None);
+    }
+
+    #[test]
+    fn context_limit_and_invalid_model_results_are_classified() {
+        let full = json!({"subtype": "success", "is_error": true, "api_error_status": 400});
+        assert_eq!(
+            from_result(&full, "Prompt is too long"),
+            ErrorCategory::ContextFull
+        );
+        assert_eq!(
+            from_result(&full, "input length and `max_tokens` exceed context limit"),
+            ErrorCategory::ContextFull
+        );
+        assert_eq!(
+            from_result(&full, "API Error: 400 bad field"),
+            ErrorCategory::InvalidRequest
+        );
+        let missing = json!({"subtype": "success", "is_error": true, "api_error_status": 404});
+        assert_eq!(
+            from_result(
+                &missing,
+                "There's an issue with the selected model (claude-nope). It may not exist or you \
+                 may not have access to it."
+            ),
+            ErrorCategory::ModelUnavailable
+        );
+        assert_eq!(
+            from_result(&json!({"api_error_status": 429}), "You've hit your limit"),
+            ErrorCategory::UsageLimit
+        );
+        assert_eq!(
+            from_api_error("invalid_request", "Prompt is too long"),
+            ErrorCategory::ContextFull
+        );
+        assert_eq!(
+            from_api_error("invalid_request", "bad"),
+            ErrorCategory::InvalidRequest
+        );
     }
 
     #[test]

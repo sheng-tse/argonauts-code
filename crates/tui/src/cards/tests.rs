@@ -1,0 +1,1265 @@
+use std::path::PathBuf;
+use std::time::Instant;
+
+use argonauts_core::api::DiffScope;
+use argonauts_core::app::{AppChoice, ChoiceKind, ViewRequest};
+use argonauts_core::events::card::CardKind;
+use argonauts_core::events::checkpoint::{
+    CheckpointKind, CheckpointPacket, EscalationPacket, FreeText, MergePacket, MergeRow,
+    VendorDownPacket,
+};
+use argonauts_core::events::run::Party;
+use argonauts_core::events::vendor::HandoffPlan;
+use argonauts_core::limits::{Candidate, CostEstimate, TrackRecord};
+use argonauts_core::names::{ChoiceId, VendorId, WorkerRef};
+use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::handoff::{HandoffMode, HandoffStrategy};
+use argonauts_core::settings::ui::UiSettings;
+use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::{DiffStat, Spend};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use time::UtcOffset;
+use time::macros::datetime;
+
+use super::*;
+use crate::bottom::{CardEvent, OptionKind};
+use crate::bridge::Effects;
+use crate::cell::HistoryCell;
+use crate::model::ViewModel;
+use crate::render::{Clock, RenderCtx};
+use crate::state::AppState;
+use crate::text::plain_text;
+use crate::theme::{Glyphs, Theme};
+
+const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+struct Screen {
+    cards: Cards,
+    model: ViewModel,
+    state: AppState,
+    settings: UiSettings,
+}
+
+impl Screen {
+    fn new() -> Self {
+        Self {
+            cards: Cards::default(),
+            model: ViewModel::default(),
+            state: AppState::default(),
+            settings: UiSettings::default(),
+        }
+    }
+
+    fn event(&mut self, event: AppEvent) -> Effects {
+        let mut out = Effects::default();
+        let mut cx = Cx {
+            model: &mut self.model,
+            state: &self.state,
+            settings: &self.settings,
+            now: Instant::now(),
+            out: &mut out,
+        };
+        self.cards.on_event(&event, &mut cx);
+        out
+    }
+
+    fn action(&mut self, action: UiAction) -> (bool, Effects) {
+        let mut out = Effects::default();
+        let mut cx = Cx {
+            model: &mut self.model,
+            state: &self.state,
+            settings: &self.settings,
+            now: Instant::now(),
+            out: &mut out,
+        };
+        let taken = self.cards.on_action(&action, &mut cx);
+        (taken, out)
+    }
+
+    fn card(&self) -> &CardPrompt {
+        self.model.bottom.card.as_ref().expect("a card on screen")
+    }
+
+    /// Presses keys on the card as the app does, and hands what they report to the cards.
+    fn keys(&mut self, codes: &[KeyCode]) -> Vec<Effects> {
+        let mut effects = Vec::new();
+        for &code in codes {
+            let card = self.model.bottom.card.as_mut().expect("a card on screen");
+            card.focused = true;
+            let id = card.id;
+            let action = match card.handle_key(KeyEvent::new(code, KeyModifiers::NONE)) {
+                CardEvent::Answered {
+                    index,
+                    note,
+                    checked,
+                } => {
+                    self.model.bottom.card = None;
+                    Some(UiAction::Answer {
+                        card: id,
+                        option: index,
+                        note,
+                        checked,
+                    })
+                }
+                CardEvent::OpenView { index } => Some(UiAction::OpenView {
+                    card: id,
+                    option: index,
+                }),
+                CardEvent::Pinned => Some(UiAction::SetAside { card: id }),
+                CardEvent::BackToInput | CardEvent::Moved | CardEvent::Unhandled => None,
+            };
+            if let Some(action) = action {
+                effects.push(self.action(action).1);
+            }
+        }
+        effects
+    }
+
+    fn history(&self) -> Vec<String> {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        self.model
+            .history
+            .cells()
+            .iter()
+            .map(|cell| plain_text(&cell.lines(&ctx)))
+            .collect()
+    }
+}
+
+fn run() -> RunId {
+    RunId::new("run-01").unwrap()
+}
+
+fn card_id(n: u32) -> CardId {
+    CardId::new(format!("card-{n:03}")).unwrap()
+}
+
+fn worker(text: &str) -> WorkerRef {
+    text.parse().unwrap()
+}
+
+fn option(key: char, label: &str, action: AnswerAction) -> AnswerOption {
+    AnswerOption {
+        key,
+        label: label.into(),
+        action,
+        recommended: false,
+        detail: None,
+    }
+}
+
+fn stat(files: u32, insertions: u32, deletions: u32) -> DiffStat {
+    DiffStat {
+        files_changed: files,
+        insertions,
+        deletions,
+    }
+}
+
+fn opened(
+    kind: CheckpointKind,
+    title: &str,
+    packet: CheckpointPacket,
+    options: Vec<AnswerOption>,
+) -> CheckpointOpened {
+    CheckpointOpened {
+        id: CheckpointId::numbered(1),
+        kind,
+        title: title.into(),
+        card: None,
+        packet,
+        evidence_sha256: HASH.into(),
+        mode: ApprovalMode::Supervised,
+        decide_with: DecideWith::Rules,
+        options,
+        free_text: FreeText::Guidance,
+        needs_you: true,
+    }
+}
+
+/// The number the card shows beside the option the event gives `key`.
+fn number(opened: &CheckpointOpened, key: char) -> KeyCode {
+    let index = opened
+        .options
+        .iter()
+        .position(|option| option.key == key)
+        .unwrap_or_else(|| panic!("an option `{key}` on {}", opened.title));
+    KeyCode::Char(char::from_digit(index as u32 + 1, 10).expect("one digit"))
+}
+
+fn merge() -> CheckpointOpened {
+    let row = |n: u32, title: &str| MergeRow {
+        card: card_id(n),
+        title: title.into(),
+        kind: CardKind::Build,
+        stat: stat(2, 40, 6),
+        owner: Some(worker("codex/gpt-5.6")),
+        gates_passed: true,
+        review: Some(ReviewVerdict::Approve),
+        debt: Vec::new(),
+    };
+    let packet = MergePacket {
+        target: Some("main".into()),
+        branch: "argonauts/run-01/integration".into(),
+        rows: vec![
+            row(2, "Add the JSON writer"),
+            row(3, "Wire --json into the CLI"),
+        ],
+        suite_passed_on_latest_main: true,
+        gates: Vec::new(),
+        combined: stat(4, 80, 12),
+        diff_path: PathBuf::from("/nonexistent/argonauts/run-01.diff"),
+        tree_sha: "abc".into(),
+        spent: Spend::default(),
+        limit: None,
+        partial: false,
+    };
+    opened(
+        CheckpointKind::Merge,
+        "Merge this run into main?",
+        CheckpointPacket::Merge(packet),
+        vec![
+            option('y', "Merge", AnswerAction::Merge),
+            option('p', "Open a pull request", AnswerAction::PullRequest),
+            option(
+                'b',
+                "Request changes on some cards",
+                AnswerAction::RequestChanges,
+            ),
+            option('k', "Keep the branch", AnswerAction::KeepBranch),
+            option('x', "Abandon the run", AnswerAction::Abandon),
+            option('d', "Show the diff", AnswerAction::ShowDiff),
+        ],
+    )
+}
+
+fn handoff() -> CheckpointOpened {
+    let candidate = |name: &str| Candidate {
+        worker: worker(name),
+        quota_left: Some(0.62),
+        quota_text: "62%".into(),
+        track_record: Some(TrackRecord { passed: 9, of: 11 }),
+        cost: CostEstimate::Quota(0.06),
+        needs_confirm: false,
+        may_run_out: false,
+    };
+    let plan = HandoffPlan {
+        card: card_id(3),
+        title: "Middleware".into(),
+        stopped: worker("claude-code/opus"),
+        reason: "usage limit, resets in 2h 10m".into(),
+        resets_at: None,
+        work: stat(4, 96, 12),
+        gates_ran: false,
+        candidates: vec![candidate("codex/gpt-5.6")],
+        mode: HandoffMode::Ask,
+        strategy: HandoffStrategy::First,
+        race_count: 1,
+        also_moving: Vec::new(),
+    };
+    let mut opened = opened(
+        CheckpointKind::Handoff,
+        "Handoff · card-003 Middleware",
+        CheckpointPacket::Handoff(plan),
+        vec![
+            option(
+                'a',
+                "codex/gpt-5.6",
+                AnswerAction::Candidate {
+                    worker: worker("codex/gpt-5.6"),
+                },
+            ),
+            option('t', "Take over myself", AnswerAction::TakeOver),
+            option('w', "Wait until the reset", AnswerAction::Wait),
+            option('o', "Pick another agent", AnswerAction::OtherCandidates),
+            option('d', "Show the diff", AnswerAction::ShowDiff),
+        ],
+    );
+    opened.card = Some(card_id(3));
+    opened
+}
+
+fn escalation() -> CheckpointOpened {
+    opened(
+        CheckpointKind::Escalation,
+        "card-004 is stuck",
+        CheckpointPacket::Escalation(EscalationPacket {
+            card: card_id(4),
+            title: "Parser".into(),
+            state: argonauts_core::events::card::CardState::NeedsDecision,
+            attempts: vec!["tests failed".into()],
+            last_failure: "tests failed".into(),
+        }),
+        vec![
+            option('r', "Retry with a note", AnswerAction::Retry),
+            option('x', "Cancel the card", AnswerAction::Cancel),
+            option('d', "Show the details", AnswerAction::ShowDiff),
+        ],
+    )
+}
+
+fn vendor_down() -> CheckpointOpened {
+    opened(
+        CheckpointKind::VendorDown,
+        "Claude Code is down",
+        CheckpointPacket::VendorDown(VendorDownPacket {
+            vendor: VendorId("claude-code".into()),
+            evidence: "overload errors on 3 sessions in 2 min".into(),
+            test_at: Some(datetime!(2026-09-30 14:40 UTC)),
+            paused: Vec::new(),
+        }),
+        vec![option('w', "Wait for Claude Code", AnswerAction::Wait)],
+    )
+}
+
+fn choice(kind: ChoiceKind, options: Vec<AnswerOption>) -> AppChoice {
+    AppChoice {
+        id: ChoiceId::numbered(7),
+        kind,
+        title: "Save effort = high where?".into(),
+        body: vec!["reasoning effort for the default agent".into()],
+        options,
+        free_text: FreeText::None,
+        bell: false,
+    }
+}
+
+fn checkpoint(event: CheckpointEvent) -> AppEvent {
+    AppEvent::Run {
+        event: Box::new(RunEvent {
+            seq: 1,
+            ts: datetime!(2026-09-30 10:58 UTC),
+            run_id: run(),
+            card_id: None,
+            session: None,
+            source: "conductor".into(),
+            kind: RunEventKind::Checkpoint(event),
+        }),
+    }
+}
+
+fn opened_event(opened: CheckpointOpened) -> AppEvent {
+    checkpoint(CheckpointEvent::Opened(Box::new(opened)))
+}
+
+fn decided(action: AnswerAction, by: Party) -> CheckpointDecided {
+    CheckpointDecided {
+        id: CheckpointId::numbered(1),
+        action,
+        text: None,
+        by,
+        evidence_sha256: HASH.into(),
+        shadow: None,
+        cards: Vec::new(),
+    }
+}
+
+#[test]
+fn answer_carries_rendered_evidence_hash() {
+    let mut screen = Screen::new();
+    let out = screen.event(opened_event(merge()));
+    assert!(out.bell, "a card that needs you rings once");
+    assert!(
+        !screen.card().focused,
+        "a card never takes the keys by itself"
+    );
+
+    let id = screen.card().id;
+    let (taken, out) = screen.action(UiAction::Answer {
+        card: id,
+        option: 1,
+        note: Some("ship it".into()),
+        checked: Vec::new(),
+    });
+    assert!(taken);
+    assert_eq!(
+        out.commands,
+        vec![UiCommand::Answer {
+            to: AnswerTarget::Checkpoint {
+                run: run(),
+                id: CheckpointId::numbered(1),
+            },
+            action: AnswerAction::PullRequest,
+            text: Some("ship it".into()),
+            evidence_sha256: Some(HASH.into()),
+            cards: Vec::new(),
+            remember: false,
+        }]
+    );
+    assert!(screen.cards.open.is_empty());
+    assert!(screen.model.bottom.card.is_none());
+}
+
+#[test]
+fn request_changes_sends_picked_cards() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    let mut keys = vec![
+        number(&merge(), 'b'),
+        KeyCode::Down,
+        KeyCode::Char(' '),
+        KeyCode::Enter,
+    ];
+    // Enter on the ticks opens the note, since the changes are what the agents act on.
+    keys.extend("split the writer".chars().map(KeyCode::Char));
+    keys.push(KeyCode::Enter);
+    let effects = screen.keys(&keys);
+    let commands: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    let [
+        UiCommand::Answer {
+            action,
+            cards,
+            text,
+            ..
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("one answer, got {commands:?}");
+    };
+    assert_eq!(*action, AnswerAction::RequestChanges);
+    assert_eq!(*cards, vec![card_id(3)]);
+    assert_eq!(text.as_deref(), Some("split the writer"));
+}
+
+#[test]
+fn retry_opens_the_note_before_it_answers() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(escalation()));
+    let mut keys = vec![number(&escalation(), 'r')];
+    keys.extend("mock the clock".chars().map(KeyCode::Char));
+    let effects = screen.keys(&keys);
+    assert!(effects.iter().all(|out| out.commands.is_empty()));
+    let effects = screen.keys(&[KeyCode::Enter]);
+    let commands: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    let [UiCommand::Answer { action, text, .. }] = commands.as_slice() else {
+        panic!("one answer, got {commands:?}");
+    };
+    assert_eq!(*action, AnswerAction::Retry);
+    assert_eq!(text.as_deref(), Some("mock the clock"));
+}
+
+fn scope_choice() -> AppChoice {
+    let scope = |key: char, label: &str, value: &str| {
+        option(
+            key,
+            label,
+            AnswerAction::Choose {
+                value: value.into(),
+            },
+        )
+    };
+    choice(
+        ChoiceKind::SettingScope,
+        vec![
+            scope('s', "Just this session", "session"),
+            scope('m', "This project, just me", "project_local"),
+            scope('p', "This project, shared", "project"),
+            scope('e', "Everywhere", "global"),
+        ],
+    )
+}
+
+#[test]
+fn a_change_made_in_a_view_asks_over_it() {
+    for kind in [ChoiceKind::SettingScope, ChoiceKind::ConfirmSafetySetting] {
+        let mut screen = Screen::new();
+        let out = screen.event(AppEvent::Choice {
+            choice: choice(kind, Vec::new()),
+        });
+        assert!(out.close_views, "{kind:?} would wait behind the view");
+    }
+    let mut screen = Screen::new();
+    let out = screen.event(AppEvent::Choice {
+        choice: choice(ChoiceKind::StartWork, Vec::new()),
+    });
+    assert!(!out.close_views);
+}
+
+#[test]
+fn a_choice_you_set_off_opens_with_the_keys() {
+    let mut screen = Screen::new();
+    screen.event(AppEvent::Choice {
+        choice: scope_choice(),
+    });
+    assert!(screen.card().focused && screen.card().takes_focus);
+    for kind in [
+        ChoiceKind::ConfirmSafetySetting,
+        ChoiceKind::TermsNote,
+        ChoiceKind::Init,
+        ChoiceKind::ConfirmRevert,
+        ChoiceKind::ConfirmConnect,
+        ChoiceKind::TrustProject,
+        ChoiceKind::DetectedGates,
+    ] {
+        let card = choice_card(1, &choice(kind, Vec::new()));
+        assert!(card.focused && card.esc_answers, "{kind:?}");
+    }
+    // The unclear request follows the lead's reply, so it waits for ↑ like a run's card.
+    let unclear = choice_card(2, &choice(ChoiceKind::StartWork, Vec::new()));
+    assert!(!unclear.focused && !unclear.takes_focus);
+
+    // A number answers it, never a letter.
+    let card = screen.model.bottom.card.as_mut().unwrap();
+    for c in ['s', 'm', 'p', 'e', '/'] {
+        assert_eq!(
+            card.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+            CardEvent::Unhandled
+        );
+    }
+    let effects = screen.keys(&[KeyCode::Char('4')]);
+    assert_eq!(
+        effects[0].commands,
+        vec![UiCommand::Answer {
+            to: AnswerTarget::Choice {
+                id: ChoiceId::numbered(7),
+            },
+            action: AnswerAction::Choose {
+                value: "global".into(),
+            },
+            text: None,
+            evidence_sha256: None,
+            cards: Vec::new(),
+            remember: false,
+        }]
+    );
+}
+
+#[test]
+fn a_choice_you_set_off_goes_before_a_waiting_run_card() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    let run_card = screen.card().id;
+    assert!(!screen.card().focused, "a run's card waits for ↑");
+    screen.event(AppEvent::Choice {
+        choice: scope_choice(),
+    });
+    assert_ne!(screen.card().id, run_card);
+    assert!(
+        screen.card().focused,
+        "the scope question takes the keys at once"
+    );
+
+    screen.keys(&[KeyCode::Char('1')]);
+    screen.event(AppEvent::ChoiceClosed {
+        id: ChoiceId::numbered(7),
+        outcome: "Saved.".into(),
+    });
+    assert_eq!(screen.card().id, run_card, "the run's card comes back");
+    assert!(!screen.card().focused, "and waits again");
+}
+
+#[test]
+fn app_choice_esc_sends_set_aside() {
+    let mut screen = Screen::new();
+    let scope = choice(
+        ChoiceKind::SettingScope,
+        vec![
+            option(
+                's',
+                "Just this session",
+                AnswerAction::Choose {
+                    value: "session".into(),
+                },
+            ),
+            option(
+                'e',
+                "Everywhere",
+                AnswerAction::Choose {
+                    value: "global".into(),
+                },
+            ),
+        ],
+    );
+    screen.event(AppEvent::Choice { choice: scope });
+    assert_eq!(screen.card().esc_hint, "Esc to cancel");
+    // Esc answers it, so only Esc on the focused card does. An unclear request just waits.
+    assert!(screen.card().esc_answers);
+    let unclear = choice_card(2, &choice(ChoiceKind::StartWork, Vec::new()));
+    assert!(!unclear.esc_answers);
+
+    let effects = screen.keys(&[KeyCode::Esc]);
+    let commands: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    assert_eq!(
+        commands,
+        vec![&UiCommand::SetAside {
+            to: AnswerTarget::Choice {
+                id: ChoiceId::numbered(7),
+            },
+        }]
+    );
+
+    // The controller closes it with its outcome line.
+    screen.event(AppEvent::ChoiceClosed {
+        id: ChoiceId::numbered(7),
+        outcome: "Not changed.".into(),
+    });
+    assert!(screen.cards.open.is_empty());
+    assert!(screen.model.bottom.card.is_none());
+    assert_eq!(
+        screen.history(),
+        vec!["◆ Save effort = high where? · Not changed.".to_owned()]
+    );
+}
+
+#[test]
+fn not_changed_leaves_a_neutral_mark() {
+    let tone = |outcome: &str| match records::choice_closed_cell(Some("Save model where?"), outcome)
+    {
+        crate::cell::Cell::Notice(notice) => notice.tone,
+        _ => panic!("a notice"),
+    };
+    assert_eq!(
+        tone(argonauts_core::app::NOT_CHANGED),
+        crate::cell::Tone::Dim
+    );
+    assert_eq!(tone("Saved to this project."), crate::cell::Tone::Success);
+}
+
+#[test]
+fn run_card_esc_sends_nothing() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    let effects = screen.keys(&[KeyCode::Esc]);
+    assert!(effects.iter().all(|out| out.commands.is_empty()));
+    assert!(screen.card().pinned, "it folds to its pinned line");
+    assert_eq!(screen.cards.open.len(), 1, "and still waits for you");
+}
+
+#[test]
+fn handoff_remember_toggle_sets_remember() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(handoff()));
+    let toggle = screen.card().options.last().unwrap().clone();
+    assert_eq!(toggle.kind, OptionKind::Toggle);
+    assert_eq!(toggle.label, REMEMBER_LABEL);
+
+    let id = screen.card().id;
+    let number = char::from_digit(screen.card().options.len() as u32, 10).unwrap();
+    screen.keys(&[KeyCode::Char('m')]);
+    assert!(!screen.cards.open[&id].remember, "a letter does nothing");
+    screen.keys(&[KeyCode::Char(number)]);
+    assert!(screen.cards.open[&id].remember);
+    assert!(screen.card().options.last().unwrap().on);
+    screen.keys(&[KeyCode::Char(number)]);
+    assert!(
+        !screen.cards.open[&id].remember,
+        "a second press turns it off"
+    );
+    screen.keys(&[KeyCode::Char(number)]);
+
+    let candidate = handoff()
+        .options
+        .iter()
+        .position(|option| matches!(option.action, AnswerAction::Candidate { .. }))
+        .unwrap();
+    let candidate = char::from_digit(candidate as u32 + 1, 10).unwrap();
+    let effects = screen.keys(&[KeyCode::Char(candidate)]);
+    let commands: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    let [
+        UiCommand::Answer {
+            action, remember, ..
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("one answer, got {commands:?}");
+    };
+    assert!(matches!(action, AnswerAction::Candidate { .. }));
+    assert!(*remember);
+    assert_eq!(
+        screen.model.bottom.answered_pick, None,
+        "a pick saved as you made it isn't offered again"
+    );
+}
+
+#[test]
+fn an_answered_pick_is_offered_as_a_rule() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(handoff()));
+    screen.keys(&[number(&handoff(), 'a')]);
+    let pick = screen
+        .model
+        .bottom
+        .answered_pick
+        .clone()
+        .expect("the pick is offered");
+    assert_eq!(
+        (&pick.run, &pick.id, pick.selected),
+        (&run(), &CheckpointId::numbered(1), false)
+    );
+    assert!(
+        pick.outcome.starts_with("card-003 handed to "),
+        "{}",
+        pick.outcome
+    );
+
+    // Answering anything else lets it go.
+    screen.event(opened_event(merge()));
+    screen.keys(&[number(&merge(), 'p')]);
+    assert_eq!(screen.model.bottom.answered_pick, None);
+}
+
+#[test]
+fn handoff_remember_stays_off_for_other_answers() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(handoff()));
+    let remember = KeyCode::Char(char::from_digit(screen.card().options.len() as u32, 10).unwrap());
+    let effects = screen.keys(&[remember, number(&handoff(), 'w')]);
+    let commands: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    let [
+        UiCommand::Answer {
+            action, remember, ..
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("one answer, got {commands:?}");
+    };
+    assert_eq!(*action, AnswerAction::Wait);
+    assert!(!*remember, "only a picked candidate is remembered");
+    assert_eq!(screen.model.bottom.answered_pick, None);
+}
+
+#[test]
+fn spot_check_sends_spot_check() {
+    let mut screen = Screen::new();
+    let mut auto = merge();
+    auto.mode = ApprovalMode::Auto;
+    auto.needs_you = false;
+    let out = screen.event(opened_event(auto));
+    assert!(!out.bell, "nothing rings while your rules decide");
+    screen.event(checkpoint(CheckpointEvent::Decided(decided(
+        AnswerAction::Merge,
+        Party::Rules,
+    ))));
+    let out = screen.event(checkpoint(CheckpointEvent::SpotCheckQueued {
+        id: CheckpointId::numbered(1),
+    }));
+    assert!(!out.bell, "a spot check never rings");
+    let card = screen.card();
+    assert_eq!(card.title, "Spot check · Merge this run into main?");
+    let labels: Vec<&str> = card
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    assert_eq!(labels, vec!["Agree", "Overrule", "Show the evidence"]);
+
+    let effects = screen.keys(&[KeyCode::Char('2')]);
+    assert_eq!(
+        effects[0].commands,
+        vec![UiCommand::SpotCheck {
+            run: run(),
+            id: CheckpointId::numbered(1),
+            correct: false,
+        }]
+    );
+}
+
+/// Through the whole bridge, as the screen sends it: once your answer goes out, the spot check
+/// no longer waits, so `/approvals` can't list it or send a second answer.
+#[test]
+fn a_spot_check_you_answered_stops_waiting() {
+    let mut bridge = crate::bridge::Bridge::new(&crate::UiOptions::default());
+    let mut model = ViewModel::default();
+    let now = Instant::now();
+    let mut auto = merge();
+    auto.mode = ApprovalMode::Auto;
+    auto.needs_you = false;
+    let id = CheckpointId::numbered(1);
+    for event in [
+        opened_event(auto),
+        checkpoint(CheckpointEvent::Decided(decided(
+            AnswerAction::Merge,
+            Party::Rules,
+        ))),
+        checkpoint(CheckpointEvent::SpotCheckQueued { id: id.clone() }),
+    ] {
+        bridge.on_event(&mut model, &event, now);
+    }
+    let waiting = |bridge: &crate::bridge::Bridge| {
+        bridge
+            .state
+            .runs
+            .get(&run())
+            .map_or(0, |run| run.spot_checks.len())
+    };
+    assert_eq!(waiting(&bridge), 1);
+
+    let answer = UiCommand::SpotCheck {
+        run: run(),
+        id,
+        correct: true,
+    };
+    let out = bridge.on_action(&mut model, &UiAction::Command(answer.clone()), now);
+    assert_eq!(out.commands, vec![answer]);
+    assert_eq!(waiting(&bridge), 0);
+}
+
+#[test]
+fn options_keep_event_order() {
+    for opened in [merge(), handoff(), escalation()] {
+        let card = checkpoint_card(1, &opened, None);
+        let drawn: Vec<&str> = card
+            .options
+            .iter()
+            .take(opened.options.len())
+            .map(|option| option.label.as_str())
+            .collect();
+        let sent: Vec<&str> = opened
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(drawn, sent, "{}", opened.title);
+    }
+
+    let kinds = |opened: &CheckpointOpened| -> Vec<OptionKind> {
+        checkpoint_card(1, opened, None)
+            .options
+            .iter()
+            .map(|option| option.kind)
+            .collect()
+    };
+    use OptionKind::*;
+    assert_eq!(
+        kinds(&merge()),
+        vec![Irreversible, Answer, Checklist, Answer, Irreversible, View]
+    );
+    assert_eq!(kinds(&escalation()), vec![Answer, Irreversible, View]);
+
+    // An app choice's Cancel is only Not now or Keep it as it is.
+    let trust = choice(
+        ChoiceKind::TrustProject,
+        vec![
+            option('y', "Trust them", AnswerAction::Approve),
+            option('n', "Not now", AnswerAction::Cancel),
+            option('d', "Show the file", AnswerAction::ShowDiff),
+        ],
+    );
+    let card = choice_card(1, &trust);
+    let kinds: Vec<OptionKind> = card.options.iter().map(|option| option.kind).collect();
+    assert_eq!(kinds, vec![Answer, Answer, View]);
+}
+
+#[test]
+fn record_line_after_decided() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    let about = screen.history();
+    assert_eq!(about.len(), 1, "the merge table goes in first");
+    assert!(about[0].contains("card-002") && about[0].contains("Suite passed"));
+
+    screen.event(checkpoint(CheckpointEvent::Decided(decided(
+        AnswerAction::Merge,
+        Party::User,
+    ))));
+    assert!(screen.cards.open.is_empty());
+    assert!(screen.model.bottom.card.is_none());
+    assert_eq!(
+        screen.history().last().map(String::as_str),
+        // The screen shows one run, so its record says "the run" rather than its id.
+        Some("◆ Merged the run into main · you, 10:58 AM")
+    );
+}
+
+/// Keeping the branch says what was kept, in words, rather than naming the branch.
+#[test]
+fn keeping_the_branch_says_the_work_stays_unmerged() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    screen.event(checkpoint(CheckpointEvent::Decided(decided(
+        AnswerAction::KeepBranch,
+        Party::User,
+    ))));
+    let record = screen.history().last().cloned().unwrap_or_default();
+    assert_eq!(
+        record,
+        "◆ Kept the run's work on its branch, not merged · you, 10:58 AM"
+    );
+    assert!(!record.contains("argonauts/"), "{record}");
+}
+
+#[test]
+fn card_times_are_in_the_terminals_zone() {
+    let mut screen = Screen::new();
+    screen.state.terminal.utc_offset = Some(UtcOffset::from_hms(-7, 0, 0).unwrap());
+    screen.event(opened_event(vendor_down()));
+    let about = screen.history();
+    assert!(
+        about
+            .iter()
+            .any(|line| line.contains("tries it again at 7:40 AM")),
+        "{about:?}"
+    );
+    assert!(
+        screen
+            .card()
+            .detail
+            .iter()
+            .any(|line| line.ends_with("test card at 7:40 AM")),
+        "{:?}",
+        screen.card().detail
+    );
+
+    screen.event(checkpoint(CheckpointEvent::Decided(decided(
+        AnswerAction::Wait,
+        Party::User,
+    ))));
+    assert!(
+        screen
+            .history()
+            .last()
+            .is_some_and(|line| line.ends_with("you, 3:58 AM")),
+        "{:?}",
+        screen.history().last()
+    );
+}
+
+#[test]
+fn a_withdrawn_card_goes_with_a_dim_line() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    screen.event(checkpoint(CheckpointEvent::Withdrawn {
+        id: CheckpointId::numbered(1),
+        reason: "the evidence changed".into(),
+    }));
+    assert!(screen.model.bottom.card.is_none());
+    assert_eq!(
+        screen.history().last().map(String::as_str),
+        Some("◆ Merge this run into main? · no longer needed: the evidence changed")
+    );
+}
+
+#[test]
+fn several_cards_show_the_oldest_and_answer_card_focuses_one() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(merge()));
+    let mut second = handoff();
+    second.id = CheckpointId::numbered(2);
+    screen.event(opened_event(second));
+    assert_eq!(screen.card().title, "Merge this run into main?");
+    assert_eq!(screen.cards.open.len(), 2);
+
+    // Setting the oldest aside brings the next one up.
+    screen.keys(&[KeyCode::Esc]);
+    assert_eq!(screen.card().title, "Handoff · card-003 Middleware");
+    assert!(!screen.card().pinned);
+
+    let (taken, out) = screen.action(UiAction::AnswerCard(AnswerTarget::Checkpoint {
+        run: run(),
+        id: CheckpointId::numbered(1),
+    }));
+    assert!(taken && out.close_views);
+    assert_eq!(screen.card().title, "Merge this run into main?");
+    assert!(screen.card().focused && !screen.card().pinned);
+}
+
+#[test]
+fn take_over_confirm_sends_take_over() {
+    let mut screen = Screen::new();
+    let (taken, out) = screen.action(UiAction::ConfirmTakeOver {
+        run: run(),
+        card: card_id(2),
+    });
+    assert!(taken && out.close_views);
+    assert!(
+        screen.card().focused,
+        "you asked for it, so it has the keys"
+    );
+    assert_eq!(screen.card().esc_hint, "Esc to cancel");
+    assert!(screen.card().esc_answers);
+    let effects = screen.keys(&[KeyCode::Char('1')]);
+    assert_eq!(
+        effects[0].commands,
+        vec![UiCommand::TakeOver {
+            run: run(),
+            card: card_id(2),
+        }]
+    );
+
+    // Esc cancels with nothing sent.
+    screen.action(UiAction::ConfirmTakeOver {
+        run: run(),
+        card: card_id(2),
+    });
+    let effects = screen.keys(&[KeyCode::Esc]);
+    assert!(effects.iter().all(|out| out.commands.is_empty()));
+    assert!(screen.cards.open.is_empty() && screen.model.bottom.card.is_none());
+}
+
+#[test]
+fn show_the_diff_asks_for_the_card_diff_and_keeps_the_card() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(handoff()));
+    let effects = screen.keys(&[number(&handoff(), 'd')]);
+    assert_eq!(
+        effects[0].commands,
+        vec![UiCommand::Request {
+            view: ViewRequest::Diff {
+                run: run(),
+                card: card_id(3),
+                scope: DiffScope::Card,
+            },
+        }]
+    );
+    assert_eq!(screen.cards.open.len(), 1);
+    assert!(screen.model.bottom.card.is_some());
+}
+
+#[test]
+fn show_the_file_opens_the_pager_and_sends_nothing() {
+    let mut screen = Screen::new();
+    let trust = choice(
+        ChoiceKind::TrustProject,
+        vec![
+            option('y', "Trust them", AnswerAction::Approve),
+            option('n', "Not now", AnswerAction::Cancel),
+            option('d', "Show the file", AnswerAction::ShowDiff),
+        ],
+    );
+    screen.event(AppEvent::Choice { choice: trust });
+    let effects = screen.keys(&[KeyCode::Char('3')]);
+    assert!(effects[0].commands.is_empty());
+    assert_eq!(effects[0].views.len(), 1);
+}
+
+#[test]
+fn a_choice_rings_only_when_it_asks_to() {
+    let mut screen = Screen::new();
+    let mut start = choice(
+        ChoiceKind::StartWork,
+        vec![option(
+            's',
+            "Solo",
+            AnswerAction::Choose {
+                value: "solo".into(),
+            },
+        )],
+    );
+    assert!(
+        !screen
+            .event(AppEvent::Choice {
+                choice: start.clone()
+            })
+            .bell
+    );
+    start.id = ChoiceId::numbered(8);
+    start.bell = true;
+    assert!(screen.event(AppEvent::Choice { choice: start }).bell);
+}
+
+/// A review the lead picked, with no plan of its own: the workflow is what you approve.
+fn review_plan() -> CheckpointOpened {
+    use argonauts_core::events::checkpoint::{PlanPacket, PlanWorkflow};
+    use argonauts_core::events::plan::{BudgetPlan, TaskGraph};
+    use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+    use argonauts_core::workflow::WorkflowRef;
+
+    let workflow = serde_json::from_value(serde_json::json!({
+        "name": "review-panel",
+        "description": "Two reviewers from other families",
+        "params": {"target": "diff", "reviewers": 2},
+        "phases": [
+            {"name": "Review", "standard": "check", "steps": [{
+                "kind": "fan_out", "role": "reviewer", "count": 2, "blind": true,
+                "different_family_from": "author"
+            }]},
+            {"name": "Adjudicate", "standard": "decide", "steps": [{
+                "kind": "judge", "role": "adjudicator", "when": "reviewers_disagree"
+            }]}
+        ]
+    }))
+    .expect("a workflow");
+    let why = "A review: two reviewers from other families";
+    let packet = PlanPacket {
+        summary: why.into(),
+        judging: None,
+        near_tie: false,
+        decisions: Vec::new(),
+        graph: TaskGraph {
+            cards: Vec::new(),
+            critical_path: Vec::new(),
+        },
+        acceptance_tests: Vec::new(),
+        budget: BudgetPlan {
+            lines: Vec::new(),
+            total: BudgetAmount {
+                unit: BudgetUnit::Usd,
+                amount: 20.0,
+            },
+            estimate_low: 0.0,
+            estimate_high: 0.0,
+        },
+        new_dependencies: Vec::new(),
+        flags: Vec::new(),
+        workflow: Some(PlanWorkflow {
+            from: Some(WorkflowRef::new("review-panel")),
+            why: Some(why.into()),
+            workflow,
+        }),
+    };
+    opened(
+        CheckpointKind::Plan,
+        "Approve this plan?",
+        CheckpointPacket::Plan(Box::new(packet)),
+        vec![
+            option('y', "Approve the plan", AnswerAction::Approve),
+            option('x', "Abandon", AnswerAction::Abandon),
+        ],
+    )
+}
+
+#[test]
+fn a_plan_shows_the_workflow_it_follows() {
+    let mut screen = Screen::new();
+    screen.event(opened_event(review_plan()));
+    let history = screen.history().join("\n");
+    let item = &history[history.find("The plan").expect("the plan's item")..];
+    for shown in [
+        "Workflow  review-panel · Two reviewers from other families",
+        "reviewers 2 · target diff",
+        "Review: fan_out reviewer ×2, blind, another family than author",
+        "Adjudicate: judge adjudicator, when reviewers_disagree",
+    ] {
+        assert!(item.contains(shown), "{shown} missing from:\n{item}");
+    }
+    // The lead's reason is the plan's summary here, so it shows once.
+    assert_eq!(item.matches("A review: two reviewers").count(), 1, "{item}");
+    assert_eq!(
+        screen.card().detail.first().map(String::as_str),
+        Some("review-panel · 2 phases · budget $20.00")
+    );
+}
+
+#[test]
+fn a_plan_names_the_agents_its_workflow_names() {
+    use argonauts_core::workflow::StepWorkers;
+
+    let mut opened = review_plan();
+    let CheckpointPacket::Plan(plan) = &mut opened.packet else {
+        unreachable!("a plan checkpoint")
+    };
+    let shown = plan.workflow.as_mut().expect("a workflow");
+    shown.workflow.phases[0].steps[0].workers =
+        StepWorkers::Named(vec!["codex/gpt-5.6".parse().expect("a worker")]);
+    let mut screen = Screen::new();
+    screen.event(opened_event(opened));
+    let history = screen.history().join("\n");
+    assert!(
+        history.contains("Review: fan_out reviewer (GPT 5.6 on Codex) ×2"),
+        "{history}"
+    );
+}
+
+/// The plan card's title asks the question, so the card doesn't ask it a second time.
+#[test]
+fn a_card_whose_title_asks_asks_once() {
+    let card = checkpoint_card(1, &review_plan(), None);
+    assert_eq!(card.title, "Approve this plan?");
+    assert_eq!(card.question, None);
+}
+
+/// The merge table names each owner as the transcript did: by the model its session ran, else
+/// by the model its CLI's settings give.
+#[test]
+fn the_merge_table_names_owners_as_the_run_knows_them() {
+    let mut opened = merge();
+    if let CheckpointPacket::Merge(packet) = &mut opened.packet {
+        packet.rows[0].owner = Some(worker("claude-code"));
+        packet.rows[1].owner = Some(worker("codex"));
+    }
+    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    let mut session = crate::state::SessionState::new(
+        argonauts_core::names::SessionKey::numbered(1),
+        worker("claude-code/claude-haiku-4-5"),
+        "claude-code",
+        argonauts_core::names::RoleName::Owner,
+        datetime!(2026-09-30 10:00 UTC),
+    );
+    session.card = Some(card_id(2));
+    run.sessions.insert(session.key.clone(), session);
+    let names = DisplayNames {
+        configured: std::collections::BTreeMap::from([(
+            "codex".to_owned(),
+            "gpt-5.6-luna".to_owned(),
+        )]),
+        ..DisplayNames::default()
+    };
+    let named = with_run_owners(&opened, Some(&run), &names);
+    let CheckpointPacket::Merge(packet) = &named.packet else {
+        unreachable!("a merge checkpoint")
+    };
+    let owners: Vec<String> = packet
+        .rows
+        .iter()
+        .map(|row| names.worker(row.owner.as_ref().unwrap()))
+        .collect();
+    assert_eq!(
+        owners,
+        ["Haiku 4.5 on Claude Code", "GPT 5.6 Luna on Codex"]
+    );
+}
+
+/// With no command gates set nothing ran on the latest main, and the card says so rather than
+/// calling the suite failed.
+#[test]
+fn a_merge_without_a_suite_says_none_ran() {
+    use argonauts_core::events::card::{GateKind, GateOutcome};
+
+    let suite = |passed: bool, command: Option<Vec<String>>| {
+        let mut opened = merge();
+        if let CheckpointPacket::Merge(packet) = &mut opened.packet {
+            packet.suite_passed_on_latest_main = passed;
+            packet.gates = vec![GateOutcome {
+                name: "tests".into(),
+                kind: GateKind::Command,
+                passed,
+                command,
+                exit_code: None,
+                duration_ms: 0,
+                summary: String::new(),
+                output_tail: String::new(),
+                violations: Vec::new(),
+                sandboxed: false,
+                skipped: false,
+            }];
+        }
+        let card = checkpoint_card(1, &opened, None).detail.join("\n");
+        let item = about_item(&opened, UtcOffset::UTC, &DisplayNames::default())
+            .map(|item| item.plain(100).join("\n"))
+            .unwrap_or_default();
+        (card, item)
+    };
+    let (card, item) = suite(false, None);
+    assert!(card.contains("no test suite set"), "{card}");
+    assert!(item.contains("No test suite ran"), "{item}");
+    let (card, item) = suite(false, Some(vec!["npm".into(), "test".into()]));
+    assert!(card.contains("suite failed on the latest main"), "{card}");
+    assert!(item.contains("Suite didn't pass"), "{item}");
+    let (card, _) = suite(true, Some(vec!["npm".into(), "test".into()]));
+    assert!(card.contains("suite passed on the latest main"), "{card}");
+}
+
+/// The card counts the run's spend as the mode line and the working line do, even when the
+/// packet's count lags behind the sessions' own reports.
+#[test]
+fn the_merge_card_counts_the_spend_the_mode_line_does() {
+    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    let mut session = crate::state::SessionState::new(
+        argonauts_core::names::SessionKey::numbered(1),
+        worker("claude-code"),
+        "claude-code",
+        argonauts_core::names::RoleName::Owner,
+        datetime!(2026-09-30 10:00 UTC),
+    );
+    session.cost_usd = Some(0.26);
+    run.sessions.insert(session.key.clone(), session);
+    let card = checkpoint_card(1, &merge(), Some(&run));
+    let detail = card.detail.join("\n");
+    assert!(detail.contains("$0.26 spent"), "{detail}");
+    assert!((run.cost_usd() - 0.26).abs() < f64::EPSILON);
+    // Without the run, the packet's count is all there is.
+    let card = checkpoint_card(1, &merge(), None);
+    assert!(card.detail.join("\n").contains("$0.00 spent"));
+}

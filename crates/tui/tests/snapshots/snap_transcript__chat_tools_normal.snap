@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+❯ why does the export test fail?
+
+  Read 1 file, ran 1 shell command · 1 failed (ctrl+o to expand)
+
+● Update(tests/export.rs)
+  ⎿  Added 1 line, removed 1 line
+        -"id,name"
+        +"id,name,email"
+
+● The test expected the old header, so I added the email column.
+
+✻ Sailed for 12s · done 10:42 AM

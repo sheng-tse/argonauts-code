@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+Context
+Each live session's context against the cap where it…  252.6k in context · $1.33
+
+╭ 3 sessions ──────────────────────────────────────────────────────────────────╮
+│   Session              Worker                  Context  Window  Calls  Spend │
+│ ❯ lead                 Opus on Claude Code  48.2k/200k      1m     12  $0.21 │
+│   owner · card-002     GPT 5.6 on Codex      184k/200k    400k     95  $1.12 │
+│   reviewer · card-001  Gemini 3.6 on agy         20.4k      1m      7        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ open agent · esc back

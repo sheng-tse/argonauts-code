@@ -1,0 +1,15 @@
+---
+source: crates/tui/src/a11y/tests.rs
+expression: "shown.lines.join(\"\\n\")"
+---
+you: 4. Show the plan
+details: plan, run-01
+  The plan
+  A JSON writer beside the CSV one
+  Acceptance tests
+  --json prints valid JSON
+  budget: cards, $6.00
+  budget: review, $2.00
+  budget: total, $10.00
+  Estimated $7.00 to $9.50
+answer: type a number. To add a note, type it after a colon, as in 1: the note.

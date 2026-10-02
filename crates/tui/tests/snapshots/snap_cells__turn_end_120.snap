@@ -1,0 +1,6 @@
+---
+source: crates/tui/tests/cells.rs
+assertion_line: 80
+expression: text(&lines)
+---
+✻ Sailed for 11m 3s · done 10:58 AM

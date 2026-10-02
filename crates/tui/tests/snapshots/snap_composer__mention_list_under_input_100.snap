@@ -1,0 +1,11 @@
+---
+source: crates/tui/tests/snap_composer.rs
+expression: text(&view.lines)
+---
+──────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+❯ tell @c
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  @claude-code                  opus · owner on card-002                                      agent
+  @codex                        2 sessions: owner on card-003, reviewer on card-002           agent
+  @card-002                     Add the JSON writer                                            card
+  @card-003                     修复导出测试中的竞态条件并添加回归测试                         card

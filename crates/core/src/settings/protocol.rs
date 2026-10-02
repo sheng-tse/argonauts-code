@@ -382,7 +382,8 @@ pub struct GateCommand {
 #[serde(default)]
 pub struct RoutingSettings {
     pub algorithm: RoutingAlgorithm,
-    /// Share of cards that try a less-proven agent.
+    /// With epsilon-greedy, the share of cards that go to a less proven worker. Thompson
+    /// sampling explores by its own draws, within max_explore_share.
     pub explore_rate: f64,
     /// Skip a vendor for new cards above this share of its quota window.
     pub skip_quota_above: f64,
@@ -390,18 +391,109 @@ pub struct RoutingSettings {
     /// Workers whose sampled pass rate is within this much of the best count as tied. Ties go
     /// to the lower cost estimate, then to the worker with fewer running cards.
     pub tie_band: f64,
+    /// How much each part of a track record counts when the router compares workers.
+    pub weights: RoutingWeights,
+    /// Cards of evidence a prior is worth.
+    pub prior_strength: f64,
+    /// Days after which an observation counts half. The prior doesn't fade.
+    pub half_life_days: f64,
+    /// Most of a run's cards that may go to a less proven worker, such as 0.2 for one in five.
+    pub max_explore_share: f64,
+    /// Recent cards a worker needs on a task type before it's scored on that type alone rather
+    /// than its group.
+    pub own_type_after: u32,
+    /// Share of a worker's old evidence that still counts once its model id changes.
+    pub model_change_keep: f64,
+    /// How sure a retro must be before it says one worker is better at a task type.
+    pub claim_above: f64,
+    /// An average prediction this far above the actual rate flags a worker as overconfident.
+    pub overconfident_margin: f64,
+    /// Predictions a worker needs before it can be flagged as overconfident.
+    pub overconfident_after: u32,
+    /// Coarse groups of task types, scored together while evidence is sparse.
+    pub groups: BTreeMap<String, Vec<String>>,
+    /// Starting rates per worker and task type, such as from your experience or a leaderboard.
+    /// They fade as evidence arrives.
+    pub priors: BTreeMap<String, BTreeMap<String, PriorRates>>,
+    /// First-pass rates per worker and task type that stay fixed, whatever the outcomes.
+    pub pins: BTreeMap<String, BTreeMap<String, f64>>,
+    /// Per worker, a date such as 2026-10-01 before which its outcomes don't count.
+    pub resets: BTreeMap<String, String>,
 }
 
 impl Default for RoutingSettings {
     fn default() -> Self {
+        let group = |name: &str, types: &[&str]| {
+            (
+                name.to_owned(),
+                types.iter().map(|kind| (*kind).to_owned()).collect(),
+            )
+        };
         Self {
             algorithm: RoutingAlgorithm::Bandit,
             explore_rate: 0.1,
             skip_quota_above: 0.9,
             no_explore_labels: vec!["security".to_owned(), "migration".to_owned()],
             tie_band: 0.05,
+            weights: RoutingWeights::default(),
+            prior_strength: 3.0,
+            half_life_days: 30.0,
+            max_explore_share: 0.2,
+            own_type_after: 10,
+            model_change_keep: 0.2,
+            claim_above: 0.9,
+            overconfident_margin: 0.2,
+            overconfident_after: 10,
+            groups: BTreeMap::from([
+                group("frontend", &["frontend"]),
+                group("backend_and_data", &["backend", "data"]),
+                group("infra_and_tests", &["infra", "tests"]),
+                group("docs_and_refactor", &["docs", "refactor"]),
+                group("security_and_performance", &["security", "performance"]),
+            ]),
+            priors: BTreeMap::new(),
+            pins: BTreeMap::new(),
+            resets: BTreeMap::new(),
         }
     }
+}
+
+/// The router's utility is the weighted sum of the rates minus the weighted cost and time
+/// ratios.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct RoutingWeights {
+    /// Weight of the first-pass gate rate.
+    pub pass_rate: f64,
+    /// Weight of the review approval rate.
+    pub approval_rate: f64,
+    /// Weight of the prediction score.
+    pub prediction: f64,
+    /// Weight of cost against the task type's median.
+    pub cost: f64,
+    /// Weight of wall time against the task type's median.
+    pub time: f64,
+}
+
+impl Default for RoutingWeights {
+    fn default() -> Self {
+        Self {
+            pass_rate: 1.0,
+            approval_rate: 0.5,
+            prediction: 0.3,
+            cost: 0.4,
+            time: 0.2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct PriorRates {
+    /// A starting first-pass gate rate, 0 to 1.
+    pub first_pass_rate: Option<f64>,
+    /// A starting review approval rate, 0 to 1.
+    pub approval_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -409,6 +501,8 @@ impl Default for RoutingSettings {
 pub enum RoutingAlgorithm {
     /// Thompson sampling over track records.
     Bandit,
+    /// The best posterior mean, except for `explore_rate` of the cards.
+    EpsilonGreedy,
     RoundRobin,
     /// `roles.owner.workers`, in order.
     Fixed,
@@ -462,4 +556,6 @@ pub enum MergeMode {
     Ask,
     /// Keep the branch and finish.
     Leave,
+    /// Open a pull request and finish, as a recipe's canary runs do.
+    PullRequest,
 }

@@ -51,7 +51,8 @@ pub enum RunLifecycle {
     /// Everything a resume or a reattach needs, so it can start here instead of at `seq` 0.
     /// The engine writes one every `supervisor.snapshot_every` events.
     Snapshot(Box<RunSnapshot>),
-    /// The last event of a run.
+    /// The last event of a run, unless it ended `Stopped` and you reopened it with `/resume`,
+    /// when a `Resumed` follows.
     Finished {
         outcome: RunOutcome,
         detail: Option<String>,
@@ -84,7 +85,7 @@ pub struct RunStarted {
     pub estimate: Option<ChangeEstimate>,
     pub triage: Option<TriageDecision>,
     pub chat_turn: Option<TurnId>,
-    /// The merged run this one continues (`/continue`).
+    /// The merged run this one continues (`/follow-up`).
     pub continues: Option<RunId>,
     /// Absolute path of the repository.
     pub repo_root: PathBuf,

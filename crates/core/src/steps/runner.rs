@@ -1,5 +1,6 @@
 //! The core [`StepRunner`]: checks each session's output against the schema and, on a
-//! mismatch, asks the same session once more with the errors.
+//! mismatch, asks the same session once more with the errors. A worker that can't resume gets
+//! the prompt again with the errors.
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -39,6 +40,7 @@ impl StepRunner for SchemaStepRunner {
                 }
                 None => None,
             };
+            let first_prompt = spec.prompt.clone();
             let mut attempts: u8 = 0;
             loop {
                 attempts = attempts.saturating_add(1);
@@ -73,14 +75,25 @@ impl StepRunner for SchemaStepRunner {
                     return Err(StepError::Session(Box::new(end)));
                 }
                 let retries_used = attempts - 1;
-                let Some(vendor_session) = end.vendor_session.clone() else {
-                    return Err(mismatch(&end, output, errors));
-                };
                 if retries_used >= retries_on_mismatch {
                     return Err(mismatch(&end, output, errors));
                 }
-                spec.resume = Some(vendor_session);
-                spec.prompt = vec![retry_part(&errors)];
+                let resumable = end
+                    .vendor_session
+                    .clone()
+                    .filter(|_| worker.capabilities().resume);
+                match resumable {
+                    Some(vendor_session) => {
+                        spec.resume = Some(vendor_session);
+                        spec.prompt = vec![retry_part(&errors, Retry::SameSession)];
+                    }
+                    // An endpoint keeps no session, so it gets the whole prompt again.
+                    None => {
+                        spec.resume = None;
+                        spec.prompt = first_prompt.clone();
+                        spec.prompt.push(retry_part(&errors, Retry::NewSession));
+                    }
+                }
             }
         })
     }
@@ -189,11 +202,24 @@ fn mismatch(end: &SessionEnd, output: Option<Value>, errors: Vec<String>) -> Ste
     StepError::SchemaMismatch { raw, errors }
 }
 
-fn retry_part(errors: &[String]) -> InputPart {
-    let mut text = String::from(
-        "Your last answer didn't match the required JSON schema. Fix these problems and reply \
-         with only the corrected JSON object:\n",
-    );
+/// Whether the retry reaches the session that gave the wrong answer.
+#[derive(Debug, Clone, Copy)]
+enum Retry {
+    SameSession,
+    NewSession,
+}
+
+fn retry_part(errors: &[String], retry: Retry) -> InputPart {
+    let mut text = String::from(match retry {
+        Retry::SameSession => {
+            "Your last answer didn't match the required JSON schema. Fix these problems and \
+             reply with only the corrected JSON object:\n"
+        }
+        Retry::NewSession => {
+            "An earlier answer to this prompt didn't match the required JSON schema. Avoid these \
+             problems and reply with only the JSON object:\n"
+        }
+    });
     for error in errors {
         text.push_str("- ");
         text.push_str(error);
@@ -233,6 +259,7 @@ mod tests {
         worker: WorkerRef,
         endings: Mutex<Vec<SessionEnd>>,
         specs: Mutex<Vec<SessionSpec>>,
+        resume: bool,
     }
 
     impl Scripted {
@@ -241,6 +268,17 @@ mod tests {
                 worker: WorkerRef::new("fake", None),
                 endings: Mutex::new(endings),
                 specs: Mutex::new(Vec::new()),
+                resume: true,
+            })
+        }
+
+        /// Like an endpoint, which keeps no session to resume.
+        fn without_resume(endings: Vec<SessionEnd>) -> Arc<Self> {
+            Arc::new(Self {
+                worker: WorkerRef::new("fake", None),
+                endings: Mutex::new(endings),
+                specs: Mutex::new(Vec::new()),
+                resume: false,
             })
         }
     }
@@ -262,7 +300,7 @@ mod tests {
             WorkerCapabilities {
                 streams_text: true,
                 steer: SteerSupport::NextTurnOnly,
-                resume: true,
+                resume: self.resume,
                 structured_output: false,
                 subagents: SubagentVisibility::None,
                 native_budget_cap: false,
@@ -352,6 +390,7 @@ mod tests {
             sandbox: SandboxProfile::default(),
             compaction: Compaction::Inherit,
             native_fanout: NativeFanout::default(),
+            isolated: false,
             status_file: None,
             env: Vec::new(),
         }
@@ -407,6 +446,28 @@ mod tests {
             specs[1].prompt[0].text.contains("kind"),
             "{}",
             specs[1].prompt[0].text
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_cannot_resume_gets_the_prompt_again_with_the_errors() {
+        let wrong = json!({"kind": "maybe", "answer_markdown": "?", "estimate": null});
+        let mut first = ending(EndReason::Completed, None, Some(wrong));
+        first.vendor_session = None;
+        let worker = Scripted::without_resume(vec![
+            first,
+            ending(EndReason::Completed, None, Some(answer())),
+        ]);
+        let (result, _) = run(worker.clone()).await;
+        assert_eq!(result.unwrap().attempts, 2);
+        let specs = worker.specs.lock().unwrap();
+        assert_eq!(specs[1].resume, None);
+        assert_eq!(specs[1].prompt.len(), 2);
+        assert_eq!(specs[1].prompt[0], specs[0].prompt[0]);
+        assert!(
+            specs[1].prompt[1].text.contains("kind"),
+            "{}",
+            specs[1].prompt[1].text
         );
     }
 

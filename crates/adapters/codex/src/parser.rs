@@ -1,17 +1,34 @@
 //! Codex prints one JSON object per line, such as `thread.started`, `turn.started`, `item.*`,
 //! `turn.completed` (with session token totals), `turn.failed`, and `error`. Agent text arrives
 //! only as whole messages. Subagents show up as `collab_tool_call` items; their own tool calls
-//! are not streamed.
+//! are not streamed. With an output schema every message is a JSON object: the last one becomes
+//! the report call and the others read as their summary, so no JSON reaches the transcript.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
+use argonauts_core::steps::summary_line;
 use argonauts_core::{AgentEvent, ErrorCategory, StreamParser, TodoItem, TodoStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use time::OffsetDateTime;
 
 use crate::classify::{classify_error, is_retry_notice, retry_reason};
+use crate::limit::usage_limit_reading;
+use crate::local_zone::LocalZone;
+use crate::subagents::{Threads, WireAgentState, WireCollabCall};
 
 const STDERR_TAIL_LINES: usize = 10;
+
+/// The name the final structured message goes under, so it reads as the report the way
+/// Claude Code's `StructuredOutput` call does.
+const REPORT_CALL: &str = "structured_output";
+
+#[derive(Debug)]
+struct Held {
+    item_id: String,
+    text: String,
+    value: Value,
+}
 
 #[derive(Debug, Default)]
 pub struct CodexParser {
@@ -19,11 +36,17 @@ pub struct CodexParser {
     open_tools: Vec<(String, String)>,
     /// The latest complete agent message, which becomes the result text.
     last_message: Option<String>,
+    /// A message that is a JSON object, held until the next line says whether it is the
+    /// report. With an output schema every message Codex sends is one.
+    held: Option<Held>,
     /// The latest fatal error message, so a following `turn.failed` isn't reported twice.
     last_error: Option<String>,
     child_messages: HashMap<String, String>,
+    threads: Threads,
     stderr_tail: VecDeque<String>,
     turn_ended: bool,
+    /// Read when a usage-limit message needs it, since Codex prints reset times in local time.
+    zone: Option<LocalZone>,
 }
 
 impl CodexParser {
@@ -31,13 +54,52 @@ impl CodexParser {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn with_zone(zone: LocalZone) -> Self {
+        Self {
+            zone: Some(zone),
+            ..Self::default()
+        }
+    }
+
+    fn on_thread_started(&mut self, value: &Value) -> Option<Vec<AgentEvent>> {
+        let session_id = value.get("thread_id")?.as_str()?.to_owned();
+        self.threads.set_main(&session_id);
+        // Codex never names the model it ran, so `Init` carries only the session id.
+        Some(vec![AgentEvent::Init {
+            session_id: Some(session_id),
+            model: None,
+            tools: Vec::new(),
+        }])
+    }
+
+    /// The error, preceded by a quota reading when it is the usage limit.
+    fn failure(&mut self, error: AgentEvent) -> Vec<AgentEvent> {
+        let AgentEvent::Error {
+            category: ErrorCategory::UsageLimit,
+            message,
+            ..
+        } = &error
+        else {
+            return vec![error];
+        };
+        let zone = self.zone.get_or_insert_with(LocalZone::system);
+        let reading = usage_limit_reading(message, OffsetDateTime::now_utc(), zone);
+        vec![AgentEvent::Quota { reading }, error]
+    }
+
     fn on_turn_completed(&mut self, value: &Value) -> Vec<AgentEvent> {
-        let mut events = Vec::with_capacity(2);
+        let mut events = Vec::with_capacity(5);
+        if let Some(held) = self.held.take() {
+            events.extend(report_call(held));
+        }
         if let Some(usage) = value
             .get("usage")
             .and_then(|u| WireUsage::deserialize(u).ok())
         {
+            let fill = usage.context_fill();
             events.push(usage.into_event());
+            events.push(fill);
         }
         self.turn_ended = true;
         events.push(self.result(false));
@@ -49,9 +111,9 @@ impl CodexParser {
             .pointer("/error/message")
             .and_then(Value::as_str)
             .unwrap_or("turn failed");
-        let mut events = Vec::with_capacity(2);
+        let mut events = Vec::with_capacity(3);
         if self.last_error.as_deref() != Some(message) {
-            events.push(error_event(message));
+            events.extend(self.failure(error_event(message)));
             self.last_error = Some(message.to_owned());
         }
         self.turn_ended = true;
@@ -68,7 +130,7 @@ impl CodexParser {
             }]);
         }
         self.last_error = Some(message.to_owned());
-        Some(vec![error_event(message)])
+        Some(self.failure(error_event(message)))
     }
 
     fn on_item(&mut self, value: &Value, phase: Phase) -> Option<Vec<AgentEvent>> {
@@ -82,7 +144,17 @@ impl CodexParser {
             WireItem::AgentMessage { text } => {
                 if done {
                     self.last_message = Some(text.clone());
-                    events.push(AgentEvent::Message { text, parent: None });
+                    match structured_output(&text) {
+                        Some(value) => {
+                            let item_id = item_id.to_owned();
+                            self.held = Some(Held {
+                                item_id,
+                                text,
+                                value,
+                            });
+                        }
+                        None => events.push(AgentEvent::Message { text, parent: None }),
+                    }
                 }
             }
             WireItem::Reasoning { text } => {
@@ -131,6 +203,8 @@ impl CodexParser {
         collab: WireCollabCall,
         phase: Phase,
     ) {
+        let threads = self.threads.observe(&collab);
+        let messages = self.new_child_messages(&collab.agents_states);
         // A spawned subagent is keyed by its thread id, which its messages use as parent.
         let tool_id = match collab.receiver_thread_ids.first() {
             Some(child) if collab.tool == "spawn_agent" => child.clone(),
@@ -148,7 +222,8 @@ impl CodexParser {
             output: summarize_agents(&collab.agents_states),
         };
         self.track(events, call, phase);
-        events.extend(self.child_updates(collab.agents_states));
+        events.extend(threads);
+        events.extend(messages);
     }
 
     /// Emits `ToolStarted` the first time a call is seen and `ToolFinished` when it completes.
@@ -182,19 +257,20 @@ impl CodexParser {
         });
     }
 
-    fn child_updates(&mut self, states: BTreeMap<String, WireAgentState>) -> Vec<AgentEvent> {
+    /// A child's new last message, also as a message under that child in the transcript.
+    fn new_child_messages(&mut self, states: &BTreeMap<String, WireAgentState>) -> Vec<AgentEvent> {
         let mut events = Vec::new();
         for (thread, state) in states {
-            let Some(text) = state.message.filter(|m| !m.trim().is_empty()) else {
+            let Some(text) = state.message.as_ref().filter(|m| !m.trim().is_empty()) else {
                 continue;
             };
-            if self.child_messages.get(&thread) == Some(&text) {
+            if self.child_messages.get(thread) == Some(text) {
                 continue;
             }
             self.child_messages.insert(thread.clone(), text.clone());
             events.push(AgentEvent::Message {
-                text,
-                parent: Some(thread),
+                text: text.clone(),
+                parent: Some(thread.clone()),
             });
         }
         events
@@ -212,6 +288,13 @@ impl CodexParser {
             structured,
             is_error,
         }
+    }
+
+    /// The held message wasn't the report after all, so it goes out as what it says.
+    fn release(&mut self) -> Option<AgentEvent> {
+        let held = self.held.take()?;
+        let text = summary_line(&held.value).unwrap_or(held.text);
+        Some(AgentEvent::Message { text, parent: None })
     }
 
     fn exit_message(&self, exit_code: Option<i32>) -> String {
@@ -235,8 +318,13 @@ impl StreamParser for CodexParser {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return vec![AgentEvent::unknown_line(line)];
         };
-        let events = match value.get("type").and_then(Value::as_str) {
-            Some("thread.started") => thread_started(&value),
+        let kind = value.get("type").and_then(Value::as_str);
+        let released = match kind {
+            Some("turn.completed") => None,
+            _ => self.release(),
+        };
+        let events = match kind {
+            Some("thread.started") => self.on_thread_started(&value),
             Some("turn.started") => Some(Vec::new()),
             Some("turn.completed") => Some(self.on_turn_completed(&value)),
             Some("turn.failed") => Some(self.on_turn_failed(&value)),
@@ -246,7 +334,8 @@ impl StreamParser for CodexParser {
             Some("error") => self.on_error(&value),
             _ => None,
         };
-        events.unwrap_or_else(|| vec![AgentEvent::Unknown { raw: value }])
+        let events = events.unwrap_or_else(|| vec![AgentEvent::Unknown { raw: value }]);
+        released.into_iter().chain(events).collect()
     }
 
     fn parse_stderr_line(&mut self, line: &str) -> Vec<AgentEvent> {
@@ -258,22 +347,23 @@ impl StreamParser for CodexParser {
             self.stderr_tail.pop_front();
         }
         self.stderr_tail.push_back(line.to_owned());
-        vec![AgentEvent::Unknown {
-            raw: json!({ "stderr": line }),
-        }]
+        // Stderr is free text, not the event stream, so it never counts as an unknown event.
+        // The raw log keeps it, and the tail explains a failed exit.
+        Vec::new()
     }
 
     fn finish(&mut self, exit_code: Option<i32>) -> Vec<AgentEvent> {
-        let mut events: Vec<AgentEvent> = self
-            .open_tools
-            .drain(..)
-            .map(|(_, id)| AgentEvent::ToolFinished {
-                id,
-                ok: false,
-                output: None,
-                parent: None,
-            })
-            .collect();
+        let mut events: Vec<AgentEvent> = self.release().into_iter().collect();
+        events.extend(
+            self.open_tools
+                .drain(..)
+                .map(|(_, id)| AgentEvent::ToolFinished {
+                    id,
+                    ok: false,
+                    output: None,
+                    parent: None,
+                }),
+        );
         if self.turn_ended {
             return events;
         }
@@ -281,7 +371,8 @@ impl StreamParser for CodexParser {
         self.turn_ended = true;
         let failed = exit_code != Some(0);
         if failed && self.last_error.is_none() {
-            events.push(exit_error(self.exit_message(exit_code), exit_code));
+            let error = exit_error(self.exit_message(exit_code), exit_code);
+            events.extend(self.failure(error));
         }
         events.push(self.result(failed));
         events
@@ -325,16 +416,6 @@ impl ToolCall {
     }
 }
 
-/// Codex never names the model it ran, so `Init` carries only the session id.
-fn thread_started(value: &Value) -> Option<Vec<AgentEvent>> {
-    let session_id = value.get("thread_id")?.as_str()?.to_owned();
-    Some(vec![AgentEvent::Init {
-        session_id: Some(session_id),
-        model: None,
-        tools: Vec::new(),
-    }])
-}
-
 fn error_event(message: &str) -> AgentEvent {
     let (category, retryable) = classify_error(message);
     AgentEvent::Error {
@@ -344,17 +425,36 @@ fn error_event(message: &str) -> AgentEvent {
     }
 }
 
+/// A failed exit the message doesn't explain is a crash.
 fn exit_error(message: String, exit_code: Option<i32>) -> AgentEvent {
-    let (category, retryable) = match (exit_code, classify_error(&message)) {
-        (None, _) => (ErrorCategory::Interrupted, false),
-        (Some(_), (ErrorCategory::Unknown, retryable)) => (ErrorCategory::Cli, retryable),
-        (Some(_), classified) => classified,
+    let (category, retryable) = match exit_code {
+        None => (ErrorCategory::Interrupted, false),
+        Some(_) => classify_error(&message),
     };
     AgentEvent::Error {
         category,
         message,
         retryable,
     }
+}
+
+/// The final structured message as a finished call, never as text, so the transcript shows
+/// the report's summary and keeps the JSON for Ctrl+O.
+fn report_call(held: Held) -> [AgentEvent; 2] {
+    [
+        AgentEvent::ToolStarted {
+            id: held.item_id.clone(),
+            name: REPORT_CALL.to_owned(),
+            input: held.value,
+            parent: None,
+        },
+        AgentEvent::ToolFinished {
+            id: held.item_id,
+            ok: true,
+            output: None,
+            parent: None,
+        },
+    ]
 }
 
 fn structured_output(text: &str) -> Option<Value> {
@@ -386,8 +486,21 @@ struct WireUsage {
 }
 
 impl WireUsage {
-    /// Codex reports session totals. Input includes cached tokens and output includes reasoning,
-    /// matching the core semantics.
+    /// Codex reports only session totals, never the last request's size. With prefix caching,
+    /// each request's uncached input is what the step before added, so the uncached total plus
+    /// the output tracks the context. It reads low by whatever was cached when the session began,
+    /// about Codex's own instructions, and high after a cache miss or a compaction.
+    fn context_fill(&self) -> AgentEvent {
+        AgentEvent::ContextFill {
+            used: self
+                .input_tokens
+                .saturating_sub(self.cached_input_tokens)
+                .saturating_add(self.output_tokens),
+            size: None,
+        }
+    }
+
+    /// Input includes cached tokens and output includes reasoning, matching the core semantics.
     fn into_event(self) -> AgentEvent {
         AgentEvent::Usage {
             input_tokens: self.input_tokens,
@@ -487,17 +600,6 @@ impl WireMcpCall {
 }
 
 #[derive(Deserialize)]
-struct WireCollabCall {
-    tool: String,
-    #[serde(default)]
-    receiver_thread_ids: Vec<String>,
-    prompt: Option<String>,
-    #[serde(default)]
-    agents_states: BTreeMap<String, WireAgentState>,
-    status: String,
-}
-
-#[derive(Deserialize)]
 struct WireMessage {
     message: String,
 }
@@ -525,12 +627,6 @@ impl WireMcpResult {
 }
 
 #[derive(Deserialize)]
-struct WireAgentState {
-    status: String,
-    message: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct WireTodo {
     text: String,
     #[serde(default)]
@@ -554,7 +650,10 @@ impl WireTodo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use argonauts_core::events::session::SubagentStatus;
+    use argonauts_core::limits::{QuotaSource, QuotaStatus};
     use argonauts_core::{Report, ReportStatus, RetryReason};
+    use time::macros::datetime;
 
     fn parse(lines: &[&str]) -> (CodexParser, Vec<AgentEvent>) {
         let mut parser = CodexParser::new();
@@ -592,8 +691,17 @@ mod tests {
                 "tool_finished",
                 "message",
                 "usage",
+                "context_fill",
                 "result"
             ]
+        );
+        // 24763 input, 24448 of it cached, and 122 output.
+        assert_eq!(
+            events[5],
+            AgentEvent::ContextFill {
+                used: 437,
+                size: None
+            }
         );
         assert_eq!(
             events[0],
@@ -632,7 +740,7 @@ mod tests {
             }
         );
         assert_eq!(
-            events[5],
+            events[6],
             AgentEvent::Result {
                 text: Some("Repo contains docs and sdk.".into()),
                 structured: None,
@@ -730,6 +838,62 @@ mod tests {
         let report = Report::from_value(structured).unwrap();
         assert_eq!(report.status, ReportStatus::Done);
         assert_eq!(report.files_changed, ["hello.txt"]);
+        // Never as text: it's the report call, whose summary the transcript shows.
+        assert_eq!(
+            types(&events),
+            [
+                "init",
+                "tool_started",
+                "tool_finished",
+                "usage",
+                "context_fill",
+                "result"
+            ]
+        );
+        assert_eq!(
+            events[1],
+            AgentEvent::ToolStarted {
+                id: "item_7".into(),
+                name: REPORT_CALL.into(),
+                input: structured.clone(),
+                parent: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_structured_message_that_isnt_the_last_reads_as_its_summary() {
+        let preamble = r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"status\":\"done\",\"summary\":\"Creating hello.txt now.\",\"files_changed\":[]}"}}"#;
+        let command = r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#;
+        let (_, events) = parse(&[THREAD, preamble, command]);
+        assert_eq!(types(&events), ["init", "message", "tool_started"]);
+        assert_eq!(
+            events[1],
+            AgentEvent::Message {
+                text: "Creating hello.txt now.".into(),
+                parent: None
+            }
+        );
+
+        // One without a summary keeps its text, and a turn that fails still shows it.
+        let bare = r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"{\"status\":\"blocked\"}"}}"#;
+        let failed = r#"{"type":"turn.failed","error":{"message":"stream disconnected"}}"#;
+        let (_, events) = parse(&[THREAD, bare, failed]);
+        assert_eq!(types(&events), ["init", "message", "error", "result"]);
+        assert_eq!(
+            events[1],
+            AgentEvent::Message {
+                text: r#"{"status":"blocked"}"#.into(),
+                parent: None
+            }
+        );
+
+        // Codex killed before the turn ended.
+        let mut parser = CodexParser::new();
+        parser.parse_stdout_line(THREAD);
+        assert!(parser.parse_stdout_line(bare).is_empty());
+        let events = parser.finish(Some(0));
+        assert_eq!(types(&events), ["message", "result"]);
     }
 
     #[test]
@@ -802,34 +966,51 @@ mod tests {
     #[test]
     fn subagents_are_keyed_by_child_thread() {
         let (_, events) = parse(&[
-            r#"{"type":"item.started","item":{"id":"item_1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"main","receiver_thread_ids":["child-1"],"prompt":"look around","agents_states":{},"status":"in_progress"}}"#,
-            r#"{"type":"item.completed","item":{"id":"item_1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"main","receiver_thread_ids":["child-1"],"prompt":"look around","agents_states":{"child-1":{"status":"running","message":null}},"status":"completed"}}"#,
-            r#"{"type":"item.completed","item":{"id":"item_2","type":"collab_tool_call","tool":"wait","sender_thread_id":"main","receiver_thread_ids":["child-1"],"prompt":null,"agents_states":{"child-1":{"status":"completed","message":"found 3 files"}},"status":"completed"}}"#,
-            r#"{"type":"item.completed","item":{"id":"item_3","type":"collab_tool_call","tool":"close_agent","sender_thread_id":"main","receiver_thread_ids":["child-1"],"prompt":null,"agents_states":{"child-1":{"status":"shutdown","message":"found 3 files"}},"status":"completed"}}"#,
+            THREAD,
+            r#"{"type":"item.started","item":{"id":"item_1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53","receiver_thread_ids":["child-1"],"prompt":"look around","agents_states":{},"status":"in_progress"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53","receiver_thread_ids":["child-1"],"prompt":"look around","agents_states":{"child-1":{"status":"running","message":null}},"status":"completed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"collab_tool_call","tool":"wait","sender_thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53","receiver_thread_ids":["child-1"],"prompt":null,"agents_states":{"child-1":{"status":"completed","message":"found 3 files"}},"status":"completed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_3","type":"collab_tool_call","tool":"close_agent","sender_thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53","receiver_thread_ids":["child-1"],"prompt":null,"agents_states":{"child-1":{"status":"shutdown","message":"found 3 files"}},"status":"completed"}}"#,
         ]);
         assert_eq!(
             types(&events),
             [
+                "init",
+                "tool_started",
+                "subagent",
+                "tool_finished",
+                "subagent",
                 "tool_started",
                 "tool_finished",
-                "tool_started",
-                "tool_finished",
+                "subagent",
                 "message",
                 "tool_started",
                 "tool_finished"
             ]
         );
         assert!(
-            matches!(&events[0], AgentEvent::ToolStarted { id, name, .. } if id == "child-1" && name == "spawn_agent")
+            matches!(&events[1], AgentEvent::ToolStarted { id, name, .. } if id == "child-1" && name == "spawn_agent")
         );
         assert!(
-            matches!(&events[1], AgentEvent::ToolFinished { id, ok: true, .. } if id == "child-1")
+            matches!(&events[3], AgentEvent::ToolFinished { id, ok: true, .. } if id == "child-1")
         );
-        assert!(
-            matches!(&events[2], AgentEvent::ToolStarted { id, name, .. } if id == "item_2" && name == "wait")
+        let statuses: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Subagent { update } => Some((update.status, update.parent.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                (SubagentStatus::Started, None),
+                (SubagentStatus::Running, None),
+                (SubagentStatus::Done, None)
+            ]
         );
         assert_eq!(
-            events[4],
+            events[8],
             AgentEvent::Message {
                 text: "found 3 files".into(),
                 parent: Some("child-1".into())
@@ -859,9 +1040,9 @@ mod tests {
         let failed = format!(r#"{{"type":"turn.failed","error":{{"message":"{limit}"}}}}"#);
         let (mut parser, mut events) = parse(&[THREAD, TURN, &error, &failed]);
         events.extend(parser.finish(Some(1)));
-        assert_eq!(types(&events), ["init", "error", "result"]);
+        assert_eq!(types(&events), ["init", "quota", "error", "result"]);
         assert_eq!(
-            events[1],
+            events[2],
             AgentEvent::Error {
                 category: ErrorCategory::UsageLimit,
                 message: limit.into(),
@@ -869,13 +1050,153 @@ mod tests {
             }
         );
         assert_eq!(
-            events[2],
+            events[3],
             AgentEvent::Result {
                 text: None,
                 structured: None,
                 is_error: true
             }
         );
+    }
+
+    #[test]
+    fn codex_usage_limit_message_parses() {
+        let limit = "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), \
+                     visit https://chatgpt.com/codex/settings/usage to purchase more credits or \
+                     try again at Oct 3rd, 2026 9:15 AM.";
+        let mut parser = CodexParser::with_zone(LocalZone::fixed(-4 * 3600));
+        let mut events = Vec::new();
+        for line in [
+            THREAD.to_owned(),
+            TURN.to_owned(),
+            json!({"type": "error", "message": limit}).to_string(),
+            json!({"type": "turn.failed", "error": {"message": limit}}).to_string(),
+        ] {
+            events.extend(parser.parse_stdout_line(&line));
+        }
+        events.extend(parser.finish(Some(1)));
+        assert_eq!(types(&events), ["init", "quota", "error", "result"]);
+        let AgentEvent::Quota { reading } = &events[1] else {
+            unreachable!()
+        };
+        assert_eq!(reading.vendor.0, "codex");
+        assert_eq!(reading.status, QuotaStatus::Rejected);
+        assert_eq!(reading.source, QuotaSource::ErrorMessage);
+        assert_eq!(reading.used, Some(1.0));
+        // 9:15 AM at UTC-4.
+        assert_eq!(reading.resets_at, Some(datetime!(2026-10-03 13:15 UTC)));
+        assert_eq!(reading.detail, Some(json!({ "message": limit })));
+        assert!(matches!(
+            &events[2],
+            AgentEvent::Error { category: ErrorCategory::UsageLimit, retryable: false, message }
+                if message == limit
+        ));
+
+        // A limit that shows only on stderr before any event still gives a reading.
+        let mut parser = CodexParser::with_zone(LocalZone::fixed(0));
+        let mut events =
+            parser.parse_stderr_line("Error: You've hit your usage limit. Try again later.");
+        events.extend(parser.finish(Some(1)));
+        assert_eq!(types(&events), ["quota", "error", "result"]);
+        assert!(matches!(
+            &events[0],
+            AgentEvent::Quota { reading } if reading.resets_at.is_none()
+                && reading.status == QuotaStatus::Rejected
+        ));
+    }
+
+    #[test]
+    fn codex_retry_notice_is_not_a_failure() {
+        let (mut parser, mut events) = parse(&[
+            THREAD,
+            TURN,
+            r#"{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion: idle timeout)"}"#,
+            r#"{"type":"error","message":"Retrying request (rate limit exceeded: slow down)"}"#,
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"done"}}"#,
+            DONE,
+        ]);
+        events.extend(parser.finish(Some(0)));
+        assert_eq!(
+            types(&events),
+            [
+                "init",
+                "retry",
+                "retry",
+                "message",
+                "usage",
+                "context_fill",
+                "result"
+            ]
+        );
+        assert_eq!(
+            events[1],
+            AgentEvent::Retry {
+                reason: RetryReason::Network,
+                delay_ms: None
+            }
+        );
+        assert_eq!(
+            events[2],
+            AgentEvent::Retry {
+                reason: RetryReason::RateLimit,
+                delay_ms: None
+            }
+        );
+        assert_eq!(
+            events.last(),
+            Some(&AgentEvent::Result {
+                text: Some("done".into()),
+                structured: None,
+                is_error: false
+            })
+        );
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
+
+        // Only turn.failed or a failed exit ends the session as a failure.
+        let (mut parser, _) = parse(&[THREAD, TURN]);
+        let mut events = parser.parse_stdout_line(
+            r#"{"type":"error","message":"Reconnecting... 5/5 (stream disconnected)"}"#,
+        );
+        events.extend(parser.finish(Some(1)));
+        assert_eq!(types(&events), ["retry", "error", "result"]);
+        assert!(matches!(
+            events[2],
+            AgentEvent::Result { is_error: true, .. }
+        ));
+    }
+
+    #[test]
+    fn context_window_and_model_errors_are_classified() {
+        let (_, events) = parse(&[
+            r#"{"type":"item.completed","item":{"id":"item_4","type":"error","message":"model rerouted: gpt-5.6-luna -> gpt-6-luna (HighRiskCyberActivity)"}}"#,
+            r#"{"type":"turn.failed","error":{"message":"ContextWindowExceeded: Codex ran out of room in the model's context window."}}"#,
+        ]);
+        assert_eq!(types(&events), ["error", "error", "result"]);
+        assert!(matches!(
+            events[0],
+            AgentEvent::Error {
+                category: ErrorCategory::ModelUnavailable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            AgentEvent::Error {
+                category: ErrorCategory::ContextFull,
+                retryable: false,
+                ..
+            }
+        ));
+        let (_, events) = parse(&[
+            r#"{"type":"error","message":"The 'gpt-9' model is not supported when using Codex with a ChatGPT account."}"#,
+        ]);
+        assert!(matches!(
+            events[0],
+            AgentEvent::Error {
+                category: ErrorCategory::ModelUnavailable,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -922,13 +1243,13 @@ mod tests {
     }
 
     #[test]
-    fn stderr_lines_are_kept_and_explain_a_failed_exit() {
+    fn stderr_lines_explain_a_failed_exit() {
         let mut parser = CodexParser::new();
         assert!(parser.parse_stderr_line("").is_empty());
         let events = parser.parse_stderr_line(
             "Not inside a trusted directory and --skip-git-repo-check was not specified.",
         );
-        assert!(matches!(&events[..], [AgentEvent::Unknown { raw }] if raw["stderr"].is_string()));
+        assert_eq!(events, []);
         let events = parser.finish(Some(1));
         assert_eq!(types(&events), ["error", "result"]);
         assert!(matches!(
@@ -968,7 +1289,7 @@ mod tests {
         );
         assert!(matches!(
             &events[1],
-            AgentEvent::Error { category: ErrorCategory::Cli, message, .. } if message.contains("code 1")
+            AgentEvent::Error { category: ErrorCategory::Unknown, message, .. } if message.contains("code 1")
         ));
         assert!(matches!(
             events[2],
@@ -988,6 +1309,17 @@ mod tests {
             }
         ));
         assert!(parser.finish(None).is_empty());
+    }
+
+    #[test]
+    fn a_failed_exit_without_a_result_is_a_crash() {
+        let events = CodexParser::new().finish(Some(1));
+        assert_eq!(types(&events), ["error", "result"]);
+        assert!(matches!(
+            &events[0],
+            AgentEvent::Error { category: ErrorCategory::Unknown, retryable: false, message }
+                if message.contains("code 1")
+        ));
     }
 
     #[test]

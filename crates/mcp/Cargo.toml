@@ -10,7 +10,17 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 argonauts-core.workspace = true
+argonauts-policy.workspace = true
+jsonschema.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
+argonauts-testkit.workspace = true
+rmcp = { workspace = true, features = ["client"] }
+tempfile.workspace = true
 tokio.workspace = true

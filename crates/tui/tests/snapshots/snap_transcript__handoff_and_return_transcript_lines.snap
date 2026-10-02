@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+● card-002 handed to GPT 5.6 on Codex · note + transcript · checkpoint handoff-1
+  · Claude Code out until 3:45 PM
+
+● Handoff(card-003 Middleware · auto)
+  ⎿  Gemini 3.6 Pro on agy took it · note + summary
+     Claude Code stopped: usage limit
+
+● Reverted card-002 to checkpoint handoff-1
+  ⎿  The later work is kept on argonauts/run-01/card-002-after-handoff-1
+
+● Claude Code is back · card-002 stays with GPT 5.6 on Codex · /reassign
+  card-002 claude-code/opus moves it back

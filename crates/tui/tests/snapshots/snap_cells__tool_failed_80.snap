@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/cells.rs
+assertion_line: 80
+expression: text(&lines)
+---
+● Bash(cargo build --release)
+  ⎿  error[E0308]: mismatched types in src/export.rs:42

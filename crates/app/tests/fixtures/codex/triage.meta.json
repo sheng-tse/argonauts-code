@@ -1,0 +1,25 @@
+{
+  "adapter": "codex",
+  "args": [
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--cd",
+    "/tmp/argonauts-live/chat/codex-repo",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--model",
+    "gpt-5.6-luna",
+    "--config",
+    "model_reasoning_effort=\"low\"",
+    "--output-schema",
+    "/tmp/argonauts-live/chat/codex-scratch/codex-output-schema.json",
+    "-"
+  ],
+  "duration_ms": 19712,
+  "exit_code": 0,
+  "program": "codex",
+  "resumed_from": null
+}

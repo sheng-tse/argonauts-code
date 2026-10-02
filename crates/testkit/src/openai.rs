@@ -10,6 +10,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::Context as _;
+use argonauts_core::settings::agents::EndpointSettings;
 use serde_json::{Value, json};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -122,6 +123,14 @@ impl FakeOpenAi {
     /// The base URL, such as `http://127.0.0.1:49152/v1`.
     pub fn base_url(&self) -> String {
         format!("http://{}/v1", self.addr)
+    }
+
+    /// `[endpoints.<id>]` pointed at this server, for the real endpoint worker.
+    pub fn endpoint_settings(&self) -> EndpointSettings {
+        EndpointSettings {
+            base_url: Some(self.base_url()),
+            ..EndpointSettings::default()
+        }
     }
 
     /// Queues the answer to the next model request.

@@ -14,12 +14,16 @@ use crate::names::{VendorId, WorkerRef};
 ///
 /// Candidates come from the most specific list that isn't empty: your pick for the card, then
 /// `roles.<role>.handoff.replace.<vendor>`, `roles.<role>.handoff.fallback`,
-/// `handoff.replace.<vendor>`, and `handoff.fallback`. Lists never merge across tables.
+/// `handoff.replace.<vendor>`, and `handoff.fallback`. Lists never merge across tables. When
+/// all are empty, the candidates are the other installed and logged-in CLIs, which the policy
+/// builder fills in for each run, since what's installed and logged in changes.
 ///
 /// The optional keys stay `None` when a table doesn't set them, so the walk can tell unset
 /// from a default. They follow the same order, key by key. `mode`, `ask_timeout`,
 /// `allow_api_billing`, and `broken_work` have no per-vendor form, so the resolver copies them
 /// from the top-level table into each role table that doesn't set them. It copies nothing else.
+/// `broken_work` decides whether the code carries over, and `context` what the replacement is
+/// told about it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct HandoffSettings {
@@ -51,6 +55,14 @@ pub struct HandoffSettings {
     /// Per card, before it escalates to you instead of bouncing between vendors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_handoffs: Option<u32>,
+    /// What a replacement is told, also when a full session rotates to a fresh one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<HandoffContext>,
+    /// Who writes the summary for `context = "note+summary"`: `harness/model` or an endpoint.
+    /// Unset uses the replacement's own harness with its cheapest model, because that vendor
+    /// is known to have quota and the stopped one may have none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summarizer: Option<WorkerRef>,
     pub replace: BTreeMap<VendorId, VendorReplacement>,
 }
 
@@ -58,7 +70,7 @@ pub struct HandoffSettings {
 impl Default for HandoffSettings {
     fn default() -> Self {
         Self {
-            mode: HandoffMode::Ask,
+            mode: HandoffMode::Auto,
             fallback: Vec::new(),
             ask_timeout: Span::new("none"),
             allow_api_billing: false,
@@ -71,6 +83,8 @@ impl Default for HandoffSettings {
             merge_rule: None,
             unknown_tier: None,
             max_handoffs: None,
+            context: None,
+            summarizer: None,
             replace: BTreeMap::new(),
         }
     }
@@ -88,6 +102,7 @@ impl HandoffSettings {
             merge_rule: Some(rules.merge_rule),
             unknown_tier: Some(rules.unknown_tier),
             max_handoffs: Some(rules.max_handoffs),
+            context: Some(rules.context),
             ..Self::default()
         }
     }
@@ -142,6 +157,12 @@ impl HandoffSettings {
                 .or_else(|| top_replace.and_then(|entry| entry.on_return))
                 .or_else(|| top.own_on_return())
                 .unwrap_or(built_in.on_return),
+            context: role_replace
+                .and_then(|entry| entry.context)
+                .or_else(|| role.and_then(|role| role.context))
+                .or_else(|| top_replace.and_then(|entry| entry.context))
+                .or(top.context)
+                .unwrap_or(built_in.context),
             race_count: set(role, top, |table| table.race_count).unwrap_or(built_in.race_count),
             checkpoint: set(role, top, |table| table.checkpoint).unwrap_or(built_in.checkpoint),
             merge_rule: set(role, top, |table| table.merge_rule).unwrap_or(built_in.merge_rule),
@@ -149,6 +170,7 @@ impl HandoffSettings {
                 .unwrap_or(built_in.unknown_tier),
             max_handoffs: set(role, top, |table| table.max_handoffs)
                 .unwrap_or(built_in.max_handoffs),
+            summarizer: set(role, top, |table| table.summarizer.clone()),
         }
     }
 
@@ -161,8 +183,8 @@ impl HandoffSettings {
 /// The handoff rules for one role and one stopped vendor, every key filled in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedHandoff {
-    /// The most specific list that isn't empty. Empty means the router offers every healthy
-    /// crew member.
+    /// The most specific list that isn't empty. Empty means the other installed and logged-in
+    /// CLIs, which the policy builder fills in.
     pub candidates: Vec<FallbackEntry>,
     pub mode: HandoffMode,
     pub ask_timeout: Span,
@@ -175,13 +197,16 @@ pub struct AppliedHandoff {
     pub merge_rule: MergeRule,
     pub unknown_tier: UnknownTier,
     pub max_handoffs: u32,
+    pub context: HandoffContext,
+    /// `None` uses the replacement's own harness with its cheapest model.
+    pub summarizer: Option<WorkerRef>,
 }
 
 impl Default for AppliedHandoff {
     fn default() -> Self {
         Self {
             candidates: Vec::new(),
-            mode: HandoffMode::Ask,
+            mode: HandoffMode::Auto,
             ask_timeout: Span::new("none"),
             allow_api_billing: false,
             broken_work: BrokenWork::Continue,
@@ -192,6 +217,8 @@ impl Default for AppliedHandoff {
             merge_rule: MergeRule::UpgradeReview,
             unknown_tier: UnknownTier::Weaker,
             max_handoffs: 3,
+            context: HandoffContext::NoteAndTranscript,
+            summarizer: None,
         }
     }
 }
@@ -201,7 +228,7 @@ impl Default for AppliedHandoff {
 pub enum HandoffMode {
     /// Show the handoff card.
     Ask,
-    /// Take the next valid fallback within your cost cap.
+    /// Take the next valid candidate within your cost cap.
     Auto,
     Wait,
 }
@@ -256,6 +283,7 @@ pub struct VendorReplacement {
     pub with: Vec<FallbackEntry>,
     pub strategy: Option<HandoffStrategy>,
     pub on_return: Option<OnReturn>,
+    pub context: Option<HandoffContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
@@ -288,6 +316,38 @@ pub enum OnReturn {
     HandBack,
     /// The card resets to the checkpoint and the original redoes the work.
     Redo,
+}
+
+/// What a replacement gets besides the card's code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+pub enum HandoffContext {
+    /// The card only.
+    #[serde(rename = "fresh")]
+    Fresh,
+    /// The handoff note: the packet rendered as a prompt.
+    #[serde(rename = "note")]
+    Note,
+    /// The note, plus the old session's transcript as a Markdown file. The note names its path
+    /// and says to read it only if more detail is needed.
+    #[default]
+    #[serde(rename = "note+transcript")]
+    NoteAndTranscript,
+    /// The note, with a summary of that transcript by `summarizer` written into it. If the
+    /// summary fails, the handoff goes on as `note+transcript`.
+    #[serde(rename = "note+summary")]
+    NoteAndSummary,
+}
+
+impl HandoffContext {
+    /// How the transcript line names it, as in `card-003 → codex/gpt-5.6 · note + transcript`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Note => "note",
+            Self::NoteAndTranscript => "note + transcript",
+            Self::NoteAndSummary => "note + summary",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]

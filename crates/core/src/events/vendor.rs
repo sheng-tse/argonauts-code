@@ -9,7 +9,7 @@ use super::run::Party;
 use crate::limits::{Candidate, QuotaReading, VendorHealth};
 use crate::names::{VendorId, WorkerRef};
 use crate::settings::budget::{BudgetAmount, BudgetLineKind};
-use crate::settings::handoff::{HandoffMode, HandoffStrategy};
+use crate::settings::handoff::{HandoffContext, HandoffMode, HandoffStrategy};
 use crate::{BudgetDimension, BudgetStatus, CardId, DiffStat, Spend};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +28,9 @@ pub enum HandoffEvent {
         to: WorkerRef,
         mode: HandoffMode,
         by: Party,
+        /// What the new owner is told, which the transcript line names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<HandoffContext>,
     },
     Waiting {
         card: CardId,

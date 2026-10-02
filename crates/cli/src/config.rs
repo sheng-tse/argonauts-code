@@ -1,130 +1,124 @@
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+//! `argonauts config show|schema|set` and `argonauts models`.
+
 use std::process::ExitCode;
 
-use argonauts_conductor::{Git, budget_problem};
-use argonauts_core::{Config, ConfigSources, LoadedConfig};
-use argonauts_tui::clean_line;
+use argonauts_core::registry::ModelEntry;
+use argonauts_core::sanitize::sanitize_for_terminal;
+use argonauts_core::settings::SettingScope;
 
-use crate::agents;
 use crate::args::ConfigCommand;
+use crate::text::words;
 use crate::usage::usage;
 
-pub async fn repo_root(dir: &Path) -> Option<PathBuf> {
-    Git::new().toplevel(dir).await.ok()
-}
-
-/// Resolves the defaults, the global file, both project files of `repo_root`, then `overrides`.
-pub fn load(repo_root: Option<&Path>, overrides: Vec<String>) -> anyhow::Result<LoadedConfig> {
-    Ok(Config::load(&ConfigSources::standard(
-        repo_root, overrides,
-    ))?)
-}
-
-/// Warnings can quote key names from a repository's config file, so they are cleaned first.
-pub fn print_warnings(loaded: &LoadedConfig) {
-    for warning in &loaded.warnings {
-        eprintln!("warning: {}", clean_line(warning));
-    }
-}
-
-pub async fn run(command: ConfigCommand) -> anyhow::Result<ExitCode> {
+pub fn run(command: &ConfigCommand, set: &[String]) -> anyhow::Result<ExitCode> {
     match command {
-        ConfigCommand::Schema => {
-            println!("{}", serde_json::to_string_pretty(&Config::json_schema())?);
+        ConfigCommand::Show => {
+            print!(
+                "{}",
+                argonauts_app::config_show(None, set.to_vec()).map_err(usage)?
+            );
         }
-        ConfigCommand::Show { set } => {
-            let cwd = std::env::current_dir()?;
-            let root = repo_root(&cwd).await;
-            let loaded = load(root.as_deref(), set).map_err(usage)?;
-            print_warnings(&loaded);
-            print!("{}", show(&loaded)?);
+        ConfigCommand::Schema => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&argonauts_app::config_schema())?
+            );
+        }
+        ConfigCommand::Set {
+            key,
+            value,
+            local,
+            project,
+            global,
+        } => {
+            let scope = scope(*local, *project, *global);
+            let file = argonauts_app::config_set(None, key, value, scope)?;
+            println!("Saved {key} in {}.", file.display());
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn show(loaded: &LoadedConfig) -> anyhow::Result<String> {
-    let mut out = String::new();
-    writeln!(out, "# Resolved config, sha256 {}", loaded.hash())?;
-    for layer in &loaded.layers {
-        match &layer.path {
-            None => writeln!(out, "# {}", layer.name)?,
-            Some(path) => {
-                let state = if layer.applied {
-                    "applied"
-                } else {
-                    "not found"
-                };
-                writeln!(out, "# {} {} ({state})", layer.name, path.display())?;
-            }
-        }
+/// `None` leaves it to the key's usual file.
+fn scope(local: bool, project: bool, global: bool) -> Option<SettingScope> {
+    if local {
+        Some(SettingScope::ProjectLocal)
+    } else if project {
+        Some(SettingScope::Project)
+    } else if global {
+        Some(SettingScope::Global)
+    } else {
+        None
     }
-    for set in &loaded.overrides {
-        writeln!(out, "# --set {}={}", set.key, set.value)?;
+}
+
+pub async fn models(discover: bool) -> anyhow::Result<ExitCode> {
+    let models = argonauts_app::models(None, discover).await?;
+    print!("{}", models_text(&models, discover));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn models_text(models: &[ModelEntry], discovered: bool) -> String {
+    if models.is_empty() {
+        return if discovered {
+            "No models found.\n".to_owned()
+        } else {
+            "No models known yet. `argonauts models --discover` asks your CLIs and local servers.\n"
+                .to_owned()
+        };
     }
-    if let Ok(adapter) = agents::by_id(&loaded.config.default_agent)
-        && let Some(problem) = budget_problem(&loaded.config, adapter.as_ref())
-    {
-        writeln!(out, "# warning: {problem}")?;
+    let mut lines: String = models
+        .iter()
+        .map(|model| {
+            format!(
+                "{} · {} · {} · {}\n",
+                model.id,
+                model.family,
+                words(&model.kind),
+                words(&model.access)
+            )
+        })
+        .collect();
+    if !discovered {
+        lines
+            .push_str("`argonauts models --discover` asks your CLIs and local servers for more.\n");
     }
-    writeln!(out)?;
-    out.push_str(&loaded.config.to_toml_string()?);
-    Ok(out)
+    // Discovered ids come from the CLIs and servers themselves.
+    sanitize_for_terminal(&lines)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn load_with(project: &str, overrides: &[&str]) -> (tempfile::TempDir, LoadedConfig) {
-        let dir = tempfile::tempdir().unwrap();
-        let project_file = dir.path().join("project.toml");
-        std::fs::write(&project_file, project).unwrap();
-        let sources = ConfigSources {
-            global: Some(dir.path().join("missing.toml")),
-            project: Some(project_file),
-            project_local: None,
-            overrides: overrides.iter().map(|s| (*s).to_owned()).collect(),
-        };
-        let loaded = Config::load(&sources).unwrap();
-        (dir, loaded)
+    #[test]
+    fn a_flag_picks_the_file_and_none_leaves_the_usual_one() {
+        assert_eq!(scope(true, false, false), Some(SettingScope::ProjectLocal));
+        assert_eq!(scope(false, true, false), Some(SettingScope::Project));
+        assert_eq!(scope(false, false, true), Some(SettingScope::Global));
+        assert_eq!(scope(false, false, false), None);
     }
 
     #[test]
-    fn show_is_valid_toml_that_names_its_layers() {
-        let (_dir, loaded) = load_with("[budget]\nper_card = 1.5\n", &["merge.mode=leave"]);
-        let text = show(&loaded).unwrap();
-        assert!(text.contains("# defaults\n"), "{text}");
-        assert!(text.contains("missing.toml (not found)"), "{text}");
-        assert!(text.contains("project.toml (applied)"), "{text}");
-        assert!(text.contains("# --set merge.mode=leave"), "{text}");
-        assert!(text.contains(&loaded.hash()), "{text}");
-
-        let reparsed = Config::from_toml_str(&text).unwrap();
-        assert_eq!(reparsed, loaded.config);
-        assert_eq!(reparsed.budget.per_card, 1.5);
+    fn no_models_says_how_to_find_some() {
+        assert!(models_text(&[], false).contains("--discover"));
+        assert_eq!(models_text(&[], true), "No models found.\n");
     }
 
     #[test]
-    fn show_warns_when_the_budget_cannot_be_enforced() {
-        let (_dir, loaded) = load_with("default_agent = \"codex\"\n", &[]);
-        let text = show(&loaded).unwrap();
+    fn known_models_still_say_how_to_find_more() {
+        let entry: ModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "codex", "family": "gpt", "kind": "harness", "access": "subscription",
+            "cost": {"unit": "quota"},
+        }))
+        .unwrap();
+        let listed = models_text(std::slice::from_ref(&entry), false);
         assert!(
-            text.contains("# warning: Codex reports only tokens"),
-            "{text}"
+            listed.starts_with("codex · gpt · harness · subscription\n"),
+            "{listed}"
         );
-        let (_dir, loaded) = load_with(
-            "default_agent = \"codex\"\n",
-            &["agents.codex.model=gpt-6-luna"],
-        );
-        assert!(!show(&loaded).unwrap().contains("# warning"));
-        Config::from_toml_str(&show(&loaded).unwrap()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn repo_root_is_none_outside_git() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(repo_root(dir.path()).await, None);
+        assert!(listed.contains("--discover"), "{listed}");
+        let discovered = models_text(&[entry], true);
+        assert_eq!(discovered, "codex · gpt · harness · subscription\n");
     }
 }

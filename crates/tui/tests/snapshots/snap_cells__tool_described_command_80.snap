@@ -1,0 +1,10 @@
+---
+source: crates/tui/tests/cells.rs
+expression: text(&lines)
+---
+● Updating build plan status
+  ⎿  $ python3 - <<'EOF'
+     p = ".github/docs/ROUTE_PLAN.md"
+     s = open(p).read()
+     old = s[s.index("## Status"):]
+     … +9 lines (ctrl+o to expand)

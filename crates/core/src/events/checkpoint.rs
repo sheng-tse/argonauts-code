@@ -17,6 +17,7 @@ use crate::policy::{ShadowRecord, Verdict, Violation};
 use crate::settings::approvals::{ApprovalMode, DecideWith};
 use crate::settings::budget::BudgetAmount;
 use crate::steps::judgment::ReviewVerdict;
+use crate::workflow::{Workflow, WorkflowRef};
 use crate::{BudgetDimension, BudgetStatus, CardId, DiffStat, Spend};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,7 +43,7 @@ pub enum CheckpointEvent {
 pub struct CheckpointOpened {
     pub id: CheckpointId,
     pub kind: CheckpointKind,
-    /// Such as "Merge checkpoint · run-01".
+    /// Such as "Merge this run into main?", the card's heading on screen.
     pub title: String,
     pub card: Option<CardId>,
     pub packet: CheckpointPacket,
@@ -128,6 +129,20 @@ pub struct PlanPacket {
     pub new_dependencies: Vec<String>,
     /// Anything that blocks auto-approval, such as text addressed to judges.
     pub flags: Vec<String>,
+    /// The workflow the run follows from here, with the lead's reason when the lead picked it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<PlanWorkflow>,
+}
+
+/// The run's workflow as the plan checkpoint shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanWorkflow {
+    /// The template it came from, or `None` when the lead composed it.
+    pub from: Option<WorkflowRef>,
+    /// The lead's one line for the plan checkpoint, when the lead designed it.
+    pub why: Option<String>,
+    /// As validated, with its parameters filled in.
+    pub workflow: Workflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

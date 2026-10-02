@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: narrow
+---
+argonauts › crew                                                    Claude 72% · Codex 41% · agy 90%
+  Needs you 2    Working 2    Ready 2    Done 2  [ All 8 ]
+
+~/code/export
+  Add a --json flag to export
+  ❯ ◆ Add the JSON writer            GPT 5.6 on Codex         asks: Keep a CSV fallback?      2m ago
+    ● Wire the --json flag           Opus on Claude Code      Update(src/mw/limit.ts)         5m ago
+    ○ Wire the --json flag           Gemini 3.6 Pro on Anti…  waiting on other work           1m ago
+    ✓ Rename the CSV writer          GPT 5.6 on Codex         Integrated card-001.            3m ago
+  Conversations and CLI sessions
+    ◎ How does the export pick a f…  Opus on Claude Code      It reads --format, then the …  40m ago
+    ◎ Explain the input handling     GPT 5.6 on Codex         It reads keys in one loop.      1d ago
+
+~/code/api
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Add the JSON writer
+◆ Needs you
+
+Last message
+asks: Keep a CSV fallback?
+
+Repo     ~/code/export
+Run      run-01 · Add a --json flag to export
+Card     card-002
+Model    GPT 5.6 on Codex (codex/gpt-5.6)
+Tokens   0 in · 12.4k out
+Context  41k of 200k (21%)
+Branch   argonauts/run-01/card-002
+
+Prompt
+Add a JSON writer beside the CSV one. Keep the CSV output byte for byte.
+↑↓ move · → open · Space details · Tab filter · x stop · ? keys · esc back

@@ -1,0 +1,22 @@
+---
+source: crates/tui/tests/snap_agents.rs
+expression: text(lines)
+---
+● Opus on Claude Code · owner · card-003 · 4m12s · ↓ 18.1k · retrying in 12s
+  ⎿  Update(src/app.rs)
+        Added 2 lines, removed 1 line
+                let area = frame.area();
+           -    draw_header(frame);
+           +    draw_header(frame, &state);
+           +    draw_prompt(frame, &state);
+     Ran 1 shell command, searched for 1 pattern · 1 failed (ctrl+o to expand)
+     Write(hello.txt)
+        Wrote 1 line to hello.txt
+         1 +hi
+     Added 2 lines, removed 1 line
+      41      fn wire(&self) {
+      42 -        self.old();
+      42 +        self.auth();
+      43 +        self.log();
+     Next I'll add the tests for it▎
+     ☒ wire middleware  ☐ tests

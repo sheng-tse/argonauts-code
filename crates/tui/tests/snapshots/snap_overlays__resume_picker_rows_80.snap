@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+Resume a run
+Parked runs never expire, so resume it or stop it                         3 runs
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│     Run     Title                        State        When  Spent  Sessions  │
+│ ❯ ◆ run-03  Add a --json flag to export  parked     2d ago  $0.46         2  │
+│     run-02  Fix the flaky export test    crashed    3h ago  $0.46         2  │
+│     run-01  Rename the CSV writer        merged   just now  $0.46         2  │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ resume · x stop · d diff · r raw · esc back

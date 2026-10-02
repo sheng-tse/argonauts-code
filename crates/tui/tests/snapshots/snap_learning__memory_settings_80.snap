@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_learning.rs
+expression: "screen(&mut picker, 80, HEIGHT)"
+---
+Memory                                 Notes  Flagged  Conventions  [ Settings ]
+Notes the crew keeps, and the conventions       1 note · 1 flagged waits for you
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   Setting              Value  From                                           │
+│ ❯ memory.max_per_card  3      built-in                                       │
+│   memory.flagged       "ask"  built-in                                       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│   Notes a card may propose                                                   │
+│   A safety key: changing it asks you to confirm.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · tab next tab · ⏎ change · esc back

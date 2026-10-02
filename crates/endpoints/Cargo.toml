@@ -9,6 +9,16 @@ publish.workspace = true
 
 [dependencies]
 argonauts-core.workspace = true
+futures.workspace = true
+jsonschema.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
+argonauts-testkit.workspace = true
+tempfile.workspace = true
 tokio.workspace = true

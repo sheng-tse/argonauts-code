@@ -1,0 +1,11 @@
+{
+  "program": "agy",
+  "args": ["--output-format", "json", "models"],
+  "cli_version": "1.2.13",
+  "recorded_at": "2026-09-30T03:52:10Z",
+  "synthetic": false,
+  "model_call": false,
+  "exit_code": 0,
+  "stderr": "Fetching available models...",
+  "notes": "agy 1.2.13 rejects `agy models --output-format json` (\"flags provided but not defined: -output-format\"); the flag is global and goes before the subcommand. The list names thinking levels as separate model ids and lists no --effort levels."
+}

@@ -1,0 +1,915 @@
+//! The model registry: built-in entries, `~/.argonauts/models.toml`, then the project's
+//! `.argonauts/models.toml` once you trust it, later wins by `id`, plus what discovery finds.
+//! Models are data, so a new one needs no code, and the model catalog says what `/model` shows
+//! of each.
+
+mod builtin;
+mod cache;
+pub mod catalog;
+pub mod discovery;
+mod estimate;
+mod family;
+mod files;
+mod trust;
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, PoisonError, RwLock};
+
+use argonauts_core::future::BoxFuture;
+use argonauts_core::limits::CostEstimate;
+use argonauts_core::model_catalog::ModelCatalog;
+use argonauts_core::names::WorkerRef;
+use argonauts_core::paths::Paths;
+use argonauts_core::registry::{CostUnit, ModelAccess, ModelEntry, ModelRegistry, RegistryKind};
+use argonauts_core::settings::Settings;
+use time::OffsetDateTime;
+
+use crate::harnesses::every_builtin_harness;
+use discovery::{CLAUDE_LIST_FRESH_FOR, ClaudeSource, agent_enabled};
+
+pub use builtin::{
+    CLAUDE_CODE_ALIASES, builtin_endpoint, builtin_models, endpoint_settings, usual_efforts,
+};
+pub use cache::ModelCache;
+pub use catalog::{CatalogSource, FetchedCatalog, shipped_catalog};
+pub use family::{family_from_model_id, family_problems};
+pub use files::{ModelTier, ModelsFile, read_registry_file, set_model_tier};
+pub use trust::ProjectModels;
+
+/// Leaves out the repo's `.argonauts/models.toml`, since this takes no trust input; use
+/// [`registry_with_trust`] with the hashes in `trusted.json` for that.
+pub fn registry(settings: &Settings, repo_root: Option<&Path>) -> Arc<dyn ModelRegistry> {
+    Arc::new(FileRegistry::load(settings, repo_root, &[]))
+}
+
+/// The registry with the repo's `.argonauts/models.toml` counting when its hash is in
+/// `trusted_hashes`, starting from the model list `cache` keeps, when given, and reading
+/// Claude Code's models from `claude` and the model catalog from `catalog` once a day. It
+/// comes back whole, so its warnings and discovery's skipped sources can be shown.
+pub fn registry_with_trust(
+    settings: &Settings,
+    repo_root: Option<&Path>,
+    trusted_hashes: &[String],
+    cache: Option<&Path>,
+    claude: Option<ClaudeSource>,
+    catalog: Option<CatalogSource>,
+) -> Arc<FileRegistry> {
+    let mut registry = FileRegistry::load(settings, repo_root, trusted_hashes);
+    if let Some(cache) = cache {
+        registry = registry.with_cache(cache);
+    }
+    if let Some(claude) = claude {
+        registry = registry.with_claude_source(claude);
+    }
+    if let Some(catalog) = catalog {
+        registry = registry.with_catalog_source(catalog);
+    }
+    Arc::new(registry)
+}
+
+/// `<repo>/.argonauts/models.toml`.
+pub fn project_models_path(repo_root: &Path) -> PathBuf {
+    repo_root.join(".argonauts").join("models.toml")
+}
+
+/// The registry from its three layers, with what discovery adds between the built-ins and
+/// your files.
+#[derive(Debug)]
+pub struct FileRegistry {
+    settings: Settings,
+    builtin: Vec<ModelEntry>,
+    discovered: RwLock<Vec<ModelEntry>>,
+    skipped: RwLock<Vec<String>>,
+    refreshed: RwLock<Option<OffsetDateTime>>,
+    /// Where discovery's list outlives this run; `None` keeps it in memory.
+    cache: Option<PathBuf>,
+    /// Where Claude Code's models come from; `None` lists its aliases only.
+    claude: Option<ClaudeSource>,
+    claude_listed: RwLock<Option<OffsetDateTime>>,
+    /// Where the daily model catalog comes from; `None` keeps the one shipped.
+    catalog_source: Option<CatalogSource>,
+    /// The catalog fetched last, as the cache keeps it and as it reads.
+    fetched: RwLock<Option<(FetchedCatalog, ModelCatalog)>>,
+    yours: Vec<ModelsFile>,
+    /// (harness id, `family`) for the built-in profiles and every manifest in the files read,
+    /// later winning by id.
+    harness_families: Vec<(String, String)>,
+    warnings: Vec<String>,
+}
+
+impl FileRegistry {
+    /// `~/.argonauts/models.toml` (or `$ARGONAUTS_HOME/models.toml`) and, with a repo, its
+    /// `.argonauts/models.toml` when the hash of its text is in `trusted_hashes`.
+    pub fn load(settings: &Settings, repo_root: Option<&Path>, trusted_hashes: &[String]) -> Self {
+        let mut registry = Self::empty(settings);
+        match Paths::from_env() {
+            Ok(paths) => registry.add_global(&paths.global_models()),
+            Err(e) => registry
+                .warnings
+                .push(format!("{e}. Your own models.toml is left out.")),
+        }
+        if let Some(root) = repo_root {
+            match ProjectModels::read(&project_models_path(root), trusted_hashes) {
+                Ok(project) => registry.add_project(&project),
+                Err(e) => registry
+                    .warnings
+                    .push(format!("{e}. Its models are left out.")),
+            }
+        }
+        registry
+    }
+
+    /// Your own `global` file counts as it is; `project` counts only when it's trusted.
+    pub fn from_files(
+        settings: &Settings,
+        global: Option<&Path>,
+        project: Option<&ProjectModels>,
+    ) -> Self {
+        let mut registry = Self::empty(settings);
+        if let Some(global) = global {
+            registry.add_global(global);
+        }
+        if let Some(project) = project {
+            registry.add_project(project);
+        }
+        registry
+    }
+
+    fn empty(settings: &Settings) -> Self {
+        let harness_families = every_builtin_harness()
+            .into_iter()
+            .map(|manifest| (manifest.id, manifest.family))
+            .collect();
+        Self {
+            settings: settings.clone(),
+            builtin: builtin_models(settings),
+            discovered: RwLock::new(Vec::new()),
+            skipped: RwLock::new(Vec::new()),
+            refreshed: RwLock::new(None),
+            cache: None,
+            claude: None,
+            claude_listed: RwLock::new(None),
+            catalog_source: None,
+            fetched: RwLock::new(None),
+            yours: Vec::new(),
+            harness_families,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Starts from the list `path` keeps, for the sources these settings still use, and keeps
+    /// each later discovery there. With discovery off the file is neither read nor written.
+    pub fn with_cache(mut self, path: &Path) -> Self {
+        if !self.settings.registry.discover {
+            return self;
+        }
+        if let Some(cache) = ModelCache::read(path) {
+            let models = still_listed(&self.settings, cache.models);
+            *self
+                .discovered
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = models;
+            *self
+                .skipped
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = cache.skipped;
+            *self
+                .refreshed
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = Some(cache.refreshed);
+            *self
+                .claude_listed
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = cache.claude_listed;
+            *self
+                .fetched
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner) = cache
+                .catalog
+                .and_then(|file| file.catalog().ok().map(|catalog| (file, catalog)));
+        }
+        self.cache = Some(path.to_owned());
+        self
+    }
+
+    /// Claude Code can't list its models, so discovery reads them from `source`, at most once
+    /// a day, keeping what it read last in between.
+    pub fn with_claude_source(mut self, source: ClaudeSource) -> Self {
+        self.claude = Some(source);
+        self
+    }
+
+    /// The model catalog comes from `source` at most once a day, the one fetched last staying
+    /// in between.
+    pub fn with_catalog_source(mut self, source: CatalogSource) -> Self {
+        self.catalog_source = Some(source);
+        self
+    }
+
+    /// The source to fetch the catalog from now, when one is set and the last catalog is a day
+    /// old, with that catalog.
+    fn catalog_due(&self, now: OffsetDateTime) -> Option<(&CatalogSource, Option<FetchedCatalog>)> {
+        let source = self.catalog_source.as_ref()?;
+        let known = self
+            .fetched
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|(file, _)| file.clone());
+        known
+            .as_ref()
+            .is_none_or(|file| now - file.fetched >= catalog::CATALOG_FRESH_FOR)
+            .then_some((source, known))
+    }
+
+    /// The source to read Claude Code's models from now, when one is set, Claude Code is on,
+    /// and the last list is a day old.
+    fn claude_due(&self, now: OffsetDateTime) -> Option<&ClaudeSource> {
+        let source = self.claude.as_ref()?;
+        if !agent_enabled(&self.settings, "claude-code") {
+            return None;
+        }
+        let listed = *self
+            .claude_listed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        listed
+            .is_none_or(|at| now - at >= CLAUDE_LIST_FRESH_FOR)
+            .then_some(source)
+    }
+
+    fn add_global(&mut self, path: &Path) {
+        match read_registry_file(path) {
+            Ok(file) => self.add_file(file),
+            Err(e) => self.warnings.push(format!("{e}. Its models are left out.")),
+        }
+    }
+
+    fn add_project(&mut self, project: &ProjectModels) {
+        let Some(text) = project.text() else {
+            return;
+        };
+        let path = project.path();
+        let file = match files::parse_models_text(path, text) {
+            Ok(file) => file,
+            Err(e) => {
+                self.warnings.push(format!("{e}. Its models are left out."));
+                return;
+            }
+        };
+        if project.trusted() {
+            self.add_file(file);
+            return;
+        }
+        let count = match file.models.len() + file.tiers.len() {
+            0 => return,
+            1 => "its model entry is".to_owned(),
+            n => format!("its {n} model entries are"),
+        };
+        self.warnings.push(format!(
+            "{}: {count} ignored until you trust the file (/setup, or the trust question when \
+             it changes)",
+            path.display()
+        ));
+    }
+
+    fn add_file(&mut self, mut file: ModelsFile) {
+        for manifest in std::mem::take(&mut file.harnesses) {
+            match self
+                .harness_families
+                .iter_mut()
+                .find(|(id, _)| *id == manifest.id)
+            {
+                Some(slot) => slot.1 = manifest.family,
+                None => self.harness_families.push((manifest.id, manifest.family)),
+            }
+        }
+        self.yours.push(file);
+    }
+
+    /// Files that couldn't be read or wait for your trust, each naming the file and why.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Why each source the latest discovery skipped found nothing, such as a CLI that isn't
+    /// installed or an endpoint that didn't answer.
+    pub fn discovery_skipped(&self) -> Vec<String> {
+        self.skipped
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// A tier set on its own lands on whatever entry the layers below give that model.
+    fn entries(&self) -> Vec<ModelEntry> {
+        let mut all = self.builtin.clone();
+        let discovered = self
+            .discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        merge(&mut all, discovered);
+        for file in &self.yours {
+            merge(&mut all, file.models.clone());
+            for rating in &file.tiers {
+                if let Some(at) = position(&all, &rating.id) {
+                    all[at].tier = Some(rating.tier);
+                }
+            }
+        }
+        all
+    }
+
+    fn manifest_family(&self, worker: &WorkerRef) -> Option<&str> {
+        self.harness_families
+            .iter()
+            .find(|(id, _)| *id == worker.worker)
+            .map(|(_, family)| family.as_str())
+    }
+
+    /// A model the registry has no entry for still costs what its harness or endpoint does:
+    /// the harness's default entry, or an entry made from `[endpoints.<id>]`.
+    fn estimate_entry(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+        if let Some(entry) = self.get(worker) {
+            return Some(entry);
+        }
+        if let Some(entry) = self.get(&WorkerRef::new(worker.worker.clone(), None)) {
+            return Some(entry);
+        }
+        let endpoint = endpoint_settings(&self.settings, &worker.worker)?;
+        let mut entry = builtin::harness_entry(&self.settings, &worker.worker, None);
+        entry.id = worker.clone();
+        entry.kind = RegistryKind::Endpoint;
+        entry.tools = false;
+        (entry.access, entry.cost) = if endpoint.local {
+            (ModelAccess::Local, builtin::cost(CostUnit::None))
+        } else {
+            (ModelAccess::ApiKey, builtin::cost(CostUnit::Usd))
+        };
+        Some(entry)
+    }
+}
+
+/// The cached entries whose harness is still on or whose endpoint is still configured, with
+/// a harness's access and cost from the settings now, since you may have changed its auth.
+fn still_listed(settings: &Settings, cached: Vec<ModelEntry>) -> Vec<ModelEntry> {
+    cached
+        .into_iter()
+        .filter(|entry| match entry.kind {
+            RegistryKind::Harness => settings
+                .agents
+                .get(&entry.id.worker)
+                .is_none_or(|agent| agent.enabled),
+            RegistryKind::Endpoint => settings.endpoints.contains_key(&entry.id.worker),
+        })
+        .map(|mut entry| {
+            if entry.kind == RegistryKind::Harness {
+                (entry.access, entry.cost) = builtin::harness_access(settings, &entry.id.worker);
+            }
+            entry
+        })
+        .collect()
+}
+
+/// A Claude Code model read from Anthropic, rather than one of the aliases Claude Code takes.
+fn from_anthropic(entry: &ModelEntry) -> bool {
+    entry.id.worker == "claude-code"
+        && entry.discovered
+        && entry
+            .id
+            .model
+            .as_deref()
+            .is_some_and(|model| !CLAUDE_CODE_ALIASES.contains(&model))
+}
+
+/// Later wins by `id`, keeping the place of the first.
+fn merge(into: &mut Vec<ModelEntry>, later: Vec<ModelEntry>) {
+    for entry in later {
+        match into.iter_mut().find(|e| e.id == entry.id) {
+            Some(slot) => *slot = entry,
+            None => into.push(entry),
+        }
+    }
+}
+
+/// The entry with this exact id, else the one that lists the model as an alias.
+fn position(entries: &[ModelEntry], worker: &WorkerRef) -> Option<usize> {
+    let exact = entries.iter().position(|e| e.id == *worker);
+    let alias = || {
+        let model = worker.model.as_deref()?;
+        entries
+            .iter()
+            .position(|e| e.id.worker == worker.worker && e.aliases.iter().any(|a| a == model))
+    };
+    exact.or_else(alias)
+}
+
+impl ModelRegistry for FileRegistry {
+    fn get(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+        let entries = self.entries();
+        position(&entries, worker).map(|at| entries[at].clone())
+    }
+
+    fn family(&self, worker: &WorkerRef) -> String {
+        family::resolve_family(
+            worker,
+            self.get(worker).as_ref(),
+            self.manifest_family(worker),
+        )
+    }
+
+    fn list(&self) -> Vec<ModelEntry> {
+        self.entries()
+    }
+
+    fn estimate(&self, worker: &WorkerRef, input_tokens: u64, output_tokens: u64) -> CostEstimate {
+        let entry = self.estimate_entry(worker);
+        estimate::estimate(entry.as_ref(), worker, input_tokens, output_tokens)
+    }
+
+    /// What it finds replaces what discovery found before, under your own entries, except that
+    /// a source that failed keeps its earlier list, and so does Claude Code's list from
+    /// Anthropic until it's a day old. Why each source it skipped found nothing is kept for
+    /// [`FileRegistry::discovery_skipped`], and the list goes to the cache file.
+    fn discover(&self) -> BoxFuture<'_, Vec<ModelEntry>> {
+        Box::pin(async move {
+            if !self.settings.registry.discover {
+                return Vec::new();
+            }
+            let now = OffsetDateTime::now_utc();
+            let claude = async {
+                match self.claude_due(now) {
+                    Some(source) => Some(source.list(&self.settings).await),
+                    None => None,
+                }
+            };
+            let fetch = async {
+                match self.catalog_due(now) {
+                    Some((source, known)) => Some(source.fetch(known.as_ref(), now).await),
+                    None => None,
+                }
+            };
+            let (mut found, claude, fetched) = tokio::join!(
+                discovery::discover_with_reasons(&self.settings),
+                claude,
+                fetch
+            );
+            match fetched {
+                Some(Ok(fetched)) => {
+                    *self.fetched.write().unwrap_or_else(PoisonError::into_inner) = Some(fetched);
+                }
+                Some(Err(reason)) => found
+                    .skipped
+                    .push(format!("Argonauts' model catalog: {reason}")),
+                None => {}
+            }
+            let mut claude_listed = *self
+                .claude_listed
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
+            let keep_claude = match claude {
+                Some(Ok(models)) => {
+                    found.models.extend(models);
+                    claude_listed = Some(now);
+                    false
+                }
+                Some(Err(reason)) => {
+                    found
+                        .skipped
+                        .push(format!("Claude Code's models: {reason}"));
+                    true
+                }
+                None => self.claude.is_some(),
+            };
+            let claude_on = agent_enabled(&self.settings, "claude-code");
+            let refreshed = OffsetDateTime::now_utc();
+            let (models, kept_claude) = {
+                let mut discovered = self
+                    .discovered
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let kept_claude: Vec<ModelEntry> = discovered
+                    .iter()
+                    .filter(|_| keep_claude && claude_on)
+                    .filter(|entry| from_anthropic(entry))
+                    .cloned()
+                    .collect();
+                let kept = discovered
+                    .iter()
+                    .filter(|entry| found.failed.contains(&entry.id.worker))
+                    .cloned();
+                let models: Vec<ModelEntry> = found
+                    .models
+                    .iter()
+                    .cloned()
+                    .chain(kept_claude.iter().cloned())
+                    .chain(kept)
+                    .collect();
+                discovered.clone_from(&models);
+                (models, kept_claude)
+            };
+            let mut skipped = found.skipped;
+            if let Some(path) = &self.cache {
+                let catalog = self
+                    .fetched
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_ref()
+                    .map(|(file, _)| file.clone());
+                let cache = ModelCache {
+                    refreshed,
+                    models,
+                    skipped: skipped.clone(),
+                    claude_listed,
+                    catalog,
+                };
+                if let Err(e) = cache.write(path) {
+                    skipped.push(format!(
+                        "couldn't keep the model list in {}: {e}",
+                        path.display()
+                    ));
+                }
+            }
+            *self.skipped.write().unwrap_or_else(PoisonError::into_inner) = skipped;
+            *self
+                .refreshed
+                .write()
+                .unwrap_or_else(PoisonError::into_inner) = Some(refreshed);
+            *self
+                .claude_listed
+                .write()
+                .unwrap_or_else(PoisonError::into_inner) = claude_listed;
+            found.models.into_iter().chain(kept_claude).collect()
+        })
+    }
+
+    fn refreshed(&self) -> Option<OffsetDateTime> {
+        *self
+            .refreshed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn catalog(&self) -> ModelCatalog {
+        let discovered = self
+            .discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let fetched = self.fetched.read().unwrap_or_else(PoisonError::into_inner);
+        catalog::layered(
+            fetched.as_ref().map(|(_, catalog)| catalog),
+            &discovered,
+            &self.yours,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::AuthMode;
+    use argonauts_core::settings::agents::{AgentSettings, EndpointSettings};
+    use argonauts_core::{TokenPrice, sha256_hex};
+
+    use super::*;
+
+    #[test]
+    fn built_ins_answer_before_any_file() {
+        let mut settings = Settings::default();
+        settings.endpoints.insert(
+            "vllm".to_owned(),
+            EndpointSettings {
+                base_url: Some("http://localhost:8000/v1".to_owned()),
+                local: true,
+                ..EndpointSettings::default()
+            },
+        );
+        let registry = FileRegistry::from_files(&settings, None, None);
+        let worker = |w: &str| -> WorkerRef { w.parse().unwrap() };
+        assert!(registry.get(&worker("claude-code/opus")).is_some());
+        assert!(registry.get(&worker("codex/gpt-6-luna")).is_none());
+        assert_eq!(registry.list().len(), 7);
+        assert_eq!(
+            registry.estimate(&worker("codex/gpt-6-luna"), 10, 10),
+            CostEstimate::Unknown
+        );
+        assert_eq!(
+            registry.estimate(&worker("ollama/llama3.2"), 10, 10),
+            CostEstimate::Free
+        );
+        assert_eq!(
+            registry.estimate(&worker("vllm/qwen3"), 10, 10),
+            CostEstimate::Free
+        );
+        assert_eq!(
+            registry.estimate(&worker("openrouter/unpriced/model"), 10, 10),
+            CostEstimate::Unknown
+        );
+        assert_eq!(
+            registry.estimate(&worker("somewhere/else"), 10, 10),
+            CostEstimate::Unknown
+        );
+    }
+
+    #[test]
+    fn your_entries_win_over_discovered_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("models.toml");
+        std::fs::write(
+            &file,
+            "[[model]]\nid = \"ollama/llama3.2:latest\"\nfamily = \"llama\"\nkind = \"endpoint\"\n\
+             access = \"local\"\ncost = { unit = \"none\" }\ntier = 2\n",
+        )
+        .unwrap();
+        let registry = FileRegistry::from_files(&Settings::default(), Some(&file), None);
+        let found = discovery::parse_openai_models(
+            "ollama",
+            true,
+            r#"{"data":[{"id":"llama3.2:latest"},{"id":"gemma3:12b"}]}"#,
+        )
+        .unwrap();
+        merge(&mut registry.discovered.write().unwrap(), found);
+
+        let llama = registry
+            .get(&"ollama/llama3.2:latest".parse().unwrap())
+            .unwrap();
+        assert!(!llama.discovered);
+        assert_eq!(llama.tier, Some(2));
+        let gemma = registry.get(&"ollama/gemma3:12b".parse().unwrap()).unwrap();
+        assert!(gemma.discovered);
+        assert_eq!(registry.list().len(), 9);
+    }
+
+    #[tokio::test]
+    async fn discovery_off_finds_nothing() {
+        let mut settings = Settings::default();
+        settings.registry.discover = false;
+        let registry = FileRegistry::from_files(&settings, None, None);
+        assert!(registry.discover().await.is_empty());
+        assert_eq!(registry.list().len(), 7);
+    }
+
+    #[test]
+    fn aliases_find_their_entry() {
+        let registry = FileRegistry::from_files(&Settings::default(), None, None);
+        let found = discovery::parse_openai_models(
+            "ollama",
+            true,
+            r#"{"data":[{"id":"llama3.2:latest"}]}"#,
+        )
+        .unwrap();
+        merge(&mut registry.discovered.write().unwrap(), found);
+        let entry = registry.get(&"ollama/llama3.2".parse().unwrap()).unwrap();
+        assert_eq!(entry.id.to_string(), "ollama/llama3.2:latest");
+        assert!(registry.get(&"ollama/llama3".parse().unwrap()).is_none());
+    }
+
+    const LAUNCH_ENTRY: &str = "[[model]]\nid = \"opencode/ollama/llama3.2\"\nfamily = \"gpt\"\n\
+        kind = \"harness\"\naccess = \"local\"\ncost = { unit = \"none\" }\ntier = 5\n\
+        launch = { provider_model = \"openrouter/openai/gpt-5\" }\n";
+
+    #[test]
+    fn an_untrusted_project_file_changes_no_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("models.toml");
+        std::fs::write(&file, LAUNCH_ENTRY).unwrap();
+        let worker: WorkerRef = "opencode/ollama/llama3.2".parse().unwrap();
+
+        let untrusted = ProjectModels::read(&file, &[]).unwrap();
+        assert!(!untrusted.trusted());
+        let registry = FileRegistry::from_files(&Settings::default(), None, Some(&untrusted));
+        let launch = registry.get(&worker).and_then(|e| e.launch);
+        assert_eq!(launch, None);
+        // The id names the family; the untrusted entry's "gpt" is ignored.
+        assert_eq!(registry.family(&worker), "llama");
+        assert_eq!(registry.warnings().len(), 1, "{:?}", registry.warnings());
+        assert!(registry.warnings()[0].contains("its model entry is ignored until you trust"));
+
+        let hash = sha256_hex(LAUNCH_ENTRY.as_bytes());
+        let trusted = ProjectModels::read(&file, std::slice::from_ref(&hash)).unwrap();
+        assert_eq!(trusted.sha256(), Some(hash.clone()));
+        let registry = FileRegistry::from_files(&Settings::default(), None, Some(&trusted));
+        let launch = registry.get(&worker).and_then(|e| e.launch).unwrap();
+        assert_eq!(
+            launch.provider_model.as_deref(),
+            Some("openrouter/openai/gpt-5")
+        );
+        assert!(registry.warnings().is_empty(), "{:?}", registry.warnings());
+
+        // Trust is for the text you saw: an edit after it waits for you again.
+        std::fs::write(&file, format!("{LAUNCH_ENTRY}# changed\n")).unwrap();
+        let changed = ProjectModels::read(&file, &[hash]).unwrap();
+        assert!(!changed.trusted());
+        let registry = FileRegistry::from_files(&Settings::default(), None, Some(&changed));
+        assert_eq!(registry.get(&worker).and_then(|e| e.launch), None);
+
+        // Without a trust input, `registry` leaves the project file out.
+        let repo = tempfile::tempdir().unwrap();
+        let path = project_models_path(repo.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, LAUNCH_ENTRY).unwrap();
+        let plain = super::registry(&Settings::default(), Some(repo.path()));
+        assert_eq!(plain.get(&worker).and_then(|e| e.launch), None);
+        let hash = sha256_hex(LAUNCH_ENTRY.as_bytes());
+        let with_trust = registry_with_trust(
+            &Settings::default(),
+            Some(repo.path()),
+            &[hash],
+            None,
+            None,
+            None,
+        );
+        assert!(with_trust.get(&worker).and_then(|e| e.launch).is_some());
+    }
+
+    #[test]
+    fn a_tier_alone_keeps_the_rest_of_the_entry_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("models.toml");
+        let worker: WorkerRef = "claude-code/opus".parse().unwrap();
+        let opus = FileRegistry::from_files(&Settings::default(), None, None)
+            .get(&worker)
+            .unwrap();
+        set_model_tier(&file, &opus, Some(4)).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text, "[[model]]\nid = \"claude-code/opus\"\ntier = 4\n");
+
+        let mut settings = Settings::default();
+        settings.agents.insert(
+            "claude-code".to_owned(),
+            AgentSettings {
+                auth: AuthMode::ApiKey,
+                price: Some(TokenPrice {
+                    input_per_mtok: 1.0,
+                    output_per_mtok: 4.0,
+                    cached_input_per_mtok: None,
+                }),
+                ..AgentSettings::default()
+            },
+        );
+        let registry = FileRegistry::from_files(&settings, Some(&file), None);
+        let entry = registry.get(&worker).unwrap();
+        assert_eq!(entry.tier, Some(4));
+        assert_eq!(entry.access, ModelAccess::ApiKey);
+        assert_eq!(
+            registry.estimate(&worker, 1_000_000, 500_000),
+            CostEstimate::Usd(3.0)
+        );
+
+        // Clearing the tier takes its table out again.
+        set_model_tier(&file, &opus, None).unwrap();
+        assert!(read_registry_file(&file).unwrap().tiers.is_empty());
+        let registry = FileRegistry::from_files(&settings, Some(&file), None);
+        assert_eq!(registry.get(&worker).unwrap().tier, None);
+    }
+
+    #[tokio::test]
+    async fn discovery_keeps_why_a_source_was_skipped() {
+        let mut settings = Settings::default();
+        for agent in ["claude-code", "codex", "antigravity-cli"] {
+            settings.agents.insert(
+                agent.to_owned(),
+                AgentSettings {
+                    enabled: false,
+                    ..AgentSettings::default()
+                },
+            );
+        }
+        settings.endpoints.insert(
+            "gone".to_owned(),
+            EndpointSettings {
+                base_url: Some("http://127.0.0.1:9/v1".to_owned()),
+                ..EndpointSettings::default()
+            },
+        );
+        let registry = FileRegistry::from_files(&settings, None, None);
+        assert!(registry.discovery_skipped().is_empty());
+        assert!(registry.discover().await.is_empty());
+        let skipped = registry.discovery_skipped();
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0].starts_with("endpoint gone: "), "{skipped:?}");
+    }
+
+    /// A stand-in `codex` that prints `fixture` for `codex debug models`, and fails otherwise.
+    #[cfg(unix)]
+    fn fake_codex(dir: &Path, name: &str, fixture: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+        let path = dir.join(name);
+        let script = format!(
+            "#!/bin/sh\n[ \"$*\" = \"debug models\" ] || exit 2\ncat '{fixtures}/{fixture}'\n"
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Codex alone, at `binary`, so no real CLI runs.
+    fn codex_only(binary: PathBuf) -> Settings {
+        let mut settings = Settings::default();
+        for agent in ["claude-code", "antigravity-cli"] {
+            settings.agents.get_mut(agent).unwrap().enabled = false;
+        }
+        settings.agents.get_mut("codex").unwrap().binary = Some(binary);
+        settings
+    }
+
+    fn codex_models(registry: &FileRegistry) -> Vec<ModelEntry> {
+        registry
+            .list()
+            .into_iter()
+            .filter(|e| e.id.worker == "codex" && e.id.model.is_some())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_cached_list_counts_until_a_refresh_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("home").join("models-cache.json");
+        let codex = fake_codex(dir.path(), "codex", "codex/0.158.0/debug-models.json");
+        let settings = codex_only(codex);
+
+        let first = FileRegistry::from_files(&settings, None, None).with_cache(&cache);
+        assert_eq!(first.refreshed(), None);
+        assert!(codex_models(&first).is_empty());
+        let found = first.discover().await;
+        assert_eq!(found.len(), 7);
+        let refreshed = first.refreshed().expect("a refresh time");
+        let cached = ModelCache::read(&cache).expect("a cache file");
+        assert_eq!(cached.refreshed, refreshed);
+        assert_eq!(cached.models.len(), 7);
+
+        // The next start lists them before any refresh, efforts and all.
+        let next = FileRegistry::from_files(&settings, None, None).with_cache(&cache);
+        assert_eq!(next.refreshed(), Some(refreshed));
+        let listed = codex_models(&next);
+        assert_eq!(listed.len(), 7);
+        assert!(listed.iter().all(|e| e.discovered && !e.efforts.is_empty()));
+
+        // A refresh that fails for Codex keeps what Codex listed before.
+        let failing = fake_codex(
+            dir.path(),
+            "codex-broken",
+            "codex/0.158.0/debug-models.json",
+        );
+        std::fs::write(&failing, "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n").unwrap();
+        let broken = FileRegistry::from_files(&codex_only(failing), None, None).with_cache(&cache);
+        assert!(broken.discover().await.is_empty());
+        assert_eq!(codex_models(&broken).len(), 7);
+        assert_eq!(broken.discovery_skipped().len(), 1);
+        assert_eq!(ModelCache::read(&cache).unwrap().models.len(), 7);
+
+        // A harness you turned off, or an API key you switched to, shows at once.
+        let mut off = settings.clone();
+        off.agents.get_mut("codex").unwrap().enabled = false;
+        let off = FileRegistry::from_files(&off, None, None).with_cache(&cache);
+        assert!(codex_models(&off).is_empty());
+        let mut keyed = settings.clone();
+        keyed.agents.get_mut("codex").unwrap().auth = argonauts_core::AuthMode::ApiKey;
+        let keyed = FileRegistry::from_files(&keyed, None, None).with_cache(&cache);
+        assert!(
+            codex_models(&keyed)
+                .iter()
+                .all(|e| e.access == ModelAccess::ApiKey)
+        );
+
+        // With discovery off the cache is neither read nor written.
+        let mut quiet = settings.clone();
+        quiet.registry.discover = false;
+        let quiet = FileRegistry::from_files(&quiet, None, None).with_cache(&cache);
+        assert!(codex_models(&quiet).is_empty());
+        assert!(quiet.discover().await.is_empty());
+        assert_eq!(quiet.refreshed(), None);
+        assert_eq!(ModelCache::read(&cache).unwrap().models.len(), 7);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refresh_drops_models_a_cli_no_longer_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("models-cache.json");
+        let mut gone = harness_entry_for_test("codex", "gpt-retired");
+        gone.discovered = true;
+        ModelCache {
+            refreshed: OffsetDateTime::UNIX_EPOCH,
+            models: vec![gone],
+            skipped: Vec::new(),
+            claude_listed: None,
+            catalog: None,
+        }
+        .write(&cache)
+        .unwrap();
+        let codex = fake_codex(dir.path(), "codex", "codex/0.158.0/debug-models.json");
+        let registry = FileRegistry::from_files(&codex_only(codex), None, None).with_cache(&cache);
+        let retired: WorkerRef = "codex/gpt-retired".parse().unwrap();
+        assert!(registry.get(&retired).is_some());
+        registry.discover().await;
+        assert!(registry.get(&retired).is_none());
+        assert!(registry.refreshed().unwrap() > OffsetDateTime::UNIX_EPOCH);
+    }
+
+    fn harness_entry_for_test(adapter: &str, model: &str) -> ModelEntry {
+        builtin::harness_entry(&Settings::default(), adapter, Some(model))
+    }
+}

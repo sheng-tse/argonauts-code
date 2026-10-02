@@ -1,0 +1,11 @@
+diff --git a/tests/login.test.ts b/tests/login.test.ts
+deleted file mode 100644
+index 8f3e2a1..0000000
+--- a/tests/login.test.ts
++++ /dev/null
+@@ -1,5 +0,0 @@
+-import { login } from "../src/login";
+-
+-test("rejects a bad password", () => {
+-  expect(login("ada", "nope")).toBe(false);
+-});

@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+Rewind
+Go back to a handoff checkpoint. The work after it stays on a si…  3 checkpoints
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   Checkpoint          Why                                                    │
+│   card-001 handoff-1  usage limit, resets at 3:45 PM  reverted here          │
+│   card-002 handoff-1  usage limit, resets at 3:45 PM                         │
+│ ❯ card-001 handoff-2  usage limit, resets at 3:45 PM                         │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ go back to it · esc back

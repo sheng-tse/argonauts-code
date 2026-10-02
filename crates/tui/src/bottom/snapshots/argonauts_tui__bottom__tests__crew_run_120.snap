@@ -1,0 +1,14 @@
+---
+source: crates/tui/src/bottom/tests.rs
+expression: screen(&view)
+---
+✻ Building… (4m 12s · ↓ 48.2k tokens · 3 agents · $0.21)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+❯ ▏
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage
+
+  ◐ claude-code  card-002                        2/5 · 4m12s · ↓ 18.1k tokens
+  ◐ codex        card-003                        1/5 · 3m40s · ↓ 12.9k tokens
+  ○ agy          review                          waiting

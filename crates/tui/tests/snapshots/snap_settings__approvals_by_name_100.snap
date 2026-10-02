@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "&shown"
+---
+Approvals
+Who decides each checkpoint, and how auto matched you
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Plan · auto · rules and approver both agree                        0 matches in a row · 0 misses │
+│ ❯ How it's decided            auto                     everywhere (global)  The plan checkpoint… │
+│   Who decides in auto         both agree               built-in             The plan checkpoint… │
+│   When auto doesn't approve   ask you                  built-in             The plan checkpoint… │
+│   Judge's widest score gap    1.0                      built-in             Plan rules: the lar… │
+│                                                                                                  │
+│ Merge · auto · your rules decide                                   0 matches in a row · 0 misses │
+│   How it's decided            auto                     everywhere (global)  The merge checkpoin… │
+│   Who decides in auto         your rules               built-in             The merge checkpoin… │
+│   When auto doesn't approve   ask you                  built-in             The merge checkpoin… │
+│   Merge with unreviewed debt  no                       built-in             Merge rules: whethe… │
+│                                                                                                  │
+│ Approver                                                 the cheapest model from another company │
+│   Model                       cheapest, other company  built-in             The approver model,… │
+│                                                                                                  │
+│ Spot checks                                                                                      │
+│   None waiting                                                                                   │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ edit · esc back

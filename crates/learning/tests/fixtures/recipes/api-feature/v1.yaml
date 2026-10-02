@@ -1,0 +1,18 @@
+recipe: api-feature
+version: 1
+description: New or changed HTTP API endpoints, with tests
+preset: peer-crew
+mode: crew
+workflow: review-loop.yaml
+match:
+  task_types: [backend]
+  labels_any: [api, endpoint]
+prompts:
+  drafting: drafting-v1.md
+critique:
+  rounds: 1
+  critic: rotate
+  checklist: [criteria, testability]
+budget:
+  per_card_usd: 2
+crew: [claude-code, codex]

@@ -1,0 +1,12 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "picker_lines(picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Roles
+  Pick a role, then its model
+
+  ❯ 1. narrator   Haiku on Claude Code
+    2. reviewer   GPT 5.6 on Codex, Opus on Claude Code
+
+  Enter to see its models · ↑↓ to move · type to filter · Esc to go back

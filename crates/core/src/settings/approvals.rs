@@ -37,13 +37,15 @@ impl Default for ApprovalSettings {
             spot_check_sample: 0.1,
             pause_auto_when_spot_checks_waiting: 5,
             suggest_auto_after_matches: 20,
-            goal: CheckpointSettings::default(),
-            plan: CheckpointSettings::default(),
-            merge: CheckpointSettings::default(),
-            recipe_promotion: CheckpointSettings::default(),
-            escalation: CheckpointSettings::default(),
-            budget: CheckpointSettings::default(),
-            change_request: CheckpointSettings::default(),
+            goal: CheckpointSettings::auto(DecideWith::RulesAndModel),
+            plan: CheckpointSettings::auto(DecideWith::RulesAndModel),
+            merge: CheckpointSettings::auto(DecideWith::Rules),
+            // The evolution loop is autonomous by default: replay and holdout checks pass first,
+            // and the canary watches what's promoted.
+            recipe_promotion: CheckpointSettings::auto(DecideWith::Rules),
+            escalation: CheckpointSettings::auto(DecideWith::RulesAndModel),
+            budget: CheckpointSettings::auto(DecideWith::RulesAndModel),
+            change_request: CheckpointSettings::auto(DecideWith::RulesAndModel),
             approver: ApproverSettings::default(),
             presence: Presence::Warn,
             refuse_ancestor_env: vec!["OPENCLAW_SHELL".to_owned(), "HERMES_SESSION_ID".to_owned()],
@@ -58,6 +60,17 @@ pub struct CheckpointSettings<R: Default> {
     pub decide_with: DecideWith,
     pub rules: R,
     pub otherwise: Otherwise,
+}
+
+impl<R: Default> CheckpointSettings<R> {
+    /// Auto mode, where `decide_with` approves and anything it doesn't goes to you.
+    pub fn auto(decide_with: DecideWith) -> Self {
+        Self {
+            mode: ApprovalMode::Auto,
+            decide_with,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
@@ -80,6 +93,7 @@ pub enum DecideWith {
     Rules,
     /// Your approver model, after the hard limits pass.
     Model,
+    /// Both must approve.
     RulesAndModel,
     /// Rules first; what they don't approve goes to the model.
     RulesOrModel,
@@ -174,7 +188,16 @@ pub struct PromotionRules {
 impl Default for PromotionRules {
     fn default() -> Self {
         Self {
-            change_classes: vec!["checklist_item".to_owned(), "drafting_prompt".to_owned()],
+            // The classes of the keys evolvable by default.
+            change_classes: [
+                "checklist_item",
+                "critique_rounds",
+                "drafting_prompt",
+                "card_split",
+                "card_budget",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
             min_days_between: 14,
         }
     }
@@ -211,6 +234,8 @@ impl Default for BudgetRules {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ApproverSettings {
+    /// Unset means the cheapest model from another company than the work it judges, which the
+    /// policy builder picks from the models you can run.
     pub model: Option<WorkerRef>,
     /// Your rules for it, in `.argonauts/`.
     pub model_rules: String,
@@ -271,14 +296,27 @@ impl Default for HardLimitSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SandboxSettings {
-    /// Every harness session and gate runs in the OS sandbox, or a container.
+    /// Whose rules guard the agents. A role's `[roles.<role>.sandbox]` can set this, `network`,
+    /// `agents_see_other_copies`, and `agents_commit` for its own agents, as [`RoleSandbox`]
+    /// says.
     pub mode: SandboxChoice,
     /// Network for commands agents run.
     pub network: bool,
+    /// Whether an agent may read the other agents' copies of the repo, not only its own.
+    pub agents_see_other_copies: bool,
+    /// Whether agents commit their own work. Off, git's files stay read-only to them and
+    /// Argonauts commits for them.
+    pub agents_commit: bool,
     /// Refuse to start a harness session when no sandbox works.
     pub fail_closed: bool,
     pub extra_writable: Vec<String>,
+    /// Hosts sessions may reach through the Argonauts proxy, on top of their harness's own
+    /// list. `host` means port 443; `host:port` names another, and `*.example.com` covers its
+    /// subdomains.
+    pub proxy_allow: Vec<String>,
     pub untrusted_repos: UntrustedRepos,
+    /// The image container sessions run in, with the harness installed. Empty refuses them.
+    pub container_image: String,
     /// Whether your own harness hooks run in Argonauts sessions, where the harness allows a choice.
     pub user_hooks: UserHooks,
 }
@@ -287,25 +325,93 @@ impl Default for SandboxSettings {
     fn default() -> Self {
         Self {
             mode: SandboxChoice::Os,
-            network: false,
+            // Agents that evolve themselves need packages and docs from the internet, and the
+            // sandbox still keeps them out of your other files.
+            network: true,
+            agents_see_other_copies: false,
+            agents_commit: true,
             fail_closed: true,
             extra_writable: Vec::new(),
+            proxy_allow: Vec::new(),
             untrusted_repos: UntrustedRepos::Container,
+            container_image: String::new(),
             user_hooks: UserHooks::Inherit,
         }
+    }
+}
+
+impl SandboxSettings {
+    /// The sandbox for one role's agents: each key the role's table sets wins, and the rest
+    /// come from this top-level `[sandbox]`.
+    pub fn applied(&self, role: Option<&RoleSandbox>) -> SandboxSettings {
+        let Some(role) = role else {
+            return self.clone();
+        };
+        SandboxSettings {
+            mode: role.mode.unwrap_or(self.mode),
+            network: role.network.unwrap_or(self.network),
+            agents_see_other_copies: role
+                .agents_see_other_copies
+                .unwrap_or(self.agents_see_other_copies),
+            agents_commit: role.agents_commit.unwrap_or(self.agents_commit),
+            ..self.clone()
+        }
+    }
+}
+
+/// A role's `[roles.<role>.sandbox]`. A key it leaves unset comes from the top-level `[sandbox]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct RoleSandbox {
+    /// Whose rules guard this role's agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SandboxChoice>,
+    /// Network for commands this role's agents run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<bool>,
+    /// Whether this role's agents may read the other agents' copies of the repo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents_see_other_copies: Option<bool>,
+    /// Whether this role's agents commit their own work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents_commit: Option<bool>,
+}
+
+impl RoleSandbox {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxChoice {
-    /// Seatbelt on macOS, Landlock plus seccomp on Linux.
+    /// Seatbelt on macOS, Landlock with user, mount, network, and PID namespaces on Linux.
     Os,
     /// A container with only the worktree mounted.
     Container,
-    /// No sandbox. Solo runs only, and only when you set it; every checkpoint of such a run
-    /// asks you, because `check_session` reports the missing sandbox.
-    Off,
+    /// Each AI tool's own sandbox and approvals, with ours off. `off` is its older name.
+    #[serde(alias = "off")]
+    Tool,
+    /// No protection at all, neither ours nor the tool's. Never a default.
+    None,
+}
+
+impl SandboxChoice {
+    /// Ours is off, leaving each tool's own protection or none.
+    pub fn ours_off(self) -> bool {
+        matches!(self, Self::Tool | Self::None)
+    }
+
+    /// The word a settings file uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Os => "os",
+            Self::Container => "container",
+            Self::Tool => "tool",
+            Self::None => "none",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

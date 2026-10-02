@@ -4,8 +4,10 @@
 pub mod agents;
 pub mod approvals;
 pub mod budget;
+pub mod endpoints;
 pub mod evolution;
 pub mod handoff;
+pub mod learning;
 pub mod protocol;
 pub mod roles;
 pub mod sessions;
@@ -26,6 +28,7 @@ use approvals::{ApprovalSettings, HardLimitSettings, SandboxSettings};
 use budget::{BudgetSettings, WatchdogSettings};
 use evolution::EvolutionSettings;
 use handoff::HandoffSettings;
+use learning::{MemorySettings, OutcomeSettings, PromptSettings, SkillSettings};
 use protocol::{
     CritiqueSettings, DivideSettings, DraftingSettings, GateSettings, GoalSettings, IntakeSettings,
     JudgingSettings, MappingSettings, MergeSettings, ReviewSettings, RoutingSettings, SoloSettings,
@@ -73,6 +76,7 @@ pub struct Settings {
     pub routing: RoutingSettings,
     pub approvals: ApprovalSettings,
     pub limits: HardLimitSettings,
+    /// The sandbox for every role. [`Settings::sandbox_for`] lays a role's own table over it.
     pub sandbox: SandboxSettings,
     pub budget: BudgetSettings,
     pub watchdogs: WatchdogSettings,
@@ -87,6 +91,10 @@ pub struct Settings {
     pub merge: MergeSettings,
     pub workflows: WorkflowSettings,
     pub evolution: EvolutionSettings,
+    pub memory: MemorySettings,
+    pub skills: SkillSettings,
+    pub outcomes: OutcomeSettings,
+    pub prompts: PromptSettings,
     pub ui: UiSettings,
     pub narrator: NarratorSettings,
     pub supervisor: SupervisorSettings,
@@ -143,6 +151,10 @@ impl Default for Settings {
             merge: MergeSettings::default(),
             workflows: WorkflowSettings::default(),
             evolution: EvolutionSettings::default(),
+            memory: MemorySettings::default(),
+            skills: SkillSettings::default(),
+            outcomes: OutcomeSettings::default(),
+            prompts: PromptSettings::default(),
             ui: UiSettings::default(),
             narrator: NarratorSettings::default(),
             supervisor: SupervisorSettings::default(),
@@ -154,6 +166,14 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// The sandbox for `role`'s agents, its own `[roles.<role>.sandbox]` over `[sandbox]`.
+    pub fn sandbox_for(&self, role: &RoleName) -> SandboxSettings {
+        let own = self.roles.get(role).map(|settings| &settings.sandbox);
+        self.sandbox.applied(own)
+    }
+}
+
 /// Keys only you may set: never a preset, recipe, or self-evolution. A `--set` of one of these
 /// needs an interactive terminal and is refused inside an agent session, and one in a
 /// project's `.argonauts/config.toml` applies only once you trust that file. A trailing `.*`
@@ -162,6 +182,8 @@ pub const SAFETY_KEYS: &[&str] = &[
     "limits.*",
     "sandbox.*",
     "approvals.*",
+    "evolution.*",
+    "memory.*",
     "budget.run_usd",
     "budget.run_tokens",
     "budget.run_quota",
@@ -175,6 +197,7 @@ pub const SAFETY_KEYS: &[&str] = &[
     "endpoints.*.allow_api_billing",
     "endpoints.*.header_env.*",
     "roles.*.handoff.allow_api_billing",
+    "roles.*.sandbox.*",
     "handoff.allow_api_billing",
     "mcp.*",
     "merge.*",
@@ -198,6 +221,10 @@ pub const LAYERS: &[&str] = &[
     "session",
 ];
 
+/// The layers that are settings files, lowest first. A preset picked in one sits just below it:
+/// what that file and later layers set wins over the preset.
+pub const FILE_LAYERS: [&str; 3] = ["global", "project", "project-local"];
+
 /// Where a setting you change inside the app is saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -205,7 +232,7 @@ pub enum SettingScope {
     /// Only this app session. Gone when you quit; passed to runs as overrides.
     Session,
     /// This project, just you: `.argonauts/config.local.toml`, kept out of git through
-    /// `.git/info/exclude`. The default for `/model`, `/effort`, and `/agent`.
+    /// `.git/info/exclude`. The default for `/model` and `/effort`.
     ProjectLocal,
     /// This project, shared: `.argonauts/config.toml`, which a team commits.
     Project,
@@ -230,6 +257,16 @@ impl SettingScope {
         match (rank(layer), rank(self.layer())) {
             (Some(theirs), Some(ours)) => theirs > ours,
             _ => false,
+        }
+    }
+
+    /// Like [`hidden_by`](Self::hidden_by) for a value in effect. One from the preset counts
+    /// from `preset_from`, the settings file that picked the preset when one did, since what
+    /// you set there or in a later layer wins over the preset.
+    pub fn hidden_by_value(self, layer: &str, preset_from: Option<&str>) -> bool {
+        match preset_from {
+            Some(from) if layer == "preset" => self.hidden_by(from),
+            _ => self.hidden_by(layer),
         }
     }
 }
@@ -303,5 +340,19 @@ mod tests {
         assert!(!ProjectLocal.hidden_by("project"));
         assert!(Global.hidden_by("session"));
         assert!(!Session.hidden_by("flag"));
+    }
+
+    #[test]
+    fn a_preset_picked_in_a_file_hides_only_the_files_before_it() {
+        use SettingScope::*;
+        assert!(Global.hidden_by_value("preset", Some("project")));
+        assert!(!Project.hidden_by_value("preset", Some("project")));
+        assert!(!ProjectLocal.hidden_by_value("preset", Some("project")));
+        assert!(!Global.hidden_by_value("preset", Some("global")));
+        // Picked by default or by a flag, the preset sits above every file.
+        assert!(ProjectLocal.hidden_by_value("preset", None));
+        assert!(!Session.hidden_by_value("preset", None));
+        // Other layers ignore where the preset was picked.
+        assert!(Global.hidden_by_value("project", Some("global")));
     }
 }

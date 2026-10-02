@@ -1,0 +1,77 @@
+name: peer-crew
+description: Peers restate the goal, draft plans blind, debate only where the drafts disagree, and build cards reviewed by another family
+phases:
+  - name: Goal
+    standard: understand
+    steps:
+      - kind: loop_until
+        name: goal
+        until: goal_approved
+        max: 2
+        steps:
+          - kind: restate
+            name: restatements
+            role: restater
+          - kind: differ
+            name: differences
+            role: differ
+            input: restatements
+          - kind: checkpoint
+            checkpoint: goal
+  - name: Plan
+    standard: plan
+    steps:
+      - kind: loop_until
+        name: planning
+        until: plan_decided
+        max: 3
+        steps:
+          - kind: draft
+            name: drafts
+            role: drafter
+            blind: true
+            input: goal
+          - kind: map
+            name: map
+            role: mapper
+            input: drafts
+          - kind: loop_until
+            name: critique
+            until: critique_done
+            max: 3
+            steps:
+              - kind: refute
+                name: critiques
+                role: critic
+                input: map
+              - kind: draft
+                name: revisions
+                role: drafter
+                input: critiques
+              - kind: map
+                name: remap
+                role: mapper
+                input: revisions
+          - kind: synthesize
+            name: merged
+            role: drafter
+            input: drafts
+            when: drafts_agree
+          - kind: judge
+            name: scores
+            role: judge
+            blind: true
+            input: drafts
+            when: drafts_disagree
+          - kind: checkpoint
+            checkpoint: plan
+  - name: Build
+    standard: do
+    steps:
+      - kind: build
+        role: owner
+        input: plan
+  - name: Merge
+    standard: decide
+    steps:
+      - kind: merge

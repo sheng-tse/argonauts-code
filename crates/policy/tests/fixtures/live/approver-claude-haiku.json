@@ -1,0 +1,48 @@
+{
+  "_recorded": {
+    "cli": "claude 2.1.285",
+    "flags": "-p --output-format json --model haiku --effort low --tools \"\" --json-schema",
+    "note": "session_id and uuid removed"
+  },
+  "is_error": false,
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "cacheCreationInputTokens": 8576,
+      "cacheReadInputTokens": 0,
+      "canonicalModel": "claude-haiku-4-5",
+      "contextWindow": 200000,
+      "costBasis": "list",
+      "costUSD": 0.019761,
+      "inputTokens": 9,
+      "maxOutputTokens": 32000,
+      "outputTokens": 520,
+      "provider": "firstParty",
+      "thinkingTokens": 377,
+      "webSearchRequests": 0
+    }
+  },
+  "num_turns": 2,
+  "permission_denials": [],
+  "result": "{\"verdict\":\"approve\",\"reasons\":[\"Every gate passed (gates passed: yes)\",\"Every review approved (reviewer B approved)\",\"No new dependencies added (new dependencies: 0)\"],\"rules_cited\":[\"Rule 1: every gate passed, every review approved, and no new dependency was added\"]}",
+  "stop_reason": "tool_use",
+  "structured_output": {
+    "reasons": [
+      "Every gate passed (gates passed: yes)",
+      "Every review approved (reviewer B approved)",
+      "No new dependencies added (new dependencies: 0)"
+    ],
+    "rules_cited": [
+      "Rule 1: every gate passed, every review approved, and no new dependency was added"
+    ],
+    "verdict": "approve"
+  },
+  "subtype": "success",
+  "total_cost_usd": 0.019761,
+  "type": "result",
+  "usage": {
+    "cache_creation_input_tokens": 8576,
+    "cache_read_input_tokens": 0,
+    "input_tokens": 9,
+    "output_tokens": 520
+  }
+}

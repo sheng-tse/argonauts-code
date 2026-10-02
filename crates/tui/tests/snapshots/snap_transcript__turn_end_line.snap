@@ -1,0 +1,24 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+❯ hi
+
+● Hi! I'm the default agent (claude-code/haiku). Ask me about this repo, or
+  describe a change and I'll run it solo or with the crew.
+
+✻ Sailed for 3s · done 10:42 AM
+
+❯ thanks
+
+● Any time.
+
+✻ Worked for 1m 4s · done 10:42 AM
+
+● Triage(crew)
+  ⎿  Starts from main · 2 uncommitted files left out
+
+● Merged the run into main (4 cards, 7 files, +120 -18)
+  ⎿  Run finished · 11m 3s · $0.46 · retro saved
+
+✻ Sailed for 11m 3s · done 10:58 AM

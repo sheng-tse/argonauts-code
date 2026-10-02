@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+Workflow library                                                Run  [ Library ]
+A repo file wins over yours in ~/.argonauts/workflows, which wins …  3 workflows
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   Workflow          Notes            Description                             │
+│   solo                               How the solo workflow runs              │
+│ ❯ coordinated-crew  in use · edited  How the coordinated-crew workflow runs  │
+│   release                            How the release workflow runs           │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ show · c copy · C copy to repo · d diff · l run · esc back

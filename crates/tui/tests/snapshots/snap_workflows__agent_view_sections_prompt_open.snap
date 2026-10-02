@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: text
+---
+build:a-terminal-bottom
+
+
+╭ build:a-terminal-bottom ─────────────────────────────────────────────────────────────────────────╮
+│ Opus on Claude Code (claude-code/opus) · run-01                                                  │
+│ ✓ Completed · Opus on Claude Code · 381k tok · $0.84 · 6m02s                                     │
+│                                                                                                  │
+│ Prompt · 14 lines · ⏎collapse                                                                    │
+│   Build the terminal and the whole bottom region of the UI kit.                                  │
+│   Read the design notes first, then the reference screenshots.                                   │
+│   Step 1: build one part, test it, and report what changed.                                      │
+│   Step 2: build one part, test it, and report what changed.                                      │
+│   Step 3: build one part, test it, and report what changed.                                      │
+│   Step 4: build one part, test it, and report what changed.                                      │
+│   Step 5: build one part, test it, and report what changed.                                      │
+│   Step 6: build one part, test it, and report what changed.                                      │
+│   Step 7: build one part, test it, and report what changed.                                      │
+│   Step 8: build one part, test it, and report what changed.                                      │
+│   Step 9: build one part, test it, and report what changed.                                      │
+│   Step 10: build one part, test it, and report what changed.                                     │
+│   Step 11: build one part, test it, and report what changed.                                     │
+│   Step 12: build one part, test it, and report what changed.                                     │
+│                                                                                                  │
+│ Activity · last 3 of 195 tool calls · ⏎expand                                                    │
+│   ● Bash(cargo test -p argonauts-tui composer)                                                   │
+│   ● Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                             │
+│   ● Bash(cargo test -p argonauts-tui)                                                            │
+│                                                                                                  │
+│ Diff · 4 files · +120 -18 · ⏎open                                                                │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ agent · ⏎ expand · s steer · t take over · d diff · x stop · p pause · esc back      1-26 of 40 ↓

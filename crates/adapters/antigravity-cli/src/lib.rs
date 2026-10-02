@@ -1,14 +1,25 @@
 //! Antigravity CLI (`agy`) adapter for Argonauts.
 
+mod agents_file;
 mod command;
 mod errors;
 mod parser;
+mod probe;
+mod subagents;
+mod tweaks;
 
+use std::path::Path;
+
+use argonauts_core::limits::QuotaReading;
+use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
-    Adapter, Capabilities, CommandSpec, SessionRequest, StopPlan, StreamParser, extract_version,
+    Adapter, Capabilities, CommandSpec, LaunchTweak, SessionRequest, SetupHints, StopPlan,
+    StreamParser, extract_version,
 };
 
-pub use command::{API_KEY_ENV, AUTO_UPDATE_ENV, AUTO_UPDATE_VALUE, build_command};
+pub use command::{
+    API_KEY_ENV, AUTO_UPDATE_ENV, AUTO_UPDATE_VALUE, build_command, user_message_line,
+};
 pub use parser::AgyStreamParser;
 
 pub const ADAPTER_ID: &str = "antigravity-cli";
@@ -18,6 +29,12 @@ pub const CHEAPEST_MODEL: &str = "gemini-3.6-flash-low";
 pub const CHEAPEST_EFFORT: &str = "low";
 
 pub const TESTED_VERSIONS: &[&str] = &["1.2.13"];
+
+/// From agy's install docs. It puts the binary at `~/.local/bin/agy`.
+pub const INSTALL_COMMAND: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+
+/// agy asks you to sign in the first time you run it (its bundled docs, 1.2.13).
+pub const LOGIN_COMMAND: &str = "agy";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityCli;
@@ -71,10 +88,54 @@ impl Adapter for AntigravityCli {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Plan mode is advisory in headless runs, and --sandbox still allows writes in the workdir.
+        // The read-only agent file narrows the tools, but agy doesn't enforce it the way a
+        // sandbox would, and --sandbox still allows writes in the workdir.
         Capabilities {
             enforces_read_only: false,
             ..Capabilities::default()
+        }
+    }
+
+    fn input_line(&self, message: &str) -> Option<String> {
+        Some(user_message_line(message))
+    }
+
+    fn quota_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
+        Some(probe::quota_probe_command(self.binary(), workdir, model))
+    }
+
+    fn parse_quota_probe(&self, stdout: &str) -> Option<QuotaReading> {
+        probe::parse_usage(self.id(), stdout)
+    }
+
+    fn compaction(&self, setting: Compaction) -> LaunchTweak {
+        tweaks::compaction(setting)
+    }
+
+    fn native_fanout(&self, setting: NativeFanout) -> LaunchTweak {
+        tweaks::native_fanout(setting)
+    }
+
+    fn user_hooks_off(&self) -> LaunchTweak {
+        tweaks::user_hooks_off()
+    }
+
+    fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
+        command::interactive_resume_command(self.binary(), session_id, workdir)
+    }
+
+    /// agy also runs Claude and GPT-OSS models. The registry maps those model ids to their
+    /// own family.
+    fn default_family(&self) -> &'static str {
+        "gemini"
+    }
+
+    /// agy has no command that reports login state without a model call.
+    fn setup_hints(&self) -> SetupHints {
+        SetupHints {
+            install: Some(INSTALL_COMMAND.to_owned()),
+            login: Some(LOGIN_COMMAND.to_owned()),
+            login_check: None,
         }
     }
 }
@@ -82,7 +143,9 @@ impl Adapter for AntigravityCli {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::{KNOWN_AGENT_IDS, SessionRole, StopSignal};
+    use argonauts_core::settings::sessions::FanoutSwitch;
+    use argonauts_core::{AuthMode, KNOWN_AGENT_IDS, SessionRole, StopSignal, TweakEffect};
+    use std::path::PathBuf;
 
     #[test]
     fn identity_matches_the_contract() {
@@ -130,6 +193,132 @@ mod tests {
     }
 
     #[test]
+    fn no_gemini_cli_adapter_ids() {
+        // Gemini CLI is no longer an adapter; Google's harness is agy.
+        let adapter = AntigravityCli;
+        for id in [adapter.id(), adapter.binary(), adapter.display_name()] {
+            let lower = id.to_ascii_lowercase();
+            assert!(!lower.contains("gemini"), "{id}");
+        }
+        assert!(KNOWN_AGENT_IDS.iter().all(|id| !id.contains("gemini")));
+        assert_ne!(adapter.binary(), "gemini");
+    }
+
+    #[test]
+    fn steering_goes_over_stdin_as_a_user_message() {
+        let line = AntigravityCli.input_line("wrap up now").unwrap();
+        assert_eq!(
+            line,
+            "{\"event\":\"user\",\"message\":{\"content\":\"wrap up now\"}}\n"
+        );
+    }
+
+    #[test]
+    fn compaction_flags_per_harness() {
+        let adapter = AntigravityCli;
+        assert_eq!(
+            adapter.compaction(Compaction::Inherit),
+            LaunchTweak::default()
+        );
+        for setting in [Compaction::Auto, Compaction::Off] {
+            let tweak = adapter.compaction(setting);
+            assert!(
+                tweak.args.is_empty() && tweak.env_set.is_empty(),
+                "{setting:?}"
+            );
+            assert!(
+                matches!(tweak.effect, TweakEffect::NotPossible { .. }),
+                "{setting:?}"
+            );
+        }
+        let req = SessionRequest {
+            prompt: "hi".into(),
+            role: SessionRole::Build,
+            compaction: Some(Compaction::Off),
+            ..SessionRequest::default()
+        };
+        let spec = adapter.command(&req).unwrap();
+        assert!(!spec.args.iter().any(|a| a.contains("compact")));
+        assert!(!spec.env_set.iter().any(|(k, _)| k.contains("COMPACT")));
+    }
+
+    #[test]
+    fn native_fanout_flags_per_harness() {
+        let adapter = AntigravityCli;
+        assert_eq!(
+            adapter.native_fanout(NativeFanout::Limit { max: 3 }).effect,
+            TweakEffect::EnforcedByConductor
+        );
+        assert_eq!(
+            adapter
+                .native_fanout(NativeFanout::Switch(FanoutSwitch::Off))
+                .effect,
+            TweakEffect::Exact
+        );
+        assert_eq!(
+            adapter
+                .native_fanout(NativeFanout::Switch(FanoutSwitch::On))
+                .effect,
+            TweakEffect::Exact
+        );
+
+        let request = |fanout| SessionRequest {
+            prompt: "hi".into(),
+            role: SessionRole::Build,
+            native_fanout: Some(fanout),
+            scratch_dir: Some(PathBuf::from("/state/s1")),
+            ..SessionRequest::default()
+        };
+        let off = adapter
+            .command(&request(NativeFanout::Switch(FanoutSwitch::Off)))
+            .unwrap();
+        let at = off.args.iter().position(|a| a == "--agent").unwrap();
+        assert_eq!(off.args[at + 1], "argonauts-no-subagents");
+        assert!(!off.files[0].contents.contains("invoke_subagent"));
+
+        let capped = adapter
+            .command(&request(NativeFanout::Limit { max: 3 }))
+            .unwrap();
+        assert!(!capped.args.iter().any(|a| a == "--agent"));
+        assert!(capped.files.is_empty());
+    }
+
+    #[test]
+    fn user_hooks_cannot_be_turned_off_per_run() {
+        let tweak = AntigravityCli.user_hooks_off();
+        assert!(tweak.args.is_empty());
+        assert!(matches!(tweak.effect, TweakEffect::NotPossible { .. }));
+    }
+
+    #[test]
+    fn take_over_resumes_the_conversation_in_the_worktree() {
+        let spec = AntigravityCli
+            .interactive_resume("055a398f", Path::new("/work/card-001"))
+            .unwrap();
+        assert_eq!(spec.program, "agy");
+        assert_eq!(spec.args, ["--conversation", "055a398f"]);
+        assert_eq!(spec.cwd, PathBuf::from("/work/card-001"));
+    }
+
+    #[test]
+    fn family_setup_and_probe() {
+        let adapter = AntigravityCli;
+        assert_eq!(adapter.default_family(), "gemini");
+        let hints = adapter.setup_hints();
+        assert!(
+            hints
+                .install
+                .unwrap()
+                .contains("antigravity.google/cli/install.sh")
+        );
+        assert_eq!(hints.login.as_deref(), Some("agy"));
+        assert_eq!(hints.login_check, None);
+        let probe = adapter.quota_probe(Path::new("/w"), None).unwrap();
+        assert_eq!(probe.args, ["-p", "/usage", "--output-format", "json"]);
+        assert!(adapter.parse_quota_probe("not json").is_none());
+    }
+
+    #[test]
     fn command_goes_through_the_adapter() {
         let req = SessionRequest {
             prompt: "hi".into(),
@@ -140,5 +329,28 @@ mod tests {
         assert_eq!(spec.program, "agy");
         let mut parser = AntigravityCli.parser();
         assert_eq!(parser.parse_stdout_line("nope").len(), 1);
+    }
+
+    /// agy is a Go binary whose HTTP client takes its proxy from `HTTPS_PROXY` and `NO_PROXY`
+    /// (`httpproxy.FromEnvironment`), so no auth mode drops them.
+    #[test]
+    fn proxy_variables_stay() {
+        for auth in [AuthMode::Subscription, AuthMode::ApiKey] {
+            let req = SessionRequest {
+                prompt: "hi".into(),
+                role: SessionRole::Build,
+                auth,
+                ..SessionRequest::default()
+            };
+            let spec = AntigravityCli.command(&req).unwrap();
+            assert!(
+                !spec
+                    .env_remove
+                    .iter()
+                    .any(|name| name.to_ascii_uppercase().contains("PROXY")),
+                "{auth:?}: {:?}",
+                spec.env_remove
+            );
+        }
     }
 }

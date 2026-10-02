@@ -1,0 +1,125 @@
+# What /model says about each model. Argonauts ships this file, and each day it fetches the
+# copy on the main branch, checked against models.toml.sha256 next to it, so a model that
+# ships after a release still gets its description. Your own ~/.argonauts/models.toml wins.
+#
+# After an edit, update the hash, or the fetched copy is refused:
+#   shasum -a 256 models.toml | cut -d' ' -f1 > models.toml.sha256
+#
+# Names come from the id ("claude-opus-5-5" reads "Opus 5.5"), so an entry sets `name` only
+# when that rule reads wrong. `rank` is the order within a CLI's models, and `efforts` lists
+# the levels a model takes, lowest first; an empty list means it takes none.
+
+version = 1
+
+# Claude Code, as its own picker shows it on 2026-10-01.
+
+[[model]]
+id = "claude-code"
+description = "Best for everyday, complex tasks"
+recommended = true
+runs = "claude-opus-5-5"
+
+[[model]]
+id = "claude-code/claude-opus-5-5"
+description = "For complex work and everyday tasks"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "xhigh"
+aliases = ["opus"]
+rank = 1
+
+[[model]]
+id = "claude-code/claude-fable-5-1"
+description = "For your toughest challenges"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "high"
+aliases = ["fable"]
+rank = 2
+
+[[model]]
+id = "claude-code/claude-sonnet-5-5"
+description = "Most efficient for simpler tasks"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "high"
+aliases = ["sonnet"]
+rank = 3
+
+[[model]]
+id = "claude-code/claude-haiku-4-5-20251001"
+description = "Fastest for quick answers"
+efforts = []
+aliases = ["haiku", "claude-haiku-4-5"]
+rank = 4
+
+[[model]]
+id = "claude-code/claude-sonnet-5"
+description = "Efficient for routine tasks"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "high"
+rank = 5
+
+[[model]]
+id = "claude-code/claude-opus-5"
+description = "Best for everyday, complex tasks"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "high"
+rank = 6
+
+[[model]]
+id = "claude-code/claude-fable-5"
+description = "Most capable for your hardest and longest-running tasks"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "high"
+rank = 7
+
+[[model]]
+id = "claude-code/claude-opus-4-8"
+description = "Best for everyday, complex tasks"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "high"
+rank = 8
+
+[[model]]
+id = "claude-code/claude-opus-4-7"
+description = "Best for everyday, complex tasks"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "high"
+rank = 9
+
+# xhigh arrived with Opus 4.7, so the 4.6 models stop at high, then max.
+
+[[model]]
+id = "claude-code/claude-opus-4-6"
+description = "Best for everyday, complex tasks"
+efforts = ["low", "medium", "high", "max"]
+default_effort = "high"
+rank = 10
+
+[[model]]
+id = "claude-code/claude-sonnet-4-6"
+description = "Efficient for routine tasks"
+efforts = ["low", "medium", "high", "max"]
+default_effort = "high"
+rank = 11
+
+# Models Anthropic still serves that Claude Code's picker leaves out. Listing them keeps them
+# from reading "new".
+
+[[model]]
+id = "claude-code/claude-mythos-5-1"
+rank = 12
+
+[[model]]
+id = "claude-code/claude-mythos-5"
+rank = 13
+
+[[model]]
+id = "claude-code/claude-opus-4-5-20251101"
+rank = 14
+
+[[model]]
+id = "claude-code/claude-sonnet-4-5-20250929"
+rank = 15
+
+[[model]]
+id = "claude-code/claude-mythos-preview"
+rank = 16

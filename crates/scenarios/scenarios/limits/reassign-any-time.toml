@@ -1,0 +1,34 @@
+# The fake Claude Code works slowly on the card, so you can move it to Codex mid-way.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--permission-mode", "acceptEdits"]
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"limits-claude-1","cwd":".","model":"claude-haiku-4-5-20251001","tools":["Read","Edit","Write","Bash"],"claude_code_version":"2.1.284","permissionMode":"acceptEdits","apiKeySource":"none"}'
+[[rule.step]]
+write = { path = "notes.txt", content = "first half\n" }
+[[rule.step]]
+emit = '{"type":"assistant","message":{"id":"msg_limits_1","type":"message","role":"assistant","model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"LIMITS-PROGRESS-NOTE: notes.txt holds the first half."}]},"session_id":"limits-claude-1","parent_tool_use_id":null}'
+[[rule.step]]
+sleep_ms = 60000
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.284/write.stdout.jsonl"
+[[rule.step]]
+exit = 0

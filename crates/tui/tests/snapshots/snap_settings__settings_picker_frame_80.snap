@@ -1,0 +1,19 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "picker_lines(picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────
+  Preset
+  How the crew works together
+
+    1. peer-crew          Every agent plans and builds as a peer
+    2. coordinated-crew   One coordinator plans and hands out the work
+  ❯ 3. solo ✓             One agent does the whole task
+    4. solo-reviewed      One agent does it and another reviews
+    5. best-of-n          Several agents try and the best result wins
+    6. draft-and-vote     Agents draft plans and vote on one
+    7. ablate-restate     Turns one part of the crew off, for research
+  ↓ 8. ablate-mapper      Turns one part of the crew off, for research
+    … +3 more
+
+  Enter to choose · ↑↓ to move · type to filter · Esc to close

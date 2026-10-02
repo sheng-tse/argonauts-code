@@ -1,0 +1,33 @@
+# The fake Codex owns the card, writes notes.txt, and hits its usage limit with the message
+# the real one prints. Claude Code takes the card over and finishes it.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--permission-mode", "acceptEdits"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.284/write.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"limits-codex-1"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+write = { path = "notes.txt", content = "first half\n" }
+[[rule.step]]
+emit = '{"type":"error","message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at 3:00 PM."}'
+[[rule.step]]
+emit = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at 3:00 PM."}}'
+[[rule.step]]
+exit = 1

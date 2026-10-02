@@ -1,0 +1,43 @@
+# The fake ACP agent runs one tool call and then thinks for a while, so you can steer it. The
+# turn your message starts runs a second, slow tool call and then waits; pausing the run must
+# let that tool call finish before it cancels the turn.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+hermes = "hermes 0.21.5"
+
+[[acp]]
+argv0 = "hermes"
+session_id = "limits-hermes-1"
+
+[acp.reply."session/new"]
+result = { models = { currentModelId = "fake-local", availableModels = [{ modelId = "fake-local", name = "Fake local model" }] } }
+
+[acp.reply."session/set_model"]
+result = {}
+
+[[acp.turn]]
+stop_reason = "end_turn"
+[[acp.turn.step]]
+update = { sessionUpdate = "agent_message_chunk", content = { type = "text", text = "Starting on hello.txt." } }
+[[acp.turn.step]]
+update = { sessionUpdate = "tool_call", toolCallId = "t1", title = "List files", kind = "read", status = "in_progress" }
+[[acp.turn.step]]
+sleep_ms = 1500
+[[acp.turn.step]]
+update = { sessionUpdate = "tool_call_update", toolCallId = "t1", status = "completed" }
+[[acp.turn.step]]
+sleep_ms = 20000
+
+[[acp.turn]]
+stop_reason = "end_turn"
+[[acp.turn.step]]
+update = { sessionUpdate = "tool_call", toolCallId = "t2", title = "Run the tests", kind = "execute", status = "in_progress" }
+[[acp.turn.step]]
+sleep_ms = 4000
+[[acp.turn.step]]
+update = { sessionUpdate = "tool_call_update", toolCallId = "t2", status = "completed" }
+[[acp.turn.step]]
+hang = true

@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub use super::approvals::RoleSandbox;
 pub use super::handoff::{BrokenWork, FallbackEntry, FallbackRules, HandoffMode, HandoffSettings};
 use super::sessions::{Compaction, NativeFanout, SessionLifetime};
 use crate::names::WorkerRef;
@@ -29,6 +30,10 @@ pub struct RoleSettings {
     /// What happens when this role's agent stops. Unset keys come from the top-level
     /// `[handoff]` through [`HandoffSettings::applied`].
     pub handoff: HandoffSettings,
+    /// The sandbox for this role's agents. Unset keys come from the top-level `[sandbox]`
+    /// through [`SandboxSettings::applied`](super::approvals::SandboxSettings::applied).
+    #[serde(skip_serializing_if = "RoleSandbox::is_empty")]
+    pub sandbox: RoleSandbox,
     pub instructions: Option<String>,
 }
 

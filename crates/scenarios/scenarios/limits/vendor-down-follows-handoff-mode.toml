@@ -1,0 +1,30 @@
+# The fake agy owns the card and has no capacity, so agy is down. The owner role hands off on
+# its own, and Codex finishes the card.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+# agy has no capacity: the recorded run that ended with a 503, and its stderr lines.
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format", "stream-json"]
+[[rule.step]]
+emit_file = "../../../adapters/antigravity-cli/fixtures/1.2.13/build_shell.stdout.jsonl"
+[[rule.step]]
+stderr = "error: API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model gemini-3.6-flash-low on the server"
+[[rule.step]]
+stderr = 'AGY_ERROR: {"short_error":"API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model gemini-3.6-flash-low on the server","retryable":false,"error_id":"844557f9-77d9-49e9-810a-944f4e10d04d-2-2010"}'
+[[rule.step]]
+exit = 3

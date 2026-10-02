@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_learning.rs
+expression: "screen(&mut picker, width, HEIGHT)"
+---
+Records                                                                                [ Agents ]  Predictions  Settings
+Who is good at what, by kind of work                                             2 agents · routing bandit, explores 20%
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   Agent             Kind of work  First pass  Approved  Cost   Time   Predictions  Cards                             │
+│ ❯ codex/gpt-5.6     backend       82%         76%       0.90×  1.10×  +0.12        14                                │
+│   claude-code/opus  backend       71%         80%       1.20×  0.95×  -0.03        9                                 │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│   Newest model: gpt-5.6-2026-09-15                                                                                   │
+│   Than claude-code/opus at backend: not clear yet                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · tab next tab · p pin · r reset · b rebuild · esc back

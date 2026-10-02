@@ -158,6 +158,7 @@ pub struct FakeWorker {
     family: String,
     capabilities: WorkerCapabilities,
     enforce_rules: bool,
+    cheapest: Option<String>,
     script: Mutex<Script>,
     specs: Mutex<Vec<SessionSpec>>,
     controls: Arc<Mutex<Vec<(SessionKey, SessionControl)>>>,
@@ -202,6 +203,7 @@ impl FakeWorker {
                 can_build: harness,
             },
             enforce_rules: true,
+            cheapest: None,
             script: Mutex::new(Script::Queue(VecDeque::new())),
             specs: Mutex::new(Vec::new()),
             controls: Arc::new(Mutex::new(Vec::new())),
@@ -210,6 +212,12 @@ impl FakeWorker {
 
     pub fn with_capabilities(mut self, capabilities: WorkerCapabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// The model its harness names as its cheapest, such as `gpt-5.6-luna`.
+    pub fn with_cheapest_model(mut self, model: &str) -> Self {
+        self.cheapest = Some(model.to_owned());
         self
     }
 
@@ -413,6 +421,10 @@ impl Worker for FakeWorker {
                 .args(["resume", vendor_session])
         })
     }
+
+    fn cheapest_model(&self) -> Option<String> {
+        self.cheapest.clone()
+    }
 }
 
 fn is_stop(message: &SessionControl) -> bool {
@@ -536,6 +548,7 @@ pub fn session_spec(worker: &str, access: Access, workdir: &Path) -> SessionSpec
         sandbox: SandboxProfile::default(),
         compaction: Compaction::Inherit,
         native_fanout: NativeFanout::default(),
+        isolated: false,
         status_file: None,
         env: Vec::new(),
     }

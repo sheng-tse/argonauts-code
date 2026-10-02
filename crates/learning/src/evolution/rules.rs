@@ -1,0 +1,298 @@
+//! The mutation rules, checked before anything is spent on a candidate.
+
+use serde_json::Value;
+
+use argonauts_core::settings::SAFETY_KEYS;
+use argonauts_core::settings::Settings;
+use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
+use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
+use argonauts_core::workflow::{Count, Step};
+
+use crate::recipes::{
+    Change, ChangeClass, LoadedRecipe, PROTECTED_KINDS, diff, guarded, key_matches,
+    patterns_overlap, protected_counts, validate,
+};
+
+/// Config errors in `evolution.evolvable`: keys that are fixed core or safety keys.
+pub fn check_evolvable(keys: &[String]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for key in keys {
+        if let Some(pattern) = FIXED_CORE_KEYS
+            .iter()
+            .find(|pattern| patterns_overlap(pattern, key))
+        {
+            errors.push(format!(
+                "`evolution.evolvable` lists `{key}`, which reaches the fixed core (`{pattern}`); \
+                 evolution never changes what scores it"
+            ));
+        } else if let Some(pattern) = SAFETY_KEYS
+            .iter()
+            .find(|pattern| patterns_overlap(pattern, key))
+        {
+            errors.push(format!(
+                "`evolution.evolvable` lists `{key}`, which reaches the safety key `{pattern}`; \
+                 only you change those"
+            ));
+        }
+    }
+    errors
+}
+
+/// The mutation rules: exactly one change, on the evolvable list, nothing from the fixed core,
+/// no gate, reviewer, judge, or approval removed or weakened, no budget above your ceilings.
+pub fn check_mutation(
+    parent: &LoadedRecipe,
+    child: &LoadedRecipe,
+    settings: &Settings,
+) -> std::result::Result<Change, String> {
+    let (old, new) = (&parent.recipe, &child.recipe);
+    if new.recipe != old.recipe || new.parent != Some(old.version) {
+        return Err(format!(
+            "{} v{} doesn't name {} v{} as its parent",
+            new.recipe, new.version, old.recipe, old.version
+        ));
+    }
+    let problems = validate(new);
+    if !problems.is_empty() {
+        return Err(format!(
+            "the new version breaks a recipe rule: {}",
+            problems.join("; ")
+        ));
+    }
+    let changes = diff(parent, child).map_err(|error| error.to_string())?;
+    let change = match changes.as_slice() {
+        [] => return Err("it changes nothing".to_owned()),
+        [one] => one.clone(),
+        many => {
+            let mut keys: Vec<&str> = many.iter().map(|change| change.key.as_str()).collect();
+            keys.dedup();
+            return Err(format!(
+                "it changes {} things ({}), and a candidate changes exactly one",
+                many.len(),
+                keys.join(", ")
+            ));
+        }
+    };
+    if let Some(reason) = guarded(&change.key) {
+        return Err(reason);
+    }
+    let evolvable = &settings.evolution.evolvable;
+    if !check_evolvable(evolvable).is_empty() {
+        return Err(
+            "`evolution.evolvable` lists a fixed-core or safety key, so nothing evolves until \
+             that's fixed"
+                .to_owned(),
+        );
+    }
+    if !evolvable
+        .iter()
+        .any(|pattern| key_matches(pattern, &change.key))
+    {
+        return Err(format!(
+            "`{}` isn't on your `evolution.evolvable` list",
+            change.key
+        ));
+    }
+    if let Some(reason) = weakens(&change)
+        .or_else(|| over_ceiling(&change, settings))
+        .or_else(|| mixes_families(&change))
+    {
+        return Err(reason);
+    }
+    Ok(change)
+}
+
+/// Removing or weakening a gate, reviewer, judge, or approval step. Adding one is fine.
+fn weakens(change: &Change) -> Option<String> {
+    if change.class != ChangeClass::StepGraph {
+        return None;
+    }
+    let by_name = |value: &Option<Value>| matches!(value, Some(Value::String(_)));
+    if by_name(&change.before) || by_name(&change.after) {
+        return Some(
+            "it swaps the whole workflow by name, so its steps can't be checked for a removed \
+             gate or reviewer"
+                .to_owned(),
+        );
+    }
+    let before = protected_counts(change.before.as_ref());
+    let after = protected_counts(change.after.as_ref());
+    for ((kind, was), (_, now)) in before.iter().zip(&after) {
+        if now < was {
+            return Some(format!(
+                "it removes a `{}` step; gates, reviewers, judges, and approvals can be added, \
+                 never removed",
+                kind_name(*kind)
+            ));
+        }
+    }
+    let (Some(old), Some(new)) = (&change.before, &change.after) else {
+        return None;
+    };
+    let (Ok(old), Ok(new)) = (
+        serde_json::from_value::<Step>(old.clone()),
+        serde_json::from_value::<Step>(new.clone()),
+    ) else {
+        return None;
+    };
+    if old.kind != new.kind || !PROTECTED_KINDS.contains(&old.kind) {
+        return None;
+    }
+    weakened_step(&old, &new).map(|what| format!("it {what} on a `{}` step", kind_name(old.kind)))
+}
+
+/// What a change to a protected step loosens, if anything. Only more of it is allowed.
+fn weakened_step(old: &Step, new: &Step) -> Option<&'static str> {
+    let fixed = |count: &Option<Count>| match count {
+        None => Some(1),
+        Some(Count::Fixed(n)) => Some(*n),
+        Some(Count::Param(_)) => None,
+    };
+    if old.count != new.count {
+        match (fixed(&old.count), fixed(&new.count)) {
+            (Some(was), Some(now)) if now >= was => {}
+            _ => return Some("lowers the count"),
+        }
+    }
+    if old.blind && !new.blind {
+        return Some("turns off blindness");
+    }
+    if old.different_family_from.is_some() && old.different_family_from != new.different_family_from
+    {
+        return Some("drops the other-family rule");
+    }
+    if old.role != new.role || old.roles != new.roles || old.workers != new.workers {
+        return Some("replaces who does it");
+    }
+    if new.when.is_some() && old.when != new.when {
+        return Some("makes it conditional");
+    }
+    if old.task != new.task {
+        return Some("changes what it's asked");
+    }
+    if old.input != new.input {
+        return Some("changes what it checks");
+    }
+    if old.checkpoint != new.checkpoint || old.workflow != new.workflow || old.params != new.params
+    {
+        return Some("changes what it runs");
+    }
+    None
+}
+
+fn kind_name(kind: argonauts_core::workflow::StepKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{kind:?}"))
+}
+
+/// A per-card budget or fan-out cap above the ceilings you set.
+fn over_ceiling(change: &Change, settings: &Settings) -> Option<String> {
+    if change.class != ChangeClass::CardBudget {
+        return None;
+    }
+    let after = change.after.as_ref()?;
+    let key = change.key.as_str();
+    let budget = &settings.budget;
+    let ceilings: Vec<(&str, Option<f64>)> = match key {
+        "budget.per_card_usd" => vec![
+            ("budget.run_usd", budget.run_usd),
+            ("limits.usd_per_day", settings.limits.usd_per_day),
+        ],
+        "budget.per_card_tokens" => {
+            vec![("budget.run_tokens", budget.run_tokens.map(|t| t as f64))]
+        }
+        "budget.per_card_quota" => vec![("budget.run_quota", budget.run_quota)],
+        "budget.per_card_minutes" => vec![("budget.run_minutes", budget.run_minutes)],
+        _ => vec![("native_fanout", fanout_ceiling(settings.native_fanout))],
+    };
+    match after {
+        Value::Number(number) => {
+            let value = number.as_f64()?;
+            if value <= 0.0 && key.starts_with("budget.") {
+                return Some(format!(
+                    "it sets `{key}` to {value}, and a budget must be above 0"
+                ));
+            }
+            ceilings.into_iter().find_map(|(ceiling, limit)| {
+                let limit = limit?;
+                (value > limit).then(|| {
+                    format!(
+                        "it raises `{key}` to {value}, above your ceiling `{ceiling}` of {limit}"
+                    )
+                })
+            })
+        }
+        Value::String(switch) if switch == "off" => None,
+        _ if key.starts_with("budget.") => Some(format!("`{key}` must be a number, not {after}")),
+        _ => ceilings
+            .into_iter()
+            .find(|(_, limit)| limit.is_some())
+            .map(|(ceiling, _)| format!("it lifts `{key}` past your cap `{ceiling}`")),
+    }
+}
+
+/// The most subagents your settings allow a card, or `None` when the harness decides.
+fn fanout_ceiling(fanout: NativeFanout) -> Option<f64> {
+    match fanout {
+        NativeFanout::Limit { max } => Some(f64::from(max)),
+        NativeFanout::Switch(FanoutSwitch::Off) => Some(0.0),
+        NativeFanout::Switch(FanoutSwitch::On) => None,
+    }
+}
+
+/// A crew whose members share a model family, or one that loses its second family.
+fn mixes_families(change: &Change) -> Option<String> {
+    if change.class != ChangeClass::CrewComposition {
+        return None;
+    }
+    let families = |value: &Option<Value>| -> Option<Vec<String>> {
+        match value {
+            Some(Value::Array(members)) => members
+                .iter()
+                .map(|member| member.as_str().map(family_of))
+                .collect(),
+            None => Some(Vec::new()),
+            _ => None,
+        }
+    };
+    let Some(after) = families(&change.after) else {
+        return Some("`crew` must be a list of workers".to_owned());
+    };
+    for (i, family) in after.iter().enumerate() {
+        if after[..i].contains(family) {
+            return Some(format!(
+                "it puts two workers of the `{family}` family in the crew; crew members keep \
+                 distinct model families"
+            ));
+        }
+    }
+    let before = families(&change.before).unwrap_or_default();
+    let distinct = |families: &[String]| {
+        let mut unique: Vec<&String> = families.iter().collect();
+        unique.sort();
+        unique.dedup();
+        unique.len()
+    };
+    if distinct(&before) >= 2 && distinct(&after) < 2 {
+        return Some(
+            "it leaves the crew a single model family, so nobody can review across families"
+                .to_owned(),
+        );
+    }
+    None
+}
+
+/// A worker's model family without the registry: the agent stands for its maker, and an
+/// endpoint's model id such as `openrouter/z-ai/glm-5` names its maker after the endpoint. The
+/// engine checks families with the registry again when the run starts.
+fn family_of(worker: &str) -> String {
+    match worker.split_once('/') {
+        Some((_, model)) if model.contains('/') => {
+            model.split('/').next().unwrap_or(model).to_owned()
+        }
+        Some((agent, _)) => agent.to_owned(),
+        None => worker.to_owned(),
+    }
+}

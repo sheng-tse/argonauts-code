@@ -1,0 +1,31 @@
+{
+  "data": [
+    {
+      "id": "z-ai/glm-5.3",
+      "name": "Z.ai: GLM 5.3",
+      "context_length": 202752,
+      "pricing": { "prompt": "0.0000006", "completion": "0.0000022" },
+      "supported_parameters": ["max_tokens", "reasoning", "response_format", "tools"]
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "name": "DeepSeek: DeepSeek V4 Pro",
+      "context_length": 163840,
+      "pricing": { "prompt": "0.0000005", "completion": "0.0000015" },
+      "supported_parameters": ["max_tokens", "tools"]
+    },
+    {
+      "id": "openai/gpt-oss-120b",
+      "name": "OpenAI: gpt-oss-120b",
+      "context_length": 131072,
+      "pricing": { "prompt": "0.00000005", "completion": "0.00000025" },
+      "supported_parameters": ["max_tokens"]
+    },
+    {
+      "id": "meta-llama/llama-4-maverick",
+      "name": "Meta: Llama 4 Maverick",
+      "context_length": 1048576,
+      "pricing": { "prompt": "0", "completion": "0" }
+    }
+  ]
+}

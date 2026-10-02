@@ -1,0 +1,44 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: text
+---
+owner · card-001
+
+
+╭ owner · card-001 ────────────────────────────────────────────────────────────────────────────────╮
+│ Opus on Claude Code (claude-code/opus) · run-01                                                  │
+│ ✓ Completed · Opus on Claude Code · 402k tok · $1.31 · 25m40s                                    │
+│                                                                                                  │
+│ Prompt · 14 lines · ⏎expand                                                                      │
+│   Build the terminal and the whole bottom region of the UI kit.                                  │
+│   Read the design notes first, then the reference screenshots.                                   │
+│   …12 more lines                                                                                 │
+│                                                                                                  │
+│ Activity · last 3 of 195 tool calls · ⏎expand                                                    │
+│   ● Bash(cargo test -p argonauts-tui composer)                                                   │
+│   ● Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                             │
+│   ● Bash(cargo test -p argonauts-tui)                                                            │
+│                                                                                                  │
+│ Diff · 4 files · +120 -18 · ⏎open                                                                │
+│                                                                                                  │
+│ Subagents · 3 · structure not exposed                                                            │
+│   ✓ explorer  done                                                                               │
+│   ✓ planner   done                                                                               │
+│   ✓ tester    done                                                                               │
+│                                                                                                  │
+│ Outcome · 9 lines · ⏎expand                                                                      │
+│   Report: the terminal and the bottom region are done, with no stubs left.                       │
+│                                                                                                  │
+│   What I built                                                                                   │
+│                                                                                                  │
+│   - Terminal: history above the live region, redrawing only changed cells.                       │
+│   - Bottom: the working line, the composer, the mode line, and the panel.                        │
+│   …5 more lines                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ agent · pgdn scroll · ⏎ expand · s steer · t take over · d diff · x stop · p pause · esc back

@@ -1,13 +1,22 @@
 //! Parses what you type: slash commands, `@mentions`, and plain text. The UI's menus and the
 //! controller's routing share this parser, so they never disagree.
 
+mod shared;
+mod vendor;
+
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::CardId;
 use crate::RunId;
-use crate::handoff::CheckpointTag;
-use crate::names::{RoleName, VendorId, WorkerRef};
+use crate::Verbosity;
+use crate::names::{ChatId, RoleName, VendorId, WorkerRef};
 use crate::settings::ui::NarratorMode;
+use crate::vendor_sessions::VendorSessionRef;
+
+pub use shared::SHARED_COMMANDS;
+pub use vendor::parse_input_with;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "input", rename_all = "snake_case")]
@@ -26,23 +35,18 @@ pub enum ParsedInput {
     },
 }
 
-/// Every slash command. `value` fields hold TOML text.
+/// Every slash command, in the `/` menu's order. `value` fields hold TOML text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum SlashCommand {
-    /// Resume the paused run on screen, or open the picker, or resume `run`.
+    /// A fresh chat with the lead. Runs keep going.
+    Clear,
+    /// No target opens the picker of conversations and runs, newest first.
     Resume {
-        run: Option<RunId>,
+        target: Option<ResumeTarget>,
     },
-    /// Start a follow-up run on a merged run.
-    Continue {
-        /// The merged run; the latest when omitted.
-        run: Option<RunId>,
-        request: Option<String>,
-    },
-    Tree,
-    /// A one-off narrator summary.
-    Summary,
+    /// Close the screen. Runs keep going.
+    Exit,
     /// An answer, never a run.
     Ask {
         question: String,
@@ -53,20 +57,117 @@ pub enum SlashCommand {
     Crew {
         task: String,
     },
-    /// Verbosity `full`, or `normal` when it's already `full`. Saved as `ui.verbosity` in your
-    /// global config.
-    Verbose,
-    /// Verbosity `normal`, which folds quiet calls into one line per group. Saved as
-    /// `ui.verbosity` in your global config.
-    Normal,
-    /// Verbosity `quiet`, milestones only, or `normal` when it's already `quiet`. Saved as
-    /// `ui.verbosity` in your global config.
-    Quiet,
+    /// A new run that builds on a finished one.
+    FollowUp {
+        /// The latest merged run when omitted.
+        run: Option<RunId>,
+        request: String,
+    },
+    /// Where each run stands. Zero tokens; `s` in its view asks the narrator for a summary.
+    Status,
+    /// The workflow view, as Ctrl+T opens it. The screen handles it; a front end without one
+    /// gets the run's workflow, or the list of workflows when no run is on screen.
+    Workflows,
+    /// Every live session's context, cap, tool calls, and spend. Zero tokens.
+    Context,
+    /// Go back to one of `card`'s checkpoints, or any card's. The work after it is kept on a side
+    /// branch.
+    Rewind {
+        card: Option<CardId>,
+    },
+    Reassign {
+        /// The card, or every card of `from`.
+        card: Option<CardId>,
+        from: Option<VendorId>,
+        to: WorkerRef,
+    },
+    /// Stop `run`, or the run on screen. Its work is committed.
+    Stop {
+        run: Option<RunId>,
+    },
+    /// Neither opens the picker. A worker without a role is the default agent's.
+    Model {
+        role: Option<RoleName>,
+        worker: Option<WorkerRef>,
+        /// Saved with the model, as the models level's effort line sets it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+    },
+    /// Reasoning effort for the default agent or a role. No level opens the picker.
+    Effort {
+        role: Option<RoleName>,
+        /// One of [`EFFORT_LEVELS`].
+        level: Option<String>,
+    },
+    Agents {
+        #[serde(default)]
+        action: AgentsAction,
+    },
+    /// No name opens the picker. `show`, `copy`, and `diff` are actions, so they can't be names.
+    Preset {
+        name: Option<String>,
+        #[serde(default)]
+        action: PresetAction,
+    },
+    /// `/handoff <role> <key> <value>` sets one key under `roles.<role>.handoff.`.
+    Handoff {
+        role: Option<RoleName>,
+        key: Option<String>,
+        value: Option<String>,
+    },
+    /// No argument opens the picker; `/approvals <key> <value>` sets one key under `approvals.`.
+    Approvals {
+        /// Without the `approvals.` prefix, such as `merge.mode`.
+        #[serde(default)]
+        key: Option<String>,
+        #[serde(default)]
+        value: Option<String>,
+    },
+    /// `/budget <key> <value>` sets one key under `budget.`.
+    Budget {
+        key: Option<String>,
+        value: Option<String>,
+    },
+    /// No argument opens the picker; `/permissions <key> <value>` sets one of [`PERMISSION_KEYS`]
+    /// for every agent. With a role first, the picker shows that role's own sandbox, and
+    /// `/permissions <role> <key> <value>` sets one of [`ROLE_SANDBOX_KEYS`] under
+    /// `roles.<role>.sandbox.`.
+    Permissions {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<RoleName>,
+        #[serde(default)]
+        key: Option<String>,
+        #[serde(default)]
+        value: Option<String>,
+    },
+    /// Who is good at what. An agent opens the picker on its rows.
+    Records {
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    /// Recipes and how they evolve. A name opens the picker on that recipe.
+    Recipes {
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Exported and imported skills, and any drift.
+    Skills,
+    /// The crew's notes, flagged ones waiting for you, and the conventions.
+    Memory,
+    /// No level opens the picker. Saved as `ui.verbosity` in your global config.
+    Verbosity {
+        level: Option<Verbosity>,
+    },
+    Narrator {
+        change: Option<NarratorChange>,
+    },
+    /// No name opens the picker.
+    Theme {
+        /// `auto`, `dark`, or `light`.
+        name: Option<String>,
+    },
     /// Toggle vim keys; saved as `ui.keys` in your global config.
     Vim,
-    /// The status summary. Zero tokens.
-    Status,
-    Stop,
     /// Show settings, set one, or reset one (`/config <key> --reset`).
     Config {
         /// A dotted key.
@@ -76,95 +177,142 @@ pub enum SlashCommand {
         #[serde(default)]
         reset: bool,
     },
-    Model {
-        role: Option<RoleName>,
-        worker: Option<WorkerRef>,
+    /// The guided setup again.
+    Setup,
+    /// Shows the MCP config `front_end` needs, and writes it only after you confirm.
+    Connect {
+        front_end: FrontEnd,
     },
-    /// Show or change the default agent for this app session.
-    Agent {
-        worker: Option<WorkerRef>,
-    },
-    /// Reasoning effort for the default agent or a role. No level opens the picker.
-    Effort {
-        role: Option<RoleName>,
-        /// One of [`EFFORT_LEVELS`].
-        level: Option<String>,
-    },
-    /// No name opens the picker. `show`, `copy`, and `diff` are actions, so they can't be names.
-    Preset {
-        name: Option<String>,
-        #[serde(default)]
-        action: PresetAction,
-    },
-    /// `/agents <id> <key> <value>` sets one key of `agents.<id>` or `endpoints.<id>`.
-    Agents {
-        id: Option<String>,
-        key: Option<String>,
-        value: Option<String>,
-    },
-    /// `/budget <key> <value>` sets one key under `budget.`.
-    Budget {
-        key: Option<String>,
-        value: Option<String>,
-    },
-    /// `/handoff <role> <key> <value>` sets one key under `roles.<role>.handoff.`.
-    Handoff {
-        role: Option<RoleName>,
-        key: Option<String>,
-        value: Option<String>,
-    },
-    /// No argument opens the picker; `/permissions <key> <value>` sets one of [`PERMISSION_KEYS`].
-    Permissions {
-        #[serde(default)]
-        key: Option<String>,
-        #[serde(default)]
-        value: Option<String>,
-    },
-    /// No name opens the picker.
-    Theme {
-        /// `auto`, `dark`, or `light`.
-        name: Option<String>,
-    },
-    Init,
-    /// No argument opens the picker; `/approvals <key> <value>` sets one key under `approvals.`.
-    Approvals {
-        /// Without the `approvals.` prefix, such as `merge.mode`.
-        #[serde(default)]
-        key: Option<String>,
-        #[serde(default)]
-        value: Option<String>,
-    },
-    Narrator {
-        change: Option<NarratorChange>,
-    },
-    Reassign {
-        /// The card, or every card of `from`.
-        card: Option<CardId>,
-        from: Option<VendorId>,
-        to: WorkerRef,
-    },
-    /// Every live session's context, cap, tool calls, and spend. Zero tokens.
-    Context,
-    /// No name opens the workflow view of the run on screen, or the picker when there's none.
-    /// A name sets the `workflow` key. `show`, `copy`, and `diff` work like `/preset`'s.
-    Workflow {
-        name: Option<String>,
-        #[serde(default)]
-        action: WorkflowAction,
-    },
-    /// A card's handoff checkpoints, or every card's.
-    Checkpoints {
-        card: Option<CardId>,
-    },
-    /// Reset a card to checkpoint `handoff-<checkpoint>` after a confirm card. The work after it
-    /// is kept on a side branch.
-    Revert {
-        card: CardId,
-        checkpoint: u32,
-    },
+    /// The agent CLIs, their versions, and logins.
+    Doctor,
     Help,
-    /// Close the screen. Runs keep going.
-    Exit,
+    /// Free the main agent's context by summarizing the conversation, whatever the CLI.
+    Compact {
+        instructions: Option<String>,
+    },
+    /// No name lets the lead suggest one.
+    Rename {
+        name: Option<String>,
+    },
+    /// A new conversation that starts from here. This one stays as it is.
+    Branch {
+        name: Option<String>,
+    },
+    /// A copy of the conversation that carries on in the background.
+    Fork {
+        prompt: Option<String>,
+    },
+    /// A side question whose answer stays out of the conversation's history.
+    Btw {
+        question: Option<String>,
+    },
+    /// One line on where the conversation stands.
+    Recap,
+    /// The last answer to the clipboard, or the `nth` counting back from it.
+    Copy {
+        nth: Option<u32>,
+    },
+    /// The conversation as plain text.
+    Export {
+        file: Option<PathBuf>,
+    },
+    /// Work in another folder. No path shows the current one.
+    Cd {
+        path: Option<PathBuf>,
+    },
+    /// One more folder the agents may work in.
+    AddDir {
+        path: PathBuf,
+    },
+    /// Plan first, and change nothing before you agree.
+    Plan {
+        task: Option<String>,
+    },
+    /// A goal the main agent works toward until it's met. No text shows the goal; `clear`,
+    /// `pause`, and `resume` act on it.
+    Goal {
+        text: Option<String>,
+    },
+    /// No value toggles it.
+    Fast {
+        on: Option<bool>,
+    },
+    OutputStyle {
+        style: Option<String>,
+    },
+    /// The working tree's changes.
+    Diff,
+    /// A review of the changes: the working tree when no target is named, else a branch, a
+    /// commit range, or a pull request.
+    Review {
+        target: Option<String>,
+    },
+    SecurityReview {
+        target: Option<String>,
+    },
+    /// Spend and quotas for each agent.
+    Usage {
+        /// Such as `daily` or `weekly`; the current windows when `None`.
+        period: Option<String>,
+    },
+    /// Run an agent CLI's own login. No agent means the main agent's.
+    Login {
+        agent: Option<String>,
+    },
+    Logout {
+        agent: Option<String>,
+    },
+    ReleaseNotes,
+    Feedback {
+        text: Option<String>,
+    },
+    /// One of the main agent CLI's own commands, sent to its session as the command itself.
+    Vendor {
+        /// Without the slash, as the CLI names it.
+        name: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        args: String,
+    },
+}
+
+/// What `/resume` carries on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum ResumeTarget {
+    /// A chat with the lead, `chat-<n>`.
+    Conversation(ChatId),
+    Run(RunId),
+    /// One of the main agent CLI's own sessions, `<adapter>:<session id>`, carried on through
+    /// the CLI's own resume.
+    VendorSession(VendorSessionRef),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentsAction {
+    /// Every agent Argonauts can use: CLIs, endpoints, and ACP agents.
+    #[default]
+    List,
+    /// Hermes, OpenClaw, OpenCode, Ollama, or the name of your own CLI.
+    Add { name: String },
+}
+
+/// A front end that drives Argonauts over MCP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FrontEnd {
+    Hermes,
+    OpenClaw,
+}
+
+impl FrontEnd {
+    /// The word `/connect` takes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FrontEnd::Hermes => "hermes",
+            FrontEnd::OpenClaw => "openclaw",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,6 +345,35 @@ pub enum Handler {
     App,
 }
 
+/// The groups of the `/` menu and `/help`, in the order they show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CommandCategory {
+    Session,
+    Work,
+    Runs,
+    Crew,
+    ApprovalsAndLimits,
+    Learning,
+    Display,
+    SetupAndHelp,
+}
+
+impl CommandCategory {
+    /// The dim header above the group.
+    pub fn title(self) -> &'static str {
+        match self {
+            CommandCategory::Session => "Session",
+            CommandCategory::Work => "Work",
+            CommandCategory::Runs => "Runs",
+            CommandCategory::Crew => "Crew",
+            CommandCategory::ApprovalsAndLimits => "Approvals and limits",
+            CommandCategory::Learning => "Learning",
+            CommandCategory::Display => "Display",
+            CommandCategory::SetupAndHelp => "Setup and help",
+        }
+    }
+}
+
 /// One row of the `/` menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlashSpec {
@@ -206,45 +383,63 @@ pub struct SlashSpec {
     pub args: &'static str,
     pub help: &'static str,
     pub handler: Handler,
+    pub category: CommandCategory,
 }
 
-/// The `/` menu, in display order.
+impl SlashSpec {
+    /// Whether an argument outside `[...]` is required, as in `/follow-up [run] <request>`, so
+    /// picking the command from the menu waits for it.
+    pub fn needs_argument(&self) -> bool {
+        let mut optional = 0_usize;
+        for c in self.args.chars() {
+            match c {
+                '[' => optional += 1,
+                ']' => optional = optional.saturating_sub(1),
+                '<' if optional == 0 => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+}
+
+/// The `/` menu, in display order: by category, then in the order written here.
 #[rustfmt::skip]
 pub const SLASH_COMMANDS: &[SlashSpec] = &[
-    SlashSpec { name: "ask", args: "<question>", help: "Answer only, never a run", handler: Handler::App },
-    SlashSpec { name: "solo", args: "<task>", help: "One agent does it; skips triage", handler: Handler::App },
-    SlashSpec { name: "crew", args: "<task>", help: "The crew does it; skips triage", handler: Handler::App },
-    SlashSpec { name: "status", args: "", help: "Goal, plan, cards, budget, quotas. No tokens", handler: Handler::App },
-    SlashSpec { name: "context", args: "", help: "Each session's context, cap, calls, and spend", handler: Handler::App },
-    SlashSpec { name: "tree", args: "", help: "Open the run tree", handler: Handler::Ui },
-    SlashSpec { name: "workflow", args: "[name] | show|copy|diff <name>", help: "Open the run's workflow, or change or copy one", handler: Handler::App },
-    SlashSpec { name: "workflows", args: "", help: "Open the workflow view", handler: Handler::App },
-    SlashSpec { name: "summary", args: "", help: "A narrator summary of the run", handler: Handler::App },
-    SlashSpec { name: "resume", args: "[run]", help: "Resume a paused, parked, or crashed run", handler: Handler::App },
-    SlashSpec { name: "continue", args: "[run] [request]", help: "Follow up on a merged run", handler: Handler::App },
-    SlashSpec { name: "stop", args: "", help: "Stop the run; work is committed", handler: Handler::App },
-    SlashSpec { name: "reassign", args: "<card> <agent>", help: "Move a card to another agent", handler: Handler::App },
-    SlashSpec { name: "checkpoints", args: "[card]", help: "A card's handoff checkpoints", handler: Handler::App },
-    SlashSpec { name: "revert", args: "<card> handoff-<n>", help: "Reset a card to a checkpoint; later work is kept", handler: Handler::App },
-    SlashSpec { name: "model", args: "[role] [agent]", help: "Show or change a role's model", handler: Handler::App },
-    SlashSpec { name: "effort", args: "[role] [level]", help: "Show or change reasoning effort", handler: Handler::App },
-    SlashSpec { name: "agent", args: "[agent]", help: "Show or change the default agent", handler: Handler::App },
-    SlashSpec { name: "agents", args: "[id] [key value]", help: "The crew: harnesses, endpoints, models, auth", handler: Handler::App },
-    SlashSpec { name: "preset", args: "[name] | show|copy|diff <name>", help: "Show, change, or copy out a preset", handler: Handler::App },
-    SlashSpec { name: "approvals", args: "[key value]", help: "What waits for you, and each checkpoint's mode", handler: Handler::App },
-    SlashSpec { name: "budget", args: "[key value]", help: "Run and card budgets, and what happens at the limit", handler: Handler::App },
-    SlashSpec { name: "handoff", args: "[role] [key value]", help: "Who takes over when an agent stops", handler: Handler::App },
-    SlashSpec { name: "permissions", args: "[key value]", help: "Sandbox, network, protected paths, daily cap", handler: Handler::App },
-    SlashSpec { name: "narrator", args: "[off|on_demand|live|model <m>]", help: "Set the narrator", handler: Handler::App },
-    SlashSpec { name: "config", args: "[key] [value|--reset]", help: "Every setting and where each came from", handler: Handler::App },
-    SlashSpec { name: "theme", args: "[auto|dark|light]", help: "Show or change the theme", handler: Handler::Both },
-    SlashSpec { name: "verbose", args: "", help: "Every call and message in full, saved globally; again for normal", handler: Handler::Both },
-    SlashSpec { name: "normal", args: "", help: "Fold quiet calls into one line per group, saved globally", handler: Handler::Both },
-    SlashSpec { name: "quiet", args: "", help: "Milestones only, saved globally; again for normal", handler: Handler::Both },
-    SlashSpec { name: "vim", args: "", help: "Vim keys on or off, saved globally", handler: Handler::Both },
-    SlashSpec { name: "init", args: "", help: "Run the guided setup again", handler: Handler::App },
-    SlashSpec { name: "help", args: "", help: "Keys and commands", handler: Handler::Ui },
-    SlashSpec { name: "exit", args: "", help: "Close the screen; runs keep going", handler: Handler::Ui },
+    SlashSpec { name: "clear", args: "", help: "Start a fresh chat with the lead. Runs keep going", handler: Handler::App, category: CommandCategory::Session },
+    SlashSpec { name: "resume", args: "", help: "Pick an earlier conversation or a run to carry on", handler: Handler::App, category: CommandCategory::Session },
+    SlashSpec { name: "exit", args: "", help: "Close the screen. Runs keep going", handler: Handler::Ui, category: CommandCategory::Session },
+    SlashSpec { name: "ask", args: "<question>", help: "Answer only, never a run", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "solo", args: "<task>", help: "One agent does it", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "crew", args: "<task>", help: "The crew does it", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "follow-up", args: "[run] <request>", help: "Follow up on a finished run", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "status", args: "", help: "Where each run stands: goal, plan, cards, budget, quotas. Costs nothing. s in it asks the narrator for a summary", handler: Handler::App, category: CommandCategory::Runs },
+    SlashSpec { name: "workflows", args: "", help: "The workflow view (Ctrl+T). Its Library tab shows, copies, and diffs workflow files", handler: Handler::Ui, category: CommandCategory::Runs },
+    SlashSpec { name: "context", args: "", help: "Each session's context, cap, calls, and spend", handler: Handler::App, category: CommandCategory::Runs },
+    SlashSpec { name: "rewind", args: "[card]", help: "Go back to a checkpoint", handler: Handler::App, category: CommandCategory::Runs },
+    SlashSpec { name: "reassign", args: "<card> <agent>", help: "Move a card to another agent", handler: Handler::App, category: CommandCategory::Runs },
+    SlashSpec { name: "stop", args: "[run]", help: "Stop a run. Its work is committed", handler: Handler::App, category: CommandCategory::Runs },
+    SlashSpec { name: "model", args: "[role] [model]", help: "The default agent or a role, then its model, from each CLI's live list", handler: Handler::App, category: CommandCategory::Crew },
+    SlashSpec { name: "effort", args: "[role] [level]", help: "Reasoning effort, from the levels that model supports", handler: Handler::App, category: CommandCategory::Crew },
+    SlashSpec { name: "agents", args: "[add <name>]", help: "The agents Argonauts can use (CLIs, endpoints, ACP agents): add one (Hermes, OpenClaw, OpenCode, Ollama, your own CLI), turn one on or off, check its login", handler: Handler::App, category: CommandCategory::Crew },
+    SlashSpec { name: "preset", args: "[name]", help: "How the crew works", handler: Handler::App, category: CommandCategory::Crew },
+    SlashSpec { name: "handoff", args: "", help: "Who takes over when an agent stops, and what it's told", handler: Handler::App, category: CommandCategory::Crew },
+    SlashSpec { name: "approvals", args: "", help: "Each checkpoint's mode, and what waits for you", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
+    SlashSpec { name: "budget", args: "", help: "Run and card budgets", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
+    SlashSpec { name: "permissions", args: "", help: "Whose rules guard the agents, internet, commits, protected paths", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
+    SlashSpec { name: "records", args: "[agent]", help: "Who is good at what: each agent's track record and prediction score by kind of work. Pin, reset, or rebuild one", handler: Handler::App, category: CommandCategory::Learning },
+    SlashSpec { name: "recipes", args: "[name]", help: "Recipes and how they evolve: versions, candidates, replays, canaries. Promote, roll back, or export one as a skill", handler: Handler::App, category: CommandCategory::Learning },
+    SlashSpec { name: "skills", args: "", help: "Exported and imported skills, and any drift. Import one as a branch for you to review", handler: Handler::App, category: CommandCategory::Learning },
+    SlashSpec { name: "memory", args: "", help: "Notes the crew keeps, flagged ones waiting for you, and the conventions. Sync AGENTS.md and CLAUDE.md", handler: Handler::App, category: CommandCategory::Learning },
+    SlashSpec { name: "verbosity", args: "[full|normal|quiet]", help: "How much of each agent's work you see", handler: Handler::Both, category: CommandCategory::Display },
+    SlashSpec { name: "narrator", args: "", help: "The narrator line", handler: Handler::App, category: CommandCategory::Display },
+    SlashSpec { name: "theme", args: "", help: "Light, dark, or auto", handler: Handler::Both, category: CommandCategory::Display },
+    SlashSpec { name: "vim", args: "", help: "Vim keys on or off", handler: Handler::Both, category: CommandCategory::Display },
+    SlashSpec { name: "config", args: "", help: "Every setting and where it came from", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "setup", args: "", help: "The guided setup again", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "connect", args: "<hermes|openclaw>", help: "Let a front end drive Argonauts over MCP: shows the config it needs, and writes it only after you confirm", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "doctor", args: "", help: "The agent CLIs, their versions, and logins", handler: Handler::App, category: CommandCategory::SetupAndHelp },
+    SlashSpec { name: "help", args: "", help: "Keys and commands, by category", handler: Handler::Ui, category: CommandCategory::SetupAndHelp },
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,34 +457,59 @@ pub enum PresetAction {
     Diff,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// What the Library tab of the workflow view does with a workflow file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowAction {
-    /// `/workflow <name>` sets the `workflow` key. With no name, the view opens.
-    #[default]
-    Use,
-    /// `/workflow show <name>`: print it, from its file or the built-in.
+    /// Print it, from its file or the built-in.
     Show,
-    /// `/workflow copy <name>`: write it out to `~/.argonauts/workflows/` to edit.
+    /// Write it out to `~/.argonauts/workflows/` to edit.
     Copy,
-    /// `/workflow copy <name> --project`: write it to `.argonauts/workflows/`, to commit and
-    /// share.
+    /// Write it to `.argonauts/workflows/`, to commit and share.
     CopyToProject,
-    /// `/workflow diff <name>`: compare your file with the current built-in.
+    /// Compare your file with the current built-in.
     Diff,
 }
 
 /// Reasoning effort levels `/effort` accepts. Pickers offer only the ones the model supports.
-pub const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
+pub const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// The keys `/permissions` covers, in picker order.
 pub const PERMISSION_KEYS: &[&str] = &[
     "sandbox.mode",
     "sandbox.network",
+    "sandbox.agents_see_other_copies",
+    "sandbox.agents_commit",
     "limits.protected_paths",
     "limits.dependency_allowlist",
     "limits.usd_per_day",
 ];
+
+/// Whether `/permissions <key> <value>` sets `key`: one of [`PERMISSION_KEYS`], or any other
+/// key under `sandbox.`, which the app checks against the catalog.
+pub fn is_permission_key(key: &str) -> bool {
+    PERMISSION_KEYS.contains(&key)
+        || key
+            .strip_prefix("sandbox.")
+            .is_some_and(|rest| !rest.is_empty())
+}
+
+/// The sandbox keys a role can set for its own agents, under `roles.<role>.sandbox.`. A key
+/// the role leaves unset comes from `[sandbox]`.
+pub const ROLE_SANDBOX_KEYS: &[&str] = &[
+    "mode",
+    "network",
+    "agents_see_other_copies",
+    "agents_commit",
+];
+
+/// The menu row for `name`, from [`SLASH_COMMANDS`] or [`SHARED_COMMANDS`].
+pub fn slash_spec(name: &str) -> Option<&'static SlashSpec> {
+    SLASH_COMMANDS
+        .iter()
+        .chain(SHARED_COMMANDS)
+        .find(|spec| spec.name == name)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InputError {
@@ -299,6 +519,9 @@ pub enum InputError {
     BadArguments { command: String, problem: String },
     #[error("@ needs a target, such as @codex or @card-002")]
     EmptyMention,
+    /// One of the main agent's commands that only its own screen runs.
+    #[error("/{command} works only in {vendor} itself")]
+    VendorScreenOnly { command: String, vendor: String },
 }
 
 /// `/` and `@` count only at the start. An `@` followed by something that isn't a valid target
@@ -365,6 +588,9 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         }
     };
     match name {
+        "clear" => no_args(SlashCommand::Clear),
+        "resume" => parse_resume(name, args),
+        "exit" => no_args(SlashCommand::Exit),
         "ask" => Ok(SlashCommand::Ask {
             question: text_arg("a question")?,
         }),
@@ -374,70 +600,108 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         "crew" => Ok(SlashCommand::Crew {
             task: text_arg("a task")?,
         }),
+        "follow-up" => parse_follow_up(name, args),
         "status" => no_args(SlashCommand::Status),
+        "workflows" => no_args(SlashCommand::Workflows),
         "context" => no_args(SlashCommand::Context),
-        "workflow" => parse_workflow(name, args),
-        "workflows" => no_args(SlashCommand::Workflow {
-            name: None,
-            action: WorkflowAction::Use,
-        }),
-        "checkpoints" => parse_checkpoints(name, args),
-        "revert" => parse_revert(name, args),
-        "tree" => no_args(SlashCommand::Tree),
-        "summary" => no_args(SlashCommand::Summary),
-        "stop" => no_args(SlashCommand::Stop),
-        "verbose" => no_args(SlashCommand::Verbose),
-        "normal" => no_args(SlashCommand::Normal),
-        "quiet" => no_args(SlashCommand::Quiet),
-        "vim" => no_args(SlashCommand::Vim),
-        "help" => no_args(SlashCommand::Help),
-        "exit" => no_args(SlashCommand::Exit),
-        "init" => no_args(SlashCommand::Init),
-        "approvals" => parse_approvals(name, args),
-        "permissions" => parse_permissions(name, args),
-        "resume" => parse_resume(name, args),
-        "continue" => Ok(parse_continue(args)),
+        "rewind" => parse_rewind(name, args),
         "reassign" => parse_reassign(name, args),
-        "narrator" => parse_narrator(name, args),
-        "config" => parse_config(name, args),
+        "stop" => parse_stop(name, args),
         "model" => parse_model(name, args),
-        "agent" => parse_agent(name, args),
         "effort" => parse_effort(name, args),
-        "preset" => parse_preset(name, args),
-        "theme" => parse_one_word(name, args).map(|name| SlashCommand::Theme { name }),
         "agents" => parse_agents(name, args),
-        "budget" => parse_budget(name, args),
+        "preset" => parse_preset(name, args),
         "handoff" => parse_handoff(name, args),
-        other => Err(InputError::UnknownCommand(other.to_owned())),
+        "approvals" => parse_approvals(name, args),
+        "budget" => parse_budget(name, args),
+        "permissions" => parse_permissions(name, args),
+        "records" => parse_one_word(name, args).map(|agent| SlashCommand::Records { agent }),
+        "recipes" => parse_one_word(name, args).map(|name| SlashCommand::Recipes { name }),
+        "skills" => no_args(SlashCommand::Skills),
+        "memory" => no_args(SlashCommand::Memory),
+        "verbosity" => parse_verbosity(name, args),
+        "narrator" => parse_narrator(name, args),
+        "theme" => parse_one_word(name, args).map(|name| SlashCommand::Theme { name }),
+        "vim" => no_args(SlashCommand::Vim),
+        "config" => parse_config(name, args),
+        "setup" => no_args(SlashCommand::Setup),
+        "connect" => parse_connect(name, args),
+        "doctor" => no_args(SlashCommand::Doctor),
+        "help" => no_args(SlashCommand::Help),
+        other => shared::parse(other, args)
+            .unwrap_or_else(|| Err(InputError::UnknownCommand(other.to_owned()))),
     }
 }
 
-fn parse_resume(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let (word, rest) = split_word(args);
-    if !rest.is_empty() {
-        return Err(bad(name, "takes at most one run id"));
+fn parse_run(name: &str, word: &str) -> Result<RunId, InputError> {
+    RunId::new(word).map_err(|err| bad(name, err.to_string()))
+}
+
+/// At most one word, which must not look like a flag.
+fn optional_word<'a>(
+    name: &str,
+    args: &'a str,
+    usage: &str,
+) -> Result<Option<&'a str>, InputError> {
+    match args.split_whitespace().collect::<Vec<_>>().as_slice() {
+        [] => Ok(None),
+        [word] if !word.starts_with('-') => Ok(Some(*word)),
+        _ => Err(bad(name, format!("use {usage}"))),
     }
-    let run = if word.is_empty() {
-        None
-    } else {
-        Some(RunId::new(word).map_err(|err| bad(name, err.to_string()))?)
+}
+
+/// `chat-<n>` is a conversation, `<adapter>:<id>` a CLI's own session, and any other word a
+/// run.
+fn parse_resume(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let target = match optional_word(name, args, "/resume [conversation, session, or run]")? {
+        None => None,
+        Some(word) if word.starts_with("chat-") => {
+            let chat = ChatId::parse(word)
+                .ok_or_else(|| bad(name, format!("{word:?} isn't a conversation")))?;
+            Some(ResumeTarget::Conversation(chat))
+        }
+        Some(word) if word.contains(':') => {
+            let session = VendorSessionRef::parse(word)
+                .ok_or_else(|| bad(name, format!("{word:?} isn't a session")))?;
+            Some(ResumeTarget::VendorSession(session))
+        }
+        Some(word) => Some(ResumeTarget::Run(parse_run(name, word)?)),
     };
-    Ok(SlashCommand::Resume { run })
+    Ok(SlashCommand::Resume { target })
 }
 
 /// The first word is a run only when it looks like one (`run-...`), so a request that starts
 /// with an ordinary word stays whole.
-fn parse_continue(args: &str) -> SlashCommand {
+fn parse_follow_up(name: &str, args: &str) -> Result<SlashCommand, InputError> {
     let (word, rest) = split_word(args);
     let run = word
         .starts_with("run-")
         .then(|| RunId::new(word).ok())
         .flatten();
     let request = if run.is_some() { rest } else { args };
-    SlashCommand::Continue {
-        run,
-        request: (!request.is_empty()).then(|| request.to_owned()),
+    if request.is_empty() {
+        return Err(bad(name, "needs a request: /follow-up [run] <request>"));
     }
+    Ok(SlashCommand::FollowUp {
+        run,
+        request: request.to_owned(),
+    })
+}
+
+fn parse_rewind(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let card = match optional_word(name, args, "/rewind [card]")? {
+        Some(word) => Some(parse_card(name, word)?),
+        None => None,
+    };
+    Ok(SlashCommand::Rewind { card })
+}
+
+fn parse_stop(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let run = match optional_word(name, args, "/stop [run]")? {
+        Some(word) => Some(parse_run(name, word)?),
+        None => None,
+    };
+    Ok(SlashCommand::Stop { run })
 }
 
 /// Anything that starts with `-` is a mistyped flag, not a worker.
@@ -526,48 +790,85 @@ fn parse_approvals(name: &str, args: &str) -> Result<SlashCommand, InputError> {
 }
 
 fn parse_permissions(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let (first, rest) = split_word(args);
+    if let Some(role) = role_named(first) {
+        let (key, value) = key_and_value(rest);
+        // `sandbox.mode` reads as well as `mode` after a role.
+        let key = key.map(|key| match key.strip_prefix("sandbox.") {
+            Some(leaf) => leaf.to_owned(),
+            None => key,
+        });
+        let known = key
+            .as_deref()
+            .is_none_or(|key| ROLE_SANDBOX_KEYS.contains(&key));
+        if !known || (key.is_some() && value.is_none()) {
+            return Err(bad(
+                name,
+                format!(
+                    "use /permissions <role> or /permissions <role> <key> <value>, the key one \
+                     of {}",
+                    ROLE_SANDBOX_KEYS.join(", ")
+                ),
+            ));
+        }
+        return Ok(SlashCommand::Permissions {
+            role: Some(role),
+            key,
+            value,
+        });
+    }
     let (key, value) = key_and_value(args);
-    let known = key
-        .as_deref()
-        .is_none_or(|key| PERMISSION_KEYS.contains(&key));
+    let known = key.as_deref().is_none_or(is_permission_key);
     if !known || (key.is_some() && value.is_none()) {
         return Err(bad(
             name,
             format!(
-                "use /permissions or /permissions <key> <value>, the key one of {}",
+                "use /permissions [role] or /permissions [role] <key> <value>, the key one of {}",
                 PERMISSION_KEYS.join(", ")
             ),
         ));
     }
-    Ok(SlashCommand::Permissions { key, value })
+    Ok(SlashCommand::Permissions {
+        role: None,
+        key,
+        value,
+    })
 }
 
 fn parse_role(name: &str, word: &str) -> Result<RoleName, InputError> {
     role_named(word).ok_or_else(|| bad(name, format!("no role named {word:?}")))
 }
 
+/// One word is a role when it names one, and otherwise the default agent's model. An effort
+/// level may follow the model.
 fn parse_model(name: &str, args: &str) -> Result<SlashCommand, InputError> {
     let words: Vec<&str> = args.split_whitespace().collect();
-    let (role, worker) = match words.as_slice() {
+    let (words, effort) = match words.split_last() {
+        Some((last, rest)) if !rest.is_empty() && EFFORT_LEVELS.contains(last) => {
+            (rest, Some((*last).to_owned()))
+        }
+        _ => (words.as_slice(), None),
+    };
+    let (role, worker) = match words {
         [] => (None, None),
-        [role] => (Some(parse_role(name, role)?), None),
+        [word] => match role_named(word) {
+            Some(role) => (Some(role), None),
+            None => (None, Some(parse_worker(name, word)?)),
+        },
         [role, worker] => (
             Some(parse_role(name, role)?),
             Some(parse_worker(name, worker)?),
         ),
-        _ => return Err(bad(name, "use /model [role] [agent]")),
+        _ => return Err(bad(name, "use /model [role] [model] [effort]")),
     };
-    Ok(SlashCommand::Model { role, worker })
-}
-
-fn parse_agent(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let words: Vec<&str> = args.split_whitespace().collect();
-    let worker = match words.as_slice() {
-        [] => None,
-        [worker] => Some(parse_worker(name, worker)?),
-        _ => return Err(bad(name, "use /agent [agent]")),
-    };
-    Ok(SlashCommand::Agent { worker })
+    if effort.is_some() && worker.is_none() {
+        return Err(bad(name, "name the model before its effort"));
+    }
+    Ok(SlashCommand::Model {
+        role,
+        worker,
+        effort,
+    })
 }
 
 fn parse_effort(name: &str, args: &str) -> Result<SlashCommand, InputError> {
@@ -592,6 +893,37 @@ fn parse_effort(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         _ => return Err(bad(name, "use /effort [role] [level]")),
     };
     Ok(SlashCommand::Effort { role, level })
+}
+
+fn parse_agents(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let action = match args.split_whitespace().collect::<Vec<_>>().as_slice() {
+        [] => AgentsAction::List,
+        ["add", agent] if !agent.starts_with('-') => AgentsAction::Add {
+            name: (*agent).to_owned(),
+        },
+        _ => return Err(bad(name, "use /agents or /agents add <name>")),
+    };
+    Ok(SlashCommand::Agents { action })
+}
+
+fn parse_verbosity(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let level = match args {
+        "" => None,
+        "full" => Some(Verbosity::Full),
+        "normal" => Some(Verbosity::Normal),
+        "quiet" => Some(Verbosity::Quiet),
+        _ => return Err(bad(name, "use /verbosity [full|normal|quiet]")),
+    };
+    Ok(SlashCommand::Verbosity { level })
+}
+
+fn parse_connect(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let front_end = match args {
+        "hermes" => FrontEnd::Hermes,
+        "openclaw" => FrontEnd::OpenClaw,
+        _ => return Err(bad(name, "use /connect hermes or /connect openclaw")),
+    };
+    Ok(SlashCommand::Connect { front_end })
 }
 
 fn parse_one_word(name: &str, args: &str) -> Result<Option<String>, InputError> {
@@ -631,36 +963,6 @@ fn parse_preset(name: &str, args: &str) -> Result<SlashCommand, InputError> {
     })
 }
 
-fn parse_workflow(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let words: Vec<&str> = args.split_whitespace().collect();
-    let (workflow, action) = match words.as_slice() {
-        [] => {
-            return Ok(SlashCommand::Workflow {
-                name: None,
-                action: WorkflowAction::Use,
-            });
-        }
-        ["show", workflow] => (*workflow, WorkflowAction::Show),
-        ["diff", workflow] => (*workflow, WorkflowAction::Diff),
-        ["copy", workflow] => (*workflow, WorkflowAction::Copy),
-        ["copy", workflow, "--project"] => (*workflow, WorkflowAction::CopyToProject),
-        [workflow] if !["show", "diff", "copy"].contains(workflow) => {
-            (*workflow, WorkflowAction::Use)
-        }
-        _ => ("", WorkflowAction::Use),
-    };
-    if workflow.is_empty() || workflow.starts_with('-') {
-        return Err(bad(
-            name,
-            "use /workflow [name], /workflow show|diff <name>, or /workflow copy <name> [--project]",
-        ));
-    }
-    Ok(SlashCommand::Workflow {
-        name: Some(workflow.to_owned()),
-        action,
-    })
-}
-
 fn parse_card(name: &str, word: &str) -> Result<CardId, InputError> {
     if !looks_like_card(word) {
         return Err(bad(
@@ -671,29 +973,6 @@ fn parse_card(name: &str, word: &str) -> Result<CardId, InputError> {
     CardId::new(word).map_err(|err| bad(name, err.to_string()))
 }
 
-fn parse_checkpoints(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    match args.split_whitespace().collect::<Vec<_>>().as_slice() {
-        [] => Ok(SlashCommand::Checkpoints { card: None }),
-        [card] => Ok(SlashCommand::Checkpoints {
-            card: Some(parse_card(name, card)?),
-        }),
-        _ => Err(bad(name, "use /checkpoints [card]")),
-    }
-}
-
-/// Takes `handoff-<n>`, or `<n>` alone.
-fn parse_revert(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let usage = || bad(name, "use /revert <card> handoff-<n>");
-    let [card, checkpoint] = args.split_whitespace().collect::<Vec<_>>()[..] else {
-        return Err(usage());
-    };
-    let card = parse_card(name, card)?;
-    let checkpoint = CheckpointTag::parse_label(checkpoint)
-        .or_else(|| checkpoint.parse().ok().filter(|n| *n > 0))
-        .ok_or_else(usage)?;
-    Ok(SlashCommand::Revert { card, checkpoint })
-}
-
 /// A key and the rest of the line as its TOML value, or neither.
 fn key_and_value(args: &str) -> (Option<String>, Option<String>) {
     let (key, value) = split_word(args);
@@ -701,19 +980,6 @@ fn key_and_value(args: &str) -> (Option<String>, Option<String>) {
         (!key.is_empty()).then(|| key.to_owned()),
         (!value.is_empty()).then(|| value.to_owned()),
     )
-}
-
-fn parse_agents(name: &str, args: &str) -> Result<SlashCommand, InputError> {
-    let (id, rest) = split_word(args);
-    let (key, value) = key_and_value(rest);
-    if id.starts_with('-') || (key.is_some() && value.is_none()) {
-        return Err(bad(name, "use /agents [id] or /agents <id> <key> <value>"));
-    }
-    Ok(SlashCommand::Agents {
-        id: (!id.is_empty()).then(|| id.to_owned()),
-        key,
-        value,
-    })
 }
 
 fn parse_budget(name: &str, args: &str) -> Result<SlashCommand, InputError> {
@@ -798,6 +1064,14 @@ mod tests {
         RunId::new(text).unwrap()
     }
 
+    fn card(text: &str) -> CardId {
+        CardId::new(text).unwrap()
+    }
+
+    fn unknown(name: &str) -> Result<ParsedInput, InputError> {
+        Err(InputError::UnknownCommand(name.to_owned()))
+    }
+
     fn bad_args(command: &str) -> Result<ParsedInput, InputError> {
         Err(InputError::BadArguments {
             command: command.to_owned(),
@@ -829,62 +1103,59 @@ mod tests {
             ("@!!! hello", plain("@!!! hello")),
             ("@", Err(InputError::EmptyMention)),
             ("@   hello", Err(InputError::EmptyMention)),
+            ("/clear", slash(SlashCommand::Clear)),
+            ("/clear all", bad_args("clear")),
+            ("/resume", slash(SlashCommand::Resume { target: None })),
+            ("/resume run-01", slash(SlashCommand::Resume { target: Some(ResumeTarget::Run(run("run-01"))) })),
+            ("/resume chat-003", slash(SlashCommand::Resume { target: Some(ResumeTarget::Conversation(ChatId::numbered(3))) })),
+            ("/resume run-01 run-02", bad_args("resume")),
+            ("/resume ../x", bad_args("resume")),
+            ("/resume chat-../x", bad_args("resume")),
+            ("/resume --last", bad_args("resume")),
+            ("/resume codex:-p", bad_args("resume")),
+            ("/exit", slash(SlashCommand::Exit)),
             ("/ask how does auth work?", slash(SlashCommand::Ask { question: "how does auth work?".into() })),
             ("/ask", bad_args("ask")),
             ("/solo fix the typo", slash(SlashCommand::Solo { task: "fix the typo".into() })),
             ("  /crew add per-key rate limiting", slash(SlashCommand::Crew { task: "add per-key rate limiting".into() })),
             ("/crew", bad_args("crew")),
+            ("/follow-up run-01 add tests", slash(SlashCommand::FollowUp { run: Some(run("run-01")), request: "add tests".into() })),
+            ("/follow-up add tests", slash(SlashCommand::FollowUp { run: None, request: "add tests".into() })),
+            ("/follow-up running the linter too", slash(SlashCommand::FollowUp { run: None, request: "running the linter too".into() })),
+            ("/follow-up", bad_args("follow-up")),
+            ("/follow-up run-01", bad_args("follow-up")),
             ("/status", slash(SlashCommand::Status)),
             ("/status now", bad_args("status")),
-            ("/tree", slash(SlashCommand::Tree)),
-            ("/summary", slash(SlashCommand::Summary)),
-            ("/stop", slash(SlashCommand::Stop)),
-            ("/approvals", slash(SlashCommand::Approvals { key: None, value: None })),
-            ("/approvals merge.mode auto", slash(SlashCommand::Approvals { key: Some("merge.mode".into()), value: Some("auto".into()) })),
-            ("/approvals merge.rules.max_combined_diff_lines 400", slash(SlashCommand::Approvals { key: Some("merge.rules.max_combined_diff_lines".into()), value: Some("400".into()) })),
-            ("/approvals merge.mode", bad_args("approvals")),
-            ("/verbose", slash(SlashCommand::Verbose)),
-            ("/normal", slash(SlashCommand::Normal)),
-            ("/normal now", bad_args("normal")),
-            ("/quiet", slash(SlashCommand::Quiet)),
-            ("/workflows", slash(SlashCommand::Workflow { name: None, action: WorkflowAction::Use })),
+            ("/workflows", slash(SlashCommand::Workflows)),
             ("/workflows review-panel", bad_args("workflows")),
-            ("/vim", slash(SlashCommand::Vim)),
-            ("/help", slash(SlashCommand::Help)),
-            ("/exit", slash(SlashCommand::Exit)),
-            ("/resume", slash(SlashCommand::Resume { run: None })),
-            ("/resume run-01", slash(SlashCommand::Resume { run: Some(run("run-01")) })),
-            ("/resume run-01 run-02", bad_args("resume")),
-            ("/resume ../x", bad_args("resume")),
-            ("/continue", slash(SlashCommand::Continue { run: None, request: None })),
-            ("/continue run-01", slash(SlashCommand::Continue { run: Some(run("run-01")), request: None })),
-            ("/continue run-01 add tests", slash(SlashCommand::Continue { run: Some(run("run-01")), request: Some("add tests".into()) })),
-            ("/continue add tests", slash(SlashCommand::Continue { run: None, request: Some("add tests".into()) })),
-            ("/reassign card-003 codex/gpt-x", slash(SlashCommand::Reassign { card: Some(CardId::new("card-003").unwrap()), from: None, to: worker("codex/gpt-x") })),
+            ("/context", slash(SlashCommand::Context)),
+            ("/context now", bad_args("context")),
+            ("/rewind", slash(SlashCommand::Rewind { card: None })),
+            ("/rewind card-002", slash(SlashCommand::Rewind { card: Some(card("card-002")) })),
+            ("/rewind test-004", slash(SlashCommand::Rewind { card: Some(card("test-004")) })),
+            ("/rewind run-01", bad_args("rewind")),
+            ("/rewind card-002 handoff-1", bad_args("rewind")),
+            ("/reassign card-003 codex/gpt-x", slash(SlashCommand::Reassign { card: Some(card("card-003")), from: None, to: worker("codex/gpt-x") })),
             ("/reassign --from claude-code codex/gpt-x", slash(SlashCommand::Reassign { card: None, from: Some(VendorId("claude-code".into())), to: worker("codex/gpt-x") })),
             ("/reassign --from claude-code/opus codex", bad_args("reassign")),
             ("/reassign card-003", bad_args("reassign")),
             ("/reassign card-003 -x", bad_args("reassign")),
-            ("/narrator", slash(SlashCommand::Narrator { change: None })),
-            ("/narrator off", slash(SlashCommand::Narrator { change: Some(NarratorChange::Mode { mode: NarratorMode::Off }) })),
-            ("/narrator on_demand", slash(SlashCommand::Narrator { change: Some(NarratorChange::Mode { mode: NarratorMode::OnDemand }) })),
-            ("/narrator live", slash(SlashCommand::Narrator { change: Some(NarratorChange::Mode { mode: NarratorMode::Live }) })),
-            ("/narrator model ollama/qwen3", slash(SlashCommand::Narrator { change: Some(NarratorChange::Model { model: worker("ollama/qwen3") }) })),
-            ("/narrator loud", bad_args("narrator")),
-            ("/config", slash(SlashCommand::Config { key: None, value: None, reset: false })),
-            ("/config ui.keys", slash(SlashCommand::Config { key: Some("ui.keys".into()), value: None, reset: false })),
-            ("/config ui.keys \"vim\"", slash(SlashCommand::Config { key: Some("ui.keys".into()), value: Some("\"vim\"".into()), reset: false })),
-            ("/config gates.run [\"cargo\", \"test\"]", slash(SlashCommand::Config { key: Some("gates.run".into()), value: Some("[\"cargo\", \"test\"]".into()), reset: false })),
-            ("/config narrator.model --reset", slash(SlashCommand::Config { key: Some("narrator.model".into()), value: None, reset: true })),
-            ("/config --reset", bad_args("config")),
-            ("/config -x 1", bad_args("config")),
-            ("/model", slash(SlashCommand::Model { role: None, worker: None })),
-            ("/model reviewer", slash(SlashCommand::Model { role: Some(RoleName::Reviewer), worker: None })),
-            ("/model phase-lead codex/gpt-x", slash(SlashCommand::Model { role: Some(RoleName::PhaseLead), worker: Some(worker("codex/gpt-x")) })),
+            ("/stop", slash(SlashCommand::Stop { run: None })),
+            ("/stop run-01", slash(SlashCommand::Stop { run: Some(run("run-01")) })),
+            ("/stop run-01 run-02", bad_args("stop")),
+            ("/stop ../x", bad_args("stop")),
+            ("/model", slash(SlashCommand::Model { role: None, worker: None, effort: None })),
+            ("/model reviewer", slash(SlashCommand::Model { role: Some(RoleName::Reviewer), worker: None, effort: None })),
+            ("/model codex", slash(SlashCommand::Model { role: None, worker: Some(worker("codex")), effort: None })),
+            ("/model claude-code/opus", slash(SlashCommand::Model { role: None, worker: Some(worker("claude-code/opus")), effort: None })),
+            ("/model phase-lead codex/gpt-x", slash(SlashCommand::Model { role: Some(RoleName::PhaseLead), worker: Some(worker("codex/gpt-x")), effort: None })),
+            ("/model claude-code/opus xhigh", slash(SlashCommand::Model { role: None, worker: Some(worker("claude-code/opus")), effort: Some("xhigh".into()) })),
+            ("/model reviewer codex low", slash(SlashCommand::Model { role: Some(RoleName::Reviewer), worker: Some(worker("codex")), effort: Some("low".into()) })),
+            ("/resume codex:019a2f-4c", slash(SlashCommand::Resume { target: Some(ResumeTarget::VendorSession(VendorSessionRef { vendor: VendorId("codex".into()), id: "019a2f-4c".into() })) })),
             ("/model boss codex", bad_args("model")),
-            ("/agent", slash(SlashCommand::Agent { worker: None })),
-            ("/agent codex", slash(SlashCommand::Agent { worker: Some(worker("codex")) })),
-            ("/agent codex claude-code", bad_args("agent")),
+            ("/model -x", bad_args("model")),
+            ("/model owner codex extra", bad_args("model")),
+            ("/model reviewer high", bad_args("model")),
             ("/effort", slash(SlashCommand::Effort { role: None, level: None })),
             ("/effort high", slash(SlashCommand::Effort { role: None, level: Some("high".into()) })),
             ("/effort reviewer", slash(SlashCommand::Effort { role: Some(RoleName::Reviewer), level: None })),
@@ -892,6 +1163,14 @@ mod tests {
             ("/effort loud", bad_args("effort")),
             ("/effort boss high", bad_args("effort")),
             ("/effort owner high now", bad_args("effort")),
+            ("/agents", slash(SlashCommand::Agents { action: AgentsAction::List })),
+            ("/agents add hermes", slash(SlashCommand::Agents { action: AgentsAction::Add { name: "hermes".into() } })),
+            ("/agents add my-cli", slash(SlashCommand::Agents { action: AgentsAction::Add { name: "my-cli".into() } })),
+            ("/agents add", bad_args("agents")),
+            ("/agents add --force", bad_args("agents")),
+            ("/agents add a b", bad_args("agents")),
+            ("/agents codex", bad_args("agents")),
+            ("/agents codex model \"gpt-x\"", bad_args("agents")),
             ("/preset", slash(SlashCommand::Preset { name: None, action: PresetAction::Use })),
             ("/preset coordinated-crew", slash(SlashCommand::Preset { name: Some("coordinated-crew".into()), action: PresetAction::Use })),
             ("/preset show peer-crew", slash(SlashCommand::Preset { name: Some("peer-crew".into()), action: PresetAction::Show })),
@@ -902,57 +1181,70 @@ mod tests {
             ("/preset copy peer-crew --global", bad_args("preset")),
             ("/preset --project", bad_args("preset")),
             ("/preset a b", bad_args("preset")),
-            ("/agents", slash(SlashCommand::Agents { id: None, key: None, value: None })),
-            ("/agents codex", slash(SlashCommand::Agents { id: Some("codex".into()), key: None, value: None })),
-            ("/agents codex model \"gpt-x\"", slash(SlashCommand::Agents { id: Some("codex".into()), key: Some("model".into()), value: Some("\"gpt-x\"".into()) })),
-            ("/agents codex enabled", bad_args("agents")),
-            ("/budget", slash(SlashCommand::Budget { key: None, value: None })),
-            ("/budget run_usd 30", slash(SlashCommand::Budget { key: Some("run_usd".into()), value: Some("30".into()) })),
-            ("/budget run_usd", bad_args("budget")),
             ("/handoff", slash(SlashCommand::Handoff { role: None, key: None, value: None })),
             ("/handoff owner", slash(SlashCommand::Handoff { role: Some(RoleName::Owner), key: None, value: None })),
             ("/handoff owner mode auto", slash(SlashCommand::Handoff { role: Some(RoleName::Owner), key: Some("mode".into()), value: Some("auto".into()) })),
             ("/handoff owner mode", bad_args("handoff")),
             ("/handoff boss", bad_args("handoff")),
-            ("/permissions", slash(SlashCommand::Permissions { key: None, value: None })),
-            ("/permissions sandbox.network true", slash(SlashCommand::Permissions { key: Some("sandbox.network".into()), value: Some("true".into()) })),
-            ("/permissions limits.usd_per_day 25.0", slash(SlashCommand::Permissions { key: Some("limits.usd_per_day".into()), value: Some("25.0".into()) })),
+            ("/approvals", slash(SlashCommand::Approvals { key: None, value: None })),
+            ("/approvals merge.mode auto", slash(SlashCommand::Approvals { key: Some("merge.mode".into()), value: Some("auto".into()) })),
+            ("/approvals merge.rules.max_combined_diff_lines 400", slash(SlashCommand::Approvals { key: Some("merge.rules.max_combined_diff_lines".into()), value: Some("400".into()) })),
+            ("/approvals merge.mode", bad_args("approvals")),
+            ("/budget", slash(SlashCommand::Budget { key: None, value: None })),
+            ("/budget run_usd 30", slash(SlashCommand::Budget { key: Some("run_usd".into()), value: Some("30".into()) })),
+            ("/budget run_usd", bad_args("budget")),
+            ("/permissions", slash(SlashCommand::Permissions { role: None, key: None, value: None })),
+            ("/permissions sandbox.network true", slash(SlashCommand::Permissions { role: None, key: Some("sandbox.network".into()), value: Some("true".into()) })),
+            ("/permissions limits.usd_per_day 25.0", slash(SlashCommand::Permissions { role: None, key: Some("limits.usd_per_day".into()), value: Some("25.0".into()) })),
+            ("/permissions reviewer", slash(SlashCommand::Permissions { role: Some(RoleName::Reviewer), key: None, value: None })),
+            ("/permissions owner mode tool", slash(SlashCommand::Permissions { role: Some(RoleName::Owner), key: Some("mode".into()), value: Some("tool".into()) })),
+            ("/permissions owner sandbox.agents_commit false", slash(SlashCommand::Permissions { role: Some(RoleName::Owner), key: Some("agents_commit".into()), value: Some("false".into()) })),
+            ("/permissions owner mode", bad_args("permissions")),
+            ("/permissions owner protected_paths []", bad_args("permissions")),
+            ("/permissions sandbox.fail_closed false", slash(SlashCommand::Permissions { role: None, key: Some("sandbox.fail_closed".into()), value: Some("false".into()) })),
+            ("/permissions sandbox. true", bad_args("permissions")),
             ("/permissions all", bad_args("permissions")),
             ("/permissions sandbox.network", bad_args("permissions")),
             ("/permissions ui.keys vim", bad_args("permissions")),
+            ("/verbosity", slash(SlashCommand::Verbosity { level: None })),
+            ("/verbosity full", slash(SlashCommand::Verbosity { level: Some(Verbosity::Full) })),
+            ("/verbosity normal", slash(SlashCommand::Verbosity { level: Some(Verbosity::Normal) })),
+            ("/verbosity quiet", slash(SlashCommand::Verbosity { level: Some(Verbosity::Quiet) })),
+            ("/verbosity loud", bad_args("verbosity")),
+            ("/verbosity quiet now", bad_args("verbosity")),
+            ("/narrator", slash(SlashCommand::Narrator { change: None })),
+            ("/narrator off", slash(SlashCommand::Narrator { change: Some(NarratorChange::Mode { mode: NarratorMode::Off }) })),
+            ("/narrator on_demand", slash(SlashCommand::Narrator { change: Some(NarratorChange::Mode { mode: NarratorMode::OnDemand }) })),
+            ("/narrator live", slash(SlashCommand::Narrator { change: Some(NarratorChange::Mode { mode: NarratorMode::Live }) })),
+            ("/narrator model ollama/qwen3", slash(SlashCommand::Narrator { change: Some(NarratorChange::Model { model: worker("ollama/qwen3") }) })),
+            ("/narrator loud", bad_args("narrator")),
             ("/theme", slash(SlashCommand::Theme { name: None })),
             ("/theme light", slash(SlashCommand::Theme { name: Some("light".into()) })),
-            ("/init", slash(SlashCommand::Init)),
-            ("/init now", bad_args("init")),
-            ("/context", slash(SlashCommand::Context)),
-            ("/context now", bad_args("context")),
-            ("/workflow", slash(SlashCommand::Workflow { name: None, action: WorkflowAction::Use })),
-            ("/workflow review-panel", slash(SlashCommand::Workflow { name: Some("review-panel".into()), action: WorkflowAction::Use })),
-            ("/workflow show review-panel", slash(SlashCommand::Workflow { name: Some("review-panel".into()), action: WorkflowAction::Show })),
-            ("/workflow diff peer-crew", slash(SlashCommand::Workflow { name: Some("peer-crew".into()), action: WorkflowAction::Diff })),
-            ("/workflow copy review-panel", slash(SlashCommand::Workflow { name: Some("review-panel".into()), action: WorkflowAction::Copy })),
-            ("/workflow copy review-panel --project", slash(SlashCommand::Workflow { name: Some("review-panel".into()), action: WorkflowAction::CopyToProject })),
-            ("/workflow show", bad_args("workflow")),
-            ("/workflow --project", bad_args("workflow")),
-            ("/workflow a b", bad_args("workflow")),
-            ("/checkpoints", slash(SlashCommand::Checkpoints { card: None })),
-            ("/checkpoints card-002", slash(SlashCommand::Checkpoints { card: Some(CardId::new("card-002").unwrap()) })),
-            ("/checkpoints run-01", bad_args("checkpoints")),
-            ("/checkpoints card-002 card-003", bad_args("checkpoints")),
-            ("/revert card-002 handoff-1", slash(SlashCommand::Revert { card: CardId::new("card-002").unwrap(), checkpoint: 1 })),
-            ("/revert test-004 2", slash(SlashCommand::Revert { card: CardId::new("test-004").unwrap(), checkpoint: 2 })),
-            ("/revert card-002", bad_args("revert")),
-            ("/revert card-002 handoff-0", bad_args("revert")),
-            ("/revert card-002 handoff-x", bad_args("revert")),
-            ("/revert handoff-1 card-002", bad_args("revert")),
-            ("/revert card-002 handoff-1 now", bad_args("revert")),
-            ("/frobnicate", Err(InputError::UnknownCommand("frobnicate".into()))),
-            ("/", Err(InputError::UnknownCommand(String::new()))),
-            ("/ ask why", Err(InputError::UnknownCommand(String::new()))),
+            ("/vim", slash(SlashCommand::Vim)),
+            ("/config", slash(SlashCommand::Config { key: None, value: None, reset: false })),
+            ("/config ui.keys", slash(SlashCommand::Config { key: Some("ui.keys".into()), value: None, reset: false })),
+            ("/config ui.keys \"vim\"", slash(SlashCommand::Config { key: Some("ui.keys".into()), value: Some("\"vim\"".into()), reset: false })),
+            ("/config gates.run [\"cargo\", \"test\"]", slash(SlashCommand::Config { key: Some("gates.run".into()), value: Some("[\"cargo\", \"test\"]".into()), reset: false })),
+            ("/config narrator.model --reset", slash(SlashCommand::Config { key: Some("narrator.model".into()), value: None, reset: true })),
+            ("/config --reset", bad_args("config")),
+            ("/config -x 1", bad_args("config")),
+            ("/setup", slash(SlashCommand::Setup)),
+            ("/setup now", bad_args("setup")),
+            ("/connect hermes", slash(SlashCommand::Connect { front_end: FrontEnd::Hermes })),
+            ("/connect openclaw", slash(SlashCommand::Connect { front_end: FrontEnd::OpenClaw })),
+            ("/connect", bad_args("connect")),
+            ("/connect slack", bad_args("connect")),
+            ("/connect hermes openclaw", bad_args("connect")),
+            ("/doctor", slash(SlashCommand::Doctor)),
+            ("/doctor codex", bad_args("doctor")),
+            ("/help", slash(SlashCommand::Help)),
+            ("/frobnicate", unknown("frobnicate")),
+            ("/", unknown("")),
+            ("/ ask why", unknown("")),
             ("@codex please add a test", mention(MentionTarget::Worker(worker("codex")), "please add a test")),
             ("@claude-code/opus look at the store", mention(MentionTarget::Worker(worker("claude-code/opus")), "look at the store")),
-            ("@card-002 keep a fallback", mention(MentionTarget::Card(CardId::new("card-002").unwrap()), "keep a fallback")),
-            ("@test-004 fail first", mention(MentionTarget::Card(CardId::new("test-004").unwrap()), "fail first")),
+            ("@card-002 keep a fallback", mention(MentionTarget::Card(card("card-002")), "keep a fallback")),
+            ("@test-004 fail first", mention(MentionTarget::Card(card("test-004")), "fail first")),
             ("@reviewer be strict", mention(MentionTarget::Role(RoleName::Reviewer), "be strict")),
             ("@phase-lead hurry", mention(MentionTarget::Role(RoleName::PhaseLead), "hurry")),
             ("@2 stop there", mention(MentionTarget::Number(2), "stop there")),
@@ -967,12 +1259,31 @@ mod tests {
     }
 
     #[test]
+    fn dropped_and_renamed_commands_are_unknown() {
+        for name in [
+            "continue",
+            "summary",
+            "tree",
+            "workflow",
+            "checkpoints",
+            "revert",
+            "agent",
+            "verbose",
+            "normal",
+            "quiet",
+            "init",
+        ] {
+            assert_eq!(parse_input(&format!("/{name}")), unknown(name), "/{name}");
+        }
+    }
+
+    #[test]
     fn every_menu_command_parses_and_every_parsed_command_is_in_the_menu() {
         for spec in SLASH_COMMANDS {
             let args = match spec.name {
-                "ask" | "solo" | "crew" => " something",
+                "ask" | "solo" | "crew" | "follow-up" => " something",
                 "reassign" => " card-001 codex",
-                "revert" => " card-001 handoff-1",
+                "connect" => " hermes",
                 _ => "",
             };
             let parsed = parse_input(&format!("/{}{args}", spec.name));
@@ -994,6 +1305,56 @@ mod tests {
     }
 
     #[test]
+    fn the_menu_groups_commands_by_category() {
+        let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
+        for spec in SLASH_COMMANDS {
+            let title = spec.category.title();
+            match groups.last_mut() {
+                Some((last, names)) if *last == title => names.push(spec.name),
+                _ => groups.push((title, vec![spec.name])),
+            }
+        }
+        assert_eq!(
+            groups,
+            [
+                ("Session", vec!["clear", "resume", "exit"]),
+                ("Work", vec!["ask", "solo", "crew", "follow-up"]),
+                (
+                    "Runs",
+                    vec![
+                        "status",
+                        "workflows",
+                        "context",
+                        "rewind",
+                        "reassign",
+                        "stop"
+                    ]
+                ),
+                (
+                    "Crew",
+                    vec!["model", "effort", "agents", "preset", "handoff"]
+                ),
+                (
+                    "Approvals and limits",
+                    vec!["approvals", "budget", "permissions"]
+                ),
+                ("Learning", vec!["records", "recipes", "skills", "memory"]),
+                ("Display", vec!["verbosity", "narrator", "theme", "vim"]),
+                (
+                    "Setup and help",
+                    vec!["config", "setup", "connect", "doctor", "help"]
+                ),
+            ]
+        );
+        assert!(
+            SLASH_COMMANDS
+                .windows(2)
+                .all(|pair| pair[0].category <= pair[1].category),
+            "the categories follow the enum's order"
+        );
+    }
+
+    #[test]
     fn handlers_match_the_contract() {
         let handler = |name: &str| {
             SLASH_COMMANDS
@@ -1001,35 +1362,96 @@ mod tests {
                 .find(|spec| spec.name == name)
                 .map(|spec| spec.handler)
         };
-        for name in ["tree", "help", "exit"] {
+        for name in ["workflows", "help", "exit"] {
             assert_eq!(handler(name), Some(Handler::Ui), "{name}");
         }
-        for name in ["verbose", "normal", "quiet", "vim", "theme"] {
+        for name in ["verbosity", "vim", "theme"] {
             assert_eq!(handler(name), Some(Handler::Both), "{name}");
         }
         for name in [
+            "clear",
+            "resume",
             "solo",
+            "follow-up",
+            "rewind",
+            "stop",
+            "model",
             "effort",
             "preset",
             "agents",
             "budget",
             "handoff",
             "permissions",
-            "init",
+            "records",
+            "recipes",
+            "skills",
+            "memory",
+            "setup",
+            "connect",
+            "doctor",
         ] {
             assert_eq!(handler(name), Some(Handler::App), "{name}");
         }
     }
 
     #[test]
+    fn learning_commands_parse_with_their_optional_names() {
+        let slash = |text: &str| match parse_input(text) {
+            Ok(ParsedInput::Slash { command }) => Ok(command),
+            Ok(other) => panic!("{text}: {other:?}"),
+            Err(err) => Err(err),
+        };
+        assert_eq!(slash("/records"), Ok(SlashCommand::Records { agent: None }));
+        assert_eq!(
+            slash("/records codex"),
+            Ok(SlashCommand::Records {
+                agent: Some("codex".to_owned())
+            })
+        );
+        assert_eq!(
+            slash("/recipes api-feature"),
+            Ok(SlashCommand::Recipes {
+                name: Some("api-feature".to_owned())
+            })
+        );
+        assert_eq!(slash("/skills"), Ok(SlashCommand::Skills));
+        assert_eq!(slash("/memory"), Ok(SlashCommand::Memory));
+        assert!(slash("/memory now").is_err());
+        assert!(slash("/recipes a b").is_err());
+    }
+
+    #[test]
+    fn only_a_required_argument_makes_the_menu_wait() {
+        let waits: Vec<&str> = SLASH_COMMANDS
+            .iter()
+            .filter(|spec| spec.needs_argument())
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(
+            waits,
+            ["ask", "solo", "crew", "follow-up", "reassign", "connect"]
+        );
+    }
+
+    #[test]
     fn parsed_input_round_trips() {
         for input in [
             "/model reviewer codex/x",
+            "/model codex",
             "@all hi",
             "/narrator live",
             "/config narrator.model --reset",
             "/approvals merge.mode auto",
             "/permissions sandbox.network true",
+            "/resume chat-003",
+            "/resume run-01",
+            "/follow-up run-01 add tests",
+            "/rewind card-002",
+            "/stop run-01",
+            "/agents",
+            "/agents add hermes",
+            "/verbosity quiet",
+            "/connect openclaw",
             "hi",
             "",
         ] {

@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: shown
+---
+Approvals
+Who decides each checkpoint, and how auto matched you
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Goal · auto · rules and approver both agree                        0 matches in a row · 0 misses │
+│ ❯ How it's decided             auto                      built-in             Goal: who approves │
+│   Who decides in auto          both agree                built-in             Goal: who decides… │
+│   When auto doesn't approve    ask you                   built-in             Goal: what happen… │
+│                                                                                                  │
+│ Merge · auto · your rules decide                                   0 matches in a row · 0 misses │
+│   How it's decided             auto                      built-in             Merge: who approv… │
+│   Who decides in auto          your rules                built-in             Merge: who decide… │
+│   When auto doesn't approve    ask you                   built-in             Merge: what happe… │
+│                                                                                                  │
+│ Approver                                                 the cheapest model from another company │
+│   Model                        cheapest, other company   built-in             The approver mode… │
+│   Rules file                   ~/.argonauts/approver-r…  everywhere (global)  The approver's ru… │
+│                                                                                                  │
+│ Everything else                                                                                  │
+│   Spot checks that pause auto  5                         built-in             Pause auto approv… │
+│   Shells refused approval      OPENCLAW_SHELL, HERMES_…  built-in             Variables that ma… │
+│                                                                                                  │
+│ Spot checks                                                                                      │
+│   None waiting                                                                                   │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ edit · esc back

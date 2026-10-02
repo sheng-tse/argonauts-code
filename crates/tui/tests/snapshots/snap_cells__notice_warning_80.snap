@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/cells.rs
+assertion_line: 80
+expression: text(&lines)
+---
+● codex hit its rate limit, so card-003 waits until 11:20 AM
+  ⎿  claude-code and agy keep going

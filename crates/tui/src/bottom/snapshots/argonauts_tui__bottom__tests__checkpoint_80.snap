@@ -1,0 +1,25 @@
+---
+source: crates/tui/src/bottom/tests.rs
+expression: screen(&view)
+---
+────────────────────────────────────────────────────────────────────────────────
+◆ Merge card-002 into main?
+  3 files · +48 -6 · tests passed · agy reviewed it and approved
+
+    1. Merge
+    2. Open a pull request
+    3. Keep the branch
+    4. Abandon the run
+    5. Show the diff
+
+  ↑ to answer
+
+❯ also add a --csv flag
+──────────────────────────────────────────────────────────────────── peer-crew ─
+❯ ▏↑ to answer the card
+────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 3 agents
+
+  ◐ claude-code  card-002                        2/5 · 1m0s · ↓ 18.1k tokens
+  ◐ codex        card-003                        1/5 · 28s · ↓ 12.9k tokens
+  ○ agy          review                          waiting

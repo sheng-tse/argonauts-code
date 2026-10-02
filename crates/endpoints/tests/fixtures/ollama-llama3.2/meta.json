@@ -1,0 +1,49 @@
+{
+  "api": "chat_completions",
+  "base_url": "http://localhost:11434/v1",
+  "note": "Recorded by live_ollama_llama32_reply with ARGONAUTS_RECORD_FIXTURES=1.",
+  "recordings": {
+    "schema": {
+      "file": "schema.stdout.jsonl",
+      "input_tokens": 40,
+      "output_tokens": 20,
+      "prompt": "Does add(a, b) return a + b? Answer as JSON.",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "fail"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "verdict",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "structured": {
+        "reason": "No",
+        "verdict": "fail"
+      },
+      "structured_output": "json_schema"
+    },
+    "text": {
+      "file": "text.stdout.jsonl",
+      "input_tokens": 32,
+      "output_tokens": 3,
+      "prompt": "Say hello in one short sentence.",
+      "text": "Hello!"
+    }
+  },
+  "server": "ollama",
+  "server_version": "0.20.3",
+  "synthetic": false,
+  "worker": "ollama/llama3.2"
+}

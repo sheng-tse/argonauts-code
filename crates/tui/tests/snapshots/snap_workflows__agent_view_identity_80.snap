@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: "&text"
+---
+peer-crew
+Fix the race in the export test and add a regressi…  6/11 agents · 46m0s · $3.02
+
+╭ Understand · 2 agents ───┬ restater ─────────────────────────────────────────╮
+│ ❯ ✓ restater · Opus on … │ Opus on Claude Code (claude-code/opus) · run-01   │
+│   ✓ restater · GPT 5.6 … │ ✓ Completed · Opus on Claude Code · 31k tok · 58s │
+│                          │                                                   │
+│                          │ Prompt · 14 lines · ⏎expand                       │
+│                          │   Build the terminal and the whole bottom region… │
+│                          │   Read the design notes first, then the referenc… │
+│                          │   …12 more lines                                  │
+│                          │                                                   │
+│                          │ Activity · last 3 of 195 tool calls · ⏎expand     │
+│                          │   ● Bash(cargo test -p argonauts-tui composer)    │
+│                          │   ● Bash(cargo clippy -p argonauts-tui --all-ta…) │
+│                          │   ● Bash(cargo test -p argonauts-tui)             │
+│                          │                                                   │
+│                          │ Diff · 4 files · +120 -18 · ⏎open                 │
+│                          │                                                   │
+│                          │ Subagents · 4 · structure not exposed · ⏎expand   │
+│                          │   ✓ explorer  done · Found 14 call sites          │
+│                          │   ● planner   running                             │
+│                          │   ✗ tester    failed · 2 tests failed             │
+│                          │   …1 more                                         │
+│                          │                                                   │
+│                          │ Outcome · 9 lines · ⏎expand                       │
+│                          │   Report: the terminal and the bottom region are  │
+│                          │   done, with no stubs left.                       │
+│                          │                                                   │
+│                          │   What I built                                    │
+╰──────────────────────────┴───────────────────────────────────────────────────╯
+↑↓ agent · ⏎ expand · s steer · t take over · x stop · esc back     1-26 of 29 ↓

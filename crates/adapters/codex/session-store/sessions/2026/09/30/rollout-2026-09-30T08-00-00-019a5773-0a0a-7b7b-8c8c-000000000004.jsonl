@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-30T08:00:00.000Z","type":"session_meta","payload":{"id":"019a5773-0a0a-7b7b-8c8c-000000000004","timestamp":"2026-09-30T08:00:00.000Z","cwd":"/work/shop","originator":"codex-tui","cli_version":"0.158.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019a5770-e3f9-7f92-ab2b-5ba3b7602e8a","depth":1}}}}}
+{"timestamp":"2026-09-30T08:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Look for the paste handler"}]}}

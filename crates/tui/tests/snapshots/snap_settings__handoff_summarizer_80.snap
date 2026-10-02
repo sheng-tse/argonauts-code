@@ -1,0 +1,13 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "picker_lines(picker, width)"
+---
+────────────────────────────────────────────────────────────────────────────────
+  Who summarizes the old session
+  Who summarizes the old session for note+summary: harness/model or an endpoint.
+  Unset uses the replacement's harness with its cheapest model. A role's own
+  setting wins
+
+  ❯
+
+  Enter to continue · Esc to cancel

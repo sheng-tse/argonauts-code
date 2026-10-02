@@ -7,7 +7,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::OnceLock;
 
+use argonauts_core::agents::AgentGroup;
+use argonauts_core::layout::session_files;
 use argonauts_core::{CommandSpec, StopSignal, create_private_dir_all, write_private_file};
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, killpg};
@@ -17,7 +20,10 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-/// Longest output line kept, in bytes. The rest of a longer line is dropped and reported.
+use crate::rawlog::{CopyingReader, OutputCopies};
+
+/// Longest output line kept, in bytes. The rest of a longer line is dropped and reported, and
+/// only a raw log copy keeps it.
 pub const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Lines buffered between the reader tasks and the consumer. Small, because lines can be large.
@@ -65,6 +71,9 @@ pub enum SpawnError {
 #[derive(Debug)]
 pub struct AgentProcess {
     group: u32,
+    /// The leader's start time, once [`AgentProcess::record`] read it.
+    start_time: OnceLock<u64>,
+    launch: String,
     input: Option<mpsc::UnboundedSender<String>>,
     lines: mpsc::Receiver<OutputLine>,
     lines_open: bool,
@@ -76,6 +85,16 @@ pub struct AgentProcess {
 impl AgentProcess {
     /// Must be called inside a tokio runtime.
     pub fn spawn(spec: &CommandSpec) -> Result<Self, SpawnError> {
+        Self::start(spec, None)
+    }
+
+    /// Like [`AgentProcess::spawn`], and copies stdout and stderr into the raw log exactly as
+    /// they are read.
+    pub fn spawn_logged(spec: &CommandSpec, copies: OutputCopies) -> Result<Self, SpawnError> {
+        Self::start(spec, Some(copies))
+    }
+
+    fn start(spec: &CommandSpec, copies: Option<OutputCopies>) -> Result<Self, SpawnError> {
         let program = resolve_program(
             &spec.program,
             std::env::var_os("PATH").as_deref(),
@@ -86,7 +105,8 @@ impl AgentProcess {
             program: spec.program.clone(),
             source,
         };
-        let mut child = session_command(&program, spec)
+        let launch = new_launch_id();
+        let mut child = session_command(&program, spec, &launch)
             .spawn()
             .map_err(spawn_error)?;
         let group = child.id().ok_or_else(|| {
@@ -94,7 +114,7 @@ impl AgentProcess {
                 "the process exited before it could be tracked",
             ))
         })?;
-        let (lines, readers) = start_readers(&mut child);
+        let (lines, readers) = start_readers(&mut child, copies);
         let input = child
             .stdin
             .take()
@@ -108,6 +128,8 @@ impl AgentProcess {
 
         Ok(Self {
             group,
+            start_time: OnceLock::new(),
+            launch,
             input,
             lines,
             lines_open: true,
@@ -115,6 +137,11 @@ impl AgentProcess {
             exited: false,
             readers,
         })
+    }
+
+    /// The id in this launch's `ARGONAUTS_LAUNCH`, which everything it starts inherits.
+    pub fn launch_id(&self) -> &str {
+        &self.launch
     }
 
     /// The process id, which is also its process group id.
@@ -168,8 +195,22 @@ impl AgentProcess {
         self.input = None;
     }
 
+    /// Signals the group, unless its id may belong to another group now: the leader was
+    /// reaped and its pid went to another process.
     pub fn signal(&self, signal: StopSignal) -> io::Result<()> {
+        if self.group_id_reused() {
+            return Ok(());
+        }
         signal_group(self.group, signal)
+    }
+
+    fn group_id_reused(&self) -> bool {
+        let now = crate::liveness::start_time(self.group);
+        match self.start_time.get() {
+            Some(started) => now.is_some_and(|now| now != *started),
+            // Never recorded, so once it has exited any process with its pid is another one.
+            None => self.exited && now.is_some(),
+        }
     }
 
     /// Stops reading output. Used when something the agent started keeps its pipes open.
@@ -212,13 +253,36 @@ pub fn exit_parts(status: &ExitStatus) -> (Option<i32>, Option<i32>) {
     (status.code(), status.signal())
 }
 
-/// Makes the child lead a new session, and with it a process group whose id is its pid.
+/// Makes the child lead a new session, and with it a process group whose id is its pid. On Linux
+/// the child also gets SIGKILL when the supervisor dies. Its children don't inherit that, so only
+/// an exit guard (`reaper::guard_group`) takes down the rest of its tree.
 pub(crate) fn new_session(command: &mut Command) {
-    // SAFETY: the closure runs in the child between fork and exec and only calls setsid, which is
-    // async-signal-safe and touches no memory shared with the parent.
+    #[cfg(target_os = "linux")]
+    let supervisor = nix::unistd::getpid();
+    // SAFETY: the closure runs in the child between fork and exec. It only makes syscalls
+    // (setsid, and prctl and getppid on Linux), allocates nothing, and touches no memory shared
+    // with the parent.
     unsafe {
-        command.pre_exec(|| nix::unistd::setsid().map(drop).map_err(io::Error::from));
+        command.pre_exec(move || {
+            nix::unistd::setsid().map_err(io::Error::from)?;
+            #[cfg(target_os = "linux")]
+            die_with_supervisor(supervisor)?;
+            Ok(())
+        });
     }
+}
+
+/// `PR_SET_PDEATHSIG` fires when the thread that forked exits, not the whole process. Agents are
+/// spawned from runtime worker threads, which live as long as the supervisor's runtime.
+#[cfg(target_os = "linux")]
+fn die_with_supervisor(supervisor: Pid) -> io::Result<()> {
+    nix::sys::prctl::set_pdeathsig(Signal::SIGKILL).map_err(io::Error::from)?;
+    // The supervisor may have died before the signal was armed. A raw OS error, since
+    // allocating is unsafe here.
+    if nix::unistd::getppid() != supervisor {
+        return Err(io::Error::from_raw_os_error(nix::libc::ESRCH));
+    }
+    Ok(())
 }
 
 /// A bare name is searched for on the absolute entries of `path_var`, so a relative entry such as
@@ -272,7 +336,12 @@ fn is_inside(path: &Path, dir: &Path) -> bool {
     }
 }
 
-fn session_command(program: &Path, spec: &CommandSpec) -> Command {
+/// Unique to one launch, unlike session keys, which repeat across runs.
+fn new_launch_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+fn session_command(program: &Path, spec: &CommandSpec, launch: &str) -> Command {
     let wants_stdin = spec.stdin.is_some() || spec.keep_stdin_open;
     let mut command = Command::new(program);
     command
@@ -290,15 +359,28 @@ fn session_command(program: &Path, spec: &CommandSpec) -> Command {
         command.env_remove(name);
     }
     command.envs(spec.env_set.iter().map(|(k, v)| (k, v)));
+    // OpenCode 1.18.34 works in `$PWD` rather than its real directory, so the PWD inherited from
+    // your shell sent a card's session into your own checkout.
+    command.env("PWD", &spec.cwd);
+    // Set last, so no spec can forge another launch's marker.
+    command.env(crate::reaper::LAUNCH_MARKER, launch);
     // No terminal to ask on, so git must fail instead of waiting for a password.
     command.env("GIT_TERMINAL_PROMPT", "0");
     command
 }
 
-fn start_readers(child: &mut Child) -> (mpsc::Receiver<OutputLine>, Vec<JoinHandle<()>>) {
+fn start_readers(
+    child: &mut Child,
+    copies: Option<OutputCopies>,
+) -> (mpsc::Receiver<OutputLine>, Vec<JoinHandle<()>>) {
+    let (stdout_copy, stderr_copy) = match copies {
+        Some(OutputCopies { stdout, stderr }) => (Some(stdout), Some(stderr)),
+        None => (None, None),
+    };
     let (line_tx, lines) = mpsc::channel(LINE_QUEUE);
     let mut readers = Vec::with_capacity(2);
     if let Some(stdout) = child.stdout.take() {
+        let stdout = CopyingReader::new(stdout, stdout_copy);
         readers.push(tokio::spawn(read_lines(
             stdout,
             Stream::Stdout,
@@ -306,6 +388,7 @@ fn start_readers(child: &mut Child) -> (mpsc::Receiver<OutputLine>, Vec<JoinHand
         )));
     }
     if let Some(stderr) = child.stderr.take() {
+        let stderr = CopyingReader::new(stderr, stderr_copy);
         readers.push(tokio::spawn(read_lines(stderr, Stream::Stderr, line_tx)));
     }
     (lines, readers)
@@ -426,6 +509,107 @@ fn decode_line(mut bytes: Vec<u8>) -> String {
         .unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned())
 }
 
+/// The child's pipes, for a session driver that speaks a protocol over them. Stderr is still
+/// read as lines by the [`AgentProcess`].
+#[derive(Debug)]
+pub struct DriverPipes {
+    pub stdin: ChildStdin,
+    pub stdout: tokio::process::ChildStdout,
+}
+
+impl AgentProcess {
+    /// Like [`AgentProcess::spawn`], but hands stdin and stdout to the caller, for a session
+    /// driver. `spec.stdin` is not written, since the driver owns stdin. Must be called inside a
+    /// tokio runtime.
+    pub fn spawn_piped(spec: &CommandSpec) -> Result<(Self, DriverPipes), SpawnError> {
+        let program = resolve_program(
+            &spec.program,
+            std::env::var_os("PATH").as_deref(),
+            &spec.cwd,
+        )?;
+        write_spec_files(spec)?;
+        let spawn_error = |source| SpawnError::Spawn {
+            program: spec.program.clone(),
+            source,
+        };
+        let launch = new_launch_id();
+        let mut command = session_command(&program, spec, &launch);
+        command.stdin(Stdio::piped());
+        let mut child = command.spawn().map_err(spawn_error)?;
+        let group = child.id().ok_or_else(|| {
+            spawn_error(io::Error::other(
+                "the process exited before it could be tracked",
+            ))
+        })?;
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            let _ = signal_group(group, StopSignal::Kill);
+            return Err(spawn_error(io::Error::other(
+                "the process started without its pipes",
+            )));
+        };
+        // Stdout is gone from the child by now, so only stderr is read as lines.
+        let (lines, readers) = start_readers(&mut child, None);
+        let (exit_tx, exit) = oneshot::channel();
+        tokio::spawn(async move {
+            let _ = exit_tx.send(child.wait().await);
+        });
+        let process = Self {
+            group,
+            start_time: OnceLock::new(),
+            launch,
+            input: None,
+            lines,
+            lines_open: true,
+            exit,
+            exited: false,
+            readers,
+        };
+        Ok((process, DriverPipes { stdin, stdout }))
+    }
+
+    /// The group, pid, and start time (`crate::liveness::start_time`), read right after the
+    /// spawn.
+    pub fn record(&self) -> io::Result<AgentGroup> {
+        let start_time = match self.start_time.get() {
+            Some(started) => *started,
+            None => crate::liveness::start_time(self.group).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("process {} exited before it could be recorded", self.group),
+                )
+            })?,
+        };
+        let _ = self.start_time.set(start_time);
+        Ok(AgentGroup {
+            pgid: self.group,
+            pid: self.group,
+            start_time,
+        })
+    }
+}
+
+/// Writes `layout::session_files::PROCESS` in `session_dir`, private to you. The file is
+/// replaced whole, so a crash never leaves half a record for recovery to read.
+pub fn write_process_file(session_dir: &Path, record: &AgentGroup) -> io::Result<()> {
+    create_private_dir_all(session_dir)?;
+    let json = serde_json::to_vec_pretty(record).map_err(io::Error::other)?;
+    let path = session_dir.join(session_files::PROCESS);
+    let partial = session_dir.join(format!("{}.partial", session_files::PROCESS));
+    write_private_file(&partial, &json)?;
+    std::fs::rename(&partial, &path)
+}
+
+/// The record in `session_dir`, or `None` when the session never wrote one.
+pub fn read_process_file(session_dir: &Path) -> io::Result<Option<AgentGroup>> {
+    match std::fs::read(session_dir.join(session_files::PROCESS)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +651,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_raw_log_keeps_what_lines_cut_and_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path().join("session");
+        let raw = crate::rawlog::RawLog::create(&session).unwrap();
+        let long = MAX_LINE_BYTES + 100;
+        let script = format!(
+            "head -c {long} /dev/zero | tr '\\0' a; printf '\\n\\377 bad\\r\\nend'; \
+             printf 'warn\\r\\n\\376\\n' >&2"
+        );
+        let spec = sh_spec(dir.path(), &script);
+        let process = AgentProcess::spawn_logged(&spec, raw.output_copies()).unwrap();
+        let (lines, status) = collect(process).await;
+        assert!(status.success());
+
+        let stdout: Vec<_> = lines
+            .iter()
+            .filter(|l| l.stream == Stream::Stdout)
+            .collect();
+        assert_eq!(stdout[0].text.len(), MAX_LINE_BYTES);
+        assert_eq!(stdout[0].dropped, 100);
+        assert_eq!(stdout[1].text, "\u{fffd} bad");
+        assert_eq!(texts(&lines, Stream::Stderr), ["warn", "\u{fffd}"]);
+
+        let mut expected = vec![b'a'; long];
+        expected.extend_from_slice(b"\n\xff bad\r\nend\n");
+        let logged = std::fs::read(raw.stdout_path()).unwrap();
+        assert!(
+            logged == expected,
+            "the raw stdout differs from what was printed"
+        );
+        let logged = std::fs::read(raw.stderr_path()).unwrap();
+        assert_eq!(logged, b"warn\r\n\xfe\n");
+    }
+
+    #[tokio::test]
     async fn runs_in_its_own_session_and_process_group() {
         let dir = tempfile::tempdir().unwrap();
         let spec = sh_spec(dir.path(), "sleep 5");
@@ -492,6 +711,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pwd_names_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = CommandSpec::new("/usr/bin/printenv", dir.path()).arg("PWD");
+        let (lines, status) = collect(AgentProcess::spawn(&spec).unwrap()).await;
+        assert!(status.success());
+        let pwd = dir.path().display().to_string();
+        assert_eq!(texts(&lines, Stream::Stdout), [pwd.as_str()]);
+    }
+
+    #[tokio::test]
     async fn writes_files_env_and_stdin() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("nested/schema.json");
@@ -514,6 +743,20 @@ mod tests {
             texts(&lines, Stream::Stdout),
             ["{\"type\":\"object\"}", "set=yes home=gone", "from stdin"]
         );
+    }
+
+    #[tokio::test]
+    async fn every_launch_gets_its_own_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = sh_spec(dir.path(), "printf '%s' \"$ARGONAUTS_LAUNCH\"");
+        spec.env_set
+            .push((crate::reaper::LAUNCH_MARKER.into(), "forged".into()));
+        let first = AgentProcess::spawn(&spec).unwrap();
+        let second = AgentProcess::spawn(&spec).unwrap();
+        assert_ne!(first.launch_id(), second.launch_id());
+        let launch = first.launch_id().to_owned();
+        let (lines, _) = collect(first).await;
+        assert_eq!(texts(&lines, Stream::Stdout), [launch]);
     }
 
     #[tokio::test]
@@ -682,5 +925,41 @@ mod tests {
                 .consumed,
             0
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_piped_hands_over_stdin_and_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = r#"read line; echo "got $line"; echo "note" >&2"#;
+        let (process, pipes) = AgentProcess::spawn_piped(&sh_spec(dir.path(), script)).unwrap();
+        let DriverPipes { mut stdin, stdout } = pipes;
+        stdin.write_all(b"hello\n").await.unwrap();
+        stdin.flush().await.unwrap();
+        let mut reply = String::new();
+        BufReader::new(stdout).read_line(&mut reply).await.unwrap();
+        assert_eq!(reply, "got hello\n");
+        assert!(!process.send_input("ignored".into()));
+
+        let (lines, status) = collect(process).await;
+        assert!(status.success());
+        assert!(texts(&lines, Stream::Stdout).is_empty());
+        assert_eq!(texts(&lines, Stream::Stderr), ["note"]);
+    }
+
+    #[test]
+    fn process_file_is_private_and_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path().join("session");
+        assert_eq!(read_process_file(&session).unwrap(), None);
+        let record = AgentGroup {
+            pgid: 4242,
+            pid: 4242,
+            start_time: 1_790_000_000,
+        };
+        write_process_file(&session, &record).unwrap();
+        let path = session.join(session_files::PROCESS);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(read_process_file(&session).unwrap(), Some(record));
     }
 }

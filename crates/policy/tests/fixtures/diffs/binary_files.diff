@@ -1,0 +1,39 @@
+diff --git a/certs/server.der b/certs/server.der
+new file mode 100644
+index 0000000..1a2b3c4
+Binary files /dev/null and b/certs/server.der differ
+diff --git a/data/app.sqlite b/data/app.sqlite
+index 1111111..2222222 100644
+GIT binary patch
+literal 8
+PcmZ?wbhEHbWMl9A2i^b|
+
+literal 8
+PcmZ?wbhEHbWMl9A2ZH~(
+
+diff --git a/dist/config.zip b/dist/config.zip
+new file mode 100644
+index 0000000..3c4d5e6
+Binary files /dev/null and b/dist/config.zip differ
+diff --git a/keys/client.p12 b/keys/client.p12
+new file mode 100644
+index 0000000..4d5e6f7
+Binary files /dev/null and b/keys/client.p12 differ
+diff --git a/img/Logo.PNG b/img/Logo.PNG
+new file mode 100644
+index 0000000..5e6f7a8
+Binary files /dev/null and b/img/Logo.PNG differ
+diff --git a/fonts/inter.woff2 b/fonts/inter.woff2
+index 6f7a8b9..7a8b9c0 100644
+Binary files a/fonts/inter.woff2 and b/fonts/inter.woff2 differ
+diff --git a/old/cache.db b/old/cache.db
+deleted file mode 100644
+index 8b9c0d1..0000000
+Binary files a/old/cache.db and /dev/null differ
+diff --git a/src/lib.rs b/src/lib.rs
+index 9c0d1e2..0d1e2f3 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1,2 @@
+ pub mod parser;
++pub mod store;

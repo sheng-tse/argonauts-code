@@ -59,6 +59,10 @@ pub struct EngineContext {
     /// Cancelled on SIGTERM or supervisor exit. Stop every session after its tool call, commit,
     /// record `Parked`, and return.
     pub shutdown: CancellationToken,
+    /// You asked to carry on a run whose log ends `Finished(Stopped)`: the engine records
+    /// `Resumed` and goes on from its last committed state. Without it, an engine over a
+    /// finished run only answers what it can and returns at once.
+    pub reopen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +168,13 @@ pub enum EngineCommand {
     Revert {
         card: CardId,
         checkpoint: u32,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Your verdict on one of this run's auto-approvals, passed to the policy's
+    /// `spot_checked`.
+    SpotCheck {
+        id: CheckpointId,
+        correct: bool,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// A change to the running workflow from the next phase on. It goes through the

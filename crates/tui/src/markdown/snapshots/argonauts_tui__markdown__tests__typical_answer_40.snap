@@ -1,0 +1,23 @@
+---
+source: crates/tui/src/markdown/tests.rs
+assertion_line: 213
+expression: text
+---
+● The flag is in and the tests pass:
+
+  $ todo export --json
+  {"items": 3, "done": 1}
+
+  Still waiting on you:
+  - The 2 --json questions. "Keep the
+    CSV default" works.
+  - The review follow-ups. The main ones
+    are the missing schema, the date
+    format in the output, and whether
+    empty fields should print as null in
+    the JSON export.
+
+  Next
+
+  1. Answer the questions.
+  2. Merge the branch.

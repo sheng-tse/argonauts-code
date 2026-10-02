@@ -1,8 +1,10 @@
 //! Stands in for vendor CLIs and ACP agents in tests: plays the first matching rule of
 //! `ARGONAUTS_FAKE_SCENARIO` and logs every invocation to `ARGONAUTS_FAKE_LOG`. With `acp` as
-//! its first argument it plays an `[[acp]]` rule as an ACP agent instead.
+//! its first argument it plays an `[[acp]]` rule as an ACP agent instead. Without a matching
+//! rule it still answers `--version` from the scenario, and `--help`.
 
 mod acp;
+mod help;
 mod report;
 
 use std::fs::{self, OpenOptions};
@@ -70,6 +72,10 @@ fn run(argv0: &str, args: &[String]) -> anyhow::Result<i32> {
             && let Some(version) = scenario.version.get(argv0)
         {
             println!("{version}");
+            return Ok(0);
+        }
+        if let Some(help) = help::text(argv0, args) {
+            print!("{help}");
             return Ok(0);
         }
         if is_chat_command(argv0, args) {

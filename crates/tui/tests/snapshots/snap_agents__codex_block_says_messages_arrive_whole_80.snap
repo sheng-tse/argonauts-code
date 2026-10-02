@@ -1,0 +1,10 @@
+---
+source: crates/tui/tests/snap_agents.rs
+expression: text(lines)
+---
+● GPT 5.6 on Codex · owner · card-002 (Redis store) · 3m40s
+  ⎿  Ran 1 shell command (ctrl+o to expand)
+     Task(look around)
+        Running · Reading the store's tests
+     Messages arrive whole · thread steps aren't streamed
+     The store needs a connection pool first.

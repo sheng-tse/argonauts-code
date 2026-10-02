@@ -1,0 +1,344 @@
+//! The `claude -p` command line for one session.
+
+use std::path::Path;
+
+use anyhow::{bail, ensure};
+use argonauts_core::{
+    AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile, env_remove_except,
+};
+
+use crate::settings::{CommandSandbox, session_settings};
+use crate::tweaks::{self, Fanout, SUBAGENT_TOOL};
+
+/// Written into the session's scratch directory, outside the worktree.
+pub const SETTINGS_FILE: &str = "claude-settings.json";
+
+const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
+const BUILD_TOOLS: &[&str] = &["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
+/// Newer models only get these with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, and `--tools` must name
+/// them too. They are how an owner's to-do list reaches the agent panel.
+const TODO_TOOLS: &[&str] = &["TaskCreate", "TaskGet", "TaskUpdate", "TaskList"];
+
+/// Messaging between Claude Code sessions on one machine (2.1.224 and later) would let blind
+/// sessions reach each other outside the blackboard.
+const CROSS_SESSION_TOOLS: &[&str] = &["SendMessage", "ListAgents"];
+
+/// An isolated session loads only your own settings. `-p` skips the trust dialog, so a
+/// repository's `.claude/settings.json` would otherwise run its hooks, including ones an agent
+/// wrote, and enable its plugins.
+const ISOLATED_SETTING_SOURCES: &str = "user";
+
+/// The key a subscription login may come as in headless setups, from `claude setup-token`.
+const SUBSCRIPTION_KEYS: &[&str] = &["CLAUDE_CODE_OAUTH_TOKEN"];
+
+const API_KEYS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+];
+
+/// More of a parent Claude Code session's own state (seen in 2.1.285), on top of the core list,
+/// so a worker started from inside Claude Code doesn't pass for that session.
+pub const PARENT_SESSION_STATE: &[&str] = &[
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+];
+
+pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
+    ensure!(
+        !req.workdir.as_os_str().is_empty(),
+        "the session needs a working directory"
+    );
+    ensure!(!req.prompt.trim().is_empty(), "the prompt is empty");
+    if let Some(dir) = &req.scratch_dir {
+        check_private_path("scratch directory", dir, &req.workdir)?;
+    }
+    if let Some(config) = &req.mcp_config {
+        check_private_path("MCP config", config, &req.workdir)?;
+    }
+
+    let role = effective_role(req);
+    let fanout = Fanout::from_setting(req.native_fanout);
+
+    let mut spec = CommandSpec::new(program, &req.workdir).arg("-p");
+    if req.keep_input_open {
+        spec = spec.args(["--input-format", "stream-json"]);
+    }
+    spec = spec
+        // stream-json needs --verbose under -p, or Claude Code exits 1.
+        .args(["--output-format", "stream-json", "--verbose"])
+        .arg("--include-partial-messages");
+    spec = with_session_flag(spec, req)?;
+    spec = spec
+        // A project's settings can set another default mode, and a resume forgets the flag,
+        // so it goes on every launch.
+        .args(["--permission-mode", permission_mode(role)])
+        .args(["--permission-prompts", "none"])
+        .args(["--tools".to_owned(), tool_list(role, fanout)])
+        .arg("--disallowedTools")
+        .args(disallowed_tools(fanout));
+    if let Some(config) = &req.mcp_config {
+        spec = spec.args(["--mcp-config".to_owned(), path_arg(config)?]);
+    }
+    // Otherwise Claude Code loads its own agents, skills, plugins, and MCP servers, as it does
+    // when you run it. An isolated session gets none: --tools doesn't cover MCP tools, so every
+    // server but Argonauts' own is left out.
+    if req.isolated {
+        spec = spec
+            .arg("--strict-mcp-config")
+            .args(["--setting-sources", ISOLATED_SETTING_SOURCES]);
+    }
+    spec = with_settings(spec, req)?;
+    if let Some(compaction) = req.compaction {
+        spec = spec.args(tweaks::compaction(compaction).args);
+    }
+    spec = with_model_flags(spec, req)?.args(req.extra_args.iter().cloned());
+
+    spec.env_remove = removed_env_vars(req);
+    spec.env_set = env_vars(req, role, fanout)?;
+    if req.keep_input_open {
+        spec.stdin = Some(user_message_line(&req.prompt));
+        spec.keep_stdin_open = true;
+    } else {
+        // On stdin, so a prompt never looks like a flag or shows in the process list.
+        spec.stdin = Some(req.prompt.clone());
+    }
+    Ok(spec)
+}
+
+/// The generated settings go in a private file in the scratch directory, which also names the
+/// session. Without one they are passed inline.
+fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
+    let commands = if req.tool_sandbox_off {
+        CommandSandbox::Off
+    } else {
+        CommandSandbox::Own
+    };
+    let settings = session_settings(req.mcp_config.is_some(), commands)?;
+    let Some(dir) = &req.scratch_dir else {
+        return Ok(spec.args(["--settings".to_owned(), settings]));
+    };
+    let path = dir.join(SETTINGS_FILE);
+    let spec_path = path_arg(&path)?;
+    spec.files.push(SpecFile {
+        path,
+        contents: settings,
+    });
+    spec = spec.args(["--settings".to_owned(), spec_path]);
+    Ok(match session_name(dir) {
+        Some(name) => spec.args(["--name".to_owned(), name]),
+        None => spec,
+    })
+}
+
+/// A build session needs the approved goal. Without one it gets the read-only flags, so nothing
+/// is written before you approve the goal, even if the conductor's own check were missed.
+pub fn effective_role(req: &SessionRequest) -> SessionRole {
+    let approved = req
+        .goal_hash
+        .as_deref()
+        .is_some_and(|h| !h.trim().is_empty());
+    match req.role {
+        SessionRole::Build if approved => SessionRole::Build,
+        _ => SessionRole::ReadOnly,
+    }
+}
+
+/// One stream-json user message, the way `--input-format stream-json` reads them.
+pub fn user_message_line(text: &str) -> String {
+    let message = serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": text},
+    });
+    format!("{message}\n")
+}
+
+fn permission_mode(role: SessionRole) -> &'static str {
+    match role {
+        // Denies anything that would prompt, and the tool list has no way to write.
+        SessionRole::ReadOnly => "dontAsk",
+        SessionRole::Build => "acceptEdits",
+    }
+}
+
+fn tool_list(role: SessionRole, fanout: Fanout) -> String {
+    let mut tools: Vec<&str> = match role {
+        SessionRole::ReadOnly => READ_ONLY_TOOLS.to_vec(),
+        SessionRole::Build => [BUILD_TOOLS, TODO_TOOLS].concat(),
+    };
+    if role == SessionRole::Build && fanout.offers_subagents() {
+        tools.push(SUBAGENT_TOOL);
+    }
+    tools.join(",")
+}
+
+fn disallowed_tools(fanout: Fanout) -> Vec<&'static str> {
+    let mut tools = CROSS_SESSION_TOOLS.to_vec();
+    if fanout == Fanout::Off {
+        tools.push(SUBAGENT_TOOL);
+    }
+    tools
+}
+
+fn with_session_flag(spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
+    match (&req.resume_session, &req.session_id) {
+        (Some(resume), chosen) => {
+            let resume = flag_value("session id", resume)?;
+            if let Some(chosen) = chosen {
+                // A different id would fork the session, which the adapter doesn't do.
+                ensure!(
+                    chosen == resume,
+                    "can't resume session {resume} under a new id {chosen}"
+                );
+            }
+            // Never --continue, which picks the latest session in the folder.
+            Ok(spec.args(["--resume", resume]))
+        }
+        (None, Some(chosen)) => {
+            ensure!(
+                is_uuid(chosen),
+                "Claude Code session ids are UUIDs, not {chosen:?}"
+            );
+            Ok(spec.args(["--session-id", chosen.as_str()]))
+        }
+        (None, None) => Ok(spec),
+    }
+}
+
+fn with_model_flags(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
+    if let Some(model) = &req.model {
+        spec = spec.args(["--model", flag_value("model", model)?]);
+    }
+    if let Some(effort) = &req.effort {
+        spec = spec.args(["--effort", flag_value("effort", effort)?]);
+    }
+    if let Some(schema) = &req.json_schema {
+        ensure!(schema.is_object(), "the JSON schema must be an object");
+        spec = spec.args(["--json-schema".to_owned(), schema.to_string()]);
+    }
+    if let Some(budget) = req.max_budget_usd {
+        spec = spec.args(native_cap_args(budget)?);
+    }
+    Ok(spec)
+}
+
+/// `--max-budget-usd` is a backstop for the conductor's own meter. Subagent spend counts toward
+/// it, and totals restored by `--resume` don't, so the caller passes what is left.
+pub fn native_cap_args(budget_usd: f64) -> anyhow::Result<[String; 2]> {
+    ensure!(
+        budget_usd.is_finite() && budget_usd > 0.0,
+        "the Claude Code budget must be a positive number of dollars, not {budget_usd}"
+    );
+    Ok(["--max-budget-usd".to_owned(), budget_usd.to_string()])
+}
+
+fn env_vars(
+    req: &SessionRequest,
+    role: SessionRole,
+    fanout: Fanout,
+) -> anyhow::Result<Vec<(String, String)>> {
+    // Auto memory is shared by every worktree of a repository, so it would leak between cards.
+    let mut vars = vec![("CLAUDE_CODE_DISABLE_AUTO_MEMORY".to_owned(), "1".to_owned())];
+    if role == SessionRole::Build {
+        vars.push(("CLAUDE_CODE_ENABLE_TODO_TOOLS".to_owned(), "1".to_owned()));
+    }
+    if let Some(compaction) = req.compaction {
+        vars.extend(tweaks::compaction(compaction).env_set);
+    }
+    if let Some(setting) = req.native_fanout
+        && fanout != Fanout::Unset
+    {
+        vars.extend(tweaks::native_fanout(setting).env_set);
+    }
+    let removed = removed_env_vars(req);
+    for (name, value) in &req.env_set {
+        ensure!(
+            !name.is_empty() && !name.contains('=') && !name.contains('\0'),
+            "{name:?} isn't a valid environment variable name"
+        );
+        ensure!(
+            !value.contains('\0'),
+            "the value of {name} holds a NUL byte"
+        );
+        // Setting one of these would undo the auth mode or reconnect a parent session.
+        ensure!(
+            !removed.iter().any(|r| r == name),
+            "{name} can't be set for a Claude Code session with this auth mode"
+        );
+        vars.push((name.clone(), value.clone()));
+    }
+    Ok(vars)
+}
+
+fn removed_env_vars(req: &SessionRequest) -> Vec<String> {
+    // With -p an API key or auth token wins over the login, so under a subscription both go.
+    let mut vars = match req.auth {
+        AuthMode::Subscription => env_remove_except(SUBSCRIPTION_KEYS),
+        AuthMode::ApiKey => env_remove_except(API_KEYS),
+    };
+    vars.extend(PARENT_SESSION_STATE.iter().map(|v| (*v).to_owned()));
+    if req.effort.is_some() {
+        // The environment variable outranks --effort.
+        vars.push("CLAUDE_CODE_EFFORT_LEVEL".to_owned());
+    }
+    if let Some(compaction) = req.compaction {
+        vars.extend(
+            tweaks::compaction_env_remove(compaction)
+                .iter()
+                .map(|v| (*v).to_owned()),
+        );
+    }
+    vars
+}
+
+/// The worker sets the scratch directory to the session folder, so its name tells you which
+/// session a row in your own Claude Code agent list belongs to.
+fn session_name(scratch_dir: &Path) -> Option<String> {
+    let folder = scratch_dir.file_name()?.to_string_lossy();
+    let folder: String = folder.chars().filter(|c| !c.is_control()).collect();
+    let folder = folder.trim();
+    (!folder.is_empty()).then(|| format!("argonauts {folder}"))
+}
+
+/// Files Claude Code reads at start must be absolute, or they'd resolve against the worktree,
+/// and outside it, or the agent could rewrite its own settings.
+fn check_private_path(what: &str, path: &Path, workdir: &Path) -> anyhow::Result<()> {
+    ensure!(
+        path.is_absolute(),
+        "the {what} must be an absolute path, not {}",
+        path.display()
+    );
+    ensure!(
+        !path.starts_with(workdir),
+        "the {what} {} is inside the worktree",
+        path.display()
+    );
+    Ok(())
+}
+
+fn path_arg(path: &Path) -> anyhow::Result<String> {
+    match path.to_str() {
+        Some(text) => Ok(text.to_owned()),
+        None => bail!("{} isn't valid UTF-8", path.display()),
+    }
+}
+
+fn flag_value<'a>(what: &str, value: &'a str) -> anyhow::Result<&'a str> {
+    ensure!(!value.trim().is_empty(), "the {what} is empty");
+    ensure!(
+        !value.starts_with('-'),
+        "the {what} can't start with '-': {value}"
+    );
+    Ok(value)
+}
+
+/// `--session-id` takes only a UUID in the 8-4-4-4-12 hex form.
+fn is_uuid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, len)| group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit()))
+}

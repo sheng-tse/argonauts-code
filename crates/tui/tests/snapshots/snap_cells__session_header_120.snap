@@ -1,0 +1,10 @@
+---
+source: crates/tui/tests/cells.rs
+expression: text(&lines)
+---
+
+    ▟▙     Argonauts v0.0.1
+   ▟██▙    Claude Code · Opus 5.5 with xhigh effort · peer-crew
+ ▝▀▀▀▀▀▀▘  ~/github/argonauts
+
+  Antigravity CLI: not signed in

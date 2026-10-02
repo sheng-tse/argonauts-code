@@ -1,0 +1,14 @@
+---
+source: crates/tui/tests/snap_agents.rs
+expression: text(lines)
+---
+● GPT 5.6 on Codex · owner · card-002 (Hello file)
+  ⎿  Creating hello.txt now.
+
+● GPT 5.6 on Codex · owner · card-002 (Hello file)
+  ⎿  Write(hello.txt)
+        Wrote hello.txt
+     Created hello.txt with a greeting.
+
+● GPT 5.6 on Codex · owner · card-002 (Hello file)
+  ⎿  Done · 2 tool uses · report ✓ · 30s · 28k tokens

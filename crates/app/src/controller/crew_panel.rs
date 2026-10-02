@@ -1,0 +1,294 @@
+//! The crew panel's rows the screen can't build itself: the conversations, the agent CLIs' own
+//! sessions in this repo, and the runs of this repo and of every repo with a live supervisor.
+//! The screen adds its own agents, live, in place of the run it holds.
+
+use std::collections::BTreeSet;
+
+use argonauts_core::api::{RunState, RunSummary};
+use argonauts_core::app::{AppEvent, ViewData};
+use argonauts_core::crew_panel::{CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTarget};
+use argonauts_core::names::WorkerRef;
+use argonauts_core::vendor_sessions::{VendorScan, VendorSession};
+
+use super::chat::{self, ChatState};
+use super::{Ctx, Effect, run_commands};
+
+/// Each CLI's newest sessions the panel lists.
+const SESSIONS_PER_CLI: usize = 20;
+
+pub(crate) async fn show(ctx: &mut Ctx, chat: &ChatState) -> anyhow::Result<Vec<Effect>> {
+    let repo = ctx.env.display_repo();
+    let chat_dir = ctx.env.chat_dir();
+    let mut rows = chat::crew_rows(&chat_dir, chat, &repo);
+    let own = chat::crew_vendor_sessions(&chat_dir);
+    rows.extend(
+        cli_sessions(ctx)
+            .await
+            .iter()
+            .filter(|session| !own.contains(&session.id))
+            .map(|session| session_row(session, &repo)),
+    );
+    for listed in run_commands::all_repos(ctx).await? {
+        rows.extend(listed.runs.iter().map(|run| run_row(run, &listed.repo)));
+    }
+    ctx.send(AppEvent::View {
+        data: Box::new(ViewData::Crew {
+            panel: CrewPanel { repo, rows },
+        }),
+    });
+    Ok(Vec::new())
+}
+
+/// Every agent CLI's own sessions that ran in this repo, read on a blocking thread.
+async fn cli_sessions(ctx: &Ctx) -> Vec<VendorSession> {
+    let Some(home) = ctx.env.user_home.clone() else {
+        return Vec::new();
+    };
+    let adapters = match crate::commands::adapters_here(Some(&ctx.env), ctx.settings.resolved()) {
+        Ok(adapters) => adapters,
+        Err(err) => {
+            tracing::warn!("listing the agent CLIs for the crew panel: {err:#}");
+            return Vec::new();
+        }
+    };
+    let scan = VendorScan::new(ctx.env.repo_root.clone(), home);
+    let listed = tokio::task::spawn_blocking(move || {
+        let mut seen = BTreeSet::new();
+        let mut sessions = Vec::new();
+        for adapter in adapters {
+            // A CLI can be both built in and set up again as a harness.
+            if !seen.insert(adapter.id().to_owned()) {
+                continue;
+            }
+            match adapter.vendor_sessions(&scan, SESSIONS_PER_CLI) {
+                Ok(found) => sessions.extend(found),
+                Err(err) => tracing::warn!("listing {}'s sessions: {err:#}", adapter.id()),
+            }
+        }
+        sessions
+    })
+    .await;
+    listed.unwrap_or_default()
+}
+
+/// A CLI session takes more, so it's ready.
+pub(crate) fn session_row(session: &VendorSession, repo: &str) -> CrewRow {
+    CrewRow {
+        target: CrewTarget::VendorSession {
+            session: session.reference(),
+        },
+        state: CrewState::Ready,
+        title: session.title.clone(),
+        repo: repo.to_owned(),
+        run: None,
+        worker: Some(WorkerRef::new(
+            session.vendor.0.clone(),
+            session.model.clone(),
+        )),
+        latest: session.last_message.clone().unwrap_or_default(),
+        updated: session.updated,
+        details: CrewDetails {
+            last_message: session.last_message.clone(),
+            branch: session.branch.clone(),
+            prompt: session.prompt.clone(),
+            ..CrewDetails::default()
+        },
+    }
+}
+
+/// A whole run, as one row under its own heading.
+pub(crate) fn run_row(run: &RunSummary, repo: &str) -> CrewRow {
+    CrewRow {
+        target: CrewTarget::Run {
+            run: run.run.clone(),
+        },
+        state: run_state(run),
+        title: run.title.clone(),
+        repo: repo.to_owned(),
+        run: Some(CrewRun {
+            id: run.run.clone(),
+            title: run.title.clone(),
+        }),
+        worker: None,
+        latest: run.stopped_at.clone(),
+        updated: run.updated,
+        details: CrewDetails {
+            spent: Some(run.spent),
+            ..CrewDetails::default()
+        },
+    }
+}
+
+/// A parked or crashed run takes more once resumed, so it's ready; one that waits on a card
+/// needs you.
+fn run_state(run: &RunSummary) -> CrewState {
+    if !run.waiting.is_empty() {
+        return CrewState::NeedsYou;
+    }
+    match run.state {
+        RunState::Running | RunState::Pausing if run.live => CrewState::Working,
+        RunState::Running | RunState::Pausing | RunState::Parked | RunState::Crashed => {
+            CrewState::Ready
+        }
+        RunState::Merged | RunState::PullRequest | RunState::BranchLeft => CrewState::Done,
+        RunState::Stopped | RunState::Abandoned => CrewState::Stopped,
+        RunState::Failed => CrewState::Failed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::Paths;
+    use argonauts_core::app::{ChatEvent, TurnReply, UiCommand, ViewRequest};
+    use argonauts_core::events::run::RunMode;
+    use argonauts_core::names::{ChatId, CheckpointId, TurnId, VendorId};
+    use argonauts_core::{RunId, Spend};
+    use time::OffsetDateTime;
+
+    use super::*;
+    use crate::chat_store::ChatStore;
+    use crate::controller::test_support::{Harness, HarnessOptions};
+    use crate::env::AppEnv;
+
+    fn summary(state: RunState, live: bool, waiting: bool) -> RunSummary {
+        RunSummary {
+            run: RunId::new("run-07").unwrap(),
+            title: "Fix the login redirect".into(),
+            mode: RunMode::Crew,
+            preset: "peer-crew".into(),
+            state,
+            stopped_at: "plan checkpoint".into(),
+            updated: OffsetDateTime::UNIX_EPOCH,
+            spent: Spend {
+                output_tokens: 9_000,
+                cost_usd: 0.46,
+                ..Spend::default()
+            },
+            sessions_to_resume: 1,
+            waiting: if waiting {
+                vec![CheckpointId::numbered(1)]
+            } else {
+                Vec::new()
+            },
+            live,
+            remind: false,
+        }
+    }
+
+    #[test]
+    fn runs_read_as_the_tab_they_belong_to() {
+        let state = |state, live, waiting| run_state(&summary(state, live, waiting));
+        assert_eq!(state(RunState::Parked, false, true), CrewState::NeedsYou);
+        assert_eq!(state(RunState::Running, true, false), CrewState::Working);
+        assert_eq!(state(RunState::Running, false, false), CrewState::Ready);
+        assert_eq!(state(RunState::Parked, false, false), CrewState::Ready);
+        assert_eq!(state(RunState::Crashed, false, false), CrewState::Ready);
+        assert_eq!(state(RunState::Merged, false, false), CrewState::Done);
+        assert_eq!(state(RunState::Abandoned, false, false), CrewState::Stopped);
+        assert_eq!(state(RunState::Failed, false, false), CrewState::Failed);
+
+        let row = run_row(&summary(RunState::Parked, false, true), "~/web");
+        assert_eq!(row.repo, "~/web");
+        assert_eq!(row.latest, "plan checkpoint");
+        assert_eq!(row.run.as_ref().map(|run| run.id.as_str()), Some("run-07"));
+        assert_eq!(
+            row.details.spent.map(|spent| spent.output_tokens),
+            Some(9_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_panel_lists_conversations_and_runs_with_their_states() {
+        let mut harness = Harness::start_with(HarnessOptions {
+            prepare: Some(Box::new(|repo| {
+                let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
+                let store = ChatStore::open(&env.chat_dir(), &ChatId::numbered(4));
+                for event in [
+                    ChatEvent::TurnStarted {
+                        turn: TurnId::numbered(1),
+                        text: "How does the export pick a format?".to_owned(),
+                        worker: "claude-code".parse().unwrap(),
+                        read_only: true,
+                        commit: "abc".to_owned(),
+                        uncommitted: Vec::new(),
+                        settings_sha256: None,
+                    },
+                    ChatEvent::TurnFinished {
+                        turn: TurnId::numbered(1),
+                        reply: TurnReply::Answer {
+                            markdown: "It reads --format first.".to_owned(),
+                        },
+                        spend: Spend::default(),
+                        elapsed_ms: 10,
+                    },
+                ] {
+                    store.append(&event).unwrap();
+                }
+            })),
+            ..HarnessOptions::default()
+        })
+        .await;
+        harness
+            .conductor
+            .set_runs(vec![summary(RunState::Parked, false, true)]);
+        harness
+            .send(UiCommand::Request {
+                view: ViewRequest::Crew,
+            })
+            .await;
+        let AppEvent::View { data } = harness
+            .until(|event| {
+                matches!(event, AppEvent::View { data } if matches!(**data, ViewData::Crew { .. }))
+            })
+            .await
+        else {
+            unreachable!()
+        };
+        let ViewData::Crew { panel } = *data else {
+            unreachable!()
+        };
+        let chat = panel
+            .rows
+            .iter()
+            .find(|row| matches!(&row.target, CrewTarget::Conversation { chat } if *chat == ChatId::numbered(4)))
+            .expect("the conversation");
+        assert_eq!(chat.state, CrewState::Ready);
+        assert_eq!(chat.title, "How does the export pick a format?");
+        assert_eq!(chat.latest, "It reads --format first.");
+        let run = panel
+            .rows
+            .iter()
+            .find(|row| matches!(row.target, CrewTarget::Run { .. }))
+            .expect("this repo's run");
+        assert_eq!(run.state, CrewState::NeedsYou);
+        assert_eq!(run.repo, panel.repo);
+        harness.exit().await;
+    }
+
+    #[test]
+    fn a_cli_session_is_ready_with_its_model_and_branch() {
+        let session = VendorSession {
+            vendor: VendorId("codex".into()),
+            id: "019a2f".into(),
+            title: "Explain the input handling".into(),
+            prompt: Some("Explain the input handling in detail".into()),
+            folder: "/w".into(),
+            updated: OffsetDateTime::UNIX_EPOCH,
+            model: Some("gpt-5.6".into()),
+            branch: Some("main".into()),
+            last_message: Some("It reads keys in one loop.".into()),
+        };
+        let row = session_row(&session, "~/app");
+        assert_eq!(row.state, CrewState::Ready);
+        assert_eq!(
+            row.worker.as_ref().map(ToString::to_string).as_deref(),
+            Some("codex/gpt-5.6")
+        );
+        assert_eq!(row.latest, "It reads keys in one loop.");
+        assert_eq!(row.details.branch.as_deref(), Some("main"));
+        let CrewTarget::VendorSession { session } = &row.target else {
+            panic!("{:?}", row.target);
+        };
+        assert_eq!(session.to_string(), "codex:019a2f");
+    }
+}

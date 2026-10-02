@@ -2,10 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use argonauts_adapter_antigravity_cli::{AntigravityCli, TESTED_VERSIONS};
+use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
+use argonauts_core::limits::{QuotaSource, QuotaStatus};
 use argonauts_core::{
     Adapter, AgentEvent, BudgetLimit, BudgetMeter, ErrorCategory, Report, ReportStatus, RetryReason,
 };
 use serde_json::{Value, json};
+use time::macros::datetime;
 
 const VERSION: &str = "1.2.13";
 
@@ -34,6 +37,53 @@ fn replay(name: &str) -> Replay {
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+}
+
+/// Recordings of sessions, as opposed to the quota probe.
+const SESSIONS: &[&str] = &[
+    "readonly_ok",
+    "build_hello_schema",
+    "build_shell",
+    "stdin_steer",
+    "build_subagent",
+    "readonly_write_refused",
+];
+
+/// The older replays check the other events in order; context fill has its own test.
+fn without_fills(events: Vec<AgentEvent>) -> Vec<AgentEvent> {
+    events
+        .into_iter()
+        .filter(|e| !matches!(e, AgentEvent::ContextFill { .. }))
+        .collect()
+}
+
+fn fills(events: &[AgentEvent]) -> Vec<u64> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ContextFill { used, size: None } => Some(*used),
+            _ => None,
+        })
+        .collect()
+}
+
+fn subagents(events: &[AgentEvent]) -> Vec<&SubagentUpdate> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Subagent { update } => Some(update),
+            _ => None,
+        })
+        .collect()
+}
+
+fn meta_args(meta: &Value) -> Vec<&str> {
+    meta["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 fn names(events: &[AgentEvent]) -> Vec<&'static str> {
@@ -73,14 +123,9 @@ fn every_tested_version_has_fixtures() {
 
 #[test]
 fn recordings_used_the_cheapest_model() {
-    for name in ["readonly_ok", "build_hello_schema", "build_shell"] {
+    for name in SESSIONS {
         let meta = replay(name).meta;
-        let args: Vec<&str> = meta["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
+        let args = meta_args(&meta);
         let after = |flag: &str| {
             let at = args.iter().position(|a| *a == flag).unwrap();
             args[at + 1]
@@ -94,6 +139,7 @@ fn recordings_used_the_cheapest_model() {
 #[test]
 fn read_only_reply_streams_text_then_succeeds() {
     let Replay { events, .. } = replay("readonly_ok");
+    let events = without_fills(events);
     assert_eq!(
         names(&events),
         [
@@ -150,6 +196,7 @@ fn read_only_reply_streams_text_then_succeeds() {
 #[test]
 fn build_with_schema_writes_a_file_and_reports() {
     let Replay { events, meta } = replay("build_hello_schema");
+    let events = without_fills(events);
     assert_eq!(
         meta["files_after"],
         json!(["README.md", "hello.txt", "notes.txt"])
@@ -238,6 +285,7 @@ fn build_with_schema_writes_a_file_and_reports() {
 #[test]
 fn denied_command_then_capacity_error_fails_once() {
     let Replay { events, .. } = replay("build_shell");
+    let events = without_fills(events);
     assert_eq!(
         names(&events),
         [
@@ -273,11 +321,13 @@ fn denied_command_then_capacity_error_fails_once() {
             retryable: false,
         }
     );
+    // The turn's result closes it. The stderr lines that repeat its error come later and are
+    // dropped, error id and all.
     assert_eq!(
         events[6],
         AgentEvent::Error {
             category: ErrorCategory::Overloaded,
-            message: "API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model gemini-3.6-flash-low on the server (error id 844557f9-77d9-49e9-810a-944f4e10d04d-2-2010)".into(),
+            message: "API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model gemini-3.6-flash-low on the server".into(),
             retryable: false,
         }
     );
@@ -293,8 +343,8 @@ fn denied_command_then_capacity_error_fails_once() {
 }
 
 #[test]
-fn a_killed_run_still_gets_exactly_one_result() {
-    for name in ["readonly_ok", "build_hello_schema", "build_shell"] {
+fn a_killed_run_still_gets_one_result_per_turn() {
+    for name in SESSIONS {
         let dir = fixtures_dir().join(VERSION);
         let stdout = fs::read_to_string(dir.join(format!("{name}.stdout.jsonl"))).unwrap();
         let mut parser = AntigravityCli.parser();
@@ -307,8 +357,156 @@ fn a_killed_run_still_gets_exactly_one_result() {
             .iter()
             .filter(|e| matches!(e, AgentEvent::Result { .. }))
             .count();
-        assert_eq!(results, 1, "{name}");
+        let turns = if *name == "stdin_steer" { 2 } else { 1 };
+        assert_eq!(results, turns, "{name}");
     }
+}
+
+fn fixture_lines(name: &str) -> Vec<String> {
+    let path = fixtures_dir()
+        .join(VERSION)
+        .join(format!("{name}.stdout.jsonl"));
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn is_result_line(line: &str) -> bool {
+    line.contains(r#""event":"result""#)
+}
+
+/// Changes one result line, keeping the rest of the recording as it was.
+fn edit_result(line: &mut String, edit: impl FnOnce(&mut Value)) {
+    let mut value: Value = serde_json::from_str(line).unwrap();
+    edit(&mut value["result"]);
+    *line = value.to_string();
+}
+
+fn results(events: &[AgentEvent]) -> Vec<&AgentEvent> {
+    events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Result { .. }))
+        .collect()
+}
+
+/// With open input, agy waits for the next line after each result, so every turn must close at
+/// its own result.
+#[test]
+fn an_error_result_closes_its_turn_while_input_stays_open() {
+    let capacity = "API error (attempt 2): UNAVAILABLE (code 503): No capacity available";
+    let mut lines = fixture_lines("stdin_steer");
+    let first = lines.iter().position(|l| is_result_line(l)).unwrap();
+    edit_result(&mut lines[first], |result| {
+        result["status"] = json!("ERROR");
+        result["response"] = json!("");
+        result["error"] = json!(capacity);
+        result.as_object_mut().unwrap().remove("structured_output");
+    });
+
+    let mut parser = AntigravityCli.parser();
+    let mut turns = Vec::new();
+    let mut turn = Vec::new();
+    for line in &lines {
+        turn.extend(parser.parse_stdout_line(line));
+        if is_result_line(line) {
+            turns.push(std::mem::take(&mut turn));
+        }
+    }
+    assert!(turn.is_empty(), "{turn:?}");
+    assert_eq!(turns.len(), 2);
+
+    let first_turn = &turns[0];
+    let errors: Vec<&AgentEvent> = first_turn
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Error { .. }))
+        .collect();
+    assert_eq!(
+        errors,
+        [&AgentEvent::Error {
+            category: ErrorCategory::Overloaded,
+            message: capacity.into(),
+            retryable: false,
+        }]
+    );
+    assert!(matches!(
+        first_turn.last(),
+        Some(AgentEvent::Result {
+            text: Some(text),
+            is_error: true,
+            ..
+        }) if text.contains("Throwaway repo")
+    ));
+
+    let second_turn = &turns[1];
+    assert!(
+        !second_turn
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { .. }))
+    );
+    assert!(matches!(
+        results(second_turn)[..],
+        [AgentEvent::Result {
+            text: Some(text),
+            is_error: false,
+            ..
+        }] if text.contains("2 lines")
+    ));
+
+    // The clean exit after the worker closes input adds nothing, least of all turn 1 again.
+    assert!(parser.finish(Some(0)).is_empty());
+}
+
+#[test]
+fn a_recovered_turn_closes_at_its_result() {
+    let lines = fixture_lines("build_hello_schema");
+    let mut parser = AntigravityCli.parser();
+    let mut before = Vec::new();
+    for line in &lines[..lines.len() - 1] {
+        before.extend(parser.parse_stdout_line(line));
+    }
+    assert!(results(&before).is_empty());
+    let at_result = parser.parse_stdout_line(lines.last().unwrap());
+    assert_eq!(names(&at_result), ["usage", "retry", "result"]);
+    assert!(matches!(
+        &at_result[2],
+        AgentEvent::Result {
+            structured: Some(_),
+            is_error: false,
+            ..
+        }
+    ));
+    assert!(parser.finish(Some(0)).is_empty());
+}
+
+#[test]
+fn a_result_with_odd_usage_keeps_its_outcome() {
+    let mut lines = fixture_lines("readonly_ok");
+    let at = lines.iter().position(|l| is_result_line(l)).unwrap();
+    edit_result(&mut lines[at], |result| {
+        result["usage"]["input_tokens"] = json!(14432.0);
+        result["usage"]["output_tokens"] = json!("1");
+    });
+    let mut parser = AntigravityCli.parser();
+    let events: Vec<AgentEvent> = lines
+        .iter()
+        .flat_map(|line| parser.parse_stdout_line(line))
+        .collect();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Unknown { .. }))
+    );
+    assert!(events.contains(&usage(14_432, 0, true)));
+    assert_eq!(
+        results(&events),
+        [&AgentEvent::Result {
+            text: Some("ok\n".into()),
+            structured: None,
+            is_error: false,
+        }]
+    );
 }
 
 #[test]
@@ -327,5 +525,255 @@ fn truncated_and_garbled_fixture_lines_become_unknown() {
             matches!(&events[..], [AgentEvent::Unknown { raw: Value::String(s) }] if s == cut),
             "{cut}"
         );
+    }
+}
+
+#[test]
+fn agy_stream_json_parses() {
+    let Replay { events, meta } = replay("stdin_steer");
+    let args = meta_args(&meta);
+    let stdin: Vec<Value> = meta["stdin"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| serde_json::from_str(entry["line"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(
+        stdin,
+        [
+            json!({"event": "user", "message": {"content": meta["prompt"]}}),
+            json!({"event": "user", "message": {"content": "Also tell me how many lines notes.txt has."}}),
+        ]
+    );
+    assert!(
+        !args.iter().any(|a| a.contains("README")),
+        "prompt leaked into args"
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--input-format", "stream-json"])
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--agent", "argonauts-read-only"])
+    );
+    assert!(args.windows(2).any(|w| w[0] == "--project"));
+    assert_eq!(meta["exit_code"], 0);
+    assert!(meta["env_set"][0] == json!(["AGY_CLI_DISABLE_AUTO_UPDATE", "true"]));
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Unknown { .. })),
+        "every line is understood"
+    );
+    let AgentEvent::Init { session_id, .. } = &events[0] else {
+        panic!("expected init first, got {:?}", events[0]);
+    };
+    assert_eq!(
+        session_id.as_deref(),
+        Some("e102fbe2-de7a-4739-9fc0-25af3db0ad11")
+    );
+
+    let results: Vec<&Option<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Result {
+                text,
+                is_error: false,
+                ..
+            } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2, "one result per turn");
+    assert!(results[0].as_deref().unwrap().contains("Throwaway repo"));
+    assert!(results[1].as_deref().unwrap().contains("2 lines"));
+
+    let tools: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolStarted { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tools,
+        ["find_by_name", "view_file", "find_by_name", "view_file"]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::FileChanged { .. }))
+    );
+
+    // Each result's usage is the session total so far, so the second replaces the first.
+    let cumulative: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Usage {
+                input_tokens,
+                cumulative: true,
+                ..
+            } => Some(*input_tokens),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cumulative.len(), 2);
+    assert!(cumulative[1] > cumulative[0]);
+    // The meter ends on the second result's session total, cache reads left out.
+    assert_eq!(billable_tokens(&events), 50_880 + 1276);
+}
+
+#[test]
+fn agy_subagent_info() {
+    let Replay { events, .. } = replay("build_subagent");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Unknown { .. }))
+    );
+    let child = "1ed3b3e2-efb1-4f04-a33c-31ae210f726b";
+    let started = SubagentUpdate {
+        id: child.into(),
+        parent: None,
+        kind: SubagentKind::Subagent,
+        label: Some("Notes Reader".into()),
+        prompt: Some(
+            "Read the file notes.txt in the current workspace directory and report its first line."
+                .into(),
+        ),
+        status: SubagentStatus::Started,
+        last_message: None,
+        log_uri: Some(format!(
+            "file://~/.gemini/antigravity-cli/brain/{child}/.system_generated/logs/transcript.jsonl"
+        )),
+        steps_visible: false,
+    };
+    let done = SubagentUpdate {
+        status: SubagentStatus::Done,
+        ..started.clone()
+    };
+    assert_eq!(subagents(&events), [&started, &done]);
+
+    let invoke = events
+        .iter()
+        .position(
+            |e| matches!(e, AgentEvent::ToolStarted { name, .. } if name == "invoke_subagent"),
+        )
+        .unwrap();
+    assert!(matches!(
+        &events[invoke + 1],
+        AgentEvent::ToolFinished { id, ok: true, .. } if id == "step-2"
+    ));
+    assert!(matches!(&events[invoke + 2], AgentEvent::Subagent { update } if update.id == child));
+    let result = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                AgentEvent::Result {
+                    is_error: false,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let closed = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Subagent { update } if update.status == SubagentStatus::Done))
+        .unwrap();
+    assert!(
+        closed < result,
+        "the turn's end closes the child before the result"
+    );
+}
+
+#[test]
+fn context_fill_from_each_vendor() {
+    let expected: &[(&str, &[u64])] = &[
+        ("readonly_ok", &[14_433]),
+        ("build_hello_schema", &[14_995, 15_180, 15_345]),
+        ("build_shell", &[14_567]),
+        (
+            "stdin_steer",
+            &[5759, 6239, 6611, 6947, 7152, 7380, 7678, 7864],
+        ),
+        ("build_subagent", &[14_539, 14_890, 15_046]),
+        ("readonly_write_refused", &[5671]),
+    ];
+    for (name, want) in expected {
+        let Replay { events, .. } = replay(name);
+        assert_eq!(fills(&events), *want, "{name}");
+    }
+}
+
+#[test]
+fn read_only_agent_had_no_write_tool() {
+    let Replay { events, meta } = replay("readonly_write_refused");
+    assert_eq!(meta["files_after"], json!(["README.md", "notes.txt"]));
+    assert!(
+        meta_args(&meta)
+            .windows(2)
+            .any(|w| w == ["--agent", "argonauts-read-only"])
+    );
+    let contents = meta["files"][0]["contents"].as_str().unwrap();
+    assert!(!contents.contains("write_to_file"));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolStarted { .. }))
+    );
+    assert!(events.iter().any(
+        |e| matches!(e, AgentEvent::Result { text: Some(t), is_error: false, .. } if t.trim() == "no write tool")
+    ));
+}
+
+#[test]
+fn agy_usage_probe_parses() {
+    let dir = fixtures_dir().join(VERSION);
+    let stdout = fs::read_to_string(dir.join("usage_probe.stdout.jsonl")).unwrap();
+    let meta: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("usage_probe.meta.json")).unwrap())
+            .unwrap();
+    let probe = AntigravityCli
+        .quota_probe(Path::new("/work"), None)
+        .expect("agy has a free probe");
+    assert_eq!(meta_args(&meta), probe.args);
+
+    let reading = AntigravityCli.parse_quota_probe(&stdout).unwrap();
+    assert_eq!(reading.vendor.0, "antigravity-cli");
+    assert_eq!(reading.source, QuotaSource::UsageProbe);
+    assert_eq!(reading.status, QuotaStatus::Allowed);
+    // The Gemini group's weekly window had the least left.
+    assert_eq!(reading.window.as_deref(), Some("weekly"));
+    let used = reading.used.unwrap();
+    assert!(used > 0.001 && used < 0.002, "{used}");
+    assert_eq!(reading.resets_at, Some(datetime!(2026-10-06 02:52:44 UTC)));
+    let groups = reading.detail.unwrap()["groups"].as_array().unwrap().len();
+    assert_eq!(groups, 2);
+}
+
+#[test]
+fn fixtures_hold_no_local_paths_or_keys() {
+    let leaks = [
+        "/Users/",
+        "/home/",
+        "/private/",
+        "/var/folders/",
+        "sk-ant-",
+        "sk-proj-",
+        "ghp_",
+        "github_pat_",
+        "AIza",
+    ];
+    for version in fs::read_dir(fixtures_dir()).unwrap() {
+        for file in fs::read_dir(version.unwrap().path()).unwrap() {
+            let path = file.unwrap().path();
+            let text = fs::read_to_string(&path).unwrap();
+            for leak in leaks {
+                assert!(!text.contains(leak), "{} contains {leak:?}", path.display());
+            }
+        }
     }
 }

@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+argonauts-ui-kit
+Build a standalone Rust UI kit prototype that matc…  8/12 agents · 2h44m · $4.10
+
+╭ Build · 7 agents ────────┬ build:a-terminal-bottom ──────────────────────────╮
+│ ❯ ✓ build:a-terminal-bo… │ Opus on Claude Code (claude-code/opus) · run-01   │
+│   ✓ build:b-history-cel… │ ✓ Completed · Opus on Claude Code · 6m02s         │
+│   ✗ build:d-plain-mode   │                                                   │
+│                          │ Prompt · 14 lines · ⏎expand                       │
+│                          │   Build the terminal and the whole bottom region… │
+│                          │   Read the design notes first, then the referenc… │
+│                          │   …12 more lines                                  │
+│                          │                                                   │
+│                          │ Activity · last 3 of 195 tool calls · ⏎expand     │
+│                          │   ● Bash(cargo test -p argonauts-tui composer)    │
+│                          │   ● Bash(cargo clippy -p argonauts-tui --all-ta…) │
+│                          │   ● Bash(cargo test -p argonauts-tui)             │
+│                          │                                                   │
+│                          │ Diff · 4 files · +120 -18 · ⏎open                 │
+│                          │                                                   │
+│                          │ Subagents · 4 · structure not exposed · ⏎expand   │
+│                          │   ✓ explorer  done · Found 14 call sites          │
+│                          │   ● planner   running                             │
+╰──────────────────────────┴───────────────────────────────────────────────────╯
+↑↓ agent · ⏎ expand · s steer · t take over · x stop · esc back     1-18 of 29 ↓

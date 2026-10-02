@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-29T15:00:00.000Z","type":"session_meta","payload":{"id":"019a5772-0a0a-7b7b-8c8c-000000000003","timestamp":"2026-09-29T15:00:00.000Z","cwd":"/work/shop","originator":"codex_exec","cli_version":"0.158.0","source":"exec"}}
+{"timestamp":"2026-09-29T15:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Triage this request: what does export do?"}]}}

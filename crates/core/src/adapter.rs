@@ -12,6 +12,8 @@ use crate::event::AgentEvent;
 use crate::limits::QuotaReading;
 use crate::session::{CommandSpec, SessionRequest};
 use crate::settings::sessions::{Compaction, NativeFanout};
+use crate::vendor_commands::{BuiltinCommand, CommandKind, VendorCommand};
+use crate::vendor_sessions::{ResumeLaunch, VendorScan, VendorSession, VendorTurn};
 
 pub const KNOWN_AGENT_IDS: &[&str] = &["claude-code", "codex", "antigravity-cli"];
 
@@ -58,9 +60,10 @@ pub trait Adapter: Send + Sync {
         None
     }
 
-    /// A command that reads quota without spending any, such as `agy -p "/usage"`.
-    fn quota_probe(&self, workdir: &Path) -> Option<CommandSpec> {
-        let _ = workdir;
+    /// A command that reads quota without spending any, such as `agy -p "/usage"`. `model` is
+    /// the one the vendor's sessions use, for a CLI that names a model on every call.
+    fn quota_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
+        let _ = (workdir, model);
         None
     }
 
@@ -111,6 +114,13 @@ pub trait Adapter: Send + Sync {
         "unknown"
     }
 
+    /// Where the CLI's own config says its model is served, such as Hermes' `model.base_url`,
+    /// for a CLI that takes its provider only from there. A server of yours makes the session
+    /// free unless you set a price.
+    fn model_base_url(&self) -> Option<String> {
+        None
+    }
+
     /// The default knows none, so the setup claims no login state.
     fn setup_hints(&self) -> SetupHints {
         SetupHints::default()
@@ -124,6 +134,53 @@ pub trait Adapter: Send + Sync {
     /// The harness worker still owns the process.
     fn session_driver(&self) -> Option<Arc<dyn SessionDriver>> {
         None
+    }
+
+    /// The CLI's own sessions that ran in `scan.folder`, newest first, at most `limit`. Reads
+    /// only the CLI's session list and transcripts, never its credentials. Blocking file reads.
+    fn vendor_sessions(
+        &self,
+        scan: &VendorScan,
+        limit: usize,
+    ) -> anyhow::Result<Vec<VendorSession>> {
+        let _ = (scan, limit);
+        Ok(Vec::new())
+    }
+
+    /// The last `count` turns of one of those sessions, oldest first, to reprint when it's
+    /// resumed.
+    fn vendor_session_turns(
+        &self,
+        scan: &VendorScan,
+        session: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<VendorTurn>> {
+        let _ = (scan, session, count);
+        Ok(Vec::new())
+    }
+
+    /// How the chat's next turn carries on `session` through the CLI's own resume. The default
+    /// suits a CLI whose `command` resumes [`SessionRequest::resume_session`].
+    fn resume_launch(&self, session: &VendorSession) -> Option<ResumeLaunch> {
+        Some(ResumeLaunch::of(session))
+    }
+
+    /// The CLI's built-in slash commands, each with what it maps to.
+    fn builtin_commands(&self) -> &'static [BuiltinCommand] {
+        &[]
+    }
+
+    /// Custom commands, skills, and plugin commands the CLI loads for `scan.folder`: the
+    /// project's, the home folder's, and installed plugins'. Blocking file reads.
+    fn discover_commands(&self, scan: &VendorScan) -> anyhow::Result<Vec<VendorCommand>> {
+        let _ = scan;
+        Ok(Vec::new())
+    }
+
+    /// The prompt that runs `command` in the main agent's session, such as `/review src`.
+    /// `None` when it can't run there.
+    fn command_prompt(&self, command: &VendorCommand, args: &str) -> Option<String> {
+        matches!(command.kind, CommandKind::Vendor).then(|| command.invocation(args))
     }
 }
 
@@ -181,6 +238,9 @@ pub struct Capabilities {
     pub reports_model: bool,
     pub resume_totals_include_earlier: bool,
     pub enforces_read_only: bool,
+    /// A message written to open input while a turn runs joins that turn, so it brings no
+    /// result of its own. Otherwise it queues as the next turn.
+    pub input_joins_running_turn: bool,
 }
 
 impl Default for Capabilities {
@@ -191,6 +251,7 @@ impl Default for Capabilities {
             reports_model: true,
             resume_totals_include_earlier: true,
             enforces_read_only: true,
+            input_joins_running_turn: false,
         }
     }
 }
@@ -343,7 +404,7 @@ mod tests {
         let adapter: Box<dyn Adapter> = Box::new(Fake);
         let dir = Path::new("/w");
         assert!(adapter.input_line("hi").is_none());
-        assert!(adapter.quota_probe(dir).is_none());
+        assert!(adapter.quota_probe(dir, None).is_none());
         assert!(adapter.parse_quota_probe("{}").is_none());
         assert!(adapter.interactive_resume("s1", dir).is_none());
         assert_eq!(adapter.default_family(), "unknown");
@@ -363,6 +424,63 @@ mod tests {
         // No login state is claimed without a verified check.
         assert_eq!(adapter.setup_hints(), SetupHints::default());
         assert!(adapter.setup_hints().login_check.is_none());
+    }
+
+    #[test]
+    fn a_vendor_without_sessions_or_commands_lists_none() {
+        use crate::names::VendorId;
+        use crate::vendor_commands::{CommandSource, VendorCommandSet};
+
+        let adapter: Box<dyn Adapter> = Box::new(Fake);
+        let scan = VendorScan::new("/w", "/home");
+        assert!(adapter.vendor_sessions(&scan, 20).unwrap().is_empty());
+        assert!(
+            adapter
+                .vendor_session_turns(&scan, "s1", 4)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(adapter.builtin_commands().is_empty());
+        assert!(adapter.discover_commands(&scan).unwrap().is_empty());
+        let set = VendorCommandSet::of(adapter.as_ref(), &scan).unwrap();
+        assert_eq!(set.vendor, VendorId("fake".into()));
+        assert!(set.commands.is_empty());
+
+        let session = VendorSession {
+            vendor: VendorId("fake".into()),
+            id: "s1".into(),
+            title: "Hi".into(),
+            prompt: None,
+            folder: "/w".into(),
+            updated: time::OffsetDateTime::UNIX_EPOCH,
+            model: None,
+            branch: None,
+            last_message: None,
+        };
+        let launch = adapter.resume_launch(&session).unwrap();
+        assert_eq!(
+            (launch.session.as_str(), launch.workdir.as_path()),
+            ("s1", dir())
+        );
+
+        let mut command = VendorCommand {
+            name: "review".into(),
+            aliases: Vec::new(),
+            args: "[target]".into(),
+            help: "Review".into(),
+            kind: CommandKind::Vendor,
+            source: CommandSource::BuiltIn,
+        };
+        assert_eq!(
+            adapter.command_prompt(&command, "src").as_deref(),
+            Some("/review src")
+        );
+        command.kind = CommandKind::ScreenOnly;
+        assert_eq!(adapter.command_prompt(&command, ""), None);
+    }
+
+    fn dir() -> &'static Path {
+        Path::new("/w")
     }
 
     #[test]

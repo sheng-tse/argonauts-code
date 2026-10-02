@@ -1,0 +1,18 @@
+{"timestamp":"2026-09-28T09:00:00.000Z","type":"session_meta","payload":{"id":"019a5770-e3f9-7f92-ab2b-5ba3b7602e8a","timestamp":"2026-09-28T09:00:00.000Z","cwd":"/work/shop","originator":"codex_cli_rs","cli_version":"0.158.0","source":"cli","model_provider":"openai","base_instructions":{"text":"You are Codex."},"git":{"commit_hash":"abc123","branch":"main","repository_url":"git@example.com:shop.git"}}}
+{"timestamp":"2026-09-28T09:00:00.100Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>Read only.</permissions instructions>"}]}}
+{"timestamp":"2026-09-28T09:00:00.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /work/shop\n\n<INSTRUCTIONS>\nKeep it short.\n</INSTRUCTIONS>"}]}}
+{"timestamp":"2026-09-28T09:00:00.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/work/shop</cwd>\n  <shell>zsh</shell>\n</environment_context>"}]}}
+{"timestamp":"2026-09-28T09:01:00.000Z","type":"turn_context","payload":{"cwd":"/work/shop","approval_policy":"on-request","model":"gpt-6.1-sol","effort":"medium","summary":"auto"}}
+{"timestamp":"2026-09-28T09:01:00.100Z","type":"event_msg","payload":{"type":"task_started","turn_id":"1","model_context_window":272000}}
+{"timestamp":"2026-09-28T09:01:00.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Explain the input handling\nin detail"}]}}
+{"timestamp":"2026-09-28T09:01:02.000Z","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"gAAAA"}}
+{"timestamp":"2026-09-28T09:01:03.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"rg\",\"read_key\"]}","call_id":"call_1"}}
+{"timestamp":"2026-09-28T09:01:04.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"src/input.rs:3:fn read_key()"}}
+{"timestamp":"2026-09-28T09:01:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"It reads keys in one loop."}],"phase":"final_answer"}}
+{"timestamp":"2026-09-28T09:01:10.100Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":null}}
+{"timestamp":"2026-09-28T09:01:10.200Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"1","last_agent_message":"It reads keys in one loop."}}
+{"timestamp":"2026-09-28T09:05:00.000Z","type":"turn_context","payload":{"cwd":"/work/shop","approval_policy":"on-request","model":"gpt-6.1-sol-mini","effort":"low","summary":"auto"}}
+{"timestamp":"2026-09-28T09:05:00.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"},{"type":"input_text","text":"And the paste handling?"}]}}
+{"timestamp":"2026-09-28T09:05:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"A paste arrives as one event."}]}}
+{"timestamp":"2026-09-28T09:05:06.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"So it never runs a command."}]}}
+{"timestamp":"2026-09-28T09:05:0

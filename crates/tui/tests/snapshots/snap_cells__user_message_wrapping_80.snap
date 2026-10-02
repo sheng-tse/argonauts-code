@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/cells.rs
+assertion_line: 80
+expression: text(&lines)
+---
+❯ Add a --json flag to the export command, keep the CSV output exactly as it is,
+  and make sure the new flag shows up in --help with a one-line description.

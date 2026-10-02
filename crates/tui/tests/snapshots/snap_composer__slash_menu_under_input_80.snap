@@ -1,0 +1,20 @@
+---
+source: crates/tui/tests/snap_composer.rs
+expression: text(&view.lines)
+---
+──────────────────────────────────────────────────────────────────── peer-crew ─
+❯ /
+────────────────────────────────────────────────────────────────────────────────
+Session
+  /clear                        Start a fresh chat with the lead. Runs keep go…
+  /resume                       Pick an earlier conversation or a run to carry…
+  /exit                         Close the screen. Runs keep going
+  /compact                      Summarize the conversation to free context
+  /rename                       Rename the conversation
+  /branch                       Start a new conversation from here and keep th…
+  /fork                         Copy the conversation into a new background se…
+  /btw                          Ask a side question that stays out of the conv…
+  /recap                        One line on where the conversation stands
+  /copy                         Copy the last answer, or the nth from last
+  /export                       Save the conversation as plain text
+  /cd                           Work in another folder. No path shows the curr…

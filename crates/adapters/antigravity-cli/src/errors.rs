@@ -16,6 +16,7 @@ const MESSAGE_KEYS: &[&str] = &[
 const STATUS_KEYS: &[&str] = &["canonical_status", "status"];
 const CODE_KEYS: &[&str] = &["http_status", "status_code", "error_code", "code"];
 const RETRYABLE_KEYS: &[&str] = &["retryable", "is_retryable"];
+const ERROR_ID_OPENER: &str = " (error id ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgyError {
@@ -72,7 +73,7 @@ pub(crate) fn parse_agy_error(payload: &str) -> AgyError {
         .unwrap_or(payload)
         .to_owned();
     if let Some(id) = first_string(&fields, &["error_id"]) {
-        message.push_str(&format!(" (error id {id})"));
+        message.push_str(&format!("{ERROR_ID_OPENER}{id})"));
     }
 
     let category = classify(
@@ -90,6 +91,16 @@ pub(crate) fn parse_agy_error(payload: &str) -> AgyError {
         message,
         retryable,
     }
+}
+
+/// The message without the error id [`parse_agy_error`] appends, so an `AGY_ERROR` line and the
+/// result it repeats compare equal.
+pub(crate) fn without_error_id(message: &str) -> &str {
+    let message = message.trim();
+    message
+        .rfind(ERROR_ID_OPENER)
+        .filter(|_| message.ends_with(')'))
+        .map_or(message, |at| message[..at].trim_end())
 }
 
 /// agy prefixes fatal errors with `error:`.
@@ -218,6 +229,8 @@ const CATEGORY_KEYWORDS: &[(ErrorCategory, &[&str])] = &[
         ErrorCategory::ModelUnavailable,
         &[
             "invalid model",
+            "unknown model",
+            "unsupported model",
             "not recognized as a known model",
             "model not found",
         ],
@@ -327,6 +340,8 @@ mod tests {
         );
         assert_eq!(err.category, ErrorCategory::RateLimit);
         assert_eq!(err.message, "request failed (error id e-1)");
+        assert_eq!(without_error_id(&err.message), "request failed");
+        assert_eq!(without_error_id(" no id (here) "), "no id (here)");
         assert!(!err.retryable);
 
         let err = parse_agy_error(r#"{"short_error":"daily quota reached","error_code":"429"}"#);

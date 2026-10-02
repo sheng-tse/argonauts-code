@@ -1,0 +1,9 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+❯ why does the export test fail?
+
+● The test expected the old header, so I added the email column.
+
+✻ Sailed for 12s · done 10:42 AM

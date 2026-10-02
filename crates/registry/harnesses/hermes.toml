@@ -1,0 +1,37 @@
+# Hermes Agent over ACP. Off unless you turn it on with `[agents.hermes] enabled = true`, and
+# experimental until it passes acp-tck and Argonauts' conformance suite on a pinned version.
+# Values come from Hermes' docs. Those marked 0.19.0 were seen on Hermes 0.19.0 over stdio with
+# a local Ollama on 2026-10-02.
+
+[[harness]]
+id = "hermes"
+display_name = "Hermes Agent"
+binary = "hermes"                             # found on PATH; agents.hermes.binary overrides
+version_args = ["--version"]
+tested_versions = []                          # none yet: conformance pins the first
+family = "from-model"                         # Hermes runs many providers
+transport = "acp"
+read_only_args = ["acp"]
+build_args = ["acp"]
+env_set = { HERMES_ACP_SKIP_CONFIGURED_MCP = "1" }   # not verified: keeps your own MCP servers out
+home = { env = "HERMES_HOME", template = "hermes", keep = "card" }
+errors = [
+    { pattern = "credentials or agent init failed", category = "auth" },   # not verified
+]
+interactive_resume = []                       # no take-over command
+# session/cancel first, then SIGINT, then at least 1.5 seconds so Hermes can kill its tool's
+# process group.
+stop = { after_interrupt = "2s", after_terminate = "5s" }
+
+[harness.acp]
+# 0.19.0 asks before each edit in "default", and Argonauts answers within the card's scope.
+modes = { read_only = "default", build = "default", spike = "default" }
+# 0.19.0 lists models as "custom:<name>" but splits at the last colon, so a tag such as
+# custom:gemma4:e2b reaches the server as "e2b". Name such a model in Hermes' config instead.
+model = "legacy-set-model"
+effort = "none"
+report = "mcp-tool"                           # 0.19.0 lists the tool; no call seen yet
+resume = "resume"                             # 0.19.0 reopens a session in a new process
+steer = "input"                               # not verified
+usage = ["end-turn", "usage-update"]          # 0.19.0 sends both; usage_update is context only
+quota = "none"

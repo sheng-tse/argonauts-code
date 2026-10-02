@@ -1,0 +1,6 @@
+---
+source: crates/tui/tests/snap_live.rs
+assertion_line: 235
+expression: styled(&render(width))
+---
+  [fg=#999999]Opus on Claude Code[/][fg=#999999] · [/]Claude 5h 38% used[fg=#999999] · [/][fg=#999999]$0.21/$5.00[/][fg=#999999] · [/][fg=#999999]ctx 150k/200k[/]

@@ -1,0 +1,57 @@
+# Hermes' home for one Argonauts card. Each key is documented by Hermes, and the combination is
+# not verified until conformance runs it. Argonauts copies this folder into the session's own
+# home and points HERMES_HOME at it, so your ~/.hermes is never read or changed. There is no
+# .env here on purpose: it would override the environment Argonauts sets.
+
+# Hermes takes its provider from here, never from your ~/.hermes, and 0.19.0 no longer reads
+# OPENAI_BASE_URL. For a local Ollama, add this in ~/.argonauts/harnesses/hermes/config.yaml:
+#
+# model:
+#   provider: custom
+#   base_url: http://localhost:11434/v1
+#   default: llama3.2
+
+# No silent switch of vendor or model mid-card, which would corrupt track records and the
+# family rules.
+fallback_providers: []
+
+# No auxiliary model approving flagged commands on its own.
+approvals:
+  mode: manual
+
+# Never read or refresh Claude Code's or Codex's logins, whose refresh tokens are single use.
+auth:
+  adopt_external_logins: false
+
+# Nothing carried between sessions, so drafts stay blind and replays reproducible.
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+
+# No memory or skill writing after turns.
+auxiliary:
+  background_review:
+    enabled: false
+
+# Skill writes are staged and never applied. Argonauts passes the repo's skills itself: the
+# worker adds the worktree's .agents/skills, read-only in the sandbox.
+skills:
+  write_approval: true
+  project_discovery: false
+  external_dirs: []
+
+# No package installs or update checks mid-session.
+security:
+  allow_lazy_installs: false
+updates:
+  check: false
+
+# Other backends run tools outside Argonauts' sandbox and worktree. The short wait keeps
+# background processes from outliving the turn for long.
+terminal:
+  backend: local
+  oneshot_completion_wait_seconds: 5
+
+# The worker sets the role's fan-out cap. One is the safe default.
+delegation:
+  max_concurrent_children: 1

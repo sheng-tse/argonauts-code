@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-adapter-manifest"
-description = "Harness manifests for Argonauts: a generic adapter for agents that speak its JSONL protocol."
+description = "Argonauts harness manifests: a generic adapter for simple CLIs described as data."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,9 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 argonauts-core.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

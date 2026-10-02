@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_cards.rs
+expression: text(&lines)
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Merge this run into main?
+  4 cards · 7 files · +120 -18 · suite passed on the latest main · 1 card needs a stronger review · $0.46 of $3.00
+
+  ❯ 1. Merge
+    2. Open a pull request
+    3. Request changes on some cards
+    4. Keep the branch
+    5. Abandon the run
+    6. Show the diff
+
+  Enter to choose · Tab to add a note · Esc to set aside

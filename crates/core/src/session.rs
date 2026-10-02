@@ -74,6 +74,15 @@ pub struct SessionRequest {
     pub launch: Option<LaunchHints>,
     #[serde(default)]
     pub user_hooks_off: bool,
+    /// Load none of the CLI's own MCP servers, plugins, or project settings. See
+    /// [`SessionSpec::isolated`](crate::worker::SessionSpec::isolated).
+    #[serde(default)]
+    pub isolated: bool,
+    /// The CLI's own sandbox stays off and the commands it runs need no approval. Our sandbox
+    /// holds the session (macOS won't start one sandbox inside another), or `sandbox.mode =
+    /// "none"` asked for no protection at all.
+    #[serde(default)]
+    pub tool_sandbox_off: bool,
 }
 
 /// A file the conductor writes before spawning the command.
@@ -82,6 +91,23 @@ pub struct SpecFile {
     /// Parent directories are created.
     pub path: PathBuf,
     pub contents: String,
+}
+
+impl SessionRequest {
+    /// The prompt, ending with the report's schema when the session has one. For a CLI with no
+    /// flag that holds a run to a schema, the model learns the report's shape only from this:
+    /// without it, a live gemma4 session on OpenCode wrote its report as plain lines.
+    pub fn prompt_with_schema(&self) -> String {
+        let Some(schema) = &self.json_schema else {
+            return self.prompt.clone();
+        };
+        let schema = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
+        format!(
+            "{}\n\nEnd your final message with your report: one JSON object that matches this \
+             schema.\n\n```json\n{schema}\n```\n",
+            self.prompt.trim_end()
+        )
+    }
 }
 
 /// A process to spawn, as an argument vector. No shell is involved.

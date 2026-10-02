@@ -1,0 +1,44 @@
+name: coordinated-crew
+description: One coordinator plans the cards, owners build them, blind reviewers review, and an adjudicator settles their disagreements
+phases:
+  - name: Goal
+    standard: understand
+    steps:
+      - kind: loop_until
+        name: goal
+        until: goal_approved
+        max: 2
+        steps:
+          - kind: restate
+            name: restatements
+            role: restater
+          - kind: differ
+            name: differences
+            role: differ
+            input: restatements
+          - kind: checkpoint
+            checkpoint: goal
+  - name: Plan
+    standard: plan
+    steps:
+      - kind: loop_until
+        name: planning
+        until: plan_decided
+        max: 3
+        steps:
+          - kind: draft
+            name: coordinated
+            role: coordinator
+            input: goal
+          - kind: checkpoint
+            checkpoint: plan
+  - name: Build
+    standard: do
+    steps:
+      - kind: build
+        role: owner
+        input: plan
+  - name: Merge
+    standard: decide
+    steps:
+      - kind: merge

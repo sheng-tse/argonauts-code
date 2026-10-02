@@ -128,7 +128,7 @@ impl Default for UiSettings {
 #[serde(rename_all = "snake_case")]
 pub enum NarratorMode {
     Off,
-    /// Only for `/summary` and `/ask`.
+    /// Only for `/ask` and `s` in `/status`.
     OnDemand,
     /// Also a short update every interval when something changed.
     Live,

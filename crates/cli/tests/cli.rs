@@ -1,612 +1,571 @@
-//! End-to-end runs of the binary, offline: each agent CLI is a fake script on `PATH` that
-//! writes `hello.txt` and replays a recorded fixture.
+//! The binary end to end, offline: a temp repo and home, no terminal, and fake agent CLIs where
+//! a command looks for them.
 
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+use std::time::Duration;
 
-use tempfile::TempDir;
+use argonauts_testkit::scenario::FakeScenario;
+use argonauts_testkit::{FakeVendors, Key, Pty, PtyCommand, TempRepo};
 
-const TASK: &str = "Create a file named hello.txt containing the word hi";
-
-struct Fake {
-    agent: &'static str,
-    binary: &'static str,
-    version_output: &'static str,
-    fixture: &'static str,
-    cheapest_model: &'static str,
+fn argonauts(repo: &TempRepo, dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_argonauts"))
+        .args(args)
+        .current_dir(dir)
+        .envs(repo.envs())
+        .env_remove("ARGONAUTS_SESSION")
+        .env_remove("ARGONAUTS_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the argonauts binary runs")
 }
 
-const CLAUDE: Fake = Fake {
-    agent: "claude-code",
-    binary: "claude",
-    version_output: "2.1.284 (Claude Code)",
-    fixture: "claude-code/2.1.284/write",
-    cheapest_model: "haiku",
-};
-
-const CODEX: Fake = Fake {
-    agent: "codex",
-    binary: "codex",
-    version_output: "codex-cli 0.158.0",
-    fixture: "codex/0.158.0/build_hello",
-    cheapest_model: "gpt-5.6-luna",
-};
-
-const AGY: Fake = Fake {
-    agent: "antigravity-cli",
-    binary: "agy",
-    version_output: "1.2.13",
-    fixture: "antigravity-cli/1.2.13/build_hello_schema",
-    cheapest_model: "gemini-3.6-flash-low",
-};
-
-struct Sandbox {
-    _dir: TempDir,
-    root: PathBuf,
-    repo: PathBuf,
-    bin: PathBuf,
+/// A folder outside any git repository.
+fn elsewhere(repo: &TempRepo) -> PathBuf {
+    let dir = repo.scratch().join("elsewhere");
+    fs::create_dir_all(&dir).unwrap();
+    dir
 }
 
-impl Sandbox {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        // Canonical, so paths match what git reports on macOS, where /var is /private/var.
-        let root = dir.path().canonicalize().unwrap();
-        let sandbox = Self {
-            repo: root.join("repo"),
-            bin: root.join("bin"),
-            root,
-            _dir: dir,
-        };
-        for sub in ["repo", "bin", "home", "config", "argonauts"] {
-            fs::create_dir_all(sandbox.root.join(sub)).unwrap();
-        }
-        sandbox.git(&["init", "-q", "-b", "main"]);
-        fs::write(sandbox.repo.join("README.md"), "# demo\n").unwrap();
-        sandbox.git(&["add", "README.md"]);
-        sandbox.git(&["commit", "-q", "-m", "initial"]);
-        sandbox
-    }
-
-    /// `name` is `<adapter>/<version>/<file>`; each adapter keeps its fixtures in its own crate.
-    fn fixture(name: &str) -> PathBuf {
-        let (adapter, rest) = name
-            .split_once('/')
-            .expect("fixture names start with the adapter");
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../adapters")
-            .join(adapter)
-            .join("fixtures")
-            .join(rest)
-    }
-
-    /// `work` runs in the agent's working directory before the replay.
-    fn install(&self, fake: &Fake, work: &str) {
-        let stdout = Self::fixture(&format!("{}.stdout.jsonl", fake.fixture));
-        let stderr = Self::fixture(&format!("{}.stderr.txt", fake.fixture));
-        assert!(stdout.is_file(), "missing fixture {}", stdout.display());
-        let args = self.args_file(fake);
-        let script = format!(
-            r#"#!/bin/sh
-if [ "$1" = "--version" ]; then echo '{version}'; exit 0; fi
-printf '%s\n' "$@" > '{args}'
-cat > /dev/null
-{work}
-cat '{stdout}'
-cat '{stderr}' >&2
-"#,
-            version = fake.version_output,
-            args = args.display(),
-            stdout = stdout.display(),
-            stderr = stderr.display(),
-        );
-        let path = self.bin.join(fake.binary);
-        fs::write(&path, script).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    fn args_file(&self, fake: &Fake) -> PathBuf {
-        self.bin.join(format!("{}.args", fake.binary))
-    }
-
-    fn recorded_args(&self, fake: &Fake) -> Vec<String> {
-        fs::read_to_string(self.args_file(fake))
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect()
-    }
-
-    fn argonauts(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_argonauts"));
-        command
-            .args(args)
-            .current_dir(&self.repo)
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
-            .env("HOME", self.root.join("home"))
-            .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("ARGONAUTS_HOME", self.root.join("argonauts"))
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("NO_COLOR", "1")
-            .env_remove("ARGONAUTS_LOG")
-            .stdin(Stdio::null());
-        for key in argonauts_core::VENDOR_KEY_ENV_VARS
-            .iter()
-            .chain(argonauts_core::PARENT_SESSION_ENV_VARS)
-        {
-            command.env_remove(key);
-        }
-        command
-    }
-
-    fn git(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&self.repo)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {args:?}: {output:?}");
-        String::from_utf8(output.stdout).unwrap()
-    }
-
-    fn card_branches(&self) -> Vec<String> {
-        self.git(&[
-            "branch",
-            "--list",
-            "argonauts/*",
-            "--format=%(refname:short)",
-        ])
-        .lines()
-        .map(str::to_owned)
-        .collect()
-    }
-
-    fn event_logs(&self) -> Vec<PathBuf> {
-        let mut found = Vec::new();
-        let mut pending = vec![self.root.join("argonauts")];
-        while let Some(dir) = pending.pop() {
-            let Ok(entries) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path.file_name().is_some_and(|n| n == "events.jsonl") {
-                    found.push(path);
-                }
-            }
-        }
-        found
-    }
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 fn describe(output: &Output) -> String {
     format!(
-        "status {:?}\n--- stdout\n{}\n--- stderr\n{}",
-        output.status,
-        text(&output.stdout),
-        text(&output.stderr)
+        "status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout(output),
+        stderr(output)
     )
 }
 
-fn run_and_leave(fake: &Fake) {
-    let sandbox = Sandbox::new();
-    sandbox.install(fake, "printf 'hi\\n' > hello.txt");
-    let output = sandbox
-        .argonauts(&[
-            "run",
-            "--solo",
-            "--plain",
-            "--agent",
-            fake.agent,
-            "--model",
-            fake.cheapest_model,
-            "--effort",
-            "low",
-            "--merge",
-            "leave",
-            "--gate",
-            "test -f hello.txt",
-            TASK,
-        ])
-        .output()
-        .unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(0), "{report}");
-    let stdout = text(&output.stdout);
-    assert!(stdout.contains("run finished: branch left"), "{report}");
-    assert!(stdout.contains("test -f hello.txt"), "{report}");
-    assert!(stdout.contains("log: "), "{report}");
+fn script(dir: &Path, name: &str, body: &str) {
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
 
-    let branches = sandbox.card_branches();
-    assert_eq!(branches.len(), 1, "{branches:?}");
-    let committed = sandbox.git(&["show", &format!("{}:hello.txt", branches[0])]);
-    assert_eq!(committed, "hi\n");
-    assert!(
-        !sandbox.repo.join("hello.txt").exists(),
-        "leave must not merge"
-    );
-
-    let args = sandbox.recorded_args(fake);
-    assert!(
-        args.iter().any(|a| a == fake.cheapest_model),
-        "the model flag reached the CLI: {args:?}"
-    );
-
-    let logs = sandbox.event_logs();
-    assert_eq!(logs.len(), 1, "{logs:?}");
-    let log = fs::read_to_string(&logs[0]).unwrap();
-    assert!(log.contains(r#""passed":true"#), "the gate passed");
-    assert!(log.contains(r#""outcome":"branch_left""#), "{log}");
+/// The real git on `PATH`, so a test's `PATH` can hold git and the fakes alone.
+fn real_git() -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|git| git.is_file())
+        .expect("git on PATH")
 }
 
 #[test]
-fn run_with_claude_code_leaves_a_committed_branch() {
-    run_and_leave(&CLAUDE);
-}
-
-#[test]
-fn run_with_codex_leaves_a_committed_branch() {
-    run_and_leave(&CODEX);
-}
-
-#[test]
-fn run_with_antigravity_cli_leaves_a_committed_branch() {
-    run_and_leave(&AGY);
-}
-
-#[test]
-fn approving_on_stdin_merges_into_the_starting_branch() {
-    let sandbox = Sandbox::new();
-    sandbox.install(&CLAUDE, "printf 'hi\\n' > hello.txt");
-    let mut child = sandbox
-        .argonauts(&["run", "--plain", "--gate", "test -f hello.txt", TASK])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(b"a\ny\n").unwrap();
-    }
-    let output = child.wait_with_output().unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(0), "{report}");
-    assert!(
-        text(&output.stdout).contains("run finished: merged"),
-        "{report}"
-    );
-    assert_eq!(
-        fs::read_to_string(sandbox.repo.join("hello.txt")).unwrap(),
-        "hi\n"
-    );
-}
-
-#[test]
-fn an_agent_that_changes_nothing_fails_the_run() {
-    let sandbox = Sandbox::new();
-    sandbox.install(&CLAUDE, ":");
-    let output = sandbox
-        .argonauts(&["run", "--plain", "--merge", "leave", TASK])
-        .output()
-        .unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(1), "{report}");
-    assert!(
-        text(&output.stdout).contains("run finished: failed"),
-        "{report}"
-    );
-    assert!(
-        sandbox.card_branches().is_empty(),
-        "the empty branch is removed"
-    );
-}
-
-fn start_run(sandbox: &Sandbox, work: &str) -> std::process::Child {
-    sandbox.install(&CLAUDE, work);
-    let child = sandbox
-        .argonauts(&["run", "--plain", "--merge", "leave", TASK])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let started = sandbox
-            .event_logs()
-            .iter()
-            .any(|log| fs::read_to_string(log).is_ok_and(|text| text.contains("session_started")));
-        if started {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the session never started");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    // Give the fake agent time to write its file.
-    std::thread::sleep(Duration::from_millis(300));
-    child
-}
-
-fn interrupt(child: &std::process::Child) {
-    let sent = Command::new("/bin/kill")
-        .args(["-INT", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(sent.success());
-}
-
-fn fake_agent_running(sandbox: &Sandbox) -> bool {
-    let script = sandbox.bin.join(CLAUDE.binary);
-    Command::new("/usr/bin/pgrep")
-        .args(["-f", &script.display().to_string()])
-        .stdout(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-#[test]
-fn ctrl_c_stops_the_agent_and_keeps_its_work() {
-    let sandbox = Sandbox::new();
-    // Writes its file, then works "forever" in short sleeps, as a responsive CLI would.
-    let child = start_run(
-        &sandbox,
-        "printf 'hi\\n' > hello.txt\nwhile true; do sleep 0.1; done",
-    );
-    interrupt(&child);
-
-    let output = child.wait_with_output().unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(130), "{report}");
-    assert!(
-        text(&output.stdout).contains("run finished: cancelled"),
-        "{report}"
-    );
-    let branches = sandbox.card_branches();
-    assert_eq!(branches.len(), 1, "{report}");
-    let committed = sandbox.git(&["show", &format!("{}:hello.txt", branches[0])]);
-    assert_eq!(committed, "hi\n");
-}
-
-#[test]
-fn a_second_ctrl_c_quits_at_once_and_kills_the_agent() {
-    let sandbox = Sandbox::new();
-    // Ignores SIGINT and SIGTERM, so a clean stop would take the whole stop plan.
-    let child = start_run(
-        &sandbox,
-        "trap '' INT TERM\nprintf 'hi\\n' > hello.txt\nwhile true; do sleep 0.1; done",
-    );
-    let started = Instant::now();
-    interrupt(&child);
-    std::thread::sleep(Duration::from_millis(300));
-    interrupt(&child);
-
-    let output = child.wait_with_output().unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(130), "{report}");
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "quit without waiting for the stop plan: {report}"
-    );
-    assert!(
-        text(&output.stderr).contains("Quit without waiting"),
-        "{report}"
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while fake_agent_running(&sandbox) {
-        assert!(Instant::now() < deadline, "the agent outlived argonauts");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[test]
-fn run_fails_early_when_the_agent_cli_is_missing() {
-    let sandbox = Sandbox::new();
-    let output = sandbox
-        .argonauts(&["run", "--plain", "--agent", "codex", TASK])
-        .output()
-        .unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(1), "{report}");
-    let stderr = text(&output.stderr);
-    assert!(
-        stderr.contains("Codex (`codex`) is not installed"),
-        "{report}"
-    );
-    assert!(stderr.contains("argonauts doctor"), "{report}");
-    assert!(sandbox.event_logs().is_empty(), "nothing started");
-}
-
-#[test]
-fn run_outside_a_repository_fails() {
-    let sandbox = Sandbox::new();
-    sandbox.install(&CLAUDE, ":");
-    let output = sandbox
-        .argonauts(&["run", "--plain", TASK])
-        .current_dir(sandbox.root.join("home"))
-        .output()
-        .unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(1), "{report}");
-    assert!(
-        text(&output.stderr).contains("is not inside a git repository"),
-        "{report}"
-    );
-}
-
-#[test]
-fn unknown_agents_are_usage_errors() {
-    let sandbox = Sandbox::new();
-    let output = sandbox
-        .argonauts(&["run", "--agent", "gemini", TASK])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{}", describe(&output));
-    assert!(text(&output.stderr).contains("claude-code"));
-}
-
-#[test]
-fn bad_gates_and_overrides_are_usage_errors() {
-    let sandbox = Sandbox::new();
-    sandbox.install(&CLAUDE, ":");
-    for args in [
-        &["run", "--plain", "--gate", "test -f 'x", TASK][..],
-        &["run", "--plain", "--set", "budget.unit=yen", TASK][..],
+fn help_lists_the_commands_but_not_the_supervisor() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, repo.root(), &["--help"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let help = stdout(&output);
+    for command in [
+        "run",
+        "resume",
+        "status",
+        "init",
+        "doctor",
+        "config",
+        "models",
+        "approve",
+        "approvals",
+        "auto",
+        "inbox",
+        "mcp",
     ] {
-        let output = sandbox.argonauts(args).output().unwrap();
-        assert_eq!(output.status.code(), Some(2), "{}", describe(&output));
-        assert!(sandbox.event_logs().is_empty());
+        assert!(
+            help.contains(&format!("  {command} ")),
+            "{command} in {help}"
+        );
     }
+    assert!(!help.contains("supervise"), "{help}");
 }
 
 #[test]
-fn a_dollar_budget_codex_cannot_report_is_refused() {
-    let sandbox = Sandbox::new();
-    sandbox.install(&CODEX, "printf 'hi\\n' > hello.txt");
-    let output = sandbox
-        .argonauts(&["run", "--plain", "--agent", "codex", TASK])
-        .output()
-        .unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(2), "{report}");
-    assert!(
-        text(&output.stderr).contains("can't enforce a dollar budget"),
-        "{report}"
+fn config_set_of_a_safety_key_without_a_terminal_refuses() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(
+        &repo,
+        repo.root(),
+        &["config", "set", "approvals.merge.mode", "auto", "--global"],
     );
-    assert!(
-        text(&output.stderr).contains("--model gpt-5.6-luna"),
-        "{report}"
-    );
-    assert!(sandbox.event_logs().is_empty(), "nothing started");
-}
-
-#[test]
-fn cheapest_picks_the_cheapest_model_and_effort() {
-    let sandbox = Sandbox::new();
-    sandbox.install(&CODEX, "printf 'hi\\n' > hello.txt");
-    let output = sandbox
-        .argonauts(&[
-            "run",
-            "--plain",
-            "--agent",
-            "codex",
-            "--cheapest",
-            "--merge",
-            "leave",
-            TASK,
-        ])
-        .output()
-        .unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(0), "{report}");
-    let args = sandbox.recorded_args(&CODEX);
-    assert!(args.iter().any(|a| a == "gpt-5.6-luna"), "{args:?}");
-    assert!(
-        args.iter().any(|a| a == "model_reasoning_effort=\"low\""),
-        "{args:?}"
-    );
-}
-
-#[test]
-fn doctor_lists_every_cli_with_its_version() {
-    let sandbox = Sandbox::new();
-    sandbox.install(&CLAUDE, ":");
-    sandbox.install(&CODEX, ":");
-    let output = sandbox.argonauts(&["doctor"]).output().unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(0), "{report}");
-    let stdout = text(&output.stdout);
-    let line = |id: &str| {
-        stdout
-            .lines()
-            .find(|l| l.starts_with(id))
-            .unwrap_or_else(|| panic!("no {id} line in {report}"))
-            .to_owned()
-    };
-    assert!(line("claude-code").contains("2.1.284"), "{report}");
-    assert!(line("claude-code").contains("tested"), "{report}");
-    assert!(line("codex").contains("0.158.0"), "{report}");
-    assert!(
-        line("antigravity-cli").contains("not installed"),
-        "{report}"
-    );
-    assert!(stdout.contains("Ready with 2 of 3 agent CLIs."), "{report}");
-
-    let output = sandbox.argonauts(&["doctor", "--json"]).output().unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["agents"][0]["status"], "tested");
-    assert_eq!(json["agents"][0]["cheapest_model"], "haiku");
-    assert_eq!(json["agents"][2]["status"], "not_installed");
-}
-
-#[test]
-fn doctor_fails_when_no_agent_cli_is_installed() {
-    let sandbox = Sandbox::new();
-    let output = sandbox.argonauts(&["doctor"]).output().unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
-    assert!(text(&output.stdout).contains("Not ready"));
+    assert!(
+        stderr(&output).contains("needs you at a terminal"),
+        "{}",
+        describe(&output)
+    );
+    assert!(!repo.global_config().exists());
 }
 
 #[test]
-fn config_show_includes_the_project_file_and_overrides() {
-    let sandbox = Sandbox::new();
-    fs::create_dir_all(sandbox.repo.join(".argonauts")).unwrap();
-    fs::write(
-        sandbox.repo.join(".argonauts/config.toml"),
-        "default_agent = \"codex\"\n[budget]\nper_card = 1.5\n",
-    )
-    .unwrap();
-    // Your own project file sits between the shared one and the flags.
-    fs::write(
-        sandbox.repo.join(".argonauts/config.local.toml"),
-        "[budget]\nper_card = 2.5\n",
-    )
-    .unwrap();
-    let output = sandbox
-        .argonauts(&["config", "show", "--set", "merge.mode=leave"])
-        .output()
+fn config_show_prints_the_settings_as_toml() {
+    let repo = TempRepo::new().unwrap();
+    repo.write(".argonauts/config.toml", "[triage]\nsolo_max_files = 5\n")
         .unwrap();
-    let report = describe(&output);
-    assert_eq!(output.status.code(), Some(0), "{report}");
-    let stdout = text(&output.stdout);
-    assert!(stdout.contains("config.toml (applied)"), "{report}");
-    assert!(stdout.contains("config.local.toml (applied)"), "{report}");
-    assert!(stdout.contains("default_agent = \"codex\""), "{report}");
-    assert!(stdout.contains("per_card = 2.5"), "{report}");
-    assert!(!stdout.contains("per_card = 1.5"), "{report}");
-    assert!(stdout.contains("mode = \"leave\""), "{report}");
+    let output = argonauts(
+        &repo,
+        repo.root(),
+        &["config", "show", "--set", "ui.bell=false"],
+    );
+    assert!(output.status.success(), "{}", describe(&output));
+    let text = stdout(&output);
+    assert!(text.starts_with("# Resolved settings, sha256 "), "{text}");
+    assert!(text.contains("# --set ui.bell=false"), "{text}");
+    assert!(text.contains(".argonauts/config.toml (read)"), "{text}");
+    let table: toml::Table = text.parse().unwrap();
+    assert_eq!(table["triage"]["solo_max_files"].as_integer(), Some(5));
+    assert_eq!(table["ui"]["bell"].as_bool(), Some(false));
+}
 
-    let output = sandbox
-        .argonauts(&["config", "show", "--set", "budget.unit=yen"])
-        .output()
-        .unwrap();
+#[test]
+fn a_bad_set_is_a_usage_error() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, repo.root(), &["config", "show", "--set", "ui.bell"]);
     assert_eq!(output.status.code(), Some(2), "{}", describe(&output));
-    assert!(text(&output.stderr).contains("budget.unit=yen"));
 }
 
 #[test]
 fn config_schema_is_json_schema() {
-    let sandbox = Sandbox::new();
-    let output = sandbox.argonauts(&["config", "schema"]).output().unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, repo.root(), &["config", "schema"]);
+    assert!(output.status.success(), "{}", describe(&output));
     let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(schema["properties"]["budget"].is_object(), "{schema}");
-    assert!(schema["properties"]["gates"].is_object(), "{schema}");
+    assert!(
+        schema["properties"]["default_agent"].is_object(),
+        "{schema}"
+    );
+}
+
+/// `ARGONAUTS_HOME` holds everything a first start writes: the setup's answers, the preset
+/// files, the terms note. Nothing lands under `HOME/.argonauts`. Esc on the first card, once it
+/// has the keys, says how to walk through the setup again.
+#[test]
+fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
+    let repo = TempRepo::new().unwrap();
+    let bin = repo.scratch().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(real_git(), bin.join("git")).unwrap();
+    // Answers every call with its version, so nothing can reach a vendor.
+    script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
+    let command = PtyCommand::new(env!("CARGO_BIN_EXE_argonauts"))
+        .cwd(repo.root())
+        .envs(repo.envs())
+        .env("PATH", bin.clone().into_os_string())
+        .env_remove("ARGONAUTS_SESSION")
+        .env_remove("ARGONAUTS_LOG")
+        .size(34, 100);
+    let mut pty = Pty::spawn(command).unwrap();
+    let wait = Duration::from_secs(30);
+    pty.wait_for(r"Welcome to Argonauts(.|\n)*Continue \(recommended\)", wait)
+        .unwrap();
+    // Esc in the input never answers a card, so ↑ hands it the keys first.
+    pty.press(Key::Up).unwrap();
+    pty.wait_for(r"Esc to take the recommended answers", wait)
+        .unwrap();
+    pty.press(Key::Esc).unwrap();
+    pty.wait_for(r"/setup \(or argonauts init\) walks through", wait)
+        .unwrap();
+    // The second Ctrl+D leaves.
+    pty.press(Key::Ctrl('d')).unwrap();
+    pty.press(Key::Ctrl('d')).unwrap();
+    pty.wait_for_exit(wait).unwrap();
+
+    assert!(repo.global_config().is_file(), "the answers are saved");
+    assert!(repo.home().join("presets").is_dir());
+    let stray = repo.user_home().join(".argonauts");
+    assert!(!stray.exists(), "{} was written", stray.display());
+}
+
+#[test]
+fn doctor_fails_without_an_agent_cli_and_passes_with_one() {
+    let repo = TempRepo::new().unwrap();
+    let bin = repo.scratch().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(real_git(), bin.join("git")).unwrap();
+    let doctor = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_argonauts"))
+            .args(args)
+            .current_dir(elsewhere(&repo))
+            .envs(repo.envs())
+            .env("PATH", &bin)
+            .env_remove("ARGONAUTS_SESSION")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+
+    let output = doctor(&["doctor"]);
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(
+        stdout(&output).contains("Not ready"),
+        "{}",
+        describe(&output)
+    );
+
+    script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
+    let output = doctor(&["doctor"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        stdout(&output).contains("Ready with 1 of"),
+        "{}",
+        describe(&output)
+    );
+
+    let output = doctor(&["doctor", "--json"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["agents"].is_array(), "{json}");
+    assert_eq!(json["parked"], serde_json::json!([]));
+}
+
+#[test]
+fn doctor_lists_every_cli_with_its_version() {
+    let repo = TempRepo::new().unwrap();
+    let scenario = repo.scratch().join("scenario.toml");
+    FakeScenario::default()
+        .version("claude", "2.1.284 (Claude Code)")
+        .version("codex", "codex-cli 0.158.0")
+        .save(&scenario)
+        .unwrap();
+    let vendors = FakeVendors::install(repo.scratch(), &scenario).unwrap();
+    for absent in ["agy", "opencode"] {
+        fs::remove_file(vendors.bin_dir().join(absent)).unwrap();
+    }
+    // The fakes and git alone, so no CLI installed on this machine shows up.
+    let git = repo.scratch().join("git-bin");
+    fs::create_dir_all(&git).unwrap();
+    std::os::unix::fs::symlink(real_git(), git.join("git")).unwrap();
+    let path = std::env::join_paths([vendors.bin_dir(), git.as_path()]).unwrap();
+    let doctor = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_argonauts"))
+            .args(args)
+            .current_dir(elsewhere(&repo))
+            .envs(repo.envs())
+            .envs(vendors.envs())
+            .env("PATH", &path)
+            .env_remove("ARGONAUTS_SESSION")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+
+    let output = doctor(&["doctor"]);
+    let report = describe(&output);
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    let text = stdout(&output);
+    let line = |id: &str| {
+        text.lines()
+            .find(|line| line.split_whitespace().next() == Some(id))
+            .unwrap_or_else(|| panic!("no {id} line in {report}"))
+            .to_owned()
+    };
+    // The exact word: "untested" holds "tested" too.
+    let says = |line: &str, word: &str| line.split_whitespace().any(|w| w == word);
+    assert!(says(&line("claude-code"), "2.1.284"), "{report}");
+    assert!(says(&line("claude-code"), "tested"), "{report}");
+    assert!(says(&line("codex"), "0.158.0"), "{report}");
+    assert!(says(&line("codex"), "tested"), "{report}");
+    assert!(
+        line("antigravity-cli").contains("not installed"),
+        "{report}"
+    );
+    assert!(line("opencode").contains("not installed"), "{report}");
+    assert!(text.contains("Ready with 2 of "), "{report}");
+    assert!(!text.contains("Untested versions"), "{report}");
+
+    let output = doctor(&["doctor", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let status = |id: &str| {
+        json["agents"]
+            .as_array()
+            .and_then(|agents| agents.iter().find(|agent| agent["id"] == id))
+            .map(|agent| agent["status"].clone())
+    };
+    assert_eq!(
+        status("claude-code"),
+        Some(serde_json::json!("tested")),
+        "{json}"
+    );
+    assert_eq!(status("codex"), Some(serde_json::json!("tested")), "{json}");
+    assert_eq!(
+        status("antigravity-cli"),
+        Some(serde_json::json!("not_installed")),
+        "{json}"
+    );
+}
+
+#[test]
+fn run_outside_a_repository_fails() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, &elsewhere(&repo), &["run", "--solo", "Add a flag"]);
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(
+        stderr(&output).contains("isn't inside a git repository"),
+        "{}",
+        describe(&output)
+    );
+}
+
+#[test]
+fn run_flag_mistakes_are_usage_errors() {
+    let repo = TempRepo::new().unwrap();
+    for args in [
+        &["run", "--gate", "test -f 'x", "task"][..],
+        &["run", "--solo", "--crew", "task"][..],
+        &["run", "--budget-usd", "0", "task"][..],
+    ] {
+        let output = argonauts(&repo, repo.root(), args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            describe(&output)
+        );
+    }
+}
+
+#[test]
+fn run_gate_and_merge_without_a_terminal_are_refused_by_name() {
+    let repo = TempRepo::new().unwrap();
+    for (args, flag) in [
+        (
+            &["run", "--solo", "--merge", "leave", "--detach", "say hi"][..],
+            "--merge",
+        ),
+        (
+            &["run", "--solo", "--gate", "true", "--detach", "say hi"][..],
+            "--gate",
+        ),
+    ] {
+        let output = argonauts(&repo, repo.root(), args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            describe(&output)
+        );
+        let error = stderr(&output);
+        assert!(
+            error.contains(&format!("so {flag} and --set")),
+            "{}",
+            describe(&output)
+        );
+        assert!(
+            error.contains("set it in .argonauts/config.toml"),
+            "{}",
+            describe(&output)
+        );
+        assert!(stdout(&output).is_empty(), "{}", describe(&output));
+    }
+}
+
+#[test]
+fn status_outside_a_repo_lists_nothing() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, &elsewhere(&repo), &["status", "--json"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json, serde_json::json!({ "live": [], "runs": [] }));
+    let output = argonauts(&repo, &elsewhere(&repo), &["status"]);
+    assert_eq!(stdout(&output), "Nothing is running.\n");
+}
+
+#[test]
+fn inbox_needs_a_repo() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, &elsewhere(&repo), &["inbox"]);
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(stderr(&output).contains("inside a git repository"));
+}
+
+#[test]
+fn auto_off_leaves_its_marker_in_your_home() {
+    let repo = TempRepo::new().unwrap();
+    for dir in [elsewhere(&repo), repo.root().to_owned()] {
+        let output = argonauts(&repo, &dir, &["auto", "off"]);
+        assert!(output.status.success(), "{}", describe(&output));
+        assert!(stdout(&output).starts_with("Auto is off."));
+        assert!(repo.home().join("auto-off").exists());
+    }
+}
+
+#[test]
+fn models_says_how_to_discover_some() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, &elsewhere(&repo), &["models"]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        stdout(&output).contains("--discover"),
+        "{}",
+        describe(&output)
+    );
+}
+
+#[test]
+fn approve_needs_a_terminal_and_refuses_inside_an_agent() {
+    let repo = TempRepo::new().unwrap();
+    let output = argonauts(&repo, repo.root(), &["approve", "run-03", "cp-001"]);
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(
+        stderr(&output).contains("approving needs you at a terminal"),
+        "{}",
+        describe(&output)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_argonauts"))
+        .args(["approve", "run-03", "cp-001"])
+        .current_dir(repo.root())
+        .envs(repo.envs())
+        .env("OPENCLAW_SHELL", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(
+        stderr(&output).contains("inside an agent session (OPENCLAW_SHELL is set)"),
+        "{}",
+        describe(&output)
+    );
+
+    for args in [
+        &["approve", "run/03", "cp-001"][..],
+        &["approve", "run-03", "cp 1"][..],
+        &["approve", "run-03"][..],
+    ] {
+        let output = argonauts(&repo, repo.root(), args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            describe(&output)
+        );
+    }
+}
+
+#[test]
+fn mcp_serve_refuses_a_repo_you_havent_set_up() {
+    let repo = TempRepo::new().unwrap();
+    let root = repo.root().to_str().unwrap();
+    let output = argonauts(&repo, &elsewhere(&repo), &["mcp", "serve", "--repo", root]);
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(
+        stderr(&output).contains("this repo isn't trusted"),
+        "{}",
+        describe(&output)
+    );
+    assert!(stdout(&output).is_empty(), "{}", describe(&output));
+}
+
+/// An MCP client on the server's stdin and stdout, one JSON-RPC message a line.
+struct McpClient {
+    stdin: std::process::ChildStdin,
+    lines: mpsc::Receiver<String>,
+    next_id: u64,
+}
+
+impl McpClient {
+    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.next_id += 1;
+        let id = self.next_id;
+        let message = serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": method, "params": params
+        });
+        writeln!(self.stdin, "{message}").unwrap();
+        self.stdin.flush().unwrap();
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(Duration::from_secs(20))
+                .expect("an answer in time");
+            let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if message["id"] == serde_json::json!(id) && message.get("method").is_none() {
+                return message;
+            }
+        }
+    }
+
+    fn notify(&mut self, method: &str) {
+        let message = serde_json::json!({ "jsonrpc": "2.0", "method": method });
+        writeln!(self.stdin, "{message}").unwrap();
+        self.stdin.flush().unwrap();
+    }
+}
+
+#[test]
+fn mcp_serve_rereads_the_repos_trust_on_every_call() {
+    let repo = TempRepo::new().unwrap();
+    fs::create_dir_all(repo.root().join(".argonauts")).unwrap();
+    let root = repo.root().to_str().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_argonauts"))
+        .args(["mcp", "serve", "--repo", root])
+        .current_dir(elsewhere(&repo))
+        .envs(repo.envs())
+        .env_remove("ARGONAUTS_SESSION")
+        .env_remove("ARGONAUTS_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let (sender, lines) = mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut client = McpClient {
+        stdin: child.stdin.take().unwrap(),
+        lines,
+        next_id: 0,
+    };
+
+    let hello = client.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "cli-test", "version": "1.0" }
+        }),
+    );
+    assert!(hello["result"]["serverInfo"].is_object(), "{hello}");
+    client.notify("notifications/initialized");
+    let tools = client.request("tools/list", serde_json::json!({}));
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .is_some_and(|t| !t.is_empty()),
+        "{tools}"
+    );
+
+    // A settings file you haven't trusted turns up while the server runs.
+    fs::write(
+        repo.root().join(".argonauts/config.toml"),
+        "[mcp]\nruns_per_day = 300\n",
+    )
+    .unwrap();
+    let refused = client.request("tools/list", serde_json::json!({}));
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("isn't trusted any more")),
+        "{refused}"
+    );
+
+    drop(client);
+    let _ = child.kill();
+    let _ = child.wait();
 }

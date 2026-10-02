@@ -9,8 +9,15 @@ publish.workspace = true
 
 [dependencies]
 argonauts-core.workspace = true
+globset.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+argonauts-testkit.workspace = true
+tempfile.workspace = true
 tokio.workspace = true

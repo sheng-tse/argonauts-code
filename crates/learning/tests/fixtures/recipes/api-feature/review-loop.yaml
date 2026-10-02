@@ -1,0 +1,31 @@
+name: review-loop
+description: Blind drafts, then a gated build loop with two blind reviewers
+phases:
+  - name: Understand
+    standard: understand
+    steps:
+      - { kind: restate, role: restater, count: 3, blind: true }
+  - name: Plan
+    standard: plan
+    steps:
+      - { kind: draft, name: drafts, role: drafter, count: 2, blind: true }
+      - { kind: judge, name: pick, role: judge, input: drafts }
+  - name: Build
+    standard: do
+    steps:
+      - kind: for_each
+        input: plan
+        steps:
+          - kind: loop_until
+            until: reviewers_approve
+            max: 3
+            steps:
+              - { kind: build, name: build, role: owner }
+              - { kind: gate, name: gates }
+              - { kind: review, name: review-1, role: reviewer, blind: true, different_family_from: author }
+              - { kind: review, name: review-2, role: reviewer, blind: true, different_family_from: author }
+          - { kind: synthesize, name: settle, role: adjudicator, when: reviewers_disagree }
+  - name: Ship
+    standard: decide
+    steps:
+      - { kind: merge }

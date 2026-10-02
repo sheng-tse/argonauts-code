@@ -9,13 +9,14 @@
 //!   cargo test -p argonauts-adapter-codex --test record -- --ignored record_1
 //! ```
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use argonauts_adapter_codex::{CHEAPEST_EFFORT, CodexAdapter, FALLBACK_CHEAPEST_MODEL};
+use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout};
 use argonauts_core::{
     Adapter, AuthMode, CommandSpec, SessionRequest, SessionRole, VENDOR_KEY_ENV_VARS,
     report_json_schema,
@@ -32,6 +33,27 @@ struct Recording {
     prompt: &'static str,
     schema: bool,
     resume_from: Option<&'static str>,
+    compaction: Option<Compaction>,
+    native_fanout: Option<NativeFanout>,
+    user_hooks_off: bool,
+    /// Send SIGINT once a stdout line contains all of these.
+    interrupt_on: &'static [&'static str],
+}
+
+impl Recording {
+    const PLAIN: Self = Self {
+        test: "",
+        name: "",
+        repo: "",
+        role: SessionRole::ReadOnly,
+        prompt: "",
+        schema: false,
+        resume_from: None,
+        compaction: None,
+        native_fanout: None,
+        user_hooks_off: false,
+        interrupt_on: &[],
+    };
 }
 
 #[test]
@@ -43,8 +65,7 @@ fn record_1_read_only_ok() {
         repo: "read-only",
         role: SessionRole::ReadOnly,
         prompt: "Reply with exactly the word: ok",
-        schema: false,
-        resume_from: None,
+        ..Recording::PLAIN
     });
 }
 
@@ -58,7 +79,7 @@ fn record_2_build_hello() {
         role: SessionRole::Build,
         prompt: "Create a file named hello.txt containing the word hi. Then reply with: done",
         schema: true,
-        resume_from: None,
+        ..Recording::PLAIN
     });
 }
 
@@ -71,9 +92,167 @@ fn record_3_resume_ls() {
         repo: "build",
         role: SessionRole::ReadOnly,
         prompt: "Run `ls` and reply with the number of files",
-        schema: false,
         resume_from: Some("build_hello"),
+        ..Recording::PLAIN
     });
+}
+
+/// Steering: the conductor interrupts a running turn, then resumes it with a message.
+#[test]
+#[ignore = "live Codex call; see the module docs"]
+fn record_4_interrupt_sleep() {
+    record(Recording {
+        test: "record_4_interrupt_sleep",
+        name: "interrupt_sleep",
+        repo: "steer",
+        role: SessionRole::Build,
+        prompt: "Run the shell command `sleep 20`, then reply with: slept",
+        compaction: Some(Compaction::Auto),
+        native_fanout: Some(NativeFanout::Switch(FanoutSwitch::Off)),
+        user_hooks_off: true,
+        interrupt_on: &["\"item.started\"", "\"command_execution\""],
+        ..Recording::PLAIN
+    });
+}
+
+#[test]
+#[ignore = "live Codex call; see the module docs"]
+fn record_5_resume_with_message() {
+    record(Recording {
+        test: "record_5_resume_with_message",
+        name: "resume_with_message",
+        repo: "steer",
+        role: SessionRole::Build,
+        prompt: "Stop waiting for that command. Do not run anything. Reply with exactly: resumed",
+        resume_from: Some("interrupt_sleep"),
+        compaction: Some(Compaction::Auto),
+        native_fanout: Some(NativeFanout::Switch(FanoutSwitch::Off)),
+        user_hooks_off: true,
+        ..Recording::PLAIN
+    });
+}
+
+#[test]
+#[ignore = "live Codex call; see the module docs"]
+fn record_6_subagent_spawn() {
+    record(Recording {
+        test: "record_6_subagent_spawn",
+        name: "subagent_spawn",
+        repo: "fanout",
+        role: SessionRole::ReadOnly,
+        prompt: "Spawn exactly one explorer subagent and ask it to count the files in this \
+                 repository and reply with just the number. Wait for it to finish, then close \
+                 it, then reply with its number.",
+        native_fanout: Some(NativeFanout::Limit { max: 1 }),
+        ..Recording::PLAIN
+    });
+}
+
+/// Reads rate limits over `codex app-server`. It starts no turn and spends nothing.
+#[test]
+#[ignore = "talks to the Codex app server; see the module docs"]
+fn record_7_rate_limits_probe() {
+    const TEST: &str = "record_7_rate_limits_probe";
+    let Some(live_dir) = live_dir(TEST) else {
+        eprintln!("skipped: set ARGONAUTS_RECORD={TEST} and ARGONAUTS_LIVE_DIR to record");
+        return;
+    };
+    let adapter = CodexAdapter::new();
+    let version = cli_version(&adapter);
+    let spec = adapter
+        .quota_probe(&live_dir, None)
+        .expect("Codex has a quota probe");
+    let requests = spec
+        .stdin
+        .clone()
+        .expect("the probe writes its requests to stdin");
+
+    let mut command = Command::new(&spec.program);
+    command
+        .args(&spec.args)
+        .current_dir(&spec.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for name in &spec.env_remove {
+        command.env_remove(name);
+    }
+    let mut child = command.spawn().expect("spawn codex app-server");
+    // Kept open until the answer arrives, since the app server exits when stdin closes.
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(requests.as_bytes()).unwrap();
+    let (lines, received) = std::sync::mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut text = String::new();
+    while adapter.parse_quota_probe(&text).is_none() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let line = received
+            .recv_timeout(left)
+            .expect("the app server answers in time");
+        text.push_str(&line);
+        text.push('\n');
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    drop(stdin);
+
+    let redactor = Redactor::new(&[(&live_dir, "<live>")]);
+    let answer: String = text
+        .lines()
+        .map(|line| format!("{}\n", redactor.apply(&redact_ids(line))))
+        .collect();
+    let meta = json!({
+        "adapter": adapter.id(),
+        "cli_version": version,
+        "recorded_at": now_rfc3339(),
+        "program": spec.program,
+        "args": spec.args,
+        "stdin": requests,
+        "spends": "nothing",
+    });
+    let fixtures = fixtures_dir().join(&version);
+    let base = fixtures.join("rate_limits_probe");
+    std::fs::write(base.with_extension("app-server.jsonl"), &answer).unwrap();
+    let mut meta_text = serde_json::to_string_pretty(&meta).unwrap();
+    meta_text.push('\n');
+    std::fs::write(base.with_extension("meta.json"), meta_text).unwrap();
+    eprintln!("{:?}", adapter.parse_quota_probe(&answer));
+}
+
+/// Account and installation ids identify you, so they never reach a fixture.
+fn redact_ids(line: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(line) else {
+        return line.to_owned();
+    };
+    redact_keys(
+        &mut value,
+        &["accountId", "installationId", "environmentId"],
+    );
+    value.to_string()
+}
+
+fn redact_keys(value: &mut Value, keys: &[&str]) {
+    match value {
+        Value::Object(fields) => {
+            for (key, field) in fields.iter_mut() {
+                if keys.contains(&key.as_str()) && !field.is_null() {
+                    *field = json!("<redacted>");
+                } else {
+                    redact_keys(field, keys);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|item| redact_keys(item, keys)),
+        _ => {}
+    }
 }
 
 fn record(rec: Recording) {
@@ -108,13 +287,16 @@ fn record(rec: Recording) {
         json_schema: rec.schema.then(report_json_schema),
         resume_session,
         scratch_dir: Some(scratch.clone()),
+        compaction: rec.compaction,
+        native_fanout: rec.native_fanout,
+        user_hooks_off: rec.user_hooks_off,
         ..SessionRequest::default()
     };
     let spec = adapter.command(&req).expect("build the command");
     write_spec_files(&spec);
 
     let started = Instant::now();
-    let (status, stdout, stderr) = run(&spec);
+    let (status, stdout, stderr) = run(&spec, rec.interrupt_on);
     let duration = started.elapsed();
 
     let redactor = Redactor::new(&[
@@ -135,6 +317,10 @@ fn record(rec: Recording) {
         "prompt": rec.prompt,
         "output_schema": rec.schema,
         "resumed_from": rec.resume_from,
+        "compaction": rec.compaction,
+        "native_fanout": rec.native_fanout,
+        "user_hooks_off": rec.user_hooks_off,
+        "interrupted": !rec.interrupt_on.is_empty(),
         "program": spec.program,
         "args": args,
         "stdin": "<prompt>",
@@ -147,8 +333,10 @@ fn record(rec: Recording) {
     write_fixture(&base, &stdout, &stderr, &meta);
 
     print_events(&adapter, &stdout, &stderr, status.code());
-    assert!(
+    // An interrupted turn exits 1 with no closing event.
+    assert_eq!(
         status.success(),
+        rec.interrupt_on.is_empty(),
         "codex exited with {status}; see {}",
         base.display()
     );
@@ -263,7 +451,7 @@ fn git(repo: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
-fn run(spec: &CommandSpec) -> (ExitStatus, String, String) {
+fn run(spec: &CommandSpec, interrupt_on: &'static [&'static str]) -> (ExitStatus, String, String) {
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -284,10 +472,36 @@ fn run(spec: &CommandSpec) -> (ExitStatus, String, String) {
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(input.as_bytes()).unwrap();
     }
-    let stdout = drain(child.stdout.take().unwrap());
+    let stdout = watch(child.stdout.take().unwrap(), child.id(), interrupt_on);
     let stderr = drain(child.stderr.take().unwrap());
     let status = wait(&mut child);
     (status, stdout.join().unwrap(), stderr.join().unwrap())
+}
+
+/// Reads stdout whole, and sends SIGINT to `pid` the first time a line holds every marker.
+fn watch(
+    pipe: impl Read + Send + 'static,
+    pid: u32,
+    markers: &'static [&'static str],
+) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut text = String::new();
+        let mut interrupted = markers.is_empty();
+        for line in BufReader::new(pipe).lines() {
+            let line = line.unwrap();
+            if !interrupted && markers.iter().all(|m| line.contains(m)) {
+                interrupted = true;
+                let status = Command::new("kill")
+                    .args(["-INT", &pid.to_string()])
+                    .status()
+                    .expect("run kill");
+                assert!(status.success(), "kill -INT {pid} failed");
+            }
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
+    })
 }
 
 fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {

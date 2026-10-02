@@ -1,0 +1,25 @@
+name: best-of-n
+description: Independent attempts at one card, keeping one that passes the visible gates
+params:
+  attempts: 3
+phases:
+  - name: Goal
+    standard: understand
+    steps:
+      - kind: restate
+        name: restatement
+        role: default
+      - kind: checkpoint
+        checkpoint: goal
+        when: restate_first
+  - name: Build
+    standard: do
+    steps:
+      - kind: build
+        role: owner
+        input: goal
+        count: "{{attempts}}"
+  - name: Merge
+    standard: decide
+    steps:
+      - kind: merge

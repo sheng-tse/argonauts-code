@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/cells.rs
+assertion_line: 80
+expression: text(&lines)
+---
+◆ Merge card-002 into main?
+  ⎿  Merge · you answered

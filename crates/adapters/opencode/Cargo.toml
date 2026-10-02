@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-adapter-opencode"
-description = "OpenCode adapter for Argonauts."
+description = "Argonauts adapter for OpenCode: headless runs with open-weight models through OpenCode's providers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,8 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 argonauts-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,16 @@
+---
+source: crates/tui/src/cell/tool/tests.rs
+expression: text(&rows)
+---
+● Goal(Add a --json flag to export)
+  ⎿  Agreed by 3 agents · 1 question answered
+
+● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)
+  ⎿  Read 1 file (ctrl+o to expand)
+     Update(src/export.rs)
+        Added 2 lines, removed 1 line
+         41      fn write(&self) -> Result<()> {
+         42 -        self.write_csv(out)
+         42 +        match self.format {
+         43 +            Format::Json => self.write_json(out),
+     Ran 2 shell commands (ctrl+o to expand)

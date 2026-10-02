@@ -1,0 +1,10 @@
+{
+  "program": "codex",
+  "args": ["debug", "models"],
+  "cli_version": "0.158.0",
+  "recorded_at": "2026-09-30T03:52:33Z",
+  "synthetic": false,
+  "model_call": false,
+  "exit_code": 0,
+  "trimmed": "each model's base_instructions and model_messages replaced with \"<removed>\" (about 490 KB of prompt text); every other field is as recorded"
+}

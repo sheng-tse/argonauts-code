@@ -1,0 +1,8 @@
+---
+source: crates/tui/tests/cells.rs
+expression: text(&lines)
+---
+● GPT-5.6 on Codex · owner · card-003 (Wire --json into the CLI)
+  ⎿  ☒ Read the CLI flags
+     ◧ Add the --json flag
+     ☐ Pass the format to the exporter

@@ -67,11 +67,16 @@ pub struct CardReport {
     pub tests_run: Vec<String>,
     /// Risks and follow-ups.
     pub concerns: Vec<String>,
+    // The lists below came after 0.0.1's report. The strict schema still asks for them, but a
+    // report without them, from a CLI that doesn't enforce the schema, still counts.
     /// Questions for the owner of another piece, or for you. Posted to the blackboard.
+    #[serde(default)]
     pub questions: Vec<String>,
     /// Requests to change something outside the card's paths or the plan.
+    #[serde(default)]
     pub change_requests: Vec<ChangeRequestOut>,
     /// Notes worth keeping for later sessions, checked by the safety scan.
+    #[serde(default)]
     pub memory_proposals: Vec<MemoryProposal>,
 }
 

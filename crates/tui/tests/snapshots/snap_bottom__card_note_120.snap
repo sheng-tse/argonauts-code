@@ -1,0 +1,21 @@
+---
+source: crates/tui/tests/snap_bottom.rs
+expression: text(&view.lines)
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Merge card-002 into main?
+  3 files · +48 -6 · tests passed · agy reviewed it and approved
+
+    1. Merge
+  ❯ 2. Open a pull request, squash the commits first
+    3. Request changes on some cards
+    4. Keep the branch
+    5. Abandon the run
+    6. Show the diff
+
+  Enter to choose with the note · Esc to close the note
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on

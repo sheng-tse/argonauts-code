@@ -52,3 +52,24 @@ fn a_missing_pattern_times_out_with_the_screen() {
         .unwrap_err();
     assert!(err.to_string().contains("shown"), "{err}");
 }
+
+#[test]
+fn keeps_rows_scrolled_off_a_region_at_the_top() {
+    // History printed above a live row that stays put, as an inline app prints it.
+    let script = "printf '\\033[10;1Hlive\\033[1;6r\\033[6;1H'; i=1; \
+                  while [ $i -le 12 ]; do printf '\\nhistory-%s' $i; i=$((i+1)); done; \
+                  printf '\\033[r\\033[9;1Hdone'; read _";
+    let mut pty = Pty::spawn(PtyCommand::new("/bin/sh").args(["-c", script]).size(10, 40)).unwrap();
+    let screen = pty.wait_for("done", WAIT).unwrap();
+    let history: Vec<String> = (1..=6).map(|n| format!("history-{n}")).collect();
+    assert!(
+        screen.scrollback.ends_with(&history),
+        "{:?}",
+        screen.scrollback
+    );
+    assert_eq!(screen.visible[0], "history-7", "{}", screen.text());
+    assert_eq!(screen.visible[5], "history-12", "{}", screen.text());
+    assert_eq!(screen.visible[9], "live", "{}", screen.text());
+    pty.press(Key::Enter).unwrap();
+    assert_eq!(pty.wait_for_exit(WAIT).unwrap(), 0);
+}

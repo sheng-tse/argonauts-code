@@ -1,0 +1,42 @@
+# Three cards, one per vendor. Claude Code and Codex finish theirs; agy starts three subagents
+# at once, one past the role's cap.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--permission-mode", "acceptEdits"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.284/write.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+# agy starts three subagents at once and then keeps working.
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format", "stream-json"]
+[[rule.step]]
+emit = '{"event":"init","conversation_id":"limits-agy-1","init":{"model":"gemini-3.6-flash-low","cwd":"<workdir>","tools":["invoke_subagent","write_to_file","finish"]}}'
+[[rule.step]]
+emit = '{"event":"step_update","step_update":{"conversation_id":"limits-agy-1","step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"invoke_subagent","subagent_info":{"subagents":[{"type_name":"research","conversation_id":"limits-agy-sub-1"}]}}}'
+[[rule.step]]
+emit = '{"event":"step_update","step_update":{"conversation_id":"limits-agy-1","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"invoke_subagent","subagent_info":{"subagents":[{"type_name":"research","conversation_id":"limits-agy-sub-2"}]}}}'
+[[rule.step]]
+emit = '{"event":"step_update","step_update":{"conversation_id":"limits-agy-1","step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"invoke_subagent","subagent_info":{"subagents":[{"type_name":"research","conversation_id":"limits-agy-sub-3"}]}}}'
+[[rule.step]]
+hang = true

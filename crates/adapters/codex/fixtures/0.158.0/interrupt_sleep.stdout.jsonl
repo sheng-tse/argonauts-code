@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a0f08f-543f-75d1-8a11-c1e362fb5900"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Running `sleep 20` now."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'sleep 20'","aggregated_output":"","exit_code":null,"status":"in_progress"}}

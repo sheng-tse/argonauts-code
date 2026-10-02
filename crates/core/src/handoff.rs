@@ -21,12 +21,12 @@ impl CheckpointTag {
         format!("argonauts/{}/{}/{}", self.run, self.card, self.label())
     }
 
-    /// `handoff-<n>`, as `/revert` and the transcript name it.
+    /// `handoff-<n>`, as `/rewind` and the transcript name it.
     pub fn label(&self) -> String {
         format!("handoff-{}", self.n)
     }
 
-    /// Where `/revert` keeps the work after this checkpoint: `argonauts/<run>/<card>-replaced-<n>`.
+    /// Where `/rewind` keeps the work after this checkpoint: `argonauts/<run>/<card>-replaced-<n>`.
     pub fn replaced_branch(&self) -> String {
         format!("argonauts/{}/{}-replaced-{}", self.run, self.card, self.n)
     }

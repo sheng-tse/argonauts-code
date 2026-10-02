@@ -1,0 +1,183 @@
+//! The conversations as rows of the crew panel.
+
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use argonauts_core::app::{ChatSummary, TurnReply};
+use argonauts_core::crew_panel::{CrewDetails, CrewRow, CrewState, CrewTarget};
+use argonauts_core::views::ContextUse;
+
+use super::past::{self, PastChat};
+use super::{ChatState, settled};
+use crate::chat_store::ChatStore;
+
+/// The newest conversations the panel lists; the rest stay in `/resume`.
+const MOST: usize = 20;
+
+/// The newest conversations, `chat` working while its turn runs.
+pub(crate) fn rows(chat_dir: &Path, chat: &ChatState, repo: &str) -> Vec<CrewRow> {
+    past::list(chat_dir)
+        .into_iter()
+        .take(MOST)
+        .filter_map(|summary| {
+            let past = past::load(chat_dir, &summary.chat)?;
+            let current = summary.chat == chat.id;
+            let busy = current && !settled(chat);
+            let context = chat
+                .context
+                .as_ref()
+                .filter(|_| current)
+                .map(|row| ContextUse {
+                    used: row.used,
+                    cap: row.cap.or(row.window).unwrap_or(0),
+                });
+            Some(row(&summary, &past, busy, context, repo))
+        })
+        .collect()
+}
+
+fn row(
+    summary: &ChatSummary,
+    past: &PastChat,
+    busy: bool,
+    context: Option<ContextUse>,
+    repo: &str,
+) -> CrewRow {
+    let reply = past
+        .turns
+        .iter()
+        .rev()
+        .find_map(|turn| turn.reply.as_ref())
+        .map(markdown);
+    let latest = match &reply {
+        _ if busy => "answering".to_owned(),
+        Some(reply) => first_line(reply),
+        None => String::new(),
+    };
+    CrewRow {
+        target: CrewTarget::Conversation {
+            chat: summary.chat.clone(),
+        },
+        state: if busy {
+            CrewState::Working
+        } else {
+            CrewState::Ready
+        },
+        title: if summary.title.trim().is_empty() {
+            "Untitled conversation".to_owned()
+        } else {
+            summary.title.clone()
+        },
+        repo: repo.to_owned(),
+        run: None,
+        worker: summary.worker.clone(),
+        latest,
+        updated: summary.updated,
+        details: CrewDetails {
+            last_message: reply,
+            context,
+            prompt: past.turns.first().map(|turn| turn.request.clone()),
+            ..CrewDetails::default()
+        },
+    }
+}
+
+fn markdown(reply: &TurnReply) -> String {
+    match reply {
+        TurnReply::Answer { markdown }
+        | TurnReply::Change { markdown, .. }
+        | TurnReply::Unclear { markdown, .. } => markdown.clone(),
+    }
+}
+
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(|line| line.trim().trim_start_matches('#').trim())
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The CLI sessions the conversations ran in, which the panel lists as conversations only.
+pub(crate) fn vendor_sessions(chat_dir: &Path) -> BTreeSet<String> {
+    past::list(chat_dir)
+        .iter()
+        .filter_map(|summary| ChatStore::open(chat_dir, &summary.chat).session())
+        .map(|session| session.vendor_session)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::Spend;
+    use argonauts_core::app::ChatEvent;
+    use argonauts_core::names::{ChatId, TurnId};
+
+    use super::*;
+
+    fn write(chat_dir: &Path, n: u32, request: &str, answer: Option<&str>) {
+        let store = ChatStore::open(chat_dir, &ChatId::numbered(n));
+        store
+            .append(&ChatEvent::TurnStarted {
+                turn: TurnId::numbered(1),
+                text: request.to_owned(),
+                worker: "codex/gpt-5.6".parse().unwrap(),
+                read_only: true,
+                commit: "abc".to_owned(),
+                uncommitted: Vec::new(),
+                settings_sha256: None,
+            })
+            .unwrap();
+        if let Some(answer) = answer {
+            store
+                .append(&ChatEvent::TurnFinished {
+                    turn: TurnId::numbered(1),
+                    reply: TurnReply::Answer {
+                        markdown: answer.to_owned(),
+                    },
+                    spend: Spend::default(),
+                    elapsed_ms: 10,
+                })
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_conversation_is_ready_with_its_first_prompt_and_last_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            1,
+            "How does the export pick a format?",
+            Some("## Short answer\n\nIt reads --format first."),
+        );
+        let past = past::load(dir.path(), &ChatId::numbered(1)).unwrap();
+        let row = row(&past.summary, &past, false, None, "~/app");
+        assert_eq!(row.state, CrewState::Ready);
+        assert_eq!(row.title, "How does the export pick a format?");
+        assert_eq!(row.latest, "Short answer");
+        assert_eq!(row.worker, Some("codex/gpt-5.6".parse().unwrap()));
+        assert_eq!(
+            row.details.prompt.as_deref(),
+            Some("How does the export pick a format?")
+        );
+        assert!(
+            row.details
+                .last_message
+                .as_deref()
+                .is_some_and(|text| text.ends_with("It reads --format first."))
+        );
+        assert_eq!(
+            row.target,
+            CrewTarget::Conversation {
+                chat: ChatId::numbered(1)
+            }
+        );
+
+        let busy = super::row(&past.summary, &past, true, None, "~/app");
+        assert_eq!(
+            (busy.state, busy.latest.as_str()),
+            (CrewState::Working, "answering")
+        );
+    }
+}

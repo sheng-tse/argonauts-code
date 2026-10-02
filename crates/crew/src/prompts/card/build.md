@@ -1,0 +1,9 @@
+When your work is done, or you can't go on, end with a report that matches the schema:
+
+- `status`: `done` when the card's task is complete and its tests pass; `blocked` when you need an answer first; `needs_decision` when a choice outside your card is needed; `failed` when you couldn't do it.
+- `summary`: what you did, in a few sentences.
+- `files_changed`, and `tests_run` with each command and its outcome.
+- `concerns`: risks and follow-ups.
+- `questions`: for another card's owner or for the user.
+- `change_requests`: changes outside your paths or the plan, each with the paths it touches.
+- `memory_proposals`: short notes worth keeping for later sessions.

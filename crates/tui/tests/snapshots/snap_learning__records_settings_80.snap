@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_learning.rs
+expression: "screen(&mut picker, 80, HEIGHT)"
+---
+Records                                        Agents  Predictions  [ Settings ]
+Who is good at what, by kind of work     2 agents · routing bandit, explores 20%
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   Setting                    Value     From                                  │
+│ ❯ routing.algorithm          "bandit"  built-in                              │
+│   routing.max_explore_share  0.2       built-in                              │
+│   outcomes.share             false     built-in                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│   How owners are picked                                                      │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · tab next tab · ⏎ change · esc back

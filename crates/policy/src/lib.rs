@@ -1,29 +1,37 @@
-//! Approvals, hard limits, and the narrator. The placeholders fail closed, so nothing is
-//! approved and no build session starts until the real checks exist.
+//! Approvals, hard limits, the approver model, and the live narrator. Every decision point
+//! checks the hard limits first, and only then does your mode and `decide_with` pick who
+//! answers. Agents never approve anything, and nothing here can raise autonomy.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use argonauts_core::events::card::CardSpec;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::WorkerRef;
-use argonauts_core::policy::{
-    ApprovalPolicy, ApprovalsView, DecisionPoint, EvidencePacket, HardLimit, HardLimits, Narrator,
-    NarratorError, NarratorLine, NarratorStatus, PolicyOutcome, UserDecision, Violation,
-};
+use argonauts_core::RunId;
+use argonauts_core::clock::{Clock, SystemClock};
+use argonauts_core::policy::{ApprovalPolicy, Narrator};
+use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::ui::NarratorMode;
 use argonauts_core::steps::StepRunner;
-use argonauts_core::worker::{SessionSpec, WorkerDirectory};
-use argonauts_core::{RunId, Spend};
-use tokio::sync::broadcast;
+use argonauts_core::worker::WorkerDirectory;
+
+pub mod approvals;
+pub mod approver;
+pub mod autonomy;
+pub mod daily;
+pub mod limits;
+pub mod narrator;
+pub mod parts;
+pub mod rules;
+pub mod session;
 
 /// Re-reads the settings, so each checkpoint can use the stricter of the run-start and current
 /// approval settings.
 pub type SettingsReloader = Arc<dyn Fn() -> Option<Settings> + Send + Sync>;
 
-const NOT_BUILT: &str = "is not implemented yet (approvals and narrator stream)";
-
+/// The policy a run's supervisor hands the engine. `state_dir` is the repo's
+/// `~/.argonauts/state/<repo>`, where shadow records and spot checks live. It must already
+/// exist, or every auto checkpoint asks, since a lost record could raise autonomy. An unset
+/// approver is picked from each agent's cheapest model; [`approval_policy_with_models`] adds the
+/// live model lists.
 pub fn approval_policy(
     settings: Arc<Settings>,
     reload: SettingsReloader,
@@ -31,10 +39,45 @@ pub fn approval_policy(
     workers: Arc<dyn WorkerDirectory>,
     steps: Arc<dyn StepRunner>,
 ) -> Arc<dyn ApprovalPolicy> {
-    let _ = (settings, reload, state_dir, workers, steps);
-    Arc::new(PlaceholderPolicy {
-        limits: PlaceholderLimits,
-    })
+    build(settings, reload, state_dir, workers, None, steps)
+}
+
+/// [`approval_policy`], picking an unset approver from `models`' live lists as well.
+pub fn approval_policy_with_models(
+    settings: Arc<Settings>,
+    reload: SettingsReloader,
+    state_dir: &Path,
+    workers: Arc<dyn WorkerDirectory>,
+    models: Arc<dyn ModelRegistry>,
+    steps: Arc<dyn StepRunner>,
+) -> Arc<dyn ApprovalPolicy> {
+    build(settings, reload, state_dir, workers, Some(models), steps)
+}
+
+fn build(
+    settings: Arc<Settings>,
+    reload: SettingsReloader,
+    state_dir: &Path,
+    workers: Arc<dyn WorkerDirectory>,
+    models: Option<Arc<dyn ModelRegistry>>,
+    steps: Arc<dyn StepRunner>,
+) -> Arc<dyn ApprovalPolicy> {
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let source = approvals::settings::SettingsSource::new(settings, reload);
+    let limits = Arc::new(limits::BuiltinLimits::new(source.clone(), workers.clone()));
+    let mut approver = approver::StepApprover::new(workers, steps, state_dir.to_owned());
+    if let Some(models) = models {
+        approver = approver.with_models(models);
+    }
+    let approver = Arc::new(approver);
+    let autonomy = Arc::new(autonomy::StateAutonomy::open(state_dir, clock.clone()));
+    Arc::new(approvals::ApprovalsPolicy::from_parts(parts::PolicyParts {
+        source,
+        limits,
+        approver,
+        autonomy,
+        clock,
+    }))
 }
 
 /// The narrator for one run, or for the app when `run` has no events yet.
@@ -45,262 +88,99 @@ pub fn narrator(
     workers: Arc<dyn WorkerDirectory>,
     steps: Arc<dyn StepRunner>,
 ) -> Arc<dyn Narrator> {
-    let _ = (run, run_dir, workers, steps);
-    let model = settings
-        .narrator
-        .model
-        .clone()
-        .unwrap_or_else(|| settings.default_agent.clone());
-    let (lines, _) = broadcast::channel(16);
-    Arc::new(PlaceholderNarrator {
-        state: Mutex::new(NarratorState {
-            mode: settings.ui.narrator,
-            model,
-        }),
-        cap: settings.narrator.spend_cap.clone(),
-        interval_s: settings
-            .narrator
-            .interval
-            .parse()
-            .ok()
-            .flatten()
-            .map_or(0, |d| d.as_secs()),
-        lines,
-    })
+    narrator::LiveNarrator::start(settings, run, run_dir.to_owned(), workers, steps)
 }
 
-fn not_built(what: &str, limit: HardLimit) -> Violation {
-    Violation {
-        limit,
-        detail: format!("{what} {NOT_BUILT}"),
-        paths: Vec::new(),
-    }
-}
-
-struct PlaceholderPolicy {
-    limits: PlaceholderLimits,
-}
-
-impl ApprovalPolicy for PlaceholderPolicy {
-    fn evaluate<'a>(
-        &'a self,
-        point: &'a DecisionPoint,
-        evidence: &'a EvidencePacket,
-    ) -> BoxFuture<'a, PolicyOutcome> {
-        Box::pin(async move {
-            PolicyOutcome::AskUser {
-                violations: self.limits.check_point(point, evidence),
-                shadow: None,
-            }
-        })
-    }
-
-    fn user_decided(&self, decision: &UserDecision) {
-        let _ = decision;
-        unimplemented!("shadow records {NOT_BUILT}");
-    }
-
-    fn spot_checked(&self, point: &DecisionPoint, correct: bool) {
-        let _ = (point, correct);
-        unimplemented!("spot checks {NOT_BUILT}");
-    }
-
-    fn auto_off(&self) {
-        // Already true: the placeholder asks you at every decision point.
-    }
-
-    fn hard_limits(&self) -> &dyn HardLimits {
-        &self.limits
-    }
-
-    fn view(&self) -> ApprovalsView {
-        unimplemented!("the approvals view {NOT_BUILT}");
-    }
-}
-
-/// Fails every check closed, so nothing passes on an unchecked limit.
-struct PlaceholderLimits;
-
-impl HardLimits for PlaceholderLimits {
-    fn check_point(&self, point: &DecisionPoint, evidence: &EvidencePacket) -> Vec<Violation> {
-        let _ = (point, evidence);
-        vec![not_built("checking hard limits", HardLimit::GatesFailed)]
-    }
-
-    fn check_card_diff(&self, card: &CardSpec, unified_diff: &str) -> Vec<Violation> {
-        let _ = (card, unified_diff);
-        vec![not_built(
-            "the built-in diff checks",
-            HardLimit::GatesFailed,
-        )]
-    }
-
-    fn check_session(&self, spec: &SessionSpec) -> Vec<Violation> {
-        let _ = spec;
-        vec![not_built(
-            "checking a session's sandbox",
-            HardLimit::NoSandbox,
-        )]
-    }
-}
-
-struct NarratorState {
-    mode: NarratorMode,
-    model: WorkerRef,
-}
-
-/// Keeps its mode and model so the lane header is right; every request gets an error.
-struct PlaceholderNarrator {
-    state: Mutex<NarratorState>,
-    cap: String,
-    interval_s: u64,
-    lines: broadcast::Sender<NarratorLine>,
-}
-
-impl PlaceholderNarrator {
-    fn state(&self) -> std::sync::MutexGuard<'_, NarratorState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn refuse(&self) -> BoxFuture<'_, Result<NarratorLine, NarratorError>> {
-        let off = self.state().mode == NarratorMode::Off;
-        Box::pin(async move {
-            if off {
-                Err(NarratorError::Off)
-            } else {
-                Err(NarratorError::Failed(format!("the narrator {NOT_BUILT}")))
-            }
-        })
-    }
-}
-
-impl Narrator for PlaceholderNarrator {
-    fn observe(&self, event: &argonauts_core::events::RunEvent) {
-        // Nothing is ever narrated, so there is no digest to keep.
-        let _ = event;
-    }
-
-    fn summary(&self) -> BoxFuture<'_, Result<NarratorLine, NarratorError>> {
-        self.refuse()
-    }
-
-    fn ask(&self, question: String) -> BoxFuture<'_, Result<NarratorLine, NarratorError>> {
-        let _ = question;
-        self.refuse()
-    }
-
-    fn set_mode(&self, mode: NarratorMode) {
-        self.state().mode = mode;
-    }
-
-    fn set_model(&self, model: WorkerRef) {
-        self.state().model = model;
-    }
-
-    fn status(&self) -> NarratorStatus {
-        let state = self.state();
-        NarratorStatus {
-            mode: state.mode,
-            model: state.model.clone(),
-            spent: Spend::default(),
-            cap: self.cap.clone(),
-            capped: false,
-            interval_s: self.interval_s,
-        }
-    }
-
-    fn lines(&self) -> broadcast::Receiver<NarratorLine> {
-        self.lines.subscribe()
-    }
-}
-
+// These go through the real approvals, autonomy, and limits parts, not fakes.
 #[cfg(test)]
 mod tests {
     use super::*;
     use argonauts_core::events::checkpoint::CheckpointKind;
     use argonauts_core::names::CheckpointId;
-    use argonauts_core::policy::EvidenceFacts;
+    use argonauts_core::policy::{
+        DecisionPoint, EvidenceFacts, EvidencePacket, NarratorError, PolicyOutcome, Verdict,
+    };
+    use argonauts_core::settings::approvals::{ApprovalMode, DecideWith, SandboxChoice};
+    use argonauts_core::settings::ui::NarratorMode;
     use argonauts_core::steps::SchemaStepRunner;
-    use argonauts_core::worker::WorkerError;
+    use argonauts_testkit::FakeDirectory;
 
-    struct NoWorkers;
-
-    impl WorkerDirectory for NoWorkers {
-        fn get(
-            &self,
-            worker: &WorkerRef,
-        ) -> Result<Arc<dyn argonauts_core::worker::Worker>, WorkerError> {
-            Err(WorkerError::Unknown(worker.clone()))
-        }
-        fn available(&self) -> Vec<WorkerRef> {
-            Vec::new()
-        }
-    }
-
-    fn point() -> DecisionPoint {
+    fn point(kind: CheckpointKind) -> DecisionPoint {
         DecisionPoint {
             run: RunId::new("run-01").unwrap(),
             checkpoint: CheckpointId::numbered(1),
-            kind: CheckpointKind::Merge,
+            kind,
             recipe: None,
             authors: Vec::new(),
             mode_override: None,
         }
     }
 
-    fn evidence() -> EvidencePacket {
+    fn evidence(kind: CheckpointKind, facts: EvidenceFacts) -> EvidencePacket {
         EvidencePacket {
-            kind: CheckpointKind::Merge,
+            kind,
             goal: None,
-            facts: EvidenceFacts::default(),
+            facts,
             agent_outputs: Vec::new(),
             documents: Vec::new(),
         }
     }
 
-    #[tokio::test]
-    async fn the_placeholder_policy_always_asks_and_fails_closed() {
+    fn policy(settings: Settings, home: &Path) -> Arc<dyn ApprovalPolicy> {
+        // A run's state folder exists before its first checkpoint.
+        let state_dir = home.join("state").join("repo-01");
+        std::fs::create_dir_all(&state_dir).unwrap();
         let reload: SettingsReloader = Arc::new(|| None);
-        let policy = approval_policy(
-            Arc::new(Settings::default()),
+        approval_policy(
+            Arc::new(settings),
             reload,
-            Path::new("/nowhere"),
-            Arc::new(NoWorkers),
+            &state_dir,
+            Arc::new(FakeDirectory::new()),
             Arc::new(SchemaStepRunner),
-        );
-        match policy.evaluate(&point(), &evidence()).await {
-            PolicyOutcome::AskUser { violations, shadow } => {
-                assert_eq!(violations.len(), 1);
-                assert!(violations[0].detail.contains("not implemented"));
-                assert!(shadow.is_none());
-            }
-            other => panic!("{other:?}"),
-        }
-        policy.auto_off();
+        )
     }
 
     #[tokio::test]
-    async fn the_placeholder_narrator_refuses_and_keeps_its_settings() {
+    async fn approval_policy_wires_the_real_parts() {
+        let home = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.sandbox.mode = SandboxChoice::Os;
+        settings.approvals.goal.mode = ApprovalMode::Auto;
+        settings.approvals.goal.decide_with = DecideWith::Rules;
+        let policy = policy(settings, home.path());
+
+        let no_questions = EvidenceFacts {
+            open_questions: Some(0),
+            ..EvidenceFacts::default()
+        };
+        let goal = evidence(CheckpointKind::Goal, no_questions);
+        match policy.evaluate(&point(CheckpointKind::Goal), &goal).await {
+            PolicyOutcome::Decided { verdict, by, .. } => {
+                assert_eq!((verdict, by), (Verdict::Approve, DecideWith::Rules));
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // A merge packet that names no commits is a hard-limit failure, so it asks.
+        let merge = evidence(CheckpointKind::Merge, EvidenceFacts::default());
+        match policy.evaluate(&point(CheckpointKind::Merge), &merge).await {
+            PolicyOutcome::AskUser { violations, .. } => assert!(!violations.is_empty()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_narrator_is_off_when_the_settings_say_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.ui.narrator = NarratorMode::Off;
         let narrator = narrator(
-            Arc::new(Settings::default()),
+            Arc::new(settings),
             RunId::new("run-01").unwrap(),
-            Path::new("/nowhere"),
-            Arc::new(NoWorkers),
+            dir.path(),
+            Arc::new(FakeDirectory::new()),
             Arc::new(SchemaStepRunner),
         );
-        assert!(matches!(
-            narrator.summary().await,
-            Err(NarratorError::Failed(_))
-        ));
-        narrator.set_mode(NarratorMode::Off);
-        assert!(matches!(
-            narrator.ask("why?".into()).await,
-            Err(NarratorError::Off)
-        ));
-        let model: WorkerRef = "ollama/qwen3".parse().unwrap();
-        narrator.set_model(model.clone());
-        let status = narrator.status();
-        assert_eq!((status.mode, status.model), (NarratorMode::Off, model));
-        assert_eq!(status.interval_s, 45);
+        assert!(matches!(narrator.summary().await, Err(NarratorError::Off)));
     }
 }

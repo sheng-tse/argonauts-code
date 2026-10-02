@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+Help
+The keys in effect, and every command by category                                        56 commands
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Keys                                                                                             │
+│ enter                         send the prompt                                                    │
+│ shift+enter / alt+enter / ctrl+j                                                                 │
+│                               new line                                                           │
+│ esc                           set a card aside, stop a chat turn, or pause the run               │
+│ ctrl+c                        clear the prompt, twice to exit                                    │
+│ ctrl+d                        exit, twice on an empty prompt                                     │
+│ shift+tab                     next approval mode                                                 │
+│ ctrl+o                        detailed transcript                                                │
+│ ctrl+t                        workflow view                                                      │
+│ ctrl+g                        edit the prompt in $EDITOR                                         │
+│ left                          crew view, on an empty prompt                                      │
+│ down                          agent panel, on an empty prompt                                    │
+│ ctrl+r                        search prompt history                                              │
+│ ?                             shortcuts, on an empty prompt                                      │
+│ up                            take queued messages back                                          │
+│ tab / up                      answer a waiting card                                              │
+│                                                                                                  │
+│ Session                                                                                          │
+│ /clear                        Start a fresh chat with the lead. Runs keep going                  │
+│ /resume                       Pick an earlier conversation or a run to carry on                  │
+│ /exit                         Close the screen. Runs keep going                                  │
+│ /compact [instructions]       Summarize the conversation to free context                         │
+│ /rename [name]                Rename the conversation                                            │
+│ /branch [name]                Start a new conversation from here and keep this one               │
+│ /fork [prompt]                Copy the conversation into a new background session                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ scroll · esc back                                                                   1-26 of 101 ↓

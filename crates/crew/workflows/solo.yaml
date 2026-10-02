@@ -1,0 +1,22 @@
+name: solo
+description: The default agent alone, with one card in a worktree, its gates, then the merge checkpoint
+phases:
+  - name: Goal
+    standard: understand
+    steps:
+      - kind: restate
+        name: restatement
+        role: default
+      - kind: checkpoint
+        checkpoint: goal
+        when: restate_first
+  - name: Build
+    standard: do
+    steps:
+      - kind: build
+        role: owner
+        input: goal
+  - name: Merge
+    standard: decide
+    steps:
+      - kind: merge

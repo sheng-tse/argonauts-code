@@ -1,13 +1,11 @@
 //! The workflow contracts: workflows as data, their events, the workflow, agent, and context
-//! views, the lead's design step, and `/workflow` and `/context`.
+//! views, the lead's design step, and `/workflows` and `/context`.
 
 use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::engine::EngineCommand;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::session::SessionStarted;
-use argonauts_core::input::{
-    Handler, ParsedInput, SLASH_COMMANDS, SlashCommand, WorkflowAction, parse_input,
-};
+use argonauts_core::input::{Handler, ParsedInput, SLASH_COMMANDS, WorkflowAction, parse_input};
 use argonauts_core::layout::{project_files, user_files};
 use argonauts_core::names::{CheckpointId, WorkflowId};
 use argonauts_core::names::{RoleName, WorkerRef};
@@ -343,39 +341,31 @@ fn parsed(text: &str) -> Value {
 }
 
 #[test]
-fn context_and_workflow_commands_parse_to_their_wire_format() {
+fn context_and_workflows_commands_parse_to_their_wire_format() {
     let context = json!({"input": "slash", "command": {"command": "context"}});
     assert_eq!(parsed("/context"), context);
     round_trip::<ParsedInput>(context);
 
-    let show = json!({"input": "slash",
-        "command": {"command": "workflow", "name": "review-panel", "action": "show"}});
-    assert_eq!(parsed("/workflow show review-panel"), show);
-    round_trip::<ParsedInput>(show);
-    assert_eq!(
-        parsed("/workflow"),
-        json!({"input": "slash", "command": {"command": "workflow", "name": null,
-               "action": "use"}})
-    );
-    for action in ["use", "show", "copy", "copy_to_project", "diff"] {
+    let workflows = json!({"input": "slash", "command": {"command": "workflows"}});
+    assert_eq!(parsed("/workflows"), workflows);
+    round_trip::<ParsedInput>(workflows);
+    // The Library tab shows, copies, and diffs workflow files with a command of its own.
+    for action in ["show", "copy", "copy_to_project", "diff"] {
         round_trip::<WorkflowAction>(json!(action));
+        round_trip::<UiCommand>(
+            json!({"type": "workflow_file", "name": "review-panel", "action": action}),
+        );
     }
-    // A command written before `action` existed reads as picking the workflow.
-    assert_eq!(
-        serde_json::from_value::<SlashCommand>(
-            json!({"command": "workflow", "name": "review-panel"})
-        )
-        .unwrap(),
-        SlashCommand::Workflow {
-            name: Some("review-panel".into()),
-            action: WorkflowAction::Use
-        }
-    );
 
-    for name in ["context", "workflow"] {
-        let spec = SLASH_COMMANDS.iter().find(|spec| spec.name == name);
-        assert_eq!(spec.map(|spec| spec.handler), Some(Handler::App), "{name}");
-    }
+    let handler = |name: &str| {
+        SLASH_COMMANDS
+            .iter()
+            .find(|spec| spec.name == name)
+            .map(|spec| spec.handler)
+    };
+    assert_eq!(handler("context"), Some(Handler::App));
+    // The screen opens the view itself, as Ctrl+T does.
+    assert_eq!(handler("workflows"), Some(Handler::Ui));
 }
 
 /// A sample answer for a step: it must pass the strict schema the worker gets, and decode.

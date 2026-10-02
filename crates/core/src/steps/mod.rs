@@ -4,6 +4,7 @@
 pub mod card;
 pub mod design;
 pub mod goal;
+pub mod handoff;
 pub mod intake;
 pub mod judgment;
 pub mod narrate;
@@ -50,6 +51,7 @@ pub enum StepName {
     ModelApprover,
     Narrate,
     DesignWorkflow,
+    HandoffSummary,
 }
 
 pub trait Step {
@@ -232,13 +234,17 @@ impl Strict {
             }
         }
         if is_object_schema(&out) {
-            let names: Vec<Value> = out
+            let mut names: Vec<String> = out
                 .get("properties")
                 .and_then(Value::as_object)
-                .map(|props| props.keys().cloned().map(Value::String).collect())
+                .map(|props| props.keys().cloned().collect())
                 .unwrap_or_default();
+            // Sorted, so the schema comes out the same when a dependency turns on serde_json's
+            // `preserve_order`.
+            names.sort();
             out.entry("properties".to_owned())
                 .or_insert_with(|| Value::Object(Map::new()));
+            let names = names.into_iter().map(Value::String).collect();
             out.insert("required".to_owned(), Value::Array(names));
             out.insert("additionalProperties".to_owned(), Value::Bool(false));
         }
@@ -306,10 +312,68 @@ pub fn decode<S: Step>(outcome: &StepOutcome) -> Result<S::Output, StepError> {
     })
 }
 
+/// The line a person reads for a step's output: its `summary`, else the first line of a chat
+/// answer. The JSON itself is for code and the Ctrl+O detail.
+pub fn summary_line(output: &Value) -> Option<String> {
+    ["summary", "answer_markdown"]
+        .iter()
+        .filter_map(|key| output.get(key)?.as_str())
+        .find_map(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
+        .map(str::to_owned)
+}
+
+/// Argonauts' own tools: the report, however the vendor sends it (`StructuredOutput`, agy's
+/// `finish`, or the `argonauts_report` MCP tool under any server prefix), and
+/// `argonauts_status`. They're how a session talks to Argonauts rather than work it does, so
+/// the screen leaves them out of an agent's activity.
+pub fn is_own_tool(name: &str) -> bool {
+    let normal: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    matches!(normal.as_str(), "structuredoutput" | "finish")
+        || normal.ends_with("argonautsreport")
+        || normal.ends_with("argonautsstatus")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::steps::{card, goal, intake, judgment, narrate, plan};
+
+    #[test]
+    fn own_tools_are_the_report_and_the_status() {
+        for name in [
+            "StructuredOutput",
+            "structured_output",
+            "finish",
+            "mcp__argonauts__argonauts_report",
+            "argonauts_argonauts_report",
+            "mcp__argonauts__argonauts_status",
+        ] {
+            assert!(is_own_tool(name), "{name}");
+        }
+        for name in ["Bash", "finish_line", "report", "status", "Read"] {
+            assert!(!is_own_tool(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_outputs_summary_line_is_its_summary_else_its_answer() {
+        let report = json!({"status": "done", "summary": "\nCreated hello.txt\nand more"});
+        assert_eq!(summary_line(&report).as_deref(), Some("Created hello.txt"));
+        let answer = json!({"status": "done", "answer_markdown": "It's **two** files.\n\n- a"});
+        assert_eq!(
+            summary_line(&answer).as_deref(),
+            Some("It's **two** files.")
+        );
+        assert_eq!(
+            summary_line(&json!({"status": "done", "summary": " "})),
+            None
+        );
+        assert_eq!(summary_line(&json!(["summary"])), None);
+    }
 
     /// Keywords Codex's strict mode (and so every vendor) rejects or ignores.
     const FORBIDDEN: &[&str] = &[
@@ -547,7 +611,7 @@ mod tests {
                     ]},
                     "tags": {"type": "array", "items": {"type": "string"}}
                 },
-                // serde_json keeps keys sorted, so `required` lists them in that order too.
+                // Sorted, whatever order serde_json keeps the properties in.
                 "required": ["child", "count", "kind", "note", "tags"],
                 "additionalProperties": false
             })
@@ -590,5 +654,23 @@ mod tests {
         let wrong =
             json!({"kind": "unclear", "answer_markdown": "x", "estimate": null, "extra": 1});
         assert!(!jsonschema::validator_for(&schema).unwrap().is_valid(&wrong));
+    }
+
+    #[test]
+    fn a_report_without_the_newer_lists_still_parses_and_the_schema_asks_for_them() {
+        let old = json!({
+            "status": "done",
+            "summary": "built it",
+            "files_changed": ["hello.txt"],
+            "tests_run": [],
+            "concerns": []
+        });
+        let report: card::CardReport = serde_json::from_value(old).unwrap();
+        assert!(report.questions.is_empty() && report.memory_proposals.is_empty());
+        let schema = output_schema::<card::Build>();
+        let required = schema["required"].as_array().unwrap();
+        for field in ["questions", "change_requests", "memory_proposals"] {
+            assert!(required.iter().any(|name| name == field), "{field}");
+        }
     }
 }

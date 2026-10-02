@@ -1,0 +1,27 @@
+[package]
+name = "argonauts-learning"
+description = "Argonauts learning: the outcome log and track records, routing and predictions, recipes and the evolution loop, replays, skills, and memory safety."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+argonauts-core.workspace = true
+rand.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+sha2.workspace = true
+starlark_syntax.workspace = true
+thiserror.workspace = true
+time.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+argonauts-testkit.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

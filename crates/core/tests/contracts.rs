@@ -12,8 +12,13 @@ use argonauts_core::names::{
     ChatId, CheckpointId, ChoiceId, DecisionId, DraftId, MessageId, RoleName, SessionKey, TurnId,
     VendorId, WorkerRef,
 };
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts, EvidencePacket, EvidenceSubject};
+use argonauts_core::policy::{
+    BudgetFacts, EscalationFacts, EvidenceDocument, EvidenceFacts, EvidencePacket, EvidenceSubject,
+    PromotionFacts,
+};
 use argonauts_core::registry::RegistryFile;
+use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::handoff::HandoffMode;
 use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::settings::{SAFETY_KEYS, SettingMeta, SettingScope, Settings, Span};
 use argonauts_core::{AgentEvent, Note, NoteLevel, RunId, Spend};
@@ -726,6 +731,7 @@ fn every_ui_command_round_trips() {
         json!({"type": "spot_check", "run": "run-01", "id": "cp-003", "correct": true}),
         json!({"type": "request", "view": {"view": "runs"}}),
         json!({"type": "request", "view": {"view": "all_repos"}}),
+        json!({"type": "request", "view": {"view": "workflow_library"}}),
         json!({"type": "request", "view": {"view": "diff", "run": "run-01", "card": "card-002",
                "scope": "last_turn"}}),
         json!({"type": "request", "view": {"view": "raw", "run": "run-01", "session": "s-003"}}),
@@ -752,10 +758,9 @@ fn every_ui_command_round_trips() {
                "level": "high"}}),
         json!({"type": "slash", "command": {"command": "effort", "role": "reviewer",
                "level": null}}),
-        json!({"type": "slash", "command": {"command": "agents", "id": "ollama",
-               "key": "base_url", "value": "\"http://localhost:11434/v1\""}}),
-        json!({"type": "slash", "command": {"command": "agents", "id": null, "key": null,
-               "value": null}}),
+        json!({"type": "slash", "command": {"command": "agents",
+               "action": {"kind": "add", "name": "ollama"}}}),
+        json!({"type": "slash", "command": {"command": "agents", "action": {"kind": "list"}}}),
         json!({"type": "slash", "command": {"command": "budget", "key": "run_usd",
                "value": "30"}}),
         json!({"type": "slash", "command": {"command": "handoff", "role": "owner",
@@ -764,12 +769,28 @@ fn every_ui_command_round_trips() {
                "value": null}}),
         json!({"type": "slash", "command": {"command": "permissions",
                "key": "sandbox.network", "value": "true"}}),
+        json!({"type": "slash", "command": {"command": "permissions", "role": "owner",
+               "key": "mode", "value": "tool"}}),
         json!({"type": "slash", "command": {"command": "approvals", "key": null,
                "value": null}}),
         json!({"type": "slash", "command": {"command": "approvals", "key": "merge.mode",
                "value": "auto"}}),
         json!({"type": "slash", "command": {"command": "theme", "name": "light"}}),
-        json!({"type": "slash", "command": {"command": "init"}}),
+        json!({"type": "slash", "command": {"command": "setup"}}),
+        json!({"type": "slash", "command": {"command": "clear"}}),
+        json!({"type": "slash", "command": {"command": "doctor"}}),
+        json!({"type": "slash", "command": {"command": "connect", "front_end": "openclaw"}}),
+        json!({"type": "slash", "command": {"command": "verbosity", "level": "quiet"}}),
+        json!({"type": "slash", "command": {"command": "verbosity", "level": null}}),
+        json!({"type": "slash", "command": {"command": "resume",
+               "target": {"kind": "conversation", "id": "chat-003"}}}),
+        json!({"type": "slash", "command": {"command": "resume",
+               "target": {"kind": "run", "id": "run-01"}}}),
+        json!({"type": "slash", "command": {"command": "stop", "run": null}}),
+        json!({"type": "slash", "command": {"command": "workflows"}}),
+        json!({"type": "rewind", "card": "card-002", "checkpoint": 1}),
+        json!({"type": "summary"}),
+        json!({"type": "workflow_file", "name": "solo", "action": "copy_to_project"}),
         json!({"type": "slash", "command": {"command": "config", "key": "narrator.model",
                "value": null, "reset": true}}),
         json!({"type": "reset_setting", "key": "ui.theme", "scope": "global"}),
@@ -783,14 +804,53 @@ fn every_ui_command_round_trips() {
     // The empty forms keep their argument names on the wire.
     let empty = [
         json!({"command": "config", "key": null, "value": null, "reset": false}),
-        json!({"command": "agent", "worker": null}),
+        json!({"command": "resume", "target": null}),
+        json!({"command": "rewind", "card": null}),
         json!({"command": "theme", "name": null}),
         json!({"command": "budget", "key": null, "value": null}),
         json!({"command": "model", "role": null, "worker": null}),
+        json!({"command": "compact", "instructions": null}),
+        json!({"command": "copy", "nth": null}),
+        json!({"command": "cd", "path": null}),
+        json!({"command": "usage", "period": null}),
     ];
     for command in empty {
         round_trip::<UiCommand>(json!({"type": "slash", "command": command}));
     }
+    // The commands the agent CLIs share, a CLI's own command, and its sessions.
+    let shared = [
+        json!({"command": "model", "role": "reviewer", "worker": "claude-code/opus",
+               "effort": "xhigh"}),
+        json!({"command": "resume", "target": {"kind": "vendor_session",
+               "id": {"vendor": "codex", "id": "019a2f-4c"}}}),
+        json!({"command": "rename", "name": "Login work"}),
+        json!({"command": "branch", "name": null}),
+        json!({"command": "fork", "prompt": "try the other parser"}),
+        json!({"command": "btw", "question": "what is a rope?"}),
+        json!({"command": "recap"}),
+        json!({"command": "copy", "nth": 2}),
+        json!({"command": "export", "file": "chat.txt"}),
+        json!({"command": "cd", "path": "../api"}),
+        json!({"command": "add_dir", "path": "../shared"}),
+        json!({"command": "plan", "task": "split the parser"}),
+        json!({"command": "goal", "text": "clear"}),
+        json!({"command": "fast", "on": true}),
+        json!({"command": "output_style", "style": "brief"}),
+        json!({"command": "diff"}),
+        json!({"command": "review", "target": "main..HEAD"}),
+        json!({"command": "security_review", "target": null}),
+        json!({"command": "usage", "period": "weekly"}),
+        json!({"command": "login", "agent": "codex"}),
+        json!({"command": "logout", "agent": null}),
+        json!({"command": "release_notes"}),
+        json!({"command": "feedback", "text": "the menu is great"}),
+        json!({"command": "vendor", "name": "simplify", "args": "the parser"}),
+        json!({"command": "vendor", "name": "anthropic-skills:example-a"}),
+    ];
+    for command in shared {
+        round_trip::<UiCommand>(json!({"type": "slash", "command": command}));
+    }
+    round_trip::<UiCommand>(json!({"type": "request", "view": {"view": "crew"}}));
     round_trip::<UiCommand>(json!({"type": "request", "view": {"view": "settings",
         "section": null}}));
     round_trip::<UiCommand>(json!({"type": "request", "view": {"view": "models",
@@ -810,13 +870,31 @@ fn narrator_line() -> Value {
            "text": "Counters survive restarts.", "model": "ollama/qwen3", "spend": spend()})
 }
 
+/// A welcome from an app that predates the header's agent and effort still reads.
+#[test]
+fn an_older_welcome_reads_without_the_agent_and_effort() {
+    let event: AppEvent = serde_json::from_value(json!({"type": "welcome", "version": "0.0.1",
+        "repo": "~/code/api", "preset": "peer-crew", "agents": [], "runs_going": 0}))
+    .unwrap();
+    assert!(matches!(
+        event,
+        AppEvent::Welcome {
+            default_agent: None,
+            effort: None,
+            ..
+        }
+    ));
+}
+
 #[test]
 fn every_app_event_round_trips() {
     let mut events = vec![
         json!({"type": "welcome", "version": "0.0.1", "repo": "~/code/api", "preset": "peer-crew",
                "agents": [{"id": "codex", "version": "0.158.0", "ready": true, "note": null}],
-               "runs_going": 1}),
+               "runs_going": 1, "example_prompt": "fix the flaky retry test",
+               "default_agent": "codex/gpt-5.6-luna", "effort": "high"}),
         json!({"type": "attached", "summary": run_summary()}),
+        json!({"type": "attached", "summary": run_summary(), "started_here": true}),
         json!({"type": "detached", "run": "run-01"}),
         json!({"type": "run", "event": envelope(json!({"type": "note",
                "data": {"level": "info", "text": "x"}}))}),
@@ -881,9 +959,55 @@ fn every_app_event_round_trips() {
                "recap": "Card 2 is in review; the plan checkpoint waits for you.",
                "recap_model": null}),
         json!({"type": "replay_done", "run": "run-01", "seq": 412}),
+        json!({"type": "view", "data": {"data": "runs", "runs": [run_summary()],
+               "chats": [{"chat": "chat-002", "title": "hi", "updated": "2026-09-29T12:00:00Z",
+                          "worker": "claude-code", "turns": 3}]}}),
+        json!({"type": "chat_resumed", "chat": "chat-002", "title": "hi", "worker": "claude-code",
+               "earlier": [{"from": {"party": "user"}, "text": "hi"}],
+               "turns": [{"from": {"party": "user"}, "text": "what does export do?"},
+                         {"from": {"party": "agent", "session": "t-002", "worker": "claude-code"},
+                          "text": "It writes CSV."}]}),
+        json!({"type": "report", "title": "Doctor",
+               "lines": ["claude-code 2.1.300 · tested · logged in", "git 2.51.2"]}),
+        json!({"type": "choice", "choice": {"id": "ch-003", "kind": "confirm_connect",
+               "title": "Add the `argonauts` server to ~/.hermes/config.yaml?",
+               "body": ["~/.hermes/config.yaml is copied to ~/.hermes/config.yaml.argonauts-backup first."],
+               "options": [{"key": "y", "label": "Write it", "action": {"action": "approve"},
+                            "recommended": false, "detail": null}],
+               "free_text": "none", "bell": false}}),
+        json!({"type": "view", "data": {"data": "runs", "runs": [], "sessions": [
+               {"vendor": "claude-code", "id": "0a1b-2c3d", "title": "Fix the flaky test",
+                "folder": "/repo", "updated": "2026-09-29T12:00:00Z", "model": "claude-opus-5-5"}]}}),
+        json!({"type": "view", "data": {"data": "effort", "slider": {"role": "reviewer",
+               "worker": "claude-code/claude-opus-5-5", "model": "Opus 5.5",
+               "stops": [{"level": "low", "description": "Quick answers with light reasoning"},
+                         {"level": "xhigh", "description": "Extra depth"}],
+               "chosen": 1, "default": 1}}}),
+        json!({"type": "view", "data": {"data": "crew", "panel": {"repo": "~/app", "rows": [
+               {"target": {"kind": "conversation", "chat": "chat-002"}, "state": "ready",
+                "title": "Explain the input handling", "repo": "~/app",
+                "worker": "claude-code", "latest": "It reads keys in one loop.",
+                "updated": "2026-09-29T12:00:00Z", "details": {}}]}}}),
+        json!({"type": "vendor_commands", "set": {"vendor": "claude-code", "title": "Claude Code",
+               "commands": [
+                   {"name": "clear", "aliases": ["reset", "new"], "help": "New conversation",
+                    "kind": "argonauts", "command": "clear", "source": "built_in"},
+                   {"name": "ship", "args": "[branch]", "help": "Ship it", "kind": "vendor",
+                    "source": "custom", "scope": "project", "path": "/repo/.claude/commands/ship.md"},
+                   {"name": "voice", "help": "Talk to it", "kind": "screen_only",
+                    "source": "built_in"}]}}),
         json!({"type": "view", "data": {"data": "all_repos", "repos": [
                {"repo": "~/src/api", "runs": [run_summary()]},
                {"repo": "~/src/web", "runs": []}]}}),
+        json!({"type": "view", "data": {"data": "workflow_library", "workflows": [
+               {"name": "solo", "origin": "yours", "source": "~/.argonauts/workflows/solo.yaml",
+                "description": "One agent", "text": "name: solo\n", "edited": true,
+                "in_use": false}], "refresh": true}}),
+        json!({"type": "view", "data": {"data": "checkpoints", "run": "run-01",
+               "card": "card-002", "checkpoints": [{"card": "card-002", "n": 1,
+               "at": "2026-09-29T12:00:00Z", "commit": "0123456",
+               "from": "claude-code/opus", "to": ["codex"], "reason": "usage limit",
+               "reverted_here": false}]}}),
         json!({"type": "view", "data": {"data": "settings", "rows": [{"key": "budget.run_usd",
                "value": "20.0", "layer": "built-in", "default_scope": "project", "safety": true,
                "allowed": [], "description": "Run ceiling in dollars"}], "command": "budget",
@@ -891,7 +1015,8 @@ fn every_app_event_round_trips() {
         json!({"type": "view", "data": {"data": "models", "choices": [{"worker": "codex/gpt-x",
                "family": "gpt", "access": "subscription", "cost": {"unit": "quota", "amount": 0.02},
                "quota": null, "efforts": ["low", "high"], "strengths": ["refactor"],
-               "current": true}], "role": "reviewer"}}),
+               "current": true}], "role": "reviewer", "refreshed": "2026-10-01T09:30:00Z",
+               "refreshing": true, "update": false}}),
         json!({"type": "narrator", "line": {"ts": "2026-09-29T12:00:00Z", "run": "run-01",
                "kind": {"kind": "phase_end", "phase": "planning"},
                "text": "Plan 2 won.", "model": "ollama/qwen3", "spend": spend()}}),
@@ -931,7 +1056,25 @@ fn every_app_event_round_trips() {
         json!({"type": "view", "data": {"data": "models", "choices": [{"worker": "ollama/llama3.2",
                "family": "llama", "access": "local", "cost": {"unit": "free"},
                "quota": null, "efforts": [], "strengths": [], "current": false}],
-               "role": null}}),
+               "role": null, "refreshed": null, "refreshing": false, "update": true}}),
+        json!({"type": "view", "data": {"data": "models", "choices": [
+               {"worker": "claude-code", "family": "claude", "access": "subscription",
+                "cost": {"unit": "quota", "amount": 0.02}, "quota": null, "efforts": [],
+                "strengths": [], "current": false, "description": "Best for everyday, complex tasks",
+                "recommended": true, "runs": "Opus 5.5"},
+               {"worker": "claude-code/claude-opus-5-5", "family": "claude",
+                "access": "subscription", "cost": {"unit": "quota", "amount": 0.02},
+                "quota": null, "efforts": ["low", "medium", "high", "xhigh", "max"],
+                "strengths": [], "current": true, "name": "Opus 5.5",
+                "description": "For complex work and everyday tasks", "default_effort": "xhigh",
+                "effort": "max"},
+               {"worker": "claude-code/opus", "family": "claude", "access": "subscription",
+                "cost": {"unit": "unknown"}, "quota": null, "efforts": [], "strengths": [],
+                "current": false, "alias": true, "runs": "Opus 5.5"},
+               {"worker": "claude-code/claude-opus-6", "family": "claude",
+                "access": "subscription", "cost": {"unit": "unknown"}, "quota": null,
+                "efforts": [], "strengths": [], "current": false, "name": "Opus 6", "new": true}],
+               "role": null, "refreshed": null, "refreshing": false, "update": false}}),
         json!({"type": "exit"}),
     ];
     for kind in [
@@ -1019,6 +1162,8 @@ fn control_frames_round_trip() {
         json!({"request": "status"}),
         json!({"request": "diff", "card": "card-002", "scope": "card"}),
         json!({"request": "raw", "session": "s-003"}),
+        json!({"request": "revert", "card": "card-002", "checkpoint": 2}),
+        json!({"request": "spot_check", "id": "cp-003", "correct": false}),
     ];
     for (id, body) in requests.into_iter().enumerate() {
         round_trip::<Frame<ControlRequest>>(json!({"id": id, "body": body}));
@@ -1078,7 +1223,7 @@ fn parsed_input_wire_format() {
     round_trip::<ParsedInput>(json!({"input": "mention",
         "target": {"target": "number", "value": 2}, "text": "stop"}));
     round_trip::<ParsedInput>(json!({"input": "slash",
-        "command": {"command": "continue", "run": "run-01", "request": null}}));
+        "command": {"command": "follow_up", "run": "run-01", "request": "add tests"}}));
     round_trip::<MentionTarget>(json!({"target": "worker", "value": "claude-code/opus"}));
 }
 
@@ -1131,6 +1276,7 @@ fn older_messages_read_with_the_review_additions_empty() {
     assert_eq!(
         command(json!({"command": "permissions"})),
         SlashCommand::Permissions {
+            role: None,
             key: None,
             value: None
         }
@@ -1162,10 +1308,34 @@ fn older_messages_read_with_the_review_additions_empty() {
     else {
         panic!("not a view");
     };
-    let ViewData::Models { choices, role } = *data else {
+    let ViewData::Models {
+        choices,
+        role,
+        refreshed,
+        refreshing,
+        update,
+    } = *data
+    else {
         panic!("not the model picker");
     };
     assert!(role.is_none() && !choices[0].current);
+    assert!(refreshed.is_none() && !refreshing && !update);
+    let AppEvent::View { data } = event(json!({"type": "view", "data": {"data": "models",
+        "choices": [], "refreshed": "2026-10-01T09:30:00Z", "update": true}}))
+    else {
+        panic!("not a view");
+    };
+    let ViewData::Models {
+        refreshed, update, ..
+    } = *data
+    else {
+        panic!("not the model picker");
+    };
+    assert_eq!(
+        refreshed,
+        Some(time::macros::datetime!(2026-10-01 09:30 UTC))
+    );
+    assert!(update);
     let AppEvent::View { data } = event(json!({"type": "view", "data": {"data": "settings",
         "rows": []}}))
     else {
@@ -1176,8 +1346,25 @@ fn older_messages_read_with_the_review_additions_empty() {
         ViewData::Settings {
             rows: Vec::new(),
             command: None,
-            section: None
+            section: None,
+            not_installed: Vec::new(),
         }
+    );
+    let AppEvent::View { data } = event(json!({"type": "view", "data": {"data": "settings",
+        "rows": [], "command": "agents",
+        "not_installed": [{"id": "opencode", "install": "npm i -g opencode-ai@latest"}]}}))
+    else {
+        panic!("not a view");
+    };
+    let ViewData::Settings { not_installed, .. } = *data else {
+        panic!("not settings");
+    };
+    assert_eq!(
+        not_installed,
+        [argonauts_core::app::MissingCli {
+            id: "opencode".into(),
+            install: Some("npm i -g opencode-ai@latest".into()),
+        }]
     );
 }
 
@@ -1391,6 +1578,7 @@ fn safety_keys_cover_the_contract_list() {
         "endpoints.*.header_env.*",
         "roles.*.handoff.allow_api_billing",
         "handoff.allow_api_billing",
+        "roles.*.sandbox.*",
         "mcp.*",
         "merge.*",
         "gates.*",
@@ -1465,6 +1653,47 @@ fn evidence_hashes_are_stable_and_bind_every_field() {
         hash,
         "the approval is bound to the head commit"
     );
+}
+
+#[test]
+fn policy_facts_are_left_out_until_the_engine_knows_them() {
+    // Absent facts leave the packet, and so its hash, as it was before they existed.
+    let unknown = serde_json::to_value(evidence()).unwrap();
+    for key in [
+        "escalation",
+        "budget",
+        "criteria_unchanged",
+        "promotion",
+        "irreversible_actions",
+    ] {
+        assert!(unknown["facts"].get(key).is_none(), "{key}");
+    }
+    let usd = |amount| BudgetAmount {
+        unit: BudgetUnit::Usd,
+        amount,
+    };
+    let mut known = evidence();
+    known.facts.escalation = Some(EscalationFacts {
+        handoff_mode: HandoffMode::Auto,
+        families_tried: vec!["claude".into()],
+        next_family: Some("gpt".into()),
+        extra_attempts: 1,
+        fits_reserve: true,
+    });
+    known.facts.budget = Some(BudgetFacts {
+        remaining_cards: usd(4.5),
+        reserve_left: usd(6.0),
+    });
+    known.facts.criteria_unchanged = Some(true);
+    known.facts.promotion = Some(PromotionFacts {
+        change_class: "checklist_item".into(),
+        last_promoted: Some(OffsetDateTime::from_unix_timestamp(1_759_200_000).unwrap()),
+    });
+    known.facts.irreversible_actions = Some(vec!["npm publish".into()]);
+    let back: EvidencePacket =
+        serde_json::from_value(serde_json::to_value(&known).unwrap()).unwrap();
+    assert_eq!(back, known);
+    assert_ne!(known.sha256(), evidence().sha256());
 }
 
 #[test]

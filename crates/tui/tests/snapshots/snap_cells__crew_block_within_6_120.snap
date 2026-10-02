@@ -1,0 +1,10 @@
+---
+source: crates/tui/tests/snap_cells.rs
+expression: text(&lines)
+---
+● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)
+  ⎿  … +6 lines (ctrl+o to expand)
+     Update(src/export.rs)
+        Added 3 lines, removed 2 lines
+         40 -    /// Writes the rows as CSV.
+     Ran 2 shell commands (ctrl+o to expand)

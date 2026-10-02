@@ -13,7 +13,7 @@ use crate::api::{
 use crate::events::RunEvent;
 use crate::events::session::QueuedMessage;
 use crate::input::MentionTarget;
-use crate::names::{MessageId, SessionKey, WorkerRef};
+use crate::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
 use crate::settings::approvals::ApprovalMode;
 use crate::{CardId, RunId};
 
@@ -113,6 +113,17 @@ pub enum ControlRequest {
     },
     Raw {
         session: SessionKey,
+    },
+    /// Reset a card to checkpoint `handoff-<checkpoint>`. The work after it stays on a side
+    /// branch.
+    Revert {
+        card: CardId,
+        checkpoint: u32,
+    },
+    /// Your verdict on an auto-approval from the spot-check queue.
+    SpotCheck {
+        id: CheckpointId,
+        correct: bool,
     },
 }
 

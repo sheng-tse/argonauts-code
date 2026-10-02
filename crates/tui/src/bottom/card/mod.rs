@@ -1,0 +1,596 @@
+//! A card from an agent or a run never takes focus by itself, so nothing you're typing when it
+//! appears can answer it. ↑ or Tab on an empty input hands it the keys, and ↓ past its last
+//! option hands them back. A card you set off yourself, such as a confirm or the save-scope
+//! question, opens with the keys and keeps them until you answer it or press Esc, the way Claude
+//! Code shows its questions.
+
+mod render;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_segmentation::UnicodeSegmentation;
+
+use crate::text::sanitize_line;
+use crate::theme::AgentColor;
+use crate::views::list;
+
+pub use render::CardView;
+
+pub const NOTE_PLACEHOLDER: &str = "and add a note";
+
+pub const ESC_HINT: &str = "Esc to set aside";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardPrompt {
+    pub id: u64,
+    pub title: String,
+    /// For the pinned line.
+    pub short_title: String,
+    pub chips: Vec<CardChip>,
+    pub agent: Option<CardAgent>,
+    pub detail: Vec<String>,
+    /// What the card asks about at length goes into the conversation before the card opens,
+    /// so this stays short.
+    pub body: Vec<String>,
+    pub question: Option<String>,
+    pub options: Vec<CardOption>,
+    pub selected: usize,
+    pub focused: bool,
+    /// You set it off yourself, so it holds the keys whenever it's on screen.
+    pub takes_focus: bool,
+    /// Set aside to one line.
+    pub pinned: bool,
+    pub allow_note: bool,
+    /// A note on an option after Tab, or the answer typed into a free-text option.
+    pub note: Option<CardNote>,
+    pub note_placeholder: String,
+    /// An option that can't be undone, picked by its number and waiting for Enter or the same
+    /// number.
+    pub armed: Option<usize>,
+    pub checklist: Option<Checklist>,
+    pub footer: Option<String>,
+    /// What Esc does here, for the hint line, such as `Esc to cancel` on a confirm.
+    pub esc_hint: String,
+    /// Esc closes it with an answer, such as cancel or the recommended answers, instead of
+    /// setting it aside to wait. Then only Esc on the focused card does that.
+    pub esc_answers: bool,
+}
+
+/// One question's chip on a card that asks several.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardChip {
+    pub label: String,
+    /// The first chip not answered is the current one.
+    pub answered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardAgent {
+    /// Its display name, such as `GPT-6.1 Sol on Codex`.
+    pub name: String,
+    /// Its id, such as `codex/gpt-6.1-sol`, which keeps its color for the run.
+    pub worker: String,
+    pub color: Option<AgentColor>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CardNote {
+    pub option: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Checklist {
+    pub option: usize,
+    pub checked: Vec<bool>,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardOption {
+    pub label: String,
+    pub kind: OptionKind,
+    pub description: Option<String>,
+    pub recommended: bool,
+    /// Rows a checklist option ticks.
+    pub items: Vec<String>,
+    /// Whether a toggle is on.
+    pub on: bool,
+    /// Its answer carries your words, such as the changes to make. On a card that takes notes,
+    /// picking it opens the note line first, and a checklist opens it after the ticks.
+    pub asks_note: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum OptionKind {
+    #[default]
+    Answer,
+    /// Its number only moves the pointer, and Enter or the same number again answers.
+    Irreversible,
+    /// The card stays, and picking it never counts as the answer.
+    View,
+    /// Opens a line inside the card for your own answer.
+    FreeText,
+    Checklist,
+    /// Its number flips it on or off and reports `OpenView`, so the host can read the new state.
+    /// The card stays, and it never counts as the answer.
+    Toggle,
+}
+
+impl CardOption {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            kind: OptionKind::Answer,
+            description: None,
+            recommended: false,
+            items: Vec::new(),
+            on: false,
+            asks_note: false,
+        }
+    }
+
+    pub fn irreversible(label: impl Into<String>) -> Self {
+        Self::new(label).with_kind(OptionKind::Irreversible)
+    }
+
+    pub fn view(label: impl Into<String>) -> Self {
+        Self::new(label).with_kind(OptionKind::View)
+    }
+
+    pub fn free_text(label: impl Into<String>) -> Self {
+        Self::new(label).with_kind(OptionKind::FreeText)
+    }
+
+    pub fn checklist(label: impl Into<String>, items: Vec<String>) -> Self {
+        Self {
+            items,
+            ..Self::new(label).with_kind(OptionKind::Checklist)
+        }
+    }
+
+    pub fn toggle(label: impl Into<String>, on: bool) -> Self {
+        Self {
+            on,
+            ..Self::new(label).with_kind(OptionKind::Toggle)
+        }
+    }
+
+    pub fn with_kind(mut self, kind: OptionKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn recommended(mut self) -> Self {
+        self.recommended = true;
+        self
+    }
+
+    pub fn asks_note(mut self) -> Self {
+        self.asks_note = true;
+        self
+    }
+
+    pub fn is_view(&self) -> bool {
+        self.kind == OptionKind::View
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardEvent {
+    Answered {
+        index: usize,
+        note: Option<String>,
+        checked: Vec<usize>,
+    },
+    /// The card stays open and nothing was answered.
+    OpenView {
+        index: usize,
+    },
+    Pinned,
+    /// ↓ went past the last option, so the keys go back to the input and the card waits.
+    BackToInput,
+    /// The selection moved, or a note or checklist changed.
+    Moved,
+    Unhandled,
+}
+
+impl CardPrompt {
+    pub fn new(
+        id: u64,
+        title: impl Into<String>,
+        short_title: impl Into<String>,
+        options: Vec<CardOption>,
+    ) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            short_title: short_title.into(),
+            chips: Vec::new(),
+            agent: None,
+            detail: Vec::new(),
+            body: Vec::new(),
+            question: None,
+            options,
+            selected: 0,
+            focused: false,
+            takes_focus: false,
+            pinned: false,
+            allow_note: false,
+            note: None,
+            note_placeholder: NOTE_PLACEHOLDER.to_owned(),
+            armed: None,
+            checklist: None,
+            footer: None,
+            esc_hint: ESC_HINT.to_owned(),
+            esc_answers: false,
+        }
+    }
+
+    pub fn waits(&self) -> bool {
+        !self.focused
+    }
+
+    pub fn focus(&mut self) {
+        self.pinned = false;
+        self.focused = true;
+    }
+
+    /// A card you set off yourself: it opens with the keys, as Claude Code's questions do.
+    pub fn yours(mut self) -> Self {
+        self.takes_focus = true;
+        self.focused = true;
+        self
+    }
+
+    /// The key as the card reads it with vim keys on: `j` and `k` move, `g` and `G` go to the
+    /// first and last option, `l` answers as Enter does, and `h` sets the card aside as Esc
+    /// does. A note being typed keeps its letters.
+    pub fn vim_key(&self, key: KeyEvent) -> KeyEvent {
+        if self.note.is_some() {
+            key
+        } else {
+            list::standard(key, true, KeyCode::Esc)
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> CardEvent {
+        if !self.focused || self.pinned {
+            return CardEvent::Unhandled;
+        }
+        if self.options.is_empty() {
+            return match key.code {
+                KeyCode::Esc => self.pin(),
+                _ => CardEvent::Unhandled,
+            };
+        }
+        self.selected = self.selected.min(self.options.len() - 1);
+        if let Some(event) = self.checklist_key(key) {
+            return event;
+        }
+        if let Some(event) = self.note_key(key) {
+            return event;
+        }
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Up => {
+                self.move_to(self.selected.saturating_sub(1));
+                CardEvent::Moved
+            }
+            // A card you set off keeps the keys, so typing never slips into the input under it.
+            KeyCode::Down if self.selected + 1 == self.options.len() && self.takes_focus => {
+                CardEvent::Moved
+            }
+            KeyCode::Down if self.selected + 1 == self.options.len() => self.back_to_input(),
+            KeyCode::Down => {
+                self.move_to(self.selected + 1);
+                CardEvent::Moved
+            }
+            KeyCode::Home => {
+                self.move_to(0);
+                CardEvent::Moved
+            }
+            KeyCode::End => {
+                self.move_to(self.options.len() - 1);
+                CardEvent::Moved
+            }
+            // Enter is the confirmation, so an option that can't be undone goes through too.
+            KeyCode::Enter => self.pick(self.selected, true),
+            KeyCode::Tab if self.can_note(self.selected) => {
+                self.armed = None;
+                self.note = Some(CardNote {
+                    option: self.selected,
+                    text: String::new(),
+                });
+                CardEvent::Moved
+            }
+            KeyCode::Esc if self.armed.is_some() => {
+                self.armed = None;
+                CardEvent::Moved
+            }
+            KeyCode::Esc => self.pin(),
+            KeyCode::Char(c) if plain => match self.option_for_digit(c) {
+                Some(index) => {
+                    let confirmed = self.armed == Some(index);
+                    self.pick(index, confirmed)
+                }
+                None => CardEvent::Unhandled,
+            },
+            _ => CardEvent::Unhandled,
+        }
+    }
+
+    fn checklist_key(&mut self, key: KeyEvent) -> Option<CardEvent> {
+        let option = self.checklist.as_ref()?.option;
+        // The note on the ticks takes the keys once it's open, and Esc goes back to the ticks.
+        if self.note.is_some() {
+            if key.code == KeyCode::Enter {
+                return Some(self.send_checklist());
+            }
+            return match self.note_key(key) {
+                Some(event) => Some(event),
+                None if key.modifiers.contains(KeyModifiers::CONTROL) => None,
+                None => Some(CardEvent::Moved),
+            };
+        }
+        let wants_note = self.wants_note(option);
+        let list = self.checklist.as_mut()?;
+        let items = self
+            .options
+            .get(option)
+            .map_or(0, |option| option.items.len());
+        match key.code {
+            KeyCode::Up => list.cursor = list.cursor.saturating_sub(1),
+            KeyCode::Down => list.cursor = (list.cursor + 1).min(items.saturating_sub(1)),
+            KeyCode::Home => list.cursor = 0,
+            KeyCode::End => list.cursor = items.saturating_sub(1),
+            KeyCode::Char(' ') => {
+                if let Some(tick) = list.checked.get_mut(list.cursor) {
+                    *tick = !*tick;
+                }
+            }
+            // Sending nothing back would decide nothing, so Enter waits for a tick.
+            KeyCode::Enter if !list.checked.contains(&true) => {}
+            KeyCode::Enter if wants_note => {
+                self.note = Some(CardNote {
+                    option,
+                    text: String::new(),
+                });
+            }
+            KeyCode::Enter => return Some(self.send_checklist()),
+            KeyCode::Esc => self.checklist = None,
+            // Other keys do nothing while the checklist is open, except the global ones.
+            _ if key.modifiers.contains(KeyModifiers::CONTROL) => return None,
+            _ => {}
+        }
+        Some(CardEvent::Moved)
+    }
+
+    /// The ticked rows, with the note when one was written.
+    fn send_checklist(&mut self) -> CardEvent {
+        let Some(list) = self.checklist.as_ref() else {
+            return CardEvent::Unhandled;
+        };
+        let checked: Vec<usize> = list
+            .checked
+            .iter()
+            .enumerate()
+            .filter_map(|(index, ticked)| ticked.then_some(index))
+            .collect();
+        if checked.is_empty() {
+            return CardEvent::Moved;
+        }
+        let index = list.option;
+        self.checklist = None;
+        CardEvent::Answered {
+            index,
+            note: self.take_note(),
+            checked,
+        }
+    }
+
+    fn take_note(&mut self) -> Option<String> {
+        self.note
+            .take()
+            .map(|note| note.text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+    }
+
+    /// The note's cursor stays at its end, so keys that would move it are taken too, where
+    /// they would otherwise reach the prompt.
+    fn note_key(&mut self, key: KeyEvent) -> Option<CardEvent> {
+        let note = self.note.as_mut()?;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => self.note = None,
+            KeyCode::Char('c') if ctrl && !note.text.is_empty() => note.text.clear(),
+            KeyCode::Char('u') if ctrl => note.text.clear(),
+            KeyCode::Char('w') if ctrl => delete_word(&mut note.text),
+            KeyCode::Backspace if ctrl || alt => delete_word(&mut note.text),
+            KeyCode::Backspace => delete_grapheme(&mut note.text),
+            // Plain keys, and AltGr, which arrives as Ctrl+Alt on some systems.
+            KeyCode::Char(c) if ctrl == alt => note.text.push(c),
+            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End | KeyCode::Delete => {}
+            _ => return None,
+        }
+        Some(CardEvent::Moved)
+    }
+
+    /// Returns whether a note took the text.
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        match &mut self.note {
+            Some(note) if self.focused && !self.pinned => {
+                note.text.push_str(&sanitize_line(text));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn has_open_note(&self) -> bool {
+        self.note.is_some()
+    }
+
+    fn can_note(&self, index: usize) -> bool {
+        self.note.is_none()
+            && self
+                .options
+                .get(index)
+                .is_some_and(|option| match option.kind {
+                    OptionKind::FreeText => true,
+                    OptionKind::View | OptionKind::Checklist | OptionKind::Toggle => false,
+                    OptionKind::Answer | OptionKind::Irreversible => self.allow_note,
+                })
+    }
+
+    fn wants_note(&self, index: usize) -> bool {
+        self.allow_note
+            && self
+                .options
+                .get(index)
+                .is_some_and(|option| option.asks_note)
+    }
+
+    fn move_to(&mut self, index: usize) {
+        self.selected = index;
+        self.armed = None;
+        // An open note follows the selection, so Tab then ↓ puts it on the next option. A typed
+        // answer belongs to its own option, so it closes instead.
+        let free_text = |card: &Self, index: usize| {
+            card.options
+                .get(index)
+                .is_some_and(|option| option.kind == OptionKind::FreeText)
+        };
+        let Some(option) = self.note.as_ref().map(|note| note.option) else {
+            return;
+        };
+        if free_text(self, option) || free_text(self, index) {
+            self.note = None;
+        } else if let Some(note) = &mut self.note {
+            note.option = index;
+        }
+    }
+
+    /// A view leaves the card as it was, pointer and note included, so coming back finds it
+    /// ready.
+    fn pick(&mut self, index: usize, confirmed: bool) -> CardEvent {
+        let kind = self.options[index].kind;
+        match kind {
+            OptionKind::View => return CardEvent::OpenView { index },
+            OptionKind::Toggle => {
+                let option = &mut self.options[index];
+                option.on = !option.on;
+                return CardEvent::OpenView { index };
+            }
+            OptionKind::Irreversible if !confirmed => {
+                self.move_to(index);
+                self.armed = Some(index);
+                return CardEvent::Moved;
+            }
+            OptionKind::FreeText => {
+                let typed = self
+                    .note
+                    .as_ref()
+                    .filter(|note| note.option == index)
+                    .map(|note| note.text.trim().to_owned());
+                return match typed {
+                    Some(text) if !text.is_empty() => {
+                        self.note = None;
+                        CardEvent::Answered {
+                            index,
+                            note: Some(text),
+                            checked: Vec::new(),
+                        }
+                    }
+                    Some(_) => CardEvent::Moved,
+                    None => {
+                        self.move_to(index);
+                        self.note = Some(CardNote {
+                            option: index,
+                            text: String::new(),
+                        });
+                        CardEvent::Moved
+                    }
+                };
+            }
+            OptionKind::Checklist => {
+                self.move_to(index);
+                self.note = None;
+                self.checklist = Some(Checklist {
+                    option: index,
+                    checked: vec![false; self.options[index].items.len()],
+                    cursor: 0,
+                });
+                return CardEvent::Moved;
+            }
+            OptionKind::Answer | OptionKind::Irreversible => {}
+        }
+        self.armed = None;
+        // An empty note still answers, so a second Enter sends it without words.
+        let noted = self.note.as_ref().is_some_and(|note| note.option == index);
+        if self.wants_note(index) && !noted {
+            self.move_to(index);
+            self.note = Some(CardNote {
+                option: index,
+                text: String::new(),
+            });
+            return CardEvent::Moved;
+        }
+        CardEvent::Answered {
+            index,
+            note: self.take_note(),
+            checked: Vec::new(),
+        }
+    }
+
+    /// The pointer and any open note stay, so ↑ from the input finds the card as it was. An
+    /// armed option doesn't, since its next key would answer.
+    fn back_to_input(&mut self) -> CardEvent {
+        self.focused = false;
+        self.armed = None;
+        CardEvent::BackToInput
+    }
+
+    fn pin(&mut self) -> CardEvent {
+        self.pinned = true;
+        self.focused = false;
+        self.note = None;
+        self.armed = None;
+        self.checklist = None;
+        CardEvent::Pinned
+    }
+
+    /// Options answer to the numbers shown beside them, 1 to 9, and never to letters.
+    fn option_for_digit(&self, c: char) -> Option<usize> {
+        let index = c.to_digit(10).filter(|digit| *digit >= 1)? as usize - 1;
+        (index < self.options.len()).then_some(index)
+    }
+}
+
+/// Drops the last grapheme, so an accent or a flag goes whole.
+fn delete_grapheme(text: &mut String) {
+    if let Some((index, _)) = text.grapheme_indices(true).next_back() {
+        text.truncate(index);
+    }
+}
+
+fn delete_word(text: &mut String) {
+    let trimmed = text.trim_end();
+    let start = trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(index, c)| index + c.len_utf8());
+    text.truncate(start);
+}
+
+#[cfg(test)]
+mod tests;

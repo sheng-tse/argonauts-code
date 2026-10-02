@@ -1,0 +1,81 @@
+{
+  "synthetic": true,
+  "agent": "hermes",
+  "note": "Made up from the ACP v1 schema and Hermes' documented ACP server, not recorded. Pins session/resume, the legacy session/set_model request (sent raw, with no read-back in its answer), input steering, the Hermes option kinds, the end-of-turn usage draft, and the report asked for again, none of which is verified against Hermes yet.",
+  "profile": {
+    "modes": {
+      "read_only": "default",
+      "build": "default",
+      "spike": "default"
+    },
+    "model": "legacy-set-model",
+    "effort": "none",
+    "report": "mcp-tool",
+    "resume": "resume",
+    "steer": "input",
+    "usage": [
+      "end-turn",
+      "usage-update"
+    ],
+    "quota": "none",
+    "mcp_servers": true
+  },
+  "errors": [
+    {
+      "pattern": "credentials or agent init failed",
+      "category": "auth"
+    }
+  ],
+  "start": {
+    "cwd": "{cwd}",
+    "prompt": "Finish the retry helper.",
+    "model": "openrouter:qwen/qwen3-coder",
+    "effort": null,
+    "access": "build",
+    "resume": "20260930_101500_ab12cd",
+    "mcp_servers": [
+      {
+        "name": "argonauts",
+        "command": "/usr/local/bin/argonauts",
+        "args": [
+          "mcp",
+          "session"
+        ]
+      }
+    ],
+    "scope": {
+      "roots": [
+        "{cwd}"
+      ],
+      "writable": [
+        "{cwd}"
+      ],
+      "deny": [],
+      "forbidden": [
+        ".argonauts/**",
+        ".hermes/**",
+        "HERMES.md"
+      ],
+      "network": false
+    },
+    "json_schema": {
+      "type": "object",
+      "required": [
+        "status",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "done",
+            "blocked"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "report_file": "{report_file}"
+  }
+}

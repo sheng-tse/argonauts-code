@@ -1,0 +1,20 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+❯ how do I export JSON?
+
+● Export formats
+
+  The exporter now takes --json, and CSV stays the default:
+
+  1. Parse the flag in src/cli.rs.
+  2. Pass the format to the writer.
+     - Each row becomes one JSON object per line.
+     - Long exports stream instead of building one array.
+
+  Try it
+
+  argonauts-export --json > rows.jsonl
+
+✻ Sailed for 12s · done 10:42 AM

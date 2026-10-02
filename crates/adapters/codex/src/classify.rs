@@ -31,6 +31,8 @@ const RULES: &[(&[&str], ErrorCategory, bool)] = &[
     (
         &[
             "context window",
+            "contextwindowexceeded",
+            "context_window_exceeded",
             "context_length_exceeded",
             "ran out of room",
         ],
@@ -258,6 +260,7 @@ mod tests {
                 InvalidRequest,
                 false,
             ),
+            ("ContextWindowExceeded", ContextFull, false),
             ("something odd happened", Unknown, false),
         ];
         for (message, category, retryable) in cases {

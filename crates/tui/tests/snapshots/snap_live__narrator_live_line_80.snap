@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_live.rs
+assertion_line: 560
+expression: "format!(\"{}\\n---\\n{}\", text(&lines), styled(&narrator))"
+---
+※ narrator: Codex took over card-003 while Claude waits for its 5h reset; two
+  cards are merged.
+✻ Rowing… (4m 12s · ↓ 48.2k tokens · Build · 2/5 cards · 3 agents · $0.21)
+
+──────────────────────────────────────────────────────────────────── peer-crew ─
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents
+---
+[fg=#999999]※[/] [fg=#999999]narrator: [/][fg=#999999 i]Codex took over card-003 while Claude waits for its 5h reset; two[/]
+  [fg=#999999 i]cards are merged.[/]

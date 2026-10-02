@@ -1,226 +1,321 @@
-//! Short human-readable forms for durations, token counts, money, paths, and diff stats.
+use std::fmt;
+use std::str::FromStr;
+use std::time::Duration;
 
-use std::path::Path;
+use argonauts_core::app::ModelChoice;
+use argonauts_core::display_names::DisplayNames;
+use time::{OffsetDateTime, UtcOffset};
 
-use argonauts_core::{BudgetDimension, BudgetLimit, BudgetStatus, DiffStat, Spend, StopCause};
-
-/// Elapsed time in the live block style, like `0m 38s`, or `1h 02m` past an hour.
-pub(crate) fn elapsed(ms: u64) -> String {
-    let secs = ms / 1000;
-    if secs >= 3600 {
-        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
+/// Token counts: `999`, `3.6k`, `248.2k`, `2.2m`.
+pub fn tokens(count: u64) -> String {
+    if count < 1_000 {
+        return count.to_string();
+    }
+    // 999_950 would round up to "1000k", so it is already a million.
+    let (value, unit) = if count < 999_950 {
+        (count as f64 / 1_000.0, "k")
     } else {
-        format!("{}m {:02}s", secs / 60, secs % 60)
-    }
+        (count as f64 / 1_000_000.0, "m")
+    };
+    let rounded = format!("{value:.1}");
+    let trimmed = rounded.strip_suffix(".0").unwrap_or(&rounded);
+    format!("{trimmed}{unit}")
 }
 
-/// A short duration for gates and commands, like `0.4 s`, `12.0 s`, or `1m 05s`.
-pub(crate) fn seconds(ms: u64) -> String {
-    if ms >= 60_000 {
-        elapsed(ms)
+/// Elapsed time with spaces: `3s`, `9m 50s`, `2h 53m 6s`.
+pub fn duration(elapsed: Duration) -> String {
+    let (hours, minutes, seconds) = split(elapsed);
+    if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
     } else {
-        format!("{:.1} s", ms as f64 / 1000.0)
+        format!("{seconds}s")
     }
 }
 
-pub(crate) fn tokens(n: u64) -> String {
-    match n {
-        0..1_000 => n.to_string(),
-        1_000..10_000 => format!("{:.1}k", n as f64 / 1_000.0),
-        10_000..1_000_000 => format!("{}k", (n as f64 / 1_000.0).round() as u64),
-        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+/// Elapsed time without spaces, for the agent panel: `45s`, `2m29s`, `1h4m`.
+pub fn duration_compact(elapsed: Duration) -> String {
+    let (hours, minutes, seconds) = split(elapsed);
+    if hours > 0 {
+        format!("{hours}h{minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 
-pub(crate) fn usd(amount: f64, lower_bound: bool) -> String {
-    let prefix = if lower_bound { "≥ " } else { "" };
-    format!("{prefix}${amount:.2}")
+/// A cost in US dollars: `$0.21`, `$12.40`.
+pub fn usd(cost: f64) -> String {
+    format!("${cost:.2}")
 }
 
-/// Spend against a limit in the limit's unit, like `$0.06 of $3.00` or `12k of 500k tok`.
-pub(crate) fn spend(spend: &Spend, limit: BudgetLimit) -> String {
-    let dollars = || {
-        let amount = usd(spend.cost_usd, spend.cost_partial);
-        if spend.cost_estimated && !spend.cost_partial {
-            format!("≈ {amount}")
-        } else {
-            amount
+fn split(elapsed: Duration) -> (u64, u64, u64) {
+    let secs = elapsed.as_secs();
+    (secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClockTime {
+    hour: u8,
+    minute: u8,
+}
+
+impl ClockTime {
+    /// A time with `hour` in `0..24` and `minute` in `0..60`.
+    pub fn new(hour: u8, minute: u8) -> Option<Self> {
+        (hour < 24 && minute < 60).then_some(Self { hour, minute })
+    }
+
+    pub fn hour(&self) -> u8 {
+        self.hour
+    }
+
+    pub fn minute(&self) -> u8 {
+        self.minute
+    }
+}
+
+impl fmt::Display for ClockTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let suffix = if self.hour < 12 { "AM" } else { "PM" };
+        let hour = match self.hour % 12 {
+            0 => 12,
+            h => h,
+        };
+        write!(f, "{hour}:{:02} {suffix}", self.minute)
+    }
+}
+
+impl From<OffsetDateTime> for ClockTime {
+    fn from(at: OffsetDateTime) -> Self {
+        Self {
+            hour: at.hour(),
+            minute: at.minute(),
         }
+    }
+}
+
+/// Wall-clock times on screen, such as `done 10:58 AM`, in the local zone. Tests pin the zone
+/// and the time so snapshots don't depend on the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WallClock {
+    pinned: Option<OffsetDateTime>,
+}
+
+impl WallClock {
+    pub fn local() -> Self {
+        Self { pinned: None }
+    }
+
+    /// Always `now`, and times shown in `now`'s offset.
+    pub fn pinned(now: OffsetDateTime) -> Self {
+        Self { pinned: Some(now) }
+    }
+
+    pub fn now(&self) -> OffsetDateTime {
+        match self.pinned {
+            Some(now) => now,
+            None => self.to_local(OffsetDateTime::now_utc()),
+        }
+    }
+
+    /// `at` in the zone this clock shows.
+    pub fn to_local(&self, at: OffsetDateTime) -> OffsetDateTime {
+        let offset = match self.pinned {
+            Some(now) => now.offset(),
+            None => local_offset_at(at).unwrap_or(UtcOffset::UTC),
+        };
+        at.to_offset(offset)
+    }
+
+    pub fn clock(&self, at: OffsetDateTime) -> ClockTime {
+        ClockTime::from(self.to_local(at))
+    }
+
+    pub fn clock_now(&self) -> ClockTime {
+        ClockTime::from(self.now())
+    }
+}
+
+impl Default for WallClock {
+    fn default() -> Self {
+        Self::local()
+    }
+}
+
+/// The `time` crate won't read the zone while other threads may run, so this asks libc, whose
+/// `localtime_r` is reentrant. The zone can change at a daylight saving switch, so it's read
+/// for each time shown.
+fn local_offset_at(at: OffsetDateTime) -> Option<UtcOffset> {
+    use nix::libc;
+
+    let seconds = libc::time_t::try_from(at.unix_timestamp()).ok()?;
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::zeroed();
+    // SAFETY: `localtime_r` only reads `seconds` and writes the `tm` it is given, which lives
+    // for the call. It returns null on failure, and `tm` is read only after it succeeded.
+    let tm = unsafe {
+        if libc::localtime_r(&seconds, tm.as_mut_ptr()).is_null() {
+            return None;
+        }
+        tm.assume_init()
     };
-    match limit {
-        BudgetLimit::Usd(max) => format!("{} of {}", dollars(), usd(max, false)),
-        BudgetLimit::Tokens(max) => {
-            format!("{} of {} tok", tokens(spend.billable_tokens()), tokens(max))
-        }
-        BudgetLimit::None if spend.cost_usd > 0.0 || spend.cost_partial => dollars(),
-        BudgetLimit::None => format!("{} tok", tokens(spend.billable_tokens())),
+    let offset = i32::try_from(tm.tm_gmtoff).ok()?;
+    UtcOffset::from_whole_seconds(offset).ok()
+}
+
+/// How a vendor is named in sentences, such as `Claude Code is back`, where the app's names
+/// aren't at hand. Unknown ids stay as they are.
+pub fn vendor_label(id: &str) -> String {
+    DisplayNames::default().harness(id)
+}
+
+/// How a model list names `choice`: a CLI's default with the model it runs, and an alias
+/// with its model when that reads differently.
+pub fn choice_words(choice: &ModelChoice) -> String {
+    let runs = choice
+        .runs
+        .as_deref()
+        .map(str::trim)
+        .filter(|runs| !runs.is_empty());
+    if choice.worker.model.is_none() {
+        let default = format!("{}'s default", vendor_label(&choice.worker.worker));
+        return match runs {
+            Some(runs) => format!("{default} ({runs})"),
+            None => default,
+        };
+    }
+    let name = choice.display_name();
+    match runs {
+        Some(runs) if choice.alias && runs != name => format!("{name} ({runs})"),
+        _ => name,
     }
 }
 
-/// The limit a budget status is closest to, like `$3.00`, `60 min`, or `300 tool calls`.
-pub(crate) fn budget_limit(status: &BudgetStatus) -> String {
-    let limits = status.work_limits;
-    match status.binding {
-        Some(BudgetDimension::Minutes) => limits
-            .max_minutes
-            .map_or_else(|| "the time limit".to_owned(), |m| format!("{m} min")),
-        Some(BudgetDimension::ToolCalls) => limits.max_tool_calls.map_or_else(
-            || "the tool-call limit".to_owned(),
-            |n| count(n, "tool call", "tool calls"),
-        ),
-        Some(BudgetDimension::Spend) | None => status.limit.to_string(),
+/// A setting's TOML text as it reads in a sentence: a plain string loses its quotes, and
+/// anything else stays as written.
+pub fn setting_value(toml: &str) -> String {
+    let trimmed = toml.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+        });
+    match unquoted {
+        Some(inner) if !inner.contains(['"', '\\', '\'']) => inner.to_owned(),
+        _ => trimmed.to_owned(),
     }
 }
 
-pub(crate) fn stopped_card(cause: StopCause, has_report: bool) -> String {
-    let why = match cause {
-        StopCause::Budget => "budget hit",
-        StopCause::User => "stopped by you",
-        StopCause::Timeout => "time limit hit",
-    };
-    let report = if has_report { "" } else { " · no report" };
-    format!("{why}{report} · partial work")
-}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockTimeError(String);
 
-pub(crate) fn short_sha(sha: &str) -> &str {
-    sha.get(..7).unwrap_or(sha)
-}
-
-pub(crate) fn display_path(path: &Path, home: Option<&Path>) -> String {
-    if let Some(rest) = home.and_then(|home| path.strip_prefix(home).ok()) {
-        if rest.as_os_str().is_empty() {
-            return "~".to_owned();
-        }
-        return format!("~/{}", rest.display());
+impl fmt::Display for ClockTimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "not a clock time: {:?}", self.0)
     }
-    path.display().to_string()
 }
 
-pub(crate) fn diff_stat(stat: &DiffStat) -> String {
-    format!(
-        "{} · +{} −{}",
-        count(stat.files_changed as u64, "file", "files"),
-        stat.insertions,
-        stat.deletions
-    )
-}
+impl std::error::Error for ClockTimeError {}
 
-pub(crate) fn command_line(program: &str, args: &[String]) -> String {
-    std::iter::once(program)
-        .chain(args.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+impl FromStr for ClockTime {
+    type Err = ClockTimeError;
 
-pub(crate) fn count(n: u64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
+    /// Reads `10:42 AM`, `6:41 pm`, or 24 hour `18:05`.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let error = || ClockTimeError(text.to_owned());
+        let trimmed = text.trim();
+        let (clock, suffix) = match trimmed.rsplit_once(' ') {
+            Some((clock, suffix)) => (clock.trim(), Some(suffix.to_ascii_uppercase())),
+            None => (trimmed, None),
+        };
+        let (hour, minute) = clock.split_once(':').ok_or_else(error)?;
+        let hour: u8 = hour.parse().map_err(|_| error())?;
+        let minute: u8 = minute.parse().map_err(|_| error())?;
+        let hour = match suffix.as_deref() {
+            None => hour,
+            Some("AM") if (1..=12).contains(&hour) => hour % 12,
+            Some("PM") if (1..=12).contains(&hour) => hour % 12 + 12,
+            Some(_) => return Err(error()),
+        };
+        Self::new(hour, minute).ok_or_else(error)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     #[test]
-    fn elapsed_uses_minutes_then_hours() {
-        assert_eq!(elapsed(38_400), "0m 38s");
-        assert_eq!(elapsed(372_000), "6m 12s");
-        assert_eq!(elapsed(3_720_000), "1h 02m");
+    fn token_counts_read_like_the_reference() {
+        assert_eq!(tokens(0), "0");
+        assert_eq!(tokens(999), "999");
+        assert_eq!(tokens(1_000), "1k");
+        assert_eq!(tokens(3_600), "3.6k");
+        assert_eq!(tokens(12_000), "12k");
+        assert_eq!(tokens(248_200), "248.2k");
+        assert_eq!(tokens(999_949), "999.9k");
+        assert_eq!(tokens(999_950), "1m");
+        assert_eq!(tokens(2_200_000), "2.2m");
     }
 
     #[test]
-    fn seconds_is_short() {
-        assert_eq!(seconds(400), "0.4 s");
-        assert_eq!(seconds(8_240), "8.2 s");
-        assert_eq!(seconds(65_000), "1m 05s");
-    }
-
-    #[test]
-    fn tokens_are_compact() {
-        assert_eq!(tokens(950), "950");
-        assert_eq!(tokens(1_100), "1.1k");
-        assert_eq!(tokens(38_400), "38k");
-        assert_eq!(tokens(1_230_000), "1.2M");
-    }
-
-    #[test]
-    fn spend_follows_the_limit_unit() {
-        let s = Spend {
-            input_tokens: 12_000,
-            cached_tokens: 2_000,
-            output_tokens: 500,
-            cost_usd: 0.061,
-            ..Spend::default()
-        };
-        assert_eq!(spend(&s, BudgetLimit::Usd(3.0)), "$0.06 of $3.00");
-        assert_eq!(spend(&s, BudgetLimit::Tokens(500_000)), "11k of 500k tok");
-        assert_eq!(spend(&s, BudgetLimit::None), "$0.06");
-        let partial = Spend {
-            cost_partial: true,
-            ..s
-        };
-        assert_eq!(spend(&partial, BudgetLimit::Usd(3.0)), "≥ $0.06 of $3.00");
-        let tokens_only = Spend { cost_usd: 0.0, ..s };
-        assert_eq!(spend(&tokens_only, BudgetLimit::None), "11k tok");
-        let estimated = Spend {
-            cost_estimated: true,
-            ..s
-        };
-        assert_eq!(spend(&estimated, BudgetLimit::Usd(3.0)), "≈ $0.06 of $3.00");
-    }
-
-    #[test]
-    fn budget_limits_name_what_binds() {
-        let mut status = BudgetStatus {
-            level: argonauts_core::BudgetAction::Stop,
-            limit: BudgetLimit::Usd(3.0),
-            spend: Spend::default(),
-            fraction_used: Some(1.0),
-            work: argonauts_core::WorkUsed::default(),
-            work_limits: argonauts_core::WorkLimits {
-                max_minutes: Some(60.0),
-                max_tool_calls: Some(300),
-            },
-            binding: Some(BudgetDimension::Spend),
-        };
-        assert_eq!(budget_limit(&status), "$3.00");
-        status.binding = Some(BudgetDimension::Minutes);
-        assert_eq!(budget_limit(&status), "60 min");
-        status.binding = Some(BudgetDimension::ToolCalls);
-        assert_eq!(budget_limit(&status), "300 tool calls");
+    fn durations_have_both_shapes() {
+        assert_eq!(duration(Duration::from_secs(3)), "3s");
+        assert_eq!(duration(Duration::from_secs(590)), "9m 50s");
         assert_eq!(
-            stopped_card(StopCause::Budget, false),
-            "budget hit · no report · partial work"
+            duration(Duration::from_secs(2 * 3600 + 53 * 60 + 6)),
+            "2h 53m 6s"
         );
-        assert_eq!(
-            stopped_card(StopCause::User, true),
-            "stopped by you · partial work"
-        );
+        assert_eq!(duration_compact(Duration::from_secs(149)), "2m29s");
+        assert_eq!(duration_compact(Duration::from_secs(45)), "45s");
+        assert_eq!(duration_compact(Duration::from_secs(3840)), "1h4m");
     }
 
     #[test]
-    fn paths_use_tilde_for_home() {
-        let home = PathBuf::from("/home/you");
-        assert_eq!(
-            display_path(Path::new("/home/you/code/api"), Some(&home)),
-            "~/code/api"
-        );
-        assert_eq!(display_path(Path::new("/home/you"), Some(&home)), "~");
-        assert_eq!(display_path(Path::new("/srv/api"), Some(&home)), "/srv/api");
-        assert_eq!(display_path(Path::new("/srv/api"), None), "/srv/api");
+    fn clock_times_print_and_parse() {
+        assert_eq!(ClockTime::new(6, 41).unwrap().to_string(), "6:41 AM");
+        assert_eq!(ClockTime::new(0, 5).unwrap().to_string(), "12:05 AM");
+        assert_eq!(ClockTime::new(12, 0).unwrap().to_string(), "12:00 PM");
+        assert_eq!(ClockTime::new(22, 58).unwrap().to_string(), "10:58 PM");
+        assert_eq!("10:42 AM".parse(), Ok(ClockTime::new(10, 42).unwrap()));
+        assert_eq!("6:41 pm".parse(), Ok(ClockTime::new(18, 41).unwrap()));
+        assert_eq!("18:05".parse(), Ok(ClockTime::new(18, 5).unwrap()));
+        assert!("13:00 PM".parse::<ClockTime>().is_err());
+        assert!("noon".parse::<ClockTime>().is_err());
+        assert_eq!(usd(0.21), "$0.21");
     }
 
     #[test]
-    fn small_helpers() {
-        assert_eq!(short_sha("3f9c2e1aa"), "3f9c2e1");
-        assert_eq!(short_sha("abc"), "abc");
-        let stat = DiffStat {
-            files_changed: 1,
-            insertions: 1,
-            deletions: 0,
-        };
-        assert_eq!(diff_stat(&stat), "1 file · +1 −0");
-        assert_eq!(count(2, "file", "files"), "2 files");
+    fn a_pinned_clock_shows_times_in_its_own_zone() {
+        let now = time::macros::datetime!(2026-09-30 10:58 -7);
+        let clock = WallClock::pinned(now);
+        assert_eq!(clock.clock_now().to_string(), "10:58 AM");
+        let later = time::macros::datetime!(2026-09-30 22:45 UTC);
+        assert_eq!(clock.clock(later).to_string(), "3:45 PM");
+    }
+
+    #[test]
+    fn the_local_clock_reads_the_zone() {
+        let now = OffsetDateTime::now_utc();
+        let local = WallClock::local().to_local(now);
+        assert_eq!(local, now);
+        assert!(local.offset().whole_hours().abs() <= 14);
+    }
+
+    #[test]
+    fn vendors_and_values_read_as_words() {
+        assert_eq!(vendor_label("claude-code"), "Claude Code");
+        assert_eq!(vendor_label("antigravity-cli"), "Antigravity CLI");
+        assert_eq!(vendor_label("agy"), "agy");
+        assert_eq!(setting_value("\"auto\""), "auto");
+        assert_eq!(setting_value("'dark'"), "dark");
+        assert_eq!(setting_value("3"), "3");
+        assert_eq!(setting_value("[\"a\", \"b\"]"), "[\"a\", \"b\"]");
+        assert_eq!(setting_value("\"say \\\"hi\\\"\""), "\"say \\\"hi\\\"\"");
     }
 }

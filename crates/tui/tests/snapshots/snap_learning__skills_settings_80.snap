@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_learning.rs
+expression: "screen(&mut picker, 80, HEIGHT)"
+---
+Skills                                    Skills  Waiting branches  [ Settings ]
+Exported and imported skills, and any drift     1 skill · 1 branch waits for you
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   Setting                     Value  From                                    │
+│ ❯ skills.claude_link          true   built-in                                │
+│   skills.export_after_canary  true   built-in                                │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│   Link each skill for Claude Code                                            │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · tab next tab · ⏎ change · esc back

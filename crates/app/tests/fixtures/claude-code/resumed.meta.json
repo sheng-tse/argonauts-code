@@ -1,0 +1,33 @@
+{
+  "adapter": "claude-code",
+  "args": [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Grep,Glob",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "user",
+    "--settings",
+    "{\"crossSessionInbound\":\"refuse\"}",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--json-schema",
+    "{\"additionalProperties\":false,\"properties\":{\"answer_markdown\":{\"type\":\"string\"}},\"required\":[\"answer_markdown\"],\"type\":\"object\"}",
+    "--resume",
+    "7adf0ccb-70de-42df-84f0-092ef22f0d10"
+  ],
+  "duration_ms": 3212,
+  "exit_code": 0,
+  "program": "claude",
+  "resumed_from": "7adf0ccb-70de-42df-84f0-092ef22f0d10"
+}

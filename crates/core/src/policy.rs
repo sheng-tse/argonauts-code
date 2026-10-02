@@ -13,6 +13,8 @@ use crate::events::run::RunPhase;
 use crate::future::BoxFuture;
 use crate::names::{CheckpointId, WorkerRef};
 use crate::settings::approvals::{ApprovalMode, DecideWith};
+use crate::settings::budget::BudgetAmount;
+use crate::settings::handoff::HandoffMode;
 use crate::settings::ui::NarratorMode;
 use crate::worker::SessionSpec;
 use crate::{RunId, Spend, canonical_json, sha256_hex};
@@ -66,6 +68,10 @@ pub enum HardLimit {
     CriterionUntested,
     /// A test-tampering flag is open.
     TamperFlag,
+    /// A plan or merge whose evidence names no commits, so an approval would cover nothing.
+    NoSubject,
+    /// Instruction files other agents read changed, so the merge waits for you.
+    InstructionFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,6 +157,10 @@ pub struct EvidenceFacts {
     pub protected_paths: Vec<String>,
     pub gates_passed: Option<bool>,
     pub reviews_approved: Option<bool>,
+    /// Every card's standing approval came from a reviewer of another company than the card's
+    /// owner, as [`company_of`](crate::registry::company_of) tells them apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_by_other_company: Option<bool>,
     /// Every acceptance test fails on the stubs and passes on the integration branch.
     pub acceptance_tests_valid: Option<bool>,
     pub untested_criteria: Vec<String>,
@@ -159,12 +169,64 @@ pub struct EvidenceFacts {
     pub tamper_flags: Option<u32>,
     pub combined_diff_lines: Option<u32>,
     pub suite_on_latest_main: Option<bool>,
+    /// Cards whose quality debt no strong enough model reviewed, from the merge rows under
+    /// `merge_rule = "upgrade_review"`, and empty under `none`. `None` means not measured, so
+    /// auto won't merge unless `allow_debt` is set.
+    #[serde(default)]
+    pub unreviewed_debt: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<EscalationFacts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetFacts>,
+    /// A goal change only clarifies the goal and leaves its success criteria as they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criteria_unchanged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion: Option<PromotionFacts>,
+    /// Outside actions this point would take that can't be undone, such as a publish or a
+    /// deploy. Hard limits check them against `limits.irreversible_allowlist`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irreversible_actions: Option<Vec<String>>,
     /// Spent on this run.
     pub spent: Spend,
     pub auto_merges_today: u32,
     /// Across every run.
     pub spent_today_usd: f64,
     pub send_backs: u32,
+}
+
+/// What auto needs to grant an escalated card one more attempt. The engine fills it only when it
+/// knows every fact, so a missing one asks you.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EscalationFacts {
+    /// The card's role's handoff mode.
+    pub handoff_mode: HandoffMode,
+    /// Model families that have worked on the card.
+    pub families_tried: Vec<String>,
+    /// The family of the fallback the next attempt would go to. `None` when no fallback is left.
+    pub next_family: Option<String>,
+    /// Extra attempts granted so far, against `escalation.rules.max_extra_attempts`.
+    pub extra_attempts: u32,
+    /// One more attempt fits in what's left of the reserve.
+    pub fits_reserve: bool,
+}
+
+/// What auto needs to release the run's reserve.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BudgetFacts {
+    /// The estimated cost of the cards not yet done.
+    pub remaining_cards: BudgetAmount,
+    pub reserve_left: BudgetAmount,
+}
+
+/// What auto needs to promote a recipe change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromotionFacts {
+    /// As `recipe_promotion.rules.change_classes` names it, such as `checklist_item`.
+    pub change_class: String,
+    /// The recipe's last promotion or canary. `None` when it never had one.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub last_promoted: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +276,12 @@ pub trait ApprovalPolicy: Send + Sync {
     fn user_decided(&self, decision: &UserDecision);
     /// A wrong auto-approval drops that point back to shadow.
     fn spot_checked(&self, point: &DecisionPoint, correct: bool);
+    /// The mode `point` runs in, given the one your settings ask for. Your records may only
+    /// lower it, such as back to shadow after a wrong auto-approval.
+    fn effective_mode(&self, point: &DecisionPoint, requested: ApprovalMode) -> ApprovalMode {
+        let _ = point;
+        requested
+    }
     /// Every decision point back to supervised, now, for every run.
     fn auto_off(&self);
     fn hard_limits(&self) -> &dyn HardLimits;
@@ -283,7 +351,7 @@ pub struct NarratorStatus {
     pub spent: Spend,
     /// As written in settings.
     pub cap: String,
-    /// At the cap, `/summary` asks before spending more.
+    /// At the cap, `s` in `/status` asks before spending more.
     pub capped: bool,
     pub interval_s: u64,
 }

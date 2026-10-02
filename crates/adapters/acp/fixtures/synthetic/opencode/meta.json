@@ -1,0 +1,72 @@
+{
+  "synthetic": true,
+  "agent": "opencode",
+  "note": "Made up from the ACP v1 schema and OpenCode's documented ACP mode, not recorded. Pins the config-option model route, load resume, cancel-and-prompt steering, and cost from usage_update, none of which is verified against OpenCode yet.",
+  "profile": {
+    "modes": {
+      "read_only": "plan",
+      "build": "build"
+    },
+    "model": "config-option",
+    "effort": "none",
+    "report": "mcp-tool",
+    "resume": "load",
+    "steer": "cancel-and-prompt",
+    "usage": [
+      "usage-update"
+    ],
+    "quota": "none",
+    "mcp_servers": true
+  },
+  "errors": [],
+  "start": {
+    "cwd": "{cwd}",
+    "prompt": "Fix the failing parser test.",
+    "model": "ollama/qwen3-coder",
+    "effort": null,
+    "access": "build",
+    "resume": null,
+    "mcp_servers": [
+      {
+        "name": "argonauts",
+        "command": "/usr/local/bin/argonauts",
+        "args": [
+          "mcp",
+          "session"
+        ]
+      }
+    ],
+    "scope": {
+      "roots": [
+        "{cwd}"
+      ],
+      "writable": [
+        "{cwd}"
+      ],
+      "deny": [],
+      "forbidden": [
+        ".argonauts/**"
+      ],
+      "network": false
+    },
+    "json_schema": {
+      "type": "object",
+      "required": [
+        "status",
+        "summary"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "done",
+            "blocked"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "report_file": "{report_file}"
+  }
+}

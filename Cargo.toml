@@ -12,6 +12,7 @@ members = [
     "crates/core",
     "crates/crew",
     "crates/endpoints",
+    "crates/learning",
     "crates/mcp",
     "crates/policy",
     "crates/registry",
@@ -41,6 +42,7 @@ argonauts-policy = { path = "crates/policy", version = "0.0.1" }
 argonauts-mcp = { path = "crates/mcp", version = "0.0.1" }
 argonauts-registry = { path = "crates/registry", version = "0.0.1" }
 argonauts-endpoints = { path = "crates/endpoints", version = "0.0.1" }
+argonauts-learning = { path = "crates/learning", version = "0.0.1" }
 argonauts-adapter-opencode = { path = "crates/adapters/opencode", version = "0.0.1" }
 argonauts-adapter-manifest = { path = "crates/adapters/manifest", version = "0.0.1" }
 argonauts-adapter-acp = { path = "crates/adapters/acp", version = "0.0.1" }
@@ -66,9 +68,15 @@ rmcp = { version = "3.5.0", features = ["server", "transport-io"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Workflow files are YAML.
+serde-saphyr = "1.3.0"
 sha2 = "0.11.0"
 shell-words = "1.1.1"
 similar = "3.2.0"
+# The Starlark parser alone. The `starlark` crate itself turns on serde_json's
+# `arbitrary_precision` for the whole workspace, which breaks numbers in flattened and untagged
+# types, so recipes evaluate their scripts with our own small interpreter instead.
+starlark_syntax = "0.14.2"
 strip-ansi-escapes = "0.2.1"
 syntect = "5.3.0"
 sysinfo = "0.39.6"
@@ -87,3 +95,37 @@ unicode-width = "0.2.2"
 uuid = { version = "1.26.1", features = ["v4", "v7", "serde"] }
 vt100 = "0.16.2"
 which = "8.0.6"
+
+# Tests spend most of their time in these when they're built without optimization: syntax
+# highlighting and its packed syntax sets, regex engines, JSON schema checks, snapshot diffs,
+# and the terminal emulator the pty tests read the screen through.
+[profile.dev.package.syntect]
+opt-level = 3
+[profile.dev.package.two-face]
+opt-level = 3
+[profile.dev.package.bincode]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.fancy-regex]
+opt-level = 3
+[profile.dev.package.regex]
+opt-level = 3
+[profile.dev.package.regex-automata]
+opt-level = 3
+[profile.dev.package.regex-syntax]
+opt-level = 3
+[profile.dev.package.aho-corasick]
+opt-level = 3
+[profile.dev.package.jsonschema]
+opt-level = 3
+[profile.dev.package.referencing]
+opt-level = 3
+[profile.dev.package.insta]
+opt-level = 3
+[profile.dev.package.similar]
+opt-level = 3
+[profile.dev.package.vt100]
+opt-level = 3

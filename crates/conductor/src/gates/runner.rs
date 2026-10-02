@@ -1,0 +1,611 @@
+//! The `GateRunner` for crew runs. Each gate runs inside a strict profile (no network, writes to
+//! the worktree and temp only) with `gates.timeout`, and its process group is killed at the end.
+//! A card's first gate runs `gates.setup` in that worktree first, once.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use argonauts_core::events::card::{GateKind, GateOutcome};
+use argonauts_core::future::BoxFuture;
+use argonauts_core::limits::{GateRequest, GateRunner};
+use argonauts_core::settings::Settings;
+use argonauts_core::worker::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::{CommandSpec, Paths};
+use tokio::time::Instant;
+
+use super::env::gate_env;
+use super::setup::{copy_untracked, main_checkout, run_setup_command};
+use super::summary::one_line_summary;
+use super::{GateProcess, Ran, execute};
+use crate::control::StopHandle;
+use crate::sandbox::selftest::self_test_once;
+use crate::sandbox::{ProfileInput, SandboxWrap, session_profile};
+use crate::supervisor::millis;
+
+/// The gates cell with `gates.run` empty, rather than a silent pass.
+pub const NO_COMMAND_GATES: &str = "No command gates set · /config gates.run";
+
+/// Used when neither the request nor `gates.timeout` gives a usable time limit.
+const FALLBACK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// The outcome to show when `gates.run` is empty: skipped, which fails nothing, and says so
+/// rather than passing silently; merge rules that need the suite check for commands themselves.
+pub fn no_command_gates() -> GateOutcome {
+    GateOutcome {
+        name: "gates.run".to_owned(),
+        kind: GateKind::Command,
+        passed: true,
+        command: None,
+        exit_code: None,
+        duration_ms: 0,
+        summary: NO_COMMAND_GATES.to_owned(),
+        output_tail: String::new(),
+        violations: Vec::new(),
+        sandboxed: false,
+        skipped: true,
+    }
+}
+
+pub struct SandboxedGates {
+    settings: Arc<Settings>,
+    sandbox: Arc<dyn SandboxWrap>,
+    /// Setup commands that already ran, by worktree.
+    set_up: Mutex<HashSet<(PathBuf, Vec<String>)>>,
+    /// Worktrees that already got their `gates.copy_untracked` files.
+    copied: Mutex<HashSet<PathBuf>>,
+}
+
+impl SandboxedGates {
+    pub fn new(settings: Arc<Settings>, sandbox: Arc<dyn SandboxWrap>) -> Self {
+        Self {
+            settings,
+            sandbox,
+            set_up: Mutex::new(HashSet::new()),
+            copied: Mutex::new(HashSet::new()),
+        }
+    }
+
+    async fn run_request(&self, request: GateRequest) -> GateOutcome {
+        let started = Instant::now();
+        if request.command.is_empty() {
+            return finished(&request, started, false, Err("the command is empty".into()));
+        }
+        if let Err(problem) = self.copy_untracked_once(&request.workdir).await {
+            return finished(&request, started, false, Err(problem));
+        }
+        if request.setup {
+            self.run_setup(request, started).await
+        } else {
+            self.run_sandboxed(request, started).await
+        }
+    }
+
+    /// Setup runs as the conductor, outside the sandbox and with network, since it installs
+    /// dependencies. It still gets only the gate environment.
+    async fn run_setup(&self, request: GateRequest, started: Instant) -> GateOutcome {
+        let key = (request.workdir.clone(), request.command.clone());
+        let first = lock(&self.set_up).insert(key.clone());
+        if !first {
+            return GateOutcome {
+                passed: true,
+                summary: "setup already ran in this worktree, skipped".to_owned(),
+                ..finished(&request, started, false, Err(String::new()))
+            };
+        }
+        let result = match GateTemp::create() {
+            Ok(temp) => {
+                let env = gate_env(supervisor_vars(), temp.root());
+                run_setup_command(
+                    &request.command,
+                    &request.workdir,
+                    &env,
+                    self.timeout(&request),
+                )
+                .await
+                .map_err(|err| format!("could not run the setup command: {err}"))
+            }
+            Err(problem) => Err(problem),
+        };
+        let outcome = finished(&request, started, false, result);
+        if !outcome.passed {
+            // A failed setup may be fixed and asked for again.
+            lock(&self.set_up).remove(&key);
+        }
+        outcome
+    }
+
+    async fn run_sandboxed(&self, request: GateRequest, started: Instant) -> GateOutcome {
+        let wrapped = self.sandbox.mode() != SandboxMode::None;
+        if wrapped {
+            let test = self_test_once(self.sandbox.as_ref()).await;
+            if !test.ok {
+                let problem = format!(
+                    "the sandbox doesn't work, so gates can't run: {}",
+                    test.detail
+                );
+                return finished(&request, started, false, Err(problem));
+            }
+        }
+        let temp = match GateTemp::create() {
+            Ok(temp) => temp,
+            Err(problem) => return finished(&request, started, false, Err(problem)),
+        };
+        let workdir = request
+            .workdir
+            .canonicalize()
+            .unwrap_or_else(|_| request.workdir.clone());
+        let env = gate_env(supervisor_vars(), temp.root());
+        let mut spec = CommandSpec::new(request.command[0].clone(), &workdir)
+            .args(request.command[1..].iter().cloned());
+        spec.env_set = env;
+        let profile = self.gate_profile(&request.sandbox, &workdir, temp.root());
+        let spec = match self.sandbox.wrap(spec, &profile) {
+            Ok(spec) => spec,
+            Err(err) => {
+                let problem = format!("could not sandbox the gate, so it didn't run: {err}");
+                return finished(&request, started, false, Err(problem));
+            }
+        };
+        let result = run_spec(&spec, self.timeout(&request)).await;
+        finished(&request, started, wrapped, result)
+    }
+
+    /// A build session's profile with the writes narrowed to the worktree and the gate's own
+    /// temp directory, and no network.
+    fn gate_profile(
+        &self,
+        requested: &SandboxProfile,
+        workdir: &Path,
+        temp: &Path,
+    ) -> SandboxProfile {
+        let user_home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let argonauts_home = Paths::from_env()
+            .map(|paths| paths.home().to_path_buf())
+            .unwrap_or_else(|_| user_home.join(".argonauts"));
+        let input = ProfileInput {
+            access: Access::Build,
+            vendor: "",
+            workdir,
+            session_dir: temp,
+            argonauts_home: &argonauts_home,
+            user_home: &user_home,
+            base_worktree: None,
+            status_file: None,
+            extra_writable: &[],
+            sees_other_copies: false,
+            commits: false,
+        };
+        let mut profile = session_profile(requested, &input);
+        profile.mode = self.sandbox.mode();
+        profile.writable = vec![workdir.to_path_buf(), temp.to_path_buf()];
+        // Not even the proxy: a gate's command needs no model API.
+        profile.network = false;
+        profile.proxy_port = None;
+        profile
+    }
+
+    async fn copy_untracked_once(&self, worktree: &Path) -> Result<(), String> {
+        let globs = self.settings.gates.copy_untracked.clone();
+        if globs.is_empty() || lock(&self.copied).contains(worktree) {
+            return Ok(());
+        }
+        let target = worktree.to_path_buf();
+        let copying = tokio::task::spawn_blocking(move || {
+            let main = main_checkout(&target)?;
+            if target.canonicalize().is_ok_and(|target| target == main) {
+                return Ok(Vec::new());
+            }
+            copy_untracked(&main, &target, &globs)
+        });
+        match copying.await {
+            Ok(Ok(_)) => {
+                lock(&self.copied).insert(worktree.to_path_buf());
+                Ok(())
+            }
+            Ok(Err(err)) => Err(format!("could not copy untracked files: {err}")),
+            Err(err) => Err(format!("could not copy untracked files: {err}")),
+        }
+    }
+
+    fn timeout(&self, request: &GateRequest) -> Duration {
+        if !request.timeout.is_zero() {
+            return request.timeout;
+        }
+        match self.settings.gates.timeout.parse() {
+            Ok(Some(timeout)) if !timeout.is_zero() => timeout,
+            _ => FALLBACK_TIMEOUT,
+        }
+    }
+}
+
+impl GateRunner for SandboxedGates {
+    fn run(&self, request: GateRequest) -> BoxFuture<'_, GateOutcome> {
+        Box::pin(self.run_request(request))
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Argonauts' own variables that are valid text; the allowlist picks from these.
+fn supervisor_vars() -> impl Iterator<Item = (String, String)> {
+    std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+}
+
+async fn run_spec(spec: &CommandSpec, timeout: Duration) -> Result<Ran, String> {
+    for file in &spec.files {
+        if let Some(parent) = file.path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("could not write {}: {err}", file.path.display()))?;
+        }
+        std::fs::write(&file.path, &file.contents)
+            .map_err(|err| format!("could not write {}: {err}", file.path.display()))?;
+    }
+    let mut argv = Vec::with_capacity(spec.args.len() + 1);
+    argv.push(spec.program.clone());
+    argv.extend(spec.args.iter().cloned());
+    let env = spec
+        .env_set
+        .iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+    let process = GateProcess::new(&argv, &spec.cwd, env)
+        .map_err(|err| format!("could not run the gate: {err}"))?;
+    execute(&process, timeout, &StopHandle::new())
+        .await
+        .map_err(|err| format!("could not run the gate: {err}"))
+}
+
+fn finished(
+    request: &GateRequest,
+    started: Instant,
+    sandboxed: bool,
+    result: Result<Ran, String>,
+) -> GateOutcome {
+    let (passed, exit_code, summary, output_tail) = match result {
+        Ok(ran) => (
+            ran.passed(),
+            ran.exit_code,
+            summarize(&ran),
+            ran.output_with_note(),
+        ),
+        Err(problem) => (false, None, problem, String::new()),
+    };
+    GateOutcome {
+        name: request.name.clone(),
+        kind: GateKind::Command,
+        passed,
+        command: Some(request.command.clone()),
+        exit_code,
+        duration_ms: millis(started.elapsed()),
+        summary,
+        output_tail,
+        violations: Vec::new(),
+        sandboxed,
+        skipped: false,
+    }
+}
+
+fn summarize(ran: &Ran) -> String {
+    if let Some(why) = &ran.ended_early {
+        return why.clone();
+    }
+    if let Some(line) = one_line_summary(&ran.output) {
+        return line;
+    }
+    match ran.exit_code {
+        Some(0) => "passed".to_owned(),
+        Some(code) => format!("failed with exit code {code}"),
+        None => "ended by a signal".to_owned(),
+    }
+}
+
+/// A fresh directory per gate, holding its `HOME` and `TMPDIR`, removed when dropped.
+struct GateTemp {
+    root: PathBuf,
+}
+
+impl GateTemp {
+    fn create() -> Result<Self, String> {
+        let base = std::env::temp_dir();
+        let base = base.canonicalize().unwrap_or(base);
+        let root = base.join(format!("argonauts-gate-{}", uuid::Uuid::new_v4().simple()));
+        for dir in [root.join("home"), root.join("tmp")] {
+            std::fs::create_dir_all(&dir).map_err(|err| {
+                format!(
+                    "could not create the gate's temp directory {}: {err}",
+                    dir.display()
+                )
+            })?;
+        }
+        Ok(Self { root })
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for GateTemp {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_dir_all(&self.root) {
+            tracing::warn!(
+                "could not remove the gate's temp directory {}: {err}",
+                self.root.display()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox::Unsandboxed;
+    use argonauts_core::settings::protocol::GateSettings;
+    use argonauts_core::{CardId, RunId};
+    use argonauts_testkit::repo::TempRepo;
+
+    fn gates(settings: Settings) -> SandboxedGates {
+        SandboxedGates::new(Arc::new(settings), Arc::new(Unsandboxed))
+    }
+
+    fn request(workdir: &Path, script: &str) -> GateRequest {
+        GateRequest {
+            run: RunId::generate(),
+            card: CardId::numbered(1),
+            name: "test".to_owned(),
+            command: vec!["/bin/sh".into(), "-c".into(), script.into()],
+            workdir: workdir.to_path_buf(),
+            sandbox: SandboxProfile::default(),
+            timeout: Duration::from_secs(20),
+            setup: false,
+        }
+    }
+
+    fn setup_request(workdir: &Path, script: &str) -> GateRequest {
+        GateRequest {
+            setup: true,
+            ..request(workdir, script)
+        }
+    }
+
+    fn worktree(repo: &TempRepo, name: &str) -> PathBuf {
+        let path = repo.scratch().join(name);
+        repo.git(&["worktree", "add", "--detach", &path.display().to_string()])
+            .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn gates_setup_runs_once_per_worktree() {
+        let repo = TempRepo::new().unwrap();
+        repo.write(".gitignore", ".env.test\n").unwrap();
+        repo.commit_all("ignore env").unwrap();
+        repo.write(".env.test", "PORT=1").unwrap();
+        repo.write("scratch.txt", "not copied").unwrap();
+        let first = worktree(&repo, "wt-1");
+        let second = worktree(&repo, "wt-2");
+        let settings = Settings {
+            gates: GateSettings {
+                copy_untracked: vec![".env.test".to_owned()],
+                ..GateSettings::default()
+            },
+            ..Settings::default()
+        };
+        let gates = gates(settings);
+        let install = "echo installed >> setup.log; echo \"$HOME\" > home.txt; test \"$CI\" = 1";
+
+        let outcome = gates.run(setup_request(&first, install)).await;
+        assert!(outcome.passed, "{outcome:?}");
+        assert!(!outcome.sandboxed);
+        assert_eq!(outcome.summary, "passed");
+        assert!(first.join(".env.test").exists());
+        assert!(!first.join("scratch.txt").exists());
+        let home = std::fs::read_to_string(first.join("home.txt")).unwrap();
+        assert!(home.contains("argonauts-gate-"), "{home}");
+        assert!(!Path::new(home.trim()).exists(), "the temp home is removed");
+
+        let again = gates.run(setup_request(&first, install)).await;
+        assert!(again.passed);
+        assert!(again.summary.contains("already ran"), "{}", again.summary);
+        assert_eq!(
+            std::fs::read_to_string(first.join("setup.log")).unwrap(),
+            "installed\n"
+        );
+
+        let other = gates.run(setup_request(&second, install)).await;
+        assert!(other.passed);
+        assert_eq!(
+            std::fs::read_to_string(second.join("setup.log")).unwrap(),
+            "installed\n"
+        );
+        assert!(second.join(".env.test").exists());
+
+        // A failed setup may run again once fixed.
+        let failing = "echo try >> tries.log; exit 1";
+        let failed = gates.run(setup_request(&first, failing)).await;
+        assert!(!failed.passed);
+        assert_eq!(failed.summary, "failed with exit code 1");
+        let retried = gates.run(setup_request(&first, failing)).await;
+        assert!(!retried.summary.contains("already ran"));
+        assert_eq!(
+            std::fs::read_to_string(first.join("tries.log")).unwrap(),
+            "try\ntry\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_gates_run_says_so() {
+        let outcome = no_command_gates();
+        assert_eq!(outcome.summary, NO_COMMAND_GATES);
+        assert_eq!(outcome.summary, "No command gates set · /config gates.run");
+        assert!(outcome.passed);
+        assert_eq!(outcome.command, None);
+        assert_eq!(outcome.kind, GateKind::Command);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut empty = request(dir.path(), "");
+        empty.command.clear();
+        let outcome = gates(Settings::default()).run(empty).await;
+        assert!(!outcome.passed);
+        assert_eq!(outcome.summary, "the command is empty");
+    }
+
+    #[tokio::test]
+    async fn gate_timeout_kills_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slow = request(
+            dir.path(),
+            "sleep 30 & echo $! > bg.pid; echo started; sleep 30",
+        );
+        slow.timeout = Duration::from_millis(500);
+        let started = std::time::Instant::now();
+        let outcome = gates(Settings::default()).run(slow).await;
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!outcome.passed);
+        assert_eq!(outcome.exit_code, None);
+        assert_eq!(outcome.summary, "timed out after 500ms");
+        assert!(outcome.output_tail.starts_with("started\n"));
+        assert!(
+            outcome
+                .output_tail
+                .ends_with("[argonauts] gate timed out after 500ms")
+        );
+
+        let pid: i32 = std::fs::read_to_string(dir.path().join("bg.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let pid = nix::unistd::Pid::from_raw(pid);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while nix::sys::signal::kill(pid, None).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the gate's background child survived"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn gates_summarize_and_keep_a_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo =
+            "echo 'test result: FAILED. 41 passed; 1 failed; 0 ignored; 0 measured'; exit 101";
+        let outcome = gates(Settings::default())
+            .run(request(dir.path(), cargo))
+            .await;
+        assert!(!outcome.passed);
+        assert_eq!(outcome.exit_code, Some(101));
+        assert_eq!(outcome.summary, "41 passed, 1 failed");
+        assert!(!outcome.sandboxed);
+
+        let loud = "i=0; while [ $i -lt 3000 ]; do echo line-$i-xxxxxxxxxxxx; i=$((i+1)); done";
+        let outcome = gates(Settings::default())
+            .run(request(dir.path(), loud))
+            .await;
+        assert!(outcome.passed);
+        assert!(outcome.output_tail.len() <= super::super::OUTPUT_TAIL_BYTES + 4);
+        assert!(outcome.output_tail.ends_with("line-2999-xxxxxxxxxxxx\n"));
+    }
+
+    #[test]
+    fn a_gate_gets_no_network_even_from_a_proxied_session() {
+        let dir = tempfile::tempdir().unwrap();
+        for network in [false, true] {
+            let session = SandboxProfile {
+                network,
+                proxy_port: Some(4128),
+                ..SandboxProfile::default()
+            };
+            let profile = gates(Settings::default()).gate_profile(&session, dir.path(), dir.path());
+            assert!(!profile.network);
+            assert_eq!(profile.proxy_port, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_sandbox_fails_closed() {
+        struct Broken;
+        impl SandboxWrap for Broken {
+            fn mode(&self) -> SandboxMode {
+                SandboxMode::Container
+            }
+            fn wrap(
+                &self,
+                _command: CommandSpec,
+                _profile: &SandboxProfile,
+            ) -> Result<CommandSpec, crate::sandbox::SandboxError> {
+                Err(crate::sandbox::SandboxError::Unavailable(
+                    "no docker".into(),
+                ))
+            }
+            fn describe(&self, _profile: &SandboxProfile) -> String {
+                "broken".into()
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let gates = SandboxedGates::new(Arc::new(Settings::default()), Arc::new(Broken));
+        let outcome = gates.run(request(dir.path(), "touch ran")).await;
+        assert!(!outcome.passed);
+        assert!(!outcome.sandboxed);
+        assert!(!dir.path().join("ran").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn os_sandboxed() -> SandboxedGates {
+        use argonauts_core::settings::approvals::SandboxChoice;
+        let mut settings = Settings::default();
+        settings.sandbox.mode = SandboxChoice::Os;
+        let sandbox = crate::sandbox::for_settings(&settings.sandbox);
+        SandboxedGates::new(Arc::new(settings), sandbox)
+    }
+
+    /// Waits on the `sandbox` builder's Seatbelt profile and self-test.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn gate_write_outside_worktree_fails() {
+        let worktree = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let escape = outside.path().join("escape.txt");
+        let gates = os_sandboxed();
+
+        let inside = gates
+            .run(request(worktree.path(), "echo ok > inside.txt"))
+            .await;
+        assert!(inside.sandboxed, "{inside:?}");
+        assert!(inside.passed, "{inside:?}");
+
+        let script = format!("echo x > '{}'", escape.display());
+        let outcome = gates.run(request(worktree.path(), &script)).await;
+        assert!(outcome.sandboxed, "{outcome:?}");
+        assert!(!outcome.passed, "{outcome:?}");
+        assert!(!escape.exists());
+    }
+
+    /// Waits on the `sandbox` builder's Seatbelt profile and self-test. Skips where this machine
+    /// has no network to begin with.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn gate_network_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let connect = "/usr/bin/nc -z -G 3 1.1.1.1 443";
+        let open = gates(Settings::default())
+            .run(request(dir.path(), connect))
+            .await;
+        if !open.passed {
+            eprintln!("no network here, so there's nothing to block: {open:?}");
+            return;
+        }
+        let outcome = os_sandboxed().run(request(dir.path(), connect)).await;
+        assert!(outcome.sandboxed, "{outcome:?}");
+        assert!(!outcome.passed, "{outcome:?}");
+    }
+}

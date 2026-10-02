@@ -1,0 +1,7 @@
+workflow = "solo-reviewed"
+
+[triage]
+force = "solo"
+
+[solo]
+review = true

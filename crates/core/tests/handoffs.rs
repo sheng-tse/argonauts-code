@@ -1,5 +1,5 @@
 //! The handoff contracts: replacement lists per vendor, strategies, checkpoints, quality debt,
-//! the original-returned card, and `/checkpoints` and `/revert`.
+//! the original-returned card, and `/rewind`.
 
 use argonauts_core::app::{AppEvent, ChoiceKind, UiCommand};
 use argonauts_core::engine::EngineCommand;
@@ -8,12 +8,14 @@ use argonauts_core::events::checkpoint::{CheckpointKind, MergeRow};
 use argonauts_core::events::vendor::HandoffPlan;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::handoff::{CheckpointTag, QualityDebt};
-use argonauts_core::input::{Handler, ParsedInput, SLASH_COMMANDS, SlashCommand, parse_input};
-use argonauts_core::limits::{Candidate, CandidateQuery, HandoffPacket, HandoffPlanner, Shortlist};
+use argonauts_core::input::{Handler, ParsedInput, SLASH_COMMANDS, parse_input};
+use argonauts_core::limits::{
+    Candidate, CandidateQuery, HandoffPacket, HandoffPlanner, Shortlist, TranscriptPaths,
+};
 use argonauts_core::names::{CheckpointId, RoleName, VendorId, WorkerRef};
 use argonauts_core::settings::handoff::{
-    BrokenWork, FallbackEntry, FallbackRules, HandoffMode, HandoffSettings, HandoffStrategy,
-    MergeRule, OnReturn, UnknownTier, VendorReplacement,
+    BrokenWork, FallbackEntry, FallbackRules, HandoffContext, HandoffMode, HandoffSettings,
+    HandoffStrategy, MergeRule, OnReturn, UnknownTier, VendorReplacement,
 };
 use argonauts_core::settings::sessions::RotateAt;
 use argonauts_core::settings::{SAFETY_KEYS, Settings, Span};
@@ -91,13 +93,14 @@ fn the_handoff_example_parses_with_every_replacement_list() {
     let settings: Settings = toml::from_str(
         r#"
 [handoff]
-mode = "ask"
+mode = "auto"
 strategy = "first"
 on_return = "ask"
 checkpoint = true
 merge_rule = "upgrade_review"
 unknown_tier = "weaker"
 max_handoffs = 3
+context = "note+transcript"
 
 [handoff.replace.claude-code]
 with = ["codex/<model>", "antigravity-cli/<model>"]
@@ -130,6 +133,7 @@ on_return = "review"
             ],
             strategy: Some(HandoffStrategy::Spread),
             on_return: None,
+            context: None,
         }
     );
     assert_eq!(
@@ -169,7 +173,8 @@ on_return = "review"
 #[test]
 fn the_new_handoff_defaults_hold() {
     let handoff = HandoffSettings::built_in();
-    assert_eq!(handoff.mode, HandoffMode::Ask);
+    // An agent that runs out picks its replacement itself.
+    assert_eq!(handoff.mode, HandoffMode::Auto);
     assert!(handoff.fallback.is_empty() && handoff.replace.is_empty());
     assert_eq!(handoff.ask_timeout, Span::new("none"));
     assert!(!handoff.allow_api_billing && !handoff.return_to_original);
@@ -181,7 +186,10 @@ fn the_new_handoff_defaults_hold() {
     assert_eq!(handoff.merge_rule, Some(MergeRule::UpgradeReview));
     assert_eq!(handoff.unknown_tier, Some(UnknownTier::Weaker));
     assert_eq!(handoff.max_handoffs, Some(3));
+    assert_eq!(handoff.context, Some(HandoffContext::NoteAndTranscript));
+    assert_eq!(handoff.summarizer, None);
     assert_eq!(VendorReplacement::default().strategy, None);
+    assert_eq!(VendorReplacement::default().context, None);
 
     // A role table that sets nothing leaves every optional key unset.
     let unset = HandoffSettings::default();
@@ -198,13 +206,19 @@ fn the_new_handoff_defaults_hold() {
         (unset.merge_rule, unset.unknown_tier, unset.max_handoffs),
         (None, None, None)
     );
+    assert_eq!((unset.context, unset.summarizer.as_ref()), (None, None));
     let applied = HandoffSettings::applied(&handoff, None, &VendorId("codex".into()));
     assert_eq!(
         HandoffSettings::applied(&unset, Some(&unset), &VendorId("codex".into())),
         applied
     );
+    assert_eq!(applied.mode, HandoffMode::Auto);
+    // No list anywhere: the policy builder offers the other installed, logged-in CLIs.
+    assert!(applied.candidates.is_empty());
     assert_eq!(applied.strategy, HandoffStrategy::First);
     assert_eq!(applied.max_handoffs, 3);
+    assert_eq!(applied.context, HandoffContext::NoteAndTranscript);
+    assert_eq!(applied.summarizer, None);
 
     let settings = Settings::default();
     assert_eq!(settings.handoff, handoff);
@@ -293,6 +307,123 @@ on_return = "review"
 }
 
 #[test]
+fn the_handoff_context_walks_like_strategy_and_the_summarizer_like_checkpoint() {
+    let settings: Settings = toml::from_str(
+        r#"
+[handoff]
+context = "note"
+summarizer = "ollama/llama3.2"
+[handoff.replace.claude-code]
+context = "note+summary"
+
+[roles.reviewer.handoff]
+summarizer = "codex/cheap"
+
+[roles.owner.handoff]
+context = "fresh"
+[roles.owner.handoff.replace.claude-code]
+context = "note+transcript"
+"#,
+    )
+    .unwrap();
+    let top = &settings.handoff;
+    let role = |name: RoleName| settings.roles.get(&name).map(|role| &role.handoff);
+    let (owner, reviewer) = (role(RoleName::Owner), role(RoleName::Reviewer));
+    let claude = VendorId("claude-code".into());
+    let codex = VendorId("codex".into());
+    let applied = |role: Option<&HandoffSettings>, vendor: &VendorId| {
+        HandoffSettings::applied(top, role, vendor)
+    };
+
+    assert_eq!(
+        applied(owner, &claude).context,
+        HandoffContext::NoteAndTranscript
+    );
+    assert_eq!(applied(owner, &codex).context, HandoffContext::Fresh);
+    assert_eq!(
+        applied(reviewer, &claude).context,
+        HandoffContext::NoteAndSummary
+    );
+    assert_eq!(applied(reviewer, &codex).context, HandoffContext::Note);
+    assert_eq!(applied(None, &codex).context, HandoffContext::Note);
+
+    // The summarizer has no per-vendor form: the role's own, then the top level's.
+    assert_eq!(
+        applied(reviewer, &claude).summarizer,
+        Some(worker("codex/cheap"))
+    );
+    assert_eq!(
+        applied(owner, &claude).summarizer,
+        Some(worker("ollama/llama3.2"))
+    );
+
+    let unset = HandoffSettings::applied(&HandoffSettings::default(), None, &codex);
+    assert_eq!(unset.context, HandoffContext::NoteAndTranscript);
+    assert_eq!(unset.summarizer, None);
+}
+
+#[test]
+fn handoff_contexts_keep_their_words_and_labels() {
+    for (context, word, label) in [
+        (HandoffContext::Fresh, "fresh", "fresh"),
+        (HandoffContext::Note, "note", "note"),
+        (
+            HandoffContext::NoteAndTranscript,
+            "note+transcript",
+            "note + transcript",
+        ),
+        (
+            HandoffContext::NoteAndSummary,
+            "note+summary",
+            "note + summary",
+        ),
+    ] {
+        assert_eq!(round_trip::<HandoffContext>(json!(word)), context);
+        assert_eq!(context.label(), label);
+        let settings: Settings =
+            toml::from_str(&format!("[handoff]\ncontext = \"{word}\"\n")).unwrap();
+        assert_eq!(settings.handoff.context, Some(context));
+        let text = toml::to_string(&settings).unwrap();
+        assert!(text.contains(&format!("context = \"{word}\"")), "{text}");
+    }
+    assert_eq!(HandoffContext::default(), HandoffContext::NoteAndTranscript);
+    assert!(serde_json::from_value::<HandoffContext>(json!("note_and_transcript")).is_err());
+    assert!(toml::from_str::<Settings>("[handoff]\ncontext = \"transcript\"\n").is_err());
+}
+
+fn older_packet() -> Value {
+    json!({"card": serde_json::to_value(card_spec()).unwrap(), "goal_sha256": null,
+        "notes": [], "work": {"branch": "argonauts/run-01/card-002", "commit": null,
+        "stat": diff_stat()}, "happened": ["Read src/limits/store.ts"], "last_todo": [],
+        "gates": [], "why_stopped": "usage limit", "last_words": null, "budget_left": null})
+}
+
+#[test]
+fn packets_carry_the_transcript_and_summary_and_older_ones_still_read() {
+    let packet: HandoffPacket = round_trip(older_packet());
+    assert_eq!((packet.transcript, packet.summary), (None, None));
+
+    let mut told = older_packet();
+    told["transcript"] = json!({
+        "worktree": "/work/card-002/.argonauts/handoff/1/transcript.md",
+        "run": "runs/run-01/cards/card-002/handoff-1/transcript.md"});
+    told["summary"] = json!("Tried a Lua script for the bucket; one test is still flaky.");
+    let packet: HandoffPacket = round_trip(told);
+    assert_eq!(
+        packet.transcript,
+        Some(TranscriptPaths {
+            worktree: "/work/card-002/.argonauts/handoff/1/transcript.md".into(),
+            run: "runs/run-01/cards/card-002/handoff-1/transcript.md".into(),
+        })
+    );
+    assert!(
+        packet
+            .summary
+            .is_some_and(|summary| summary.contains("flaky"))
+    );
+}
+
+#[test]
 fn rotate_at_takes_a_share_a_count_or_a_token_count() {
     let rotate_at = |text: &str| {
         toml::from_str::<Settings>(&format!("[sessions]\nrotate_at = {text}"))
@@ -342,13 +473,19 @@ checkpoint = false
 merge_rule = "none"
 unknown_tier = "equal"
 max_handoffs = 5
+context = "note+summary"
+summarizer = "ollama/llama3.2"
 [handoff.replace.claude-code]
 with = ["codex/gpt-x"]
 strategy = "spread"
 on_return = "redo"
+context = "fresh"
+[roles.owner.handoff]
+summarizer = "codex/gpt-x"
 [roles.owner.handoff.replace.codex]
 with = ["claude-code/opus"]
 on_return = "keep"
+context = "note"
 [sessions]
 rotate_at = "1m"
 [approvals.merge.rules]
@@ -358,6 +495,10 @@ allow_debt = true
     .unwrap();
     assert_eq!(settings.handoff.strategy, Some(HandoffStrategy::Race));
     assert_eq!(settings.handoff.on_return, Some(OnReturn::HandBack));
+    assert_eq!(
+        settings.handoff.context,
+        Some(HandoffContext::NoteAndSummary)
+    );
     assert!(settings.approvals.merge.rules.allow_debt);
     let value = serde_json::to_value(&settings).unwrap();
     let schema = schemars::schema_for!(Settings).to_value();
@@ -582,39 +723,28 @@ fn parsed(text: &str) -> Value {
 }
 
 #[test]
-fn checkpoints_and_revert_parse_to_their_wire_format() {
-    let checkpoints = json!({"input": "slash",
-        "command": {"command": "checkpoints", "card": "card-002"}});
-    assert_eq!(parsed("/checkpoints card-002"), checkpoints);
-    round_trip::<ParsedInput>(checkpoints);
+fn rewind_parses_to_its_wire_format() {
+    let rewind = json!({"input": "slash", "command": {"command": "rewind", "card": "card-002"}});
+    assert_eq!(parsed("/rewind card-002"), rewind);
+    round_trip::<ParsedInput>(rewind);
     assert_eq!(
-        parsed("/checkpoints"),
-        json!({"input": "slash", "command": {"command": "checkpoints", "card": null}})
+        parsed("/rewind"),
+        json!({"input": "slash", "command": {"command": "rewind", "card": null}})
     );
-
-    let revert = json!({"input": "slash",
-        "command": {"command": "revert", "card": "card-002", "checkpoint": 1}});
-    assert_eq!(parsed("/revert card-002 handoff-1"), revert);
-    assert_eq!(parsed("/revert card-002 1"), revert);
-    round_trip::<ParsedInput>(revert);
     for bad in [
-        "/revert card-002 handoff-0",
-        "/revert card-002",
-        "/revert handoff-1",
+        "/rewind card-002 handoff-1",
+        "/rewind handoff-1",
+        "/rewind run-01",
     ] {
         assert!(parse_input(bad).is_err(), "{bad}");
     }
+    let spec = SLASH_COMMANDS.iter().find(|spec| spec.name == "rewind");
+    assert_eq!(spec.map(|spec| spec.handler), Some(Handler::App));
 
-    for name in ["checkpoints", "revert"] {
-        let spec = SLASH_COMMANDS.iter().find(|spec| spec.name == name);
-        assert_eq!(spec.map(|spec| spec.handler), Some(Handler::App), "{name}");
-    }
-    assert!(matches!(
-        parse_input("/revert card-002 handoff-2"),
-        Ok(ParsedInput::Slash {
-            command: SlashCommand::Revert { checkpoint: 2, .. }
-        })
-    ));
+    // The checkpoint you pick goes back as a command of its own; a confirm card comes first.
+    let pick =
+        round_trip::<UiCommand>(json!({"type": "rewind", "card": "card-002", "checkpoint": 2}));
+    assert!(matches!(pick, UiCommand::Rewind { checkpoint: 2, .. }));
 }
 
 #[tokio::test]

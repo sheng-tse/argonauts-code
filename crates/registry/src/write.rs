@@ -6,18 +6,25 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use argonauts_core::layout::project_files;
-use argonauts_core::paths::{LOCAL_CONFIG_EXCLUDE, exclude_from_git};
-use argonauts_core::settings::Settings;
+use argonauts_core::paths::{LOCAL_CONFIG_EXCLUDE, Paths, exclude_from_git};
+use argonauts_core::settings::{GLOBAL_ONLY_KEYS, SettingMeta, Settings};
 use toml_edit::{Decor, DocumentMut, InlineTable, Item, Key, Table, TableLike, Value};
 
 use crate::SettingsError;
-use crate::catalog::setting_meta;
-use crate::resolve::{SESSION_ENV, is_safety_key};
+use crate::catalog::{fits, quote, setting_meta, settings_catalog};
+use crate::presets::{is_preset_name, not_a_preset_name, presets_in};
+use crate::resolve::{SESSION_ENV, is_plain_key, is_safety_path, key_matches};
+use crate::settings::budget_units::{BudgetUnits, other_units};
+use crate::settings::handoff::entry_billing;
+use crate::settings::validate::file_problems;
 
 /// Sets one dotted key in a TOML file. A new key gets its catalog description as a comment, a
-/// bare word reads as a string as with `--set`, and a table value merges key by key. Safety keys
-/// are refused inside an agent session, and a repo's `config.local.toml` is git-excluded before
-/// it's written. Unknown keys and disallowed values aren't refused yet.
+/// bare word reads as a string as with `--set`, and a table value merges key by key. Picking a
+/// budget unit drops the file's other unit for that limit. Nothing is written when the file
+/// would then fail to resolve on its own, when the key is unknown or takes other values, when a
+/// project file would hold a key only your global config may set, or when a safety key would
+/// change inside an agent session. A repo's `config.local.toml` is git-excluded before it's
+/// written.
 pub fn write_setting(file: &Path, key: &str, toml_value: &str) -> Result<(), SettingsError> {
     let in_agent_session = std::env::var_os(SESSION_ENV).is_some();
     write(file, key, toml_value, in_agent_session)
@@ -44,9 +51,22 @@ fn write(
     let path = key_path(key).map_err(invalid)?;
     let key = &path.join(".");
     let value = parse_value(toml_value).map_err(|message| invalid(format!("{key}: {message}")))?;
+    if let Some(odd) = odd_name(&value) {
+        return Err(invalid(format!(
+            "{odd:?} in {key}'s value isn't a plain key name; use letters, digits, _ and -"
+        )));
+    }
     if in_agent_session && let Some(safety) = safety_keys(key, &value).first() {
         return Err(refused_in_agent_session(safety));
     }
+    let leaves = leaves_of(key, &value);
+    let global = Paths::from_env().ok().map(|paths| paths.global_config());
+    if project_config_repo(file, global.as_deref()).is_some()
+        && let Some(global_only) = leaves.iter().find(|leaf| is_global_only(leaf))
+    {
+        return Err(global_only_in_project(global_only, file));
+    }
+    check(key, &value, &|| preset_names(file)).map_err(invalid)?;
 
     let target = real_path(file)?;
     let _turn = lock_folder(&target)?;
@@ -65,13 +85,18 @@ fn write(
         .filter(|description| !description.is_empty());
     set(doc.as_table_mut(), &path, value, comment.as_deref(), false)
         .map_err(|message| invalid(format!("{key}: {message}")))?;
+    // Two units for one limit in one file is an error, so the unit written replaces the other.
+    for other in leaves.iter().flat_map(|leaf| other_units(leaf)) {
+        if !leaves.contains(&other) {
+            let other: Vec<&str> = other.split('.').collect();
+            remove_at(doc.as_table_mut(), &other);
+        }
+    }
     let mut text = doc.to_string();
     if only_comments {
         text = format!("{}\n\n{text}", original.trim_end());
     }
-    // A value of the wrong type never reaches the file.
-    toml::from_str::<Settings>(&text)
-        .map_err(|err| invalid(format!("{key}: {}", err.message())))?;
+    resolves_alone(file, key, &text)?;
 
     // Exclude before writing, so your own settings are never briefly committable.
     if let Some(repo_root) = local_config_repo(file) {
@@ -89,19 +114,31 @@ fn remove(file: &Path, key: &str, in_agent_session: bool) -> Result<bool, Settin
     let path = key_path(key).map_err(invalid)?;
     let key = &path.join(".");
     let target = real_path(file)?;
+    // No folder holds no file, and locking would create one.
+    if matches!(folder_of(&target).try_exists(), Ok(false)) {
+        return Ok(false);
+    }
     let _turn = lock_folder(&target)?;
     let original = read(&target)?;
     let mut doc: DocumentMut = original
         .parse()
         .map_err(|err: toml_edit::TomlError| invalid(err.to_string()))?;
+    let header = file_header(&doc, &path);
     let Some(removed) = remove_at(doc.as_table_mut(), &path) else {
         return Ok(false);
     };
+    if let Some(header) = header {
+        keep_header(&mut doc, &header);
+    }
     if in_agent_session {
-        let mut keys = vec![key.clone()];
-        keys.extend(leaf_keys(key, &removed));
-        if let Some(safety) = keys.iter().find(|key| is_safety_key(key)) {
-            return Err(refused_in_agent_session(safety));
+        let path: Vec<String> = path.iter().map(|name| (*name).to_owned()).collect();
+        let mut keys = vec![path.clone()];
+        keys.extend(leaf_paths(&path, &removed));
+        if let Some(safety) = keys.iter().find(|path| {
+            let names: Vec<&str> = path.iter().map(String::as_str).collect();
+            is_safety_path(&names)
+        }) {
+            return Err(refused_in_agent_session(&safety.join(".")));
         }
     }
     let text = doc.to_string();
@@ -109,6 +146,52 @@ fn remove(file: &Path, key: &str, in_agent_session: bool) -> Result<bool, Settin
         .map_err(|err| invalid(format!("{key}: {}", err.message())))?;
     write_replacing(&target, &text)?;
     Ok(true)
+}
+
+/// Refuses a file that `resolve` would refuse on its own, with the message it would give. A
+/// value of the wrong type never reaches the file.
+fn resolves_alone(file: &Path, key: &str, text: &str) -> Result<(), SettingsError> {
+    let invalid = |message: String| SettingsError::Invalid {
+        layer: file.display().to_string(),
+        message,
+    };
+    let settings: Settings =
+        toml::from_str(text).map_err(|err| invalid(format!("{key}: {}", err.message())))?;
+    let table: toml::Table = text
+        .parse()
+        .map_err(|err: toml::de::Error| invalid(err.to_string()))?;
+    // The layer name only labels what a later unit clears, and nothing is cleared here.
+    BudgetUnits::default().note("file", &file.display().to_string(), &table)?;
+    match file_problems(&settings).into_iter().next() {
+        Some(problem) => Err(invalid(problem.message)),
+        None => Ok(()),
+    }
+}
+
+/// The dotted key of every value a write sets. A list is one value, as in `resolve`.
+fn leaves_of(key: &str, value: &Value) -> Vec<String> {
+    match value {
+        Value::InlineTable(table) => table
+            .iter()
+            .flat_map(|(name, inner)| leaves_of(&format!("{key}.{name}"), inner))
+            .collect(),
+        _ => vec![key.to_owned()],
+    }
+}
+
+fn is_global_only(key: &str) -> bool {
+    GLOBAL_ONLY_KEYS
+        .iter()
+        .any(|pattern| key_matches(pattern, key))
+}
+
+/// The refusal `resolve` gives for the file once it holds `key`.
+fn global_only_in_project(key: &str, file: &Path) -> SettingsError {
+    SettingsError::Refused(format!(
+        "{key} in {} can only be set in your global config, since it names a program for \
+         Argonauts to run",
+        file.display()
+    ))
 }
 
 fn remove_at(table: &mut dyn TableLike, path: &[&str]) -> Option<Item> {
@@ -132,6 +215,60 @@ fn remove_at(table: &mut dyn TableLike, path: &[&str]) -> Option<Item> {
     Some(removed)
 }
 
+/// The comment that opens the file, when `path` is the file's first key. It belongs to the file,
+/// so it stays when the key goes; only the key's own description goes with it.
+fn file_header(doc: &DocumentMut, path: &[&str]) -> Option<String> {
+    let [name] = path else {
+        return None;
+    };
+    let root = doc.as_table();
+    let (first, item) = root.iter().next()?;
+    if first != *name || !item.is_value() {
+        return None;
+    }
+    let prefix = root.key(name)?.leaf_decor().prefix()?.as_str()?;
+    let own = setting_meta(name)
+        .map(|meta| format!("# {}", meta.description.replace(['\n', '\r'], " ")))
+        .unwrap_or_default();
+    let header: String = prefix
+        .split_inclusive('\n')
+        .filter(|line| line.trim_end() != own)
+        .collect();
+    header.contains('#').then_some(header)
+}
+
+/// Puts the file's opening comment above whatever now comes first: a key, or else a table.
+fn keep_header(doc: &mut DocumentMut, header: &str) {
+    let root = doc.as_table_mut();
+    let first_key = root
+        .iter()
+        .find(|(_, item)| item.is_value())
+        .map(|(name, _)| name.to_owned());
+    if let Some(name) = first_key {
+        if let Some(mut key) = root.key_mut(&name) {
+            prepend(key.leaf_decor_mut(), header);
+        }
+        return;
+    }
+    let first_table = root
+        .iter_mut()
+        .filter_map(|(_, item)| item.as_table_mut())
+        .filter(|table| !table.is_implicit())
+        .min_by_key(|table| table.position());
+    if let Some(table) = first_table {
+        prepend(table.decor_mut(), header);
+    }
+}
+
+fn prepend(decor: &mut Decor, text: &str) {
+    let below = decor
+        .prefix()
+        .and_then(|prefix| prefix.as_str())
+        .unwrap_or("");
+    let joined = format!("{text}{below}");
+    decor.set_prefix(joined);
+}
+
 fn has_comment(decor: &Decor) -> bool {
     decor
         .prefix()
@@ -139,17 +276,20 @@ fn has_comment(decor: &Decor) -> bool {
         .is_some_and(|prefix| prefix.contains('#'))
 }
 
-fn leaf_keys(prefix: &str, item: &Item) -> Vec<String> {
+/// Every key under `prefix` in `item`, each as its names, since a hand-written file may quote
+/// a name that holds a dot.
+fn leaf_paths(prefix: &[String], item: &Item) -> Vec<Vec<String>> {
     let Some(table) = item.as_table_like() else {
         return Vec::new();
     };
     table
         .iter()
         .flat_map(|(name, inner)| {
-            let key = format!("{prefix}.{name}");
-            let mut keys = leaf_keys(&key, inner);
-            keys.push(key);
-            keys
+            let mut path = prefix.to_vec();
+            path.push(name.to_owned());
+            let mut paths = leaf_paths(&path, inner);
+            paths.push(path);
+            paths
         })
         .collect()
 }
@@ -161,17 +301,156 @@ fn key_path(key: &str) -> Result<Vec<&str>, String> {
     if path.iter().any(|segment| segment.is_empty()) {
         return Err(format!("{key:?} needs a name between every dot"));
     }
-    let plain = |segment: &&str| {
-        segment
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    };
-    if let Some(odd) = path.iter().find(|segment| !plain(segment)) {
+    if let Some(odd) = path.iter().find(|segment| !is_plain_key(segment)) {
         return Err(format!(
             "{odd:?} in {key:?} isn't a plain key name; use letters, digits, _ and -"
         ));
     }
     Ok(path)
+}
+
+/// Refuses a key the catalog doesn't know, naming the nearest one it does, and a value outside
+/// the key's allowed list, naming the values it takes. A table value is checked key by key.
+/// `presets` lists the presets `preset` may name beyond the built-ins.
+fn check(key: &str, value: &Value, presets: &dyn Fn() -> Vec<String>) -> Result<(), String> {
+    let catalog = settings_catalog();
+    let inner = catalog.iter().find(|meta| holds(&meta.key, key));
+    if let (Value::InlineTable(table), Some(_)) = (value, inner) {
+        for (name, value) in table.iter() {
+            check(&format!("{key}.{name}"), value, presets)?;
+        }
+        return Ok(());
+    }
+    match (setting_meta(key), inner) {
+        (Some(meta), _) => {
+            let mut allowed = meta.allowed;
+            if key == "preset" {
+                if let Some(name) = value.as_str()
+                    && !is_preset_name(name)
+                {
+                    return Err(not_a_preset_name(name));
+                }
+                for name in presets() {
+                    let name = quote(&name);
+                    if !allowed.contains(&name) {
+                        allowed.push(name);
+                    }
+                }
+            }
+            check_allowed(key, value, &allowed)
+        }
+        (None, Some(inner)) => Err(format!(
+            "{key} is a table of settings, such as {}; set one of them",
+            filled(&inner.key, key)
+        )),
+        (None, None) => Err(match nearest(key, &catalog) {
+            Some(near) => format!("{key} isn't a setting. Did you mean {near}?"),
+            None => format!("{key} isn't a setting"),
+        }),
+    }
+}
+
+fn check_allowed(key: &str, value: &Value, allowed: &[String]) -> Result<(), String> {
+    // A value that can't be compared, such as a table, is left to the type check.
+    let Some(given) = plain(&value.to_string()) else {
+        return Ok(());
+    };
+    if allowed.is_empty()
+        || allowed
+            .iter()
+            .any(|text| plain(text).as_ref() == Some(&given))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{key} can't be {}; it takes {}",
+        value.to_string().trim(),
+        one_of(allowed)
+    ))
+}
+
+/// A TOML value as `toml` reads it, so `'auto'` and `"auto"` compare equal.
+fn plain(text: &str) -> Option<toml::Value> {
+    format!("value = {text}")
+        .parse::<toml::Table>()
+        .ok()?
+        .remove("value")
+}
+
+/// `"a", "b", or "c"`.
+fn one_of(values: &[String]) -> String {
+    match values {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} or {second}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
+/// Whether the catalog key `pattern` lies inside the table `key` names.
+fn holds(pattern: &str, key: &str) -> bool {
+    let (parts, names): (Vec<&str>, Vec<&str>) =
+        (pattern.split('.').collect(), key.split('.').collect());
+    parts.len() > names.len() && fits(&parts[..names.len()].join("."), key)
+}
+
+/// The catalog key `pattern` with each `*` filled by the name `key` has there.
+fn filled(pattern: &str, key: &str) -> String {
+    let names: Vec<&str> = key.split('.').collect();
+    pattern
+        .split('.')
+        .enumerate()
+        .map(|(at, part)| match (part, names.get(at)) {
+            ("*", Some(name)) => *name,
+            _ => part,
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The known key, or table of keys, closest to `key` by edit distance. Ties go to the one the
+/// catalog lists first, so picker keys win.
+fn nearest(key: &str, catalog: &[SettingMeta]) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for meta in catalog {
+        let full = filled(&meta.key, key);
+        let parts: Vec<&str> = full.split('.').collect();
+        for end in 1..=parts.len() {
+            let candidate = parts[..end].join(".");
+            let distance = edit_distance(key, &candidate);
+            if best.as_ref().is_none_or(|(closest, _)| distance < *closest) {
+                best = Some((distance, candidate));
+            }
+        }
+    }
+    best.map(|(_, near)| near)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, left) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, right) in b.iter().enumerate() {
+            let replaced = diagonal + usize::from(left != *right);
+            diagonal = row[j + 1];
+            row[j + 1] = replaced.min(row[j] + 1).min(row[j + 1] + 1);
+        }
+    }
+    row[b.len()]
+}
+
+/// The presets a file's `preset` may name besides the built-ins: the files in the `presets`
+/// folder beside it and in your global one.
+fn preset_names(file: &Path) -> Vec<String> {
+    let beside = folder_of(file).join("presets");
+    let global = Paths::from_env().map(|paths| paths.global_presets());
+    let all = match &global {
+        Ok(global) => presets_in(global, Some(&beside)),
+        Err(_) => presets_in(&beside, None),
+    };
+    all.into_iter().map(|preset| preset.name).collect()
 }
 
 fn refused_in_agent_session(safety: &str) -> SettingsError {
@@ -189,18 +468,60 @@ pub fn safety_keys_in(key: &str, toml_value: &str) -> Vec<String> {
 }
 
 /// [`safety_keys_in`] for a key as it will be written, so spaces around a dot can't dodge the
-/// rule.
+/// rule. Names inside the value are matched one by one, so a quoted name with a dot can't
+/// either. A fallback entry's `allow_api_billing` counts, as it does for `--set`.
 fn safety_keys(key: &str, value: &Value) -> Vec<String> {
-    let mut found = Vec::new();
-    if is_safety_key(key) {
-        found.push(key.to_owned());
-    }
-    if let Value::InlineTable(table) = value {
-        for (name, inner) in table.iter() {
-            found.extend(safety_keys(&format!("{key}.{name}"), inner));
+    let mut found = safety_leaves(key, value);
+    found.extend(entry_billing(&as_layer(key, value)));
+    found
+}
+
+fn safety_leaves(key: &str, value: &Value) -> Vec<String> {
+    fn walk<'a>(path: &mut Vec<&'a str>, value: &'a Value, found: &mut Vec<String>) {
+        if is_safety_path(path) {
+            found.push(path.join("."));
+        }
+        if let Value::InlineTable(table) = value {
+            for (name, inner) in table.iter() {
+                path.push(name);
+                walk(path, inner, found);
+                path.pop();
+            }
         }
     }
+    let mut path: Vec<&str> = key.split('.').collect();
+    let mut found = Vec::new();
+    walk(&mut path, value, &mut found);
     found
+}
+
+/// `value` nested at its dotted `key`, as a layer that sets only it.
+fn as_layer(key: &str, value: &Value) -> toml::Table {
+    let mut layer = plain(&value.to_string());
+    for name in key.rsplit('.') {
+        let mut table = toml::Table::new();
+        table.extend(layer.map(|inner| (name.to_owned(), inner)));
+        layer = Some(toml::Value::Table(table));
+    }
+    match layer {
+        Some(toml::Value::Table(table)) => table,
+        _ => toml::Table::new(),
+    }
+}
+
+/// The first name inside a table value that isn't a plain key name, which the settings loader
+/// would refuse.
+fn odd_name(value: &Value) -> Option<String> {
+    let Value::InlineTable(table) = value else {
+        return None;
+    };
+    table.iter().find_map(|(name, inner)| {
+        if is_plain_key(name) {
+            odd_name(inner)
+        } else {
+            Some(name.to_owned())
+        }
+    })
 }
 
 /// A bare word that isn't TOML reads as a string, as with `--set`, so `vim` works without quotes.
@@ -315,6 +636,24 @@ fn local_config_repo(file: &Path) -> Option<&Path> {
     if file.file_name()? != project_files::CONFIG_LOCAL {
         return None;
     }
+    repo_of(file)
+}
+
+/// The repo root when `file` is a repo's `.argonauts/config.toml` or `config.local.toml`. Your
+/// global config, `~/.argonauts/config.toml`, has the same shape, so `global` tells it apart.
+fn project_config_repo<'a>(file: &'a Path, global: Option<&Path>) -> Option<&'a Path> {
+    let name = file.file_name()?;
+    if name != project_files::CONFIG && name != project_files::CONFIG_LOCAL {
+        return None;
+    }
+    if global.is_some_and(|global| same_file(file, global)) {
+        return None;
+    }
+    repo_of(file)
+}
+
+/// The folder holding `file`'s `.argonauts` folder.
+fn repo_of(file: &Path) -> Option<&Path> {
     let folder = file.parent()?;
     if folder.file_name()? != ".argonauts" {
         return None;
@@ -322,9 +661,19 @@ fn local_config_repo(file: &Path) -> Option<&Path> {
     folder.parent()
 }
 
+/// Whether two paths name one file, through links and whether or not it exists yet.
+fn same_file(a: &Path, b: &Path) -> bool {
+    let real = |path: &Path| {
+        real_path(path)
+            .ok()
+            .and_then(|path| std::path::absolute(path).ok())
+    };
+    matches!((real(a), real(b)), (Some(a), Some(b)) if a == b)
+}
+
 /// The file to write. A config that's a link, such as one kept in a dotfiles repo, is written
 /// through, so the link stays, even when what it points at doesn't exist yet.
-fn real_path(file: &Path) -> Result<PathBuf, SettingsError> {
+pub(crate) fn real_path(file: &Path) -> Result<PathBuf, SettingsError> {
     match fs::canonicalize(file) {
         Ok(path) => Ok(path),
         Err(err) if err.kind() == io::ErrorKind::NotFound => follow_links(file),
@@ -359,16 +708,13 @@ fn folder_of(file: &Path) -> &Path {
 }
 
 /// Locks the folder while its file is read, edited, and replaced, so two windows saving at once
-/// never lose a change. A missing folder holds no file to race over.
-fn lock_folder(target: &Path) -> Result<Option<fs::File>, SettingsError> {
+/// never lose a change. It creates the folder first, so the first writes into it take turns too.
+pub(crate) fn lock_folder(target: &Path) -> Result<fs::File, SettingsError> {
     let dir = folder_of(target);
-    let handle = match fs::File::open(dir) {
-        Ok(handle) => handle,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(io_error(dir, err)),
-    };
+    fs::create_dir_all(dir).map_err(|err| io_error(dir, err))?;
+    let handle = fs::File::open(dir).map_err(|err| io_error(dir, err))?;
     handle.lock().map_err(|err| io_error(dir, err))?;
-    Ok(Some(handle))
+    Ok(handle)
 }
 
 fn read(file: &Path) -> Result<String, SettingsError> {
@@ -381,7 +727,7 @@ fn read(file: &Path) -> Result<String, SettingsError> {
 
 /// Writes through a temporary file and a rename, so a crash never leaves half a file, and keeps
 /// the old file's permissions.
-fn write_replacing(target: &Path, text: &str) -> Result<(), SettingsError> {
+pub(crate) fn write_replacing(target: &Path, text: &str) -> Result<(), SettingsError> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let dir = folder_of(target);
     fs::create_dir_all(dir).map_err(|err| io_error(dir, err))?;
@@ -405,7 +751,7 @@ fn write_replacing(target: &Path, text: &str) -> Result<(), SettingsError> {
     })
 }
 
-fn io_error(path: &Path, err: io::Error) -> SettingsError {
+pub(crate) fn io_error(path: &Path, err: io::Error) -> SettingsError {
     SettingsError::Io {
         path: path.to_owned(),
         message: err.to_string(),
@@ -601,6 +947,197 @@ keys = \"default\"
     }
 
     #[test]
+    fn fallback_billing_never_changes_inside_an_agent_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let billing = "{ worker = \"codex\", allow_api_billing = true }";
+        for (key, value) in [
+            ("handoff.fallback", format!("[{billing}]")),
+            (
+                "handoff.replace.codex.with",
+                format!("[\"claude-code\", {billing}]"),
+            ),
+            (
+                "roles.owner.handoff",
+                format!("{{ fallback = [{billing}] }}"),
+            ),
+            (
+                "roles.owner",
+                format!("{{ handoff = {{ replace = {{ codex = {{ with = [{billing}] }} }} }} }}"),
+            ),
+        ] {
+            let err = write(&file, key, &value, true).unwrap_err();
+            assert!(matches!(err, SettingsError::Refused(_)), "{key}: {err}");
+        }
+        assert!(!file.exists());
+        assert_eq!(
+            safety_keys_in("handoff.fallback", &format!("[\"codex\", {billing}]")),
+            ["handoff.fallback[1].allow_api_billing"]
+        );
+        assert_eq!(
+            safety_keys_in(
+                "roles.owner.handoff",
+                &format!("{{ replace = {{ codex = {{ with = [{billing}] }} }} }}")
+            ),
+            ["roles.owner.handoff.replace.codex.with[0].allow_api_billing"]
+        );
+        let no_billing = "[\"claude-code\", { worker = \"codex\", allow_api_billing = false }]";
+        assert!(safety_keys_in("handoff.fallback", no_billing).is_empty());
+        write(&file, "handoff.fallback", no_billing, true).unwrap();
+    }
+
+    fn resolve_alone(file: &Path) -> Result<crate::ResolvedSettings, SettingsError> {
+        crate::resolve(&crate::SettingsSources {
+            global: Some(file.to_owned()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_budget_unit_replaces_the_other_units_of_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        fs::write(
+            &file,
+            "[budget]\n# Dollars.\nrun_usd = 20.0\nper_card_usd = 2.0\nsoft_stop = 0.8\n",
+        )
+        .unwrap();
+        write(&file, "budget.run_tokens", "2000000", false).unwrap();
+        write(&file, "budget", "{ per_card_minutes = 30 }", false).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("usd") && !text.contains("Dollars"), "{text}");
+        let budget = resolve_alone(&file).unwrap().settings.budget;
+        assert_eq!(budget.run_tokens, Some(2_000_000));
+        assert_eq!(budget.run_usd, None);
+        assert_eq!(budget.per_card_usd, None);
+        assert_eq!(budget.soft_stop, 0.8);
+
+        let message = refusal(&file, "budget", "{ run_usd = 5.0, run_quota = 0.5 }");
+        assert!(
+            message.contains("budget.run_usd and budget.run_quota are one choice"),
+            "{message}"
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), text);
+    }
+
+    #[test]
+    fn a_value_resolve_would_refuse_never_reaches_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let before = "[ui]\nkeys = \"vim\"\n";
+        fs::write(&file, before).unwrap();
+        for (key, value, wanted) in [
+            (
+                "workflows.max_depth",
+                "3",
+                "workflows.max_depth is at most 2",
+            ),
+            ("sessions.rotate_at", "0", "sessions.rotate_at"),
+            ("critique.critic", "\"not a worker!\"", "critique.critic is"),
+            (
+                "default_agent",
+                "ollama",
+                "default_agent is ollama, an endpoint",
+            ),
+            (
+                "budget.soft_stop",
+                "1.5",
+                "budget.soft_stop must be more than 0",
+            ),
+            ("gates.timeout", "soon", "gates.timeout: "),
+            (
+                "roles.owner.native_fanout",
+                "{ max = 0 }",
+                "roles.owner.native_fanout.max must be at least 1",
+            ),
+        ] {
+            let message = refusal(&file, key, value);
+            assert!(message.contains(wanted), "{key}: {message}");
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap(), before);
+
+        // The refusal is the one resolve gives for the file.
+        let err = write(&file, "workflows.max_depth", "3", false).unwrap_err();
+        fs::write(&file, format!("{before}[workflows]\nmax_depth = 3\n")).unwrap();
+        assert_eq!(resolve_alone(&file).unwrap_err(), err);
+    }
+
+    #[test]
+    fn a_project_file_never_takes_a_global_only_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let shared = argonauts_core::paths::project_config_path(&repo);
+        let local = argonauts_core::paths::project_local_config_path(&repo);
+        for file in [&shared, &local] {
+            for (key, value) in [
+                ("notifications.chat.on", "[\"finished\"]"),
+                ("notifications", "{ chat = { on = [\"finished\"] } }"),
+            ] {
+                let err = write(file, key, value, false).unwrap_err();
+                assert!(matches!(err, SettingsError::Refused(_)), "{key}: {err}");
+            }
+        }
+        assert!(!shared.exists() && !local.exists());
+
+        // The refusal is the one resolve gives for the file, trusted or not.
+        let err = write(&shared, "notifications.chat.on", "[\"finished\"]", false).unwrap_err();
+        fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        fs::write(&shared, "[notifications.chat]\non = [\"finished\"]\n").unwrap();
+        let sources = crate::SettingsSources {
+            project: Some(shared.clone()),
+            project_trusted: true,
+            ..Default::default()
+        };
+        assert_eq!(crate::resolve(&sources).unwrap_err(), err);
+
+        // Your global config lives in a folder of the same name.
+        let global = dir.path().join("home/.argonauts/config.toml");
+        assert_eq!(
+            project_config_repo(&global, None),
+            Some(global.parent().unwrap().parent().unwrap())
+        );
+        assert_eq!(project_config_repo(&global, Some(&global)), None);
+        assert_eq!(
+            project_config_repo(&local, Some(&global)),
+            Some(repo.as_path())
+        );
+        assert_eq!(
+            project_config_repo(&dir.path().join("config.toml"), None),
+            None
+        );
+        write(
+            &dir.path().join("config.toml"),
+            "notifications.chat.on",
+            "[\"finished\"]",
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_dotted_name_in_a_value_is_still_a_safety_key_and_never_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let dotted = "{ \"evil.x\" = { base_url = \"https://attacker/v1\" } }";
+        assert_eq!(
+            safety_keys_in("endpoints", dotted),
+            ["endpoints.evil.x.base_url"]
+        );
+        for in_agent_session in [true, false] {
+            let err = write(&file, "endpoints", dotted, in_agent_session).unwrap_err();
+            assert!(err.to_string().contains("\"evil.x\""), "{err}");
+        }
+        assert!(!file.exists());
+        fs::write(
+            &file,
+            "[endpoints.\"evil.x\"]\nbase_url = \"https://attacker/v1\"\n",
+        )
+        .unwrap();
+        let err = remove(&file, "endpoints", true).unwrap_err();
+        assert!(matches!(err, SettingsError::Refused(_)), "{err}");
+    }
+
+    #[test]
     fn local_setting_added_to_git_exclude() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
@@ -711,7 +1248,42 @@ model = \"ollama/llama3.2\"
         assert_eq!(settings.narrator.model, None);
         let missing = dir.path().join("nowhere/config.toml");
         assert!(!remove(&missing, "ui.keys", false).unwrap());
-        assert!(!missing.exists());
+        assert!(!missing.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn removing_the_first_key_keeps_the_files_opening_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        fs::write(
+            &file,
+            "# My settings. Hands off, robots.\ndefault_agent = \"codex\"\npreset = \"solo\"\n",
+        )
+        .unwrap();
+        assert!(remove(&file, "default_agent", false).unwrap());
+        let after = fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            after,
+            "# My settings. Hands off, robots.\npreset = \"solo\"\n"
+        );
+
+        // With no key left, the first table carries it, and the key's description goes.
+        write_setting(&file, "ui.theme", "dark").unwrap();
+        remove(&file, "preset", false).unwrap();
+        write_setting(&file, "default_agent", "codex").unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(
+            &file,
+            text.replace("default_agent", "# opening\ndefault_agent"),
+        )
+        .unwrap();
+        assert!(remove(&file, "default_agent", false).unwrap());
+        let after = fs::read_to_string(&file).unwrap();
+        assert!(
+            after.starts_with("# opening\n# My settings. Hands off, robots.\n\n[ui]\n"),
+            "{after}"
+        );
+        assert!(!after.contains("default_agent") && !after.contains("Who you chat with"));
     }
 
     #[test]
@@ -761,14 +1333,148 @@ model = \"ollama/llama3.2\"
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
         fs::write(&file, "# mine\n").unwrap();
+        // The first writes into a folder not there yet take turns too.
+        let fresh = dir.path().join("repo/.argonauts/config.toml");
         let keys: Vec<String> = (0..8).map(|n| format!("ui.keymap.action_{n}")).collect();
-        std::thread::scope(|scope| {
-            for key in &keys {
-                let file = &file;
-                scope.spawn(move || write(file, key, "\"ctrl+x\"", false).unwrap());
-            }
-        });
+        for file in [&file, &fresh] {
+            std::thread::scope(|scope| {
+                for key in &keys {
+                    scope.spawn(move || write(file, key, "\"ctrl+x\"", false).unwrap());
+                }
+            });
+            let settings: Settings = toml::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+            assert_eq!(settings.ui.keymap.len(), keys.len(), "a change was lost");
+        }
+    }
+
+    fn refusal(file: &Path, key: &str, value: &str) -> String {
+        match write(file, key, value, false) {
+            Err(SettingsError::Invalid { message, .. }) => message,
+            other => panic!("{key} = {value}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_setting_names_the_nearest_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let before = "[ui]\nkeys = \"default\"\n";
+        fs::write(&file, before).unwrap();
+        for (key, value, near) in [
+            ("ui.them", "light", "ui.theme"),
+            ("agents.codex.modle", "gpt-x", "agents.codex.model"),
+            ("budgt.run_usd", "5", "budget.run_usd"),
+            ("budgt", "{ run_usd = 5 }", "budget"),
+            (
+                "roles.owner.handoff.stratgy",
+                "race",
+                "roles.owner.handoff.strategy",
+            ),
+            (
+                "handoff.replace.codex.wth",
+                "[\"claude-code\"]",
+                "handoff.replace.codex.with",
+            ),
+            (
+                "agents.codex",
+                "{ modle = \"gpt-x\" }",
+                "agents.codex.model",
+            ),
+        ] {
+            let message = refusal(&file, key, value);
+            assert!(
+                message.ends_with(&format!("Did you mean {near}?")),
+                "{key}: {message}"
+            );
+        }
+        let message = refusal(&file, "budget", "5");
+        assert!(
+            message.contains("budget is a table of settings"),
+            "{message}"
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), before);
+
+        // Map keys you choose are known wherever the catalog has a `*`.
+        for (key, value) in [
+            ("roles.owner.native_fanout.max", "2"),
+            ("roles.owner.handoff.replace.codex.strategy", "spread"),
+            ("visibility.status_summary.owner", "false"),
+            ("endpoints.ollama.header_env.X-Team", "TEAM_HEADER"),
+            ("ui.keymap.crew_view", "\"ctrl+left\""),
+            (
+                "agents.codex",
+                "{ model = \"gpt-x\", price = { input_per_mtok = 1.5, output_per_mtok = 6.0 } }",
+            ),
+        ] {
+            write(&file, key, value, false).unwrap_or_else(|err| panic!("{key}: {err}"));
+        }
+    }
+
+    #[test]
+    fn write_setting_refuses_a_value_not_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".argonauts/config.toml");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let before = "# mine\npreset = \"solo\"\n";
+        fs::write(&file, before).unwrap();
+        for (key, value, wanted) in [
+            (
+                "ui.theme",
+                "blue",
+                "ui.theme can't be \"blue\"; it takes \"auto\", \"dark\", or \"light\"",
+            ),
+            (
+                "sandbox.network",
+                "yes",
+                "sandbox.network can't be \"yes\"; it takes true or false",
+            ),
+            (
+                "ui.ambiguous_width",
+                "3",
+                "ui.ambiguous_width can't be 3; it takes 1 or 2",
+            ),
+            (
+                "approvals.merge",
+                "{ mode = \"sometimes\" }",
+                "approvals.merge.mode can't be \"sometimes\"",
+            ),
+            (
+                "roles.owner.handoff.on_return",
+                "later",
+                "\"ask\", \"keep\", \"review\", \"hand_back\", or \"redo\"",
+            ),
+        ] {
+            let message = refusal(&file, key, value);
+            assert!(message.contains(wanted), "{key}: {message}");
+        }
+        let preset = "a-preset-only-this-test-writes";
+        let message = refusal(&file, "preset", preset);
+        assert_eq!(message.matches("\"peer-crew\"").count(), 1, "{message}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), before);
+
+        // A preset file beside the settings makes its name a value `preset` takes.
+        let presets = dir.path().join(".argonauts/presets");
+        fs::create_dir_all(&presets).unwrap();
+        fs::write(
+            presets.join(format!("{preset}.toml")),
+            "[review]\nper_card = 2\n",
+        )
+        .unwrap();
+        write(&file, "preset", preset, false).unwrap();
+        // A file whose name the lookup refuses doesn't make that name a value `preset` takes.
+        fs::write(presets.join("my team.toml"), "[review]\nper_card = 2\n").unwrap();
+        let message = refusal(&file, "preset", "\"my team\"");
+        assert!(message.contains("isn't a preset name"), "{message}");
+        for (key, value) in [
+            ("ui.theme", "'light'"),
+            ("ui.ambiguous_width", "2"),
+            ("roles.owner.native_fanout", "off"),
+            ("agents.codex.effort", "xhigh"),
+            ("workflow", "any-workflow-name"),
+        ] {
+            write(&file, key, value, false).unwrap_or_else(|err| panic!("{key}: {err}"));
+        }
         let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!(settings.ui.keymap.len(), keys.len(), "a change was lost");
+        assert_eq!(settings.preset, preset);
     }
 }

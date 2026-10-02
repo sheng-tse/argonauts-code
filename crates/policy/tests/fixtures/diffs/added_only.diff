@@ -1,0 +1,10 @@
+diff --git a/src/cart.test.js b/src/cart.test.js
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/cart.test.js
++++ b/src/cart.test.js
+@@ -1,4 +1,4 @@
+-describe("cart", () => {
++describe.only("cart", () => {
+   it("adds an item", () => {
+     expect(add([], "pen")).toEqual(["pen"]);
+   });

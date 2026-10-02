@@ -57,6 +57,8 @@ pub mod session_files {
 pub mod user_files {
     pub const CONFIG: &str = "config.toml";
     pub const MODELS: &str = "models.toml";
+    /// What model discovery last found, so `/model` lists it before the next refresh lands.
+    pub const MODELS_CACHE: &str = "models-cache.json";
     pub const PRESETS: &str = "presets";
     pub const VENDORS: &str = "vendors.json";
     /// Live supervisors and their session counts, for global concurrency caps.
@@ -92,6 +94,13 @@ pub mod repo_state {
     /// The outcome log, one JSONL file per run.
     pub const OUTCOMES: &str = "outcomes";
     pub const HISTORY: &str = "history.jsonl";
+    /// The replay set: its tuning and holdout lists and the hidden tests, outside every
+    /// sandbox's read scope.
+    pub const REPLAY: &str = "replay";
+    /// The evolution loop's candidates, canaries, and spend.
+    pub const EVOLUTION: &str = "evolution";
+    /// Skills staged for import, never inside the repo.
+    pub const IMPORTS: &str = "imports";
 }
 
 /// Reviewable project files in the repo's `.argonauts/`.
@@ -111,6 +120,10 @@ pub mod project_files {
     pub const PRESETS: &str = "presets";
     /// A workflow here overrides yours and the built-in of the same name.
     pub const WORKFLOWS: &str = "workflows";
+    /// Recipes, `<name>/v<N>.yaml`, with `<name>/current` naming the version that runs.
+    pub const RECIPES: &str = "recipes";
+    /// Finished runs' outcome logs, when `outcomes.share` is on.
+    pub const OUTCOMES: &str = "outcomes";
 }
 
 pub fn session_dir(run_dir: &Path, session: &SessionKey) -> PathBuf {

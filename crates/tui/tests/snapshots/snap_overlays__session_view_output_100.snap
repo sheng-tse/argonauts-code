@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+● GPT 5.6 on Codex · owner · card-002 (Add the JSON writer) · 2m00s · ↓ 12.4k
+[ Output ]   Input                                                                         following
+────────────────────────────────────────────────────────────────────────────────────────────────────
+     fn write(&self) {}
+     fn write_csv(&self) {}
+
+● Bash(cargo test -- export)
+  ⎿  test export::csv ... ok
+     test export::json ... ok
+
+● Update(src/export.rs)
+  ⎿  Added 1 line, removed 1 line
+        -self.write_csv(out)
+        +match self.format {
+
+● Update(src/export.rs)
+  ⎿  Added 2 lines, removed 1 line
+      10  fn write(&self) {
+      11 -        self.write_csv(out)
+      11 +        match self.format {
+      12 +            Format::Json => self.write_json(out),
+      13  }
+
+● The JSON writer goes beside the CSV one.
+
+● 2 subagents
+  ⎿ ✓ explorer · done · Two writers, both in src/export.rs
+     ⎿ ● thread · running · Check the tests · its steps don't stream here
+
+⎿ Queued use serde_json
+  arrives after the current tool call
+↑↓ scroll · i input · s steer · t take over · r raw · d diff · ← crew · esc back          3-30 of 30

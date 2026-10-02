@@ -1,0 +1,25 @@
+---
+source: crates/tui/tests/snap_cards.rs
+expression: text(&lines)
+---
+● Merge the run into main
+  card      title                     files  lines     owner                          gates   review
+  card-001  Exporter trait                2  +30 -4    Opus on Claude Code            passed  approved
+  card-002  JSON writer                   2  +60 -8    GPT 5.6 on Codex               passed  approved
+  card-003  Wire --json into the CLI      2  +90 -12   Gemini 3.6 on Antigravity CLI  passed  approved
+  card-004  Middleware                    2  +120 -16  GPT 5.6 on Codex               passed  needs Opus on Claude Code
+  4 cards · 7 files · +120 -18
+  Suite passed on the latest main
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Merge this run into main?
+  4 cards · 7 files · +120 -18 · suite passed on the latest main · 1 card needs a stronger review · $0.46 of $3.00
+
+  ❯ 1. Merge
+    2. Open a pull request
+    3. Request changes on some cards
+    4. Keep the branch
+    5. Abandon the run
+    6. Show the diff
+
+  Enter to choose · Tab to add a note · Esc to set aside

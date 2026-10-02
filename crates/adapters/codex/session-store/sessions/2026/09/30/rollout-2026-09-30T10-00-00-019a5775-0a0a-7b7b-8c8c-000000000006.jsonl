@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-30T10:00:00.000Z","type":"session_meta","payload":{"id":"019a5775-0a0a-7b7b-8c8c-000000000006","timestamp":"2026-09-30T10:00:00.000Z","cwd":"/work/shop","originator":"codex-tui","cli_version":"0.158.0","source":"vscode"}}
+{"timestamp":"2026-09-30T10:00:00.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/work/shop</cwd>\n</environment_context>"}]}}

@@ -1,0 +1,44 @@
+---
+source: crates/tui/tests/snap_overlays.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+argonauts › crew                                                                                                                                                        Claude 72% · Codex 41% · agy 90%
+  Needs you 2    Working 2    Ready 0    Done 3  [ All 7 ]
+
+~/code/export                                                                                                                                 │ Add a --json flag to export
+  Add a --json flag to export                                                                                                                 │ ◆ Needs you
+  ❯ ◆ Add a --json flag to export                                                asks: Merge this run into main?                     just now │
+    ◆ Add the JSON writer                     GPT 5.6 on Codex                   asks: Keep a CSV fallback?                            2m ago │ Last message
+    ● Wire the --json flag                    Opus on Claude Code                Update(src/mw/limit.ts)                               5m ago │ Merge this run into main?
+    ○ Wire the --json flag                    Gemini 3.6 Pro on Antigravity CLI  waiting on other work                                 1m ago │
+    ✓ Rename the CSV writer                   GPT 5.6 on Codex                   Integrated card-001.                                  3m ago │ Repo     ~/code/export
+    ✓ Restater · Add a --json flag to export  Haiku on Claude Code               done                                                 15m ago │ Run      run-01 · Add a --json flag to export
+    ✓ Drafter · Add a --json flag to export   Haiku on Claude Code               done                                                 15m ago │
+                                                                                                                                              │
+Listing conversations and CLI sessions…                                                                                                       │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+                                                                                                                                              │
+↑↓ move · → open · Tab filter · x stop · ? keys · esc back

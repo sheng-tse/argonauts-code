@@ -1,0 +1,11 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+
+    ▟▙     Argonauts v0.0.1
+   ▟██▙    Claude Code · Haiku 4.5 · peer-crew
+ ▝▀▀▀▀▀▀▘  ~/github/argonauts
+
+  Codex: logged out · run codex login
+  2 runs going · /resume

@@ -1,0 +1,8 @@
+---
+source: crates/tui/tests/bottom.rs
+expression: text(&view.lines)
+---
+──────────────────────────────────────────────────────────────────── peer-crew ─
+❯ Ask anything, or describe a change
+────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts

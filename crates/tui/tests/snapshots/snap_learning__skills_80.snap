@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_learning.rs
+expression: "screen(&mut picker, width, HEIGHT)"
+---
+Skills                                    [ Skills ]  Waiting branches  Settings
+Exported and imported skills, and any drift     1 skill · 1 branch waits for you
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   Skill        From            Drift           Description                   │
+│ ❯ api-feature  api-feature v4  edited by hand  New or changed HTTP API endp… │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│   .agents/skills/api-feature/SKILL.md changed since its export; sync leaves… │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · tab next tab · esc back

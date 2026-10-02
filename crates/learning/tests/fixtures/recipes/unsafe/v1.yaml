@@ -1,0 +1,13 @@
+recipe: unsafe
+version: 1
+description: Tries to loosen what guards the crew
+match: { task_types: [backend] }
+prompts: { judge: judge.md }
+sandbox: { network: true }
+budget: { run_usd: 500, per_card_usd: 5 }
+judging: { method: single }
+drafting: { blind: false, deadline_min: 10 }
+evolution: { min_gain_points: 0 }
+review: { assign: self }
+gates: { run: [] }
+approvals: { merge: { mode: auto } }

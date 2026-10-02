@@ -1,0 +1,2 @@
+{"type":"permission-mode","permissionMode":"default","sessionId":"0a1b2c3d-4444-4aaa-8bbb-000000000004"}
+{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/work/shop","sessionId":"0a1b2c3d-4444-4aaa-8bbb-000000000004","version":"2.1.285","gitBranch":"main","entrypoint":"cli","type":"user","message":{"role":"user","content":"<command-name>/doctor</command-name>\n            <command-message>doctor</command-message>\n            <command-args></command-args>"},"uuid":"u-1","timestamp":"2026-09-30T10:00:00.000Z"}

@@ -1,0 +1,27 @@
+{
+  "adapter": "codex",
+  "args": [
+    "exec",
+    "--json",
+    "--color",
+    "never",
+    "--cd",
+    "/tmp/argonauts-live/chat/codex-repo",
+    "--sandbox",
+    "read-only",
+    "--skip-git-repo-check",
+    "--model",
+    "gpt-5.6-luna",
+    "--config",
+    "model_reasoning_effort=\"low\"",
+    "--output-schema",
+    "/tmp/argonauts-live/chat/codex-scratch/codex-output-schema.json",
+    "resume",
+    "01a0f098-ae43-7ca1-9700-7300a81666d0",
+    "-"
+  ],
+  "duration_ms": 4348,
+  "exit_code": 0,
+  "program": "codex",
+  "resumed_from": "01a0f098-ae43-7ca1-9700-7300a81666d0"
+}

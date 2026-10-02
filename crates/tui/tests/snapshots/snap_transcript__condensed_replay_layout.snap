@@ -1,0 +1,20 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+● Add a --json flag to export
+  ⎿  Parked · plan checkpoint, waiting for you · $1.24 spent · 2 sessions to
+     resume
+     ctrl+o shows the whole history
+
+❯ Add a --json flag to export
+
+● That touches the CLI and the writer, so I'll run it with the crew.
+
+● So far in this run
+  ⎿  Triage: crew · 7 files, tests exist
+     Goal approved · 3 criteria
+     Plan 1 won · 5 cards
+
+※ recap: The plan waits for your approval at the plan checkpoint. (disable
+  recaps in /config)

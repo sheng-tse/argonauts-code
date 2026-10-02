@@ -1,0 +1,52 @@
+name: draft-and-vote
+description: Blind drafts, a majority vote on the plan, and one owner builds it
+phases:
+  - name: Goal
+    standard: understand
+    steps:
+      - kind: loop_until
+        name: goal
+        until: goal_approved
+        max: 2
+        steps:
+          - kind: restate
+            name: restatements
+            role: restater
+          - kind: differ
+            name: differences
+            role: differ
+            input: restatements
+          - kind: checkpoint
+            checkpoint: goal
+  - name: Plan
+    standard: plan
+    steps:
+      - kind: loop_until
+        name: planning
+        until: plan_decided
+        max: 3
+        steps:
+          - kind: draft
+            name: drafts
+            role: drafter
+            blind: true
+            input: goal
+          - kind: judge
+            name: votes
+            role: judge
+            blind: true
+            input: drafts
+            params:
+              method: vote
+          - kind: checkpoint
+            checkpoint: plan
+  - name: Build
+    standard: do
+    steps:
+      - kind: build
+        role: owner
+        input: plan
+  - name: Merge
+    standard: decide
+    steps:
+      - kind: merge

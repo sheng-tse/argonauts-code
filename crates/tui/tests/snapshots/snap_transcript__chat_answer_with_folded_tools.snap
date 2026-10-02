@@ -1,0 +1,14 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+❯ how does export work?
+
+  Read 4 files (ctrl+o to expand)
+
+● Export writes CSV today. The writer lives in src/export.rs, and the flag would
+  go in src/cli.rs.
+
+  Want me to add --json?
+
+✻ Sailed for 9s · done 10:42 AM

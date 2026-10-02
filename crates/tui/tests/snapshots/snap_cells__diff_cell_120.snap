@@ -1,0 +1,15 @@
+---
+source: crates/tui/tests/cells.rs
+expression: text(&lines)
+---
+● Update(src/export.rs)
+  ⎿  Added 5 lines, removed 2 lines
+      40 -    /// Writes the rows as CSV.
+      40 +    /// Writes the rows as CSV or JSON.
+      41      fn write(&self, out: &mut dyn Write) -> Result<()> {
+      42 -        self.write_csv(out)
+      42 +        match self.format {
+      43 +            Format::Json => self.write_json(out),
+      44 +            Format::Csv => self.write_csv(out),
+      45 +        }
+      46      }

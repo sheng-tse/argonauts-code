@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "screen(&mut view, width, height, &state)"
+---
+Config
+Every setting and the layer it comes from. ! marks a safety key       8 settings
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ general                                                                      │
+│ ❯   preset                 peer-crew         this project                    │
+│     default_agent          claude-code/opus  everywhere (global)             │
+│                                                                              │
+│ ui                                                                           │
+│     ui.theme               dark              everywhere (global)             │
+│     ui.keys                vim               this session                    │
+│     ui.accent              unset             built-in                        │
+│                                                                              │
+│ budget                                                                       │
+│   ! budget.run_usd         30.0              just you (project-local)        │
+│                                                                              │
+│ approvals                                                                    │
+│   ! approvals.merge.mode   shadow            --set                           │
+│                                                                              │
+│ roles                                                                        │
+│     roles.reviewer.effort  high              preset                          │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ edit · type to search · esc back

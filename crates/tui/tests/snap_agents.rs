@@ -1,0 +1,1209 @@
+//! Agent sessions on the main screen: live blocks, what reaches scrollback at each verbosity,
+//! and every vendor's calls saying what they did. Events are built by hand from the shapes the
+//! adapters' recorded fixtures produce.
+
+mod common;
+
+use std::collections::BTreeMap;
+
+use argonauts_core::app::AppEvent;
+use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::card::{CardEvent, CardState};
+use argonauts_core::events::session::{
+    EndReason, FileDiff, SessionEnd, SessionEvent, SessionStarted, SubagentKind, SubagentStatus,
+    SubagentUpdate,
+};
+use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
+use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
+use argonauts_core::settings::sessions::SessionLifetime;
+use argonauts_core::settings::ui::UiSettings;
+use argonauts_core::worker::{Access, WorkerKind};
+use argonauts_core::{
+    AgentEvent, CardId, RetryReason, RunId, Spend, TodoItem, TodoStatus, Verbosity,
+};
+use argonauts_tui::HistoryCell;
+use argonauts_tui::bridge::agents::AgentBlocks;
+use argonauts_tui::bridge::{Cx, Effects};
+use argonauts_tui::model::ViewModel;
+use argonauts_tui::render::{Clock, RenderCtx};
+use argonauts_tui::stability::{self, samples};
+use argonauts_tui::state::{
+    AppState, CardRow, Doing, Replay, RunState, SessionState, SessionStatus,
+};
+use argonauts_tui::theme::Role;
+use common::{assert_fits, at, style_of, t0, text, theme};
+use ratatui::text::Line;
+use serde_json::{Value, json};
+use time::OffsetDateTime;
+use time::macros::datetime;
+
+const WIDTHS: [u16; 2] = [80, 100];
+
+const START: OffsetDateTime = datetime!(2026-09-30 10:00 UTC);
+
+/// A worktree path as Claude Code reports it, which calls show from inside the worktree.
+const WORKTREE: &str = "/Users/me/.argonauts/worktrees/repo-1/run-01/card-003";
+
+/// A run's events driven through the agents part of the bridge, with a clock in seconds.
+struct Crew {
+    model: ViewModel,
+    state: AppState,
+    settings: UiSettings,
+    blocks: AgentBlocks,
+    run: RunId,
+    seq: u64,
+    now: f64,
+}
+
+impl Crew {
+    fn new(verbosity: Verbosity) -> Self {
+        let run = RunId::at(START, 1);
+        let mut state = AppState::default();
+        state.runs.insert(run.clone(), RunState::new(run.clone()));
+        let settings = UiSettings {
+            verbosity,
+            ..UiSettings::default()
+        };
+        Self {
+            model: ViewModel::new("crew"),
+            state,
+            settings,
+            blocks: AgentBlocks::default(),
+            run,
+            seq: 0,
+            now: 0.0,
+        }
+    }
+
+    fn run_state(&mut self) -> &mut RunState {
+        self.state.runs.get_mut(&self.run).expect("the run")
+    }
+
+    fn card(&mut self, n: u32, title: &str, state: Option<CardState>) {
+        let id = CardId::numbered(n);
+        self.run_state().cards.insert(
+            id.clone(),
+            CardRow {
+                id,
+                title: title.to_owned(),
+                state,
+                owner: None,
+                attempt: 1,
+                diff: None,
+                standing_in_for: None,
+                debt: Vec::new(),
+                checkpoints: 0,
+                rotations: 0,
+                last_gate: None,
+                reviews: 0,
+                waiting_on_vendor: None,
+            },
+        );
+    }
+
+    fn at(&mut self, seconds: f64) -> &mut Self {
+        self.now = seconds;
+        self
+    }
+
+    fn send(&mut self, session: &str, card: Option<u32>, kind: RunEventKind) {
+        self.seq += 1;
+        let event = RunEvent {
+            seq: self.seq,
+            ts: START + time::Duration::seconds_f64(self.now),
+            run_id: self.run.clone(),
+            card_id: card.map(CardId::numbered),
+            session: SessionKey::parse(session),
+            source: "test".to_owned(),
+            kind,
+        };
+        self.app(&AppEvent::Run {
+            event: Box::new(event),
+        });
+    }
+
+    fn app(&mut self, event: &AppEvent) {
+        let mut out = Effects::default();
+        let mut cx = Cx {
+            model: &mut self.model,
+            state: &self.state,
+            settings: &self.settings,
+            now: at(self.now),
+            out: &mut out,
+        };
+        self.blocks.on_event(event, &mut cx);
+    }
+
+    /// The app's state gets the session first, as `AppState::apply` does before the parts run.
+    fn start(&mut self, session: &str, worker: &str, card: Option<u32>) {
+        let worker: WorkerRef = worker.parse().expect("a worker");
+        let key = SessionKey::parse(session).expect("a key");
+        let ts = START + time::Duration::seconds_f64(self.now);
+        let state = session_state(&key, &worker, card.map(CardId::numbered), ts);
+        let run = self.run_state();
+        run.sessions.insert(key.clone(), state);
+        run.session_order.push(key);
+        let started = SessionStarted {
+            vendor: VendorId(worker.worker.clone()),
+            worker,
+            family: "test".to_owned(),
+            kind: WorkerKind::Harness,
+            role: RoleName::Owner,
+            step: None,
+            access: Access::Build,
+            lifetime: SessionLifetime::Card,
+            resumed_from: None,
+            follow_key: None,
+            workflow_step: None,
+        };
+        self.send(
+            session,
+            card,
+            RunEventKind::Session(SessionEvent::Started(Box::new(started))),
+        );
+    }
+
+    fn tokens(&mut self, session: &str, tokens: u64) {
+        let key = SessionKey::parse(session).expect("a key");
+        if let Some(state) = self.run_state().sessions.get_mut(&key) {
+            state.tokens_out = tokens;
+        }
+    }
+
+    fn agent(&mut self, session: &str, event: AgentEvent) -> &mut Self {
+        self.send(session, None, RunEventKind::Agent(event));
+        self
+    }
+
+    fn tool(&mut self, session: &str, id: &str, name: &str, input: Value) -> &mut Self {
+        self.agent(
+            session,
+            AgentEvent::ToolStarted {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                input,
+                parent: None,
+            },
+        )
+    }
+
+    fn done(&mut self, session: &str, id: &str, ok: bool, output: Option<&str>) -> &mut Self {
+        self.agent(
+            session,
+            AgentEvent::ToolFinished {
+                id: id.to_owned(),
+                ok,
+                output: output.map(str::to_owned),
+                parent: None,
+            },
+        )
+    }
+
+    fn message(&mut self, session: &str, text: &str) -> &mut Self {
+        self.agent(
+            session,
+            AgentEvent::Message {
+                text: text.to_owned(),
+                parent: None,
+            },
+        )
+    }
+
+    fn end(&mut self, session: &str, reason: EndReason, seconds: u64, tokens: u64) {
+        let end = SessionEnd {
+            vendor_session: None,
+            exit_code: Some(0),
+            signal: None,
+            duration_ms: seconds * 1000,
+            reason,
+            spend: Spend {
+                input_tokens: tokens * 3 / 4,
+                output_tokens: tokens / 4,
+                ..Spend::default()
+            },
+            tool_calls: 0,
+            result_text: Some("done".to_owned()),
+            structured: Some(json!({"status": "done"})),
+            last_message: None,
+            raw_log: None,
+        };
+        self.send(
+            session,
+            None,
+            RunEventKind::Session(SessionEvent::Ended(Box::new(end))),
+        );
+    }
+
+    /// The live region as drawn, each block after a blank row.
+    fn live(&self, width: u16) -> Vec<Line<'static>> {
+        let theme = theme();
+        let ctx = RenderCtx::new(width, &theme, Clock::new(t0(), at(self.now)));
+        let mut lines = Vec::new();
+        for block in self.model.history.live_blocks(&ctx) {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.extend(block.lines);
+        }
+        lines
+    }
+
+    /// Scrollback, one blank row between items.
+    fn printed(&self, width: u16) -> Vec<Line<'static>> {
+        let theme = theme();
+        let ctx = RenderCtx::new(width, &theme, Clock::still(at(self.now)));
+        let mut lines = Vec::new();
+        for cell in self.model.history.cells() {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.extend(cell.lines(&ctx));
+        }
+        lines
+    }
+}
+
+fn session_state(
+    key: &SessionKey,
+    worker: &WorkerRef,
+    card: Option<CardId>,
+    at: OffsetDateTime,
+) -> SessionState {
+    SessionState {
+        key: key.clone(),
+        follow: None,
+        worker: worker.clone(),
+        vendor: worker.worker.clone(),
+        role: RoleName::Owner,
+        card,
+        workflow_step: None,
+        status: SessionStatus::Working,
+        started: at,
+        ended: None,
+        last_event: at,
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: None,
+        context: None,
+        context_window: None,
+        rotations: 0,
+        todos: Vec::new(),
+        tools: Vec::new(),
+        messages: Vec::new(),
+        streaming: String::new(),
+        diffs: Vec::new(),
+        subagents: Vec::new(),
+        inputs: Vec::new(),
+        queued: Vec::new(),
+        retry: None,
+        standing_in_for: None,
+        end: None,
+        unknown: Vec::new(),
+        doing: Doing::Nothing,
+        vendor_session: None,
+    }
+}
+
+fn snapshot(name: &str, lines: &[Line<'_>], width: u16) {
+    assert!(!lines.is_empty(), "{name} drew nothing at {width}");
+    assert_fits(lines, width);
+    insta::assert_snapshot!(format!("{name}_{width}"), text(lines));
+}
+
+/// Claude Code's calls as its stream reports them: a read, an edit, a failing test run, a
+/// search, and a write.
+fn claude_calls(crew: &mut Crew) {
+    let numbered: String = (1..=120).map(|n| format!("{n:>6}→line {n}\n")).collect();
+    let test_output: String = std::iter::once("Exit code 101".to_owned())
+        .chain((1..=15).map(|n| format!("test export::case_{n} ... ok")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    crew.at(10.0)
+        .tool("s-001", "t1", "Read", json!({"file_path": format!("{WORKTREE}/src/app.rs")}))
+        .done("s-001", "t1", true, Some(&numbered))
+        .tool(
+            "s-001",
+            "t2",
+            "Edit",
+            json!({
+                "file_path": format!("{WORKTREE}/src/app.rs"),
+                "old_string": "    let area = frame.area();\n    draw_header(frame);\n",
+                "new_string": "    let area = frame.area();\n    draw_header(frame, &state);\n    draw_prompt(frame, &state);\n",
+            }),
+        )
+        .done("s-001", "t2", true, Some("The file has been updated."))
+        .tool("s-001", "t3", "Bash", json!({"command": "cargo test export", "description": "tests"}))
+        .done("s-001", "t3", false, Some(&test_output))
+        .tool("s-001", "t4", "Grep", json!({"pattern": "fn draw_prompt", "path": "src"}))
+        .done("s-001", "t4", true, Some("src/app.rs:88:fn draw_prompt(frame: &mut Frame) {"))
+        .tool("s-001", "t5", "Write", json!({"file_path": format!("{WORKTREE}/hello.txt"), "content": "hi\n"}))
+        .done("s-001", "t5", true, Some("File created successfully at: hello.txt"));
+}
+
+#[test]
+fn tool_calls_read_update_bash_search_write() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.start("s-001", "claude-code/opus", Some(3));
+    claude_calls(&mut crew);
+    crew.message("s-001", "The prompt draws under the header now.");
+    for width in WIDTHS {
+        let lines = crew.printed(width);
+        snapshot("tool_calls_read_update_bash_search_write", &lines, width);
+        let all = text(&lines);
+        for said in [
+            "Read 120 lines",
+            "Added 2 lines, removed 1 line",
+            "… +10 lines (ctrl+o to expand)",
+            "Error: Exit code 101",
+            "Found 1 match",
+            "Wrote 1 line to hello.txt",
+        ] {
+            assert!(all.contains(said), "missing {said:?} in\n{all}");
+        }
+    }
+    let lines = crew.printed(80);
+    assert_eq!(
+        style_of(&lines, "Exit code 101").and_then(|s| s.fg),
+        theme().style(Role::Error).fg
+    );
+}
+
+#[test]
+fn live_block_all_parts() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.start("s-001", "claude-code/opus", Some(3));
+    claude_calls(&mut crew);
+    crew.at(200.0).send(
+        "s-001",
+        Some(3),
+        RunEventKind::Session(SessionEvent::FileDiff(FileDiff {
+            path: "src/middleware.rs".to_owned(),
+            added: 2,
+            removed: 1,
+            hunk: "@@ -41,2 +41,3 @@\n     fn wire(&self) {\n-        self.old();\n+        self.auth();\n+        self.log();\n".to_owned(),
+            truncated: false,
+        })),
+    );
+    crew.agent(
+        "s-001",
+        AgentEvent::Todo {
+            items: vec![
+                TodoItem {
+                    text: "wire middleware".to_owned(),
+                    status: TodoStatus::Completed,
+                },
+                TodoItem {
+                    text: "tests".to_owned(),
+                    status: TodoStatus::InProgress,
+                },
+            ],
+        },
+    );
+    crew.agent(
+        "s-001",
+        AgentEvent::TextDelta {
+            text: "Now the middleware runs first.\nNext I'll add the tests for it".to_owned(),
+            parent: None,
+        },
+    );
+    crew.tokens("s-001", 18_100);
+    for (seconds, delay) in [(250.0, 5_000), (252.0, 12_000)] {
+        crew.at(seconds).agent(
+            "s-001",
+            AgentEvent::Retry {
+                reason: RetryReason::Overloaded,
+                delay_ms: Some(delay),
+            },
+        );
+    }
+    crew.at(252.0);
+    for width in WIDTHS {
+        let lines = crew.live(width);
+        snapshot("live_block_all_parts", &lines, width);
+    }
+    let wide = text(&crew.live(140));
+    assert!(
+        wide.starts_with(
+            "● Opus on Claude Code · owner · card-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)"
+        ),
+        "{wide}"
+    );
+    for part in [
+        "Added 2 lines, removed 1 line",
+        "Next I'll add the tests for it▎",
+        "☒ wire middleware  ☐ tests",
+    ] {
+        assert!(wide.contains(part), "missing {part:?} in\n{wide}");
+    }
+    let lines = crew.live(140);
+    assert_eq!(
+        style_of(&lines, "retrying").and_then(|s| s.fg),
+        theme().style(Role::Warning).fg
+    );
+
+    // Any progress clears the retry, and nothing of the block went to scrollback line by line.
+    crew.at(255.0)
+        .tool("s-001", "t6", "Read", json!({"file_path": "src/lib.rs"}));
+    assert!(!text(&crew.live(140)).contains("retrying"));
+    assert!(!text(&crew.printed(140)).contains("Next I'll add"));
+}
+
+#[test]
+fn a_block_that_doesnt_fit_keeps_its_header_todo_and_text() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", None);
+    crew.start("s-001", "claude-code/opus", Some(3));
+    claude_calls(&mut crew);
+    crew.agent(
+        "s-001",
+        AgentEvent::Todo {
+            items: vec![TodoItem {
+                text: "tests".to_owned(),
+                status: TodoStatus::InProgress,
+            }],
+        },
+    );
+    crew.agent(
+        "s-001",
+        AgentEvent::TextDelta {
+            text: "Writing the tests".to_owned(),
+            parent: None,
+        },
+    );
+    let theme = theme();
+    let ctx = RenderCtx::new(80, &theme, Clock::new(t0(), at(60.0)));
+    let (_, cell) = crew.model.history.active_cells().next().expect("a block");
+    let lines = cell.lines_within(&ctx, 5);
+    assert_eq!(lines.len(), 5, "{}", text(&lines));
+    let squeezed = text(&lines);
+    assert!(squeezed.starts_with("● Opus on Claude Code"), "{squeezed}");
+    assert!(squeezed.contains("Writing the tests▎"), "{squeezed}");
+    assert!(squeezed.ends_with("☐ tests"), "{squeezed}");
+}
+
+#[test]
+fn codex_block_says_messages_arrive_whole() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(2, "Redis store", Some(CardState::Running));
+    crew.start("s-002", "codex/gpt-5.6", Some(2));
+    crew.at(5.0)
+        .tool(
+            "s-002",
+            "item_1",
+            "command_execution",
+            json!({"command": "bash -lc ls"}),
+        )
+        .done("s-002", "item_1", true, Some("docs\nsdk\n"))
+        .tool(
+            "s-002",
+            "child-1",
+            "spawn_agent",
+            json!({"prompt": "look around", "receiver_thread_ids": ["child-1"]}),
+        )
+        .done("s-002", "child-1", true, None)
+        .agent(
+            "s-002",
+            AgentEvent::Subagent {
+                update: SubagentUpdate {
+                    id: "child-1".to_owned(),
+                    parent: None,
+                    kind: SubagentKind::Thread,
+                    label: Some("explorer".to_owned()),
+                    prompt: Some("look around".to_owned()),
+                    status: SubagentStatus::Running,
+                    last_message: Some("Reading the store's tests".to_owned()),
+                    log_uri: None,
+                    steps_visible: false,
+                },
+            },
+        )
+        .message("s-002", "The store needs a connection pool first.");
+    crew.tokens("s-002", 12_900);
+    crew.at(220.0);
+    for width in WIDTHS {
+        snapshot(
+            "codex_block_says_messages_arrive_whole",
+            &crew.live(width),
+            width,
+        );
+    }
+    let live = text(&crew.live(100));
+    assert!(
+        live.contains("Messages arrive whole · thread steps aren't streamed"),
+        "{live}"
+    );
+    assert!(
+        live.contains("Running · Reading the store's tests"),
+        "{live}"
+    );
+    assert!(
+        live.contains("The store needs a connection pool first."),
+        "{live}"
+    );
+    assert!(
+        !live.contains('▎'),
+        "Codex doesn't stream, so no cursor:\n{live}"
+    );
+}
+
+/// A step that ends in a structured result, as each vendor sends it: Codex's last message
+/// (which its adapter turns into a report call), Claude Code's `StructuredOutput`, agy's `finish`.
+fn reporting_session(worker: &str, report_call: &str) -> Crew {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(2, "Hello file", Some(CardState::Running));
+    crew.start("s-002", worker, Some(2));
+    crew.at(4.0)
+        .message("s-002", "Creating hello.txt now.")
+        .tool(
+            "s-002",
+            "item_1",
+            "file_change",
+            json!({"changes": [{"path": "hello.txt", "kind": "add"}]}),
+        )
+        .done("s-002", "item_1", true, None)
+        .tool(
+            "s-002",
+            "item_2",
+            report_call,
+            json!({
+                "status": "done",
+                "summary": "Created hello.txt with a greeting.\nNothing else changed.",
+                "files_changed": ["hello.txt"],
+                "tests_run": [],
+                "concerns": []
+            }),
+        )
+        .done("s-002", "item_2", true, None);
+    crew.at(30.0).end("s-002", EndReason::Completed, 30, 28_000);
+    crew
+}
+
+/// What reaches scrollback, without what's kept for the overlay alone.
+fn scrollback(crew: &mut Crew, width: u16) -> Vec<Line<'static>> {
+    let theme = theme();
+    let ctx = RenderCtx::new(width, &theme, Clock::still(at(crew.now)));
+    crew.model.history.drain_printable(&ctx)
+}
+
+#[test]
+fn a_structured_result_shows_as_its_summary() {
+    for width in WIDTHS {
+        let mut crew = reporting_session("codex/gpt-5.6", "structured_output");
+        let lines = scrollback(&mut crew, width);
+        assert_fits(&lines, width);
+        snapshot("a_structured_result_shows_as_its_summary", &lines, width);
+    }
+    let cases = [
+        ("codex/gpt-5.6", "structured_output"),
+        ("claude-code/opus", "StructuredOutput"),
+        ("antigravity-cli/gemini-3.6-flash", "finish"),
+    ];
+    for (worker, name) in cases {
+        let mut crew = reporting_session(worker, name);
+        let scrollback = text(&scrollback(&mut crew, 100));
+        assert!(
+            scrollback.contains("Created hello.txt with a greeting."),
+            "{worker}: {scrollback}"
+        );
+        assert!(!scrollback.contains("Nothing else changed"), "{scrollback}");
+        assert!(
+            !scrollback.contains("files_changed"),
+            "{worker}: {scrollback}"
+        );
+        assert!(!scrollback.contains("Report"), "{worker}: {scrollback}");
+
+        let theme = theme();
+        let overlay = RenderCtx::new(100, &theme, Clock::still(at(crew.now))).with_expanded(true);
+        let detail: String = crew
+            .model
+            .history
+            .cells()
+            .iter()
+            .map(|cell| text(&cell.lines(&overlay)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(detail.contains("Report(done)"), "{worker}: {detail}");
+        assert!(
+            detail.contains(r#""files_changed": ["#),
+            "the JSON stays in Ctrl+O for {worker}: {detail}"
+        );
+    }
+}
+
+/// Claude Code wrote its report out as fenced JSON, then called the report tool with it. The
+/// transcript reads its words and the summary once, and the JSON stays in Ctrl+O.
+#[test]
+fn a_report_written_out_and_called_shows_once() {
+    let report = json!({
+        "status": "done",
+        "summary": "Created hello.txt with a greeting.",
+        "files_changed": ["hello.txt"],
+        "tests_run": [],
+        "concerns": []
+    });
+    let pretty = serde_json::to_string_pretty(&report).unwrap();
+    let mut crew = Crew::new(Verbosity::Normal);
+    crew.card(2, "Hello file", Some(CardState::Running));
+    crew.start("s-002", "claude-code/opus", Some(2));
+    crew.at(4.0)
+        .message("s-002", &format!("Done\n\n```json\n{pretty}\n```"))
+        .tool("s-002", "t1", "StructuredOutput", report)
+        .done("s-002", "t1", true, None);
+    crew.at(30.0).end("s-002", EndReason::Completed, 30, 28_000);
+    let scrollback = text(&scrollback(&mut crew, 100));
+    assert_eq!(
+        scrollback
+            .matches("Created hello.txt with a greeting.")
+            .count(),
+        1,
+        "{scrollback}"
+    );
+    for json in ["```", "\"status\"", "files_changed"] {
+        assert!(!scrollback.contains(json), "{json} in:\n{scrollback}");
+    }
+}
+
+/// One session's scrollback: reads and a shell command, an edit, a message, and its end.
+fn one_session(verbosity: Verbosity) -> Crew {
+    let mut crew = Crew::new(verbosity);
+    crew.card(3, "Middleware", Some(CardState::InReview));
+    crew.start("s-001", "claude-code/opus", Some(3));
+    crew.at(12.0)
+        .tool("s-001", "t1", "Read", json!({"file_path": "src/app.rs"}))
+        .done("s-001", "t1", true, Some("fn main() {}\n"))
+        .tool("s-001", "t2", "Read", json!({"file_path": "src/lib.rs"}))
+        .done("s-001", "t2", true, Some("pub mod app;\npub mod middleware;\n"))
+        .tool("s-001", "t3", "Bash", json!({"command": "cargo build"}))
+        .done("s-001", "t3", true, Some("Finished `dev` profile in 2.41s"))
+        .tool(
+            "s-001",
+            "t4",
+            "Edit",
+            json!({"file_path": "src/middleware.rs", "old_string": "old();\n", "new_string": "auth();\n"}),
+        )
+        .done("s-001", "t4", true, Some("ok"))
+        .message("s-001", "Wired the middleware in front of the router.");
+    crew.at(580.0)
+        .end("s-001", EndReason::Completed, 580, 61_000);
+    crew
+}
+
+#[test]
+fn verbosity_full_normal_quiet() {
+    for width in WIDTHS {
+        let mut sections = Vec::new();
+        for level in [Verbosity::Full, Verbosity::Normal, Verbosity::Quiet] {
+            let crew = one_session(level);
+            let lines = crew.printed(width);
+            assert_fits(&lines, width);
+            assert!(
+                crew.live(width).is_empty(),
+                "the block left the live region"
+            );
+            sections.push(format!("── {level:?} ──\n{}", text(&lines)));
+        }
+        insta::assert_snapshot!(
+            format!("verbosity_full_normal_quiet_{width}"),
+            sections.join("\n\n")
+        );
+    }
+    let full = text(&one_session(Verbosity::Full).printed(100));
+    assert!(full.contains("⎿  Read(src/app.rs)"), "{full}");
+    assert!(
+        full.ends_with("⎿  Done · 4 tool uses · report ✓ · gates ✓ · 9m 40s · 61k tokens"),
+        "{full}"
+    );
+    let normal = text(&one_session(Verbosity::Normal).printed(100));
+    assert!(
+        normal.contains("Read 2 files, ran 1 shell command"),
+        "{normal}"
+    );
+    assert!(!normal.contains("Read(src/app.rs)"), "{normal}");
+    assert!(
+        normal.ends_with("⎿  Done · 4 tool uses · report ✓ · gates ✓ · 9m 40s · 61k tokens"),
+        "{normal}"
+    );
+    assert!(one_session(Verbosity::Quiet).printed(100).is_empty());
+}
+
+#[test]
+fn agents_started_rows() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(2, "Redis store", None);
+    crew.card(3, "Middleware", None);
+    crew.card(4, "Docs", None);
+    crew.start("s-001", "codex/gpt-5.6", Some(2));
+    crew.start("s-002", "claude-code/opus", Some(3));
+    crew.at(1.0)
+        .start("s-003", "antigravity-cli/gemini-3.6-flash", Some(4));
+    assert!(
+        crew.printed(80).is_empty(),
+        "the tree waits for the last start"
+    );
+    crew.at(3.0)
+        .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
+    for width in WIDTHS {
+        snapshot("agents_started_rows", &crew.printed(width), width);
+    }
+    assert_eq!(
+        text(&crew.printed(100)),
+        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · owner · card-002 Redis store\n   ├ Opus on Claude Code · owner · card-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · owner · card-004 Docs"
+    );
+    assert_eq!(crew.model.history.active_cells().count(), 3);
+
+    // One agent on its own gets only its live block.
+    let mut solo = Crew::new(Verbosity::Full);
+    solo.start("s-001", "codex/gpt-5.6", None);
+    solo.at(3.0).message("s-001", "hi");
+    assert!(!text(&solo.printed(80)).contains("started"));
+}
+
+#[test]
+fn agents_started_between_card_events() {
+    // A conductor that makes each card and then starts its agent.
+    let mut crew = Crew::new(Verbosity::Full);
+    let cards = [
+        (2, "Redis store", "s-001", "codex/gpt-5.6"),
+        (3, "Middleware", "s-002", "claude-code/opus"),
+        (4, "Docs", "s-003", "antigravity-cli/gemini-3.6-flash"),
+    ];
+    for (n, title, session, worker) in cards {
+        crew.card(n, title, None);
+        let made = CardEvent::State {
+            from: None,
+            to: CardState::Ready,
+            reason: String::new(),
+        };
+        crew.send("", Some(n), RunEventKind::Card(made));
+        crew.start(session, worker, Some(n));
+    }
+    crew.at(3.0)
+        .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
+    assert_eq!(
+        text(&crew.printed(100)),
+        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · owner · card-002 Redis store\n   ├ Opus on Claude Code · owner · card-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · owner · card-004 Docs"
+    );
+}
+
+#[test]
+fn stopped_agent_prints_one_line() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", None);
+    crew.start("s-001", "claude-code/opus", Some(3));
+    crew.at(20.0)
+        .tool("s-001", "t1", "Read", json!({"file_path": "a.rs"}))
+        .done("s-001", "t1", true, Some("x"))
+        .tool("s-001", "t2", "Bash", json!({"command": "cargo test"}));
+    crew.at(123.0).end("s-001", EndReason::Stopped, 123, 12_000);
+    let printed = text(&crew.printed(80));
+    assert_eq!(
+        printed,
+        "● Opus on Claude Code · owner · card-003 (Middleware)\n  ⎿  Stopped · 2 tool uses · 2m 3s · 12k tokens"
+    );
+    assert_eq!(crew.model.history.cells().len(), 1);
+    assert_eq!(crew.model.history.active_cells().count(), 0);
+    // The overlay still has every call, the one it was running marked stopped.
+    let theme = theme();
+    let overlay = RenderCtx::new(80, &theme, Clock::still(t0())).with_expanded(true);
+    let whole = text(&crew.model.history.cells()[0].lines(&overlay));
+    assert!(
+        whole.contains("Read(a.rs)") && whole.contains("Bash(cargo test)"),
+        "{whole}"
+    );
+    // The overlay is the detail view, so the stamp over the block keeps the id.
+    let stamp = whole.lines().next().unwrap_or_default();
+    assert!(stamp.trim_end().ends_with(" claude-code/opus"), "{whole}");
+}
+
+/// With the app's catalog, an alias reads as the model it runs, everywhere the agent shows.
+#[test]
+fn an_agent_is_named_from_the_catalog() {
+    let mut opus = CatalogEntry::new("claude-code/claude-opus-5-5".parse().unwrap());
+    opus.aliases = Some(vec!["opus".into()]);
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.state.names = DisplayNames {
+        catalog: ModelCatalog {
+            models: vec![opus],
+            ..ModelCatalog::default()
+        },
+        ..DisplayNames::default()
+    };
+    crew.card(3, "Middleware", None);
+    crew.start("s-001", "claude-code/opus", Some(3));
+    crew.at(123.0)
+        .end("s-001", EndReason::Completed, 123, 12_000);
+    let printed = text(&crew.printed(80));
+    assert!(
+        printed.starts_with("● Opus 5.5 on Claude Code · owner · card-003 (Middleware)"),
+        "{printed}"
+    );
+}
+
+/// An agent has one name: from its start, the model its CLI's settings give it, else the model
+/// it reports at its start, in its block and in the started rows alike.
+#[test]
+fn an_agent_keeps_one_name_from_its_start() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.state.names = DisplayNames {
+        configured: BTreeMap::from([("codex".to_owned(), "gpt-5.6-luna".to_owned())]),
+        ..DisplayNames::default()
+    };
+    crew.card(2, "Redis store", None);
+    crew.card(3, "Middleware", None);
+    crew.start("s-001", "codex", Some(2));
+    crew.start("s-002", "claude-code", Some(3));
+    // Claude Code runs its own default and says which at its start; the app's state takes it
+    // in before the blocks hear of it.
+    let key = SessionKey::parse("s-002").unwrap();
+    crew.run_state().sessions.get_mut(&key).unwrap().worker =
+        "claude-code/claude-haiku-4-5".parse().unwrap();
+    crew.at(0.5).agent(
+        "s-002",
+        AgentEvent::Init {
+            session_id: Some("claude-1".into()),
+            model: Some("claude-haiku-4-5".into()),
+            tools: Vec::new(),
+        },
+    );
+    let live = text(&crew.live(100));
+    assert!(
+        live.contains("● Haiku 4.5 on Claude Code · owner"),
+        "{live}"
+    );
+    assert!(live.contains("● GPT 5.6 Luna on Codex · owner"), "{live}");
+    crew.at(3.0)
+        .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
+    let printed = text(&crew.printed(100));
+    assert!(
+        printed.contains("├ GPT 5.6 Luna on Codex · owner · card-002 Redis store"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("└ Haiku 4.5 on Claude Code · owner · card-003 Middleware"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn unknown_event_line() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.start("s-001", "claude-code/opus", None);
+    crew.at(2.0).agent(
+        "s-001",
+        AgentEvent::Unknown {
+            raw: json!({"type": "system", "subtype": "hook_response", "x": 1}),
+        },
+    );
+    crew.agent(
+        "s-001",
+        AgentEvent::Unknown {
+            raw: Value::String("not json at all".to_owned()),
+        },
+    );
+    let lines = crew.live(80);
+    let live = text(&lines);
+    assert!(
+        live.contains("⎿  ? unknown event (system/hook_response)"),
+        "{live}"
+    );
+    // One hook per block, so the second line sits at the body column.
+    assert!(live.contains("\n     ? unknown event (not JSON)"), "{live}");
+    assert_eq!(
+        style_of(&lines, "? unknown event").and_then(|s| s.fg),
+        theme().style(Role::Dim).fg
+    );
+    crew.message("s-001", "ok");
+    let printed = text(&crew.printed(80));
+    assert!(
+        printed.contains("? unknown event (system/hook_response)"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn agent_text_is_sanitized() {
+    let evil = "\u{1b}[31mred\u{1b}[0m \u{1b}]0;owned\u{7} \u{1b}[2Jclear\r\u{8}";
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, evil, None);
+    crew.start("s-001", "claude-code/opus", Some(3));
+    crew.at(2.0)
+        .tool(
+            "s-001",
+            "t1",
+            "Bash",
+            json!({"command": format!("echo {evil}")}),
+        )
+        .done("s-001", "t1", true, Some(evil))
+        .tool("s-001", "t2", "mcp__x\u{1b}[1m__y", json!({"q": evil}))
+        .agent(
+            "s-001",
+            AgentEvent::Todo {
+                items: vec![TodoItem {
+                    text: evil.to_owned(),
+                    status: TodoStatus::Pending,
+                }],
+            },
+        )
+        .agent(
+            "s-001",
+            AgentEvent::TextDelta {
+                text: evil.to_owned(),
+                parent: None,
+            },
+        )
+        .agent(
+            "s-001",
+            AgentEvent::Unknown {
+                raw: json!({"type": evil}),
+            },
+        );
+    let mut all = crew.live(80);
+    crew.message("s-001", evil);
+    crew.at(9.0).end(
+        "s-001",
+        EndReason::Crashed {
+            message: evil.to_owned(),
+        },
+        9,
+        10,
+    );
+    all.extend(crew.printed(80));
+    for line in &all {
+        for span in &line.spans {
+            assert!(
+                !span.content.chars().any(|c| c.is_control()),
+                "a control character reached the screen: {:?}",
+                span.content
+            );
+        }
+    }
+    assert!(text(&all).contains("red"));
+}
+
+#[test]
+fn quiet_harnesses_say_how_long_they_have_been_quiet() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.start("s-001", "antigravity-cli/gemini-3.6-flash", None);
+    crew.at(5.0).tool(
+        "s-001",
+        "step-1",
+        "run_command",
+        json!({"CommandLine": "cargo test"}),
+    );
+    assert!(!text(&crew.live(120)).contains("quiet"));
+    crew.at(50.0);
+    let lines = crew.live(120);
+    assert!(
+        text(&lines).contains("· quiet 45s · may be waiting on a limit"),
+        "{}",
+        text(&lines)
+    );
+    assert_eq!(
+        style_of(&lines, "quiet").and_then(|s| s.fg),
+        theme().style(Role::Dim).fg
+    );
+    crew.at(185.0);
+    let lines = crew.live(120);
+    assert!(text(&lines).contains("· quiet 3m · may be waiting on a limit"));
+    assert_eq!(
+        style_of(&lines, "quiet").and_then(|s| s.fg),
+        theme().style(Role::Warning).fg
+    );
+
+    // Claude Code says when it retries, so it never gets the hint.
+    let mut claude = Crew::new(Verbosity::Full);
+    claude.start("s-001", "claude-code/opus", None);
+    claude.at(300.0);
+    assert!(!text(&claude.live(120)).contains("quiet"));
+}
+
+#[test]
+fn replay_keeps_finished_sessions_for_the_overlay() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.state.replay = Replay::Replaying {
+        run: crew.run.clone(),
+    };
+    crew.card(2, "Redis store", None);
+    crew.card(3, "Middleware", None);
+    crew.start("s-001", "codex/gpt-5.6", Some(2));
+    crew.start("s-002", "claude-code/opus", Some(3));
+    crew.at(30.0)
+        .tool("s-001", "t1", "command_execution", json!({"command": "ls"}))
+        .done("s-001", "t1", true, Some("a"))
+        .message("s-001", "done")
+        .tool("s-002", "t2", "Read", json!({"file_path": "a.rs"}));
+    crew.at(60.0).end("s-001", EndReason::Completed, 60, 2_000);
+    crew.at(600.0);
+    crew.state.replay = Replay::Live;
+    crew.app(&AppEvent::ReplayDone {
+        run: crew.run.clone(),
+        seq: 9,
+    });
+    // The condensed replay prints in place of the finished session, which Ctrl+O still shows.
+    assert!(!crew.model.history.has_unprinted());
+    assert_eq!(
+        text(&crew.printed(100)),
+        "● GPT 5.6 on Codex · owner · card-002 (Redis store)\n  ⎿  Done · 1 tool use · report ✓ · 1m 0s · 2k tokens"
+    );
+    // The session still going keeps its block, timed from its start to the newest event rather
+    // than from the replay.
+    let live = text(&crew.live(100));
+    assert!(
+        live.starts_with("● Opus on Claude Code · owner · card-003 (Middleware) · 1m0s"),
+        "{live}"
+    );
+}
+
+#[test]
+fn stays_in_shape_at_every_width() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, samples::CJK, Some(CardState::Running));
+    crew.card(4, samples::EMOJI, None);
+    crew.start("s-001", "claude-code/opus", Some(3));
+    crew.start("s-002", "codex/gpt-5.6", Some(4));
+    let long_word = samples::long_word();
+    crew.at(4.0)
+        .tool("s-001", "t1", "Read", json!({"file_path": samples::LONG_PATH}))
+        .done("s-001", "t1", true, Some(samples::CJK))
+        .tool("s-001", "t2", "Bash", json!({"command": long_word}))
+        .done("s-001", "t2", false, Some(&format!("Exit code 2\n{}\n{}", samples::EMOJI, long_word)))
+        .tool(
+            "s-001",
+            "t3",
+            "Edit",
+            json!({"file_path": samples::LONG_PATH, "old_string": samples::CJK, "new_string": samples::EMOJI}),
+        )
+        .done("s-001", "t3", true, None)
+        .agent(
+            "s-001",
+            AgentEvent::Todo {
+                items: vec![
+                    TodoItem {
+                        text: samples::CJK.to_owned(),
+                        status: TodoStatus::Completed,
+                    },
+                    TodoItem {
+                        text: samples::EMOJI.to_owned(),
+                        status: TodoStatus::InProgress,
+                    },
+                ],
+            },
+        )
+        .agent(
+            "s-001",
+            AgentEvent::TextDelta {
+                text: format!("{} {}", samples::EMOJI, samples::CJK),
+                parent: None,
+            },
+        )
+        .message("s-002", &format!("{} {}", samples::CJK, samples::LONG_PATH));
+    crew.tokens("s-001", 248_200);
+    crew.at(4000.0);
+    let mut snapshots = BTreeMap::new();
+    for width in stability::WIDTHS {
+        let live = crew.live(width);
+        stability::assert_lines(&live, width);
+        stability::assert_lines(&crew.printed(width), width);
+        snapshots.insert(width, live.len());
+    }
+    crew.end(
+        "s-001",
+        EndReason::Crashed {
+            message: samples::EMOJI.to_owned(),
+        },
+        4000,
+        248_200,
+    );
+    for width in stability::WIDTHS {
+        stability::assert_lines(&crew.printed(width), width);
+        stability::assert_lines(&crew.live(width), width);
+    }
+    assert!(snapshots.values().all(|rows| *rows > 0));
+}
+
+#[test]
+fn a_session_known_only_from_state_still_gets_a_block() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", None);
+    let key = SessionKey::parse("s-004").expect("a key");
+    let worker: WorkerRef = "codex/gpt-5.6".parse().expect("a worker");
+    let state = session_state(&key, &worker, Some(CardId::numbered(3)), START);
+    crew.run_state().sessions.insert(key, state);
+    crew.at(30.0)
+        .tool("s-004", "t1", "command_execution", json!({"command": "ls"}));
+    let live = text(&crew.live(100));
+    assert!(
+        live.starts_with("● GPT 5.6 on Codex · owner · card-003 (Middleware)"),
+        "{live}"
+    );
+
+    // A session that has ended gets none from a late event.
+    let key = SessionKey::parse("s-005").expect("a key");
+    let mut ended = session_state(&key, &worker, None, START);
+    ended.status = SessionStatus::Done;
+    crew.run_state().sessions.insert(key, ended);
+    crew.agent(
+        "s-005",
+        AgentEvent::Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cached_tokens: 0,
+            cost_usd: None,
+            cumulative: true,
+        },
+    );
+    assert_eq!(crew.model.history.active_cells().count(), 1);
+}
+
+#[test]
+fn argonauts_own_calls_stay_in_the_overlay() {
+    for level in [Verbosity::Full, Verbosity::Normal] {
+        let mut crew = Crew::new(level);
+        crew.card(3, "Middleware", Some(CardState::InReview));
+        crew.start("s-001", "claude-code/opus", Some(3));
+        crew.at(12.0)
+            .tool("s-001", "t1", "Read", json!({"file_path": "src/app.rs"}))
+            .done("s-001", "t1", true, Some("fn main() {}\n"))
+            .tool(
+                "s-001",
+                "t2",
+                "mcp__argonauts_status__argonauts_status",
+                json!({}),
+            );
+        let live = text(&crew.live(100));
+        assert!(live.contains("Read"), "{live}");
+        assert!(!live.contains("argonauts_status"), "{live}");
+        crew.done("s-001", "t2", true, Some("card-003 running"))
+            .message("s-001", "Wired the middleware in front of the router.")
+            .tool("s-001", "t3", "StructuredOutput", json!({"status": "done"}))
+            .done("s-001", "t3", true, Some("ok"));
+        let live = text(&crew.live(100));
+        assert!(!live.contains("Report"), "{live}");
+        crew.at(580.0)
+            .end("s-001", EndReason::Completed, 580, 61_000);
+
+        let theme = theme();
+        let ctx = RenderCtx::new(100, &theme, Clock::still(at(crew.now)));
+        let scrollback = text(&crew.model.history.drain_printable(&ctx));
+        assert!(scrollback.contains("Wired the middleware"), "{scrollback}");
+        assert!(!scrollback.contains("argonauts_status"), "{scrollback}");
+        assert!(!scrollback.contains("Report"), "{scrollback}");
+
+        let overlay = ctx.with_expanded(true);
+        let detail: String = crew
+            .model
+            .history
+            .cells()
+            .iter()
+            .map(|cell| text(&cell.lines(&overlay)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(detail.contains("argonauts_status"), "{level:?}: {detail}");
+        assert!(detail.contains("Report(done)"), "{level:?}: {detail}");
+        assert!(detail.contains("Sent the report"), "{level:?}: {detail}");
+        assert_eq!(detail.matches("Report(done)").count(), 1, "{detail}");
+    }
+}

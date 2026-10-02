@@ -21,7 +21,9 @@ pub struct DesignInput {
     pub request: String,
     /// The approved goal's summary and criteria, when there is one.
     pub goal: Vec<String>,
-    /// Templates and past workflows that did well on similar tasks, best first.
+    /// Templates and past workflows that did well on similar tasks, best first. The engine
+    /// sends them as a markdown part after the input instead, one `### name` section each, so
+    /// their files read as YAML; it leaves this empty.
     pub examples: Vec<WorkflowExample>,
     /// Each step kind with one line on what it does.
     pub step_kinds: Vec<String>,

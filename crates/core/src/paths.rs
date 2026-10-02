@@ -57,6 +57,11 @@ impl Paths {
         self.home.join("models.toml")
     }
 
+    /// What model discovery last found.
+    pub fn models_cache(&self) -> PathBuf {
+        self.home.join(crate::layout::user_files::MODELS_CACHE)
+    }
+
     pub fn global_presets(&self) -> PathBuf {
         self.home.join("presets")
     }

@@ -1,0 +1,24 @@
+{
+  "adapter": "antigravity-cli",
+  "args": [
+    "-p",
+    "You are answering a question about a git repository, as the chat agent of Argonauts. This session is read-only: read files and search as you need, but change nothing and run nothing that writes. Answer the question; don't start work on a change.\n\nFirst write your answer in Markdown, so it streams as you write. Then end your reply with one JSON object that matches this schema, with the same answer in `answer_markdown`:\n\n```json\n{\n  \"additionalProperties\": false,\n  \"properties\": {\n    \"answer_markdown\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"answer_markdown\"\n  ],\n  \"type\": \"object\"\n}\n```\n\nThe question:\n\nIn one sentence, what did I just ask you about?\n",
+    "--output-format",
+    "stream-json",
+    "--sandbox",
+    "--mode",
+    "plan",
+    "--model",
+    "gemini-3.6-flash-low",
+    "--effort",
+    "low",
+    "--json-schema",
+    "{\"additionalProperties\":false,\"properties\":{\"answer_markdown\":{\"type\":\"string\"}},\"required\":[\"answer_markdown\"],\"type\":\"object\"}",
+    "--conversation",
+    "cb86b375-9311-4165-9535-70e98e4ee01c"
+  ],
+  "duration_ms": 31581,
+  "exit_code": 0,
+  "program": "agy",
+  "resumed_from": "cb86b375-9311-4165-9535-70e98e4ee01c"
+}

@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-registry"
-description = "Argonauts settings resolution, presets, the model registry, and discovery."
+description = "Argonauts settings resolution, presets, workflow files, harness profiles, the model registry, and discovery."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,11 +9,19 @@ publish.workspace = true
 
 [dependencies]
 argonauts-core.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde-saphyr.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 
 [dev-dependencies]
+argonauts-testkit.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

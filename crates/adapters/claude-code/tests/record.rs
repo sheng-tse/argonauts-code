@@ -9,22 +9,27 @@
 //! ```
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
-use argonauts_adapter_claude_code::ClaudeCodeAdapter;
+use argonauts_adapter_claude_code::{ClaudeCodeAdapter, STATUS_SERVER};
+use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
     Adapter, BudgetLimit, Card, CommandSpec, SessionRequest, SessionRole, render_solo_prompt,
-    report_json_schema,
+    report_json_schema, sha256_hex,
 };
 use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
+/// A steered session whose last expected turn never comes is closed after this much quiet.
+const QUIET_AFTER_RESULT: Duration = Duration::from_secs(45);
 
 struct Recording {
     test: &'static str,
@@ -33,6 +38,32 @@ struct Recording {
     prompt: String,
     report_schema: bool,
     max_budget_usd: Option<f64>,
+    session: SessionShape,
+}
+
+/// What the newer recordings add: stdin kept open, session ids, and the status server.
+#[derive(Default)]
+struct SessionShape {
+    keep_input_open: bool,
+    /// Sent once the first tool call shows the first turn is under way.
+    follow_up: Option<&'static str>,
+    /// Stdin closes after this many results.
+    results: usize,
+    choose_session_id: bool,
+    /// Resumes the session recorded under this fixture name, in the same repository.
+    resume_from: Option<&'static str>,
+    status_server: StatusServer,
+    native_fanout: Option<NativeFanout>,
+    compaction: Option<Compaction>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum StatusServer {
+    #[default]
+    None,
+    Working,
+    /// An entry Claude Code rejects, to record `mcp_server_errors`.
+    Broken,
 }
 
 #[test]
@@ -45,6 +76,7 @@ fn record_read_only() {
         prompt: "Reply with exactly the word: ok".into(),
         report_schema: false,
         max_budget_usd: None,
+        session: SessionShape::default(),
     });
 }
 
@@ -60,6 +92,7 @@ fn record_write() {
         prompt: render_solo_prompt(&card, &report_json_schema()),
         report_schema: true,
         max_budget_usd: Some(0.5),
+        session: SessionShape::default(),
     });
 }
 
@@ -73,6 +106,79 @@ fn record_shell() {
         prompt: "Run `ls` and reply with the number of files".into(),
         report_schema: false,
         max_budget_usd: None,
+        session: SessionShape::default(),
+    });
+}
+
+/// Stream-json input with a second message sent mid-turn, a chosen session id, the status
+/// tool, and one subagent.
+#[test]
+#[ignore = "live call that spends Claude quota"]
+fn record_stream_input() {
+    record(Recording {
+        test: "record_stream_input",
+        name: "stream-input",
+        role: SessionRole::Build,
+        prompt: "Do these steps in order. 1. Call the argonauts_status tool once. 2. Use the \
+                 Agent tool once to start a general-purpose subagent with the prompt: Read \
+                 README.md and reply with its first line. 3. Reply with the subagent's answer \
+                 and the word: done."
+            .into(),
+        report_schema: false,
+        max_budget_usd: Some(0.5),
+        session: SessionShape {
+            keep_input_open: true,
+            follow_up: Some("After that, reply with only the word: second"),
+            results: 2,
+            choose_session_id: true,
+            status_server: StatusServer::Working,
+            native_fanout: Some(NativeFanout::Limit { max: 1 }),
+            compaction: Some(Compaction::Auto),
+            ..SessionShape::default()
+        },
+    });
+}
+
+/// Resumes `stream-input` with every flag again.
+#[test]
+#[ignore = "live call that spends Claude quota"]
+fn record_resume() {
+    record(Recording {
+        test: "record_resume",
+        name: "resume",
+        role: SessionRole::Build,
+        prompt: "Which word did my second message ask you to reply with? Reply with just \
+                 that word."
+            .into(),
+        report_schema: false,
+        max_budget_usd: Some(0.5),
+        session: SessionShape {
+            keep_input_open: true,
+            results: 1,
+            resume_from: Some("stream-input"),
+            status_server: StatusServer::Working,
+            native_fanout: Some(NativeFanout::Limit { max: 1 }),
+            compaction: Some(Compaction::Auto),
+            ..SessionShape::default()
+        },
+    });
+}
+
+/// An MCP config entry Claude Code rejects, which it reports only in `init`.
+#[test]
+#[ignore = "live call that spends Claude quota"]
+fn record_status_tool_error() {
+    record(Recording {
+        test: "record_status_tool_error",
+        name: "status-tool-error",
+        role: SessionRole::ReadOnly,
+        prompt: "Reply with exactly the word: ok".into(),
+        report_schema: false,
+        max_budget_usd: None,
+        session: SessionShape {
+            status_server: StatusServer::Broken,
+            ..SessionShape::default()
+        },
     });
 }
 
@@ -82,7 +188,17 @@ fn record(recording: Recording) {
     };
     let adapter = ClaudeCodeAdapter::new();
     let version = cli_version(&adapter);
-    let repo = throwaway_repo(&live_root, recording.name);
+    let shape = &recording.session;
+    let (repo, resume_session) = match shape.resume_from {
+        Some(earlier) => (
+            latest_repo(&live_root, earlier),
+            Some(recorded_session_id(&version, earlier)),
+        ),
+        None => (throwaway_repo(&live_root, recording.name), None),
+    };
+    let scratch = live_root.join("sessions").join(recording.name);
+    fs::create_dir_all(&scratch).expect("scratch dir");
+    let mcp_config = status_server_config(&live_root, &scratch, shape.status_server);
 
     let (model, effort) = adapter.cheapest_model();
     let req = SessionRequest {
@@ -93,15 +209,31 @@ fn record(recording: Recording) {
         role: recording.role,
         json_schema: recording.report_schema.then(report_json_schema),
         max_budget_usd: recording.max_budget_usd,
+        goal_hash: (recording.role == SessionRole::Build)
+            .then(|| sha256_hex(recording.prompt.as_bytes())),
+        keep_input_open: shape.keep_input_open,
+        session_id: shape.choose_session_id.then(new_uuid),
+        resume_session,
+        mcp_config,
+        scratch_dir: Some(scratch),
+        native_fanout: shape.native_fanout,
+        compaction: shape.compaction,
         ..SessionRequest::default()
     };
     let spec = adapter.command(&req).expect("command");
+    write_spec_files(&spec);
+    let follow_up = shape.follow_up.and_then(|text| adapter.input_line(text));
     let Run {
         status,
         stdout,
         stderr,
+        stdin_sent,
         duration_ms,
-    } = run(&spec);
+    } = if spec.keep_stdin_open {
+        run_steered(&spec, follow_up, shape.results.max(1))
+    } else {
+        run(&spec)
+    };
 
     let scrub = Scrubber::new(&live_root);
     let dir = fixture_dir().join(&version);
@@ -115,7 +247,14 @@ fn record(recording: Recording) {
         "date": OffsetDateTime::now_utc().format(&Rfc3339).expect("date"),
         "program": spec.program,
         "args": spec.args.iter().map(|a| scrub.apply(a)).collect::<Vec<_>>(),
-        "stdin": scrub.apply(spec.stdin.as_deref().unwrap_or_default()),
+        "stdin": scrub.apply(&stdin_sent),
+        "session_id": req.session_id,
+        "resume_session": req.resume_session,
+        "keep_input_open": req.keep_input_open,
+        "files": spec.files.iter().map(|f| json!({
+            "path": scrub.apply(&f.path.display().to_string()),
+            "contents": f.contents,
+        })).collect::<Vec<_>>(),
         "env_removed": spec.env_remove,
         "env_set": spec.env_set.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
         "model": model,
@@ -139,10 +278,12 @@ struct Run {
     status: ExitStatus,
     stdout: String,
     stderr: String,
+    /// Everything written to stdin, in order.
+    stdin_sent: String,
     duration_ms: u64,
 }
 
-fn run(spec: &CommandSpec) -> Run {
+fn command_for(spec: &CommandSpec) -> Command {
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -156,32 +297,226 @@ fn run(spec: &CommandSpec) -> Run {
     for (name, value) in &spec.env_set {
         command.env(name, value);
     }
+    command
+}
 
+fn run(spec: &CommandSpec) -> Run {
     let started = Instant::now();
-    let mut child = command.spawn().expect("spawn claude");
+    let mut child = command_for(spec).spawn().expect("spawn claude");
     let mut stdin = child.stdin.take().expect("stdin");
-    stdin
-        .write_all(spec.stdin.as_deref().unwrap_or_default().as_bytes())
-        .expect("write prompt");
+    let prompt = spec.stdin.clone().unwrap_or_default();
+    stdin.write_all(prompt.as_bytes()).expect("write prompt");
     drop(stdin);
     let stdout = read_in_background(child.stdout.take().expect("stdout"));
     let stderr = read_in_background(child.stderr.take().expect("stderr"));
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait") {
-            break status;
-        }
-        if started.elapsed() > TIMEOUT {
-            child.kill().expect("kill");
-            break child.wait().expect("wait after kill");
-        }
-        thread::sleep(Duration::from_millis(200));
-    };
+    let status = wait_with_timeout(&mut child, started);
     Run {
         status,
         duration_ms: started.elapsed().as_millis() as u64,
         stdout: stdout.join().expect("stdout reader"),
         stderr: stderr.join().expect("stderr reader"),
+        stdin_sent: prompt,
     }
+}
+
+/// Keeps stdin open the way the harness worker does: the first message, then `follow_up`
+/// once the first tool call arrives, then stdin closes after `results` results.
+fn run_steered(spec: &CommandSpec, follow_up: Option<String>, results: usize) -> Run {
+    let started = Instant::now();
+    let mut child = command_for(spec).spawn().expect("spawn claude");
+    let mut stdin = Some(child.stdin.take().expect("stdin"));
+    let mut sent = spec.stdin.clone().unwrap_or_default();
+    write_input(stdin.as_mut(), &sent);
+    let stderr = read_in_background(child.stderr.take().expect("stderr"));
+    let (line_tx, lines) = mpsc::channel::<String>();
+    let reader = BufReader::new(child.stdout.take().expect("stdout"));
+    let stdout_reader = thread::spawn(move || {
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut follow_up = follow_up;
+    let mut stdout = String::new();
+    let mut seen_results = 0;
+    let mut last_result: Option<Instant> = None;
+    while started.elapsed() < TIMEOUT {
+        match lines.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                let value: serde_json::Value =
+                    serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
+                stdout.push_str(&line);
+                stdout.push('\n');
+                if value["type"] == "result" {
+                    seen_results += 1;
+                    last_result = Some(Instant::now());
+                }
+                if is_tool_call(&value)
+                    && let Some(text) = follow_up.take()
+                {
+                    write_input(stdin.as_mut(), &text);
+                    sent.push_str(&text);
+                }
+                if seen_results >= results {
+                    stdin = None;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if last_result.is_some_and(|at| at.elapsed() > QUIET_AFTER_RESULT) {
+                    stdin = None;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if stdin.is_none() && child.try_wait().expect("wait").is_some() {
+            break;
+        }
+    }
+    drop(stdin);
+    let status = wait_with_timeout(&mut child, started);
+    stdout_reader.join().expect("stdout reader");
+    stdout.extend(lines.try_iter().map(|line| line + "\n"));
+    Run {
+        status,
+        duration_ms: started.elapsed().as_millis() as u64,
+        stdout,
+        stderr: stderr.join().expect("stderr reader"),
+        stdin_sent: sent,
+    }
+}
+
+fn write_input(stdin: Option<&mut ChildStdin>, text: &str) {
+    if let Some(stdin) = stdin {
+        stdin.write_all(text.as_bytes()).expect("write input");
+        stdin.flush().expect("flush input");
+    }
+}
+
+fn is_tool_call(line: &serde_json::Value) -> bool {
+    line["type"] == "assistant"
+        && line["message"]["content"]
+            .as_array()
+            .is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "tool_use"))
+}
+
+fn wait_with_timeout(child: &mut std::process::Child, started: Instant) -> ExitStatus {
+    loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            return status;
+        }
+        if started.elapsed() > TIMEOUT {
+            child.kill().expect("kill");
+            return child.wait().expect("wait after kill");
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The conductor writes these before the spawn, readable only by you.
+fn write_spec_files(spec: &CommandSpec) {
+    for file in &spec.files {
+        if let Some(parent) = file.path.parent() {
+            fs::create_dir_all(parent).expect("spec file dir");
+        }
+        fs::write(&file.path, &file.contents).expect("spec file");
+        fs::set_permissions(&file.path, fs::Permissions::from_mode(0o600)).expect("chmod");
+    }
+}
+
+/// A stdio MCP server with one read-only tool, standing in for `argonauts mcp session`.
+const STATUS_SERVER_SCRIPT: &str = r#"import json, sys
+STATUS = "Run r-01: card-001 is building. No messages for you."
+def reply(msg_id, result):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": result}) + "\n")
+    sys.stdout.flush()
+for raw in sys.stdin:
+    try:
+        msg = json.loads(raw)
+    except ValueError:
+        continue
+    method, msg_id = msg.get("method"), msg.get("id")
+    if msg_id is None:
+        continue
+    if method == "initialize":
+        version = msg.get("params", {}).get("protocolVersion", "2025-06-18")
+        reply(msg_id, {"protocolVersion": version, "capabilities": {"tools": {}},
+                       "serverInfo": {"name": "argonauts_status", "version": "0.0.1"}})
+    elif method == "tools/list":
+        reply(msg_id, {"tools": [{"name": "argonauts_status",
+            "description": "The run's status for this session, read-only.",
+            "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": True}}]})
+    elif method == "tools/call":
+        reply(msg_id, {"content": [{"type": "text", "text": STATUS}]})
+    elif method == "ping":
+        reply(msg_id, {})
+    else:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg_id,
+            "error": {"code": -32601, "message": "unknown method"}}) + "\n")
+        sys.stdout.flush()
+"#;
+
+fn status_server_config(live_root: &Path, scratch: &Path, server: StatusServer) -> Option<PathBuf> {
+    let entry = match server {
+        StatusServer::None => return None,
+        StatusServer::Working => {
+            let script = live_root.join("status_server.py");
+            fs::write(&script, STATUS_SERVER_SCRIPT).expect("status server script");
+            json!({"command": "python3", "args": [script.display().to_string()]})
+        }
+        StatusServer::Broken => json!({"type": "stdio"}),
+    };
+    let path = scratch.join("mcp.json");
+    let config = json!({"mcpServers": {STATUS_SERVER: entry}});
+    fs::write(&path, config.to_string()).expect("mcp config");
+    Some(path)
+}
+
+/// The repository an earlier recording ran in, so a resume runs where the session began.
+fn latest_repo(live_root: &Path, name: &str) -> PathBuf {
+    let prefix = format!("{name}-");
+    let mut repos: Vec<PathBuf> = fs::read_dir(live_root)
+        .expect("live dir")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|e| e.path())
+        .collect();
+    repos.sort();
+    repos.pop().unwrap_or_else(|| panic!("record {name} first"))
+}
+
+fn recorded_session_id(version: &str, name: &str) -> String {
+    let path = fixture_dir()
+        .join(version)
+        .join(format!("{name}.meta.json"));
+    let meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("earlier meta")).expect("meta");
+    meta["session_id"]
+        .as_str()
+        .expect("the earlier recording chose a session id")
+        .to_owned()
+}
+
+/// A random version 4 UUID, without a dependency for one test.
+fn new_uuid() -> String {
+    let mut bytes = [0u8; 16];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .expect("random bytes");
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
 }
 
 /// Makes no live calls, but is gated like the recorders.
@@ -339,12 +674,25 @@ impl Scrubber {
         // Longer paths first, so a repo is replaced before the live root that contains it.
         replacements.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
         push_both_forms(&mut replacements, live_root, PLACEHOLDER_ROOT);
+        // Left by recordings made before the real path was replaced ahead of its short form.
+        replacements.push((
+            format!("/private{PLACEHOLDER_ROOT}"),
+            PLACEHOLDER_ROOT.to_owned(),
+        ));
+        replacements.extend(temp_folders());
         if let Some(home) = env::var_os("HOME") {
-            replacements.push((home.to_string_lossy().into_owned(), "/home/user".to_owned()));
+            replacements.push((home.to_string_lossy().into_owned(), "~".to_owned()));
         }
         if let Ok(user) = env::var("USER")
             && user.len() >= 3
         {
+            // Earlier scrubs replaced the user name inside flattened paths already.
+            let flattened: Vec<(String, String)> = replacements
+                .iter()
+                .filter(|(from, _)| from.starts_with('-') && from.contains(&user))
+                .map(|(from, to)| (from.replace(&user, "user"), to.clone()))
+                .collect();
+            replacements.extend(flattened);
             replacements.push((user, "user".to_owned()));
         }
         Self { replacements }
@@ -444,10 +792,56 @@ impl Scrubber {
 }
 
 /// macOS temp paths show up both with and without their `/private` prefix.
+/// Claude Code also names per-project folders after the working path with every character
+/// other than a letter or digit turned into `-`, so that form is replaced too.
 fn push_both_forms(replacements: &mut Vec<(String, String)>, path: &Path, placeholder: &str) {
     let real = path.display().to_string();
-    replacements.push((real.replacen("/private/", "/", 1), placeholder.to_owned()));
+    let short = real.replacen("/private/", "/", 1);
+    replacements.push((flatten(&real), flatten(placeholder)));
+    replacements.push((flatten(&short), flatten(placeholder)));
+    // The real path first, since the short one is part of it.
     replacements.push((real, placeholder.to_owned()));
+    replacements.push((short, placeholder.to_owned()));
+}
+
+/// Claude Code keeps task output under `/tmp/claude-<uid>`, which names the recording
+/// machine's user id, and tools may write under `$TMPDIR`.
+fn temp_folders() -> Vec<(String, String)> {
+    let mut replacements = Vec::new();
+    if let Some(uid) = current_uid() {
+        let tmp = Path::new("/tmp")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from("/tmp"));
+        push_both_forms(
+            &mut replacements,
+            &tmp.join(format!("claude-{uid}")),
+            "/tmp/claude-uid",
+        );
+    }
+    if let Some(temp) = env::var_os("TMPDIR").map(PathBuf::from) {
+        let temp = temp.canonicalize().unwrap_or(temp);
+        let real = temp.display().to_string().trim_end_matches('/').to_owned();
+        let short = real.replacen("/private/", "/", 1);
+        // Only the plain path, since a short folder flattened could match ordinary words.
+        if !real.is_empty() && short != "/tmp" {
+            replacements.push((real, "/tmp".to_owned()));
+            replacements.push((short, "/tmp".to_owned()));
+        }
+    }
+    // Either folder can hold the other, so the longer goes first.
+    replacements.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
+    replacements
+}
+
+fn current_uid() -> Option<u32> {
+    let out = Command::new("id").arg("-u").output().ok()?;
+    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+}
+
+fn flatten(path: &str) -> String {
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 struct Line {

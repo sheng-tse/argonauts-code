@@ -1,24 +1,44 @@
 [package]
 name = "argonauts-tui"
-description = "Argonauts terminal interface: the live main screen and the plain renderer."
+description = "Argonauts terminal interface: the inline chat screen, its overlays, and the screen-reader mode."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "argonauts-tui-harness"
+path = "src/bin/argonauts-tui-harness.rs"
+test = false
+
 [dependencies]
 anyhow.workspace = true
 argonauts-core.workspace = true
-crossterm.workspace = true
+crossterm = { workspace = true, features = ["event-stream"] }
 dirs.workspace = true
+futures.workspace = true
 nix = { workspace = true, features = ["term"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-strip-ansi-escapes.workspace = true
+shell-words.workspace = true
+similar = { workspace = true, features = ["inline"] }
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
+toml.workspace = true
+two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"] }
+unicode-linebreak = "0.1.5"
+unicode-segmentation = "1.13.3"
 unicode-width.workspace = true
 
 [dev-dependencies]
+argonauts-testkit.workspace = true
 insta.workspace = true
+regex.workspace = true
+strip-ansi-escapes.workspace = true
+tempfile.workspace = true
+vt100.workspace = true

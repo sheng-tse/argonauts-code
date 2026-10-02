@@ -1,0 +1,6 @@
+---
+source: crates/tui/tests/snap_live.rs
+assertion_line: 463
+expression: styled(&render(width))
+---
+  [fg=#ffc107]Codex 5h 92% used[/][fg=#999999] · [/][fg=#ffc107]agy out until Tue 3:45 PM[/][fg=#999999] · [/][fg=#ffc107]OpenRouter down[/]

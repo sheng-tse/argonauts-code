@@ -1,0 +1,27 @@
+diff --git a/src/parser.rs b/src/parser.rs
+index 3b18e51..a1c2d3e 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -1,5 +1,9 @@
+ pub fn parse(input: &str) -> Vec<&str> {
+-    input.split(',').collect()
++    input
++        .split(',')
++        .map(str::trim)
++        .skip(0)
++        .collect()
+ }
+ 
+ #[cfg(test)]
+diff --git a/tests/parser.rs b/tests/parser.rs
+new file mode 100644
+index 0000000..5d1e2f3
+--- /dev/null
++++ b/tests/parser.rs
+@@ -0,0 +1,6 @@
++use demo::parse;
++
++#[test]
++fn trims_each_field() {
++    assert_eq!(parse("a, b"), vec!["a", "b"]);
++}

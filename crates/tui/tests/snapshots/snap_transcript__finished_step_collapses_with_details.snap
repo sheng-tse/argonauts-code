@@ -1,0 +1,27 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+● Triage(crew)
+  ⎿  Starts from main · 2 uncommitted files left out
+
+● Goal(Add a --json flag to export)
+  ⎿  Agreed by 3 agents · 1 question answered
+
+● Plan(3 drafts, judged)
+  ⎿  Plan 1 won · 5 cards
+     ┌────────────┬────────────┬───────────────┬────────────┐
+     │ Disputed   │ Plan 1     │ Plan 2        │ Plan 3     │
+     ├────────────┼────────────┼───────────────┼────────────┤
+     │ Row format │ JSON lines │ one array     │ JSON lines │
+     │ Flag name  │ --json     │ --format json │            │
+     └────────────┴────────────┴───────────────┴────────────┘
+
+● Gates(card-002 · tests, lint, link check)
+  ⎿  All 3 passed
+
+● Gates(card-003 · tests)
+  ⎿  tests failed · 41 passed, 1 failed
+
+● Gates(card-004 · built-in checks)
+  ⎿  No command gates set · /config gates.run

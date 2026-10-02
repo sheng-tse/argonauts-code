@@ -2,18 +2,20 @@
 //! `ARGONAUTS_RECORD` names it and `ARGONAUTS_LIVE_DIR` points at a scratch directory.
 //!
 //! ```text
-//! ARGONAUTS_LIVE_DIR=/tmp/live/antigravity-cli ARGONAUTS_RECORD=record_readonly_ok \
+//! ARGONAUTS_LIVE_DIR=/tmp/live/antigravity-cli ARGONAUTS_RECORD=record_stdin_steer \
 //!   cargo test -p argonauts-adapter-antigravity-cli --test record -- --ignored record_
 //! ```
 
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use argonauts_adapter_antigravity_cli::AntigravityCli;
+use argonauts_core::settings::sessions::NativeFanout;
 use argonauts_core::{Adapter, CommandSpec, SessionRequest, SessionRole, report_json_schema};
 use serde_json::{Value, json};
 
@@ -22,40 +24,121 @@ const TIMEOUT: Duration = Duration::from_secs(600);
 #[test]
 #[ignore = "live call; see the module docs"]
 fn record_readonly_ok() {
-    record(
+    record(Recording::new(
         "record_readonly_ok",
         "readonly_ok",
         SessionRole::ReadOnly,
         "Reply with exactly the word: ok",
-        None,
-    );
+    ));
 }
 
 #[test]
 #[ignore = "live call; see the module docs"]
 fn record_build_hello() {
-    record(
-        "record_build_hello",
-        "build_hello_schema",
-        SessionRole::Build,
-        "Create a file named hello.txt containing the word hi. Then reply with: done",
-        Some(report_json_schema()),
-    );
+    record(Recording {
+        schema: Some(report_json_schema()),
+        ..Recording::new(
+            "record_build_hello",
+            "build_hello_schema",
+            SessionRole::Build,
+            "Create a file named hello.txt containing the word hi. Then reply with: done",
+        )
+    });
 }
 
 #[test]
 #[ignore = "live call; see the module docs"]
 fn record_build_shell() {
-    record(
+    record(Recording::new(
         "record_build_shell",
         "build_shell",
         SessionRole::Build,
         "Run `ls` and reply with the number of files",
-        None,
-    );
+    ));
 }
 
-fn record(test: &str, name: &str, role: SessionRole, prompt: &str, schema: Option<Value>) {
+/// The prompt and a second message mid-run, both over stream-json stdin, in a read-only
+/// session with the restricted agent and a per-run project.
+#[test]
+#[ignore = "live call; see the module docs"]
+fn record_stdin_steer() {
+    record(Recording {
+        follow_up: Some("Also tell me how many lines notes.txt has."),
+        ..Recording::new(
+            "record_stdin_steer",
+            "stdin_steer",
+            SessionRole::ReadOnly,
+            "Read README.md and reply with its first line.",
+        )
+    });
+}
+
+#[test]
+#[ignore = "live call; see the module docs"]
+fn record_build_subagent() {
+    record(Recording {
+        native_fanout: Some(NativeFanout::Limit { max: 2 }),
+        ..Recording::new(
+            "record_build_subagent",
+            "build_subagent",
+            SessionRole::Build,
+            "Use the invoke_subagent tool to start one research subagent that reads notes.txt \
+             and reports its first line. Then reply with that line.",
+        )
+    });
+}
+
+/// A read-only session asked to write, to check that the restricted agent has no write tool.
+#[test]
+#[ignore = "live call; see the module docs"]
+fn record_readonly_write_refused() {
+    record(Recording::new(
+        "record_readonly_write_refused",
+        "readonly_write_refused",
+        SessionRole::ReadOnly,
+        "Create a file named probe.txt containing the word hi. If you have no tool that can \
+         write files, reply with exactly: no write tool",
+    ));
+}
+
+struct Recording {
+    test: &'static str,
+    name: &'static str,
+    role: SessionRole,
+    prompt: &'static str,
+    schema: Option<Value>,
+    /// Sent on stdin once the first turn's first step arrives, which keeps stdin open.
+    follow_up: Option<&'static str>,
+    native_fanout: Option<NativeFanout>,
+}
+
+impl Recording {
+    fn new(
+        test: &'static str,
+        name: &'static str,
+        role: SessionRole,
+        prompt: &'static str,
+    ) -> Self {
+        Self {
+            test,
+            name,
+            role,
+            prompt,
+            schema: None,
+            follow_up: None,
+            native_fanout: None,
+        }
+    }
+}
+
+fn record(recording: Recording) {
+    let Recording {
+        test,
+        name,
+        role,
+        prompt,
+        ..
+    } = recording;
     let Some(live_root) = armed(test) else {
         eprintln!("skipping {test}: set ARGONAUTS_RECORD={test} and ARGONAUTS_LIVE_DIR");
         return;
@@ -65,6 +148,9 @@ fn record(test: &str, name: &str, role: SessionRole, prompt: &str, schema: Optio
     let repo = live_root.join(name);
     make_throwaway_repo(&repo);
     let repo = repo.canonicalize().unwrap();
+    let scratch = live_root.join("scratch").join(name);
+    fs::create_dir_all(&scratch).unwrap();
+    let scratch = scratch.canonicalize().unwrap();
 
     let (model, effort) = adapter.cheapest_model();
     let log_file = live_root.join("logs").join(format!("{name}.agy.log"));
@@ -74,24 +160,50 @@ fn record(test: &str, name: &str, role: SessionRole, prompt: &str, schema: Optio
         model: Some(model.to_owned()),
         effort: effort.map(str::to_owned),
         role,
-        json_schema: schema,
+        json_schema: recording.schema.clone(),
+        keep_input_open: recording.follow_up.is_some(),
+        project: Some(format!("argonauts-live-{name}")),
+        native_fanout: recording.native_fanout,
+        scratch_dir: Some(scratch.clone()),
         extra_args: vec!["--log-file".into(), log_file.display().to_string()],
         ..SessionRequest::default()
     };
     let spec = adapter.command(&req).unwrap();
+    for file in &spec.files {
+        fs::create_dir_all(file.path.parent().unwrap()).unwrap();
+        fs::write(&file.path, &file.contents).unwrap();
+    }
 
+    let follow_up = recording.follow_up.and_then(|m| adapter.input_line(m));
     let started = Instant::now();
-    let (exit_code, stdout, stderr) = run(&spec);
+    let run = run(&spec, follow_up.as_deref());
     let duration_ms = started.elapsed().as_millis() as u64;
 
     // The raw output stays in the live directory. Only scrubbed copies become fixtures.
-    write_output(&live_root, name, &stdout, &stderr);
+    write_output(&live_root, name, &run.stdout, &run.stderr);
     let scrub = Scrubber::new(&repo, &live_root);
     let out_dir = fixtures_dir().join(&version);
     fs::create_dir_all(&out_dir).unwrap();
-    write_output(&out_dir, name, &scrub.apply(&stdout), &scrub.apply(&stderr));
+    write_output(
+        &out_dir,
+        name,
+        &scrub.apply(&run.stdout),
+        &scrub.apply(&run.stderr),
+    );
 
     let args: Vec<String> = spec.args.iter().map(|a| scrub.apply(a)).collect();
+    let files: Vec<Value> = spec
+        .files
+        .iter()
+        .map(
+            |f| json!({"path": scrub.apply(&f.path.display().to_string()), "contents": f.contents}),
+        )
+        .collect();
+    let stdin: Vec<Value> = run
+        .stdin
+        .iter()
+        .map(|(after_ms, line)| json!({"after_ms": after_ms, "line": scrub.apply(line.trim_end())}))
+        .collect();
     let meta = json!({
         "adapter": adapter.id(),
         "cli_version": version,
@@ -100,10 +212,13 @@ fn record(test: &str, name: &str, role: SessionRole, prompt: &str, schema: Optio
         "prompt": prompt,
         "program": spec.program,
         "args": args,
+        "stdin": stdin,
+        "keep_stdin_open": spec.keep_stdin_open,
+        "files": files,
         "env_set": spec.env_set,
         "env_removed": spec.env_remove,
         "date": now_rfc3339(),
-        "exit_code": exit_code,
+        "exit_code": run.exit_code,
         "duration_ms": duration_ms,
         "files_after": list_files(&repo),
         "sanitized": "absolute paths replaced with <workdir> and <live>, the home directory with ~, and email addresses with <email>",
@@ -115,7 +230,7 @@ fn record(test: &str, name: &str, role: SessionRole, prompt: &str, schema: Optio
     .unwrap();
 
     report_log_lines(&log_file);
-    eprintln!("{name}: exit {exit_code:?} in {duration_ms} ms");
+    eprintln!("{name}: exit {:?} in {duration_ms} ms", run.exit_code);
 }
 
 fn write_output(dir: &Path, name: &str, stdout: &str, stderr: &str) {
@@ -182,12 +297,22 @@ fn make_throwaway_repo(repo: &Path) {
     git(&["commit", "-q", "-m", "init"]);
 }
 
-fn run(spec: &CommandSpec) -> (Option<i32>, String, String) {
+struct Run {
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    /// Each stdin line with the milliseconds since spawn when it was written.
+    stdin: Vec<(u64, String)>,
+}
+
+/// Writes the spec's stdin, then the follow-up once the first step arrives. With stdin kept
+/// open, it closes stdin after one `result` per message sent, which ends the session.
+fn run(spec: &CommandSpec, follow_up: Option<&str>) -> Run {
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
         .current_dir(&spec.cwd)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in &spec.env_set {
@@ -196,11 +321,67 @@ fn run(spec: &CommandSpec) -> (Option<i32>, String, String) {
     for key in &spec.env_remove {
         command.env_remove(key);
     }
+    let started = Instant::now();
     let mut child = command.spawn().unwrap();
-    let stdout = drain(child.stdout.take().unwrap());
+    let mut stdin_log = Vec::new();
+    let mut stdin = child.stdin.take();
+    if let (Some(pipe), Some(first)) = (stdin.as_mut(), spec.stdin.as_deref()) {
+        send(pipe, first, started, &mut stdin_log);
+    }
+    if !spec.keep_stdin_open {
+        stdin = None;
+    }
+
+    let (lines_tx, lines_rx) = mpsc::channel::<String>();
+    let stdout_pipe = child.stdout.take().unwrap();
+    let stdout = thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stdout_pipe).lines() {
+            let Ok(line) = line else { break };
+            all.push_str(&line);
+            all.push('\n');
+            let _ = lines_tx.send(line);
+        }
+        all
+    });
     let stderr = drain(child.stderr.take().unwrap());
-    let status = wait(&mut child);
-    (status, stdout.join().unwrap(), stderr.join().unwrap())
+
+    let mut pending = follow_up;
+    let mut results = 0;
+    let expected_results = stdin_log.len() + usize::from(pending.is_some());
+    while stdin.is_some() && started.elapsed() < TIMEOUT {
+        let Ok(line) = lines_rx.recv_timeout(Duration::from_millis(200)) else {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            continue;
+        };
+        if line.contains(r#""event":"step_update""#)
+            && let (Some(message), Some(pipe)) = (pending.take(), stdin.as_mut())
+        {
+            send(pipe, message, started, &mut stdin_log);
+        }
+        if line.contains(r#""event":"result""#) {
+            results += 1;
+            if results >= expected_results && pending.is_none() {
+                stdin = None;
+            }
+        }
+    }
+    drop(stdin);
+    let exit_code = wait(&mut child);
+    Run {
+        exit_code,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+        stdin: stdin_log,
+    }
+}
+
+fn send(pipe: &mut ChildStdin, text: &str, started: Instant, log: &mut Vec<(u64, String)>) {
+    pipe.write_all(text.as_bytes()).unwrap();
+    pipe.flush().unwrap();
+    log.push((started.elapsed().as_millis() as u64, text.to_owned()));
 }
 
 fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {

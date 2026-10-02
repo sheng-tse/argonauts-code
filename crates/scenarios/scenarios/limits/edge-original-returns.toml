@@ -1,0 +1,68 @@
+# The fake Claude Code hits its usage limit, which resets in 20 seconds. Codex takes the card
+# and is still working when Claude Code comes back; moving the card back resumes Claude Code.
+
+[version]
+claude = "2.1.284 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+# A resumed session finishes the card.
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--resume", "limits-claude-1"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.284/write.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+# A fresh session whose handoff note carries the stopped session's last message finishes it.
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--permission-mode", "acceptEdits"]
+stdin_prompt = "line"
+prompt_contains = "LIMITS-PROGRESS-NOTE"
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.284/write.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+# Codex keeps working long enough for Claude Code to come back first.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"limits-codex-1"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"LIMITS-PROGRESS-NOTE: Codex picked up notes.txt."}}'
+[[rule.step]]
+sleep_ms = 60000
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--permission-mode", "acceptEdits"]
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"limits-claude-1","cwd":".","model":"claude-haiku-4-5-20251001","tools":["Read","Edit","Write","Bash"],"claude_code_version":"2.1.284","permissionMode":"acceptEdits","apiKeySource":"none"}'
+[[rule.step]]
+write = { path = "notes.txt", content = "first half\n" }
+[[rule.step]]
+emit = '{"type":"assistant","message":{"id":"msg_limits_1","type":"message","role":"assistant","model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"LIMITS-PROGRESS-NOTE: notes.txt holds the first half."}]},"session_id":"limits-claude-1","parent_tool_use_id":null}'
+[[rule.step]]
+emit = '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":@RESET_SOON@,"rateLimitType":"five_hour","utilization":1.0,"isUsingOverage":false},"session_id":"limits-claude-1"}'
+[[rule.step]]
+emit = '''{"type":"assistant","error":"rate_limit","message":{"id":"msg_limits_2","type":"message","role":"assistant","content":[{"type":"text","text":"You've hit your usage limit · resets 3:45pm"}]},"session_id":"limits-claude-1","parent_tool_use_id":null}'''
+[[rule.step]]
+emit = '''{"type":"result","subtype":"success","is_error":true,"result":"You've hit your usage limit · resets 3:45pm","session_id":"limits-claude-1","total_cost_usd":0.0,"usage":{"input_tokens":0,"output_tokens":0}}'''
+[[rule.step]]
+exit = 1

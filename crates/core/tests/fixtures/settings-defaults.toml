@@ -37,7 +37,7 @@ exclude_paths = []
 [roles]
 
 [handoff]
-mode = "ask"
+mode = "auto"
 fallback = []
 ask_timeout = "none"
 allow_api_billing = false
@@ -50,6 +50,7 @@ checkpoint = true
 merge_rule = "upgrade_review"
 unknown_tier = "weaker"
 max_handoffs = 3
+context = "note+transcript"
 
 [handoff.replace]
 
@@ -154,6 +155,46 @@ no_explore_labels = [
     "migration",
 ]
 tie_band = 0.05
+prior_strength = 3.0
+half_life_days = 30.0
+max_explore_share = 0.2
+own_type_after = 10
+model_change_keep = 0.2
+claim_above = 0.9
+overconfident_margin = 0.2
+overconfident_after = 10
+
+[routing.weights]
+pass_rate = 1.0
+approval_rate = 0.5
+prediction = 0.3
+cost = 0.4
+time = 0.2
+
+[routing.groups]
+backend_and_data = [
+    "backend",
+    "data",
+]
+docs_and_refactor = [
+    "docs",
+    "refactor",
+]
+frontend = ["frontend"]
+infra_and_tests = [
+    "infra",
+    "tests",
+]
+security_and_performance = [
+    "security",
+    "performance",
+]
+
+[routing.priors]
+
+[routing.pins]
+
+[routing.resets]
 
 [approvals]
 goal_changes = "ask"
@@ -167,15 +208,15 @@ refuse_ancestor_env = [
 ]
 
 [approvals.goal]
-mode = "supervised"
-decide_with = "rules"
+mode = "auto"
+decide_with = "rules_and_model"
 otherwise = "ask"
 
 [approvals.goal.rules]
 
 [approvals.plan]
-mode = "supervised"
-decide_with = "rules"
+mode = "auto"
+decide_with = "rules_and_model"
 otherwise = "ask"
 
 [approvals.plan.rules]
@@ -183,7 +224,7 @@ max_score_spread = 1.0
 min_winner_margin = 1.5
 
 [approvals.merge]
-mode = "supervised"
+mode = "auto"
 decide_with = "rules"
 otherwise = "ask"
 
@@ -193,36 +234,39 @@ max_combined_diff_lines = 400
 allow_debt = false
 
 [approvals.recipe_promotion]
-mode = "supervised"
+mode = "auto"
 decide_with = "rules"
 otherwise = "ask"
 
 [approvals.recipe_promotion.rules]
 change_classes = [
     "checklist_item",
+    "critique_rounds",
     "drafting_prompt",
+    "card_split",
+    "card_budget",
 ]
 min_days_between = 14
 
 [approvals.escalation]
-mode = "supervised"
-decide_with = "rules"
+mode = "auto"
+decide_with = "rules_and_model"
 otherwise = "ask"
 
 [approvals.escalation.rules]
 max_extra_attempts = 1
 
 [approvals.budget]
-mode = "supervised"
-decide_with = "rules"
+mode = "auto"
+decide_with = "rules_and_model"
 otherwise = "ask"
 
 [approvals.budget.rules]
 use_reserve = true
 
 [approvals.change_request]
-mode = "supervised"
-decide_with = "rules"
+mode = "auto"
+decide_with = "rules_and_model"
 otherwise = "ask"
 
 [approvals.change_request.rules]
@@ -248,10 +292,14 @@ evolution_usd_per_month = 1000.0
 
 [sandbox]
 mode = "os"
-network = false
+network = true
+agents_see_other_copies = false
+agents_commit = true
 fail_closed = true
 extra_writable = []
+proxy_allow = []
 untrusted_repos = "container"
+container_image = ""
 user_hooks = "inherit"
 
 [budget]
@@ -315,6 +363,7 @@ max_depth = 2
 adapt_at_phase_ends = true
 
 [evolution]
+stage = "evolve"
 evolvable = [
     "critique.rounds",
     "critique.checklist",
@@ -325,12 +374,39 @@ evolvable = [
 propose_every = 1
 min_gain_points = 10.0
 max_cost_increase = 0.1
+not_worse_classes = []
 canary_runs = 5
+canary_pull_requests = true
+tripwire_p = 0.05
+tripwire_baseline_runs = 20
 
 [evolution.replay]
 tasks = 30
 runs_per_task = 3
 prefix_replay = true
+sequential = true
+accept_entries = "auto"
+holdout_tasks = 10
+holdout_retire_after = 10
+use_subscriptions = false
+
+[memory]
+max_per_card = 3
+max_chars = 300
+allow_urls = false
+allow_commands = false
+flagged = "ask"
+
+[skills]
+claude_link = true
+export_after_canary = true
+
+[outcomes]
+share = false
+
+[prompts]
+drafting = ""
+build = ""
 
 [ui]
 verbosity = "full"

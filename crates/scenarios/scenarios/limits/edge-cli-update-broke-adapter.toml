@@ -1,0 +1,29 @@
+# The fake Claude Code reports a version Argonauts hasn't tested, and its output no longer
+# has the shape the adapter knows: no result, only lines of an unknown type. Codex takes over.
+
+[version]
+claude = "9.0.0 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+[[rule.step]]
+write = { path = "hello.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/codex/fixtures/0.158.0/build_hello.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["-p", "--permission-mode", "acceptEdits"]
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"limits-claude-1","cwd":".","model":"claude-haiku-4-5-20251001","tools":[],"claude_code_version":"9.0.0"}'
+[[rule.step]]
+emit = '{"type":"conversation_frame","frame":{"kind":"delta","body":"working"},"session_id":"limits-claude-1"}'
+[[rule.step]]
+emit = '{"type":"conversation_frame","frame":{"kind":"end"},"session_id":"limits-claude-1"}'
+[[rule.step]]
+exit = 0

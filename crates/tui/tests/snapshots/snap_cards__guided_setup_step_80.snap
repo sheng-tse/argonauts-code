@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_cards.rs
+expression: text(&lines)
+---
+────────────────────────────────────────────────────────────────────────────────
+◆ Welcome to Argonauts
+  Argonauts runs the coding agents you already use as one crew.
+
+  ❯ 1. Continue
+
+  Enter to choose · Esc to take the recommended answers
+
+────────────────────────────────────────────────────────────────────────────────
+◆ How should the crew work?
+  You can change it later with /preset.
+
+  ❯ 1. peer-crew (recommended)
+    2. coordinated-crew
+    3. solo
+
+  Enter to choose · Esc to take the recommended answers
+
+────────────────────────────────────────────────────────────────────────────────
+◆ Approvals
+  With auto, the agents work and merge on their own under the rules. Change that
+  any time in /permissions and /approvals.
+
+  ❯ 1. Auto (recommended)
+       Rules and a reviewer from another AI company decide, and you're asked
+       when a rule fails.
+    2. Supervised
+       You approve the goal, the plan, and every merge.
+    3. Shadow
+       You approve, and Argonauts learns what it would have decided.
+
+  Enter to choose · Esc to take the recommended answers

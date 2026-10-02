@@ -1,10 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use argonauts_core::{AgentEvent, ErrorCategory, StreamParser};
 use serde_json::Value;
+use time::OffsetDateTime;
 
+use crate::context::ContextTracker;
 use crate::errors;
 use crate::json::{array_at, bool_at, str_at, string_at, strings_at};
+use crate::quota;
+use crate::settings::STATUS_SERVER;
+use crate::subagents::SubagentTracker;
 use crate::todo::TodoTracker;
 use crate::usage::UsageTracker;
 
@@ -12,16 +17,31 @@ const FILE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
 /// Text streams as [`AgentEvent::TextDelta`] and then arrives whole in [`AgentEvent::Message`],
 /// while usage comes as increments until the result reports cumulative totals with cost.
+/// A session with stream-json input has one result per turn.
 #[derive(Debug, Default)]
 pub struct ClaudeStreamParser {
     cwd: Option<String>,
     usage: UsageTracker,
+    context: ContextTracker,
     todos: TodoTracker,
+    subagents: SubagentTracker,
     open_tools: HashMap<String, OpenTool>,
     streaming_message_id: Option<String>,
     last_text: Option<String>,
-    result_reported: bool,
+    results_seen: usize,
+    /// Output arrived after the last result, so a new turn is waiting for its own.
+    turn_open: bool,
+    /// Whether this turn's failure was already reported, so the result doesn't repeat it.
     error_reported: bool,
+    /// The category of the last result's error, for telling a crash from a clean failure.
+    result_error: Option<ErrorCategory>,
+    /// Retry categories already reported as errors. Claude Code sends one event per attempt.
+    retry_errors: HashSet<ErrorCategory>,
+    /// The servers init said Claude Code rejected. It runs on without them, so no turn is clean.
+    rejected_mcp: Option<String>,
+    /// The last stderr error nothing classified, to explain an exit without a result.
+    stderr_error: Option<String>,
+    finished: bool,
 }
 
 #[derive(Debug)]
@@ -43,59 +63,120 @@ impl ClaudeStreamParser {
             "assistant" => self.on_assistant(line),
             "user" => Some(self.on_user(line)),
             "result" => Some(self.on_result(line)),
-            "rate_limit_event" => Some(vec![AgentEvent::QuotaSignal {
-                detail: line
-                    .get("rate_limit_info")
-                    .cloned()
-                    .unwrap_or_else(|| line.clone()),
-            }]),
+            "rate_limit_event" => Some(self.on_rate_limit(line)),
             _ => None,
         }
     }
 
     fn on_system(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
-        let event = match str_at(line, "subtype")? {
-            "init" => {
-                self.cwd = string_at(line, "cwd");
-                AgentEvent::Init {
-                    session_id: string_at(line, "session_id"),
-                    model: string_at(line, "model"),
-                    tools: strings_at(line, "tools"),
-                }
-            }
-            "api_retry" => AgentEvent::Retry {
-                reason: errors::retry_reason(line),
-                delay_ms: line.get("retry_delay_ms").and_then(Value::as_u64),
-            },
+        let events = match str_at(line, "subtype")? {
+            "init" => self.on_init(line),
+            "api_retry" => vec![self.on_api_retry(line)],
             "permission_denied" => {
                 let tool = str_at(line, "tool_name").unwrap_or("A tool");
                 let reason = str_at(line, "message")
                     .or_else(|| str_at(line, "decision_reason"))
                     .unwrap_or("permission denied");
-                AgentEvent::Error {
+                vec![AgentEvent::Error {
                     category: ErrorCategory::Permission,
                     message: format!("{tool} was denied: {reason}"),
                     retryable: false,
-                }
+                }]
             }
-            // Transient hints about a request in flight or a running estimate of thinking tokens.
-            "status" | "thinking_tokens" => return Some(Vec::new()),
-            _ => return None,
+            // Transient hints about a request in flight or a running estimate of thinking tokens,
+            // the list of background tasks (task events cover each one), and the --name title.
+            "status" | "thinking_tokens" | "background_tasks_changed" | "session_title_changed" => {
+                Vec::new()
+            }
+            subtype => self
+                .subagents
+                .task_event(subtype, line)?
+                .into_iter()
+                .collect(),
         };
-        Some(vec![event])
+        Some(events)
+    }
+
+    fn on_init(&mut self, line: &Value) -> Vec<AgentEvent> {
+        self.turn_open = true;
+        self.cwd = string_at(line, "cwd");
+        let model = string_at(line, "model");
+        self.context.set_model(model.clone());
+        let mut events = vec![AgentEvent::Init {
+            session_id: string_at(line, "session_id"),
+            model,
+            tools: strings_at(line, "tools"),
+        }];
+        // Under -p Claude Code skips a bad --mcp-config entry and runs on. An entry naming
+        // Argonauts' own server means the adapter produced something this version rejects; your
+        // own servers' troubles are yours. Each turn's init repeats it.
+        if let Some(servers) = line.get("mcp_server_errors").and_then(mcp_error_summary)
+            && self.rejected_mcp.is_none()
+        {
+            events.push(AgentEvent::Error {
+                category: ErrorCategory::Cli,
+                message: format!(
+                    "adapter broken: Claude Code rejected Argonauts' MCP config ({servers}), \
+                     so the status tool is missing"
+                ),
+                retryable: false,
+            });
+            self.rejected_mcp = Some(servers);
+        }
+        events
+    }
+
+    /// Sent before each retry of an API request. Waiting fixes a rate limit or an overload, so
+    /// those are retries; a login, billing, or request problem is reported once as an error.
+    fn on_api_retry(&mut self, line: &Value) -> AgentEvent {
+        let code = str_at(line, "error").unwrap_or("unknown");
+        let category = errors::from_api_error(code, "");
+        let lasting = category != ErrorCategory::Unknown && !errors::retryable(category);
+        if lasting && self.retry_errors.insert(category) {
+            let status = line
+                .get("error_status")
+                .and_then(Value::as_u64)
+                .map(|s| format!(" (HTTP {s})"))
+                .unwrap_or_default();
+            return self.error(
+                category,
+                format!("Claude Code's API requests fail with {code}{status}"),
+            );
+        }
+        AgentEvent::Retry {
+            reason: errors::retry_reason(line),
+            delay_ms: line.get("retry_delay_ms").and_then(Value::as_u64),
+        }
+    }
+
+    fn on_rate_limit(&mut self, line: &Value) -> Vec<AgentEvent> {
+        let info = line.get("rate_limit_info").unwrap_or(line);
+        let Some(reading) = quota::reading(info, OffsetDateTime::now_utc()) else {
+            return vec![AgentEvent::QuotaSignal {
+                detail: info.clone(),
+            }];
+        };
+        let limit = quota::usage_limit_message(&reading);
+        let mut events = vec![AgentEvent::Quota { reading }];
+        if let Some(message) = limit {
+            events.push(self.error(ErrorCategory::UsageLimit, message));
+        }
+        events
     }
 
     fn on_stream_event(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
         let event = line.get("event")?;
+        let main = string_at(line, "parent_tool_use_id").is_none();
         match str_at(event, "type")? {
             "message_start" => {
+                self.turn_open = true;
                 let message = event.get("message")?;
                 self.streaming_message_id = string_at(message, "id");
-                Some(self.observe_usage(str_at(message, "id"), message.get("usage")))
+                Some(self.observe_usage(str_at(message, "id"), message.get("usage"), main))
             }
             "message_delta" => {
                 let id = self.streaming_message_id.clone();
-                Some(self.observe_usage(id.as_deref(), event.get("usage")))
+                Some(self.observe_usage(id.as_deref(), event.get("usage"), main))
             }
             "content_block_delta" => Self::on_content_delta(line, event.get("delta")?),
             "message_stop" => {
@@ -128,6 +209,7 @@ impl ClaudeStreamParser {
 
     fn on_assistant(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
         let message = line.get("message")?;
+        self.turn_open = true;
         let parent = string_at(line, "parent_tool_use_id");
         let mut events = Vec::new();
         let mut text_parts = Vec::new();
@@ -156,15 +238,26 @@ impl ClaudeStreamParser {
                 }
                 Some("redacted_thinking") => {}
                 Some("tool_use" | "server_tool_use" | "mcp_tool_use") => {
-                    events.push(self.start_tool(block, parent.clone()));
+                    events.extend(self.start_tool(block, parent.clone()));
                 }
                 _ => events.push(AgentEvent::Unknown { raw: block.clone() }),
+            }
+        }
+        if let Some(child) = &parent {
+            let text = (!text_parts.is_empty()).then(|| text_parts.join("\n"));
+            // Before the child's own steps, so the tree has the child when they arrive.
+            if let Some(update) = self.subagents.activity(child, text.as_deref()) {
+                events.insert(0, update);
             }
         }
         if let Some(code) = str_at(line, "error") {
             events.push(self.api_error(code, &text_parts));
         }
-        events.extend(self.observe_usage(str_at(message, "id"), message.get("usage")));
+        events.extend(self.observe_usage(
+            str_at(message, "id"),
+            message.get("usage"),
+            parent.is_none(),
+        ));
         Some(events)
     }
 
@@ -188,27 +281,51 @@ impl ClaudeStreamParser {
             .iter()
             .filter(|block| str_at(block, "type") == Some("tool_result"))
             .collect();
+        // A subagent's prompt and its tool results come back as user messages.
+        let mut events: Vec<AgentEvent> = match &parent {
+            Some(child) => {
+                self.turn_open = true;
+                self.subagents.activity(child, None).into_iter().collect()
+            }
+            None => Vec::new(),
+        };
         // `tool_use_result` belongs to the message, so it is only unambiguous for a single result.
         let structured = match results.as_slice() {
             [_] => line.get("tool_use_result"),
             _ => None,
         };
-        results
-            .into_iter()
-            .flat_map(|block| self.finish_tool(block, structured, parent.clone()))
-            .collect()
+        for block in results {
+            events.extend(self.finish_tool(block, structured, parent.clone()));
+        }
+        events
     }
 
     fn on_result(&mut self, line: &Value) -> Vec<AgentEvent> {
-        self.result_reported = true;
+        self.results_seen += 1;
+        self.turn_open = false;
         let mut events: Vec<AgentEvent> = self.usage.result_totals(line).into_iter().collect();
+        events.extend(self.context.observe_result(line));
         let subtype = str_at(line, "subtype").unwrap_or("success");
-        let is_error = bool_at(line, "is_error") || subtype != "success";
+        let mut is_error = bool_at(line, "is_error") || subtype != "success";
         let text = string_at(line, "result").filter(|t| !t.is_empty());
-        if is_error && !self.error_reported {
+        self.result_error = None;
+        if is_error {
             let message = result_error_message(line, subtype, text.as_deref());
             let category = errors::from_result(line, &message);
-            events.push(self.error(category, message));
+            self.result_error = Some(category);
+            if !self.error_reported {
+                events.push(self.error(category, message));
+            }
+        } else if let Some(servers) = &self.rejected_mcp {
+            // The work may be fine, but the session ran without the status tool, so the
+            // rejected config decides how it ends. Reported again as the turn's last error.
+            let message = format!(
+                "adapter broken: the turn ran without the status tool, since Claude Code \
+                 rejected Argonauts' MCP config ({servers})"
+            );
+            is_error = true;
+            self.result_error = Some(ErrorCategory::Cli);
+            events.push(self.error(ErrorCategory::Cli, message));
         }
         events.push(AgentEvent::Result {
             text,
@@ -218,13 +335,18 @@ impl ClaudeStreamParser {
                 .cloned(),
             is_error,
         });
+        // The next turn reports its own failure.
+        self.error_reported = false;
         events
     }
 
-    fn start_tool(&mut self, block: &Value, parent: Option<String>) -> AgentEvent {
+    fn start_tool(&mut self, block: &Value, parent: Option<String>) -> Vec<AgentEvent> {
         let id = string_at(block, "id").unwrap_or_default();
         let name = string_at(block, "name").unwrap_or_default();
         let input = block.get("input").cloned().unwrap_or(Value::Null);
+        let spawned = self
+            .subagents
+            .tool_started(&id, &name, &input, parent.as_deref());
         self.open_tools.insert(
             id.clone(),
             OpenTool {
@@ -232,12 +354,14 @@ impl ClaudeStreamParser {
                 input: input.clone(),
             },
         );
-        AgentEvent::ToolStarted {
+        let mut events = vec![AgentEvent::ToolStarted {
             id,
             name,
             input,
             parent,
-        }
+        }];
+        events.extend(spawned);
+        events
     }
 
     fn finish_tool(
@@ -248,12 +372,17 @@ impl ClaudeStreamParser {
     ) -> Vec<AgentEvent> {
         let id = string_at(block, "tool_use_id").unwrap_or_default();
         let ok = !bool_at(block, "is_error");
+        let output = tool_output_text(block.get("content"));
+        let child_done = self
+            .subagents
+            .tool_finished(&id, ok, output.as_deref(), structured);
         let mut events = vec![AgentEvent::ToolFinished {
             id: id.clone(),
             ok,
-            output: tool_output_text(block.get("content")),
+            output,
             parent,
         }];
+        events.extend(child_done);
         if let Some(tool) = self.open_tools.remove(&id)
             && ok
         {
@@ -291,11 +420,22 @@ impl ClaudeStreamParser {
             .to_owned()
     }
 
-    fn observe_usage(&mut self, id: Option<&str>, usage: Option<&Value>) -> Vec<AgentEvent> {
-        match (id, usage) {
-            (Some(id), Some(usage)) => self.usage.observe(id, usage).into_iter().collect(),
-            _ => Vec::new(),
+    /// `main` is false for a subagent's messages, which count toward spend but fill their own
+    /// context rather than the session's.
+    fn observe_usage(
+        &mut self,
+        id: Option<&str>,
+        usage: Option<&Value>,
+        main: bool,
+    ) -> Vec<AgentEvent> {
+        let (Some(id), Some(usage)) = (id, usage) else {
+            return Vec::new();
+        };
+        let mut events: Vec<AgentEvent> = self.usage.observe(id, usage).into_iter().collect();
+        if main {
+            events.extend(self.context.observe(usage));
         }
+        events
     }
 
     fn error(&mut self, category: ErrorCategory, message: String) -> AgentEvent {
@@ -305,6 +445,16 @@ impl ClaudeStreamParser {
             message,
             retryable: errors::retryable(category),
         }
+    }
+
+    /// A process that failed with a result nobody could classify, then exited non-zero, crashed.
+    fn crash_after_error_result(&self, exit_code: Option<i32>) -> Option<AgentEvent> {
+        let code = exit_code.filter(|code| !matches!(code, 0 | 130 | 143))?;
+        (self.result_error == Some(ErrorCategory::Unknown)).then(|| AgentEvent::Error {
+            category: ErrorCategory::Unknown,
+            message: format!("claude exited with code {code} after an error it didn't explain"),
+            retryable: false,
+        })
     }
 }
 
@@ -327,22 +477,38 @@ impl StreamParser for ClaudeStreamParser {
             return Vec::new();
         }
         if line.to_lowercase().starts_with("error") {
-            let category = errors::from_text(line).unwrap_or(ErrorCategory::Cli);
-            return vec![self.error(category, line.to_owned())];
+            if let Some(category) = errors::from_text(line) {
+                return vec![self.error(category, line.to_owned())];
+            }
+            // Unexplained, so it leaves the turn's verdict to the result or the exit, and it
+            // doesn't overrule an error that already explained the turn.
+            if !self.error_reported {
+                self.stderr_error = Some(line.to_owned());
+                return vec![AgentEvent::Error {
+                    category: ErrorCategory::Unknown,
+                    message: line.to_owned(),
+                    retryable: false,
+                }];
+            }
         }
-        vec![AgentEvent::Unknown {
-            raw: Value::String(line.to_owned()),
-        }]
+        // Other stderr is free text, not the event stream, so it never counts as an unknown
+        // event. The raw log and the worker's stderr tail keep it.
+        Vec::new()
     }
 
     fn finish(&mut self, exit_code: Option<i32>) -> Vec<AgentEvent> {
-        if self.result_reported {
+        if std::mem::replace(&mut self.finished, true) {
             return Vec::new();
         }
-        self.result_reported = true;
+        if self.results_seen > 0 && !self.turn_open {
+            return self
+                .crash_after_error_result(exit_code)
+                .into_iter()
+                .collect();
+        }
         let mut events = Vec::new();
         if !self.error_reported {
-            let (category, message) = missing_result_error(exit_code);
+            let (category, message) = missing_result_error(exit_code, self.stderr_error.as_deref());
             events.push(self.error(category, message));
         }
         events.push(AgentEvent::Result {
@@ -354,7 +520,44 @@ impl StreamParser for ClaudeStreamParser {
     }
 }
 
-fn missing_result_error(exit_code: Option<i32>) -> (ErrorCategory, String) {
+/// Argonauts' own server as `mcp_server_errors` names it, with its error, or `None` when it
+/// isn't named. Its shape isn't documented, so strings, objects, and a map by server name all read.
+fn mcp_error_summary(errors: &Value) -> Option<String> {
+    let entries: Vec<String> = match errors {
+        Value::Array(items) => items.iter().map(describe_mcp_error).collect(),
+        Value::Object(map) => map
+            .iter()
+            .map(|(name, error)| format!("{name}: {}", describe_mcp_error(error)))
+            .collect(),
+        Value::String(text) => vec![text.clone()],
+        _ => Vec::new(),
+    };
+    let entries: Vec<String> = entries
+        .into_iter()
+        .filter(|entry| entry.contains(STATUS_SERVER))
+        .collect();
+    (!entries.is_empty()).then(|| entries.join("; "))
+}
+
+fn describe_mcp_error(error: &Value) -> String {
+    match error {
+        Value::String(text) => text.clone(),
+        Value::Object(_) => {
+            let name = str_at(error, "name").or_else(|| str_at(error, "server"));
+            let detail = str_at(error, "error").or_else(|| str_at(error, "message"));
+            match (name, detail) {
+                (Some(name), Some(detail)) => format!("{name}: {detail}"),
+                (Some(text), None) | (None, Some(text)) => text.to_owned(),
+                (None, None) => error.to_string(),
+            }
+        }
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// A crash unless a signal ended it. `said` is the last unexplained stderr error.
+fn missing_result_error(exit_code: Option<i32>, said: Option<&str>) -> (ErrorCategory, String) {
     match exit_code {
         None => (
             ErrorCategory::Interrupted,
@@ -365,10 +568,13 @@ fn missing_result_error(exit_code: Option<i32>) -> (ErrorCategory, String) {
             ErrorCategory::Interrupted,
             format!("claude was interrupted (exit code {code}) before it reported a result"),
         ),
-        Some(code) => (
-            ErrorCategory::Cli,
-            format!("claude exited with code {code} before it reported a result"),
-        ),
+        Some(code) => {
+            let said = said.map(|line| format!(": {line}")).unwrap_or_default();
+            (
+                ErrorCategory::Unknown,
+                format!("claude exited with code {code} before it reported a result{said}"),
+            )
+        }
     }
 }
 
@@ -405,6 +611,8 @@ fn result_error_message(result: &Value, subtype: &str, text: Option<&str>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use argonauts_core::events::session::SubagentStatus;
+    use argonauts_core::limits::QuotaStatus;
     use argonauts_core::{RetryReason, TodoStatus};
     use serde_json::json;
 
@@ -475,7 +683,7 @@ mod tests {
                 "type": "message_start",
                 "message": {"id": "msg_1", "usage": {"input_tokens": 10, "output_tokens": 1}}}}),
         );
-        assert_eq!(types(&start), ["usage"]);
+        assert_eq!(types(&start), ["usage", "context_fill"]);
         let delta = parse(
             &mut parser,
             json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
@@ -654,12 +862,24 @@ mod tests {
         );
         let info =
             json!({"status": "allowed_warning", "utilization": 0.9, "rateLimitType": "five_hour"});
+        let quota = parse(
+            &mut parser,
+            json!({"type": "rate_limit_event", "rate_limit_info": info.clone()}),
+        );
+        let [AgentEvent::Quota { reading }] = quota.as_slice() else {
+            panic!("expected one quota reading, got {quota:?}");
+        };
+        assert_eq!(reading.status, QuotaStatus::Warning);
+        assert_eq!(reading.used, Some(0.9));
+        assert_eq!(reading.detail, Some(info));
+        // A payload without a status can't be normalized, so it stays raw.
+        let odd = json!({"note": "new shape"});
         assert_eq!(
             parse(
                 &mut parser,
-                json!({"type": "rate_limit_event", "rate_limit_info": info.clone()})
+                json!({"type": "rate_limit_event", "rate_limit_info": odd.clone()})
             ),
-            [AgentEvent::QuotaSignal { detail: info }]
+            [AgentEvent::QuotaSignal { detail: odd }]
         );
         let denied = parse(
             &mut parser,
@@ -770,10 +990,69 @@ mod tests {
         let mut parser = ClaudeStreamParser::new();
         let events = parser.finish(None);
         assert_eq!(types(&events), ["error", "result"]);
+
+        // Any other exit without a result is a crash, not a sign the adapter broke.
+        for code in [0, 1] {
+            let events = ClaudeStreamParser::new().finish(Some(code));
+            assert_eq!(
+                events[0],
+                AgentEvent::Error {
+                    category: ErrorCategory::Unknown,
+                    message: format!("claude exited with code {code} before it reported a result"),
+                    retryable: false
+                }
+            );
+        }
     }
 
     #[test]
-    fn stderr_errors_are_categorized_and_other_lines_kept() {
+    fn unexplained_stderr_errors_leave_the_verdict_to_the_result_or_exit() {
+        let mut parser = ClaudeStreamParser::new();
+        let events = parser.parse_stderr_line("Error: something broke");
+        assert_eq!(
+            events,
+            [AgentEvent::Error {
+                category: ErrorCategory::Unknown,
+                message: "Error: something broke".into(),
+                retryable: false
+            }]
+        );
+        let result = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": true,
+                   "result": "You've hit your usage limit"}),
+        );
+        assert!(matches!(
+            &result[0],
+            AgentEvent::Error {
+                category: ErrorCategory::UsageLimit,
+                ..
+            }
+        ));
+
+        let mut parser = ClaudeStreamParser::new();
+        parser.parse_stderr_line("Error: something broke");
+        let events = parser.finish(Some(1));
+        assert_eq!(
+            events[0],
+            AgentEvent::Error {
+                category: ErrorCategory::Unknown,
+                message: "claude exited with code 1 before it reported a result: \
+                          Error: something broke"
+                    .into(),
+                retryable: false
+            }
+        );
+
+        // Once an error explained the turn, a vague one on stderr doesn't overrule it, and like
+        // other stderr text it isn't an unknown event either.
+        let mut parser = ClaudeStreamParser::new();
+        parser.parse_stderr_line("Error: Prompt is too long");
+        assert_eq!(parser.parse_stderr_line("Error: something broke"), []);
+    }
+
+    #[test]
+    fn stderr_errors_are_categorized_and_other_lines_ignored() {
         let mut parser = ClaudeStreamParser::new();
         assert!(parser.parse_stderr_line("").is_empty());
         let events = parser.parse_stderr_line(
@@ -789,12 +1068,7 @@ mod tests {
                 retryable: false
             }]
         );
-        assert_eq!(
-            parser.parse_stderr_line("Warning: something"),
-            [AgentEvent::Unknown {
-                raw: json!("Warning: something")
-            }]
-        );
+        assert_eq!(parser.parse_stderr_line("Warning: something"), []);
         assert_eq!(types(&parser.finish(Some(1))), ["result"]);
     }
 
@@ -810,5 +1084,278 @@ mod tests {
             .as_deref(),
             Some("a\n[image]")
         );
+    }
+
+    fn init_with(mcp_server_errors: Value) -> Value {
+        json!({"type": "system", "subtype": "init", "session_id": "s-1", "model": "claude-haiku",
+               "tools": ["Read"], "mcp_servers": [], "mcp_server_errors": mcp_server_errors})
+    }
+
+    #[test]
+    fn your_own_mcp_servers_failing_is_not_the_adapters_fault() {
+        let mut parser = ClaudeStreamParser::new();
+        let errors = json!([{"name": "github", "error": "connection refused"}]);
+        assert_eq!(types(&parse(&mut parser, init_with(errors))), ["init"]);
+        let mixed = json!({"github": "connection refused", "argonauts_status": "bad"});
+        let events = parse(&mut ClaudeStreamParser::new(), init_with(mixed));
+        let AgentEvent::Error { message, .. } = &events[1] else {
+            unreachable!("{events:?}")
+        };
+        assert!(message.contains("argonauts_status: bad"), "{message}");
+        assert!(!message.contains("github"), "{message}");
+    }
+
+    #[test]
+    fn claude_mcp_error_in_init_is_adapter_broken() {
+        let shapes = [
+            json!([{"name": "argonauts_status", "error": "command: Required"}]),
+            json!(["argonauts_status: command: Required"]),
+            json!({"argonauts_status": "command: Required"}),
+        ];
+        for errors in shapes {
+            let mut parser = ClaudeStreamParser::new();
+            let events = parse(&mut parser, init_with(errors.clone()));
+            assert_eq!(types(&events), ["init", "error"], "{errors}");
+            let AgentEvent::Error {
+                category,
+                message,
+                retryable,
+            } = &events[1]
+            else {
+                unreachable!()
+            };
+            assert_eq!(*category, ErrorCategory::Cli);
+            assert!(!retryable);
+            assert!(message.starts_with("adapter broken"), "{message}");
+            assert!(
+                message.contains("argonauts_status: command: Required"),
+                "{message}"
+            );
+            // The session still reports its own result error, if it has one.
+            let result = parse(
+                &mut parser,
+                json!({"type": "result", "subtype": "success", "is_error": true,
+                       "result": "Invalid API key"}),
+            );
+            assert_eq!(types(&result), ["error", "result"]);
+            assert!(matches!(
+                &result[0],
+                AgentEvent::Error {
+                    category: ErrorCategory::Auth,
+                    ..
+                }
+            ));
+
+            // The next turn's init names the same servers, and its clean result still ran
+            // without the status tool.
+            assert_eq!(types(&parse(&mut parser, init_with(errors))), ["init"]);
+            let result = parse(
+                &mut parser,
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "ok"}),
+            );
+            assert_eq!(types(&result), ["error", "result"]);
+            assert!(matches!(
+                &result[0],
+                AgentEvent::Error { category: ErrorCategory::Cli, message, retryable: false }
+                    if message.contains("argonauts_status")
+            ));
+            assert!(matches!(
+                &result[1],
+                AgentEvent::Result { is_error: true, .. }
+            ));
+        }
+        for clean in [json!([]), json!({}), Value::Null, json!([null])] {
+            let events = parse(&mut ClaudeStreamParser::new(), init_with(clean.clone()));
+            assert_eq!(types(&events), ["init"], "{clean}");
+        }
+    }
+
+    #[test]
+    fn claude_api_retry_categories() {
+        let retry = |parser: &mut ClaudeStreamParser, error: &str, status: Value| {
+            parse(
+                parser,
+                json!({"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 10,
+                       "retry_delay_ms": 500, "error_status": status, "error": error}),
+            )
+        };
+        let mut parser = ClaudeStreamParser::new();
+        for (error, status, reason) in [
+            ("rate_limit", json!(429), RetryReason::RateLimit),
+            ("overloaded", json!(529), RetryReason::Overloaded),
+            ("server_error", json!(500), RetryReason::ServerError),
+            ("unknown", Value::Null, RetryReason::Network),
+            (
+                "max_output_tokens",
+                json!(200),
+                RetryReason::Other("max_output_tokens".into()),
+            ),
+        ] {
+            assert_eq!(
+                retry(&mut parser, error, status),
+                [AgentEvent::Retry {
+                    reason,
+                    delay_ms: Some(500)
+                }],
+                "{error}"
+            );
+        }
+        for (error, category) in [
+            ("authentication_failed", ErrorCategory::Auth),
+            ("oauth_org_not_allowed", ErrorCategory::Auth),
+            ("account_on_hold", ErrorCategory::Auth),
+            ("billing_error", ErrorCategory::Billing),
+            ("model_not_found", ErrorCategory::ModelUnavailable),
+        ] {
+            let mut parser = ClaudeStreamParser::new();
+            let first = retry(&mut parser, error, json!(401));
+            assert_eq!(
+                first,
+                [AgentEvent::Error {
+                    category,
+                    message: format!("Claude Code's API requests fail with {error} (HTTP 401)"),
+                    retryable: false
+                }],
+                "{error}"
+            );
+            // Later attempts are only retries, and the result doesn't report it again.
+            assert_eq!(types(&retry(&mut parser, error, json!(401))), ["retry"]);
+            let end = parse(
+                &mut parser,
+                json!({"type": "result", "subtype": "success", "is_error": true,
+                       "result": "Failed to authenticate"}),
+            );
+            assert_eq!(types(&end), ["result"]);
+        }
+    }
+
+    #[test]
+    fn a_rejected_rate_limit_is_a_usage_limit() {
+        let mut parser = ClaudeStreamParser::new();
+        let events = parse(
+            &mut parser,
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected",
+                   "resetsAt": 1790678400, "rateLimitType": "five_hour"}}),
+        );
+        assert_eq!(types(&events), ["quota", "error"]);
+        let AgentEvent::Error {
+            category,
+            retryable,
+            message,
+        } = &events[1]
+        else {
+            unreachable!()
+        };
+        assert_eq!(*category, ErrorCategory::UsageLimit);
+        assert!(*retryable && message.contains("five_hour"));
+        let end = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": true,
+                   "result": "You've hit your limit"}),
+        );
+        assert_eq!(types(&end), ["result"]);
+    }
+
+    #[test]
+    fn subagent_messages_update_the_tree() {
+        let mut parser = ClaudeStreamParser::new();
+        let spawn = parse(
+            &mut parser,
+            json!({"type": "assistant", "parent_tool_use_id": null, "message": {"id": "m1",
+                   "content": [{"type": "tool_use", "id": "toolu_a", "name": "Agent",
+                                "input": {"description": "Read it", "prompt": "Read README.md",
+                                          "subagent_type": "general-purpose"}}]}}),
+        );
+        assert_eq!(types(&spawn), ["tool_started", "subagent"]);
+        let prompt = parse(
+            &mut parser,
+            json!({"type": "user", "parent_tool_use_id": "toolu_a",
+                   "message": {"role": "user", "content": [{"type": "text", "text": "Read README.md"}]}}),
+        );
+        let [AgentEvent::Subagent { update }] = prompt.as_slice() else {
+            panic!("{prompt:?}");
+        };
+        assert_eq!(update.status, SubagentStatus::Running);
+        // A subagent's usage counts toward spend but not the session's context.
+        let step = parse(
+            &mut parser,
+            json!({"type": "assistant", "parent_tool_use_id": "toolu_a", "message": {"id": "m2",
+                   "content": [{"type": "tool_use", "id": "toolu_b", "name": "Read",
+                                "input": {"file_path": "README.md"}}],
+                   "usage": {"input_tokens": 50, "output_tokens": 2}}}),
+        );
+        assert_eq!(types(&step), ["tool_started", "usage"]);
+        assert!(
+            matches!(&step[0], AgentEvent::ToolStarted { parent: Some(p), .. } if p == "toolu_a")
+        );
+        let done = parse(
+            &mut parser,
+            json!({"type": "user", "parent_tool_use_id": null, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_a", "content": [{"type": "text", "text": "# Title"}]}]}}),
+        );
+        assert_eq!(types(&done), ["tool_finished", "subagent"]);
+        let AgentEvent::Subagent { update } = &done[1] else {
+            unreachable!()
+        };
+        assert_eq!(update.status, SubagentStatus::Done);
+        assert_eq!(update.last_message.as_deref(), Some("# Title"));
+    }
+
+    #[test]
+    fn each_turn_reports_its_own_result() {
+        let mut parser = ClaudeStreamParser::new();
+        let failed = json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                            "errors": ["Prompt is too long"]});
+        assert_eq!(
+            types(&parse(&mut parser, failed.clone())),
+            ["error", "result"]
+        );
+        parse(
+            &mut parser,
+            json!({"type": "assistant", "message": {"id": "m9", "content": [{"type": "text", "text": "again"}]}}),
+        );
+        assert_eq!(types(&parse(&mut parser, failed)), ["error", "result"]);
+        // Every turn ended, so a clean exit adds nothing.
+        assert!(parser.finish(Some(0)).is_empty());
+        assert!(parser.finish(Some(0)).is_empty());
+
+        // A second turn cut short still gets a result.
+        let mut parser = ClaudeStreamParser::new();
+        parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "one"}),
+        );
+        parse(
+            &mut parser,
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m2"}}}),
+        );
+        assert_eq!(types(&parser.finish(Some(130))), ["error", "result"]);
+    }
+
+    #[test]
+    fn a_non_zero_exit_after_an_unexplained_error_result_is_a_crash() {
+        let unexplained = json!({"type": "result", "subtype": "error_during_execution",
+                                 "is_error": true, "errors": ["something odd"]});
+        let mut parser = ClaudeStreamParser::new();
+        parse(&mut parser, unexplained.clone());
+        assert_eq!(
+            parser.finish(Some(1)),
+            [AgentEvent::Error {
+                category: ErrorCategory::Unknown,
+                message: "claude exited with code 1 after an error it didn't explain".into(),
+                retryable: false
+            }]
+        );
+        for exit in [Some(0), Some(130), None] {
+            let mut parser = ClaudeStreamParser::new();
+            parse(&mut parser, unexplained.clone());
+            assert!(parser.finish(exit).is_empty(), "{exit:?}");
+        }
+        let mut budget = ClaudeStreamParser::new();
+        parse(
+            &mut budget,
+            json!({"type": "result", "subtype": "error_max_budget_usd", "is_error": true}),
+        );
+        assert!(budget.finish(Some(1)).is_empty());
     }
 }

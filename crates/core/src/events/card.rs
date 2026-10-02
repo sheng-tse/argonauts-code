@@ -159,7 +159,7 @@ pub enum CardEvent {
     DebtCleared {
         by: WorkerRef,
     },
-    /// `/revert`: the card's branch was reset to checkpoint `to`, and the work after it kept.
+    /// `/rewind`: the card's branch was reset to checkpoint `to`, and the work after it kept.
     Reverted {
         to: u32,
         /// The side branch that holds the replaced work.
@@ -203,6 +203,10 @@ pub struct GateOutcome {
     pub violations: Vec<Violation>,
     /// Whether it ran inside the OS sandbox.
     pub sandboxed: bool,
+    /// Nothing ran, as when `gates.run` is empty. Nothing failed either, so `passed` holds,
+    /// but no rule that needs a suite to have run counts it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -222,6 +226,9 @@ pub enum GateKind {
     AffectedTests,
     /// The full suite in the final check.
     FullSuite,
+    /// A done report's changed files are on the card's branch: an owner that changed nothing
+    /// says so instead of naming files.
+    ReportedChanges,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

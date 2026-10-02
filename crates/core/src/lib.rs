@@ -2,13 +2,17 @@
 //! nothing uses them; newer ones are reached by path.
 
 pub mod adapter;
+pub mod agents;
 pub mod api;
 pub mod app;
 pub mod budget;
+pub mod build_output;
 pub mod card;
 pub mod clock;
 pub mod config;
 pub mod control;
+pub mod crew_panel;
+pub mod display_names;
 pub mod driver;
 pub mod engine;
 pub mod event;
@@ -23,6 +27,8 @@ pub mod layout;
 pub mod limits;
 pub mod log;
 pub mod main_sessions;
+pub mod model_catalog;
+pub mod model_picker;
 pub mod names;
 pub mod paths;
 pub mod policy;
@@ -34,6 +40,8 @@ pub mod sanitize;
 pub mod session;
 pub mod settings;
 pub mod steps;
+pub mod vendor_commands;
+pub mod vendor_sessions;
 pub mod views;
 pub mod worker;
 pub mod workflow;

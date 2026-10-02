@@ -1,0 +1,31 @@
+{
+  "adapter": "claude-code",
+  "args": [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Grep,Glob",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "user",
+    "--settings",
+    "{\"crossSessionInbound\":\"refuse\"}",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--json-schema",
+    "{\"additionalProperties\":false,\"description\":\"Code reads `kind` and picks the branch.\",\"properties\":{\"answer_markdown\":{\"description\":\"The answer to show. For a change, a one-paragraph plan of attack.\",\"type\":\"string\"},\"estimate\":{\"anyOf\":[{\"additionalProperties\":false,\"description\":\"Facts the triage rules read. The agent never picks the mode.\",\"properties\":{\"file_count\":{\"description\":\"How many files, when the list is only a sample.\",\"type\":\"integer\"},\"files_likely\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"risk_labels\":{\"description\":\"Labels such as `architecture`, `migration`, `security`, `storage`, `api`.\",\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"summary\":{\"description\":\"One line describing the change.\",\"type\":\"string\"},\"task_type\":{\"description\":\"A task type recipes can match, such as `docs`, `bugfix`, or `api-feature`.\",\"type\":\"string\"},\"tests_exist\":{\"type\":\"boolean\"},\"unknowns\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"}},\"required\":[\"file_count\",\"files_likely\",\"risk_labels\",\"summary\",\"task_type\",\"tests_exist\",\"unknowns\"],\"type\":\"object\"},{\"type\":\"null\"}],\"description\":\"Present for `change` and `unclear`.\"},\"kind\":{\"anyOf\":[{\"description\":\"A chat message or a question. No run starts.\",\"enum\":[\"answer\"],\"type\":\"string\"},{\"description\":\"A change to the repo.\",\"enum\":[\"change\"],\"type\":\"string\"},{\"description\":\"It could be either; the app offers `[s] solo [c] crew [n] no`.\",\"enum\":[\"unclear\"],\"type\":\"string\"}]}},\"required\":[\"answer_markdown\",\"estimate\",\"kind\"],\"type\":\"object\"}"
+  ],
+  "duration_ms": 16293,
+  "exit_code": 0,
+  "program": "claude",
+  "resumed_from": null
+}

@@ -1,0 +1,1 @@
+{"object":"list","data":[{"id":"llama3.2:latest","object":"model","created":1790000000,"owned_by":"library"},{"id":"gemma3:12b","object":"model","created":1790000000,"owned_by":"library"},{"id":"gpt-oss:20b","object":"model","created":1790000000,"owned_by":"library"}]}

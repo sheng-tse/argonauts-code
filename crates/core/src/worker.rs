@@ -73,6 +73,9 @@ pub struct SessionSpec {
     pub compaction: Compaction,
     /// Cap on the harness's own subagents.
     pub native_fanout: NativeFanout,
+    /// The CLI loads none of its own MCP servers, plugins, or project settings, as for a blind
+    /// reviewer or the approver. Every other session gets what the CLI loads when run directly.
+    pub isolated: bool,
     /// Read by the agent's `argonauts_status` MCP tool, pre-filtered for the role. `None` turns
     /// the tool off.
     pub status_file: Option<PathBuf>,
@@ -129,6 +132,10 @@ pub struct SandboxProfile {
     pub deny_read: Vec<PathBuf>,
     /// Network for commands the agent runs. The harness still reaches its model API.
     pub network: bool,
+    /// With `network` off, the one loopback port the session may connect to: the Argonauts
+    /// proxy, which tunnels only to its harness's API hosts. `None` leaves every loopback port
+    /// open and nothing beyond, as gates have it.
+    pub proxy_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -136,7 +143,7 @@ pub struct SandboxProfile {
 pub enum SandboxMode {
     /// No sandbox. Endpoint sessions only; `HardLimits::check_session` flags it on a harness.
     None,
-    /// Seatbelt on macOS, Landlock plus seccomp on Linux.
+    /// Seatbelt on macOS, Landlock with user, mount, network, and PID namespaces on Linux.
     #[default]
     Os,
     /// Only the worktree mounted.
@@ -232,6 +239,11 @@ pub trait Worker: Send + Sync {
     fn start(&self, spec: SessionSpec) -> BoxFuture<'_, Result<SessionHandle, WorkerError>>;
     /// Opens the session in the vendor's own UI, for take-over.
     fn takeover_command(&self, vendor_session: &str, workdir: &Path) -> Option<CommandSpec>;
+    /// The cheapest model its harness offers, for small read-only steps such as a handoff
+    /// summary. `None` when it knows of none, and then the worker's own model does them.
+    fn cheapest_model(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -255,4 +267,10 @@ pub trait WorkerDirectory: Send + Sync {
     fn get(&self, worker: &WorkerRef) -> Result<Arc<dyn Worker>, WorkerError>;
     /// Every configured worker that is installed and enabled.
     fn available(&self) -> Vec<WorkerRef>;
+    /// The CLI behind `worker` keeps a read-only session from changing files with its own
+    /// flags and sandbox. False when that isn't known, so callers keep their own sandbox.
+    fn enforces_read_only(&self, worker: &WorkerRef) -> bool {
+        let _ = worker;
+        false
+    }
 }

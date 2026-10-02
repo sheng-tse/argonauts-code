@@ -1,0 +1,24 @@
+---
+source: crates/tui/tests/snap_bottom.rs
+expression: text(&tight.lines)
+---
+● Opus on Claude Code · owner · card-002 (Add the JSON writer)
+  ⎿  … +6 lines (ctrl+o to expand)
+     Update(src/export.rs)
+     Adding the JSON writer next to the CSV one.
+
+● GPT 5.6 on Codex · owner · card-003 (Wire --json into the CLI)
+  ⎿  … +6 lines (ctrl+o to expand)
+     Update(src/cli.rs)
+     Adding the JSON writer next to the CSV one.
+
+✻ Building… (4m 12s · ↓ 48.2k tokens · build · 3 agents)
+
+──────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage
+
+  ◐ claude-code/opus  card-002                        2/5 · 4m12s · ↓ 18.1k tokens
+  ◐ codex/gpt-5.6     card-003                        1/5 · 3m40s · ↓ 12.9k tokens
+  ○ agy/gemini-3.6    review                          waiting for card-002

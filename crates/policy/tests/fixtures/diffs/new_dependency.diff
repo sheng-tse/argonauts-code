@@ -1,0 +1,28 @@
+diff --git a/package.json b/package.json
+index 3c4d5e6..7f8a9b0 100644
+--- a/package.json
++++ b/package.json
+@@ -1,10 +1,12 @@
+ {
+   "name": "demo",
+   "version": "1.0.0",
+   "scripts": {
+     "build": "tsc -p ."
+   },
+   "dependencies": {
+-    "express": "^4.18.2"
++    "express": "^4.19.2",
++    "left-pad": "^1.3.0",
++    "evil-pkg": "^0.0.1"
+   }
+ }
+diff --git a/Cargo.toml b/Cargo.toml
+index 1234567..89abcde 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -5,3 +5,5 @@ edition = "2024"
+ 
+ [dependencies]
+ anyhow = "1"
++serde = { version = "1", features = ["derive"] }
++sketchy-crate = "0.1"

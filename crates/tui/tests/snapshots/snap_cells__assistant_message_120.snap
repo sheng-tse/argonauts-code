@@ -1,0 +1,22 @@
+---
+source: crates/tui/tests/cells.rs
+assertion_line: 80
+expression: text(&lines)
+---
+● Here's the plan, with --json as the new flag:
+
+  - Parse the flag in src/cli.rs.
+  - Pass the format to the exporter, then write each row as one JSON object per line, so long exports stream instead of
+    building one huge array.
+
+  cd /tmp/argonauts-try && mkdir -p out
+  echo "export ready" > out/status.txt
+
+  fn write(&self, out: &mut dyn Write) -> Result<()> {
+      match self.format {
+          Format::Json => self.write_json(out),
+          Format::Csv => self.write_csv(out),
+      }
+  }
+
+  Run /tree to watch the crew.

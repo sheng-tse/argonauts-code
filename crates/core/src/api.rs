@@ -33,7 +33,7 @@ pub struct StartRun {
     pub estimate: Option<ChangeEstimate>,
     pub triage: Option<TriageDecision>,
     pub chat_turn: Option<TurnId>,
-    /// The merged run this continues (`/continue`).
+    /// The merged run this continues (`/follow-up`).
     pub continues: Option<RunId>,
     /// `--set key=value` overrides for this run.
     pub overrides: Vec<String>,
@@ -188,7 +188,7 @@ pub enum ApiError {
     /// The run can't do that now, such as steering a finished session.
     #[error("{0}")]
     NotNow(String),
-    #[error("run {0} is merged; /continue starts a follow-up run")]
+    #[error("run {0} is merged; /follow-up builds on it")]
     Merged(RunId),
     #[error("refused: {0}")]
     Refused(String),
@@ -289,6 +289,36 @@ pub trait ConductorApi: Send + Sync {
         scope: DiffScope,
     ) -> BoxFuture<'_, Result<DiffView, ApiError>>;
     fn raw(&self, run: &RunId, session: &SessionKey) -> BoxFuture<'_, Result<RawView, ApiError>>;
+    /// Resets a card's branch to checkpoint `handoff-<checkpoint>`, keeping the work after it on
+    /// a side branch. Merged work is refused; a new change undoes it instead.
+    fn revert(
+        &self,
+        run: &RunId,
+        card: &CardId,
+        checkpoint: u32,
+    ) -> BoxFuture<'_, Result<(), ApiError>> {
+        let _ = (run, card, checkpoint);
+        Box::pin(async {
+            Err(ApiError::NotNow(
+                "this conductor can't revert a card".to_owned(),
+            ))
+        })
+    }
+    /// Your verdict on an auto-approval from the spot-check queue. A wrong one drops that
+    /// decision point back to shadow.
+    fn spot_check(
+        &self,
+        run: &RunId,
+        id: &CheckpointId,
+        correct: bool,
+    ) -> BoxFuture<'_, Result<(), ApiError>> {
+        let _ = (run, id, correct);
+        Box::pin(async {
+            Err(ApiError::NotNow(
+                "this conductor takes no spot checks".to_owned(),
+            ))
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

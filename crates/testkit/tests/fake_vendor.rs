@@ -152,3 +152,19 @@ fn reads_stdin_during_the_script_and_refuses_to_write_outside() {
     assert!(stderr.contains("outside the working directory"), "{stderr}");
     assert!(!repo.scratch().join("escape.txt").exists());
 }
+
+#[test]
+fn answers_help_with_the_flags_the_doctor_looks_for() {
+    let repo = TempRepo::new().unwrap();
+    let vendors = install(&repo, FakeScenario::default());
+    let (code, help, _) = run(&vendors, &repo, "codex", &["exec", "--help"], "");
+    assert_eq!(code, 0);
+    for flag in ["--json", "--output-schema", "--skip-git-repo-check"] {
+        assert!(help.contains(flag), "{flag} in {help}");
+    }
+    let (code, help, _) = run(&vendors, &repo, "claude", &["--help"], "");
+    assert_eq!(code, 0);
+    assert!(help.contains("--output-format"), "{help}");
+    let (code, _, _) = run(&vendors, &repo, "claude", &["-p", "--help"], "");
+    assert_eq!(code, NO_RULE_EXIT);
+}

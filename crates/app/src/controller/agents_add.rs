@@ -1,0 +1,375 @@
+//! `/agents add <name>`: sets up one more agent Argonauts can use. A CLI with a profile, such
+//! as Hermes or OpenCode, is checked (its version and login, and how to install it when it's
+//! missing) and turned on. Ollama is looked for at its address and turned on as a local
+//! endpoint. OpenClaw is pointed at `/connect`, and any other name gets the `[[harness]]` entry
+//! it needs.
+
+use std::path::Path;
+
+use argonauts_core::NoteLevel;
+use argonauts_core::app::AppEvent;
+
+use super::doctor;
+use super::{Ctx, Effect, ScopeRequest};
+use crate::setup::probe;
+
+type Handled = anyhow::Result<Vec<Effect>>;
+
+/// Where Ollama listens when `endpoints.ollama.base_url` names nowhere else.
+const OLLAMA_URL: &str = "http://localhost:11434/v1";
+
+pub(crate) async fn add(ctx: &mut Ctx, name: &str) -> Handled {
+    let name = name.trim().to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!("{name:?} isn't an agent name: use letters, digits, and dashes.");
+    }
+    match name.as_str() {
+        "ollama" => ollama(ctx).await,
+        "openclaw" => Ok(openclaw(ctx)),
+        _ => cli(ctx, profile_id(&name)),
+    }
+}
+
+/// The names people use for the built-in CLIs.
+fn profile_id(name: &str) -> &str {
+    match name {
+        "claude" => "claude-code",
+        "agy" | "antigravity" => "antigravity-cli",
+        other => other,
+    }
+}
+
+/// Checks the CLI off the loop, since a login check can take seconds, and asks where to turn
+/// it on when it's off.
+fn cli(ctx: &mut Ctx, id: &str) -> Handled {
+    let env = Some(ctx.env.as_ref());
+    let resolved = ctx.settings.resolved();
+    let adapters = crate::commands::adapters_turning_on(env, resolved, &[id.to_owned()])?;
+    let Some(adapter) = adapters.iter().find(|adapter| adapter.id() == id).cloned() else {
+        own_cli(ctx, id);
+        return Ok(Vec::new());
+    };
+    let counted = crate::commands::adapters_here(env, resolved)?
+        .iter()
+        .any(|adapter| adapter.id() == id);
+    let on = counted
+        && ctx
+            .settings()
+            .agents
+            .get(id)
+            .is_none_or(|agent| agent.enabled);
+    let name = adapter.display_name().to_owned();
+    let settings = ctx.settings.shared();
+    let out = ctx.out.clone();
+    let id_owned = id.to_owned();
+    tokio::spawn(async move {
+        let (mut agents, _) = doctor::check(&[adapter], &settings).await;
+        let lines = match agents.first_mut() {
+            Some(agent) => {
+                // Whether it's on is said once, below, not in the doctor's words.
+                agent.enabled = true;
+                cli_lines(agent, on)
+            }
+            None => vec![format!("{id_owned} couldn't be checked.")],
+        };
+        out.send(AppEvent::Report {
+            title: format!("Adding {name}"),
+            lines,
+        });
+    });
+    if on {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Effect::AskScope(Box::new(ScopeRequest {
+        key: format!("agents.{id}.enabled"),
+        value: "true".to_owned(),
+        command: "agents".to_owned(),
+    }))])
+}
+
+fn cli_lines(agent: &probe::FoundAgent, on: bool) -> Vec<String> {
+    let mut lines = vec![doctor::agent_line(agent)];
+    if !agent.installed() {
+        match &agent.hints.install {
+            Some(install) => lines.push(format!("Install it with: {install}")),
+            None => lines.push(format!("Install {} and put it on your PATH.", agent.id)),
+        }
+        lines.push(format!("Then /agents add {} checks it again.", agent.id));
+    } else if agent.login == probe::LoginState::LoggedOut
+        && let Some(login) = &agent.hints.login
+    {
+        lines.push(format!("Log in with: {login}"));
+    }
+    lines.push(if on {
+        "It's on already.".to_owned()
+    } else {
+        format!("Turning it on: agents.{}.enabled = true.", agent.id)
+    });
+    lines
+}
+
+/// Looks for Ollama where your settings say, or at its usual address, and turns it on as a local
+/// endpoint. Nothing leaves your machine.
+async fn ollama(ctx: &mut Ctx) -> Handled {
+    let endpoint = ctx.settings().endpoints.get("ollama");
+    let set_up = endpoint.is_some_and(|endpoint| endpoint.local);
+    let url = endpoint
+        .and_then(|endpoint| endpoint.base_url.clone())
+        .unwrap_or_else(|| OLLAMA_URL.to_owned());
+    let servers = probe::local_servers(ctx.settings()).await;
+    let found = servers.iter().find(|server| server.id == "ollama");
+    let mut lines = match found {
+        Some(server) => {
+            let mut lines = vec![format!(
+                "Ollama answers at {} with {}: {}",
+                server.base_url,
+                count(server.models.len(), "model", "models"),
+                server.models.join(", ")
+            )];
+            if let Some(first) = server.models.first() {
+                lines.push(format!("Pick one with /model, such as ollama/{first}."));
+            }
+            lines
+        }
+        None => vec![
+            format!("Ollama isn't answering at {url}."),
+            "Install it from https://ollama.com, start it with `ollama serve`, and pull a model \
+             with `ollama pull <model>`. Then /agents add ollama checks it again."
+                .to_owned(),
+        ],
+    };
+    lines.push(if set_up {
+        "It's set up already.".to_owned()
+    } else {
+        "Turning it on: endpoints.ollama.local = true.".to_owned()
+    });
+    ctx.send(AppEvent::Report {
+        title: "Adding Ollama".to_owned(),
+        lines,
+    });
+    if set_up {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Effect::AskScope(Box::new(ScopeRequest {
+        key: "endpoints.ollama.local".to_owned(),
+        value: "true".to_owned(),
+        command: "agents".to_owned(),
+    }))])
+}
+
+/// OpenClaw's ACP bridge runs its tools outside the card's sandbox, so it drives Argonauts
+/// instead of joining the crew.
+fn openclaw(ctx: &mut Ctx) -> Vec<Effect> {
+    ctx.send(AppEvent::Report {
+        title: "OpenClaw can't join the crew".to_owned(),
+        lines: vec![
+            "`openclaw acp` runs its tools in OpenClaw's Gateway, outside the card's worktree \
+             and Argonauts' sandbox, so no profile runs it."
+                .to_owned(),
+            "/connect openclaw lets OpenClaw start and watch your runs over MCP instead."
+                .to_owned(),
+        ],
+    });
+    Vec::new()
+}
+
+/// A CLI with no profile: where it is, and the entry that would run it.
+fn own_cli(ctx: &mut Ctx, name: &str) {
+    let found = argonauts_conductor::quota::find_unsandboxed(name, None).ok();
+    let file = ctx.env.paths.global_models();
+    let mut lines = vec![match &found {
+        Some(path) => format!("{name} is at {}.", path.display()),
+        None => format!("{name} isn't on your PATH yet."),
+    }];
+    lines.push(format!(
+        "Argonauts runs a CLI with no profile through a [[harness]] entry in {}. For an ACP \
+         agent, start from this:",
+        ctx.env.display(&file)
+    ));
+    lines.push(String::new());
+    lines.extend(
+        harness_entry(name, found.as_deref())
+            .lines()
+            .map(str::to_owned),
+    );
+    lines.push(String::new());
+    lines.push(format!(
+        "Then /agents add {name} checks it and turns it on."
+    ));
+    ctx.send(AppEvent::Report {
+        title: format!("No profile for {name} yet"),
+        lines,
+    });
+    ctx.notice(
+        NoteLevel::Info,
+        "Built-in profiles: hermes, opencode-acp, claude-code, codex, antigravity-cli, opencode.",
+    );
+}
+
+/// The least an ACP agent's entry claims; conformance pins the rest.
+fn harness_entry(name: &str, binary: Option<&Path>) -> String {
+    let binary = binary.map_or_else(
+        || format!("/absolute/path/to/{name}"),
+        |path| path.display().to_string(),
+    );
+    format!(
+        r#"[[harness]]
+id = "{name}"
+display_name = "{name}"
+binary = "{binary}"
+version_args = ["--version"]
+tested_versions = []
+family = "from-model"
+transport = "acp"
+read_only_args = ["acp"]
+build_args = ["acp"]
+interactive_resume = []
+
+[harness.acp]
+modes = {{ read_only = "default", build = "default", spike = "default" }}
+model = "none"
+effort = "none"
+report = "final-prompt"
+resume = "none"
+steer = "cancel-and-prompt"
+usage = ["end-turn"]
+quota = "none""#
+    )
+}
+
+fn count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::app::{AppEvent, UiCommand};
+    use argonauts_core::input::{AgentsAction, SlashCommand};
+    use argonauts_core::registry::RegistryFile;
+
+    use super::harness_entry;
+    use crate::controller::test_support::{Harness, HarnessOptions};
+
+    fn add(name: &str) -> UiCommand {
+        UiCommand::Slash {
+            command: SlashCommand::Agents {
+                action: AgentsAction::Add {
+                    name: name.to_owned(),
+                },
+            },
+        }
+    }
+
+    async fn report(harness: &mut Harness, title: &str) -> Vec<String> {
+        let event = harness
+            .until(|event| matches!(event, AppEvent::Report { title: t, .. } if t.contains(title)))
+            .await;
+        match event {
+            AppEvent::Report { lines, .. } => lines,
+            _ => unreachable!(),
+        }
+    }
+
+    async fn scope_question(harness: &mut Harness) -> String {
+        let event = harness
+            .until(|event| matches!(event, AppEvent::Choice { .. }))
+            .await;
+        match event {
+            AppEvent::Choice { choice } => format!("{} {}", choice.title, choice.body.join(" ")),
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_hermes_says_how_to_install_it_and_turns_it_on() {
+        let mut harness = Harness::start_with(HarnessOptions {
+            flags: vec![r#"agents.hermes.binary="/nowhere/hermes""#.to_owned()],
+            ..HarnessOptions::default()
+        })
+        .await;
+        harness.send(add("Hermes")).await;
+        let asked = scope_question(&mut harness).await;
+        assert!(asked.contains("agents.hermes.enabled"), "{asked}");
+        let lines = report(&mut harness, "Adding Hermes").await;
+        assert!(lines[0].starts_with("hermes · not installed"), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("checks it again")),
+            "{lines:?}"
+        );
+        assert!(lines.last().unwrap().contains("Turning it on"), "{lines:?}");
+        harness.exit().await;
+    }
+
+    #[tokio::test]
+    async fn a_cli_that_is_on_already_asks_nothing() {
+        let mut harness = Harness::start_with(HarnessOptions {
+            flags: vec![r#"agents.opencode.binary="/nowhere/opencode""#.to_owned()],
+            ..HarnessOptions::default()
+        })
+        .await;
+        harness.send(add("opencode")).await;
+        let lines = report(&mut harness, "Adding OpenCode").await;
+        assert_eq!(lines.last().map(String::as_str), Some("It's on already."));
+        let events = harness.exit().await;
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AppEvent::Choice { .. })),
+            "{events:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ollama_that_isnt_running_says_how_to_start_it() {
+        let mut harness = Harness::start_with(HarnessOptions {
+            flags: vec![r#"endpoints.ollama.base_url="http://127.0.0.1:9/v1""#.to_owned()],
+            ..HarnessOptions::default()
+        })
+        .await;
+        harness.send(add("ollama")).await;
+        let lines = report(&mut harness, "Adding Ollama").await;
+        assert_eq!(lines[0], "Ollama isn't answering at http://127.0.0.1:9/v1.");
+        assert!(lines[1].contains("ollama serve"), "{lines:?}");
+        let asked = scope_question(&mut harness).await;
+        assert!(asked.contains("endpoints.ollama.local"), "{asked}");
+        harness.exit().await;
+    }
+
+    #[tokio::test]
+    async fn openclaw_is_pointed_at_connect() {
+        let mut harness = Harness::start().await;
+        harness.send(add("openclaw")).await;
+        let lines = report(&mut harness, "OpenClaw").await;
+        assert!(lines[1].contains("/connect openclaw"), "{lines:?}");
+        harness.exit().await;
+    }
+
+    #[tokio::test]
+    async fn an_unknown_cli_gets_the_entry_it_needs() {
+        let mut harness = Harness::start().await;
+        harness.send(add("no-such-cli-here")).await;
+        let lines = report(&mut harness, "No profile for no-such-cli-here").await;
+        assert_eq!(lines[0], "no-such-cli-here isn't on your PATH yet.");
+        assert!(
+            lines.contains(&r#"id = "no-such-cli-here""#.to_owned()),
+            "{lines:?}"
+        );
+        harness.exit().await;
+    }
+
+    #[test]
+    fn the_suggested_entry_is_one_the_registry_accepts() {
+        let text = harness_entry("my-agent", Some(std::path::Path::new("/opt/bin/my-agent")));
+        let file: RegistryFile = toml::from_str(&text).unwrap();
+        let check = argonauts_registry::harnesses::check_manifest(&file.harnesses[0], None);
+        assert!(check.is_ok(), "{:?}", check.errors);
+    }
+}

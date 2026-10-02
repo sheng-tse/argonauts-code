@@ -2,15 +2,19 @@
 //! project's `.argonauts/`, so new models need no code change.
 
 pub mod acp;
+pub mod company;
 pub mod harness;
 
+pub use company::company_of;
 pub use harness::HarnessManifest;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 use crate::future::BoxFuture;
 use crate::limits::CostEstimate;
+use crate::model_catalog::ModelCatalog;
 use crate::names::{RoleName, WorkerRef};
 use crate::worker::WorkerKind;
 
@@ -54,12 +58,26 @@ pub struct ModelEntry {
     pub successor: Option<String>,
     #[serde(default)]
     pub discovered: bool,
+    /// The model the CLI runs when you name none, as the CLI's own list marks it. Only
+    /// discovery sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cli_default: bool,
+    /// The effort the CLI runs this model at when you name none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
     #[serde(default)]
     pub launch: Option<LaunchHints>,
     /// Your own strength rating, 1 to 5, which decides who counts as weaker after a handoff.
     /// Track records decide when it's unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<u8>,
+    /// The CLI's own name for it, such as Codex's `GPT-6.1-Sol`. The pickers derive one from
+    /// the id when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The CLI's own one-line description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -130,4 +148,14 @@ pub trait ModelRegistry: Send + Sync {
     /// Runs discovery (`agy models`, `codex debug models`, Claude Code aliases, `GET /models`)
     /// and returns what it found. Never makes a model call.
     fn discover(&self) -> BoxFuture<'_, Vec<ModelEntry>>;
+    /// When discovery last finished, here or in an earlier run whose list was cached. `None`
+    /// before the first.
+    fn refreshed(&self) -> Option<OffsetDateTime> {
+        None
+    }
+
+    /// Every catalog layer merged: shipped, fetched, the CLIs' own names, then yours.
+    fn catalog(&self) -> ModelCatalog {
+        ModelCatalog::default()
+    }
 }

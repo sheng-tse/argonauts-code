@@ -1,0 +1,36 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: "screen(&mut autonomous_approvals(), width, height, &state)"
+---
+Approvals
+Who decides each checkpoint, and how auto matched you
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Goal · auto · rules and approver both agree                                            0 matches in a row · 0 misses │
+│ ❯ How it's decided           auto                     built-in  Goal: who approves                                   │
+│   Who decides in auto        both agree               built-in  Goal: who decides in auto mode                       │
+│   When auto doesn't approve  ask you                  built-in  Goal: what happens when auto doesn't approve         │
+│                                                                                                                      │
+│ Merge · auto · your rules decide                                                       0 matches in a row · 0 misses │
+│   How it's decided           auto                     built-in  Merge: who approves                                  │
+│   Who decides in auto        your rules               built-in  Merge: who decides in auto mode                      │
+│   When auto doesn't approve  ask you                  built-in  Merge: what happens when auto doesn't approve        │
+│                                                                                                                      │
+│ Approver                                                                     the cheapest model from another company │
+│   Model                      cheapest, other company  built-in  The approver model. Unset picks the cheapest model … │
+│                                                                                                                      │
+│ Spot checks                                                                                                          │
+│   None waiting                                                                                                       │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · ⏎ edit · esc back

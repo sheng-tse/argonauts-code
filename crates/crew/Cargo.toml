@@ -1,6 +1,6 @@
 [package]
 name = "argonauts-crew"
-description = "Argonauts run engine: triage, goal alignment, planning, dividing, card pipelines, integration, and the retro."
+description = "Argonauts run engine: a workflow runner for goal alignment, planning, dividing, card pipelines, integration, and the retro."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,25 @@ publish.workspace = true
 
 [dependencies]
 argonauts-core.workspace = true
+argonauts-learning.workspace = true
+futures.workspace = true
+globset.workspace = true
+rand.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+which.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+argonauts-conductor.workspace = true
+argonauts-policy.workspace = true
 argonauts-testkit.workspace = true
+tempfile.workspace = true
 tokio.workspace = true

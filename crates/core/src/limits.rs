@@ -194,7 +194,29 @@ pub struct HandoffPacket {
     pub why_stopped: String,
     /// The previous agent's own report, if it wrote one.
     pub last_words: Option<CardReport>,
+    /// What the stopped session said last. Without a report, it is often the only word on
+    /// where the work stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<String>,
     pub budget_left: Option<BudgetAmount>,
+    /// The old session as Markdown, written for `note+transcript` and `note+summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<TranscriptPaths>,
+    /// The summarizer's summary of that transcript, for `note+summary`. It goes into the note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Where a handoff's transcript was written. Code builds it from the card's events in the
+/// run's log, so it reads the same for every vendor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptPaths {
+    /// `<card worktree>/.argonauts/handoff/<n>/transcript.md`, the copy the note names. Every
+    /// harness can read it without extra flags, and the worktree's git exclude file keeps it
+    /// out of commits.
+    pub worktree: PathBuf,
+    /// `runs/<run>/cards/<card>/handoff-<n>/transcript.md`, the run's own copy, kept for you.
+    pub run: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -1,0 +1,198 @@
+//! Starting a run's supervisor: `argonauts supervise --repo <root> --run <id>`, detached in its
+//! own session, stdin null, stdout and stderr to `supervisor.log`.
+
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use anyhow::Context as _;
+use argonauts_core::RunId;
+use argonauts_core::layout::run_files;
+
+pub(crate) trait Launcher: Send + Sync {
+    fn launch(&self, repo_root: &Path, run: &RunId, run_dir: &Path) -> anyhow::Result<()>;
+
+    /// How the supervisor last launched for `run_dir` failed, such as "exited with status 1",
+    /// once it has. `None` while it runs, and after it exits cleanly.
+    fn failed(&self, _run_dir: &Path) -> Option<String> {
+        None
+    }
+}
+
+/// Runs the `argonauts` binary. Tests can point it at a freshly built one.
+pub(crate) struct ProcessLauncher {
+    binary: PathBuf,
+    failures: Arc<Mutex<HashMap<PathBuf, String>>>,
+}
+
+impl ProcessLauncher {
+    /// This process's own binary.
+    pub(crate) fn current() -> anyhow::Result<Self> {
+        Ok(Self {
+            binary: std::env::current_exe()?,
+            failures: Arc::default(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_binary(binary: PathBuf) -> Self {
+        Self {
+            binary,
+            failures: Arc::default(),
+        }
+    }
+
+    fn failures(&self) -> MutexGuard<'_, HashMap<PathBuf, String>> {
+        self.failures.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn command(&self, repo_root: &Path, run: &RunId) -> Command {
+        let mut command = Command::new(&self.binary);
+        command
+            .arg("supervise")
+            .arg("--repo")
+            .arg(repo_root)
+            .arg("--run")
+            .arg(run.as_str());
+        command
+    }
+}
+
+impl Launcher for ProcessLauncher {
+    fn launch(&self, repo_root: &Path, run: &RunId, run_dir: &Path) -> anyhow::Result<()> {
+        let log_path = run_dir.join(run_files::SUPERVISOR_LOG);
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&log_path)
+            .with_context(|| format!("opening {}", log_path.display()))?;
+        let mut command = self.command(repo_root, run);
+        command
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log);
+        // SAFETY: setsid is async-signal-safe and touches no memory the parent shares. Its own
+        // session keeps the supervisor running when the app's terminal closes.
+        unsafe {
+            command.pre_exec(|| {
+                nix::unistd::setsid()
+                    .map(drop)
+                    .map_err(std::io::Error::from)
+            });
+        }
+        self.failures().remove(run_dir);
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("starting {}", self.binary.display()))?;
+        // Reaped by a thread so an exited supervisor never lingers as a zombie of the app. A
+        // failed exit is kept, so a wait for its Welcome can stop at once.
+        let failures = self.failures.clone();
+        let run_dir = run_dir.to_owned();
+        let _reaper = std::thread::Builder::new()
+            .name("argonauts-supervisor-reaper".to_owned())
+            .spawn(move || {
+                let failure = match child.wait() {
+                    Ok(status) if status.success() => return,
+                    Ok(status) => format!("exited ({status})"),
+                    Err(err) => format!("was lost ({err})"),
+                };
+                failures
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(run_dir, failure);
+            });
+        Ok(())
+    }
+
+    fn failed(&self, run_dir: &Path) -> Option<String> {
+        self.failures().get(run_dir).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_supervisor_gets_the_repo_and_the_run_as_arguments() {
+        let launcher = ProcessLauncher::with_binary(PathBuf::from("/usr/local/bin/argonauts"));
+        let run = RunId::new("run-20260930-101500-00ab").unwrap();
+        let command = launcher.command(Path::new("/code/app"), &run);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "supervise",
+                "--repo",
+                "/code/app",
+                "--run",
+                "run-20260930-101500-00ab"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_launched_supervisor_writes_to_its_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-argonauts");
+        std::fs::write(&script, "#!/bin/sh\necho \"args: $*\"\n").unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let run = RunId::new("run-20260930-101500-00ab").unwrap();
+        ProcessLauncher::with_binary(script)
+            .launch(Path::new("/code/app"), &run, dir.path())
+            .unwrap();
+        let log = dir.path().join(run_files::SUPERVISOR_LOG);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut text = String::new();
+        while std::time::Instant::now() < deadline {
+            text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("args:") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            text.trim(),
+            "args: supervise --repo /code/app --run run-20260930-101500-00ab"
+        );
+    }
+
+    #[test]
+    fn a_failed_supervisor_is_remembered_until_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-argonauts");
+        std::fs::write(&script, "#!/bin/sh\nexit 3\n").unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let run = RunId::new("run-20260930-101500-00ab").unwrap();
+        let launcher = ProcessLauncher::with_binary(script.clone());
+        launcher
+            .launch(Path::new("/code/app"), &run, dir.path())
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while launcher.failed(dir.path()).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the exit was never seen"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(launcher.failed(dir.path()).unwrap().contains('3'));
+
+        std::fs::write(&script, "#!/bin/sh\nsleep 1\n").unwrap();
+        launcher
+            .launch(Path::new("/code/app"), &run, dir.path())
+            .unwrap();
+        assert_eq!(
+            launcher.failed(dir.path()),
+            None,
+            "a new launch starts clean"
+        );
+    }
+}
