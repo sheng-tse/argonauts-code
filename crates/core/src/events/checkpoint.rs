@@ -155,6 +155,10 @@ pub struct MergePacket {
     pub suite_passed_on_latest_main: bool,
     pub gates: Vec<GateOutcome>,
     pub combined: DiffStat,
+    /// What Argonauts committed itself, such as the goal record and decisions: the combined
+    /// diff over the paths no agent touched. With the rows, it accounts for `combined`.
+    #[serde(default, skip_serializing_if = "DiffStat::is_empty")]
+    pub conductor: DiffStat,
     pub diff_path: PathBuf,
     /// The integration tree's hash. An approval records it.
     pub tree_sha: String,

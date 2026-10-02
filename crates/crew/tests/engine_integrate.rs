@@ -248,6 +248,21 @@ async fn only_the_conductor_commits() -> anyhow::Result<()> {
     let conductor_only =
         conductor::conductor_paths(&bench.host, crew.repo.root(), &base, &head).await?;
     assert_eq!(conductor_only, [".argonauts/goal/run-01.md"]);
+    // The merge card lists the goal record as Argonauts' own row, so its rows add up.
+    let check = FinalCheck {
+        passed: true,
+        gates: Vec::new(),
+        problem: None,
+    };
+    let packet = merge_packet::build(&bench.host, &check).await?.packet;
+    assert_eq!(packet.conductor.files_changed, 1, "{packet:?}");
+    assert_eq!(packet.conductor.insertions, 1, "{packet:?}");
+    let rows: u32 = packet.rows.iter().map(|row| row.stat.files_changed).sum();
+    assert_eq!(
+        rows + packet.conductor.files_changed,
+        packet.combined.files_changed,
+        "{packet:?}"
+    );
     // Walked along the integration branch itself, every card merge counts in full.
     let history = gates::CardHistory {
         dir: crew.repo.root(),

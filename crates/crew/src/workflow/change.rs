@@ -481,8 +481,9 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
                     host,
                     NoteLevel::Warn,
                     format!(
-                        "The lead couldn't design the workflow, so `{}` runs: {err}",
-                        settings.workflow
+                        "The lead couldn't design the workflow, so `{}` runs. {}",
+                        settings.workflow,
+                        sentence(&err.to_string())
                     ),
                 )?;
                 return Ok(None);
@@ -509,12 +510,22 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
         host,
         NoteLevel::Warn,
         format!(
-            "The lead's workflow broke the rules twice, so `{}` runs: {}",
+            "The lead's workflow broke the rules twice, so `{}` runs. {}",
             settings.workflow,
-            input.errors.join("; ")
+            sentence(&input.errors.join("; "))
         ),
     )?;
     Ok(None)
+}
+
+/// A reason as a sentence of its own: capitalized, with one closing period.
+fn sentence(reason: &str) -> String {
+    let reason = reason.trim().trim_end_matches('.');
+    let mut chars = reason.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}.", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
 }
 
 fn lead(host: &Host) -> argonauts_core::names::WorkerRef {

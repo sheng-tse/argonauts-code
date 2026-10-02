@@ -138,9 +138,11 @@ impl<'a> Labels<'a> {
             .and_then(|worker| self.listed.iter().find(|entry| entry.id == *worker))
             .filter(|entry| !entry.efforts.is_empty());
         if let Some(own) = own {
+            // Levels of its own with no default of their own start where the model it runs does.
             let default = own
                 .default_effort
                 .clone()
+                .or_else(|| self.catalog.entry(target?)?.default_effort.clone())
                 .filter(|level| own.efforts.contains(level));
             return (own.efforts.clone(), default);
         }

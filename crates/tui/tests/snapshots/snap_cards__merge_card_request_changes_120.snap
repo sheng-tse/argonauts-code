@@ -4,7 +4,7 @@ expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Merge this run into main?
-  4 cards · 7 files · +120 -18 · suite passed on the latest main · 1 card needs a stronger review · $0.46 of $3.00
+  4 cards · 9 files · +327 -40 · suite passed on the latest main · 1 card needs a stronger review · $0.46 of $3.00
 
   ❯ 1. Merge
     2. Open a pull request

@@ -9,6 +9,7 @@ use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_core::settings::budget::BudgetAmount;
 
 use super::Ctx;
+use super::names::cli_defaults;
 use super::turn::chat_agent;
 
 /// What the attached run adds to the status line.
@@ -54,13 +55,7 @@ pub(crate) fn header_agent(ctx: &Ctx) -> (WorkerRef, Option<String>) {
     let registry = &ctx.services.registry;
     let catalog = registry.catalog();
     if agent.model.is_none() {
-        let marked = registry
-            .list()
-            .into_iter()
-            .find(|entry| entry.cli_default && entry.id.worker == agent.worker)
-            .and_then(|entry| entry.id.model);
-        let harness = WorkerRef::new(agent.worker.clone(), None);
-        agent.model = marked.or_else(|| catalog.entry(&harness)?.runs.clone());
+        agent.model = cli_defaults(ctx, [agent.worker.as_str()]).remove(&agent.worker);
     }
     let effort = effort
         .or_else(|| registry.get(&agent)?.default_effort)

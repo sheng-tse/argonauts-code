@@ -11,7 +11,7 @@ use argonauts_core::settings::approvals::ApprovalMode;
 use crate::app::UiAction;
 use crate::bottom::{AgentRef, ApprovalMode as ShownMode, ModeNotice};
 use crate::cell::Tone;
-use crate::format::usd;
+use crate::format;
 use crate::keymap::Keymap;
 use crate::state::{AppState, RunState, SessionState, SessionStatus};
 use crate::text::sanitize_line;
@@ -213,6 +213,34 @@ fn is_live(session: &SessionState) -> bool {
     )
 }
 
+/// The one line a fullscreen exit leaves on the main screen, and only while runs keep going:
+/// which, and how to watch them.
+pub fn watch_line(state: &AppState) -> Option<String> {
+    let going: Vec<&RunState> = state
+        .runs
+        .values()
+        .filter(|run| run.finished.is_none())
+        .collect();
+    match going.as_slice() {
+        [] => None,
+        [run] => {
+            let doing = if run.parked.is_some() {
+                "is paused"
+            } else {
+                "keeps going"
+            };
+            Some(format!(
+                "{id} {doing} · watch it with: argonauts resume {id}",
+                id = run.id
+            ))
+        }
+        runs => Some(format!(
+            "{} runs keep going · watch them with: argonauts",
+            runs.len()
+        )),
+    }
+}
+
 /// Dim lines left in scrollback on exit: what keeps going, and how to come back.
 pub fn exit_lines(state: &AppState) -> Vec<String> {
     let going: Vec<&RunState> = state
@@ -237,9 +265,9 @@ pub fn exit_lines(state: &AppState) -> Vec<String> {
                 1 => parts.push("1 agent working".to_owned()),
                 n => parts.push(format!("{n} agents working")),
             }
-            let spent = run.cost_usd();
-            if spent > 0.0 {
-                parts.push(format!("{} spent", usd(spent)));
+            let spent = run.spend();
+            if spent.cost_usd > 0.0 {
+                parts.push(format!("{} spent", format::spend(&spent)));
             }
             parts.join(" · ")
         })
@@ -378,6 +406,25 @@ mod tests {
                 "run-01 keeps going · $7.40 spent",
                 "Reattach with: argonauts"
             ]
+        );
+    }
+
+    #[test]
+    fn a_fullscreen_exit_names_how_to_watch_what_keeps_going() {
+        let mut state = AppState::default();
+        assert_eq!(watch_line(&state), None);
+
+        state.runs.insert(run_id(), RunState::new(run_id()));
+        assert_eq!(
+            watch_line(&state).as_deref(),
+            Some("run-01 keeps going · watch it with: argonauts resume run-01")
+        );
+
+        let second = RunId::new("run-02").unwrap();
+        state.runs.insert(second.clone(), RunState::new(second));
+        assert_eq!(
+            watch_line(&state).as_deref(),
+            Some("2 runs keep going · watch them with: argonauts")
         );
     }
 }

@@ -20,6 +20,11 @@ pub struct DisplayNames {
     /// names no model of its own runs.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub configured: BTreeMap<String, String>,
+    /// A CLI's id to the model it runs when nothing names one: the one its model list marks,
+    /// else the one the catalog's "Default (recommended)" runs. A session is named by it from its
+    /// start, as the header is, until the session says which model it runs.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub defaults: BTreeMap<String, String>,
 }
 
 impl DisplayNames {
@@ -62,21 +67,35 @@ impl DisplayNames {
     }
 
     /// The worker with the model a session of it runs: its own, else the one its CLI's
-    /// settings give, so a session reads `GPT 5.6 on Codex` from its start to its end.
+    /// settings give, else its CLI's default, so a session reads `GPT 5.6 on Codex` from its
+    /// start to its end.
     pub fn running(&self, worker: &WorkerRef) -> WorkerRef {
         if worker.model.is_some() {
             return worker.clone();
         }
-        let model = self
-            .configured
-            .get(worker.worker.trim())
-            .map(|model| model.trim())
-            .filter(|model| !model.is_empty());
+        let cli = worker.worker.trim();
+        let model = model_for(&self.configured, cli).or_else(|| model_for(&self.defaults, cli));
         match model {
             Some(model) => WorkerRef::new(worker.worker.clone(), Some(model.to_owned())),
             None => worker.clone(),
         }
     }
+
+    /// Whether [`Self::running`] names `worker` by its CLI's default, a guess that the model
+    /// the session reports replaces.
+    pub fn by_default(&self, worker: &WorkerRef) -> bool {
+        let cli = worker.worker.trim();
+        worker.model.is_none()
+            && model_for(&self.configured, cli).is_none()
+            && model_for(&self.defaults, cli).is_some()
+    }
+}
+
+fn model_for<'a>(models: &'a BTreeMap<String, String>, cli: &str) -> Option<&'a str> {
+    models
+        .get(cli)
+        .map(|model| model.trim())
+        .filter(|model| !model.is_empty())
 }
 
 /// The names of the CLIs and endpoints Argonauts knows without asking an adapter.
@@ -114,6 +133,7 @@ mod tests {
                 ..ModelCatalog::default()
             },
             configured: BTreeMap::from([("codex".to_owned(), "gpt-6.1-sol".to_owned())]),
+            defaults: BTreeMap::new(),
         }
     }
 
@@ -128,6 +148,30 @@ mod tests {
         // A model of its own wins, and a CLI without one in its settings runs its default.
         assert_eq!(names.running(&id("codex/gpt-5.6")), id("codex/gpt-5.6"));
         assert_eq!(names.running(&id("claude-code")), id("claude-code"));
+        assert!(!names.by_default(&id("codex")));
+    }
+
+    /// A CLI that names no model runs its default, so its sessions read as that model from
+    /// their start, as the header does. The settings' model still wins.
+    #[test]
+    fn a_session_with_no_model_runs_its_clis_default() {
+        let mut names = names();
+        names.defaults = BTreeMap::from([
+            ("claude-code".to_owned(), "claude-opus-5-5".to_owned()),
+            ("codex".to_owned(), "gpt-5.6".to_owned()),
+        ]);
+        assert_eq!(
+            names.worker(&names.running(&id("claude-code"))),
+            "Opus 5.5 on Claude Code"
+        );
+        assert!(names.by_default(&id("claude-code")));
+        assert_eq!(
+            names.worker(&names.running(&id("codex"))),
+            "GPT-6.1 Sol on Codex"
+        );
+        assert!(!names.by_default(&id("codex")));
+        assert!(!names.by_default(&id("claude-code/claude-haiku-4-5")));
+        assert!(!names.by_default(&id("my-cli")));
     }
 
     #[test]

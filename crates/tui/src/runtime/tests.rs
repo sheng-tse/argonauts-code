@@ -8,7 +8,7 @@ use argonauts_core::app::{AppEvent, UiCommand, ViewData};
 use argonauts_core::names::SessionKey;
 use argonauts_core::session::CommandSpec;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::settings::ui::TakeoverWhere;
+use argonauts_core::settings::ui::{ScreenMode, TakeoverWhere};
 use argonauts_core::{CardId, RunId};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::channel::mpsc::{UnboundedSender, unbounded};
@@ -128,10 +128,30 @@ fn options() -> UiOptions {
     UiOptions::from_settings(&argonauts_core::settings::ui::UiSettings::default())
 }
 
+fn inline() -> UiOptions {
+    UiOptions::from_settings(&argonauts_core::settings::ui::UiSettings {
+        screen: ScreenMode::Inline,
+        ..Default::default()
+    })
+}
+
+fn raw_view() -> AppEvent {
+    let raw = RawView {
+        session: SessionKey::numbered(1),
+        lines: vec!["raw line".into()],
+        truncated: false,
+        path: PathBuf::from("raw.jsonl"),
+        vendor_transcript: None,
+    };
+    AppEvent::View {
+        data: Box::new(ViewData::Raw { raw }),
+    }
+}
+
 #[tokio::test]
 async fn a_scripted_session_runs_end_to_end() {
     let (mut script, io, terminal, keys) = session();
-    let run = run_with(io, options(), terminal, keys);
+    let run = run_with(io, inline(), terminal, keys);
     let drive = async move {
         script.settle().await;
         assert!(script.screen.shows("❯"), "{:#?}", script.screen.rows());
@@ -147,18 +167,7 @@ async fn a_scripted_session_runs_end_to_end() {
         assert_eq!(script.command().await, UiCommand::Focus { focused: false });
 
         // A controller answer opens its view on the alternate screen, and Esc comes back.
-        let raw = RawView {
-            session: SessionKey::numbered(1),
-            lines: vec!["raw line".into()],
-            truncated: false,
-            path: PathBuf::from("raw.jsonl"),
-            vendor_transcript: None,
-        };
-        script
-            .event(AppEvent::View {
-                data: Box::new(ViewData::Raw { raw }),
-            })
-            .await;
+        script.event(raw_view()).await;
         script.settle().await;
         assert!(script.screen.alternate());
         script.key(KeyCode::Esc, KeyModifiers::NONE);
@@ -244,6 +253,70 @@ async fn a_scripted_session_runs_end_to_end() {
         "{:#?}",
         script.screen.rows()
     );
+}
+
+#[tokio::test]
+async fn fullscreen_keeps_the_alternate_screen_through_views_and_handovers() {
+    let (mut script, io, terminal, keys) = session();
+    script.screen.write_all(b"$ argonauts\r\n").unwrap();
+    let run = run_with(io, options(), terminal, keys);
+    let drive = async move {
+        script.settle().await;
+        assert!(script.screen.alternate());
+        assert!(script.screen.shows("❯"), "{:#?}", script.screen.rows());
+
+        script.event(raw_view()).await;
+        script.settle().await;
+        assert!(
+            script.screen.shows("raw line"),
+            "{:#?}",
+            script.screen.rows()
+        );
+        script.key(KeyCode::Esc, KeyModifiers::NONE);
+        script.settle().await;
+        assert!(script.screen.alternate());
+        assert!(
+            !script.screen.shows("raw line"),
+            "{:#?}",
+            script.screen.rows()
+        );
+
+        // The program gets the main screen, and the app takes the alternate one back after.
+        let dir = tempfile::tempdir().unwrap();
+        let spec = CommandSpec::new("sh", dir.path()).args(["-c", "exit 0"]);
+        let run = RunId::new("run-01").unwrap();
+        let card = CardId::new("card-001").unwrap();
+        script
+            .event(AppEvent::TakeOver {
+                ticket: TakeOverTicket {
+                    card: card.clone(),
+                    command: Some(spec),
+                    worktree: dir.path().to_owned(),
+                    vendor: "codex".into(),
+                },
+                place: TakeoverWhere::Here,
+                run: run.clone(),
+            })
+            .await;
+        assert!(matches!(
+            script.command().await,
+            UiCommand::TakeOverEnded { .. }
+        ));
+        script.settle().await;
+        assert!(script.screen.alternate());
+        assert!(script.screen.shows("❯"), "{:#?}", script.screen.rows());
+
+        script.key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        script.key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(script.command().await, UiCommand::Exit);
+        script
+    };
+    let (ran, script) = tokio::join!(timeout(PATIENCE, run), drive);
+    ran.expect("the loop ends").unwrap();
+    assert!(!script.screen.alternate());
+    let rows = script.screen.rows();
+    assert_eq!(rows[0], "$ argonauts");
+    assert!(rows[1..].iter().all(String::is_empty), "{rows:#?}");
 }
 
 #[tokio::test]

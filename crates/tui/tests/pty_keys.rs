@@ -44,6 +44,25 @@ fn ctrl_c_clears_then_exits_twice() {
     harness.wait_visible("Press Ctrl-C again to exit · the run keeps going");
     harness.press(Key::Ctrl('c'));
     assert_eq!(harness.wait_exit(), 0);
+    // The main screen comes back with one line under it: what keeps going, and how to watch.
+    let text = harness.text();
+    assert_eq!(
+        text.trim(),
+        "run-01 keeps going · watch it with: argonauts resume run-01"
+    );
+}
+
+#[test]
+fn ctrl_c_twice_on_the_inline_screen_leaves_what_keeps_going_in_scrollback() {
+    let (_, _, events) = crew_run(1);
+    let mut harness = Harness::launch(Script::idle().all(0, events))
+        .inline()
+        .start();
+    harness.wait_visible("esc to interrupt");
+    harness.press(Key::Ctrl('c'));
+    harness.wait_visible("Press Ctrl-C again to exit · the run keeps going");
+    harness.press(Key::Ctrl('c'));
+    assert_eq!(harness.wait_exit(), 0);
     let text = harness.text();
     assert!(text.contains("run-01 keeps going"), "{text}");
     assert!(text.contains("Reattach with: argonauts"), "{text}");
@@ -306,7 +325,10 @@ fn return_from_take_over_shows_needs_you() {
         .at(0, run.take_over_return("cp-001", &agent))
         .at(0, mode_parked(RUN, "checkpoint"));
     let harness = Harness::start(script);
-    harness.wait_for("in the vendor ui");
+    // The program printed on the main screen, which the app's own screen covers again after.
+    harness.wait_until("the program's output", |_| {
+        String::from_utf8_lossy(&harness.raw()).contains("in the vendor ui")
+    });
     let ended = harness.wait_command("take_over_ended");
     assert_eq!(ended["run"], RUN);
     assert_eq!(ended["card"], agent.card);

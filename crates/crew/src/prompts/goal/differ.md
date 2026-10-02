@@ -24,6 +24,8 @@ Answer with:
   - `question`: a multiple-choice question the person who asked could answer in one key, with
     two to four `options`, the index of the one you `recommended`, and its `basis`, such as
     "2 of 3 restatements read it this way". Give one for every difference that isn't wording.
+    The person never sees the labels, so the question, its options, and its basis say what a
+    reading holds, never which label holds it.
 
 Code, not you, decides which differences become questions. Tag honestly: when a difference
 touches scope, security, data, or cost, tag it so even if most restatements agree.

@@ -1702,6 +1702,36 @@ fn a_session_is_named_by_the_model_it_runs() {
     assert_eq!(worker(2), "claude-code/claude-haiku-4-5");
 }
 
+/// A session that names no model is named by its CLI's default from its start, as the header
+/// is, until it reports the model it runs.
+#[test]
+fn a_session_is_named_by_its_clis_default_until_it_reports() {
+    let mut log = Log::new();
+    let mut state = AppState::default();
+    state.apply(&AppEvent::Names {
+        names: Box::new(DisplayNames {
+            defaults: BTreeMap::from([("claude-code".to_owned(), "claude-opus-5-5".to_owned())]),
+            ..DisplayNames::default()
+        }),
+    });
+    state.apply(&log.event(started("Fix the export race", RunMode::Crew)));
+    let bare = |name: &str| WorkerRef::new(name, None);
+    state.apply(&log.session(1, None, session_started(bare("claude-code"), 1)));
+    state.apply(&log.session(2, None, session_started(bare("claude-code"), 2)));
+    let worker = |state: &AppState, n: u32| run(state).sessions[&key(n)].worker.to_string();
+    assert_eq!(worker(&state, 1), "claude-code/claude-opus-5-5");
+    let init = |model: &str| AgentEvent::Init {
+        session_id: None,
+        model: Some(model.to_owned()),
+        tools: Vec::new(),
+    };
+    state.apply(&log.agent(1, init("claude-opus-5-5")));
+    state.apply(&log.agent(2, init("claude-haiku-4-5")));
+    assert_eq!(worker(&state, 1), "claude-code/claude-opus-5-5");
+    // The catalog guessed wrong, and the session's own word wins.
+    assert_eq!(worker(&state, 2), "claude-code/claude-haiku-4-5");
+}
+
 /// The run keeps when it ended and what its merge card put up, for the lines that come after.
 #[test]
 fn a_run_keeps_its_end_and_its_merge_totals() {

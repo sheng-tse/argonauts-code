@@ -32,12 +32,22 @@ const NOTE_CHARS: usize = 8_000;
 
 pub fn owner_parts(host: &Host, card: &CardId) -> EngineResult<Vec<InputPart>> {
     let record = record_of(host, card)?;
-    let (goal, decisions) =
-        host.read(|state| (state.goal.approved.clone(), state.plan.decisions.clone()));
+    let (goal, decisions, cards) = host.read(|state| {
+        (
+            state.goal.approved.clone(),
+            state.plan.decisions.clone(),
+            state.cards.by_id.len(),
+        )
+    });
+    let opening = if cards > 1 {
+        prompts::card::OWNER_OF_ONE_CARD
+    } else {
+        prompts::card::OWNER_OF_THE_CHANGE
+    };
     let mut parts = vec![part(
         InputPartKind::Prompt,
         "owner",
-        prompts::card::OWNER,
+        format!("{opening}{}", prompts::card::OWNER),
         None,
     )];
     parts.push(part(

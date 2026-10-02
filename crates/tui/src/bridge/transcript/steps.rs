@@ -6,6 +6,7 @@ use argonauts_core::PhaseStatus;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::goal::{GoalChangeResolution, GoalFile, GoalSource};
 use argonauts_core::events::run::{Party, RunMode, RunPhase, RunStarted};
+use argonauts_core::log::RETRO_FAILED;
 
 use crate::cell::{Notice, Tone, ToolCall, ToolItem, ToolKind, ToolState};
 
@@ -139,6 +140,16 @@ pub(super) fn phase(phase: RunPhase, status: PhaseStatus, summary: Option<&str>,
         }
         _ => {}
     }
+}
+
+/// `● The retro failed. The run's result stands.` Why is often a raw schema error, so it waits
+/// for Ctrl+O.
+pub(super) fn retro_failed(reason: Option<&str>, cx: &mut Cx<'_>) {
+    let mut notice = Notice::new(Tone::Warning, RETRO_FAILED);
+    if let Some(reason) = reason.map(str::trim).filter(|reason| !reason.is_empty()) {
+        notice = notice.with_more(reason);
+    }
+    emit(cx, notice);
 }
 
 fn phase_name(phase: RunPhase) -> &'static str {

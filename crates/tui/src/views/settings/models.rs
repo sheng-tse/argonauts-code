@@ -426,8 +426,8 @@ fn model_label(choice: &ModelChoice) -> String {
 
 /// What the model is for, from the catalog or the CLI, with the model Default runs before it.
 /// A model neither knows is marked new. Without a description: what it stands for, its cost,
-/// and its strengths, else its id, so no row's description is blank.
-fn model_description(choice: &ModelChoice) -> String {
+/// and its strengths, else what kind of model it is, so no row's description is blank.
+pub(super) fn model_description(choice: &ModelChoice) -> String {
     let mut parts: Vec<String> = Vec::new();
     if choice.new {
         parts.push("new".to_owned());
@@ -447,12 +447,32 @@ fn model_description(choice: &ModelChoice) -> String {
             }
         }
     }
-    if parts.is_empty()
-        && let Some(id) = &choice.worker.model
-    {
-        parts.push(id.clone());
+    if parts.is_empty() && choice.worker.model.is_some() {
+        parts.push(kind_of_model(choice));
     }
     parts.join(" · ")
+}
+
+/// `A Claude model on your subscription`: what Argonauts knows of a model nothing describes.
+/// Never its id, which only repeats the name beside it.
+fn kind_of_model(choice: &ModelChoice) -> String {
+    let family = match choice.family.trim() {
+        "" | "unknown" => None,
+        family => Some(display_name_from_id(family)),
+    };
+    let what = match &family {
+        Some(family) if family.starts_with(['A', 'E', 'I', 'O', 'U']) => {
+            format!("An {family} model")
+        }
+        Some(family) => format!("A {family} model"),
+        None => "A model".to_owned(),
+    };
+    let how = match choice.access {
+        ModelAccess::Subscription => "on your subscription",
+        ModelAccess::ApiKey => "on your API key",
+        ModelAccess::Local => "on this machine",
+    };
+    format!("{what} {how}")
 }
 
 /// `Aliases: opus, sonnet (in use), haiku`.

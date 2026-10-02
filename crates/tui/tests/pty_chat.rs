@@ -56,7 +56,7 @@ fn history_goes_to_scrollback() {
         ("third question", long_answer("gamma")),
     ];
     let script: Vec<(&str, &str)> = turns.iter().map(|(p, a)| (*p, a.as_str())).collect();
-    let mut harness = Harness::start(chat_script(&script));
+    let mut harness = Harness::launch(chat_script(&script)).inline().start();
     harness.wait_for(TOP_RULE);
     for (prompt, topic) in [
         ("first question", "alpha"),

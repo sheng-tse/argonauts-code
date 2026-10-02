@@ -241,7 +241,7 @@ async fn run(argv: &[String]) -> anyhow::Result<()> {
 
 fn spent_text(spent: Option<&Spend>) -> String {
     match spent {
-        Some(spent) if spent.cost_usd > 0.0 => format!("${:.2}", spent.cost_usd),
+        Some(spent) if spent.cost_usd > 0.0 => argonauts_tui::format::spend(spent),
         Some(spent) if spent.input_tokens + spent.output_tokens > 0 => {
             format!("{} tokens", spent.input_tokens + spent.output_tokens)
         }

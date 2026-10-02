@@ -272,13 +272,13 @@ fn app_first_run_offers_local_server() -> anyhow::Result<()> {
     let steps = walk_setup(&scenario, &mut pty, |step| {
         step.options
             .iter()
-            .find(|o| o.label.contains("llama3.2"))
+            .find(|o| o.label == "Llama3.2")
             .map(|o| o.key)
     })?;
     let offer = steps
         .iter()
-        .find(|s| s.options.iter().any(|o| o.label.contains("llama3.2")))
-        .expect("the local server wasn't offered");
+        .find(|s| s.options.iter().any(|o| o.label == "Llama3.2"))
+        .expect("the local server wasn't offered by the model's name");
     assert!(
         offer
             .options

@@ -17,7 +17,7 @@ use argonauts_core::events::session::{
     Watchdog,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::names::{SessionKey, WorkerRef};
 use argonauts_core::settings::ui::Glyphs as GlyphChoice;
 use argonauts_core::{AgentEvent, CardId, RunId, TodoItem, TodoStatus, Verbosity};
 use serde_json::Value;
@@ -30,6 +30,7 @@ use crate::cell::{
 };
 use crate::format;
 use crate::history::CellId;
+use crate::state::task_label;
 use crate::theme::Glyphs;
 
 /// Tool items a live block keeps, newest last. Quiet calls in a row count as one.
@@ -155,7 +156,7 @@ impl AgentBlocks {
                     },
                     &started.worker,
                     &started.vendor.0,
-                    started.role,
+                    task_label(started.role, started.step, event.card_id.as_ref()),
                     cx,
                 );
                 self.started.add(live.started_row(), event.ts);
@@ -342,8 +343,9 @@ impl AgentBlocks {
             .state
             .session(&event.run_id, key)
             .filter(|session| session.is_running())?;
-        let (worker, vendor, role) = (session.worker.clone(), session.vendor.clone(), session.role);
+        let (worker, vendor) = (session.worker.clone(), session.vendor.clone());
         let card = session.card.clone().or_else(|| event.card_id.clone());
+        let task = task_label(session.role, session.step, card.as_ref());
         let live = Live::new(
             Place {
                 run: &event.run_id,
@@ -353,7 +355,7 @@ impl AgentBlocks {
             },
             &worker,
             &vendor,
-            role,
+            task,
             cx,
         );
         self.sessions.push(live);
@@ -424,7 +426,7 @@ impl Live {
         place: Place<'_>,
         worker: &WorkerRef,
         vendor: &str,
-        role: RoleName,
+        task: String,
         cx: &mut Cx<'_>,
     ) -> Self {
         let worker = &cx.state.names.running(worker);
@@ -436,16 +438,12 @@ impl Live {
                 .and_then(|run| run.cards.get(card))
                 .map(|row| row.title.clone())
         });
-        let role = match place.card {
-            Some(card) => format!("{} · {card}", role.as_str()),
-            None => role.as_str().to_owned(),
-        };
         // The transcript overlay is the detail view, so its stamp keeps the id.
         let started = format::ClockTime::from(place.at.to_offset(cx.state.clock_offset()));
         let head = ToolCall::agent(
             cx.state.names.worker(worker),
             Some(color),
-            role,
+            task,
             title.unwrap_or_default(),
         )
         .with_key(place.key.to_string())

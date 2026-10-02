@@ -259,6 +259,27 @@ fn vim_keys_stand_in_for_the_arrows_inside_a_checklist_too() {
     assert_eq!(card.selected, 0);
 }
 
+/// Esc backs out of a confirm; when the option itself cancels, the hint says so in other words.
+#[test]
+fn confirming_a_cancel_offers_a_way_back() {
+    let theme = theme();
+    let ctx = ctx(80, &theme);
+    let mut card = focused(CardPrompt::new(
+        8,
+        "card-001 escalated · Fix add",
+        "What now?",
+        vec![
+            CardOption::new("Retry with a note"),
+            CardOption::irreversible("Cancel the card"),
+        ],
+    ));
+    card.handle_key(key(KeyCode::Char('2')));
+    assert_eq!(
+        last_row(&card, &ctx),
+        "  Enter to cancel the card · Esc to go back"
+    );
+}
+
 #[test]
 fn an_option_that_cant_be_undone_waits_for_enter() {
     let theme = theme();

@@ -4,6 +4,7 @@
 //! screen is still.
 
 mod frames;
+mod fullscreen;
 mod input;
 mod live;
 mod overlay;
@@ -33,6 +34,7 @@ use crate::theme::Theme;
 use crate::views::ViewCtx;
 
 pub use frames::{FrameScheduler, MIN_FRAME_INTERVAL};
+pub use fullscreen::{Scrollback, select_key};
 pub use live::{LiveView, compose_live};
 pub use overlay::{OverlayEvent, OverlayView, TranscriptOverlay};
 pub use run::{Flow, Host, StdoutWriter, run};
@@ -136,6 +138,9 @@ pub struct Ui<W: Write> {
     /// Whether the terminal shows the alternate screen now. Frames switch it to match what's
     /// open, so a switch's errors have a place to go.
     on_alternate: bool,
+    /// Set when the app has the whole alternate screen (`ui.screen = "fullscreen"`), with the
+    /// conversation the inline screen would have printed into the terminal's scrollback.
+    scrollback: Option<Scrollback>,
     quit: Option<QuitArm>,
     /// Until when a second Esc clears the input.
     clear_armed: Option<Instant>,
@@ -171,6 +176,7 @@ impl<W: Write> Ui<W> {
             overlay: None,
             views: Vec::new(),
             on_alternate: false,
+            scrollback: None,
             quit: None,
             clear_armed: None,
             modes: None,
@@ -288,6 +294,10 @@ impl<W: Write> Ui<W> {
     }
 
     fn draw_frame(&mut self, now: Instant, state: Option<&AppState>) -> io::Result<bool> {
+        // The main screen shows the panic now, and the screen is on its way out.
+        if self.scrollback.is_some() && setup::given_back_after_panic() {
+            return Ok(false);
+        }
         // A panel whose rows went away lets go of the focus, so it can't come back unasked.
         if self.model.bottom.agents.rows.is_empty() {
             self.model.bottom.agents.blur();
@@ -295,7 +305,10 @@ impl<W: Write> Ui<W> {
         let mut wrote = self.update_title(now)?;
         let wanted = self.wants_alternate_screen();
         if wanted != self.on_alternate {
-            if wanted {
+            if self.scrollback.is_some() {
+                // The fullscreen app leaves the alternate screen only to suspend or finish.
+                self.terminal.enter_fullscreen()?;
+            } else if wanted {
                 // History waiting to print belongs to the inline transcript, so it goes first.
                 self.draw_inline(now)?;
                 self.terminal.enter_alternate_screen()?;
@@ -313,11 +326,16 @@ impl<W: Write> Ui<W> {
 
         let before = self.terminal.frame_bytes();
         if self.on_alternate {
-            // History waits while a view is up, and prints when it closes.
-            if !self.dirty && !due {
+            // On the inline screen, history waits while a view is up, and prints when it closes.
+            let printed = self.scrollback.is_some() && self.drain_history(now);
+            if !self.dirty && !due && !printed {
                 return Ok(wrote);
             }
-            self.draw_alternate(now, state)?;
+            if self.scrollback.is_some() && self.views.is_empty() && self.overlay.is_none() {
+                self.draw_fullscreen(now)?;
+            } else {
+                self.draw_alternate(now, state)?;
+            }
             self.frame_done(now);
             return Ok(wrote || self.terminal.frame_bytes() != before);
         }
@@ -362,7 +380,7 @@ impl<W: Write> Ui<W> {
     }
 
     fn wants_alternate_screen(&self) -> bool {
-        self.overlay.is_some() || !self.views.is_empty()
+        self.scrollback.is_some() || self.overlay.is_some() || !self.views.is_empty()
     }
 
     /// When [`frame`](Self::frame) next has work, or `None` while the screen is still.
@@ -423,10 +441,16 @@ impl<W: Write> Ui<W> {
         self.dirty = true;
         // The child gets the main screen. An open view comes back on the next frame.
         if self.on_alternate {
-            self.terminal.leave_alternate_screen()?;
+            if self.scrollback.is_some() {
+                self.terminal.leave_fullscreen()?;
+            } else {
+                self.terminal.leave_alternate_screen()?;
+            }
             self.on_alternate = false;
         }
-        self.terminal.clear_live()?;
+        if self.scrollback.is_none() {
+            self.terminal.clear_live()?;
+        }
         if let Some(modes) = self.modes.as_mut() {
             modes.restore()?;
         }
@@ -457,8 +481,12 @@ impl<W: Write> Ui<W> {
     }
 
     /// What was still live prints as it stands, so an agent's block doesn't vanish from the
-    /// screen, then `exit_lines` in dim text, and only then does the live region clear.
+    /// screen, then `exit_lines` in dim text, and only then does the live region clear. The
+    /// fullscreen app leaves the alternate screen instead, and prints only `exit_lines`.
     pub fn finish_with(&mut self, exit_lines: Vec<String>) -> io::Result<()> {
+        if self.scrollback.is_some() {
+            return self.finish_fullscreen(exit_lines);
+        }
         if self.on_alternate {
             self.terminal.leave_alternate_screen()?;
             self.on_alternate = false;
@@ -523,6 +551,13 @@ impl<W: Write> Ui<W> {
         let redrawn = self.model.history.take_header_redrawn();
         if rows.is_empty() && redrawn.is_none() {
             return false;
+        }
+        if let Some(scrollback) = self.scrollback.as_mut() {
+            scrollback.push(rows, header);
+            if let Some(lines) = redrawn {
+                scrollback.replace_header(lines);
+            }
+            return true;
         }
         match header {
             Some(header) => self.terminal.insert_marked_history(rows, header),

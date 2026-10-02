@@ -9,6 +9,7 @@ use argonauts_core::events::run::{
     Party, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunStarted,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::log::RETRO_FAILED;
 use argonauts_core::names::{TurnId, WorkerRef};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::ui::UiSettings;
@@ -17,7 +18,7 @@ use time::macros::datetime;
 
 use super::{ChatTurns, Transcript};
 use crate::bridge::{Cx, Effects};
-use crate::cell::{Cell, ToolKind};
+use crate::cell::{Cell, HistoryCell, ToolKind};
 use crate::format::WallClock;
 use crate::model::ViewModel;
 use crate::render::{Clock, RenderCtx};
@@ -382,11 +383,8 @@ fn a_failed_retro_is_said_once_and_not_called_saved() {
         outcome: true,
         brier: 0.04,
     })));
-    harness.send(retro_phase(PhaseStatus::Failed, Some("no answer")));
-    harness.send(note(
-        NoteLevel::Warn,
-        "The retro failed: no answer. The run's result stands.",
-    ));
+    harness.send(retro_phase(PhaseStatus::Failed, Some(SCHEMA_MISS)));
+    harness.send(note(NoteLevel::Warn, RETRO_FAILED));
     harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Merged,
         detail: None,
@@ -395,6 +393,60 @@ fn a_failed_retro_is_said_once_and_not_called_saved() {
     assert_eq!(printed.matches("The retro failed").count(), 1, "{printed}");
     assert!(printed.contains("Run finished"), "{printed}");
     assert!(!printed.contains("retro saved"), "{printed}");
+}
+
+const SCHEMA_MISS: &str =
+    "step: output didn't match the schema: [\"Additional properties are not allowed\"]";
+
+/// A schema miss is plumbing: the main view says the retro failed in plain words, and the
+/// reason waits for Ctrl+O.
+#[test]
+fn a_failed_retro_keeps_its_raw_reason_for_ctrl_o() {
+    let mut harness = Harness::new();
+    harness.send(started());
+    harness.send(retro_phase(PhaseStatus::Started, None));
+    harness.send(retro_phase(PhaseStatus::Failed, Some(SCHEMA_MISS)));
+    harness.send(note(NoteLevel::Warn, RETRO_FAILED));
+    let printed = harness.printed();
+    assert!(
+        printed.contains("● The retro failed. The run's result stands. (ctrl+o to expand)"),
+        "{printed}"
+    );
+    assert!(!printed.contains("schema"), "{printed}");
+
+    let mut theme = Theme::dark();
+    theme.glyphs = Glyphs::UNICODE;
+    let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now())).with_expanded(true);
+    let expanded: String = harness
+        .model
+        .history
+        .cells()
+        .iter()
+        .map(|cell| plain_text(&cell.lines(&ctx)))
+        .collect();
+    assert!(
+        expanded.contains("⎿  step: output didn't match the schema"),
+        "{expanded}"
+    );
+    assert!(!expanded.contains("ctrl+o to expand"), "{expanded}");
+}
+
+/// Another run's failed retro is said again, though its note is word for word the same.
+#[test]
+fn each_runs_failed_retro_is_said() {
+    let mut harness = Harness::new();
+    for _ in 0..2 {
+        harness.send(started());
+        harness.send(retro_phase(PhaseStatus::Failed, None));
+        harness.send(note(NoteLevel::Warn, RETRO_FAILED));
+        harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+            outcome: RunOutcome::Merged,
+            detail: None,
+        })));
+    }
+    let printed = harness.printed();
+    assert_eq!(printed.matches("The retro failed").count(), 2, "{printed}");
+    assert!(!printed.contains("ctrl+o"), "{printed}");
 }
 
 #[test]
@@ -1078,6 +1130,7 @@ fn merge_opened(cards: usize, combined: argonauts_core::DiffStat) -> AppEvent {
         suite_passed_on_latest_main: true,
         gates: Vec::new(),
         combined,
+        conductor: Default::default(),
         diff_path: PathBuf::from("/nonexistent/run-01.diff"),
         tree_sha: "abc".into(),
         spent: Spend::default(),

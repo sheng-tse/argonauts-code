@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use argonauts_core::CardId;
 use argonauts_core::events::card::{AttemptCause, CardEvent, CardKind, CardState};
-use argonauts_core::events::session::EndReason;
+use argonauts_core::events::session::{EndReason, SessionEnd};
 use argonauts_core::limits::{HandoffPacket, RecoveryAction};
 use argonauts_core::names::WorkerRef;
 use argonauts_core::steps::card::ReportStatus;
@@ -738,7 +738,7 @@ async fn failed(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> Engine
             }
         }
     };
-    let why = failure_summary(&record_of(host, card)?);
+    let why = failure_summary(&record_of(host, card)?, end_of(host, card).as_ref());
     match action {
         RecoveryAction::Escalate { reason } => {
             transition(host, card, Trigger::Escalate, &reason)?;
@@ -788,7 +788,7 @@ async fn escalated(
     {
         return Ok(Step::Wait);
     }
-    let why = failure_summary(&record_of(host, card)?);
+    let why = failure_summary(&record_of(host, card)?, end_of(host, card).as_ref());
     let from = CardState::Escalated;
     if let Decision::Moved(Some(next)) =
         escalation::decide(host, card, Some(at), from, &why).await?
@@ -849,7 +849,7 @@ async fn taken_over(
     Ok(Step::Moved)
 }
 
-fn end_of(host: &Host, card: &CardId) -> Option<argonauts_core::events::session::SessionEnd> {
+fn end_of(host: &Host, card: &CardId) -> Option<SessionEnd> {
     host.read(|state| newest_owner_session(state, card).and_then(|s| s.end.clone()))
 }
 
@@ -866,13 +866,18 @@ async fn apply_and_settle(
     })
 }
 
-/// One line on why the card is where it is: its newest failed gate, else its newest report.
-fn failure_summary(record: &CardRecord) -> String {
+/// One line on why the card is where it is: its newest failed gate, else its newest report,
+/// else how its newest session ended.
+fn failure_summary(record: &CardRecord, end: Option<&SessionEnd>) -> String {
     if let Some(gate) = record.gates.iter().rev().find(|gate| !gate.passed) {
         return format!("{} failed: {}", gate.name, gate.summary);
     }
-    match record.reports.last() {
-        Some(report) => format!("its report: {}", report.summary),
+    if let Some(report) = record.reports.last() {
+        return format!("its report: {}", report.summary);
+    }
+    match end.map(|end| &end.reason) {
+        Some(EndReason::Completed) => "its agent ended without a report".to_owned(),
+        Some(reason) => format!("its session ended: {}", end_text(reason)),
         None => "it failed".to_owned(),
     }
 }
@@ -932,7 +937,7 @@ mod tests {
     #[test]
     fn failure_summary_prefers_the_newest_failed_gate() {
         let mut record = CardRecord::new(card_spec("card-001", &[], None));
-        assert_eq!(failure_summary(&record), "it failed");
+        assert_eq!(failure_summary(&record, None), "it failed");
         record
             .gates
             .push(argonauts_core::events::card::GateOutcome {
@@ -948,6 +953,35 @@ mod tests {
                 sandboxed: true,
                 skipped: false,
             });
-        assert_eq!(failure_summary(&record), "test failed: 2 failed");
+        assert_eq!(failure_summary(&record, None), "test failed: 2 failed");
+    }
+
+    #[test]
+    fn a_card_with_no_report_says_how_its_session_ended() {
+        let record = CardRecord::new(card_spec("card-001", &[], None));
+        let end = |reason: EndReason| SessionEnd {
+            vendor_session: None,
+            exit_code: Some(0),
+            signal: None,
+            duration_ms: 1,
+            reason,
+            spend: argonauts_core::Spend::default(),
+            tool_calls: 0,
+            result_text: None,
+            structured: None,
+            last_message: None,
+            raw_log: None,
+        };
+        assert_eq!(
+            failure_summary(&record, Some(&end(EndReason::Completed))),
+            "its agent ended without a report"
+        );
+        let crashed = end(EndReason::Crashed {
+            message: "exit 1".into(),
+        });
+        assert_eq!(
+            failure_summary(&record, Some(&crashed)),
+            "its session ended: crashed: exit 1"
+        );
     }
 }

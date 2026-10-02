@@ -387,7 +387,8 @@ fn merge() -> CheckpointOpened {
         ],
         suite_passed_on_latest_main: true,
         gates: Vec::new(),
-        combined: stat(7, 120, 18),
+        combined: stat(9, 327, 40),
+        conductor: stat(1, 27, 0),
         diff_path: PathBuf::from(".argonauts/runs/run-01/merge.diff"),
         tree_sha: "4b825dc".into(),
         spent: Spend {
@@ -980,6 +981,65 @@ fn a_summary_wraps_between_its_parts() {
 #[test]
 fn plan_card() {
     checkpoint_case("plan_card", plan(), None);
+}
+
+/// The plan with the workflow it follows: its phases in plain words in the main view, and its
+/// conditions and loop rules under Ctrl+O.
+fn plan_with_workflow() -> CheckpointOpened {
+    use argonauts_core::events::checkpoint::PlanWorkflow;
+    use argonauts_core::workflow::WorkflowRef;
+
+    let mut opened = plan();
+    let CheckpointPacket::Plan(packet) = &mut opened.packet else {
+        unreachable!("a plan checkpoint")
+    };
+    let workflow = serde_json::from_value(serde_json::json!({
+        "name": "peer-crew",
+        "description": "Peers draft plans blind and debate only where they disagree",
+        "phases": [
+            {"name": "Goal", "standard": "understand", "steps": [{
+                "kind": "loop_until", "until": "goal_approved", "max": 2,
+                "steps": [
+                    {"kind": "restate", "role": "restater"},
+                    {"kind": "differ", "role": "differ"},
+                    {"kind": "checkpoint", "checkpoint": "goal"}
+                ]
+            }]},
+            {"name": "Plan", "standard": "plan", "steps": [{
+                "kind": "loop_until", "until": "plan_decided", "max": 3,
+                "steps": [
+                    {"kind": "draft", "role": "drafter", "count": 3, "blind": true},
+                    {"kind": "judge", "role": "judge", "when": "drafts_disagree"},
+                    {"kind": "checkpoint", "checkpoint": "plan"}
+                ]
+            }]},
+            {"name": "Build", "standard": "do", "steps": [{"kind": "build", "role": "owner"}]},
+            {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
+        ]
+    }))
+    .expect("a workflow");
+    packet.workflow = Some(PlanWorkflow {
+        from: Some(WorkflowRef::new("peer-crew")),
+        why: Some("A security-labeled API feature: blind drafts and cross-judging fit it.".into()),
+        workflow,
+    });
+    opened
+}
+
+#[test]
+fn plan_card_with_workflow() {
+    checkpoint_case("plan_card_with_workflow", plan_with_workflow(), None);
+    let opened = plan_with_workflow();
+    snapshot("plan_workflow_expanded", |width| {
+        let theme = theme();
+        let ctx = still(&theme, width).with_expanded(true);
+        let cells = about_cells(&opened, None);
+        let item = cells
+            .iter()
+            .find(|cell| text(&cell.lines(&ctx)).contains("Workflow"))
+            .expect("the plan's item");
+        item.lines(&ctx)
+    });
 }
 
 #[test]

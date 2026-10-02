@@ -98,6 +98,12 @@ pub enum ViewOutcome {
 }
 
 /// `p` in a run's view. A pause acts on the run on screen, so another run's view says so.
+/// Whether `run` can still be paused or have agents stopped: not finished and not parked, as far
+/// as the screen knows it.
+pub(crate) fn run_going(state: &AppState, run: &RunId) -> bool {
+    state.runs.get(run).is_none_or(|run| run.is_active())
+}
+
 pub(crate) fn pause(run: &RunId, ctx: &ViewCtx<'_>) -> ViewOutcome {
     if ctx.state.attached.as_ref() == Some(run) {
         ViewOutcome::Send(UiCommand::Pause { now: false })

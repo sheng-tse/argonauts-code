@@ -67,6 +67,11 @@ impl Launch {
         self
     }
 
+    /// `ui.screen = "inline"`: the chat goes up into the terminal's scrollback.
+    pub fn inline(self) -> Self {
+        self.ui(r#"screen = "inline""#)
+    }
+
     /// Lines of `[ui]` TOML, such as `keys = "vim"` or `[panel]\nagents = true`.
     pub fn ui(mut self, toml: &str) -> Self {
         self.ui.push(toml.to_owned());
@@ -448,6 +453,11 @@ impl Harness {
     /// Lets a script line `await_signal` with this name go ahead.
     pub fn signal(&self, name: &str) {
         fs::write(self.signals.join(name), b"").expect("writing a signal file");
+    }
+
+    /// The harness's process id. Started from a shell, it is the shell's.
+    pub fn pid(&self) -> u32 {
+        self.pty.pid().expect("the harness has a process id")
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {

@@ -17,6 +17,9 @@ pub struct UiSettings {
     /// `/vim` saves this in your global config.
     pub keys: KeyScheme,
     pub takeover: TakeoverWhere,
+    /// `fullscreen` draws in the terminal's alternate screen and leaves no trace on exit;
+    /// `inline` prints the chat into the terminal's scrollback. Read at start.
+    pub screen: ScreenMode,
     /// Rebinds: action name to key, such as `crew_view = "ctrl+left"`.
     pub keymap: BTreeMap<String, String>,
     /// Flat labeled lines, no boxes or spinners (`--screen-reader`, `ARGONAUTS_SCREEN_READER=1`).
@@ -105,6 +108,7 @@ impl Default for UiSettings {
             narrator: NarratorMode::OnDemand,
             keys: KeyScheme::Standard,
             takeover: TakeoverWhere::Here,
+            screen: ScreenMode::Fullscreen,
             keymap: BTreeMap::new(),
             screen_reader: false,
             motion: Motion::Normal,
@@ -142,6 +146,16 @@ pub enum TakeoverWhere {
     TmuxSplit,
     /// A new terminal tab, where supported.
     NewTab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenMode {
+    /// The whole terminal, like Claude Code's fullscreen mode. The conversation scrolls inside
+    /// the app, and the shell comes back as it was.
+    Fullscreen,
+    /// Under the shell prompt, with the conversation going up into the terminal's scrollback.
+    Inline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

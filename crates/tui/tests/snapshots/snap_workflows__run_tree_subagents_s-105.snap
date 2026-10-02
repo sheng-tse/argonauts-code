@@ -9,23 +9,23 @@ owner · card-002
 │ GPT 5.6 on Codex (codex/gpt-5.6) · run-01                                                        │
 │ ● Running · GPT 5.6 on Codex · 181k tok · $0.64 · 10m12s · ↺ for Opus on Claude Code             │
 │                                                                                                  │
-│ Prompt · 14 lines · ⏎expand                                                                      │
+│ Prompt · 14 lines · ↵expand                                                                      │
 │   Build the terminal and the whole bottom region of the UI kit.                                  │
 │   Read the design notes first, then the reference screenshots.                                   │
 │   …12 more lines                                                                                 │
 │                                                                                                  │
-│ Activity · last 3 of 195 tool calls · ⏎expand                                                    │
+│ Activity · last 3 of 195 tool calls · ↵expand                                                    │
 │   ● Bash(cargo test -p argonauts-tui composer)                                                   │
 │   ● Bash(cargo clippy -p argonauts-tui --all-targets -- -D warnings)                             │
 │   ● Bash(cargo test -p argonauts-tui)                                                            │
 │                                                                                                  │
-│ Diff · 4 files · +120 -18 · ⏎open                                                                │
+│ Diff · 4 files · +120 -18 · ↵open                                                                │
 │                                                                                                  │
 │ Threads · 2 · steps not streamed                                                                 │
 │   ● thread thr_1  running                                                                        │
 │   ✓ thread thr_2  done                                                                           │
 │                                                                                                  │
-│ Outcome · 9 lines · ⏎expand                                                                      │
+│ Outcome · 11 lines · ↵expand                                                                     │
 │   Report: the terminal and the bottom region are done, with no stubs left.                       │
 │                                                                                                  │
 │   What I built                                                                                   │
@@ -41,4 +41,4 @@ owner · card-002
 │                                                                                                  │
 │                                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ agent · pgdn scroll · ⏎ expand · s steer · t take over · d diff · x stop · p pause · esc back
+↑↓ agent · pgdn scroll · tab section · ⏎ expand · s steer · x stop · p pause · esc back

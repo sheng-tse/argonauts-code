@@ -60,7 +60,7 @@ fn run_name(run: &RunState) -> String {
 
 /// The run's own workflow. Before the lead picks it, a goal alignment runs ahead of it, so the
 /// row names the workflow the alignment came from, then the preset, rather than `goal`.
-fn workflow_name(run: &RunState) -> Option<&str> {
+pub(crate) fn workflow_name(run: &RunState) -> Option<&str> {
     fn named(name: &str) -> Option<&str> {
         Some(name.trim()).filter(|name| !name.is_empty())
     }
@@ -180,10 +180,7 @@ fn agent_row(
     now: Instant,
 ) -> AgentRow {
     let card = session.card.as_ref().and_then(|id| run.cards.get(id));
-    let task = match &session.card {
-        Some(card) => format!("{} · {card}", session.role.as_str()),
-        None => session.role.as_str().to_owned(),
-    };
+    let task = session.task();
     let state = match session.status {
         SessionStatus::Starting | SessionStatus::Working => AgentState::Working,
         SessionStatus::Waiting | SessionStatus::Stopped => AgentState::Waiting,

@@ -122,7 +122,12 @@ pub fn validate(workflow: &Workflow, context: &Context<'_>) -> Result<(), Vec<Wo
 
 impl std::fmt::Display for WorkflowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.at, self.message)
+        // "the workflow needs at least $3.00", where "the workflow: it needs …" would stack
+        // colons once a notice quotes it.
+        match self.message.strip_prefix("it ") {
+            Some(rest) if self.at == "the workflow" => write!(f, "the workflow {rest}"),
+            _ => write!(f, "{}: {}", self.at, self.message),
+        }
     }
 }
 
@@ -870,6 +875,25 @@ pub fn kind_name(kind: StepKind) -> String {
 mod tests {
     use super::*;
     use crate::workflow::{builtin, yaml};
+
+    #[test]
+    fn a_workflow_wide_error_reads_as_one_phrase() {
+        let error = |at: &str, message: &str| WorkflowError {
+            rule: Rule::OverBudget,
+            at: at.to_owned(),
+            message: message.to_owned(),
+        };
+        let budget = error(
+            "the workflow",
+            "it needs at least $3.00, and $0.61 of the budget is left",
+        );
+        assert_eq!(
+            budget.to_string(),
+            "the workflow needs at least $3.00, and $0.61 of the budget is left"
+        );
+        let step = error("phase Build, step 1", "it has no owner");
+        assert_eq!(step.to_string(), "phase Build, step 1: it has no owner");
+    }
 
     fn rules(steps: &str) -> Vec<Rule> {
         let text = format!(

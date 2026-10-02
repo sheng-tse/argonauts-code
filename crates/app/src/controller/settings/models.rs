@@ -195,6 +195,16 @@ pub(crate) fn efforts(ctx: &Ctx, role: Option<RoleName>) -> (Option<WorkerRef>, 
 
 /// The effort levels `worker` takes, worked out as the models level shows them.
 pub(crate) fn levels_of(ctx: &Ctx, worker: Option<&WorkerRef>) -> Vec<String> {
+    levels_and_default(ctx, worker).0
+}
+
+/// The level `worker` starts at when no effort is set, as the models level shows it: a CLI's
+/// default starts where the model it runs does, such as xhigh for Opus 5.5.
+pub(crate) fn default_effort(ctx: &Ctx, worker: &WorkerRef) -> Option<String> {
+    levels_and_default(ctx, Some(worker)).1
+}
+
+fn levels_and_default(ctx: &Ctx, worker: Option<&WorkerRef>) -> (Vec<String>, Option<String>) {
     let settings = ctx.settings();
     let registry = &ctx.services.registry;
     let listed = registry.list();
@@ -202,7 +212,7 @@ pub(crate) fn levels_of(ctx: &Ctx, worker: Option<&WorkerRef>) -> Vec<String> {
     let labels = Labels::new(settings, registry.catalog(), &listed, &defaults);
     let target = worker.and_then(|worker| labels.target(worker));
     let harness = worker.map_or("", |worker| worker.worker.as_str());
-    labels.levels(worker, target.as_ref(), harness).0
+    labels.levels(worker, target.as_ref(), harness)
 }
 
 /// The harnesses that are on and whose CLI is installed, as the worker directory finds them,

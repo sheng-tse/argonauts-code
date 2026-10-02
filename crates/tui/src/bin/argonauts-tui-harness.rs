@@ -7,7 +7,8 @@
 //! - `{"await_command": "<type>"}` waits for a `UiCommand` of that type, such as `submit`. Each
 //!   wait takes the oldest such command not taken yet, even one sent before the wait began;
 //! - `{"await_signal": "<name>"}` waits until a file called `<name>` exists in
-//!   `$HARNESS_SIGNALS`, so a test can hold an event back until it has typed something.
+//!   `$HARNESS_SIGNALS`, so a test can hold an event back until it has typed something;
+//! - `{"panic": "<message>"}` panics, so a test can see the terminal given back after a crash.
 //!
 //! `$HARNESS_UI` holds `[ui]` settings as TOML, bare or under a `[ui]` table. Every command the
 //! screen sends goes to `$HARNESS_COMMANDS` as one JSON line. The harness exits when the screen
@@ -97,6 +98,7 @@ enum Step {
     Event { at: Duration, event: Box<AppEvent> },
     AwaitCommand(String),
     AwaitSignal(String),
+    Panic(String),
 }
 
 fn load_script(path: &Path) -> anyhow::Result<Vec<Step>> {
@@ -126,9 +128,13 @@ fn parse_step(line: &str) -> anyhow::Result<Step> {
         }
         return Ok(Step::AwaitSignal(name.to_owned()));
     }
+    if let Some(message) = value.get("panic") {
+        let message = message.as_str().context("panic takes a message")?;
+        return Ok(Step::Panic(message.to_owned()));
+    }
     let event = value
         .get("event")
-        .context("a line has an event, await_command, or await_signal")?;
+        .context("a line has an event, await_command, await_signal, or panic")?;
     let event: AppEvent = serde_json::from_value(event.clone()).context("not an AppEvent")?;
     let at_ms = match value.get("at_ms") {
         None => 0,
@@ -177,6 +183,8 @@ async fn play(
                     Err(Stop)
                 }
             },
+            // Unwinding drops the event sender, so the screen closes after the panic hook.
+            Step::Panic(message) => panic!("{message}"),
         };
         if played.is_err() {
             break;

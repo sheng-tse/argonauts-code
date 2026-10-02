@@ -1,17 +1,20 @@
 //! What the events say about each session, gathered once for the views that draw sessions.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
+use argonauts_core::events::card::{CardEvent, CardState};
 use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointPacket};
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::{
-    EndReason, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
+    EndReason, LimitEvent, SessionEnd, SessionEvent, SessionStarted, SubagentUpdate,
 };
 use argonauts_core::events::vendor::HandoffEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{CheckpointId, RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::RotateAt;
+use argonauts_core::steps::StepName;
 use argonauts_core::views::{AgentRow, ContextUse, RowStatus};
 use argonauts_core::{AgentEvent, CardId, Spend};
 use time::OffsetDateTime;
@@ -23,6 +26,15 @@ pub(crate) fn add_spend(total: &mut Spend, more: &Spend) {
     total.cost_usd += more.cost_usd;
     total.cost_partial |= more.cost_partial;
     total.cost_estimated |= more.cost_estimated;
+}
+
+/// The token counts of whichever reading saw more.
+fn larger_tokens(a: Spend, b: Spend) -> Spend {
+    if b.total_tokens() > a.total_tokens() {
+        b
+    } else {
+        a
+    }
 }
 
 pub(crate) struct ToolCall {
@@ -45,6 +57,8 @@ pub(crate) struct SessionFacts {
     pub ended: Option<SessionEnd>,
     /// From `Usage` events, until `Ended` gives the final spend.
     pub usage: Spend,
+    /// The conductor's meter, which prices what the stream leaves unpriced.
+    pub metered: Option<Spend>,
     pub tools: Vec<ToolCall>,
     /// Used tokens and the window's size, from the latest `ContextFill`.
     pub context: Option<(u64, Option<u64>)>,
@@ -52,13 +66,33 @@ pub(crate) struct SessionFacts {
     pub subagents: Vec<SubagentUpdate>,
     /// Every input part, in order: the prompt, then what each delivery added.
     pub prompt: String,
+    /// Where it was launched, from its first input.
+    pub cwd: Option<PathBuf>,
     /// The worker it replaced after a handoff.
     pub standing_in_for: Option<WorkerRef>,
+    /// The card's attempt an owner session works on, 1-based.
+    pub attempt: Option<u32>,
+    /// Lines added and removed in each file it changed since the worktree's last commit.
+    pub file_diffs: BTreeMap<String, (u32, u32)>,
+    /// It ended as if done, but without a report, and its card failed for that.
+    pub unreported: bool,
 }
 
 impl SessionFacts {
+    /// What it spent: the end's count once it ends. Where the vendor gave no dollars, the
+    /// meter's priced count stands in, as it does in the run's budget, so a row agrees with
+    /// the header.
     pub fn spent(&self) -> Spend {
-        self.ended.as_ref().map_or(self.usage, |end| end.spend)
+        let reported = self.ended.as_ref().map_or(self.usage, |end| end.spend);
+        match self.metered {
+            Some(metered) if reported.cost_partial && !metered.cost_partial => Spend {
+                cost_usd: metered.cost_usd,
+                cost_partial: false,
+                cost_estimated: metered.cost_estimated,
+                ..larger_tokens(reported, metered)
+            },
+            _ => reported,
+        }
     }
 
     pub fn tool_calls(&self) -> u32 {
@@ -70,10 +104,16 @@ impl SessionFacts {
         counted.max(reported)
     }
 
+    /// Such as `owner · card-001`, and `owner · card-001 · attempt 2` for a retry, so the
+    /// card's sessions read apart wherever their agents' names are cut.
     pub fn label(&self) -> String {
-        match &self.card {
-            Some(card) => format!("{} · {card}", self.started.role.as_str()),
-            None => self.started.role.as_str().to_owned(),
+        let role = self.started.role.as_str();
+        match (&self.card, self.attempt) {
+            (Some(card), Some(attempt)) if attempt > 1 => {
+                format!("{role} · {card} · attempt {attempt}")
+            }
+            (Some(card), _) => format!("{role} · {card}"),
+            (None, _) => role.to_owned(),
         }
     }
 }
@@ -100,8 +140,38 @@ impl RunFacts {
         let mut finished_at = None;
         // Each CLI's model from the run's settings (`agents.<cli>.model`).
         let mut configured: BTreeMap<String, String> = BTreeMap::new();
-        for event in events {
+        // Each card's current attempt, where its latest report is in the log, and its owner
+        // session that ended with no report yet.
+        let mut attempts: BTreeMap<CardId, u32> = BTreeMap::new();
+        let mut reported_at: BTreeMap<CardId, usize> = BTreeMap::new();
+        let mut unreported: BTreeMap<CardId, usize> = BTreeMap::new();
+        // Where each session starts in the log.
+        let mut starts: Vec<usize> = Vec::new();
+        for (at_event, event) in events.iter().enumerate() {
             match &event.kind {
+                RunEventKind::Card(card_event) => {
+                    let Some(card) = &event.card_id else { continue };
+                    match card_event {
+                        CardEvent::Attempt { attempt, .. } => {
+                            attempts.insert(card.clone(), *attempt);
+                        }
+                        CardEvent::Reported(_) => {
+                            reported_at.insert(card.clone(), at_event);
+                            unreported.remove(card);
+                        }
+                        CardEvent::State {
+                            to: CardState::Failed | CardState::Escalated,
+                            ..
+                        } => {
+                            if let Some(at) = unreported.remove(card)
+                                && let Some(facts) = sessions.get_mut(at)
+                            {
+                                facts.unreported = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 RunEventKind::Run(RunLifecycle::Started(started)) => {
                     if let Some(value) = started.settings.pointer("/sessions/rotate_at")
                         && let Ok(parsed) = serde_json::from_value::<RotateAt>(value.clone())
@@ -162,7 +232,14 @@ impl RunFacts {
                             configured.get(&started.worker.worker).cloned(),
                         ),
                     };
+                    let owns = started.step == Some(StepName::Build);
+                    let attempt = event
+                        .card_id
+                        .as_ref()
+                        .filter(|_| owns)
+                        .and_then(|card| attempts.get(card).copied());
                     index.insert(key.clone(), sessions.len());
+                    starts.push(at_event);
                     sessions.push(SessionFacts {
                         key: key.clone(),
                         card: event.card_id.clone(),
@@ -171,12 +248,37 @@ impl RunFacts {
                         worker,
                         ended: None,
                         usage: Spend::default(),
+                        metered: None,
                         tools: Vec::new(),
                         context: None,
                         subagents: Vec::new(),
                         prompt: String::new(),
+                        cwd: None,
                         standing_in_for,
+                        attempt,
+                        file_diffs: BTreeMap::new(),
+                        unreported: false,
                     });
+                }
+                RunEventKind::Session(SessionEvent::Ended(end)) => {
+                    let Some(at) = event.session.as_ref().and_then(|key| index.get(key)) else {
+                        continue;
+                    };
+                    let Some(facts) = sessions.get_mut(*at) else {
+                        continue;
+                    };
+                    facts.ended = Some((**end).clone());
+                    // A report sent with a tool came before the end; one parsed from the last
+                    // answer comes after it, before the card moves on.
+                    if let Some(card) = &facts.card
+                        && facts.started.step == Some(StepName::Build)
+                        && end.reason == EndReason::Completed
+                        && reported_at
+                            .get(card)
+                            .is_none_or(|reported| starts.get(*at).is_some_and(|s| reported < s))
+                    {
+                        unreported.insert(card.clone(), *at);
+                    }
                 }
                 _ => {
                     let Some(facts) = event
@@ -206,6 +308,7 @@ impl RunFacts {
 
     pub fn status(&self, facts: &SessionFacts) -> RowStatus {
         match &facts.ended {
+            Some(_) if facts.unreported => RowStatus::Failed,
             Some(end) => match end.reason {
                 EndReason::Completed
                 | EndReason::Paused
@@ -283,11 +386,18 @@ impl SessionFacts {
     fn note(&mut self, kind: &RunEventKind) {
         match kind {
             RunEventKind::Session(SessionEvent::Input(input)) => {
+                self.cwd.get_or_insert_with(|| input.launch.cwd.clone());
                 for part in &input.parts {
                     self.prompt.push_str(&part.text);
                 }
             }
-            RunEventKind::Session(SessionEvent::Ended(end)) => self.ended = Some((**end).clone()),
+            RunEventKind::Session(SessionEvent::Limit(LimitEvent::Budget(status))) => {
+                self.metered = Some(status.spend);
+            }
+            RunEventKind::Session(SessionEvent::FileDiff(diff)) => {
+                self.file_diffs
+                    .insert(diff.path.clone(), (diff.added, diff.removed));
+            }
             RunEventKind::Agent(agent) => self.note_agent(agent),
             _ => {}
         }

@@ -81,17 +81,15 @@ pub fn minutes(minutes: f64) -> String {
 pub fn budget_reading(status: &BudgetStatus, dimension: BudgetDimension) -> String {
     match dimension {
         BudgetDimension::Spend => match status.limit {
-            BudgetLimit::Usd(limit) => format!(
-                "{} of {}",
-                format::usd(status.spend.cost_usd),
-                format::usd(limit)
-            ),
+            BudgetLimit::Usd(limit) => {
+                format!("{} of {}", format::spend(&status.spend), format::usd(limit))
+            }
             BudgetLimit::Tokens(limit) => format!(
                 "{} of {} tokens",
                 format::tokens(status.spend.input_tokens + status.spend.output_tokens),
                 format::tokens(limit)
             ),
-            BudgetLimit::None => format!("{} spent", format::usd(status.spend.cost_usd)),
+            BudgetLimit::None => format!("{} spent", format::spend(&status.spend)),
         },
         BudgetDimension::Minutes => match status.work_limits.max_minutes {
             Some(limit) => format!("{} of {}", minutes(status.work.minutes), minutes(limit)),

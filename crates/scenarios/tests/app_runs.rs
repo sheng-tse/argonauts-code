@@ -884,16 +884,18 @@ fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
 
     wait_checkpoint(&scenario, CheckpointKind::Plan)?;
     // The lead's own message says why before the plan's item does, so this waits for the
-    // item's last phase and reads the item alone.
-    let text = pty.wait_for("Adjudicate: ", WAIT)?.text();
+    // item's workflow in plain words, which ends with its last phase, and reads the item alone.
+    // The steps' conditions are for Ctrl+O.
+    let text = pty.wait_for(r"adjudicate \(if needed\)", WAIT)?.text();
     let plan = &text[text.rfind("The plan").context("no plan item")?..];
     for shown in [
         "A review: two reviewers from other families",
-        "Review: ",
-        "Adjudicate: ",
+        "review-panel",
+        "review → adjudicate (if needed)",
     ] {
         assert!(plan.contains(shown), "the plan card lacks {shown}:\n{text}");
     }
+    assert!(!plan.contains("reviewers_disagree"), "{text}");
     scenario.shot(&pty, "app_lead_picks_review_panel_and_fills_params")?;
     Ok(())
 }

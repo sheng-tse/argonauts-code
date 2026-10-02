@@ -34,7 +34,7 @@ pub use run::{
     CardRow, GateBrief, MergeTotals, OpenCheckpoint, RunState, RunTotals, StepState, VendorWait,
     WorkflowState,
 };
-pub use session::{Doing, Retrying, SessionState, SessionStatus, ToolRecord};
+pub use session::{Doing, Retrying, SessionState, SessionStatus, ToolRecord, task_label};
 
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
@@ -363,8 +363,8 @@ impl AppState {
         }
         let replaying = self.replaying();
         let opened = self.run_mut(&event.run_id).apply(event, replaying);
-        // A session that names no model runs the one its CLI's settings give, and reads so
-        // from the first row that names it.
+        // A session that names no model runs the one its CLI's settings give, else its CLI's
+        // default, and reads so from the first row that names it.
         if let RunEventKind::Session(SessionEvent::Started(_)) = &event.kind
             && let Some(key) = &event.session
             && let Some(session) = self
@@ -372,6 +372,7 @@ impl AppState {
                 .get_mut(&event.run_id)
                 .and_then(|run| run.sessions.get_mut(key))
         {
+            session.model_assumed = self.names.by_default(&session.worker);
             session.worker = self.names.running(&session.worker);
         }
         if let Some(id) = opened {

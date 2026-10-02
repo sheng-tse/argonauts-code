@@ -162,7 +162,7 @@ impl Cards {
         match (self.merged, self.total) {
             (_, 0) => None,
             (1, 1) => Some("the card merged".to_owned()),
-            (0, 1) => Some("the card not merged".to_owned()),
+            (0, 1) => Some("the card isn't merged".to_owned()),
             (merged, total) if merged == total => Some(format!("all {total} cards merged")),
             (merged, total) => Some(format!("{merged} of {total} cards merged")),
         }
@@ -190,7 +190,12 @@ fn in_progress(summary: &StatusSummary, cards: &Cards) -> String {
         format!("{}.", parts.join(", "))
     };
     if !summary.waiting.is_empty() {
-        text.push_str(&format!(" Waiting on {}.", summary.waiting.join(", ")));
+        // A card's title can end a sentence of its own, and one stop is enough.
+        let waiting = summary.waiting.join(", ");
+        text.push_str(&format!(
+            " Waiting on {}.",
+            waiting.trim().trim_end_matches('.')
+        ));
     } else if let Some(last) = summary.recent.last() {
         text.push_str(&format!(" Last: {}.", last.trim().trim_end_matches('.')));
     }
@@ -255,6 +260,13 @@ mod tests {
             recap_from_summary(&going, None),
             "Export now takes --json. 1 of 2 cards merged, 1 working. Waiting on the merge \
              checkpoint."
+        );
+        let mut escalated = summary(vec![card(1, CardState::Escalated)]);
+        escalated.waiting = vec!["card-001 escalated · Fix add so it returns a + b.".to_owned()];
+        assert_eq!(
+            recap_from_summary(&escalated, None),
+            "Export now takes --json. The card isn't merged. Waiting on card-001 escalated · Fix \
+             add so it returns a + b."
         );
         let empty = StatusSummary::default();
         assert_eq!(

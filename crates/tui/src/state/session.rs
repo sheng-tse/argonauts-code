@@ -4,6 +4,7 @@ use argonauts_core::events::session::{
 };
 use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::sessions::SessionSettings;
+use argonauts_core::steps::StepName;
 use argonauts_core::views::ContextUse;
 use argonauts_core::workflow::StepRef;
 use argonauts_core::{CardId, RetryReason, TodoItem};
@@ -17,9 +18,13 @@ pub struct SessionState {
     /// 1 to 9, the key that opens its session view.
     pub follow: Option<u8>,
     pub worker: WorkerRef,
+    /// Its model is its CLI's default as the catalog has it, which the model it reports replaces.
+    pub model_assumed: bool,
     /// Adapter or endpoint id, such as `claude-code` or `ollama`.
     pub vendor: String,
     pub role: RoleName,
+    /// The step it runs, which tells an owner's forecast for its card from building it.
+    pub step: Option<StepName>,
     pub card: Option<CardId>,
     pub workflow_step: Option<StepRef>,
     pub status: SessionStatus,
@@ -104,6 +109,20 @@ pub struct ToolRecord {
     pub output: Option<String>,
 }
 
+/// What a session does, as the live block, the started tree and the panel name it:
+/// `owner · card-002`. An owner forecasting its card runs before you approve the plan, so it's
+/// an `estimator` there; `owner` would read as if building had begun.
+pub fn task_label(role: RoleName, step: Option<StepName>, card: Option<&CardId>) -> String {
+    let role = match (role, step) {
+        (RoleName::Owner, Some(StepName::Predict)) => "estimator",
+        _ => role.as_str(),
+    };
+    match card {
+        Some(card) => format!("{role} · {card}"),
+        None => role.to_owned(),
+    }
+}
+
 impl SessionState {
     pub fn new(
         key: SessionKey,
@@ -116,8 +135,10 @@ impl SessionState {
             key,
             follow: None,
             worker,
+            model_assumed: false,
             vendor: vendor.into(),
             role,
+            step: None,
             card: None,
             workflow_step: None,
             status: SessionStatus::Starting,
@@ -161,10 +182,16 @@ impl SessionState {
             at,
         );
         session.follow = started.follow_key;
+        session.step = started.step;
         session.card = card;
         session.workflow_step = started.workflow_step.clone();
         session.vendor_session = started.resumed_from.clone();
         session
+    }
+
+    /// `owner · card-002`, as its rows name what it does.
+    pub fn task(&self) -> String {
+        task_label(self.role, self.step, self.card.as_ref())
     }
 
     pub fn tokens(&self) -> u64 {
@@ -211,8 +238,9 @@ impl SessionState {
                 if session_id.is_some() {
                     self.vendor_session.clone_from(session_id);
                 }
-                if self.worker.model.is_none() {
+                if self.worker.model.is_none() || (self.model_assumed && model.is_some()) {
                     self.worker.model.clone_from(model);
+                    self.model_assumed = false;
                 }
             }
             AgentEvent::TextDelta { text, parent: None } => {

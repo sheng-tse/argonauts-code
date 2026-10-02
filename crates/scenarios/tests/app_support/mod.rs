@@ -142,7 +142,7 @@ pub fn launch_with(
 ) -> anyhow::Result<Pty> {
     let binary = argonauts_bin().context("finding the argonauts binary")?;
     let mut command = PtyCommand::new(binary)
-        .args(args.iter().copied())
+        .args(argonauts_scenarios::inline_screen(args))
         .cwd(scenario.repo.root())
         .envs(scenario.envs())
         .env_remove("ARGONAUTS_SESSION")
@@ -504,7 +504,7 @@ pub fn run_cli_with(
     let binary = argonauts_bin().context("finding the argonauts binary")?;
     let mut command = Command::new(binary);
     command
-        .args(args)
+        .args(argonauts_scenarios::inline_screen(args))
         .current_dir(scenario.repo.root())
         .env_remove("ARGONAUTS_SESSION")
         .envs(scenario.envs())

@@ -408,7 +408,7 @@ async fn ask_to_add(
     let request = CheckpointRequest {
         at: Some(call.at.clone()),
         kind: CheckpointKind::Question,
-        title: "New dependencies".to_owned(),
+        title: "Add the new dependencies yourself?".to_owned(),
         card: Some(first.id.clone()),
         packet: CheckpointPacket::Question(QuestionPacket {
             from: division.divided_by.clone(),

@@ -13,6 +13,7 @@ use argonauts_core::events::run::{RunLifecycle, RunMode, RunPhase};
 use argonauts_core::events::vendor::{HandoffEvent, HandoffPlan, VendorEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::HealthState;
+use argonauts_core::log::RETRO_FAILED;
 use argonauts_core::names::{VendorId, WorkerRef};
 use argonauts_core::{CardId, PhaseStatus, RunId};
 use time::OffsetDateTime;
@@ -49,6 +50,7 @@ pub(super) struct RunStory {
     pub landed: Option<String>,
     pub pull_request: Option<PullRequest>,
     pub retro: bool,
+    pub retro_failed: bool,
     /// Each card's latest checkpoint tag and why it was handed off.
     pub tags: BTreeMap<CardId, u32>,
     pub handoffs: BTreeMap<CardId, HandoffPlan>,
@@ -92,9 +94,12 @@ impl Milestones {
             },
             RunEventKind::Phase(change) => match (change.phase, change.status) {
                 (RunPhase::Retro, PhaseStatus::Finished) => story.retro = true,
-                // The engine's warning says a failed retro once, with why and that the run's
-                // result stands, and the finish line mustn't call it saved.
-                (RunPhase::Retro, PhaseStatus::Failed) => story.retro = false,
+                // The finish line mustn't call a failed retro saved.
+                (RunPhase::Retro, PhaseStatus::Failed) => {
+                    story.retro = false;
+                    story.retro_failed = true;
+                    steps::retro_failed(change.summary.as_deref(), cx);
+                }
                 (phase, status) => steps::phase(phase, status, change.summary.as_deref(), cx),
             },
             RunEventKind::Goal(goal) => match goal {
@@ -219,6 +224,8 @@ impl Milestones {
                 VendorEvent::Quota(_) => {}
             },
             RunEventKind::Retro(_) => story.retro = true,
+            // The engine's note repeats the line the failed phase printed, without the reason.
+            RunEventKind::Note(note) if story.retro_failed && note.text == RETRO_FAILED => {}
             RunEventKind::Note(note) => items.notice(note.level, &note.text, cx),
             _ => {}
         }

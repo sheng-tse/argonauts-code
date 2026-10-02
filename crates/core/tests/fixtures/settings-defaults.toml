@@ -413,6 +413,7 @@ verbosity = "full"
 narrator = "on_demand"
 keys = "default"
 takeover = "here"
+screen = "fullscreen"
 screen_reader = false
 motion = "normal"
 color = "auto"

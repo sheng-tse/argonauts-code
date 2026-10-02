@@ -116,9 +116,14 @@ impl Screen {
     }
 
     fn history(&self) -> Vec<String> {
+        self.history_as(false)
+    }
+
+    /// As Ctrl+O shows it when `expanded`.
+    fn history_as(&self, expanded: bool) -> Vec<String> {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
-        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now())).with_expanded(expanded);
         self.model
             .history
             .cells()
@@ -210,6 +215,7 @@ fn merge() -> CheckpointOpened {
         suite_passed_on_latest_main: true,
         gates: Vec::new(),
         combined: stat(4, 80, 12),
+        conductor: stat(0, 0, 0),
         diff_path: PathBuf::from("/nonexistent/argonauts/run-01.diff"),
         tree_sha: "abc".into(),
         spent: Spend::default(),
@@ -1110,6 +1116,8 @@ fn review_plan() -> CheckpointOpened {
     )
 }
 
+/// The main view says the workflow in plain words, and its conditions and loop rules wait for
+/// Ctrl+O.
 #[test]
 fn a_plan_shows_the_workflow_it_follows() {
     let mut screen = Screen::new();
@@ -1119,17 +1127,62 @@ fn a_plan_shows_the_workflow_it_follows() {
     for shown in [
         "Workflow  review-panel · Two reviewers from other families",
         "reviewers 2 · target diff",
-        "Review: fan_out reviewer ×2, blind, another family than author",
-        "Adjudicate: judge adjudicator, when reviewers_disagree",
+        "    review → adjudicate (if needed)\n    … +2 lines (ctrl+o to expand)",
     ] {
         assert!(item.contains(shown), "{shown} missing from:\n{item}");
+    }
+    for hidden in ["fan_out", "reviewers_disagree"] {
+        assert!(!item.contains(hidden), "{hidden} shown in:\n{item}");
     }
     // The lead's reason is the plan's summary here, so it shows once.
     assert_eq!(item.matches("A review: two reviewers").count(), 1, "{item}");
     assert_eq!(
         screen.card().detail.first().map(String::as_str),
-        Some("review-panel · 2 phases · budget $20.00")
+        Some("review-panel · review → adjudicate (if needed) · budget $20.00")
     );
+
+    let expanded = screen.history_as(true).join("\n");
+    for shown in [
+        "Review: fan_out reviewer ×2, blind, another family than author",
+        "Adjudicate: judge adjudicator, when reviewers_disagree",
+    ] {
+        assert!(
+            expanded.contains(shown),
+            "{shown} missing from:\n{expanded}"
+        );
+    }
+    assert!(!expanded.contains("ctrl+o to expand"), "{expanded}");
+}
+
+/// A loop reads as its rounds: `goal (up to 2 rounds) → plan (up to 3 rounds) → build`.
+#[test]
+fn a_looping_phase_says_its_rounds() {
+    let mut opened = review_plan();
+    let CheckpointPacket::Plan(plan) = &mut opened.packet else {
+        unreachable!("a plan checkpoint")
+    };
+    let shown = plan.workflow.as_mut().expect("a workflow");
+    shown.workflow = serde_json::from_value(serde_json::json!({
+        "name": "peer-crew",
+        "description": "",
+        "phases": [
+            {"name": "Goal", "standard": "understand", "steps": [{
+                "kind": "loop_until", "until": "goal_approved", "max": 2,
+                "steps": [{"kind": "restate"}, {"kind": "checkpoint", "checkpoint": "goal"}]
+            }]},
+            {"name": "Build", "standard": "do", "steps": [{"kind": "build", "role": "owner"}]},
+            {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
+        ]
+    }))
+    .expect("a workflow");
+    let mut screen = Screen::new();
+    screen.event(opened_event(opened));
+    let history = screen.history().join("\n");
+    assert!(
+        history.contains("goal (up to 2 rounds) → build → merge"),
+        "{history}"
+    );
+    assert!(!history.contains("goal_approved"), "{history}");
 }
 
 #[test]
@@ -1145,7 +1198,7 @@ fn a_plan_names_the_agents_its_workflow_names() {
         StepWorkers::Named(vec!["codex/gpt-5.6".parse().expect("a worker")]);
     let mut screen = Screen::new();
     screen.event(opened_event(opened));
-    let history = screen.history().join("\n");
+    let history = screen.history_as(true).join("\n");
     assert!(
         history.contains("Review: fan_out reviewer (GPT 5.6 on Codex) ×2"),
         "{history}"
@@ -1262,4 +1315,68 @@ fn the_merge_card_counts_the_spend_the_mode_line_does() {
     // Without the run, the packet's count is all there is.
     let card = checkpoint_card(1, &merge(), None);
     assert!(card.detail.join("\n").contains("$0.00 spent"));
+}
+
+/// An attempt that ended without a report lists nothing in the packet, so the card counts the
+/// card's owner sessions.
+#[test]
+fn an_escalation_counts_attempts_that_reported_nothing() {
+    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    for n in 1..=2 {
+        let mut session = crate::state::SessionState::new(
+            argonauts_core::names::SessionKey::numbered(n),
+            worker("opencode"),
+            "opencode",
+            argonauts_core::names::RoleName::Owner,
+            datetime!(2026-09-30 10:00 UTC),
+        );
+        session.card = Some(card_id(4));
+        session.step = Some(argonauts_core::steps::StepName::Build);
+        run.sessions.insert(session.key.clone(), session);
+    }
+    let mut opened = escalation();
+    if let CheckpointPacket::Escalation(packet) = &mut opened.packet {
+        packet.attempts.clear();
+    }
+    let detail = checkpoint_card(1, &opened, Some(&run)).detail.join("\n");
+    assert!(detail.contains("card-004 Parser · 2 attempts"), "{detail}");
+    let detail = checkpoint_card(1, &opened, None).detail.join("\n");
+    assert!(detail.contains("· 0 attempts"), "{detail}");
+}
+
+/// A plan's author ran its CLI's default, so the card names it by that model, as the
+/// transcript named the draft's session.
+#[test]
+fn a_plans_author_reads_as_its_session_did() {
+    use argonauts_core::display_names::DisplayNames;
+    use argonauts_core::events::plan::{JudgingResult, PlanTally};
+    use argonauts_core::settings::protocol::JudgingMethod;
+
+    let mut opened = review_plan();
+    if let CheckpointPacket::Plan(packet) = &mut opened.packet {
+        packet.judging = Some(JudgingResult {
+            method: JudgingMethod::Cross,
+            plans: vec![PlanTally {
+                label: 1,
+                author: worker("codex"),
+                mean: 8.0,
+                spread: 0.0,
+                counted: 1,
+                dropped: 0,
+            }],
+            winner: Some(1),
+            margin: 1.5,
+            near_tie: false,
+        });
+    }
+    let mut names = DisplayNames::default();
+    names
+        .defaults
+        .insert("codex".to_owned(), "gpt-5.6-luna".to_owned());
+    let card = checkpoint_card_local(1, &opened, None, UtcOffset::UTC, &names);
+    let detail = card.detail.join("\n");
+    assert!(
+        detail.contains("Plan 1 by GPT 5.6 Luna on Codex scored best"),
+        "{detail}"
+    );
 }

@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::events::session::SessionEnd;
+use crate::events::session::{EndReason, SessionEnd};
 use crate::future::BoxFuture;
 use crate::worker::{SessionControl, SessionSpec, Worker, WorkerError, WorkerEvent};
 use std::sync::Arc;
@@ -106,13 +106,40 @@ pub struct StepOutcome {
 pub enum StepError {
     #[error("worker: {0}")]
     Worker(#[from] WorkerError),
-    #[error("the session ended early: {0:?}")]
+    #[error("{}", ended_early(.0))]
     Session(Box<SessionEnd>),
-    #[error("output didn't match the schema: {errors:?}")]
+    #[error("output didn't match the schema: {}", errors.join("; "))]
     SchemaMismatch {
         raw: Option<String>,
         errors: Vec<String>,
     },
+}
+
+/// Why a step's session gave no answer, in words. The session's record is for the raw view.
+fn ended_early(end: &SessionEnd) -> String {
+    let why = match &end.reason {
+        EndReason::Completed => return "the session ended without an answer".to_owned(),
+        EndReason::VendorError { message, .. }
+        | EndReason::Auth { message }
+        | EndReason::Billing { message }
+        | EndReason::StartFailed { message }
+        | EndReason::Crashed { message } => first_line(message),
+        EndReason::AdapterBroken { detail } => first_line(detail),
+        EndReason::ModelUnavailable { model } => format!("{model} isn't available"),
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|value| value.get("why").and_then(Value::as_str).map(str::to_owned))
+            .map_or_else(|| "it stopped".to_owned(), |tag| tag.replace('_', " ")),
+    };
+    format!("the session ended early: {why}")
+}
+
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("no reason given")
+        .to_owned()
 }
 
 pub trait StepRunner: Send + Sync {
@@ -341,6 +368,53 @@ pub fn is_own_tool(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::steps::{card, goal, intake, judgment, narrate, plan};
+
+    /// A step's error is read in the main view's details, so it's words, never a record dump.
+    #[test]
+    fn a_step_error_says_why_in_words() {
+        let ended = |reason: EndReason| {
+            StepError::Session(Box::new(SessionEnd {
+                vendor_session: None,
+                exit_code: Some(0),
+                signal: None,
+                duration_ms: 745,
+                reason,
+                spend: crate::Spend::default(),
+                tool_calls: 0,
+                result_text: None,
+                structured: None,
+                last_message: None,
+                raw_log: Some("/tmp/raw.jsonl".into()),
+            }))
+            .to_string()
+        };
+        let broken = ended(EndReason::AdapterBroken {
+            detail: "Internal error: OpenCode service failure\nat line 2".into(),
+        });
+        assert_eq!(
+            broken,
+            "the session ended early: Internal error: OpenCode service failure"
+        );
+        assert_eq!(
+            ended(EndReason::Completed),
+            "the session ended without an answer"
+        );
+        assert_eq!(
+            ended(EndReason::ContextFull),
+            "the session ended early: context full"
+        );
+        let mismatch = StepError::SchemaMismatch {
+            raw: None,
+            errors: vec![
+                "Additional properties are not allowed".into(),
+                "x is missing".into(),
+            ],
+        };
+        assert_eq!(
+            mismatch.to_string(),
+            "output didn't match the schema: Additional properties are not allowed; x is missing"
+        );
+    }
 
     #[test]
     fn own_tools_are_the_report_and_the_status() {

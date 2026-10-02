@@ -499,7 +499,8 @@ async fn note_and_summary_puts_the_cheapest_models_summary_in_the_note() -> anyh
     ensure!(
         spec.prompt
             .iter()
-            .any(|part| part.label == "transcript" && part.text == TRANSCRIPT),
+            // Parts go out with a blank line between them.
+            .any(|part| part.label == "transcript" && part.text.trim_end() == TRANSCRIPT.trim_end()),
         "the summarizer didn't get the transcript"
     );
 
@@ -801,7 +802,7 @@ async fn the_summary_reads_the_transcript_the_conductor_wrote() -> anyhow::Resul
         asked[0]
             .prompt
             .iter()
-            .any(|part| part.label == "transcript" && part.text == written),
+            .any(|part| part.label == "transcript" && part.text.trim_end() == written.trim_end()),
         "the summarizer didn't read the transcript the conductor wrote"
     );
     let note = first_note(&codex)?;

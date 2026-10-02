@@ -2,6 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
+use argonauts_core::Spend;
 use argonauts_core::app::ModelChoice;
 use argonauts_core::display_names::DisplayNames;
 use time::{OffsetDateTime, UtcOffset};
@@ -49,6 +50,20 @@ pub fn duration_compact(elapsed: Duration) -> String {
 /// A cost in US dollars: `$0.21`, `$12.40`.
 pub fn usd(cost: f64) -> String {
     format!("${cost:.2}")
+}
+
+/// What was spent, marked the same on every screen: `~$0.24` when estimated from token counts,
+/// `$0.24+` when some usage had no price.
+pub fn spend(spent: &Spend) -> String {
+    // A free model, such as one on your own server, is priced at exactly nothing.
+    let free = spent.cost_usd == 0.0 && !spent.cost_partial;
+    let estimated = if spent.cost_estimated && !free {
+        "~"
+    } else {
+        ""
+    };
+    let partial = if spent.cost_partial { "+" } else { "" };
+    format!("{estimated}{}{partial}", usd(spent.cost_usd))
 }
 
 fn split(elapsed: Duration) -> (u64, u64, u64) {
@@ -249,6 +264,27 @@ impl FromStr for ClockTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spend_marks_an_estimate_and_a_floor_but_not_a_free_model() {
+        let estimated = Spend {
+            cost_usd: 0.24,
+            cost_estimated: true,
+            ..Spend::default()
+        };
+        assert_eq!(spend(&estimated), "~$0.24");
+        let floor = Spend {
+            cost_usd: 1.5,
+            cost_partial: true,
+            ..Spend::default()
+        };
+        assert_eq!(spend(&floor), "$1.50+");
+        let free = Spend {
+            cost_estimated: true,
+            ..Spend::default()
+        };
+        assert_eq!(spend(&free), "$0.00");
+    }
 
     #[test]
     fn token_counts_read_like_the_reference() {

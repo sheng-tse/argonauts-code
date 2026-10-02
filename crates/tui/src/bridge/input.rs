@@ -125,6 +125,12 @@ impl InputRouter {
     }
 
     fn submit(&mut self, text: &str, shown: &str, cx: &mut Cx<'_>) {
+        // Typed alone, these leave as `/exit` does, as in Claude Code, instead of going to the
+        // agent as a message.
+        if matches!(text.trim(), "exit" | "quit") {
+            cx.out.exit = true;
+            return;
+        }
         if let Err(error) = self.history.append(text) {
             notice(cx, error.to_string(), Tone::Error);
         }
@@ -499,6 +505,13 @@ mod tests {
         assert_eq!(help.views.len(), 1);
         let exit = screen.submit("/exit");
         assert!(exit.exit && exit.commands.is_empty());
+        for typed in ["exit", "  quit ", "quit"] {
+            let out = screen.submit(typed);
+            assert!(out.exit && out.commands.is_empty(), "{typed:?}");
+        }
+        for typed in ["exit now", "Exit", "please quit"] {
+            assert!(!screen.submit(typed).exit, "{typed:?} is a message");
+        }
 
         let full = screen.submit("/verbosity full");
         assert_eq!(full.verbosity, Some(Verbosity::Full));

@@ -188,7 +188,8 @@ fn plan_item(plan: &PlanPacket, names: &DisplayNames) -> AboutCell {
                     plan_name(tally.label),
                     if won { Role::Success } else { Role::Text },
                 ),
-                TableCell::text(names.worker(&tally.author)),
+                // Named as its draft's session was, by its CLI's default where it named none.
+                TableCell::text(names.worker(&names.running(&tally.author))),
                 TableCell::text(format!("{:.1}", tally.mean)),
                 TableCell::dim(format!("{:.1}", tally.spread)),
                 TableCell::dim(judges),
@@ -319,6 +320,18 @@ fn merge_item(merge: &MergePacket, names: &DisplayNames) -> AboutCell {
             ),
             gates,
             review,
+        ]);
+    }
+    // What Argonauts committed itself, such as the goal record, so the rows add up to the totals.
+    if !merge.conductor.is_empty() {
+        table.row(vec![
+            TableCell::text(""),
+            TableCell::text("Run records"),
+            TableCell::dim(merge.conductor.files_changed.to_string()),
+            TableCell::text(words::lines(&merge.conductor)),
+            TableCell::dim("Argonauts"),
+            TableCell::text(""),
+            TableCell::text(""),
         ]);
     }
     item.table(table);
@@ -497,14 +510,15 @@ fn budget_line(line: BudgetLineKind) -> &'static str {
 /// `card-002 Redis store · GPT-6.1 Sol on Codex · reviewed by Opus 5.5 on Claude Code`.
 fn card_line(card: &CardSpec, names: &DisplayNames) -> String {
     let mut line = format!("{} {}", card.id, card.title);
+    // Named as their sessions will be, by the CLI's default where the plan names no model.
     if let Some(owner) = &card.owner {
-        line.push_str(&format!(" · {}", names.worker(owner)));
+        line.push_str(&format!(" · {}", names.worker(&names.running(owner))));
     }
     if !card.reviewers.is_empty() {
         let reviewers: Vec<String> = card
             .reviewers
             .iter()
-            .map(|reviewer| names.worker(reviewer))
+            .map(|reviewer| names.worker(&names.running(reviewer)))
             .collect();
         line.push_str(&format!(" · reviewed by {}", words::joined(&reviewers)));
     }

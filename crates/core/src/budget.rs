@@ -118,7 +118,7 @@ impl Spend {
         self.input_tokens.saturating_add(self.output_tokens)
     }
 
-    fn plus(&self, other: &Spend) -> Spend {
+    pub fn plus(&self, other: &Spend) -> Spend {
         Spend {
             input_tokens: self.input_tokens.saturating_add(other.input_tokens),
             output_tokens: self.output_tokens.saturating_add(other.output_tokens),

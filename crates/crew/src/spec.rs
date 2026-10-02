@@ -80,7 +80,7 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         access: input.access,
         workdir: input.workdir,
         session_dir: input.session_dir,
-        prompt: input.prompt,
+        prompt: separated(input.prompt),
         json_schema: input.json_schema,
         resume: input.resume,
         lifetime: input.lifetime,
@@ -97,6 +97,20 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         status_file: input.status_file,
         env: Vec::new(),
     })
+}
+
+/// The parts go out concatenated, so each but the last ends in a blank line. Otherwise a card's
+/// last line and the goal's first run together, as `Kind: the whole changeAdd median`.
+fn separated(mut parts: Vec<InputPart>) -> Vec<InputPart> {
+    let last = parts.len().saturating_sub(1);
+    for part in &mut parts[..last] {
+        let text = &mut part.text;
+        if text.is_empty() || text.ends_with("\n\n") {
+            continue;
+        }
+        text.push_str(if text.ends_with('\n') { "\n" } else { "\n\n" });
+    }
+    parts
 }
 
 /// `roles.<role>.effort`, else `agents.<harness>.effort`, else unset.
@@ -203,6 +217,30 @@ mod tests {
         };
         settings.agents.insert("codex".to_owned(), codex);
         settings
+    }
+
+    #[test]
+    fn prompt_parts_never_run_together() {
+        let part = |text: &str| InputPart {
+            kind: argonauts_core::events::session::InputPartKind::Prompt,
+            label: "part".to_owned(),
+            text: text.to_owned(),
+            approx_tokens: 1,
+            source: None,
+        };
+        let parts = separated(vec![
+            part("Kind: the whole change"),
+            part("Add median.\n"),
+            part("Rules.\n\n"),
+            part(""),
+            part("Report."),
+        ]);
+        let sent: String = parts.iter().map(|part| part.text.as_str()).collect();
+        assert_eq!(
+            sent,
+            "Kind: the whole change\n\nAdd median.\n\nRules.\n\nReport."
+        );
+        assert!(separated(Vec::new()).is_empty());
     }
 
     #[test]

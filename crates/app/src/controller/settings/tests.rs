@@ -273,8 +273,8 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     };
     assert_eq!(slider.role, None);
     assert_eq!(slider.worker, "claude-code".parse().unwrap());
-    // Claude Code's usual levels, since its default model lists none of its own, each with
-    // what it means, starting in the middle while neither a level nor a default is set.
+    // The levels of the model Claude Code's default runs, each with what it means, starting
+    // where that model starts with no level set: xhigh for Opus 5.5.
     let levels: Vec<&str> = slider
         .stops
         .iter()
@@ -282,7 +282,8 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         .collect();
     assert_eq!(levels, ["low", "medium", "high", "xhigh", "max"]);
     assert!(slider.stops.iter().all(|stop| !stop.description.is_empty()));
-    assert_eq!(slider.level(), "high");
+    assert_eq!(slider.level(), "xhigh");
+    assert!(slider.is_default() && !slider.cli_default);
 
     harness
         .send(UiCommand::Request {
@@ -700,6 +701,76 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
         assert!(text.contains("# Mine, keep these notes.\n[ui]\n"), "{text}");
         assert!(text.contains("bell = true  # I like it"), "{text}");
     }
+    harness.exit().await;
+}
+
+/// A registry whose catalog has Claude Code's default running Sonnet 5.5, which starts at
+/// high.
+struct DefaultRunsSonnet(StaticRegistry);
+
+impl ModelRegistry for DefaultRunsSonnet {
+    fn get(&self, worker: &WorkerRef) -> Option<ModelEntry> {
+        self.0.get(worker)
+    }
+    fn family(&self, worker: &WorkerRef) -> String {
+        self.0.family(worker)
+    }
+    fn list(&self) -> Vec<ModelEntry> {
+        self.0.list()
+    }
+    fn estimate(
+        &self,
+        worker: &WorkerRef,
+        input: u64,
+        output: u64,
+    ) -> argonauts_core::limits::CostEstimate {
+        self.0.estimate(worker, input, output)
+    }
+    fn discover(&self) -> futures::future::BoxFuture<'_, Vec<ModelEntry>> {
+        self.0.discover()
+    }
+    fn catalog(&self) -> argonauts_core::model_catalog::ModelCatalog {
+        use argonauts_core::model_catalog::{CATALOG_VERSION, CatalogEntry, ModelCatalog};
+        let mut default = CatalogEntry::new("claude-code".parse().unwrap());
+        default.runs = Some("claude-sonnet-5-5".to_owned());
+        let mut sonnet = CatalogEntry::new("claude-code/claude-sonnet-5-5".parse().unwrap());
+        sonnet.efforts = Some(
+            ["low", "medium", "high", "xhigh", "max"]
+                .map(str::to_owned)
+                .to_vec(),
+        );
+        sonnet.default_effort = Some("high".to_owned());
+        ModelCatalog {
+            version: CATALOG_VERSION,
+            models: vec![default, sonnet],
+            efforts: Vec::new(),
+        }
+    }
+}
+
+/// With no effort set, `/effort` on a CLI's default starts where the model it runs starts:
+/// high for Sonnet 5.5.
+#[tokio::test]
+async fn the_effort_slider_starts_where_the_clis_default_model_does() {
+    let mut harness = Harness::start_with(HarnessOptions {
+        registry: Some(Arc::new(DefaultRunsSonnet(StaticRegistry::default()))),
+        ..HarnessOptions::default()
+    })
+    .await;
+    slash(
+        &harness,
+        SlashCommand::Effort {
+            role: None,
+            level: None,
+        },
+    )
+    .await;
+    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+        panic!("/effort answers with its slider");
+    };
+    assert_eq!(slider.worker, "claude-code".parse().unwrap());
+    assert_eq!(slider.level(), "high");
+    assert!(slider.is_default() && !slider.cli_default);
     harness.exit().await;
 }
 

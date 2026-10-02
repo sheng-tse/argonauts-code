@@ -804,6 +804,39 @@ fn noted(worker: &str, note: Option<&str>, older: bool) -> ModelChoice {
     }
 }
 
+/// A model the catalog has no words for, such as Mythos 5.1, reads as what it is, not its id.
+#[test]
+fn a_model_without_a_description_says_what_kind_it_is() {
+    use super::models::model_description;
+
+    let mythos = ModelChoice {
+        family: "claude".into(),
+        name: "Mythos 5.1".into(),
+        ..choice("claude-code/claude-mythos-5-1", false)
+    };
+    assert_eq!(
+        model_description(&mythos),
+        "A Claude model on your subscription"
+    );
+    let local = ModelChoice {
+        family: "olmo".into(),
+        access: ModelAccess::Local,
+        ..choice("ollama/olmo2", false)
+    };
+    assert_eq!(model_description(&local), "An Olmo model on this machine");
+    let unknown = ModelChoice {
+        family: "unknown".into(),
+        access: ModelAccess::ApiKey,
+        ..choice("acme/x-1", false)
+    };
+    assert_eq!(model_description(&unknown), "A model on your API key");
+    let described = ModelChoice {
+        description: Some("Efficient for routine tasks".into()),
+        ..mythos
+    };
+    assert_eq!(model_description(&described), "Efficient for routine tasks");
+}
+
 fn levels(names: &[&str]) -> Vec<String> {
     names.iter().map(|&name| name.to_owned()).collect()
 }
@@ -977,9 +1010,12 @@ fn model_lists_the_clis_then_enter_opens_one() {
         "older models follow with no heading, as Claude Code lists them"
     );
 
-    // A model nothing describes shows its id, so its row doesn't read as blank.
+    // A model nothing describes says what kind it is, so its row doesn't read as blank.
     let mut choices = claude_and_codex();
-    choices.push(choice("claude-code/claude-mythos-5-1", false));
+    choices.push(ModelChoice {
+        family: "claude".into(),
+        ..choice("claude-code/claude-mythos-5-1", false)
+    });
     let mut screen = Screen::new();
     screen.answer(models(None, choices));
     screen.press(KeyCode::Enter);
@@ -989,7 +1025,7 @@ fn model_lists_the_clis_then_enter_opens_one() {
         .iter()
         .find(|row| row.label == "Mythos 5.1")
         .unwrap_or_else(|| panic!("{:?}", screen.labels()));
-    assert_eq!(mythos.description, "claude-mythos-5-1");
+    assert_eq!(mythos.description, "A Claude model on your subscription");
     assert_eq!(picker.esc_hint, "Esc to go back");
 
     // Esc goes back to the CLIs, on the one it left; the next opens on its default.

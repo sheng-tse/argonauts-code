@@ -47,13 +47,23 @@ impl<W: Write> Ui<W> {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
                 self.handle_key(key, now, &mut actions);
             }
-            Event::Key(_) | Event::Mouse(_) => {}
+            Event::Mouse(mouse) => {
+                let state = crate::state::AppState::default();
+                actions = self.mouse_event(mouse, now, &state);
+            }
+            Event::Key(_) => {}
             Event::Paste(text) => self.handle_paste(&text, &mut actions),
             Event::Resize(columns, rows) => self.resize(Size::new(columns, rows), None),
             Event::FocusGained => actions.push(UiAction::Focus(true)),
             Event::FocusLost => actions.push(UiAction::Focus(false)),
         }
         self.show_vim_mode();
+        if actions
+            .iter()
+            .any(|action| matches!(action, UiAction::Submit { .. }))
+        {
+            self.follow_conversation();
+        }
         actions
     }
 
@@ -101,6 +111,9 @@ impl<W: Write> Ui<W> {
             if !self.card_key(key, actions) {
                 self.quit_key(key, now, actions);
             }
+            return;
+        }
+        if self.scroll_key(&key) {
             return;
         }
         if self.model.bottom.pick_selected() && self.answered_pick_key(key, now, actions) {

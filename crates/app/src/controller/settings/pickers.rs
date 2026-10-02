@@ -211,7 +211,8 @@ fn not_installed(ctx: &Ctx) -> Vec<MissingCli> {
 }
 
 /// `/effort`'s slider over the levels the role's model takes, starting on the level set now,
-/// else the model's default. `None` while the router picks the worker, so there's no one model.
+/// else the model's default, which for a CLI's default is that of the model it runs. `None`
+/// while the router picks the worker, so there's no one model.
 fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
     let role = role.filter(|role| *role != RoleName::Default);
     let (worker, levels) = models::efforts(ctx, role);
@@ -226,7 +227,8 @@ fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
         .unwrap_or(label.name);
     let default = entry
         .and_then(|entry| entry.default_effort)
-        .or_else(|| catalog.entry(&worker)?.default_effort.clone());
+        .or_else(|| catalog.entry(&worker)?.default_effort.clone())
+        .or_else(|| models::default_effort(ctx, &worker));
     let stops = levels
         .into_iter()
         .map(|level| EffortStop {

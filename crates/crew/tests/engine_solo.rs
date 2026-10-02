@@ -11,14 +11,16 @@ use serde_json::{Value, json};
 
 use argonauts_core::engine::{EngineCommand, EngineExit};
 use argonauts_core::events::card::{AttemptCause, CardEvent, CardKind, CardSpec};
-use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, CheckpointKind};
+use argonauts_core::events::checkpoint::{
+    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointPacket, MergePacket,
+};
 use argonauts_core::events::goal::{GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::run::{
     ParkReason, Party, PhaseChange, ResumeCause, RunLifecycle, RunMode, RunOutcome, RunPhase,
 };
 use argonauts_core::events::session::{EndReason, SessionEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::log::{Note, NoteLevel};
+use argonauts_core::log::{Note, NoteLevel, RETRO_FAILED};
 use argonauts_core::names::WorkerRef;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{Access, SessionSpec};
@@ -109,6 +111,19 @@ fn opened(events: &[RunEvent], kind: CheckpointKind) -> usize {
         .count()
 }
 
+fn merge_packet(events: &[RunEvent]) -> MergePacket {
+    events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => match &opened.packet {
+                CheckpointPacket::Merge(packet) => Some(packet.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a merge card opened")
+}
+
 fn builds(worker: &FakeWorker) -> Vec<SessionSpec> {
     worker
         .specs()
@@ -194,6 +209,18 @@ async fn solo_lifecycle() -> anyhow::Result<()> {
     let build = builds(&owner);
     assert_eq!(build.len(), 1);
     assert_eq!(build[0].goal_sha256.as_deref(), Some(goal.sha256.as_str()));
+    // The run's only card has no other owners to speak of, and its parts never run together.
+    let sent: String = build[0]
+        .prompt
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect();
+    assert!(
+        sent.starts_with("You make this change on your own"),
+        "{sent}"
+    );
+    assert!(!sent.contains("Other agents own"), "{sent}");
+    assert!(sent.contains("Kind: the whole change\n\n"), "{sent}");
 
     // Then the merge checkpoint, and merging ends the run.
     assert_eq!(opened(&outcome.events, CheckpointKind::Merge), 1);
@@ -213,23 +240,26 @@ async fn a_failed_retro_leaves_the_merge_standing() -> anyhow::Result<()> {
     let merged = decide(&crew, &outcome, CheckpointKind::Merge, AnswerAction::Merge).await?;
     assert_eq!(merged.exit, EngineExit::Finished(RunOutcome::Merged));
 
-    let retro: Vec<PhaseStatus> = merged
+    let retro: Vec<(PhaseStatus, bool)> = merged
         .events
         .iter()
         .filter_map(|event| match &event.kind {
             RunEventKind::Phase(PhaseChange {
                 phase: RunPhase::Retro,
                 status,
-                ..
-            }) => Some(*status),
+                summary,
+            }) => Some((*status, summary.is_some())),
             _ => None,
         })
         .collect();
-    assert_eq!(retro, [PhaseStatus::Started, PhaseStatus::Failed]);
+    // Why it failed rides on the phase, and the note says it in plain words.
+    assert_eq!(
+        retro,
+        [(PhaseStatus::Started, false), (PhaseStatus::Failed, true)]
+    );
     assert!(merged.events.iter().any(|event| matches!(
         &event.kind,
-        RunEventKind::Note(Note { level: NoteLevel::Warn, text })
-            if text.starts_with("The retro failed") && text.ends_with("The run's result stands.")
+        RunEventKind::Note(Note { level: NoteLevel::Warn, text }) if text == RETRO_FAILED
     )));
     let finished: Vec<RunOutcome> = merged
         .events
@@ -470,6 +500,24 @@ async fn solo_goal_file_not_a_violation() -> anyhow::Result<()> {
     );
     assert!(!evidence.facts.agent_paths.contains(&goal_path));
     assert!(evidence.facts.protected_paths.is_empty());
+    // The card shows the goal record as Argonauts' own row, so its rows add up to its totals.
+    let packet = merge_packet(&outcome.events);
+    let rows: u32 = packet.rows.iter().map(|row| row.stat.files_changed).sum();
+    assert!(packet.conductor.files_changed >= 1, "{packet:?}");
+    assert_eq!(
+        rows + packet.conductor.files_changed,
+        packet.combined.files_changed,
+        "{packet:?}"
+    );
+    assert_eq!(
+        packet
+            .rows
+            .iter()
+            .map(|row| row.stat.insertions)
+            .sum::<u32>()
+            + packet.conductor.insertions,
+        packet.combined.insertions
+    );
     let violations: Vec<_> = outcome
         .events
         .iter()

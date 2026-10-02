@@ -268,7 +268,8 @@ impl WorkflowView {
         totals.elapsed.is_some().then_some(totals)
     }
 
-    fn footer(&self, vim: bool) -> Footer {
+    /// Stopping an agent and pausing need the run going; a finished run's view only reads.
+    fn footer(&self, vim: bool, run_going: bool) -> Footer {
         if let Some(session) = &self.confirm_stop {
             let label = self
                 .top()
@@ -287,15 +288,12 @@ impl WorkflowView {
             return Footer::hints(&[(&ask, 0), ("esc to keep", 0)]);
         }
         let library = format!("{} library", tab_key(vim));
-        Footer::hints(&[
-            ("↑↓ select", 0),
-            ("tab switch pane", 1),
-            ("→ open", 4),
-            ("x stop", 3),
-            ("p pause", 2),
-            (&library, 1),
-            (panes::ESC_BACK, 0),
-        ])
+        let mut hints = vec![("↑↓ select", 0), ("tab switch pane", 1), ("→ open", 4)];
+        if run_going {
+            hints.extend([("x stop", 3), ("p pause", 2)]);
+        }
+        hints.extend([(library.as_str(), 1), (panes::ESC_BACK, 0)]);
+        Footer::hints(&hints)
     }
 
     /// Enter or → on the right pane's row.
@@ -483,7 +481,10 @@ impl View for WorkflowView {
         panes::draw_footer(
             buf,
             panes.footer,
-            self.footer(list::vim(ctx.state)),
+            self.footer(
+                list::vim(ctx.state),
+                super::run_going(ctx.state, self.run()),
+            ),
             "",
             theme,
         );
@@ -1526,6 +1527,22 @@ mod tests {
         nested.breadcrumb = vec!["peer-crew".into(), "review".into()];
         assert!(!view.accept_workflow(&nested));
         assert_eq!(view.current().name, "peer-crew");
+    }
+
+    /// A finished run's view only reads, so it offers no stop or pause.
+    #[test]
+    fn a_finished_runs_view_offers_no_stop_or_pause() {
+        let theme = theme();
+        let mut state = AppState::default();
+        let mut finished = crate::state::RunState::new(run());
+        finished.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+        state.runs.insert(finished.id.clone(), finished);
+        let mut view = WorkflowView::new(workflow(1, "peer-crew", Vec::new()));
+        let text = draw_with(&mut view, 120, &theme, &state);
+        let footer = text.lines().last().unwrap_or_default();
+        assert!(!footer.contains("x stop"), "{footer}");
+        assert!(!footer.contains("p pause"), "{footer}");
+        assert!(footer.trim_end().ends_with("esc back"), "{footer}");
     }
 
     /// The header counts the run as its panel row does: every agent, the run's time, and the

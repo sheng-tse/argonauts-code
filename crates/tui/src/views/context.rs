@@ -1,5 +1,6 @@
 //! `/context`: every live session's context against its cap, its calls, and its spend.
 
+use argonauts_core::Spend;
 use argonauts_core::app::ViewRequest;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::views::{ContextRow, ContextView as ContextData};
@@ -177,10 +178,12 @@ impl View for ContextView {
         let theme = ctx.theme;
         let rows = &self.data.rows;
         let used: u64 = rows.iter().map(|row| row.used).sum();
-        let cost: f64 = rows.iter().map(|row| row.spent.cost_usd).sum();
+        let spent = rows
+            .iter()
+            .fold(Spend::default(), |total, row| total.plus(&row.spent));
         let mut summary = vec![format!("{} in context", format::tokens(used))];
-        if cost > 0.0 {
-            summary.push(format::usd(cost));
+        if spent.cost_usd > 0.0 {
+            summary.push(format::spend(&spent));
         }
         let header = Header {
             title: Line::from(Span::styled("Context", theme.style(Role::Label))),

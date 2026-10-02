@@ -60,6 +60,8 @@ struct WorkflowFacts {
     /// The latest definition, after any approved change.
     definition: Workflow,
     parent: Option<StepRef>,
+    /// The template it came from, such as the preset a goal alignment runs ahead of.
+    from: Option<String>,
     started_at: OffsetDateTime,
 }
 
@@ -74,6 +76,8 @@ struct WorkflowLog {
     order: Vec<WorkflowId>,
     workflows: BTreeMap<WorkflowId, WorkflowFacts>,
     steps: HashMap<StepRef, StepProgress>,
+    /// When each phase's first step started.
+    phase_starts: HashMap<(WorkflowId, u32), OffsetDateTime>,
     sessions: RunFacts,
 }
 
@@ -93,6 +97,7 @@ impl WorkflowLog {
         let mut order = Vec::new();
         let mut workflows = BTreeMap::new();
         let mut steps = HashMap::new();
+        let mut phase_starts = HashMap::new();
         for event in events {
             let RunEventKind::Workflow(workflow) = &event.kind else {
                 continue;
@@ -105,6 +110,7 @@ impl WorkflowLog {
                         WorkflowFacts {
                             definition: started.workflow.clone(),
                             parent: started.parent.clone(),
+                            from: started.from.as_ref().map(|from| from.as_str().to_owned()),
                             started_at: event.ts,
                         },
                     );
@@ -116,6 +122,9 @@ impl WorkflowLog {
                 }
                 WorkflowEvent::StepStarted(step) => {
                     steps.insert(step.step.clone(), StepProgress::Running);
+                    phase_starts
+                        .entry((step.step.workflow.clone(), step.step.phase))
+                        .or_insert(event.ts);
                 }
                 WorkflowEvent::StepFinished(step) => {
                     steps.insert(step.step.clone(), StepProgress::Ended(step.end, event.ts));
@@ -126,11 +135,34 @@ impl WorkflowLog {
             order,
             workflows,
             steps,
+            phase_starts,
             sessions: RunFacts::of(events),
         }
     }
 
-    /// Names from the run's workflow down to `id`.
+    /// Whether `facts` is the top of what the log holds: the run's own workflow, or before the
+    /// lead picks it, the goal's alignment that runs ahead of it.
+    fn is_top(&self, facts: &WorkflowFacts) -> bool {
+        facts
+            .parent
+            .as_ref()
+            .is_none_or(|parent| !self.workflows.contains_key(&parent.workflow))
+    }
+
+    /// The phase of `id` going on at `at`: the last one begun by then, else the first.
+    fn phase_at(&self, id: &WorkflowId, phases: usize, at: OffsetDateTime) -> u32 {
+        (0..u32::try_from(phases).unwrap_or(u32::MAX))
+            .rev()
+            .find(|phase| {
+                self.phase_starts
+                    .get(&(id.clone(), *phase))
+                    .is_some_and(|started| *started <= at)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Names from the run's workflow down to `id`. Before the run's own workflow starts, the
+    /// one a goal alignment came from heads it, as the panel row names it.
     fn breadcrumb(&self, id: &WorkflowId) -> Vec<String> {
         let mut names = Vec::new();
         let mut at = Some(id.clone());
@@ -140,6 +172,13 @@ impl WorkflowLog {
             };
             names.push(facts.definition.name.clone());
             if names.len() > MAX_DEPTH {
+                break;
+            }
+            if facts.parent.is_some()
+                && self.is_top(facts)
+                && let Some(from) = facts.from.as_ref().filter(|from| !from.is_empty())
+            {
+                names.push(from.clone());
                 break;
             }
             at = facts.parent.as_ref().map(|parent| parent.workflow.clone());
@@ -159,14 +198,20 @@ impl WorkflowLog {
             workers: Vec::new(),
             status: RowStatus::Waiting,
         };
+        let top = self.is_top(facts);
+        let phase_count = facts.definition.phases.len();
         for (index, phase) in facts.definition.phases.iter().enumerate() {
             let index = u32::try_from(index).unwrap_or(u32::MAX);
             let mut rows: Vec<(OffsetDateTime, WorkflowRow)> = Vec::new();
             for session in &self.sessions.sessions {
-                let Some(step) = &session.started.workflow_step else {
-                    continue;
+                let here = match &session.started.workflow_step {
+                    Some(step) => &step.workflow == id && step.phase == index,
+                    // A session no step started, such as the retro or an estimate, shows in
+                    // the phase going on when it started, so the phases add up to the run's
+                    // agents.
+                    None => top && self.phase_at(id, phase_count, session.started_at) == index,
                 };
-                if &step.workflow != id || step.phase != index {
+                if !here {
                     continue;
                 }
                 let row = self.sessions.agent_row(session);
@@ -487,6 +532,46 @@ mod tests {
         assert!(workflow_view(&[], &run_id(), None).is_none());
     }
 
+    /// A session no step started, such as the retro after the merge, shows in the phase going
+    /// on when it started, so the phases add up to every agent the run counts.
+    #[test]
+    fn a_session_outside_the_steps_shows_in_the_phase_it_ran_in() {
+        let top = WorkflowId::numbered(1);
+        let (build, merge) = (step(&top, 0, 0), step(&top, 1, 0));
+        let (owner, retro) = (SessionKey::numbered(1), SessionKey::numbered(2));
+        let events = vec![
+            started(
+                0,
+                &top,
+                None,
+                definition(serde_json::json!({
+                    "name": "solo",
+                    "phases": [
+                        {"name": "Build", "standard": "do", "steps": [{"kind": "build"}]},
+                        {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
+                    ]
+                })),
+            ),
+            step_started(1, build.clone(), StepKind::Build, StandardPhase::Do),
+            placed(2, &owner, RoleName::Owner, "claude-code", build.clone()),
+            session_ended(3, &owner, EndReason::Completed, 1_000),
+            step_finished(4, build, StepKind::Build, StandardPhase::Do),
+            step_started(5, merge.clone(), StepKind::Merge, StandardPhase::Decide),
+            step_finished(6, merge, StepKind::Merge, StandardPhase::Decide),
+            session_started(7, &retro, None, RoleName::Retro, "claude-code"),
+            session_ended(8, &retro, EndReason::Completed, 1_000),
+        ];
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        assert_eq!((view.agents_done, view.agents_total), (2, 2));
+        let counts: Vec<(u32, u32)> = view
+            .phases
+            .iter()
+            .map(|phase| (phase.done, phase.total))
+            .collect();
+        assert_eq!(counts, [(1, 1), (1, 1)]);
+        assert!(matches!(&view.phases[1].rows[0], WorkflowRow::Agent(row) if row.label == "retro"));
+    }
+
     /// Before the lead picks the run's workflow, the goal's alignment runs nested under the
     /// workflow to come, and the view shows it rather than nothing.
     #[test]
@@ -519,6 +604,12 @@ mod tests {
         assert_eq!((view.name.as_str(), &view.id), ("goal", &alignment));
         assert_eq!(view.phases[0].name, "Goal");
         assert_eq!(view.agents_total, 1);
+        // The workflow it came from heads it, as the panel row names the run's workflow.
+        if let RunEventKind::Workflow(WorkflowEvent::Started(started)) = &mut events[0].kind {
+            started.from = Some(argonauts_core::workflow::WorkflowRef::new("peer-crew"));
+        }
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        assert_eq!(view.breadcrumb, ["peer-crew", "goal"]);
 
         events.push(started(
             3,

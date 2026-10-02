@@ -1,7 +1,7 @@
-//! The screen's shape at start, as in Claude Code's: what the shell showed goes up into the
-//! scrollback, the header sits on the top row, and the input is pinned to the bottom rows.
-//! History fills down from the header, then scrolls into the scrollback, and a restart in the
-//! same terminal shows one header.
+//! The screen's shape, as in Claude Code's: the header sits at the top, and the input is pinned
+//! to the bottom rows. On the inline screen, what the shell showed goes up into the scrollback,
+//! history fills down from the header, then scrolls into the scrollback, and a restart in the
+//! same terminal shows one header. `pty_fullscreen.rs` covers the alternate screen.
 
 mod pty_support;
 
@@ -56,6 +56,7 @@ fn assert_input_at_bottom(screen: &Screen) {
 #[test]
 fn the_start_shows_the_header_on_top_and_the_input_at_the_bottom() {
     let harness = Harness::launch(Script::idle())
+        .inline()
         .after_shell_line(SHELL_LINE)
         .start();
     let screen = harness.wait_visible(MODE_IDLE);
@@ -95,7 +96,7 @@ fn history_fills_under_the_header_then_scrolls_into_the_scrollback() {
         .all(50, notes(1..=3))
         .await_signal("more")
         .all(0, notes(4..=40));
-    let harness = Harness::start(script);
+    let harness = Harness::launch(script).inline().start();
     let screen = harness.wait_visible("note 03");
     let header = expect_row(&screen, HEADER);
     let first = expect_row(&screen, "note 01");
@@ -166,6 +167,7 @@ fn a_restart_shows_only_the_new_header() {
         .at(0, exit());
     let second = Script::idle().at(0, notice("info", "second session"));
     let harness = Harness::launch(first)
+        .inline()
         .after_shell_line(SHELL_LINE)
         .then_restart(second)
         .start();

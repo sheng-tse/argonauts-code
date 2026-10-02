@@ -208,7 +208,7 @@ pub(super) fn run_end(
         finished.push_str(&format!(" · {}", format::duration(elapsed)));
     }
     if let Some(run) = state {
-        finished.push_str(&format!(" · {}", format::usd(run.cost_usd())));
+        finished.push_str(&format!(" · {}", format::spend(&run.spend())));
     }
     if story.retro {
         finished.push_str(" · retro saved");

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::KeyScheme;
 use argonauts_core::app::{AppEvent, UiCommand};
-use argonauts_core::settings::ui::TakeoverWhere;
+use argonauts_core::settings::ui::{ScreenMode, TakeoverWhere};
 use crossterm::event::Event;
 use futures::StreamExt;
 use ratatui::layout::Size;
@@ -21,9 +21,9 @@ use super::editor::edit_in_editor;
 use super::keys::KeySource;
 use super::takeover::{TakeOverPlan, TermEnv, plan_take_over, run_in_tmux, write_spec_files};
 use crate::UiOptions;
-use crate::app::Ui;
+use crate::app::{Ui, select_key};
 use crate::bottom::{ModeNotice, VimMode};
-use crate::bridge::keys::exit_lines;
+use crate::bridge::keys::{exit_lines, watch_line};
 use crate::bridge::settings::theme_for;
 use crate::bridge::{Bridge, Effects, TakeOverJob, TerminalJob};
 use crate::cell::{Notice, Tone};
@@ -70,6 +70,8 @@ pub(super) struct Screen<W: Write> {
     size_poll: Option<Interval>,
     /// The `ui.keymap` the keymap was built from.
     keymap_source: Option<BTreeMap<String, String>>,
+    /// Only on the process's own terminal, in fullscreen.
+    stops: Option<Stops>,
 }
 
 impl<W: Write> Screen<W> {
@@ -94,9 +96,14 @@ impl<W: Write> Screen<W> {
         let mut bridge = Bridge::new(options);
         bridge.state.terminal = info;
         let (returns_tx, returns) = mpsc::unbounded_channel();
+        let mut ui = Ui::new(terminal, theme, model, Instant::now());
+        if options.settings.screen == ScreenMode::Fullscreen {
+            let term_program = std::env::var("TERM_PROGRAM").ok();
+            ui.use_fullscreen(select_key(term_program.as_deref()));
+        }
         let mut screen = Self {
             io,
-            ui: Ui::new(terminal, theme, model, Instant::now()),
+            ui,
             bridge,
             handovers: VecDeque::new(),
             returns_tx,
@@ -104,6 +111,7 @@ impl<W: Write> Screen<W> {
             exit: None,
             size_poll: None,
             keymap_source: None,
+            stops: None,
         };
         screen.refresh_keymap();
         screen
@@ -113,6 +121,9 @@ impl<W: Write> Screen<W> {
     /// tmux its size is polled.
     pub(super) fn use_real_terminal(&mut self, modes: TerminalModes) {
         self.ui.set_terminal_modes(modes);
+        if self.ui.is_fullscreen() {
+            self.stops = Stops::listen();
+        }
         if TermEnv::from_process().in_tmux {
             let start = tokio::time::Instant::now() + SIZE_POLL;
             let mut poll = tokio::time::interval_at(start, SIZE_POLL);
@@ -122,10 +133,16 @@ impl<W: Write> Screen<W> {
     }
 
     /// Leaves what was live and the exit lines in scrollback, and gives the terminal back
-    /// even when the loop failed.
+    /// even when the loop failed. The fullscreen app leaves the main screen as it was, with one
+    /// line under it only while runs keep going.
     pub(super) async fn run<K: KeySource>(mut self, mut keys: K) -> anyhow::Result<()> {
         let result = self.run_loop(&mut keys).await;
         let lines = self.exit.take().unwrap_or_default();
+        let lines = if self.ui.is_fullscreen() {
+            watch_line(&self.bridge.state).into_iter().collect()
+        } else {
+            lines
+        };
         let finished = self.ui.finish_with(lines);
         let restored = self
             .ui
@@ -164,6 +181,9 @@ impl<W: Write> Screen<W> {
                 Some(returned) = self.returns.recv() => self.on_returned(returned).await,
                 () = tokio::time::sleep_until(sleep_until), if wake.is_some() => {}
                 () = tick(&mut self.size_poll), if self.size_poll.is_some() => self.check_size(),
+                () = stopped(&mut self.stops), if self.stops.is_some() => {
+                    self.exit.get_or_insert_with(Vec::new);
+                }
             }
         }
     }
@@ -531,6 +551,46 @@ async fn run_here(argv: Vec<String>, cwd: PathBuf) -> io::Result<ExitStatus> {
         .current_dir(cwd)
         .status()
         .await
+}
+
+/// SIGTERM, SIGHUP, and SIGINT close the fullscreen app the way `/exit` does, so the terminal
+/// leaves the alternate screen. In raw mode Ctrl+C is a key, so these come from elsewhere.
+struct Stops {
+    #[cfg(unix)]
+    signals: Vec<tokio::signal::unix::Signal>,
+}
+
+impl Stops {
+    #[cfg(unix)]
+    fn listen() -> Option<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        let kinds = [
+            SignalKind::terminate(),
+            SignalKind::hangup(),
+            SignalKind::interrupt(),
+        ];
+        let signals = kinds.into_iter().map(signal).collect::<io::Result<_>>();
+        signals.ok().map(|signals| Self { signals })
+    }
+
+    #[cfg(not(unix))]
+    fn listen() -> Option<Self> {
+        None
+    }
+}
+
+async fn stopped(stops: &mut Option<Stops>) {
+    #[cfg(unix)]
+    if let Some(stops) = stops {
+        let waits = stops
+            .signals
+            .iter_mut()
+            .map(|signal| Box::pin(signal.recv()));
+        futures::future::select_all(waits).await;
+        return;
+    }
+    let _ = stops;
+    std::future::pending::<()>().await;
 }
 
 async fn tick(poll: &mut Option<Interval>) {

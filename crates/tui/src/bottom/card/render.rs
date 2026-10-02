@@ -389,7 +389,13 @@ impl CardPrompt {
             }
         } else if let Some(armed) = self.armed.and_then(|index| self.options.get(index)) {
             let verb = lowercase_first(sanitize_line(&armed.label).trim());
-            hint(&format!("Enter to {verb}"), "Esc to cancel");
+            // "Enter to cancel the card · Esc to cancel" would offer one word for both ways.
+            let back = if verb.starts_with("cancel") {
+                "Esc to go back"
+            } else {
+                "Esc to cancel"
+            };
+            hint(&format!("Enter to {verb}"), back);
         } else {
             let enter = match selected.map(|option| option.kind) {
                 Some(OptionKind::View) => "Enter to open",

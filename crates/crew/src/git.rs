@@ -290,6 +290,35 @@ impl Git {
         Ok(parse_numstat(&out))
     }
 
+    /// [`Git::diff_stat`] over `paths` alone, taken literally. No paths count nothing.
+    pub async fn diff_stat_of(
+        &self,
+        dir: &Path,
+        from: &str,
+        to: &str,
+        paths: &[String],
+    ) -> Result<DiffStat, GitError> {
+        if paths.is_empty() {
+            return Ok(DiffStat::default());
+        }
+        let specs: Vec<String> = paths
+            .iter()
+            .map(|path| format!(":(literal){path}"))
+            .collect();
+        let mut args = vec![
+            "diff",
+            "--numstat",
+            "--no-ext-diff",
+            "--no-textconv",
+            from,
+            to,
+            "--",
+        ];
+        args.extend(specs.iter().map(String::as_str));
+        let out = self.run(dir, &args).await?;
+        Ok(parse_numstat(&out))
+    }
+
     pub async fn diff(&self, dir: &Path, from: &str, to: &str) -> Result<String, GitError> {
         self.diff_with(dir, &[], from, to, &[]).await
     }

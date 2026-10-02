@@ -11,15 +11,25 @@ use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use crossterm::style::{Attribute, SetAttribute};
+use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{self, LeaveAlternateScreen};
 use crossterm::{execute, queue};
 use ratatui::layout::{Position, Size};
 
 /// Whether keyboard flags were pushed, so the panic hook knows to pop them.
 static KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
-/// Whether an overlay has the alternate screen, so the panic hook knows to leave it.
+/// Whether the app or an overlay has the alternate screen, so the panic hook and
+/// [`TerminalModes::restore`] know to leave it.
 static ALTERNATE_SCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Set once the panic hook gave the terminal back, so a screen still running draws nothing more.
+static GIVEN_BACK: AtomicBool = AtomicBool::new(false);
+
+/// Clicks and the wheel reported as SGR mouse events, with no motion tracking. The terminal's
+/// own selection still works with its bypass key held, such as Shift.
+pub(crate) const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+/// Turns off both kinds of mouse reporting the app uses, and alternate scroll mode.
+pub(crate) const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l\x1b[?1007l";
 
 /// Raw mode, bracketed paste, focus events, and keyboard disambiguation where the terminal
 /// supports it. Dropping it restores the terminal.
@@ -72,6 +82,10 @@ impl TerminalModes {
                 first_error.get_or_insert(error);
             }
         };
+        // Normally the screen left already. After an error it may not have.
+        if ALTERNATE_SCREEN.swap(false, Ordering::Relaxed) {
+            keep(execute!(stdout, Print(MOUSE_OFF), LeaveAlternateScreen));
+        }
         if self.keyboard_pushed {
             keep(execute!(stdout, PopKeyboardEnhancementFlags));
             self.keyboard_pushed = false;
@@ -100,6 +114,11 @@ pub(crate) fn note_alternate_screen(active: bool) {
     ALTERNATE_SCREEN.store(active, Ordering::Relaxed);
 }
 
+/// Whether a panic already gave the terminal back to the shell.
+pub(crate) fn given_back_after_panic() -> bool {
+    GIVEN_BACK.load(Ordering::Relaxed)
+}
+
 /// Installing it twice is harmless.
 pub fn install_panic_hook() {
     static INSTALL: Once = Once::new();
@@ -114,9 +133,10 @@ pub fn install_panic_hook() {
 
 /// Best effort, since the panic may have come from anywhere, even mid-frame.
 fn restore_after_panic() {
+    GIVEN_BACK.store(true, Ordering::Relaxed);
     let mut stdout = io::stdout();
     if ALTERNATE_SCREEN.swap(false, Ordering::Relaxed) {
-        let _ = queue!(stdout, LeaveAlternateScreen);
+        let _ = queue!(stdout, Print(MOUSE_OFF), LeaveAlternateScreen);
     }
     if KEYBOARD_PUSHED.swap(false, Ordering::Relaxed) {
         let _ = queue!(stdout, PopKeyboardEnhancementFlags);

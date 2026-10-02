@@ -573,6 +573,13 @@ fn value_words(row: &SettingRow, names: &DisplayNames) -> String {
     {
         return names.worker(&worker);
     }
+    if leaf == "change_classes" && !matches!(words.as_str(), "unset" | "none") {
+        return words
+            .split(", ")
+            .map(change_class_words)
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
     let plain = match (leaf, words.as_str()) {
         ("decide_with", "rules") => "your rules",
         ("decide_with", "model") => "the approver",
@@ -587,6 +594,24 @@ fn value_words(row: &SettingRow, names: &DisplayNames) -> String {
         _ => return words,
     };
     plain.to_owned()
+}
+
+/// A recipe change class as people say it: `checklist items` for `checklist_item`.
+fn change_class_words(class: &str) -> String {
+    let words = match class {
+        "checklist_item" => "checklist items",
+        "critique_rounds" => "critique rounds",
+        "critic_policy" => "who critiques",
+        "drafting_prompt" => "drafting prompt",
+        "build_prompt" => "build prompt",
+        "card_split" => "how cards split",
+        "card_budget" => "card budgets",
+        "crew_composition" => "who is in the crew",
+        "step_graph" => "workflow steps",
+        "setting" => "other settings",
+        other => return other.replace('_', " "),
+    };
+    words.to_owned()
 }
 
 /// `merge` and `mode` for `approvals.merge.mode`; `None` for a key right under `approvals.`.
@@ -638,4 +663,39 @@ fn record_words(point: &ApprovalRow) -> String {
         words.push_str(" · ready for auto");
     }
     words
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::settings::SettingScope;
+
+    use super::*;
+
+    fn row(key: &str, value: &str) -> SettingRow {
+        SettingRow {
+            key: key.to_owned(),
+            value: value.to_owned(),
+            layer: "built-in".to_owned(),
+            preset_from: None,
+            default_scope: SettingScope::Project,
+            safety: true,
+            allowed: Vec::new(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn change_classes_read_as_words() {
+        let names = DisplayNames::default();
+        let classes = row(
+            "approvals.recipe_promotion.rules.change_classes",
+            r#"["checklist_item", "critique_rounds", "card_budget", "new_class"]"#,
+        );
+        assert_eq!(
+            value_words(&classes, &names),
+            "checklist items, critique rounds, card budgets, new class"
+        );
+        let none = row("approvals.recipe_promotion.rules.change_classes", "[]");
+        assert_eq!(value_words(&none, &names), "none");
+    }
 }

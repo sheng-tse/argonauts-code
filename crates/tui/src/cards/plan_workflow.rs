@@ -1,9 +1,10 @@
 //! The workflow a plan checkpoint shows: its name, the lead's reason, the parameters the lead
-//! filled, and one line per phase in the words of the workflow file, with agents by name.
+//! filled, and its phases in plain words. One line per phase in the words of the workflow file,
+//! with its conditions and loop rules, waits for Ctrl+O.
 
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::checkpoint::PlanWorkflow;
-use argonauts_core::workflow::{Count, Step, StepKind, StepWorkers, Workflow};
+use argonauts_core::workflow::{Count, Phase, Step, StepKind, StepWorkers, Workflow};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -37,28 +38,61 @@ pub(super) fn push(
     if let Some(params) = params(workflow) {
         item.push(params, Role::Dim, 1);
     }
+    let flow = flow(workflow);
+    if !flow.is_empty() {
+        item.push(flow, Role::Text, 1);
+    }
     for phase in &workflow.phases {
         let steps: Vec<String> = phase
             .steps
             .iter()
             .map(|step| step_text(step, names))
             .collect();
-        item.push(
+        item.more(
             format!("{}: {}", phase.name, steps.join("; ")),
-            Role::Text,
+            Role::Dim,
             1,
         );
     }
 }
 
-/// For the card itself: `review-panel · 4 phases`.
+/// For the card itself: `review-panel · review → adjudicate (if needed)`.
 pub(super) fn summary(shown: &PlanWorkflow) -> String {
-    let phases = shown.workflow.phases.len();
-    format!(
-        "{} · {phases} phase{}",
-        shown.workflow.name,
-        if phases == 1 { "" } else { "s" }
-    )
+    let flow = flow(&shown.workflow);
+    if flow.is_empty() {
+        return shown.workflow.name.clone();
+    }
+    format!("{} · {flow}", shown.workflow.name)
+}
+
+/// The phases in plain words: `goal (up to 2 rounds) → plan (up to 3 rounds) → build → merge`.
+fn flow(workflow: &Workflow) -> String {
+    workflow
+        .phases
+        .iter()
+        .map(phase_words)
+        .filter(|words| !words.is_empty())
+        .collect::<Vec<_>>()
+        .join(" → ")
+}
+
+fn phase_words(phase: &Phase) -> String {
+    let mut words = phase.name.trim().to_lowercase();
+    if words.is_empty() {
+        return words;
+    }
+    let rounds = phase
+        .steps
+        .iter()
+        .find(|step| step.kind == StepKind::LoopUntil)
+        .and_then(|step| step.max);
+    if let Some(max) = rounds {
+        let unit = if max == 1 { "round" } else { "rounds" };
+        words.push_str(&format!(" (up to {max} {unit})"));
+    } else if !phase.steps.is_empty() && phase.steps.iter().all(|step| step.when.is_some()) {
+        words.push_str(" (if needed)");
+    }
+    words
 }
 
 fn params(workflow: &Workflow) -> Option<String> {

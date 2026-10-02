@@ -18,6 +18,7 @@ use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
 use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::settings::ui::UiSettings;
+use argonauts_core::steps::StepName;
 use argonauts_core::worker::{Access, WorkerKind};
 use argonauts_core::{
     AgentEvent, CardId, RetryReason, RunId, Spend, TodoItem, TodoStatus, Verbosity,
@@ -137,10 +138,21 @@ impl Crew {
 
     /// The app's state gets the session first, as `AppState::apply` does before the parts run.
     fn start(&mut self, session: &str, worker: &str, card: Option<u32>) {
+        self.start_step(session, worker, card, None);
+    }
+
+    fn start_step(
+        &mut self,
+        session: &str,
+        worker: &str,
+        card: Option<u32>,
+        step: Option<StepName>,
+    ) {
         let worker: WorkerRef = worker.parse().expect("a worker");
         let key = SessionKey::parse(session).expect("a key");
         let ts = START + time::Duration::seconds_f64(self.now);
-        let state = session_state(&key, &worker, card.map(CardId::numbered), ts);
+        let mut state = session_state(&key, &worker, card.map(CardId::numbered), ts);
+        state.step = step;
         let run = self.run_state();
         run.sessions.insert(key.clone(), state);
         run.session_order.push(key);
@@ -150,7 +162,7 @@ impl Crew {
             family: "test".to_owned(),
             kind: WorkerKind::Harness,
             role: RoleName::Owner,
-            step: None,
+            step,
             access: Access::Build,
             lifetime: SessionLifetime::Card,
             resumed_from: None,
@@ -274,8 +286,10 @@ fn session_state(
         key: key.clone(),
         follow: None,
         worker: worker.clone(),
+        model_assumed: false,
         vendor: worker.worker.clone(),
         role: RoleName::Owner,
+        step: None,
         card,
         workflow_step: None,
         status: SessionStatus::Working,
@@ -788,6 +802,35 @@ fn agents_started_between_card_events() {
     );
 }
 
+/// Owners forecast their cards before you approve the plan, and that mustn't read as building.
+#[test]
+fn an_owner_forecasting_its_card_is_an_estimator() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(1, "Limiter interface", None);
+    crew.card(2, "Redis store", None);
+    crew.start_step("s-001", "codex/gpt-5.6", Some(1), Some(StepName::Predict));
+    crew.start_step(
+        "s-002",
+        "claude-code/opus",
+        Some(2),
+        Some(StepName::Predict),
+    );
+    crew.at(3.0).end("s-001", EndReason::Completed, 3, 180);
+    let printed = text(&crew.printed(100));
+    assert!(
+        printed.starts_with(
+            "● 2 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · estimator · card-001 Limiter interface\n   └ Opus on Claude Code · estimator · card-002 Redis store"
+        ),
+        "{printed}"
+    );
+    assert!(
+        printed
+            .contains("● GPT 5.6 on Codex · estimator · card-001 (Limiter interface)\n  ⎿  Done"),
+        "{printed}"
+    );
+    assert!(!printed.contains("owner"), "{printed}");
+}
+
 #[test]
 fn stopped_agent_prints_one_line() {
     let mut crew = Crew::new(Verbosity::Full);
@@ -884,6 +927,33 @@ fn an_agent_keeps_one_name_from_its_start() {
     assert!(
         printed.contains("└ Haiku 4.5 on Claude Code · owner · card-003 Middleware"),
         "{printed}"
+    );
+}
+
+/// A CLI running its own default is named by it from its start, so the started rows, which can
+/// print before it says which model it runs, name it as its block does.
+#[test]
+fn an_agent_on_its_clis_default_is_named_by_it_from_its_start() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.state.names = DisplayNames {
+        defaults: BTreeMap::from([("claude-code".to_owned(), "claude-opus-5-5".to_owned())]),
+        ..DisplayNames::default()
+    };
+    crew.card(2, "Redis store", None);
+    crew.card(3, "Middleware", None);
+    crew.start("s-001", "codex/gpt-5.6", Some(2));
+    crew.start("s-002", "claude-code", Some(3));
+    crew.at(3.0)
+        .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
+    let printed = text(&crew.printed(100));
+    assert!(
+        printed.contains("└ Opus 5.5 on Claude Code · owner · card-003 Middleware"),
+        "{printed}"
+    );
+    let live = text(&crew.live(100));
+    assert!(
+        live.contains("Opus 5.5 on Claude Code · owner · card-003 (Middleware)"),
+        "{live}"
     );
 }
 

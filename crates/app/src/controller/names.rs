@@ -54,17 +54,43 @@ fn names(ctx: &Ctx) -> DisplayNames {
                 .collect()
         })
         .unwrap_or_else(|_| BTreeMap::new());
-    let configured = ctx
+    let configured: BTreeMap<String, String> = ctx
         .settings()
         .agents
         .iter()
         .filter_map(|(id, agent)| Some((id.clone(), agent.model.clone()?)))
         .collect();
+    // A session that names no model may print its row before it says which model it runs, so
+    // it's named by its CLI's default from the start, as the header is.
+    let defaults = cli_defaults(ctx, harnesses.keys().map(String::as_str));
     DisplayNames {
         harnesses,
         catalog: ctx.services.registry.catalog(),
         configured,
+        defaults,
     }
+}
+
+/// The model each CLI in `clis` runs when nothing names one: the one its model list marks, else
+/// the one the catalog's "Default (recommended)" runs. A CLI with neither is left out.
+pub(crate) fn cli_defaults<'a>(
+    ctx: &Ctx,
+    clis: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, String> {
+    let registry = &ctx.services.registry;
+    let catalog = registry.catalog();
+    let listed = registry.list();
+    clis.into_iter()
+        .filter_map(|cli| {
+            let marked = listed
+                .iter()
+                .find(|entry| entry.cli_default && entry.id.worker == cli)
+                .and_then(|entry| entry.id.model.clone());
+            let harness = WorkerRef::new(cli, None);
+            let model = marked.or_else(|| catalog.entry(&harness)?.runs.clone())?;
+            Some((cli.to_owned(), model))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -103,6 +129,29 @@ mod tests {
             "Opus 5.5 on Claude Code"
         );
         assert_eq!(names.worker(&worker("antigravity-cli")), "Antigravity CLI");
+        harness.exit().await;
+    }
+
+    /// A session that names no model runs its CLI's default, so it's named by that from its
+    /// start, as the header names it, and never shows the bare CLI first.
+    #[tokio::test]
+    async fn a_cli_default_session_is_named_by_the_default() {
+        let mut harness = Harness::start().await;
+        harness
+            .until(|event| matches!(event, AppEvent::Status { .. }))
+            .await;
+        let AppEvent::Names { names } = &harness.seen()[0] else {
+            panic!("{:#?}", harness.seen());
+        };
+        assert_eq!(
+            names.worker(&names.running(&worker("claude-code"))),
+            "Opus 5.5 on Claude Code"
+        );
+        // A model the session names is its own.
+        assert_eq!(
+            names.worker(&names.running(&worker("claude-code/claude-haiku-4-5"))),
+            "Haiku 4.5 on Claude Code"
+        );
         harness.exit().await;
     }
 }

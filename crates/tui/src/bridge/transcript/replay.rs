@@ -85,7 +85,7 @@ impl ReplayPrinter {
         if !stopped_at.is_empty() {
             parts.push(stopped_at.to_owned());
         }
-        parts.push(format!("{} spent", format::usd(summary.spent.cost_usd)));
+        parts.push(format!("{} spent", format::spend(&summary.spent)));
         if summary.sessions_to_resume > 0 {
             let sessions = usize::try_from(summary.sessions_to_resume).unwrap_or(usize::MAX);
             parts.push(format!(

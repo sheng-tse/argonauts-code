@@ -448,6 +448,97 @@ fn slider(chosen: &str) -> EffortSlider {
     .unwrap()
 }
 
+/// The slider for a model whose default is `default`, with no level set.
+fn unset_slider(worker: &str, model: &str, default: &str) -> EffortSlider {
+    let stops = ["low", "medium", "high", "xhigh", "max"]
+        .iter()
+        .map(|&level| EffortStop {
+            level: level.into(),
+            description: argonauts_core::model_catalog::builtin_effort_note(level)
+                .unwrap_or_default()
+                .to_owned(),
+        })
+        .collect();
+    EffortSlider::new(
+        None,
+        worker.parse().unwrap(),
+        model,
+        stops,
+        Some(default),
+        None,
+    )
+    .unwrap()
+}
+
+/// With no effort set, `/effort` opens on the level the model runs at, drawn just as that
+/// level picked would be, and marked as the model's default.
+#[test]
+fn with_no_effort_set_the_slider_starts_on_the_models_default() {
+    let cases = [
+        (
+            "effort_slider_unset_xhigh",
+            unset_slider("claude-code", "Opus 5.5", "xhigh"),
+            "Extra depth for hard, many-step problems. The model's default",
+        ),
+        (
+            "effort_slider_unset_high",
+            unset_slider("claude-code/claude-sonnet-5-5", "Sonnet 5.5", "high"),
+            "Thinks longer for complex problems. The model's default",
+        ),
+    ];
+    let theme = theme();
+    for (name, unset, says) in cases {
+        let level = unset.level().to_owned();
+        let mut picked = unset.clone();
+        picked.chosen = picked.default.expect("the model has a default");
+        let unset = flow::effort_picker("effort", unset);
+        check_picker(name, &unset);
+        let shown = picker_lines(&unset, 80);
+        assert!(shown.contains(says), "{shown}");
+        assert!(!shown.contains("The CLI's own effort"), "{shown}");
+        let picked = flow::effort_picker("effort", picked);
+        for width in [80, 120] {
+            let ctx = still(&theme, width);
+            assert_eq!(
+                common::styled(&unset.lines(&ctx)),
+                common::styled(&picked.lines(&ctx)),
+                "{level} unset reads as {level} picked"
+            );
+        }
+        let lines = unset.lines(&still(&theme, 80));
+        assert_eq!(style_of(&lines, "▲"), Some(theme.style(Role::Card)));
+        let label = style_of(&lines, &format!(" {level} ")).or_else(|| style_of(&lines, &level));
+        assert_eq!(
+            label.and_then(|style| style.fg),
+            theme.style(Role::Card).fg,
+            "{level} in the accent color"
+        );
+    }
+}
+
+/// `/model`'s effort line on Claude Code's Default, with no effort set, names the level the
+/// model it runs starts at.
+#[test]
+fn with_no_effort_set_the_models_effort_line_names_the_default() {
+    for (runs, default) in [("Opus 5.5", "xhigh"), ("Sonnet 5.5", "high")] {
+        let mut choices = reviewer_choices();
+        choices[0].runs = Some(runs.into());
+        choices[0].default_effort = Some(default.into());
+        choices[0].current = true;
+        choices[1].current = false;
+        let mut picker = flow::models_picker("model", None, &choices);
+        assert_eq!(press(&mut picker, KeyCode::Enter), Step::Stay);
+        let name = format!("model_list_unset_{default}");
+        check_picker(&name, &picker);
+        let shown = picker_lines(&picker, 80);
+        assert!(
+            shown.contains(&format!("◉ {default} effort (default)  ←/→ to adjust")),
+            "{shown}"
+        );
+        assert!(!shown.contains("the CLI's own effort"), "{shown}");
+    }
+}
+
 #[test]
 fn effort_slider() {
     let mut picker = flow::effort_picker("effort", slider("xhigh"));

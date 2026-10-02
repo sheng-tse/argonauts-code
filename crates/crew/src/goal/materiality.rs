@@ -95,7 +95,7 @@ pub fn settle(listings: &[DifferOutput], restaters: usize, settings: &GoalSettin
                     format!("{}: {answer}", merged.topic)
                 },
                 basis: format!(
-                    "not asked, over the {limit}-question limit, so the recommended answer"
+                    "the recommended answer, since it was over the {limit}-question limit"
                 ),
             });
         }

@@ -8,12 +8,13 @@ expression: text(&lines)
   card-002  JSON writer              +60 -8    passed  approved
   card-003  Wire --json into the C…  +90 -12   passed  approved
   card-004  Middleware               +120 -16  passed  needs Opus on Claude Code
-  4 cards · 7 files · +120 -18
+            Run records              +27 -0
+  4 cards · 9 files · +327 -40
   Suite passed on the latest main
 
 ────────────────────────────────────────────────────────────────────────────────
 ◆ Merge this run into main?
-  4 cards · 7 files · +120 -18 · suite passed on the latest main
+  4 cards · 9 files · +327 -40 · suite passed on the latest main
   1 card needs a stronger review · $0.46 of $3.00
 
   ❯ 1. Merge

@@ -14,7 +14,7 @@ use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::{PhaseChange, RunOutcome, RunPhase};
 use argonauts_core::events::shared::RetroEvent;
-use argonauts_core::log::{Note, NoteLevel};
+use argonauts_core::log::{Note, NoteLevel, RETRO_FAILED};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::learning::FlaggedNote;
@@ -53,7 +53,7 @@ pub async fn run_or_note(host: &Host) -> EngineResult<()> {
             phase(host, PhaseStatus::Failed, Some(&reason))?;
             let note = Note {
                 level: NoteLevel::Warn,
-                text: format!("The retro failed: {reason}. The run's result stands."),
+                text: RETRO_FAILED.to_owned(),
             };
             host.record(None, None, RunEventKind::Note(note))?;
             Ok(())
@@ -561,8 +561,9 @@ pub fn action_note(action: &Action) -> Note {
         Action::RolledBack { recipe, to, reason } => {
             format!("{recipe} was rolled back to v{to}: {reason}.")
         }
-        Action::Recorded { recipe, branch } => {
-            format!("This run's workflow was saved as {recipe}, on {branch} for you.")
+        // Its branch is plumbing, so the line names the recipe alone.
+        Action::Recorded { recipe, .. } => {
+            format!("This run's workflow was saved as the recipe {recipe}, for you to review.")
         }
         Action::Tell { text } => text.clone(),
     };
@@ -626,4 +627,26 @@ fn phase(host: &Host, status: PhaseStatus, summary: Option<&str>) -> EngineResul
     };
     host.record(None, None, RunEventKind::Phase(change))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_learning::types::RecipeRef;
+
+    use super::*;
+
+    #[test]
+    fn a_recorded_recipe_is_named_without_its_branch() {
+        let note = action_note(&Action::Recorded {
+            recipe: RecipeRef {
+                name: "api-feature".into(),
+                version: 1,
+            },
+            branch: "argonauts/recipes/api-feature-v1".into(),
+        });
+        assert_eq!(
+            note.text,
+            "This run's workflow was saved as the recipe api-feature v1, for you to review."
+        );
+    }
 }

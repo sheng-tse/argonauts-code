@@ -93,7 +93,7 @@ pub(crate) async fn usage(
                 .collect();
             let total = counted
                 .iter()
-                .fold(Spend::default(), |sum, run| plus(&sum, &run.spent));
+                .fold(Spend::default(), |sum, run| sum.plus(&run.spent));
             let runs = match counted.len() {
                 1 => "1 run".to_owned(),
                 n => format!("{n} runs"),
@@ -153,24 +153,7 @@ fn span(left: Duration) -> String {
 }
 
 fn usd(spend: &Spend) -> String {
-    let at_least = if spend.cost_partial { "at least " } else { "" };
-    let estimated = if spend.cost_estimated {
-        ", estimated"
-    } else {
-        ""
-    };
-    format!("{at_least}${:.2}{estimated}", spend.cost_usd)
-}
-
-fn plus(a: &Spend, b: &Spend) -> Spend {
-    Spend {
-        input_tokens: a.input_tokens.saturating_add(b.input_tokens),
-        output_tokens: a.output_tokens.saturating_add(b.output_tokens),
-        cached_tokens: a.cached_tokens.saturating_add(b.cached_tokens),
-        cost_usd: a.cost_usd + b.cost_usd,
-        cost_partial: a.cost_partial || b.cost_partial,
-        cost_estimated: a.cost_estimated || b.cost_estimated,
-    }
+    argonauts_tui::format::spend(spend)
 }
 
 /// `/login` and `/logout`: the screen steps aside while the agent CLI's own command runs in
@@ -379,7 +362,13 @@ mod tests {
             cost_partial: true,
             ..Spend::default()
         };
-        assert_eq!(usd(&spend), "at least $1.50");
+        assert_eq!(usd(&spend), "$1.50+");
+        let estimated = Spend {
+            cost_usd: 0.24,
+            cost_estimated: true,
+            ..Spend::default()
+        };
+        assert_eq!(usd(&estimated), "~$0.24");
         assert_eq!(span(Duration::hours(48)), "2d");
         assert_eq!(span(Duration::seconds(10)), "1m");
     }

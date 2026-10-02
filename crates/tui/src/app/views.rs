@@ -30,6 +30,7 @@ impl<W: Write> Ui<W> {
             }
             // The hidden prompt never gets a paste meant for the view on top.
             Event::Paste(text) if !self.views.is_empty() => self.view_paste(&text, now, state),
+            Event::Mouse(mouse) => self.mouse_event(mouse, now, state),
             event => self.handle_chat_event(event, now),
         }
     }

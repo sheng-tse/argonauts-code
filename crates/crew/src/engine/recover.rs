@@ -354,6 +354,7 @@ mod tests {
             suite_passed_on_latest_main: true,
             gates: Vec::new(),
             combined: DiffStat::default(),
+            conductor: DiffStat::default(),
             diff_path: std::path::PathBuf::new(),
             tree_sha: String::new(),
             spent: Spend::default(),

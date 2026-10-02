@@ -359,6 +359,11 @@ impl Pty {
         Ok(base.with_extension("txt"))
     }
 
+    /// The program's process id, for a test that signals it.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     pub fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();

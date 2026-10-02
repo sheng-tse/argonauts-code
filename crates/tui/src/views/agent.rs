@@ -239,33 +239,63 @@ impl AgentView {
             0 => usize::from(panes.footer.width),
             mark => usize::from(panes.footer.width).saturating_sub(mark + 2),
         };
-        let footer = self.footer(room, theme, list::vim(ctx.state));
+        let footer = self.footer(room, ctx);
         panes::draw_footer(buf, panes.footer, footer, &mark, theme);
     }
 
-    fn footer(&self, width: usize, theme: &Theme, vim: bool) -> Footer {
+    /// The keys that act here and now: Enter names what it does to the section it's on, and
+    /// steering and stopping need the agent running, taking over and pausing the run going.
+    /// Lower numbers give way first when the row is short.
+    fn footer(&self, width: usize, ctx: &ViewCtx<'_>) -> Footer {
         if let Some(text) = &self.steer {
-            return Footer::Line(steer_line(text, width, theme));
+            return Footer::Line(steer_line(text, width, ctx.theme));
         }
         if self.confirm_stop {
             let label = sanitize_line(&self.data.row.label).trim().to_owned();
             let ask = format!("x again to stop {label}");
             return Footer::hints(&[(&ask, 0), ("esc to keep", 0)]);
         }
+        let internals = vendor_internals(ctx);
         // `j` and `k` scroll with or without vim keys, but the hint names them only with.
-        let scroll = if vim { "j/k scroll" } else { "pgdn scroll" };
-        Footer::hints(&[
-            ("↑↓ agent", 0),
-            (scroll, 2),
-            ("tab section", 1),
-            ("⏎ expand", 5),
-            ("s steer", 7),
-            ("t take over", 6),
-            ("d diff", 4),
-            ("x stop", 8),
-            ("p pause", 3),
-            (panes::ESC_BACK, 0),
-        ])
+        let scroll = if list::vim(ctx.state) {
+            "j/k scroll"
+        } else {
+            "pgdn scroll"
+        };
+        let enter = match self.current_section(internals) {
+            Some(Section::Diff) => Some("⏎ open"),
+            Some(section) if self.expanded.contains(&section) => Some("⏎ collapse"),
+            Some(_) => Some("⏎ expand"),
+            None => None,
+        };
+        let running = matches!(
+            self.data.row.status,
+            RowStatus::Running | RowStatus::NeedsYou | RowStatus::Waiting
+        );
+        let run_going = super::run_going(ctx.state, &self.data.run);
+        let has_card = ctx
+            .state
+            .session(&self.data.run, &self.data.row.session)
+            .is_some_and(|session| session.card.is_some());
+        let mut hints = vec![("↑↓ agent", 0), (scroll, 6)];
+        if self.expandable(internals).len() > 1 {
+            hints.push(("tab section", 2));
+        }
+        hints.extend(enter.map(|enter| (enter, 7)));
+        if running {
+            hints.push(("s steer", 5));
+        }
+        if run_going && has_card {
+            hints.push(("t take over", 3));
+        }
+        if running {
+            hints.push(("x stop", 4));
+        }
+        if run_going {
+            hints.push(("p pause", 1));
+        }
+        hints.push((panes::ESC_BACK, 0));
+        Footer::hints(&hints)
     }
 
     fn sibling_lines(
@@ -443,15 +473,23 @@ impl AgentView {
                 body.extend(wrap_text(line, style, usize::from(width), &indent, &indent));
             }
         } else {
-            for line in all.iter().take(PROMPT_PREVIEW) {
+            // The first lines with text: a blank line between parts says nothing in a preview.
+            let shown: Vec<usize> = (0..all.len())
+                .filter(|at| !all[*at].trim().is_empty())
+                .take(PROMPT_PREVIEW)
+                .collect();
+            for at in &shown {
                 body.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(cut(line, inner), style),
+                    Span::styled(cut(all[*at], inner), style),
                 ]));
             }
-            if all.len() > PROMPT_PREVIEW {
-                let more = format!("  …{} more lines", all.len() - PROMPT_PREVIEW);
-                body.push(Line::from(Span::styled(more, theme.style(Role::Dim))));
+            let after = shown.last().map_or(0, |last| last + 1);
+            if all.len() > after {
+                body.push(Line::from(Span::styled(
+                    more_lines(all.len() - after),
+                    theme.style(Role::Dim),
+                )));
             }
         }
         Some((title, all.len() > PROMPT_PREVIEW, body))
@@ -475,10 +513,14 @@ impl AgentView {
         } else {
             activity.len().min(ACTIVITY_PREVIEW)
         };
-        let title = format!(
-            "Activity · last {shown} of {}",
-            panes::count(calls as usize, "tool call")
-        );
+        let title = if shown as u32 >= calls {
+            format!("Activity · {}", panes::count(shown, "tool call"))
+        } else {
+            format!(
+                "Activity · last {shown} of {}",
+                panes::count(calls as usize, "tool call")
+            )
+        };
         let marks = Marks::for_theme(theme);
         let body = activity[activity.len() - shown..]
             .iter()
@@ -622,15 +664,15 @@ impl AgentView {
         theme: &Theme,
     ) -> Option<Block> {
         let rendered = rendered?;
-        let source = self.data.outcome.as_deref().unwrap_or_default();
-        let title = format!("Outcome · {}", panes::count(source.lines().count(), "line"));
+        // Counted as drawn, so a long paragraph isn't `1 line` over five rows.
+        let title = format!("Outcome · {}", panes::count(rendered.len(), "line"));
         let expands = rendered.len() > OUTCOME_PREVIEW;
         if open || !expands {
             return Some((title, expands, rendered));
         }
         let hidden = rendered.len() - OUTCOME_PREVIEW;
         let mut body: Vec<Line<'static>> = rendered.into_iter().take(OUTCOME_PREVIEW).collect();
-        let more = format!("  …{hidden} more lines");
+        let more = more_lines(hidden);
         body.push(Line::from(Span::styled(more, theme.style(Role::Dim))));
         Some((title, true, body))
     }
@@ -678,6 +720,12 @@ impl AgentView {
 type Block = (String, bool, Vec<Line<'static>>);
 
 /// `hint` is what Enter does there, such as `expand`, and `None` when it does nothing.
+/// `  …3 more lines` under a section's preview.
+fn more_lines(count: usize) -> String {
+    let noun = if count == 1 { "line" } else { "lines" };
+    format!("  …{count} more {noun}")
+}
+
 fn section_title(title: String, hint: Option<&str>, current: bool, theme: &Theme) -> Line<'static> {
     let dim = theme.style(Role::Dim);
     let title_style = if current {
@@ -1205,17 +1253,76 @@ mod tests {
         text.lines().last().unwrap_or_default()
     }
 
+    /// A run that's going, with the agent's session working on a card.
+    fn live_state() -> AppState {
+        let mut state = AppState::default();
+        let run_id = RunId::new("run-01").unwrap();
+        let mut run = crate::state::RunState::new(run_id.clone());
+        run.started = Some(time::OffsetDateTime::now_utc());
+        let mut session = crate::state::SessionState::new(
+            SessionKey::parse("s-002").unwrap(),
+            "claude-code/opus".parse().unwrap(),
+            "claude-code",
+            argonauts_core::names::RoleName::Owner,
+            time::OffsetDateTime::now_utc(),
+        );
+        session.card = Some(argonauts_core::CardId::new("card-002").unwrap());
+        run.sessions.insert(session.key.clone(), session);
+        state.runs.insert(run_id, run);
+        state
+    }
+
+    fn draw_in(view: &mut AgentView, width: u16, state: &AppState) -> String {
+        let buf = render(view, width, &theme(Glyphs::UNICODE), state);
+        assert_frames(&buf);
+        buffer_text(&buf)
+    }
+
     #[test]
     fn the_footer_keeps_its_ends_at_pty_widths() {
+        let state = live_state();
         for width in [60, 80, 100] {
-            let text = draw(&mut in_phase("Done."), width);
+            let text = draw_in(&mut in_phase("Done."), width, &state);
             let footer = footer(&text);
             assert!(footer.starts_with("↑↓ agent"), "{footer}");
             assert!(footer.trim_end().ends_with("esc back"), "{footer}");
             assert!(!footer.contains('…'), "{footer}");
         }
-        let text = draw(&mut in_phase("Done."), 120);
-        assert!(footer(&text).contains("p pause"), "{text}");
+        let text = draw_in(&mut in_phase("Done."), 120, &state);
+        let footer = footer(&text);
+        for hint in ["s steer", "t take over", "x stop", "p pause"] {
+            assert!(footer.contains(hint), "{hint}: {footer}");
+        }
+    }
+
+    /// Steering and stopping need the agent running, and taking over and pausing need its run
+    /// going. Enter's hint says what it does to the section it's on.
+    #[test]
+    fn the_footer_offers_only_the_keys_that_act() {
+        let mut done = data(&"A line of the outcome.\n".repeat(12));
+        done.row.status = RowStatus::Done;
+        done.diff = Some(DiffStat::default());
+        let row = done.row.clone();
+        let mut view = AgentView::in_phase(done, &phase(vec![WorkflowRow::Agent(row)]));
+        let mut finished = live_state();
+        for run in finished.runs.values_mut() {
+            run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+        }
+        let text = draw_in(&mut view, 120, &finished);
+        let shown = footer(&text);
+        for gone in ["s steer", "t take over", "x stop", "p pause", "d diff"] {
+            assert!(!shown.contains(gone), "{gone}: {shown}");
+        }
+        assert!(shown.contains("tab section"), "{shown}");
+        assert!(shown.contains("⏎ open"), "{shown}");
+
+        key_in(&mut view, KeyCode::Tab, KeyModifiers::NONE, &finished);
+        let text = draw_in(&mut view, 120, &finished);
+        assert!(footer(&text).contains("⏎ expand"), "{text}");
+        key_in(&mut view, KeyCode::Enter, KeyModifiers::NONE, &finished);
+        let text = draw_in(&mut view, 120, &finished);
+        assert!(footer(&text).contains("⏎ collapse"), "{text}");
+        assert!(footer(&text).contains("pgdn scroll"), "{text}");
     }
 
     #[test]
@@ -1247,7 +1354,7 @@ mod tests {
         let mut view = in_phase("Done.");
         let text = draw(&mut view, 80);
         assert!(text.contains("Outcome · 1 line"), "{text}");
-        assert!(!text.contains("⏎expand"), "{text}");
+        assert!(!text.contains("↵expand"), "{text}");
 
         let long = (1..=12)
             .map(|n| format!("Line {n}."))
@@ -1255,7 +1362,7 @@ mod tests {
             .join("\n\n");
         let mut view = in_phase(&long);
         let text = draw(&mut view, 80);
-        assert!(text.contains("⏎expand"), "{text}");
+        assert!(text.contains("↵expand"), "{text}");
     }
 
     #[test]
@@ -1268,7 +1375,7 @@ mod tests {
         });
         let mut view = AgentView::new(data);
         let text = draw(&mut view, 80);
-        assert!(text.contains("⏎open"), "{text}");
+        assert!(text.contains("↵open"), "{text}");
 
         // Diff is the one section Enter acts on here, and with no card to diff both say so.
         for code in [KeyCode::Char('d'), KeyCode::Enter] {
@@ -1478,6 +1585,23 @@ mod tests {
         );
     }
 
+    /// The preview skips the blank line between the prompt's parts.
+    #[test]
+    fn the_prompt_preview_shows_lines_with_text() {
+        let mut data = data("Done.");
+        data.prompt =
+            "You make this change on your own.\n\n- Work only in the worktree.\n- Never commit.\n"
+                .into();
+        let text = draw(&mut AgentView::new(data), 100);
+        assert!(text.contains("Prompt · 4 lines"), "{text}");
+        assert!(
+            text.contains("  You make this change on your own."),
+            "{text}"
+        );
+        assert!(text.contains("  - Work only in the worktree."), "{text}");
+        assert!(text.contains("…1 more line "), "{text}");
+    }
+
     #[test]
     fn a_finished_agent_had_no_tool_calls_rather_than_none_yet() {
         let mut done = data("done");
@@ -1494,8 +1618,15 @@ mod tests {
             ok: Some(true),
         }];
         done.tool_calls = 1;
+        let text = draw(&mut AgentView::new(done.clone()), 100);
+        assert!(text.contains("Activity · 1 tool call "), "{text}");
+        // Only some show: the latest of how many.
+        done.tool_calls = 9;
         let text = draw(&mut AgentView::new(done), 100);
-        assert!(text.contains("Activity · last 1 of 1 tool call "), "{text}");
+        assert!(
+            text.contains("Activity · last 1 of 9 tool calls "),
+            "{text}"
+        );
     }
 
     #[test]

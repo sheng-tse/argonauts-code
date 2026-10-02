@@ -1,5 +1,3 @@
-You own one card of a larger change. Other agents own the other cards, each in its own git worktree, and a conductor coordinates the run.
-
 - Work only inside this worktree, and change only the paths your card owns. Read-only paths are for reading.
 - Don't commit, branch, merge, or rebase. The conductor commits your work when your session ends.
 - Don't edit tests to make them pass, add skip markers, or change test or build config unless your card says so.

@@ -56,6 +56,12 @@ impl Script {
         self
     }
 
+    /// The harness panics here, as a crash in the app would.
+    pub fn panic(mut self, message: &str) -> Self {
+        self.lines.push(json!({ "panic": message }));
+        self
+    }
+
     pub fn to_jsonl(&self) -> String {
         self.lines.iter().map(|line| format!("{line}\n")).collect()
     }

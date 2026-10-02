@@ -631,7 +631,8 @@ fn agent_view_sections() {
         "Activity · last 3 of 195 tool calls",
         "Diff · 4 files · +120 -18",
         "Subagents · 4 · structure not exposed",
-        "Outcome · 9 lines",
+        // Counted as drawn at this width.
+        "Outcome · 11 lines",
     ];
     let at: Vec<usize> = order
         .iter()
@@ -648,12 +649,12 @@ fn agent_view_sections() {
     );
     assert!(!text.contains("crates/tui/src/bottom/mod.rs"), "{text}");
     assert!(text.contains("Report: the terminal"), "{text}");
-    assert!(text.contains("⏎expand"), "{text}");
+    assert!(text.contains("↵expand"), "{text}");
 
     // Enter expands the section at the top: the Prompt, all of it.
     press(&mut view, KeyCode::Enter, &state);
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("Prompt · 14 lines · ⏎collapse"), "{text}");
+    assert!(text.contains("Prompt · 14 lines · ↵collapse"), "{text}");
     assert!(text.contains("Step 12: build one part"), "{text}");
     assert!(
         text.contains(" of ") && text.contains(" ↓"),
@@ -667,7 +668,7 @@ fn agent_view_sections() {
     press(&mut view, KeyCode::Enter, &state);
     let text = screen(&mut view, 100, 40, &state);
     assert!(
-        text.contains("Activity · last 5 of 195 tool calls · ⏎collapse"),
+        text.contains("Activity · last 5 of 195 tool calls · ↵collapse"),
         "{text}"
     );
     assert!(
@@ -1046,7 +1047,9 @@ fn session(
         follow: None,
         vendor: worker.worker.clone(),
         worker,
+        model_assumed: false,
         role,
+        step: None,
         card,
         workflow_step: None,
         status,

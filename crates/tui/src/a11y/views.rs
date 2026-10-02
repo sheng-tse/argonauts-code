@@ -189,7 +189,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                 view.agents_done,
                 view.agents_total,
                 duration(view.elapsed_ms),
-                format::usd(view.spent.cost_usd)
+                format::spend(&view.spent)
             )];
             for phase in &view.phases {
                 lines.push(format!(
@@ -249,7 +249,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                     names.worker(&row.worker),
                     tokens(row.used),
                     row.tool_calls,
-                    format::usd(row.spent.cost_usd)
+                    format::spend(&row.spent)
                 )
             })
             .collect(),
@@ -414,7 +414,7 @@ fn run_row(run: &RunSummary) -> String {
         run.run,
         one(&run.title),
         word(&run.state),
-        format::usd(run.spent.cost_usd)
+        format::spend(&run.spent)
     )
 }
 

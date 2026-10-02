@@ -15,6 +15,7 @@ use argonauts_core::events::run::Party;
 use argonauts_core::events::vendor::HandoffPlan;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::handoff::HandoffStrategy;
+use argonauts_core::steps::StepName;
 use argonauts_core::steps::goal::DiffTag;
 use argonauts_core::steps::judgment::ReviewVerdict;
 use argonauts_core::{CardId, DiffStat};
@@ -205,7 +206,7 @@ fn plan_card(card: &mut CardPrompt, plan: &PlanPacket, names: &DisplayNames) {
             card.detail.push(format!(
                 "Plan {} by {} scored best, {:.1} ahead",
                 winner.label,
-                names.worker(&winner.author),
+                names.worker(&names.running(&winner.author)),
                 judging.margin
             ));
         }
@@ -268,12 +269,12 @@ fn merge_card(
     }
     // The run's spend as the mode line counts it; the packet's count can lag behind it.
     let spent = run
-        .map(RunState::cost_usd)
-        .filter(|cost| *cost > 0.0)
-        .unwrap_or(merge.spent.cost_usd);
+        .map(RunState::spend)
+        .filter(|spent| spent.cost_usd > 0.0)
+        .unwrap_or(merge.spent);
     summary.push(match &merge.limit {
-        Some(limit) => format!("{} of {}", format::usd(spent), words::amount(limit)),
-        None => format!("{} spent", format::usd(spent)),
+        Some(limit) => format!("{} of {}", format::spend(&spent), words::amount(limit)),
+        None => format!("{} spent", format::spend(&spent)),
     });
     card.detail.push(summary.join(" · "));
     if merge.partial {
@@ -384,7 +385,18 @@ fn escalation_card(
     names: &DisplayNames,
 ) {
     card.agent = owner_line(run, &escalation.card, names);
-    let attempts = u32::try_from(escalation.attempts.len()).unwrap_or(u32::MAX);
+    // The packet lists what the attempts reported, and one that ended without a report lists
+    // nothing, so its owners' sessions count them.
+    let owners = run.map_or(0, |run| {
+        run.sessions
+            .values()
+            .filter(|session| {
+                session.card.as_ref() == Some(&escalation.card)
+                    && session.step == Some(StepName::Build)
+            })
+            .count()
+    });
+    let attempts = u32::try_from(owners.max(escalation.attempts.len())).unwrap_or(u32::MAX);
     card.detail.push(format!(
         "{} {} · {}",
         escalation.card,

@@ -111,6 +111,12 @@ async fn cards_run_in_parallel_worktrees() -> anyhow::Result<()> {
         assert_eq!(branch, &format!("argonauts/{run}/{id}"));
         assert!(path.ends_with(id), "{path:?}");
         assert_eq!(worker.specs()[0].workdir, *path);
+        // Each owner knows other agents own the run's other cards.
+        let opening = &worker.specs()[0].prompt[0].text;
+        assert!(
+            opening.starts_with("You own one card of a larger change"),
+            "{opening}"
+        );
     }
     assert_ne!(
         trees[&CardId::new("card-001")?].0,

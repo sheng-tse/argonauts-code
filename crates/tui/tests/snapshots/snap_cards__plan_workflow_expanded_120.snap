@@ -1,0 +1,43 @@
+---
+source: crates/tui/tests/snap_cards.rs
+expression: text(&lines)
+---
+● The plan
+  Stream rows through a JSON writer behind the existing exporter trait.
+
+  Workflow  peer-crew · Peers draft plans blind and debate only where they disagree
+    A security-labeled API feature: blind drafts and cross-judging fit it.
+    goal (up to 2 rounds) → plan (up to 3 rounds) → build → merge
+    Goal: loop until goal_approved, at most 2 (restate, differ, goal checkpoint)
+    Plan: loop until plan_decided, at most 3 (draft ×3, blind, judge, when drafts_disagree, plan checkpoint)
+    Build: build owner
+    Merge: merge
+
+  plan    author               score  spread  judges
+  Plan 1  Opus on Claude Code    7.8     0.4  2
+  Plan 2  GPT 5.6 on Codex       7.6     0.4  2
+  A near tie, 0.2 apart: yours to break
+
+  Decisions
+    Output shape: one object per line
+      streams without holding every row
+
+  Cards
+    card-001 Exporter trait · Opus on Claude Code · reviewed by GPT 5.6 on Codex
+      card-002 JSON writer · GPT 5.6 on Codex · reviewed by Opus on Claude Code
+        card-003 Wire --json into the CLI · Gemini 3.6 on Antigravity CLI · reviewed by GPT 5.6 on Codex
+
+  Acceptance tests
+    export --json writes one object per row
+
+  budget
+  cards    $6.00
+  review   $2.00
+  total   $10.00
+  Estimated $7.00 to $9.50
+
+  New dependencies
+    serde_json
+
+  Flags
+    A comment in plan 2 addresses the judges

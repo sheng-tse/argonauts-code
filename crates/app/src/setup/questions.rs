@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use argonauts_core::app::ChoiceKind;
 use argonauts_core::events::checkpoint::{AnswerAction, AnswerOption};
+use argonauts_core::model_catalog::display_name_from_id;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_registry::TERMS_NOTE;
@@ -270,14 +271,22 @@ fn server_question(server: &LocalServer, view: &SetupView) -> Question {
     let mut options = vec![option('n', "Not now", choose(NOT_NOW), current.is_none())];
     // Keys skip `n`, which Not now keeps.
     let keys = ('a'..='z').filter(|key| *key != 'n');
-    for (model, key) in server.models.iter().zip(keys) {
+    let names: Vec<String> = server
+        .models
+        .iter()
+        .map(|model| display_name_from_id(model))
+        .collect();
+    for ((model, name), key) in server.models.iter().zip(&names).zip(keys) {
         let mut model_option = option(
             key,
-            model,
+            name,
             choose(model),
             current.is_some_and(|current| current == model),
         );
-        model_option.detail = Some(format!("{}/{model}", server.id));
+        // Tags such as `qwen3:8b` and `qwen3:8B` can read as one name; their ids tell them apart.
+        if names.iter().filter(|other| *other == name).count() > 1 {
+            model_option.detail = Some(model.clone());
+        }
         options.push(model_option);
     }
     // Enter takes the first option, so the one you use now goes first.
@@ -507,7 +516,7 @@ fn folder_question(view: &SetupView) -> Option<Question> {
 /// question offered `value`.
 pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut Answers) -> String {
     match step {
-        Step::Terms => "Read the note on your plan's terms.".to_owned(),
+        Step::Terms => "You read the note on your plan's terms.".to_owned(),
         Step::Agents => {
             answers.crew = view.ready().map(FoundAgent::worker).collect();
             let mut line = if answers.crew.is_empty() {
@@ -539,7 +548,11 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
                 base_url: server.base_url.clone(),
                 model: value.to_owned(),
             });
-            format!("{value} on {} reviews your crew's work.", server.name())
+            format!(
+                "{} on {} reviews your crew's work.",
+                display_name_from_id(value),
+                server.name()
+            )
         }
         Step::DefaultAgent => {
             let agent = kept_or_new(view.current_default_agent(), value);
@@ -796,6 +809,33 @@ mod tests {
     }
 
     #[test]
+    fn a_server_question_names_its_models() {
+        let server = LocalServer {
+            id: "ollama".to_owned(),
+            base_url: "http://localhost:11434/v1".to_owned(),
+            models: vec![
+                "qwen3-coder:30b".to_owned(),
+                "llama3.2:latest".to_owned(),
+                "llama3.2".to_owned(),
+            ],
+        };
+        let question = server_question(&server, &view(Vec::new()));
+        let shown: Vec<(&str, Option<&str>)> = question.options[1..]
+            .iter()
+            .map(|option| (option.label.as_str(), option.detail.as_deref()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Qwen3 Coder 30B", None),
+                ("Llama3.2", Some("llama3.2:latest")),
+                ("Llama3.2", Some("llama3.2")),
+            ]
+        );
+        assert_eq!(values(&question)[1], "qwen3-coder:30b");
+    }
+
+    #[test]
     fn trust_and_folder_are_asked_only_when_they_matter() {
         let mut view = view(Vec::new());
         view.project_dir_exists = true;
@@ -816,13 +856,17 @@ mod tests {
         let mut line = |step: &Step, value: &str| apply(step, value, &view, &mut answers);
         assert_eq!(
             line(&Step::Terms, "c"),
-            "Read the note on your plan's terms."
+            "You read the note on your plan's terms."
         );
         let server = LocalServer {
             id: "ollama".to_owned(),
             base_url: "http://localhost:11434/v1".to_owned(),
             models: vec!["llama3.2".to_owned()],
         };
+        assert_eq!(
+            line(&Step::Server(server.clone()), "llama3.2"),
+            "Llama3.2 on Ollama reviews your crew's work."
+        );
         let declined = line(&Step::Server(server.clone()), NOT_NOW);
         assert_eq!(
             declined,

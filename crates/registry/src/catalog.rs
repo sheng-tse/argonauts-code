@@ -865,6 +865,12 @@ fn named() -> Vec<SettingMeta> {
             "Reduced keeps spinners still and streams text a line at a time",
             &["normal", "reduced"],
         ),
+        words(
+            "ui.screen",
+            "Fullscreen takes the whole terminal and leaves it as it was; inline prints into \
+             its scrollback. Takes effect at the next start",
+            &["fullscreen", "inline"],
+        ),
         // /vim, /verbosity
         words(
             "ui.keys",

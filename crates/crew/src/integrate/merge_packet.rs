@@ -126,6 +126,9 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         .filter(|path| !conductor_paths.contains(path))
         .collect();
     let protected_paths = protected(&host.settings().limits.protected_paths, &agent_paths)?;
+    let conductor = git
+        .diff_stat_of(&worktree, &base, &head, &conductor_paths)
+        .await?;
 
     let cards: Vec<CardRecord> = host.read(|state| {
         state
@@ -182,6 +185,7 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         suite_passed_on_latest_main: suite_on_latest_main,
         gates: check.gates.clone(),
         combined,
+        conductor,
         diff_path: diff_path.clone(),
         tree_sha: tree_sha.clone(),
         spent,

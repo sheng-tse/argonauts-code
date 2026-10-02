@@ -538,12 +538,60 @@ impl<W: Write> InlineTerminal<W> {
         Ok(())
     }
 
+    /// The whole app on the alternate screen, with the wheel reported, for `ui.screen =
+    /// "fullscreen"`. Nothing is written to the main screen, so leaving shows it as it was.
+    pub fn enter_fullscreen(&mut self) -> io::Result<()> {
+        let mut out = Vec::new();
+        queue!(out, EnterAlternateScreen, Print(setup::MOUSE_ON), Hide)?;
+        self.emit(&out)?;
+        setup::note_alternate_screen(true);
+        // The main screen is never drawn on, so there is no shell output to move out of the way.
+        self.shell_on_screen = false;
+        self.cursor_hidden = true;
+        self.parked = None;
+        self.screen_rows.clear();
+        self.screen_buffer = None;
+        Ok(())
+    }
+
+    /// Back to the main screen as the shell left it, with the cursor showing.
+    pub fn leave_fullscreen(&mut self) -> io::Result<()> {
+        let mut out = Vec::new();
+        queue!(out, Print(setup::MOUSE_OFF), LeaveAlternateScreen, Show)?;
+        self.emit(&out)?;
+        setup::note_alternate_screen(false);
+        self.cursor_hidden = false;
+        self.parked = None;
+        self.screen_rows.clear();
+        self.screen_buffer = None;
+        Ok(())
+    }
+
+    /// Prints `lines` where the cursor is, each on its own row, such as the one line a
+    /// fullscreen exit leaves on the main screen.
+    pub fn print_lines(&mut self, lines: &[Line<'_>]) -> io::Result<()> {
+        let mut out = Vec::new();
+        for line in lines {
+            write_line(&mut out, line, self.screen.width)?;
+            queue!(out, Print("\r\n"))?;
+        }
+        self.emit(&out)
+    }
+
+    /// What the alternate screen shows, as the last [`draw_buffer`](Self::draw_buffer) left it.
+    pub fn screen_buffer(&self) -> Option<&Buffer> {
+        self.screen_buffer.as_ref()
+    }
+
     /// Paints the whole alternate screen, writing only the rows that changed since the last
     /// call. Rows past `lines` are cleared.
     pub fn draw_screen(&mut self, lines: &[Line<'static>]) -> io::Result<()> {
         let mut out = std::mem::take(&mut self.scratch);
         out.clear();
         let mut result = self.screen_into(&mut out, lines);
+        if !out.is_empty() {
+            self.parked = None;
+        }
         if result.is_ok() && !out.is_empty() {
             result = self.write_frame(&out);
             if result.is_err() {
@@ -557,6 +605,12 @@ impl<W: Write> InlineTerminal<W> {
     /// Paints the whole alternate screen from a view's buffer, writing only the cells that
     /// changed since the last one.
     pub fn draw_buffer(&mut self, next: &Buffer) -> io::Result<()> {
+        self.draw_buffer_parked(next, None)
+    }
+
+    /// Like [`draw_buffer`](Self::draw_buffer), then parks the hidden cursor at `park`, where
+    /// typing happens, so input methods put their popups there.
+    pub fn draw_buffer_parked(&mut self, next: &Buffer, park: Option<Position>) -> io::Result<()> {
         let area = Rect::new(0, 0, self.screen.width, self.screen.height);
         if area.is_empty() {
             return Ok(());
@@ -578,8 +632,20 @@ impl<W: Write> InlineTerminal<W> {
         let mut result = flush_diff(&mut out, &previous, &next);
         // Rows written from lines no longer describe the screen.
         self.screen_rows.clear();
+        if !out.is_empty() {
+            self.parked = None;
+        }
+        if let Some(position) = park.filter(|position| self.parked != Some(*position))
+            && result.is_ok()
+        {
+            result = queue!(out, MoveTo(position.x, position.y));
+            self.parked = Some(position);
+        }
         if result.is_ok() && !out.is_empty() {
             result = self.write_frame(&out);
+        }
+        if result.is_err() {
+            self.parked = None;
         }
         self.screen_buffer = result.is_ok().then_some(next);
         self.scratch = out;
@@ -755,7 +821,7 @@ impl<W: Write> InlineTerminal<W> {
 
 /// Each line's own style fills its whole row before its spans draw, so a styled blank line
 /// still paints.
-fn paint_rows(buffer: &mut Buffer, area: Rect, lines: &[Line<'_>]) {
+pub(crate) fn paint_rows(buffer: &mut Buffer, area: Rect, lines: &[Line<'_>]) {
     for (row, line) in (area.top()..area.bottom()).zip(lines) {
         // ratatui skips empty lines entirely, so the fill must come from the row itself.
         buffer.set_style(Rect::new(area.x, row, area.width, 1), line.style);

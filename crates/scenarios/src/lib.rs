@@ -66,7 +66,7 @@ impl Scenario {
         let binary = argonauts_bin().context("finding the argonauts binary")?;
         Pty::spawn(
             PtyCommand::new(binary)
-                .args(args.iter().copied())
+                .args(inline_screen(args))
                 .cwd(self.repo.root())
                 .envs(self.envs())
                 .env_remove("ARGONAUTS_SESSION")
@@ -90,6 +90,17 @@ impl Drop for Scenario {
     fn drop(&mut self) {
         leftovers::stop(self);
     }
+}
+
+/// Scenarios read what the app printed from the terminal's scrollback, which only the inline
+/// screen fills; the fullscreen mode has tests of its own in the tui crate.
+pub fn inline_screen<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    if args.iter().any(|arg| arg.starts_with("ui.screen=")) {
+        return args.to_vec();
+    }
+    let mut all = vec!["--set", "ui.screen=inline"];
+    all.extend_from_slice(args);
+    all
 }
 
 #[cfg(test)]

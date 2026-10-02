@@ -419,7 +419,8 @@ impl Marks {
                 nested: "◇",
                 phase_waiting: "·",
                 selected: glyphs.prompt,
-                expand: "⏎",
+                // `⏎` is drawn two cells wide by some fonts, which breaks the frame around it.
+                expand: "↵",
                 stands_in: "↺",
                 debt: "◌",
                 warning: "!",
@@ -498,12 +499,7 @@ pub fn spend(spent: &Spend) -> Option<String> {
     if spent.cost_usd <= 0.0 && !spent.cost_partial {
         return None;
     }
-    let estimated = if spent.cost_estimated { "~" } else { "" };
-    let partial = if spent.cost_partial { "+" } else { "" };
-    Some(format!(
-        "{estimated}{}{partial}",
-        format::usd(spent.cost_usd)
-    ))
+    Some(format::spend(spent))
 }
 
 /// `3 agents`, `1 agent`.

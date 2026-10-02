@@ -163,6 +163,12 @@ pub struct DiffStat {
     pub deletions: u32,
 }
 
+impl DiffStat {
+    pub fn is_empty(&self) -> bool {
+        self.files_changed == 0 && self.insertions == 0 && self.deletions == 0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitInfo {
     /// The card branch, such as `argonauts/run-01/card-001`.
@@ -252,6 +258,10 @@ pub enum NoteLevel {
     Warn,
     Error,
 }
+
+/// The note a failed retro leaves. Why it failed is in the retro phase's `Failed` summary,
+/// which the main view keeps for Ctrl+O, so a raw schema error never shows there.
+pub const RETRO_FAILED: &str = "The retro failed. The run's result stands.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {

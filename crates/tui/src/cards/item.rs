@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 
 use super::table::Table;
 use crate::cell::HistoryCell;
+use crate::cell::layout::more_row;
 use crate::render::RenderCtx;
 use crate::text::{fit_lines, sanitize, sanitize_line, str_width, wrap_spans};
 use crate::theme::Role;
@@ -29,6 +30,9 @@ pub enum Block {
         text: String,
         role: Role,
         depth: usize,
+        /// Only Ctrl+O and the pager show it, such as a workflow's loop rules. The main view
+        /// says how many rows it holds back.
+        more: bool,
     },
     /// A dim label, then the text: `Tests  the export writes one row per line`.
     Labeled {
@@ -60,6 +64,17 @@ impl AboutCell {
             text: text.into(),
             role,
             depth,
+            more: false,
+        });
+    }
+
+    /// A line that only Ctrl+O and the pager show.
+    pub fn more(&mut self, text: impl Into<String>, role: Role, depth: usize) {
+        self.blocks.push(Block::Line {
+            text: text.into(),
+            role,
+            depth,
+            more: true,
         });
     }
 
@@ -139,16 +154,29 @@ impl HistoryCell for AboutCell {
         while let Some(Block::Blank) = blocks.last() {
             blocks = &blocks[..blocks.len() - 1];
         }
+        // Rows held back for Ctrl+O, and how deep the first of them sat.
+        let mut held: Option<(usize, usize)> = None;
         for block in blocks {
+            let hidden = !ctx.expanded && matches!(block, Block::Line { more: true, .. });
+            if !hidden {
+                flush_held(&mut lines, &mut held, ctx);
+            }
             match block {
-                Block::Line { text, role, depth } => {
+                Block::Line {
+                    text, role, depth, ..
+                } => {
                     let lead = [Span::raw(" ".repeat(BODY + depth * STEP))];
                     let hang = [Span::raw(" ".repeat(BODY + depth * STEP + STEP))];
                     let spans = [Span::styled(
                         sanitize(text).into_owned(),
                         theme.style(*role),
                     )];
-                    lines.extend(wrap_spans(&spans, width, &lead, &hang));
+                    let rows = wrap_spans(&spans, width, &lead, &hang);
+                    if hidden {
+                        held.get_or_insert((0, *depth)).0 += rows.len();
+                    } else {
+                        lines.extend(rows);
+                    }
                 }
                 Block::Labeled { label, text } => {
                     let label = sanitize_line(label).trim().to_owned();
@@ -167,7 +195,26 @@ impl HistoryCell for AboutCell {
                 Block::Blank => lines.push(Line::default()),
             }
         }
+        flush_held(&mut lines, &mut held, ctx);
         fit_lines(&mut lines, width);
         lines
+    }
+}
+
+/// `… +4 lines (ctrl+o to expand)` where the held-back rows would be.
+fn flush_held(
+    lines: &mut Vec<Line<'static>>,
+    held: &mut Option<(usize, usize)>,
+    ctx: &RenderCtx<'_>,
+) {
+    if let Some((count, depth)) = held.take() {
+        let lead = vec![Span::raw(" ".repeat(BODY + depth * STEP))];
+        lines.push(more_row(
+            lead,
+            ctx.theme,
+            count,
+            true,
+            usize::from(ctx.width),
+        ));
     }
 }

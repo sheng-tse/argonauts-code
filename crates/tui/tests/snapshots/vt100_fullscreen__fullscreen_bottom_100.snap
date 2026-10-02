@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/vt100_fullscreen.rs
+expression: f.shown()
+---
+
+● Answer 3. The export writes JSON to stdout, one object per line, and --pretty indents it.
+
+  - It reads the store
+  - It writes each row
+  - It flushes
+
+❯ Question 4: what does the export do?
+
+● Answer 4. The export writes JSON to stdout, one object per line, and --pretty indents it.
+
+  - It reads the store
+  - It writes each row
+  - It flushes
+
+● GPT on Codex · owner (Wire --json)
+  ⎿  step one
+
+∙ Rowing…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt

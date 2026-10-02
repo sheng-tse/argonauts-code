@@ -3,7 +3,6 @@
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::KeyScheme;
 use argonauts_core::app::{AppMode, QuotaChip};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{Party, RunMode, RunPhase};
@@ -13,6 +12,7 @@ use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::settings::approvals::ApprovalMode as CoreApproval;
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::ui::{NarratorMode, VerbTheme};
+use argonauts_core::{KeyScheme, Spend};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::bottom::verbs::VerbStyle;
@@ -266,9 +266,9 @@ fn run_details(run: &RunState) -> Vec<String> {
         1 => details.push("1 agent".to_owned()),
         agents => details.push(format!("{agents} agents")),
     }
-    let cost = run.cost_usd();
-    if cost > 0.0 {
-        details.push(format::usd(cost));
+    let spent = run.spend();
+    if spent.cost_usd > 0.0 {
+        details.push(format::spend(&spent));
     }
     details
 }
@@ -343,14 +343,15 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
     Some(format!("to {to}, {when}"))
 }
 
-/// The run's preset, `solo` for a solo run, or the preset a new run would use.
+/// The run's workflow as its panel row names it, `solo` for a solo run, or the preset a new
+/// run would use.
 fn composer_label(state: &AppState) -> Option<String> {
     if let Some(run) = focus_run(state) {
         if run.mode == Some(RunMode::Solo) {
             return Some("solo".to_owned());
         }
-        if let Some(preset) = run.preset.as_ref().filter(|preset| !preset.is_empty()) {
-            return Some(preset.clone());
+        if let Some(workflow) = super::panel::workflow_name(run) {
+            return Some(workflow.to_owned());
         }
     }
     state
@@ -621,7 +622,7 @@ fn budget_meter(state: &AppState) -> Vec<StatusPart> {
             && let Some(spent) = &status.spent
         {
             parts.push(StatusPart::spend(spend_text(
-                spent.cost_usd,
+                spent,
                 spent.input_tokens + spent.output_tokens,
                 status.limit.as_ref(),
             )));
@@ -640,7 +641,7 @@ fn budget_meter(state: &AppState) -> Vec<StatusPart> {
             budget.spent.total_tokens()
         });
     parts.push(StatusPart::spend(spend_text(
-        run.cost_usd(),
+        &run.spend(),
         tokens,
         limit.as_ref(),
     )));
@@ -668,8 +669,8 @@ fn budget_meter(state: &AppState) -> Vec<StatusPart> {
 }
 
 /// `$0.21/$5.00`, `48.2k/2m tokens`, or the spend alone without a limit it can be read against.
-fn spend_text(cost: f64, tokens: u64, limit: Option<&BudgetAmount>) -> String {
-    let spent = format::usd(cost);
+fn spend_text(spent: &Spend, tokens: u64, limit: Option<&BudgetAmount>) -> String {
+    let spent = format::spend(spent);
     match limit {
         Some(BudgetAmount {
             unit: BudgetUnit::Usd,
@@ -717,7 +718,7 @@ fn narrator_spend(state: &AppState) -> Option<StatusPart> {
     Some(StatusPart::narrator(
         format!(
             "narrator {}/{}",
-            format::usd(status.spent.cost_usd),
+            format::spend(&status.spent),
             cap_text(&status.cap)
         ),
         tone,
@@ -806,6 +807,32 @@ mod tests {
             state.mode = Some(mode.clone());
             assert_eq!(run_takes_text(&state), takes, "{mode:?}");
         }
+    }
+
+    /// The input's rule names the workflow the run follows, as the panel row does: the preset
+    /// until the lead picks, then the pick.
+    #[test]
+    fn the_input_rule_names_the_workflow_the_lead_picked() {
+        let id = RunId::new("run-20260930-100000-a1b2").unwrap();
+        let mut state = AppState::default();
+        let mut run = crate::state::RunState::new(id.clone());
+        run.mode = Some(RunMode::Crew);
+        run.preset = Some("peer-crew".into());
+        let under_own = StepRef {
+            workflow: WorkflowId::numbered(1),
+            phase: 0,
+            path: vec![0],
+        };
+        run.workflows
+            .push(workflow(2, "goal", &["Goal"], Some(under_own)));
+        state.runs.insert(id.clone(), run);
+        state.mode = Some(AppMode::Working { run: id.clone() });
+        assert_eq!(composer_label(&state).as_deref(), Some("peer-crew"));
+
+        let run = state.runs.get_mut(&id).unwrap();
+        run.workflows
+            .insert(0, workflow(1, "solo-reviewed", &["Build"], None));
+        assert_eq!(composer_label(&state).as_deref(), Some("solo-reviewed"));
     }
 
     fn workflow(id: u32, name: &str, phases: &[&str], parent: Option<StepRef>) -> WorkflowState {

@@ -1223,6 +1223,7 @@ fn open_merge_card(bench: &Bench) -> anyhow::Result<CheckpointId> {
         suite_passed_on_latest_main: true,
         gates: Vec::new(),
         combined: DiffStat::default(),
+        conductor: DiffStat::default(),
         diff_path: PathBuf::new(),
         tree_sha: String::new(),
         spent: Spend::default(),

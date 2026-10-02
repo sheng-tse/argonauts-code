@@ -1,11 +1,11 @@
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-use super::layout::{BODY_COL, indent, result_prefix};
+use super::layout::{BODY_COL, EXPAND_HINT, indent, result_prefix};
 use super::tool::body::text_rows;
 use super::{HistoryCell, Tone};
 use crate::render::RenderCtx;
-use crate::text::{fit_lines, sanitize, sanitize_line, str_width, wrap_spans};
+use crate::text::{fit_lines, sanitize, sanitize_line, spans_width, str_width, wrap_spans};
 use crate::theme::Role;
 
 /// A short message from the app rather than an agent.
@@ -21,6 +21,8 @@ pub struct Notice {
     pub decided: Option<String>,
     /// Dim lines under `⎿`.
     pub detail: Vec<String>,
+    /// Dim lines under `⎿` that only Ctrl+O shows, such as the raw error behind a plain line.
+    pub more: Vec<String>,
 }
 
 impl Notice {
@@ -32,6 +34,7 @@ impl Notice {
             text: text.into(),
             decided: None,
             detail: Vec::new(),
+            more: Vec::new(),
         }
     }
 
@@ -51,6 +54,11 @@ impl Notice {
 
     pub fn with_detail(mut self, line: impl Into<String>) -> Self {
         self.detail.push(line.into());
+        self
+    }
+
+    pub fn with_more(mut self, line: impl Into<String>) -> Self {
+        self.more.push(line.into());
         self
     }
 }
@@ -103,8 +111,17 @@ impl HistoryCell for Notice {
                 ));
             }
         }
+        let hidden = !ctx.expanded && self.more.iter().any(|line| !line.trim().is_empty());
+        if hidden && spans_width(&first) + spans_width(&spans) + str_width(EXPAND_HINT) <= width {
+            spans.push(Span::styled(EXPAND_HINT, theme.style(Role::Dim)));
+        }
         let mut lines = wrap_spans(&spans, width, &first, &rest);
-        for (i, detail) in self.detail.iter().enumerate() {
+        let shown = if ctx.expanded {
+            self.detail.iter().chain(&self.more).collect::<Vec<_>>()
+        } else {
+            self.detail.iter().collect()
+        };
+        for (i, detail) in shown.into_iter().enumerate() {
             let first = if i == 0 {
                 result_prefix(theme)
             } else {

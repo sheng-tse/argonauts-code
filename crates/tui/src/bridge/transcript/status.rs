@@ -82,7 +82,7 @@ pub fn status_sections(summary: &StatusSummary, names: &DisplayNames) -> Vec<Vec
     let skip = summary.recent.len().saturating_sub(RECENT);
     section(summary.recent.iter().skip(skip).cloned().collect());
     if let Some(budget) = &summary.budget {
-        let spent = format::usd(budget.spent.cost_usd);
+        let spent = format::spend(&budget.spent);
         let line = match &budget.limit {
             Some(limit) => format!("Spent {spent} of {}", amount(limit)),
             None => format!("Spent {spent}"),

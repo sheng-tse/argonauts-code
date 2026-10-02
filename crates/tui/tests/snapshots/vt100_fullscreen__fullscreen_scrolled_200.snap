@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/vt100_fullscreen.rs
+expression: f.shown()
+---
+  - It reads the store
+  - It writes each row
+  - It flushes
+
+❯ Question 2: what does the export do?
+
+● Answer 2. The export writes JSON to stdout, one object per line, and --pretty indents it.
+
+  - It reads the store
+  - It writes each row
+  - It flushes
+
+❯ Question 3: what does the export do?
+
+● Answer 3. The export writes JSON to stdout, one object per line, and --pretty indents it.
+
+  ↓ 15 rows below · pgdn to scroll
+
+∙ Rowing…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt
