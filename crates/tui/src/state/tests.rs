@@ -974,6 +974,7 @@ fn state_folds_welcome_status_and_mode() {
         title: "export race".into(),
         repo: "~/argonauts".into(),
         preset: "peer-crew".into(),
+        all_hands: false,
         run: None,
         default_agent: worker("claude-code", "opus"),
         quotas: vec![QuotaChip {

@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: shown
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Effort
+  How long Haiku 4.5 thinks before it answers, for the default agent
+
+    Haiku 4.5 takes no effort setting.
+
+    All hands  on · Tab to toggle
+    All hands: every task goes to the crew, and the lead designs its workflow
+
+    To set an effort, pick another model with /model.
+
+  Enter to confirm · Esc to cancel

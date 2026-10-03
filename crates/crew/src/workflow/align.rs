@@ -26,7 +26,7 @@ pub const ALIGNMENT: &str = "goal";
 /// designs, works from your request alone.
 pub fn applies(host: &Host) -> bool {
     let settings = host.settings();
-    settings.workflows.lead_designs
+    settings.lead_designs()
         && host.read(runner::run_mode) != Some(RunMode::Solo)
         && goal_phase(host).is_some()
 }

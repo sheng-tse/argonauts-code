@@ -40,6 +40,6 @@ pub use history::{CellId, History};
 pub use model::ViewModel;
 pub use options::UiOptions;
 pub use render::{Clock, RenderCtx};
-pub use runtime::{AppIo, run_app, run_with};
+pub use runtime::{AppIo, run_app, run_with, stop_signal};
 pub use terminal::InlineTerminal;
 pub use theme::Theme;

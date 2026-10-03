@@ -19,7 +19,7 @@ use argonauts_core::crew_panel::{CrewPanel, CrewState, CrewTarget};
 use argonauts_core::events::checkpoint::{
     AnswerAction, CheckpointKind, CheckpointOpened, CheckpointPacket,
 };
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunOutcome};
+use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome};
 use argonauts_core::events::session::{EndReason, SessionEvent};
 use argonauts_core::events::{CardEvent, RunEventKind, WorkflowEvent};
 use argonauts_core::input::{Handler, SLASH_COMMANDS};
@@ -186,6 +186,42 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
         assert!(drafters.contains(agent), "no {agent} drafter:\n{drafters}");
     }
     scenario.shot(&pty, "app_example_bigger_task_crew")?;
+    Ok(())
+}
+
+/// All hands through the fake vendors: the one-file fix that triage gives one
+/// agent goes to the crew while it's on, as the input rule's label says, and solo while it's off.
+#[test]
+fn app_all_hands_sends_a_small_task_to_the_crew() -> anyhow::Result<()> {
+    for (on, mode, triage) in [
+        (true, RunMode::Crew, "crew"),
+        (false, RunMode::Solo, "solo"),
+    ] {
+        let config = if on {
+            format!("{GLOBAL_CONFIG}\n[triage]\nall_hands = true\n")
+        } else {
+            GLOBAL_CONFIG.to_owned()
+        };
+        let scenario = scenario_with(&config)?;
+        let mut pty = start(&scenario)?;
+        if on {
+            pty.wait_for("─ peer-crew · all hands ─", WAIT)?;
+        }
+        submit(&mut pty, requests::SMALL_FIX)?;
+
+        let run_dir = wait_run_dir(&scenario)?;
+        let started = run_started(&run_dir)?;
+        assert_eq!(started.mode, mode);
+        assert!(!started.forced);
+        let rule = started.triage.map(|triage| triage.rule).unwrap_or_default();
+        assert_eq!(rule == "all_hands", on, "{rule}");
+        let shown = pty.wait_for(&format!(r"Triage\({triage}\)"), WAIT)?.text();
+        assert_eq!(shown.contains("all hands"), on, "{shown}");
+        if on {
+            pty.wait_for("All hands is on", WAIT)?;
+            scenario.shot(&pty, "app_all_hands_sends_a_small_task_to_the_crew")?;
+        }
+    }
     Ok(())
 }
 

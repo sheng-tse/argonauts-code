@@ -159,3 +159,35 @@ pub trait ModelRegistry: Send + Sync {
         ModelCatalog::default()
     }
 }
+
+/// The levels `worker`'s model takes, as the catalog or its CLI's own list says: empty for a
+/// model that takes no effort setting. `None` when nothing says, and for a harness's own
+/// default, whose model the CLI picks.
+pub fn known_efforts(registry: &dyn ModelRegistry, worker: &WorkerRef) -> Option<Vec<String>> {
+    worker.model.as_ref()?;
+    registry
+        .catalog()
+        .entry(worker)
+        .and_then(|entry| entry.efforts.clone())
+        .or_else(|| {
+            registry
+                .get(worker)
+                .map(|entry| entry.efforts)
+                .filter(|levels| !levels.is_empty())
+        })
+}
+
+/// The level `worker` runs at with `set` asked for. A model that takes one level runs at it,
+/// and one that takes none gets none, so what runs is what `/effort` shows, whatever level was
+/// set before. Any other model runs at what's set.
+pub fn effort_to_run(
+    registry: &dyn ModelRegistry,
+    worker: &WorkerRef,
+    set: Option<String>,
+) -> Option<String> {
+    match known_efforts(registry, worker).as_deref() {
+        Some([]) => None,
+        Some([only]) => Some(only.clone()),
+        _ => set,
+    }
+}

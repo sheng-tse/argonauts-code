@@ -227,6 +227,71 @@ async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
     harness.exit().await;
 }
 
+/// With All hands on, a one-file change that triage would give one agent goes to the crew,
+/// whose lead then designs its workflow. A question is still just answered, and `/solo` still
+/// runs one task solo.
+#[tokio::test]
+async fn all_hands_sends_every_change_to_the_crew() {
+    let all_hands = || HarnessOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            std::fs::write(repo.global_config(), "[triage]\nall_hands = true\n").unwrap();
+        })),
+        ..HarnessOptions::default()
+    };
+    let small = json!({
+        "task_type": "docs",
+        "summary": "Fix the install command in the README",
+        "files_likely": ["README.md"],
+        "file_count": 1,
+        "risk_labels": [],
+        "tests_exist": true,
+        "unknowns": []
+    });
+    let mut harness = Harness::start_with(all_hands()).await;
+    harness.agent.push(answer("Hi."));
+    harness.submit("hi").await;
+    turn_done(&mut harness).await;
+    assert!(
+        harness.conductor.starts().is_empty(),
+        "a question is answered"
+    );
+
+    harness.agent.push(FakeSession::structured(json!({
+        "kind": "change",
+        "answer_markdown": "The README's install line names the wrong package.",
+        "estimate": small
+    })));
+    harness
+        .submit("fix the install command in the README")
+        .await;
+    harness.until(finished).await;
+    let conductor = harness.conductor.clone();
+    eventually(|| conductor.starts().len() == 1).await;
+    let start = conductor.starts().remove(0);
+    assert_eq!(start.mode, RunMode::Crew);
+    assert!(!start.forced);
+    let triage = start.triage.expect("the triage decision");
+    assert_eq!(
+        (triage.rule.as_str(), triage.reason.as_str()),
+        ("all_hands", "All hands is on")
+    );
+    harness.exit().await;
+
+    let harness = Harness::start_with(all_hands()).await;
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Solo {
+                task: "fix the install command in the README".to_owned(),
+            },
+        })
+        .await;
+    let conductor = harness.conductor.clone();
+    eventually(|| conductor.starts().len() == 1).await;
+    let start = conductor.starts().remove(0);
+    assert_eq!((start.mode, start.forced), (RunMode::Solo, true));
+    harness.exit().await;
+}
+
 #[tokio::test]
 async fn solo_skips_the_estimate() {
     let mut harness = Harness::start().await;

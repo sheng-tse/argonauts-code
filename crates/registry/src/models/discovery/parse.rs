@@ -11,8 +11,11 @@ use crate::models::family::UNKNOWN_FAMILY;
 use crate::models::family_from_model_id;
 
 /// `agy --output-format json models`: the list sits under `command.data.models`, each model
-/// with the label agy's own picker shows. agy 1.2.13 names thinking levels as separate model
-/// ids (`gemini-3.6-flash-low`) and lists no `--effort` levels, so `efforts` stays empty.
+/// with the label agy's own picker shows. agy names thinking levels as separate model ids
+/// (`gemini-3.8-flash-high`, "Gemini 3.8 Flash (High)"), and its `--effort` picks another of
+/// those ids rather than changing how the named one thinks, so a model named for a level takes
+/// that one only. A model named without one keeps `efforts` empty, and the CLI layer of the
+/// catalog takes that to mean it takes none.
 pub fn parse_agy_models(json: &str) -> Result<Vec<ModelEntry>, String> {
     let reply: Value =
         serde_json::from_str(json).map_err(|e| format!("agy's model list isn't JSON: {e}"))?;
@@ -28,9 +31,31 @@ pub fn parse_agy_models(json: &str) -> Result<Vec<ModelEntry>, String> {
             let id = model["id"].as_str()?;
             let mut entry = discovered(harness_entry(&settings, "antigravity-cli", Some(id)));
             entry.name = plain(&model["label"]);
+            if let Some(level) = agy_level(id, entry.name.as_deref()) {
+                entry.efforts = vec![level.to_owned()];
+                entry.default_effort = Some(level.to_owned());
+            }
             Some(entry)
         })
         .collect())
+}
+
+/// The thinking levels agy names its models for. Other words a name may end with, such as
+/// Ultra, a Gemini tier, are no level of agy's.
+const AGY_LEVELS: [&str; 3] = ["low", "medium", "high"];
+
+/// The level a model is named for: the one its label ends with, as in "Gemini 3.8 Flash
+/// (High)", else the one its id ends with when it has no label.
+fn agy_level(id: &str, label: Option<&str>) -> Option<&'static str> {
+    let word = match label {
+        Some(label) => label.strip_suffix(')')?.rsplit_once('(')?.1,
+        None => id.rsplit_once('-')?.1,
+    };
+    let level = AGY_LEVELS
+        .into_iter()
+        .find(|level| level.eq_ignore_ascii_case(word.trim()))?;
+    // The id names it too, so a label alone never makes a level.
+    id.ends_with(&format!("-{level}")).then_some(level)
 }
 
 /// `codex debug models`, with each model's name, description, reasoning levels, and the level
@@ -199,6 +224,32 @@ mod tests {
         entries.iter().map(|e| e.id.to_string()).collect()
     }
 
+    /// Only agy's three levels count, named by the label and the id alike, so a Gemini tier
+    /// such as Ultra, or a word such as Thinking, is no level.
+    #[test]
+    fn an_agy_level_is_low_medium_or_high_in_the_label_and_the_id() {
+        assert_eq!(
+            agy_level("gemini-3.8-flash-high", Some("Gemini 3.8 Flash (High)")),
+            Some("high")
+        );
+        assert_eq!(agy_level("gemini-3.6-flash-low", None), Some("low"));
+        for (id, label) in [
+            ("gemini-3.5-ultra", Some("Gemini 3.5 Ultra")),
+            ("gemini-3.5-ultra", None),
+            ("gemini-4-max", Some("Gemini 4 (Max)")),
+            ("gemini-4-minimal", None),
+            (
+                "claude-opus-4-6-thinking",
+                Some("Claude Opus 4.6 (Thinking)"),
+            ),
+            ("claude-sonnet-4-6", Some("Claude Sonnet 4.6 (Thinking)")),
+            ("gemini-3.8-flash", Some("Gemini 3.8 Flash (High)")),
+            ("gemini-3.8-flash-high", Some("Gemini 3.8 Flash")),
+        ] {
+            assert_eq!(agy_level(id, label), None, "{id} {label:?}");
+        }
+    }
+
     #[test]
     fn discovery_parsers() {
         let agy = parse_agy_models(AGY).unwrap();
@@ -217,8 +268,20 @@ mod tests {
         assert_eq!(family("claude-opus-4-6-thinking"), Some("claude"));
         assert_eq!(family("gpt-oss-120b-medium"), Some("gpt-oss"));
         assert_eq!(agy[0].name.as_deref(), Some("Gemini 3.8 Flash (High)"));
+        let fixed = |id: &str| {
+            agy.iter()
+                .find(|e| e.id.model.as_deref() == Some(id))
+                .map(|e| (e.efforts.clone(), e.default_effort.clone()))
+                .unwrap()
+        };
+        let only = |level: &str| (vec![level.to_owned()], Some(level.to_owned()));
+        assert_eq!(fixed("gemini-3.8-flash-high"), only("high"));
+        assert_eq!(fixed("gemini-3.6-flash-low"), only("low"));
+        assert_eq!(fixed("gpt-oss-120b-medium"), only("medium"));
+        assert_eq!(fixed("claude-sonnet-4-6"), (Vec::new(), None));
+        assert_eq!(fixed("claude-opus-4-6-thinking"), (Vec::new(), None));
         for entry in &agy {
-            assert!(entry.efforts.is_empty(), "{}", entry.id);
+            assert!(entry.efforts.len() <= 1, "{}", entry.id);
             assert!(entry.discovered);
             assert_eq!(entry.kind, RegistryKind::Harness);
             assert_eq!(entry.access, ModelAccess::Subscription);

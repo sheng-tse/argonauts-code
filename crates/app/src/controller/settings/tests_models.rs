@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::app::{AppEvent, ModelChoice, ViewData};
-use argonauts_core::model_picker::ModelsLevel;
-use argonauts_core::names::RoleName;
+use argonauts_core::input::SlashCommand;
+use argonauts_core::model_picker::{EffortSlider, ModelsLevel};
+use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::registry::ModelRegistry as _;
 use argonauts_core::settings::ui::NarratorMode;
 use argonauts_core::settings::{SettingScope, Settings};
@@ -33,6 +34,49 @@ fn fake_codex(dir: &Path) -> PathBuf {
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
+}
+
+const AGY_MODELS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../registry/tests/fixtures/agy/1.2.13/models.json"
+);
+
+/// A stand-in `agy` that lists the recorded models and nothing else.
+fn fake_agy(dir: &Path) -> PathBuf {
+    let path = dir.join("agy");
+    let script = format!(
+        "#!/bin/sh\n[ \"$*\" = \"--output-format json models\" ] || exit 2\ncat '{AGY_MODELS}'\n"
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// Codex and agy installed, each listing its recorded models through a fake.
+fn codex_and_agy(fixture: &mut Fixture, dir: &Path) {
+    let cache = dir.join("home").join("models-cache.json");
+    let mut settings = Settings::default();
+    settings.agents.get_mut("codex").unwrap().binary = Some(fake_codex(dir));
+    settings.agents.get_mut("antigravity-cli").unwrap().binary = Some(fake_agy(dir));
+    fixture.ctx.services.registry =
+        Arc::new(FileRegistry::from_files(&settings, None, None).with_cache(&cache));
+    let directory = Arc::new(FakeDirectory::new());
+    directory.add(FakeWorker::harness("codex", "gpt"));
+    directory.add(FakeWorker::harness("antigravity-cli", "gemini"));
+    fixture.ctx.services.workers = directory;
+}
+
+/// `/effort`'s slider for the default agent.
+fn effort_slider(fixture: &Fixture) -> EffortSlider {
+    let command = SlashCommand::Effort {
+        role: None,
+        level: None,
+        all_hands: None,
+    };
+    match pickers::picker(&fixture.ctx, &command).as_slice() {
+        [ViewData::Effort { slider }] => slider.clone(),
+        other => panic!("/effort answers with its slider, not {other:?}"),
+    }
 }
 
 /// Claude Code and Codex installed and agy not, with Codex listing its models through the fake,
@@ -518,4 +562,205 @@ async fn codex_names_its_models_and_your_models_toml_wins() {
         sol.default_effort, None,
         "Codex's medium isn't one of the levels you gave it"
     );
+}
+
+/// With no effort set, Codex's models start where its own list says: its default runs
+/// gpt-6-astra at low, and gpt-6-luna starts at medium.
+#[tokio::test]
+async fn codex_models_start_at_the_level_codex_lists_for_each() {
+    for (agent, model, level) in [
+        ("codex", "gpt-6-astra", "low"),
+        ("codex/gpt-6-luna", "gpt-6-luna", "medium"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(false, |repo| {
+            let config = format!("default_agent = \"{agent}\"\n");
+            std::fs::write(repo.global_config(), config).unwrap();
+        });
+        codex_and_agy(&mut fixture, dir.path());
+        refresh_models(&fixture.ctx, &mut fixture.state);
+        refresh_lands(&mut fixture).await;
+
+        let choices = models::choices(&fixture.ctx, None);
+        let choice = offered(&choices, agent);
+        assert_eq!(choice.default_effort.as_deref(), Some(level), "{agent}");
+        assert_eq!(choice.effort, None);
+
+        let slider = effort_slider(&fixture);
+        assert_eq!(slider.worker.to_string(), agent);
+        assert_eq!(slider.level(), Some(level), "{agent}");
+        assert!(slider.is_default() && !slider.cli_default, "{agent}");
+        assert!(!slider.is_fixed());
+
+        let (header, effort) = crate::controller::header_agent(&fixture.ctx);
+        assert_eq!(header.to_string(), format!("codex/{model}"));
+        assert_eq!(effort.as_deref(), Some(level), "{agent}");
+    }
+}
+
+/// agy names each thinking level as a model of its own, so a model's level is fixed by its
+/// name: the picker, `/effort`, and the header show it, with nothing to adjust. A model named
+/// without one takes none, until a recording shows agy's `--effort` works for it.
+#[tokio::test]
+async fn an_agy_model_named_for_a_level_runs_at_it_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(false, |repo| {
+        std::fs::write(
+            repo.global_config(),
+            "default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
+        )
+        .unwrap();
+    });
+    codex_and_agy(&mut fixture, dir.path());
+    refresh_models(&fixture.ctx, &mut fixture.state);
+    refresh_lands(&mut fixture).await;
+
+    let choices = models::choices(&fixture.ctx, None);
+    for (model, level) in [
+        ("gemini-3.8-flash-high", "high"),
+        ("gemini-3.6-flash-low", "low"),
+        ("gpt-oss-120b-medium", "medium"),
+    ] {
+        let choice = offered(&choices, &format!("antigravity-cli/{model}"));
+        assert_eq!(choice.efforts, [level], "{model}");
+        assert_eq!(choice.default_effort.as_deref(), Some(level), "{model}");
+    }
+    for model in ["claude-opus-4-6-thinking", "claude-sonnet-4-6"] {
+        let choice = offered(&choices, &format!("antigravity-cli/{model}"));
+        assert!(choice.efforts.is_empty(), "{model}: {:?}", choice.efforts);
+    }
+
+    let slider = effort_slider(&fixture);
+    assert!(slider.is_fixed());
+    assert_eq!(slider.level(), Some("high"));
+    assert!(!slider.cli_default);
+
+    let (header, effort) = crate::controller::header_agent(&fixture.ctx);
+    assert_eq!(header.to_string(), "antigravity-cli/gemini-3.8-flash-high");
+    assert_eq!(effort.as_deref(), Some("high"));
+}
+
+/// The default agent's chat session, as a turn builds it, with `/fast` on or off.
+fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::SessionSpec {
+    use crate::controller::turn::{Launch, TurnStep, session_spec};
+    use argonauts_core::names::{ChatId, SessionKey, TurnId};
+
+    let (chat, turn) = (ChatId::numbered(1), TurnId::numbered(1));
+    let step = TurnStep::Ask { run_status: None };
+    let worker = fixture.ctx.settings().default_agent.clone();
+    let launch = Launch {
+        chat: &chat,
+        turn: &turn,
+        step: &step,
+        text: "what does main do?",
+        handle: Arc::new(FakeWorker::harness(&worker.to_string(), "gemini")),
+        worker,
+        resume: None,
+        excerpt: None,
+        notes: Vec::new(),
+        fast,
+    };
+    let dir = fixture.ctx.env.state_dir.join("chat-test");
+    session_spec(&fixture.ctx, &launch, SessionKey::numbered(1), dir)
+}
+
+/// A level set before a model fixed at one was picked stays set, but never reaches the model:
+/// the header and the chat's session say high on gemini-3.8-flash-high whether `low` is the
+/// default role's or agy's own, as `/effort` and `/model` do.
+#[tokio::test]
+async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
+    for set in [
+        "[roles.default]\neffort = \"low\"\n",
+        "[agents.antigravity-cli]\neffort = \"low\"\n",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(false, |repo| {
+            let config =
+                format!("default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n{set}");
+            std::fs::write(repo.global_config(), config).unwrap();
+        });
+        codex_and_agy(&mut fixture, dir.path());
+        refresh_models(&fixture.ctx, &mut fixture.state);
+        refresh_lands(&mut fixture).await;
+
+        let (header, effort) = crate::controller::header_agent(&fixture.ctx);
+        assert_eq!(header.to_string(), "antigravity-cli/gemini-3.8-flash-high");
+        assert_eq!(effort.as_deref(), Some("high"), "{set}");
+        let spec = chat_session(&fixture, false);
+        assert_eq!(
+            spec.worker.to_string(),
+            "antigravity-cli/gemini-3.8-flash-high"
+        );
+        assert_eq!(spec.effort.as_deref(), Some("high"), "{set}");
+        assert_eq!(effort_slider(&fixture).level(), Some("high"));
+    }
+}
+
+/// `/fast` on a model fixed at one level runs its line's lowest instead, as agy lists
+/// gemini-3.8-flash-low beside gemini-3.8-flash-high. One already at its line's lowest, or one
+/// that takes no effort setting, has nothing faster.
+#[tokio::test]
+async fn fast_on_an_agy_model_fixed_at_one_level_runs_its_lowest_sibling() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(false, |repo| {
+        let config = "default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n";
+        std::fs::write(repo.global_config(), config).unwrap();
+    });
+    codex_and_agy(&mut fixture, dir.path());
+    refresh_models(&fixture.ctx, &mut fixture.state);
+    refresh_lands(&mut fixture).await;
+
+    let fast = |model: &str| {
+        let worker: WorkerRef = format!("antigravity-cli/{model}").parse().unwrap();
+        crate::controller::turn::fast_choice(&fixture.ctx, &worker)
+            .map(|(worker, level)| (worker.to_string(), level))
+    };
+    let low = |model: &str| Some((format!("antigravity-cli/{model}"), "low".to_owned()));
+    assert_eq!(fast("gemini-3.8-flash-high"), low("gemini-3.8-flash-low"));
+    assert_eq!(fast("gemini-3.1-pro-high"), low("gemini-3.1-pro-low"));
+    for model in [
+        "gemini-3.8-flash-low",
+        "gpt-oss-120b-medium",
+        "claude-opus-4-6-thinking",
+    ] {
+        assert_eq!(fast(model), None, "{model}");
+    }
+
+    let spec = chat_session(&fixture, true);
+    assert_eq!(
+        spec.worker.to_string(),
+        "antigravity-cli/gemini-3.8-flash-low"
+    );
+    assert_eq!(spec.effort.as_deref(), Some("low"));
+}
+
+/// Haiku takes no effort setting, but the default agent's `/effort` still opens with nothing to
+/// slide, since All hands lives there. A role on Haiku lists the roles' efforts as before.
+#[test]
+fn effort_on_a_default_agent_without_levels_still_offers_all_hands() {
+    let fixture = Fixture::new(false, |repo| {
+        let config = "default_agent = \"claude-code/haiku\"\n\
+                      [triage]\nall_hands = true\n\
+                      [roles.reviewer]\nworkers = [\"claude-code/haiku\"]\n";
+        std::fs::write(repo.global_config(), config).unwrap();
+    });
+    let slider = effort_slider(&fixture);
+    assert!(slider.stops.is_empty(), "{slider:?}");
+    assert_eq!((slider.level(), slider.role), (None, None));
+    assert_eq!(slider.worker, "claude-code/haiku".parse().unwrap());
+    assert!(slider.model.starts_with("Haiku"), "{}", slider.model);
+    assert_eq!(
+        slider.all_hands,
+        Some(argonauts_core::model_picker::AllHandsToggle::new(true))
+    );
+
+    let command = SlashCommand::Effort {
+        role: Some(RoleName::Reviewer),
+        level: None,
+        all_hands: None,
+    };
+    match pickers::picker(&fixture.ctx, &command).as_slice() {
+        [ViewData::Settings { command, .. }] => assert_eq!(command.as_deref(), Some("effort")),
+        other => panic!("a role on Haiku lists the roles' efforts, not {other:?}"),
+    }
 }

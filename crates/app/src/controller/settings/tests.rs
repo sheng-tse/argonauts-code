@@ -12,6 +12,7 @@ use argonauts_core::events::checkpoint::AnswerAction;
 use argonauts_core::input::{
     AgentsAction, NarratorChange, PERMISSION_KEYS, PresetAction, ROLE_SANDBOX_KEYS, SlashCommand,
 };
+use argonauts_core::model_picker::AllHandsToggle;
 use argonauts_core::names::{ChoiceId, RoleName, WorkerRef};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
 use argonauts_core::settings::SettingScope;
@@ -265,6 +266,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         SlashCommand::Effort {
             role: None,
             level: None,
+            all_hands: None,
         },
     )
     .await;
@@ -282,7 +284,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         .collect();
     assert_eq!(levels, ["low", "medium", "high", "xhigh", "max"]);
     assert!(slider.stops.iter().all(|stop| !stop.description.is_empty()));
-    assert_eq!(slider.level(), "xhigh");
+    assert_eq!(slider.level(), Some("xhigh"));
     assert!(slider.is_default() && !slider.cli_default);
 
     harness
@@ -541,6 +543,7 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             SlashCommand::Effort {
                 role: None,
                 level: Some("high".to_owned()),
+                all_hands: None,
             },
             "roles.default.effort",
             "\"high\"",
@@ -762,6 +765,7 @@ async fn the_effort_slider_starts_where_the_clis_default_model_does() {
         SlashCommand::Effort {
             role: None,
             level: None,
+            all_hands: None,
         },
     )
     .await;
@@ -769,7 +773,7 @@ async fn the_effort_slider_starts_where_the_clis_default_model_does() {
         panic!("/effort answers with its slider");
     };
     assert_eq!(slider.worker, "claude-code".parse().unwrap());
-    assert_eq!(slider.level(), "high");
+    assert_eq!(slider.level(), Some("high"));
     assert!(slider.is_default() && !slider.cli_default);
     harness.exit().await;
 }
@@ -801,6 +805,7 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         SlashCommand::Effort {
             role: None,
             level: Some("max".to_owned()),
+            all_hands: None,
         },
     )
     .await;
@@ -815,6 +820,7 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         SlashCommand::Effort {
             role: None,
             level: None,
+            all_hands: None,
         },
     )
     .await;
@@ -828,6 +834,46 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         .collect();
     assert_eq!(levels, ["low", "medium", "high"]);
     assert_eq!(slider.worker, "claude-code/haiku".parse().unwrap());
+    harness.exit().await;
+}
+
+/// agy's level-named models take their own level only, so another is refused with why.
+#[tokio::test]
+async fn another_level_for_a_model_fixed_at_one_is_refused_saying_so() {
+    let registry = registry_with(&[serde_json::json!({
+        "id": "antigravity-cli/gemini-3.8-flash-high",
+        "family": "gemini",
+        "kind": "harness",
+        "access": "subscription",
+        "cost": { "unit": "quota" },
+        "efforts": ["high"],
+        "default_effort": "high",
+    })]);
+    let mut harness = Harness::start_with(HarnessOptions {
+        registry: Some(registry),
+        prepare: Some(Box::new(|repo: &TempRepo| {
+            std::fs::write(
+                repo.global_config(),
+                "default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
+            )
+            .unwrap();
+        })),
+        ..HarnessOptions::default()
+    })
+    .await;
+    slash(
+        &harness,
+        SlashCommand::Effort {
+            role: None,
+            level: Some("low".to_owned()),
+            all_hands: None,
+        },
+    )
+    .await;
+    assert_eq!(
+        next_notice(&mut harness).await,
+        "antigravity-cli/gemini-3.8-flash-high takes only high effort, fixed by the model"
+    );
     harness.exit().await;
 }
 
@@ -903,6 +949,116 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
         "{choices:#?}"
     );
     harness.exit().await;
+}
+
+/// `/effort`'s All hands toggle. The default agent's slider offers it as it is now and a role's
+/// doesn't. The toggle alone asks where to save and writes only `triage.all_hands`, which the
+/// status then carries for the input rule; with a level, both are saved together. `/config`
+/// lists it.
+#[tokio::test]
+async fn all_hands_from_the_effort_slider_saves_where_you_choose() {
+    let mut harness = Harness::start_with(harness_options(|repo| {
+        let reviewer = "[roles.reviewer]\nworkers = [\"claude-code\"]\n";
+        std::fs::write(repo.global_config(), reviewer).unwrap();
+    }))
+    .await;
+    let effort = |role: Option<RoleName>, level: Option<&str>, all_hands: Option<bool>| {
+        SlashCommand::Effort {
+            role,
+            level: level.map(str::to_owned),
+            all_hands,
+        }
+    };
+    slash(&harness, effort(None, None, None)).await;
+    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+        panic!("/effort answers with its slider");
+    };
+    assert_eq!(slider.all_hands, Some(AllHandsToggle::new(false)));
+    slash(&harness, effort(Some(RoleName::Reviewer), None, None)).await;
+    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+        panic!("/effort reviewer answers with its slider");
+    };
+    assert_eq!(slider.all_hands, None, "a role's slider has no toggle");
+
+    slash(&harness, effort(None, None, Some(true))).await;
+    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    assert_eq!(question.body[0], "triage.all_hands = true");
+    assert!(
+        !question.body.iter().any(|line| line.contains("effort")),
+        "{question:?}"
+    );
+    assert_eq!(
+        recommended(&question),
+        choose(SettingScope::ProjectLocal),
+        "saved for just you, as /effort saves"
+    );
+    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
+    let (key, value, scope, _, _) = next_change(&mut harness).await;
+    assert_eq!(
+        (key.as_str(), value.as_str(), scope),
+        ("triage.all_hands", "true", SettingScope::Project)
+    );
+    let event = harness
+        .until(|event| matches!(event, AppEvent::Status { .. }))
+        .await;
+    let AppEvent::Status { status } = event else {
+        unreachable!()
+    };
+    assert!(status.all_hands, "the input rule's label shows it");
+    let project =
+        std::fs::read_to_string(harness.repo.root().join(".argonauts/config.toml")).unwrap();
+    assert!(project.contains("all_hands = true"), "{project}");
+    assert!(!project.contains("effort"), "{project}");
+
+    slash(&harness, effort(None, None, None)).await;
+    let ViewData::Effort { slider } = next_view(&mut harness).await else {
+        panic!("/effort answers with its slider");
+    };
+    assert_eq!(slider.all_hands, Some(AllHandsToggle::new(true)));
+
+    slash(&harness, effort(None, Some("high"), Some(false))).await;
+    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    assert_eq!(
+        question.body[..2],
+        [
+            "roles.default.effort = \"high\"".to_owned(),
+            "triage.all_hands = false".to_owned()
+        ]
+    );
+    answer(&harness, &question.id, choose(SettingScope::Project), None).await;
+    let mut saved = Vec::new();
+    for _ in 0..2 {
+        let (key, value, _, _, _) = next_change(&mut harness).await;
+        saved.push((key, value));
+    }
+    saved.sort();
+    assert_eq!(
+        saved,
+        [
+            ("roles.default.effort".to_owned(), "\"high\"".to_owned()),
+            ("triage.all_hands".to_owned(), "false".to_owned()),
+        ]
+    );
+    harness.exit().await;
+}
+
+#[tokio::test]
+async fn config_lists_all_hands_off_by_default() {
+    let fixture = Fixture::new(false, |_| {});
+    let rows = rows::rows(&fixture.ctx.settings, Some("config"), None);
+    let all_hands = row(&rows, "triage.all_hands");
+    assert_eq!(
+        (all_hands.value.as_str(), all_hands.layer.as_str()),
+        ("false", "built-in")
+    );
+    assert_eq!(all_hands.allowed, ["true", "false"]);
+    assert!(
+        all_hands
+            .description
+            .contains("every task goes to the crew"),
+        "{}",
+        all_hands.description
+    );
 }
 
 #[tokio::test]
@@ -1083,6 +1239,7 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
         SlashCommand::Effort {
             role: None,
             level: Some("high".to_owned()),
+            all_hands: None,
         },
     )
     .await;

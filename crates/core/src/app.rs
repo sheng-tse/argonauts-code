@@ -464,6 +464,9 @@ pub struct StatusLine {
     /// With `~` for home.
     pub repo: String,
     pub preset: String,
+    /// `triage.all_hands`, which the input rule's label shows beside the preset.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_hands: bool,
     pub run: Option<RunId>,
     pub default_agent: WorkerRef,
     /// One chip per vendor, in `crew` order.

@@ -664,6 +664,7 @@ fn the_header_waits_for_the_default_agent() {
             title: "argonauts".into(),
             repo: "~/github/argonauts".into(),
             preset: "peer-crew".into(),
+            all_hands: false,
             run: None,
             default_agent: WorkerRef::new("claude-code", Some("haiku".into())),
             quotas: vec![],
@@ -1022,6 +1023,33 @@ fn a_model_you_pick_is_named_as_its_list_named_it() {
         harness.printed().trim_end(),
         "  ⎿  Set model to GPT-6-Sol · everywhere · was Opus 5.5"
     );
+}
+
+/// `/effort`'s All hands toggle reads as a result line, not as its key.
+#[test]
+fn all_hands_saved_reads_as_turned_on_or_off() {
+    for (value, scope, line) in [
+        (
+            "true",
+            argonauts_core::settings::SettingScope::ProjectLocal,
+            "  ⎿  Turned All hands on · just you",
+        ),
+        (
+            "false",
+            argonauts_core::settings::SettingScope::Session,
+            "  ⎿  Turned All hands off · this session",
+        ),
+    ] {
+        let mut harness = Harness::new();
+        harness.send(AppEvent::SettingChanged {
+            key: "triage.all_hands".into(),
+            value: value.into(),
+            scope,
+            previous: None,
+            reset: false,
+        });
+        assert_eq!(harness.printed().trim_end(), line);
+    }
 }
 
 /// The triage block says where the run starts in words, with no commit hash or setting key.

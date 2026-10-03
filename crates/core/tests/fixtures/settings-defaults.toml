@@ -58,6 +58,7 @@ context = "note+transcript"
 include_uncommitted = false
 
 [triage]
+all_hands = false
 use_recipes = true
 solo_max_files = 3
 solo_requires_tests = true

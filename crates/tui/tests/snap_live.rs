@@ -56,6 +56,7 @@ fn status_line_with(quotas: Vec<QuotaChip>) -> StatusLine {
         title: "Fix the export race".into(),
         repo: "~/argonauts".into(),
         preset: "peer-crew".into(),
+        all_hands: false,
         run: None,
         default_agent: worker("claude-code", "opus"),
         quotas,

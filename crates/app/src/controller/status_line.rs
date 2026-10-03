@@ -5,6 +5,7 @@ use argonauts_core::Spend;
 use argonauts_core::app::{QuotaChip, StatusLine};
 use argonauts_core::limits::{HealthBoard, QuotaBoard};
 use argonauts_core::names::{VendorId, WorkerRef};
+use argonauts_core::registry::effort_to_run;
 use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_core::settings::budget::BudgetAmount;
 
@@ -29,6 +30,7 @@ pub(crate) fn status_line(ctx: &Ctx, title: &str, run: RunStatusParts) -> Status
         title: title.to_owned(),
         repo: ctx.env.display_repo(),
         preset: settings.preset.clone(),
+        all_hands: settings.triage.all_hands,
         run: run.run,
         default_agent: header_agent(ctx).0,
         quotas: quota_chips(
@@ -48,7 +50,8 @@ pub(crate) fn status_line(ctx: &Ctx, title: &str, run: RunStatusParts) -> Status
 /// The chat's agent as the header names it. The status line carries the same, so it names an
 /// agent only once you change it. With no model set the CLI runs its own default: the one its
 /// model list marks, else the one the catalog's "Default (recommended)" runs. With no effort
-/// set it runs the level that model starts at, as the CLI says, else the catalog.
+/// set it runs the level that model starts at, as the CLI says, else the catalog. A model fixed
+/// at one level, or taking none, runs as it does whatever is set.
 pub(crate) fn header_agent(ctx: &Ctx) -> (WorkerRef, Option<String>) {
     let settings = ctx.settings();
     let (mut agent, effort) = chat_agent(settings, &settings.default_agent);
@@ -57,7 +60,7 @@ pub(crate) fn header_agent(ctx: &Ctx) -> (WorkerRef, Option<String>) {
     if agent.model.is_none() {
         agent.model = cli_defaults(ctx, [agent.worker.as_str()]).remove(&agent.worker);
     }
-    let effort = effort
+    let effort = effort_to_run(registry.as_ref(), &agent, effort)
         .or_else(|| registry.get(&agent)?.default_effort)
         .or_else(|| catalog.entry(&agent)?.default_effort.clone());
     (agent, effort)

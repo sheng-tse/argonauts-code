@@ -994,6 +994,45 @@ fn merged_id() -> RunId {
     run_id("run-001")
 }
 
+/// A follow-up to a solo run stays solo, unless All hands is on, which sends it to the crew as
+/// it does every task.
+#[tokio::test]
+async fn follow_up_goes_to_the_crew_while_all_hands_is_on() {
+    for on in [false, true] {
+        let mut rig = Rig::with(true, |global| {
+            std::fs::write(global, format!("[triage]\nall_hands = {on}\n")).unwrap();
+        });
+        let merged = RunSummary {
+            state: RunState::Merged,
+            ..listed("run-001", false)
+        };
+        rig.conductor.set_runs(vec![merged]);
+        super::continue_run(
+            &mut rig.ctx,
+            &mut rig.runs,
+            None,
+            "Add a CSV export too".into(),
+        )
+        .await
+        .expect("/follow-up");
+        let calls = rig.conductor.calls();
+        let Some(Call::Continue { merged, request }) = calls
+            .iter()
+            .find(|call| matches!(call, Call::Continue { .. }))
+        else {
+            panic!("no follow-up started: {calls:?}");
+        };
+        assert_eq!(*merged, merged_id());
+        let rule = request.triage.as_ref().map(|triage| triage.rule.as_str());
+        if on {
+            assert_eq!((request.mode, rule), (RunMode::Crew, Some("all_hands")));
+        } else {
+            assert_eq!((request.mode, rule), (RunMode::Solo, None));
+        }
+        assert!(!request.forced);
+    }
+}
+
 #[tokio::test]
 async fn the_workflow_view_before_a_workflow_starts_says_so_plainly() {
     let mut rig = Rig::new();

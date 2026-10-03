@@ -7,6 +7,7 @@ use argonauts_core::input::{
 };
 use argonauts_core::layout::project_files;
 use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::settings::protocol::TriageSettings;
 use argonauts_registry::{presets_in, setting_meta, settings_catalog};
 
 use super::models;
@@ -51,10 +52,23 @@ pub(crate) fn setting_write(
         SlashCommand::Effort {
             role,
             level: Some(level),
+            all_hands,
         } => {
+            if let Some(on) = all_hands {
+                also.push((TriageSettings::ALL_HANDS.to_owned(), on.to_string()));
+            }
             let name = role.unwrap_or(RoleName::Default).as_str();
             (format!("roles.{name}.effort"), quoted(level), "effort")
         }
+        SlashCommand::Effort {
+            level: None,
+            all_hands: Some(on),
+            ..
+        } => (
+            TriageSettings::ALL_HANDS.to_owned(),
+            on.to_string(),
+            "effort",
+        ),
         SlashCommand::Preset {
             name: Some(name),
             action: PresetAction::Use,
@@ -235,8 +249,10 @@ fn takes_level(worker: Option<&WorkerRef>, levels: &[String], level: &str) -> an
         return Ok(());
     }
     let who = worker.map_or_else(|| "That model".to_owned(), |worker| worker.to_string());
-    if levels.is_empty() {
-        anyhow::bail!("{who} takes no effort setting");
+    match levels {
+        [] => anyhow::bail!("{who} takes no effort setting"),
+        [only] => anyhow::bail!("{who} takes only {only} effort, fixed by the model"),
+        _ => {}
     }
     anyhow::bail!(
         "{who} doesn't take {level} effort; it takes {}",

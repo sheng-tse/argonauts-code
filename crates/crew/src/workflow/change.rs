@@ -444,16 +444,16 @@ fn withdrawn(host: &Host, checkpoint: &CheckpointId) -> bool {
     })
 }
 
-/// Before the run's workflow starts, with `workflows.lead_designs` on a crew run, the lead picks
-/// a template (built in, or one of your files) and its params, or composes one when
-/// `allow_composed`. When the preset aligns the goal first, it runs once the goal is approved,
+/// Before the run's workflow starts, with `workflows.lead_designs` or All hands on a crew run,
+/// the lead picks a template (built in, or one of your files) and its params, or composes one
+/// when `allow_composed`. When the preset aligns the goal first, it runs once the goal is approved,
 /// and its pick is framed with that goal phase and a plan checkpoint (`align::frame`). Validated at the top level, and retried once
 /// with the errors. `None` keeps the preset's workflow, with a note saying why when the lead's
 /// answer didn't hold.
 pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<WorkflowRef>, Workflow)>> {
     let settings = host.settings();
     let solo = host.read(runner::run_mode) == Some(RunMode::Solo);
-    if !settings.workflows.lead_designs || solo {
+    if !settings.lead_designs() || solo {
         return Ok(None);
     }
     let mut input = design_input(host, None, Vec::new());

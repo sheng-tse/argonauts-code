@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: shown
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Effort
+  How long Opus 5.5 thinks before it answers, for the default agent
+
+    Faster                                Smarter
+    ─────────────────────────────────▲───────────    All hands  on
+    low      medium      high      xhigh      max    Tab to toggle
+    All hands: every task goes to the crew, and the lead designs its workflow
+
+    Extra depth for hard, many-step problems. The model's default
+
+  ←/→ to adjust · Enter to confirm · Esc to cancel

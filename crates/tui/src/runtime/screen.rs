@@ -70,7 +70,7 @@ pub(super) struct Screen<W: Write> {
     size_poll: Option<Interval>,
     /// The `ui.keymap` the keymap was built from.
     keymap_source: Option<BTreeMap<String, String>>,
-    /// Only on the process's own terminal, in fullscreen.
+    /// Only on the process's own terminal.
     stops: Option<Stops>,
 }
 
@@ -117,13 +117,11 @@ impl<W: Write> Screen<W> {
         screen
     }
 
-    /// The process's own terminal: its modes go back on after a child program, and inside
-    /// tmux its size is polled.
-    pub(super) fn use_real_terminal(&mut self, modes: TerminalModes) {
+    /// The process's own terminal: its modes go back on after a child program, stop signals
+    /// close the screen, and inside tmux its size is polled.
+    pub(super) fn use_real_terminal(&mut self, modes: TerminalModes, stops: Option<Stops>) {
         self.ui.set_terminal_modes(modes);
-        if self.ui.is_fullscreen() {
-            self.stops = Stops::listen();
-        }
+        self.stops = stops;
         if TermEnv::from_process().in_tmux {
             let start = tokio::time::Instant::now() + SIZE_POLL;
             let mut poll = tokio::time::interval_at(start, SIZE_POLL);
@@ -182,7 +180,7 @@ impl<W: Write> Screen<W> {
                 () = tokio::time::sleep_until(sleep_until), if wake.is_some() => {}
                 () = tick(&mut self.size_poll), if self.size_poll.is_some() => self.check_size(),
                 () = stopped(&mut self.stops), if self.stops.is_some() => {
-                    self.exit.get_or_insert_with(Vec::new);
+                    self.exit = Some(exit_lines(&self.bridge.state));
                 }
             }
         }
@@ -464,7 +462,10 @@ impl<W: Write> Screen<W> {
         tokio::pin!(child);
         let mut events_open = true;
         loop {
+            // Checked first, since the child's Ctrl+C can land in the same wake as its exit.
             tokio::select! {
+                biased;
+                () = interrupted(&mut self.stops), if self.stops.is_some() => {}
                 output = &mut child => return output,
                 event = self.io.events.recv(), if events_open => match event {
                     Some(event) => self.on_app_event(event).await,
@@ -553,40 +554,56 @@ async fn run_here(argv: Vec<String>, cwd: PathBuf) -> io::Result<ExitStatus> {
         .await
 }
 
-/// SIGTERM, SIGHUP, and SIGINT close the fullscreen app the way `/exit` does, so the terminal
-/// leaves the alternate screen. In raw mode Ctrl+C is a key, so these come from elsewhere.
-struct Stops {
+/// SIGTERM, SIGHUP, and SIGINT close the app the way `/exit` does, so the terminal gets its
+/// modes back and, in fullscreen, its main screen. In raw mode Ctrl+C is a key, so these come
+/// from elsewhere.
+pub(super) struct Stops {
     #[cfg(unix)]
-    signals: Vec<tokio::signal::unix::Signal>,
+    ends: Vec<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
 }
 
 impl Stops {
     #[cfg(unix)]
-    fn listen() -> Option<Self> {
+    pub(super) fn listen() -> Option<Self> {
         use tokio::signal::unix::{SignalKind, signal};
-        let kinds = [
-            SignalKind::terminate(),
-            SignalKind::hangup(),
-            SignalKind::interrupt(),
-        ];
-        let signals = kinds.into_iter().map(signal).collect::<io::Result<_>>();
-        signals.ok().map(|signals| Self { signals })
+        let ends = [SignalKind::terminate(), SignalKind::hangup()]
+            .into_iter()
+            .map(signal)
+            .collect::<io::Result<_>>()
+            .ok()?;
+        let interrupt = signal(SignalKind::interrupt()).ok()?;
+        Some(Self { ends, interrupt })
     }
 
     #[cfg(not(unix))]
-    fn listen() -> Option<Self> {
+    pub(super) fn listen() -> Option<Self> {
         None
     }
 }
 
-async fn stopped(stops: &mut Option<Stops>) {
+pub(super) async fn stopped(stops: &mut Option<Stops>) {
     #[cfg(unix)]
-    if let Some(stops) = stops {
-        let waits = stops
-            .signals
+    if let Some(Stops { ends, interrupt }) = stops {
+        let waits = ends
             .iter_mut()
+            .chain(std::iter::once(interrupt))
             .map(|signal| Box::pin(signal.recv()));
         futures::future::select_all(waits).await;
+        return;
+    }
+    let _ = stops;
+    std::future::pending::<()>().await;
+}
+
+/// While a child program has the terminal, Ctrl+C there reaches this process too, since both
+/// are in the terminal's foreground group. It was meant for the child, so it stops nothing here.
+async fn interrupted(stops: &mut Option<Stops>) {
+    #[cfg(unix)]
+    if let Some(stops) = stops
+        && stops.interrupt.recv().await.is_some()
+    {
         return;
     }
     let _ = stops;

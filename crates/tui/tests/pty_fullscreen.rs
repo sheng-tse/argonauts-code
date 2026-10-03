@@ -19,6 +19,11 @@ const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 const BELOW: &str = r"rows? below · pgdn to scroll$";
 const WHEEL_UP: &str = "\x1b[<64;10;5M";
 const WHEEL_DOWN: &str = "\x1b[<65;10;5M";
+const PASTE_ON: &str = "\x1b[?2004h";
+const PASTE_OFF: &str = "\x1b[?2004l";
+const FOCUS_ON: &str = "\x1b[?1004h";
+const FOCUS_OFF: &str = "\x1b[?1004l";
+const CURSOR_DEFAULT: &str = "\x1b[0 q";
 
 fn notes(range: std::ops::RangeInclusive<u32>) -> Vec<AppEvent> {
     range
@@ -314,6 +319,92 @@ fn the_inline_screen_never_takes_the_alternate_screen() {
     assert!(text.contains(SHELL_LINE), "{text}");
     assert!(text.contains("note 03"), "{text}");
     assert_eq!(count_rows(&harness.screen(), HEADER), 1, "{text}");
+}
+
+/// A stop signal closes the inline screen the way `/exit` does: the terminal gets its modes
+/// back, and a run that keeps going says how to watch it.
+#[test]
+fn stop_signals_give_the_inline_screen_the_terminal_back() {
+    for signal in [Signal::SIGTERM, Signal::SIGHUP, Signal::SIGINT] {
+        let (_, _, run) = crew_run(1);
+        let script = Script::idle().all(0, notes(1..=3)).all(0, run);
+        let mut harness = Harness::launch(script)
+            .inline()
+            .name(&format!("inline_{signal}"))
+            .start();
+        harness.wait_visible("esc to interrupt");
+        let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
+        kill(Pid::from_raw(pid), signal).expect("signalling the harness");
+        assert_eq!(harness.wait_exit(), 0, "{signal} closes the screen cleanly");
+        let raw = raw_text(&harness);
+        assert!(!raw.contains(ENTER), "{signal}: {raw:?}");
+        for (on, off) in [(PASTE_ON, PASTE_OFF), (FOCUS_ON, FOCUS_OFF)] {
+            let given_back = raw
+                .rfind(off)
+                .is_some_and(|at| at > raw.rfind(on).unwrap_or(0));
+            assert!(given_back, "{signal} turns {on:?} off: {raw:?}");
+        }
+        assert!(raw.ends_with(CURSOR_DEFAULT), "{signal}: {raw:?}");
+        // As after any other exit, the chat stays in the terminal.
+        let text = harness.text();
+        assert!(text.contains("note 03"), "{signal}: {text}");
+        for line in [
+            "run-01 keeps going · 1 agent working",
+            "Reattach with: argonauts",
+        ] {
+            assert!(text.contains(line), "{signal}: {text}");
+        }
+    }
+}
+
+/// A stop signal while the app still waits on a terminal that never answers its start-up
+/// queries, with raw mode already on, waits for the screen, which gives the terminal back.
+#[test]
+fn a_stop_signal_during_the_start_up_probes_gives_the_terminal_back() {
+    const KEYBOARD_QUERY: &str = "\x1b[?u";
+    let mut harness = Harness::launch(Script::idle().all(0, notes(1..=3)))
+        .inline()
+        .unanswered()
+        .start();
+    harness.wait_until("the keyboard query, sent in raw mode", |_| {
+        raw_text(&harness).contains(KEYBOARD_QUERY)
+    });
+    let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
+    kill(Pid::from_raw(pid), Signal::SIGTERM).expect("signalling the harness");
+    assert_eq!(harness.wait_exit(), 0, "the screen closed it");
+    let raw = raw_text(&harness);
+    for (on, off) in [(PASTE_ON, PASTE_OFF), (FOCUS_ON, FOCUS_OFF)] {
+        let given_back = raw
+            .rfind(off)
+            .is_some_and(|at| at > raw.rfind(on).unwrap_or(0));
+        assert!(given_back, "turns {on:?} off: {raw:?}");
+    }
+    assert!(raw.ends_with(CURSOR_DEFAULT), "{raw:?}");
+}
+
+/// Ctrl+C in a program the screen handed the terminal to reaches the app too, since they share
+/// the terminal's foreground group. It is the program's, so the app comes back and stays.
+#[test]
+fn ctrl_c_in_a_handed_over_program_leaves_the_app_running() {
+    for inline in [true, false] {
+        let run = AppEvent::RunInTerminal {
+            argv: ["/bin/sh", "-c", "trap '' INT; kill -INT 0"]
+                .map(str::to_owned)
+                .to_vec(),
+            cwd: std::env::temp_dir(),
+        };
+        let launch = Harness::launch(Script::idle().at(0, notice("info", "note 01")).at(0, run));
+        let launch = if inline { launch.inline() } else { launch };
+        let mut harness = launch
+            .name(&format!("handed_over_ctrl_c_inline_{inline}"))
+            .start();
+        harness.wait_visible("Back from");
+        harness.submit("still here");
+        harness.press(Key::Ctrl('c'));
+        harness.wait_visible("Press Ctrl-C again to exit");
+        harness.press(Key::Ctrl('c'));
+        assert_eq!(harness.wait_exit(), 0);
+    }
 }
 
 #[test]

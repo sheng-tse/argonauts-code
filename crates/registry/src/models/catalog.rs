@@ -166,11 +166,22 @@ pub fn cli_layer(discovered: &[ModelEntry]) -> ModelCatalog {
             }
         };
         layer.rank = Some(rank);
-        layer.efforts = (!entry.efforts.is_empty()).then(|| entry.efforts.clone());
+        layer.efforts = if entry.efforts.is_empty() && names_every_level(harness) {
+            Some(Vec::new())
+        } else {
+            (!entry.efforts.is_empty()).then(|| entry.efforts.clone())
+        };
         layer.default_effort.clone_from(&entry.default_effort);
         catalog.models.push(layer);
     }
     catalog
+}
+
+/// agy names each level it runs as a model of its own, so a model it lists without one takes
+/// none, until a recording shows its `--effort` works for one. Its known "--effort is not
+/// supported for the current model" error says as much.
+fn names_every_level(harness: &str) -> bool {
+    harness == "antigravity-cli"
 }
 
 /// One `models.toml`: what each whole `[[model]]` says of names, descriptions, levels, and

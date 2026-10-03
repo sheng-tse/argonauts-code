@@ -1,4 +1,4 @@
-use argonauts_core::model_picker::{EffortLine, EffortSlider};
+use argonauts_core::model_picker::{AllHandsToggle, EffortLine, EffortSlider};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -18,6 +18,11 @@ const MIN_DESCRIPTION: usize = 8;
 const SLIDER_INDENT: usize = 4;
 /// Between the slider's levels, where there's room.
 const SLIDER_GAP: usize = 6;
+/// Between the slider's right end and All hands beside it.
+const TOGGLE_GAP: usize = 4;
+const TOGGLE_HINT: &str = "Tab to toggle";
+/// Follows the level of a model that takes one only, as agy's `gemini-3.8-flash-high` does.
+const FIXED: &str = "fixed by the model";
 
 /// The marks beyond the theme's glyph set, with ASCII stand-ins.
 struct Marks {
@@ -275,13 +280,15 @@ impl Picker {
         }
     }
 
-    /// `◉ xhigh effort (default)  ←/→ to adjust`, for the highlighted model.
+    /// `◉ xhigh effort (default)  ←/→ to adjust`, for the highlighted model, and no hint for
+    /// one fixed at its only level.
     fn effort_row(&self, line: &EffortLine, ctx: &RenderCtx<'_>) -> Line<'static> {
         let theme = ctx.theme;
         let dim = theme.style(Role::Dim);
         let marks = Marks::for_theme(theme);
         let default = line.default.and_then(|at| line.levels.get(at));
         let (level, note) = match line.level() {
+            Some(level) if line.is_fixed() => (format!("{level} effort"), format!(" ({FIXED})")),
             Some(level) if line.is_default() => (format!("{level} effort"), " (default)".into()),
             Some(level) => (
                 format!("{level} effort"),
@@ -289,13 +296,16 @@ impl Picker {
             ),
             None => ("the CLI's own effort".to_owned(), String::new()),
         };
-        Line::from(vec![
+        let mut spans = vec![
             Span::raw("  "),
             Span::styled(format!("{} ", marks.effort), theme.style(Role::Card)),
             Span::styled(sanitize_line(&level).into_owned(), theme.style(Role::Text)),
             Span::styled(sanitize_line(&note).into_owned(), dim),
-            Span::styled(format!("  {}", self.adjust_hint()), dim),
-        ])
+        ];
+        if !line.is_fixed() {
+            spans.push(Span::styled(format!("  {}", self.adjust_hint()), dim));
+        }
+        Line::from(spans)
     }
 
     fn adjust_hint(&self) -> &'static str {
@@ -324,7 +334,16 @@ impl Picker {
             }
         };
         let mut parts = Vec::new();
-        if self.flow.slider.is_some() {
+        let unmoving = self.flow.slider.as_ref().filter(|slider| !slider.moves());
+        if let Some(slider) = unmoving {
+            // Tab is named beside All hands, where the view offers it.
+            if slider.all_hands.is_some() {
+                parts.push(Part::new(part(enter), KEEP));
+                parts.push(Part::joined(dot(), part(esc("Esc to cancel")), 1));
+            } else {
+                parts.push(Part::new(part(esc("Esc to close")), KEEP));
+            }
+        } else if self.flow.slider.is_some() {
             parts.push(Part::new(part(self.adjust_hint()), KEEP));
             parts.push(Part::joined(dot(), part(enter), KEEP));
             parts.push(Part::joined(dot(), part(esc("Esc to cancel")), 1));
@@ -360,6 +379,9 @@ impl Picker {
 /// `/effort`'s slider: "Faster" and "Smarter" over the ends of a line, a marker on it over the
 /// chosen level, the levels under it, and what the chosen one means.
 fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+    if !slider.moves() {
+        return fixed_level_lines(slider, ctx);
+    }
     let theme = ctx.theme;
     let marks = Marks::for_theme(theme);
     let dim = theme.style(Role::Dim);
@@ -431,6 +453,9 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
         used = starts[index] + widths[index];
     }
     lines.push(Line::from(levels));
+    if let Some(toggle) = slider.all_hands {
+        add_all_hands(&mut lines, toggle, scale, ctx);
+    }
     lines.push(Line::default());
     let description = sanitize_line(&slider.stops[chosen].description)
         .trim()
@@ -453,5 +478,119 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
             &lead,
         ));
     }
+    lines
+}
+
+/// All hands beside the slider, where Claude Code puts Ultracode: its name and state level with
+/// the line and `Tab to toggle` under them, else one row under the levels where there's no room
+/// beside it. While it's on, a line under the levels says what it does.
+fn add_all_hands(
+    lines: &mut Vec<Line<'static>>,
+    toggle: AllHandsToggle,
+    scale: usize,
+    ctx: &RenderCtx<'_>,
+) {
+    let column = str_width(AllHandsToggle::NAME) + 2 + str_width("off");
+    let end = SLIDER_INDENT + scale;
+    // The rule row and the levels row are the last two, each `end` cells wide.
+    let rows = lines.len();
+    if end + TOGGLE_GAP + column.max(str_width(TOGGLE_HINT)) <= usize::from(ctx.width) {
+        let pad =
+            |line: &Line<'static>| " ".repeat((end + TOGGLE_GAP).saturating_sub(line.width()));
+        let gap = pad(&lines[rows - 2]);
+        lines[rows - 2].spans.push(Span::raw(gap));
+        lines[rows - 2].spans.extend(all_hands_named(toggle, ctx));
+        let gap = pad(&lines[rows - 1]);
+        lines[rows - 1].spans.push(Span::raw(gap));
+        lines[rows - 1]
+            .spans
+            .push(Span::styled(TOGGLE_HINT, ctx.theme.style(Role::Dim)));
+    } else {
+        lines.push(all_hands_row(toggle, ctx));
+    }
+    lines.extend(all_hands_means(toggle, ctx));
+}
+
+/// `All hands  on`, brighter while it's on.
+fn all_hands_named(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Vec<Span<'static>> {
+    let theme = ctx.theme;
+    let (name, state) = if toggle.on {
+        let label = theme.style(Role::Label);
+        (label, label.add_modifier(Modifier::BOLD))
+    } else {
+        (theme.style(Role::Text), theme.style(Role::Dim))
+    };
+    let word = if toggle.on { "on" } else { "off" };
+    vec![
+        Span::styled(AllHandsToggle::NAME, name),
+        Span::raw("  "),
+        Span::styled(word, state),
+    ]
+}
+
+/// All hands on a row of its own, with `Tab to toggle` after it.
+fn all_hands_row(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Line<'static> {
+    let mut row = vec![Span::raw(" ".repeat(SLIDER_INDENT))];
+    row.extend(all_hands_named(toggle, ctx));
+    row.push(Span::styled(
+        format!(" · {TOGGLE_HINT}"),
+        ctx.theme.style(Role::Dim),
+    ));
+    Line::from(row)
+}
+
+/// What All hands does, only while it's on.
+fn all_hands_means(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+    if !toggle.on {
+        return Vec::new();
+    }
+    let lead = [Span::raw(" ".repeat(SLIDER_INDENT))];
+    let means = format!("{}: {}", AllHandsToggle::NAME, AllHandsToggle::MEANS);
+    wrap_text(
+        &means,
+        ctx.theme.style(Role::Dim),
+        usize::from(ctx.width),
+        &lead,
+        &lead,
+    )
+}
+
+/// A model that takes one level has no slider: the level, as `/model` shows it, and how to get
+/// another. One that takes none says so. Either way, the default agent's view still offers All
+/// hands.
+fn fixed_level_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+    let theme = ctx.theme;
+    let text = theme.style(Role::Text);
+    let width = usize::from(ctx.width);
+    let indent = || Span::raw(" ".repeat(SLIDER_INDENT));
+    let lead = [indent()];
+    let (mut lines, then) = match slider.level() {
+        Some(level) => {
+            let marks = Marks::for_theme(theme);
+            let level = sanitize_line(level).trim().to_owned();
+            let line = Line::from(vec![
+                indent(),
+                Span::styled(format!("{} ", marks.effort), theme.style(Role::Card)),
+                Span::styled(format!("{level} effort"), text),
+                Span::styled(format!(" ({FIXED})"), theme.style(Role::Dim)),
+            ]);
+            (vec![line], "To change it, pick another model with /model.")
+        }
+        None => {
+            let model = sanitize_line(&slider.model).trim().to_owned();
+            let says = format!("{model} takes no effort setting.");
+            (
+                wrap_text(&says, text, width, &lead, &lead),
+                "To set an effort, pick another model with /model.",
+            )
+        }
+    };
+    lines.push(Line::default());
+    if let Some(toggle) = slider.all_hands {
+        lines.push(all_hands_row(toggle, ctx));
+        lines.extend(all_hands_means(toggle, ctx));
+        lines.push(Line::default());
+    }
+    lines.extend(wrap_text(then, text, width, &lead, &lead));
     lines
 }

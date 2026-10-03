@@ -345,6 +345,12 @@ pub fn advance(picker: &mut Picker, event: PickerEvent) -> Step {
         PickerEvent::Left => sideways(picker, false),
         PickerEvent::Right => sideways(picker, true),
         PickerEvent::Confirmed => confirmed(picker),
+        PickerEvent::Toggled => {
+            if let Some(slider) = picker.flow.slider.as_mut() {
+                slider.toggle_all_hands();
+            }
+            Step::Stay
+        }
         PickerEvent::Closed => back(picker).unwrap_or_else(|| Step::Cancel { kept: kept(picker) }),
         PickerEvent::Unhandled => Step::Stay,
     };
@@ -363,6 +369,10 @@ fn sideways(picker: &mut Picker, right: bool) -> Step {
         return Step::Stay;
     }
     if let Some(line) = picker.flow.effort.as_mut() {
+        // A model's only level is no choice of yours to carry to the next model.
+        if line.is_fixed() {
+            return Step::Stay;
+        }
         if right {
             line.raise();
         } else {
@@ -412,15 +422,32 @@ fn push_level(picker: &mut Picker) {
     picker.flow.parents.push(level);
 }
 
-/// Enter on the effort slider sends the level, which then asks where to save it.
+/// Enter on the effort slider sends the level, and All hands when Tab changed it, which then
+/// asks where to save them. With only All hands changed, the level stays as it was rather than
+/// being saved, so flipping the toggle never pins the model's default. A model that takes one
+/// level, or none, has no level to save, so Enter sends only a changed toggle, and otherwise
+/// closes as Esc does.
 fn confirmed(picker: &Picker) -> Step {
     match (&picker.flow.stage, &picker.flow.slider) {
-        (Stage::Effort { role, .. }, Some(slider)) => Step::Done(UiCommand::Slash {
-            command: SlashCommand::Effort {
-                role: *role,
-                level: Some(slider.level().to_owned()),
-            },
-        }),
+        (Stage::Effort { role, was }, Some(slider)) => {
+            let all_hands = slider
+                .all_hands
+                .filter(|toggle| toggle.changed())
+                .map(|toggle| toggle.on);
+            let level = slider.level().filter(|_| slider.moves());
+            let unmoved = slider.cli_default || level.is_none() || was.as_deref() == level;
+            let level = level.filter(|_| all_hands.is_none() || !unmoved);
+            if level.is_none() && all_hands.is_none() {
+                return Step::Cancel { kept: kept(picker) };
+            }
+            Step::Done(UiCommand::Slash {
+                command: SlashCommand::Effort {
+                    role: *role,
+                    level: level.map(str::to_owned),
+                    all_hands,
+                },
+            })
+        }
         _ => Step::Stay,
     }
 }
@@ -450,7 +477,10 @@ pub fn effort_picker(command: &str, slider: EffortSlider) -> Picker {
     picker.flow.command = command.to_owned();
     picker.flow.stage = Stage::Effort {
         role,
-        was: (!slider.cli_default).then(|| slider.level().to_owned()),
+        was: slider
+            .level()
+            .filter(|_| !slider.cli_default)
+            .map(str::to_owned),
     };
     picker.flow.slider = Some(slider);
     picker.enter_hint = "Enter to confirm".to_owned();
@@ -652,6 +682,15 @@ fn kept(picker: &Picker) -> Kept {
         Stage::Scope(change) => change.kept.clone(),
         Stage::Models { role } | Stage::ModelsOf { role, .. } | Stage::OtherModel { role, .. } => {
             models::kept(picker, *role)
+        }
+        // The model takes no effort setting, so only All hands was there to change.
+        Stage::Effort { .. }
+            if flow
+                .slider
+                .as_ref()
+                .is_some_and(|slider| slider.level().is_none()) =>
+        {
+            Kept::words("Nothing changed")
         }
         Stage::Effort { was: None, .. } => Kept::words("Kept the CLI's own effort"),
         Stage::Effort {

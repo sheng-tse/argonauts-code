@@ -30,7 +30,7 @@ pub use takeover::{
 };
 
 use keys::{GivenKeys, TerminalKeys};
-use screen::Screen;
+use screen::{Screen, Stops, stopped};
 
 /// How long the terminal gets to say its background color at start.
 const BACKGROUND_WAIT: Duration = Duration::from_millis(250);
@@ -47,6 +47,9 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     if options.screen_reader {
         return crate::a11y::run_screen_reader(io, options).await;
     }
+    // Listening before raw mode goes on means a stop signal during the probes below waits for
+    // the screen, which gives the terminal back, instead of ending the app in raw mode.
+    let stops = Stops::listen();
     let mut modes = TerminalModes::enable()?;
     install_panic_hook();
     let background = probe_background(BACKGROUND_WAIT);
@@ -62,8 +65,15 @@ pub async fn run_app(io: AppIo, options: UiOptions) -> anyhow::Result<()> {
     let terminal = InlineTerminal::new(BufWriter::new(io::stdout()), screen, origin);
     set_ambiguous_width(options.settings.ambiguous_width);
     let mut screen = Screen::new(io, &options, terminal, terminal_info(background));
-    screen.use_real_terminal(modes);
+    screen.use_real_terminal(modes, stops);
     screen.run(TerminalKeys::new()).await
+}
+
+/// The next Ctrl+C, terminate, or hangup, for what the app still waits on after [`run_app`]
+/// closed, such as the controller's last call. The screen's listening took over what these
+/// signals do, so without this one they would do nothing until the app exits.
+pub async fn stop_signal() {
+    stopped(&mut Stops::listen()).await;
 }
 
 /// [`run_app`] on any terminal and any source of terminal events, such as a `vt100` parser and

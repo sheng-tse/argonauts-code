@@ -135,9 +135,12 @@ fn start_request(command: &RunCommand, settings: &Settings) -> StartRun {
     }
 }
 
-/// Without a chat there's no estimate, so only the settings decide: a forced mode, or what
-/// triage does between its thresholds.
+/// Without a chat there's no estimate, so only the settings decide: All hands, a forced mode,
+/// or what triage does between its thresholds.
 fn triage_without_estimate(triage: &TriageSettings) -> TriageDecision {
+    if let Some(crew) = argonauts_crew::triage::all_hands(triage) {
+        return crew;
+    }
     if let Some(forced) = triage.force {
         let mode = match forced {
             ForcedMode::Solo => RunMode::Solo,
@@ -557,6 +560,44 @@ mod tests {
 
         let by_file = settings_with(&[], "[intake]\ninclude_uncommitted = true\n");
         assert!(start_request(&command, by_file.settings()).include_uncommitted);
+    }
+
+    /// All hands sends a task from the command line to the crew as the chat's triage does,
+    /// whether a file or `--set` turns it on, and over a preset's forced solo. `--solo` still
+    /// runs it solo.
+    #[test]
+    fn all_hands_sends_a_command_line_task_to_the_crew() {
+        let command = RunCommand::default();
+        let off = start_request(&command, settings_with(&[], "").settings());
+        let triage = off.triage.unwrap();
+        assert_eq!(
+            (off.mode, triage.rule.as_str()),
+            (RunMode::Solo, "otherwise")
+        );
+
+        let forced_solo = "[triage]\nforce = \"solo\"\n";
+        for settings in [
+            settings_with(&["triage.all_hands=true"], ""),
+            settings_with(&[], "[triage]\nall_hands = true\n"),
+            settings_with(&["triage.all_hands=true"], forced_solo),
+        ] {
+            let request = start_request(&command, settings.settings());
+            assert_eq!(request.mode, RunMode::Crew);
+            assert!(!request.forced);
+            let triage = request.triage.unwrap();
+            assert_eq!(
+                (triage.rule.as_str(), triage.reason.as_str()),
+                ("all_hands", "All hands is on")
+            );
+            assert!(!triage.escalate_to_crew);
+
+            let solo = RunCommand {
+                mode: Some(RunMode::Solo),
+                ..RunCommand::default()
+            };
+            let request = start_request(&solo, settings.settings());
+            assert_eq!((request.mode, request.forced), (RunMode::Solo, true));
+        }
     }
 
     fn started_with(uncommitted: &[&str], included: bool) -> RunEvent {

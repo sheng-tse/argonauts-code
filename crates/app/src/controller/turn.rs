@@ -10,6 +10,7 @@ use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::names::{ChatId, RoleName, SessionKey, TurnId, WorkerRef};
 use argonauts_core::paths::create_private_dir_all;
+use argonauts_core::registry::{ModelRegistry, effort_to_run, known_efforts};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::handoff::HandoffSettings;
@@ -418,19 +419,53 @@ pub(crate) fn chat_agent(settings: &Settings, worker: &WorkerRef) -> (WorkerRef,
     (worker, effort)
 }
 
-/// The lowest effort `worker`'s model takes, or `low` when its levels aren't known.
-pub(crate) fn fastest_effort(ctx: &Ctx, worker: &WorkerRef) -> String {
-    let supported = ctx
-        .services
-        .registry
-        .get(worker)
-        .map(|entry| entry.efforts)
-        .unwrap_or_default();
-    EFFORT_LEVELS
-        .iter()
-        .find(|level| supported.iter().any(|known| known == *level))
-        .map_or("low", |level| *level)
-        .to_owned()
+/// What `/fast` runs `worker` as: the lowest level its model takes, `low` when they aren't
+/// known, or for a model fixed at one level, the listed model of its line at the lowest, as
+/// agy lists `gemini-3.8-flash-low` beside `gemini-3.8-flash-high`. `None` when nothing is
+/// faster: a model that takes no effort setting, or one fixed at its line's lowest.
+pub(crate) fn fast_choice(ctx: &Ctx, worker: &WorkerRef) -> Option<(WorkerRef, String)> {
+    let registry = ctx.services.registry.as_ref();
+    let Some(levels) = known_efforts(registry, worker) else {
+        return Some((worker.clone(), "low".to_owned()));
+    };
+    match levels.as_slice() {
+        [] => None,
+        [level] => lowest_sibling(registry, worker, level).filter(|(_, lowest)| lowest != level),
+        levels => {
+            let lowest = EFFORT_LEVELS
+                .iter()
+                .find(|level| levels.iter().any(|known| known == *level))
+                .map_or("low", |level| *level);
+            Some((worker.clone(), lowest.to_owned()))
+        }
+    }
+}
+
+/// Among the listed models named like `worker` but for another level, the one at the lowest.
+fn lowest_sibling(
+    registry: &dyn ModelRegistry,
+    worker: &WorkerRef,
+    level: &str,
+) -> Option<(WorkerRef, String)> {
+    let stem = |model: &str, level: &str| {
+        model
+            .strip_suffix(level)
+            .and_then(|rest| rest.strip_suffix('-'))
+            .map(str::to_owned)
+    };
+    let line = stem(worker.model.as_deref()?, level)?;
+    registry
+        .list()
+        .into_iter()
+        .filter(|entry| entry.id.worker == worker.worker)
+        .filter_map(|entry| match entry.efforts.as_slice() {
+            [only] => {
+                let named = stem(entry.id.model.as_deref()?, only)?;
+                (named == line).then(|| (entry.id.clone(), only.clone()))
+            }
+            _ => None,
+        })
+        .min_by_key(|(_, level)| EFFORT_LEVELS.iter().position(|known| known == level))
 }
 
 /// A chat turn reads your checkout. With `sandbox.mode` set to `tool` or `none` it runs outside
@@ -444,7 +479,7 @@ fn chat_sandbox(choice: SandboxChoice, keeps_read_only: bool) -> SandboxMode {
     }
 }
 
-fn session_spec(
+pub(crate) fn session_spec(
     ctx: &Ctx,
     launch: &Launch<'_>,
     key: SessionKey,
@@ -452,9 +487,13 @@ fn session_spec(
 ) -> SessionSpec {
     let settings = ctx.settings();
     let role = settings.roles.get(&RoleName::Default);
-    let (worker, mut effort) = chat_agent(settings, &launch.worker);
-    if launch.fast {
-        effort = Some(fastest_effort(ctx, &worker));
+    let (mut worker, effort) = chat_agent(settings, &launch.worker);
+    let mut effort = effort_to_run(ctx.services.registry.as_ref(), &worker, effort);
+    if launch.fast
+        && let Some((fast, level)) = fast_choice(ctx, &worker)
+    {
+        worker = fast;
+        effort = Some(level);
     }
     let mut prompt: Vec<InputPart> = launch.excerpt.iter().cloned().collect();
     prompt.push(launch.step.prompt(launch.text));

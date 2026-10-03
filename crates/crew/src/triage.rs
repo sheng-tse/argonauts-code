@@ -3,7 +3,7 @@
 
 use argonauts_core::events::run::{RunMode, TriageDecision};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::protocol::{ForcedMode, TriageMiddle};
+use argonauts_core::settings::protocol::{ForcedMode, TriageMiddle, TriageSettings};
 use argonauts_core::steps::intake::ChangeEstimate;
 use argonauts_learning::recipes::{LoadedRecipe, RecipeMode};
 
@@ -20,6 +20,9 @@ pub fn decide_with(
     recipe: Option<&LoadedRecipe>,
 ) -> TriageDecision {
     let rules = &settings.triage;
+    if let Some(crew) = all_hands(rules) {
+        return crew;
+    }
     if let Some(forced) = rules.force {
         let mode = match forced {
             ForcedMode::Solo => RunMode::Solo,
@@ -108,6 +111,20 @@ pub fn decide_with(
     }
 }
 
+/// The crew, while All hands is on, whatever else would decide: the chat's triage, a task from
+/// the command line, or a follow-up. You turned it on yourself, so it wins over a preset's
+/// forced mode and a recipe's.
+pub fn all_hands(rules: &TriageSettings) -> Option<TriageDecision> {
+    rules.all_hands.then(|| {
+        decision(
+            RunMode::Crew,
+            false,
+            "all_hands",
+            "All hands is on".to_owned(),
+        )
+    })
+}
+
 fn decision(mode: RunMode, escalate_to_crew: bool, rule: &str, reason: String) -> TriageDecision {
     TriageDecision {
         mode,
@@ -189,6 +206,10 @@ mod tests {
         middle_crew.triage.otherwise = TriageMiddle::Crew;
         let mut middle_solo = Settings::default();
         middle_solo.triage.otherwise = TriageMiddle::Solo;
+        let mut all_hands = Settings::default();
+        all_hands.triage.all_hands = true;
+        let mut all_hands_over_solo = forced_solo.clone();
+        all_hands_over_solo.triage.all_hands = true;
 
         let table: Vec<Row> = vec![
             (
@@ -294,6 +315,25 @@ mod tests {
                 "otherwise",
             ),
             (&forced_crew, 1, true, &[], RunMode::Crew, false, "force"),
+            (&all_hands, 1, true, &[], RunMode::Crew, false, "all_hands"),
+            (
+                &all_hands,
+                30,
+                false,
+                &["security"],
+                RunMode::Crew,
+                false,
+                "all_hands",
+            ),
+            (
+                &all_hands_over_solo,
+                1,
+                true,
+                &[],
+                RunMode::Crew,
+                false,
+                "all_hands",
+            ),
             (
                 &forced_solo,
                 30,
@@ -315,6 +355,19 @@ mod tests {
                 "{row}"
             );
         }
+    }
+
+    #[test]
+    fn all_hands_has_the_lead_design_the_crews_workflow() {
+        let mut settings = Settings::default();
+        settings.workflows.lead_designs = false;
+        assert!(!settings.lead_designs());
+        settings.triage.all_hands = true;
+        assert!(settings.lead_designs());
+        assert_eq!(
+            decide(&estimate(1, true, &[]), &settings).reason,
+            "All hands is on"
+        );
     }
 
     #[test]

@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_settings.rs
+expression: shown
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Effort
+  How long Gemini 3.8 Flash (High) thinks before it answers, for the default agent
+
+    ◉ high effort (fixed by the model)
+
+    All hands  on · Tab to toggle
+    All hands: every task goes to the crew, and the lead designs its workflow
+
+    To change it, pick another model with /model.
+
+  Enter to confirm · Esc to cancel

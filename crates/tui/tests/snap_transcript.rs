@@ -289,6 +289,7 @@ fn startup_header() {
             title: "argonauts".into(),
             repo: "~/github/argonauts".into(),
             preset: "peer-crew".into(),
+            all_hands: false,
             run: None,
             default_agent: worker("claude-code", "haiku-4.5"),
             quotas: vec![],

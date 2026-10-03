@@ -172,6 +172,11 @@ impl Settings {
         let own = self.roles.get(role).map(|settings| &settings.sandbox);
         self.sandbox.applied(own)
     }
+
+    /// Whether the lead designs a crew run's workflow. All hands always has it design one.
+    pub fn lead_designs(&self) -> bool {
+        self.workflows.lead_designs || self.triage.all_hands
+    }
 }
 
 /// Keys only you may set: never a preset, recipe, or self-evolution. A `--set` of one of these

@@ -17,8 +17,9 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::handoff::FallbackEntry;
 use argonauts_core::steps::SchemaStepRunner;
 use argonauts_registry::{PresetUpgrade, PresetUpgradeOutcome, upgrade_presets};
-use argonauts_tui::{AppIo, UiOptions, run_app, run_screen_reader};
+use argonauts_tui::{AppIo, UiOptions, run_app, run_screen_reader, stop_signal};
 use tokio::sync::mpsc;
+use tokio::task::{JoinError, JoinHandle};
 
 use crate::ancestry::{AgentMarkers, check_self};
 use crate::app_settings::AppSettings;
@@ -130,10 +131,17 @@ async fn run_once(
     };
     // The screen dropped its command sender, so the controller's loop ends too, unless a call
     // to a run's supervisor holds it. The run goes on without this app, so quitting doesn't wait.
+    // Screen-reader mode never took over the stop signals, so they still end the app at once.
     let mut app = app;
-    let app = match tokio::time::timeout(EXIT_GRACE, &mut app).await {
-        Ok(joined) => joined.map_err(|err| anyhow!("the app stopped unexpectedly: {err}")),
-        Err(_) => {
+    let stop = async {
+        if screen_reader {
+            std::future::pending::<()>().await;
+        }
+        stop_signal().await;
+    };
+    let app = match wait_for_controller(&mut app, EXIT_GRACE, stop).await {
+        Some(joined) => joined.map_err(|err| anyhow!("the app stopped unexpectedly: {err}")),
+        None => {
             app.abort();
             tracing::warn!("quit without waiting for the controller's pending call");
             Ok(Ok(()))
@@ -147,6 +155,19 @@ async fn run_once(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
     Ok(next)
+}
+
+/// The controller as it finished, or `None` once `grace` passes or `stop` comes first, such as
+/// another Ctrl+C after the screen closed.
+async fn wait_for_controller<T>(
+    app: &mut JoinHandle<T>,
+    grace: Duration,
+    stop: impl Future<Output = ()>,
+) -> Option<Result<T, JoinError>> {
+    tokio::select! {
+        joined = tokio::time::timeout(grace, app) => joined.ok(),
+        () = stop => None,
+    }
 }
 
 /// The registry and the workers follow the settings, so a change made in the app, such as
@@ -404,6 +425,31 @@ mod tests {
 
     use super::*;
     use crate::controller::test_support::{HarnessOptions, TestCtx};
+
+    /// Quitting waits for the controller's last call only up to the grace, and not at all once
+    /// a stop signal comes, as one does when Ctrl+C is pressed again after the screen closed.
+    #[tokio::test]
+    async fn quitting_waits_for_the_controller_until_the_grace_or_a_stop() {
+        let mut done = tokio::spawn(async { 7 });
+        let joined =
+            wait_for_controller(&mut done, Duration::from_secs(60), std::future::pending()).await;
+        assert_eq!(joined.map(Result::unwrap), Some(7));
+
+        let started = std::time::Instant::now();
+        let mut stuck = tokio::spawn(std::future::pending::<()>());
+        let stopped = wait_for_controller(&mut stuck, Duration::from_secs(60), async {}).await;
+        assert!(stopped.is_none());
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        let waited = wait_for_controller(
+            &mut stuck,
+            Duration::from_millis(20),
+            std::future::pending(),
+        )
+        .await;
+        assert!(waited.is_none());
+        stuck.abort();
+    }
 
     fn check(id: &str, status: AgentStatus) -> AgentCheck {
         AgentCheck {

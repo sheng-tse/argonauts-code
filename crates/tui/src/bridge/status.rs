@@ -344,8 +344,21 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
 }
 
 /// The run's workflow as its panel row names it, `solo` for a solo run, or the preset a new
-/// run would use.
+/// run would use, with `all hands` after it while that's on.
 fn composer_label(state: &AppState) -> Option<String> {
+    let label = workflow_label(state);
+    let all_hands = state.status.as_ref().is_some_and(|status| status.all_hands);
+    match label {
+        Some(label) if all_hands => Some(format!("{label} · {ALL_HANDS_LABEL}")),
+        None if all_hands => Some(ALL_HANDS_LABEL.to_owned()),
+        label => label,
+    }
+}
+
+/// All hands on the input rule, lowercase like the preset beside it.
+const ALL_HANDS_LABEL: &str = "all hands";
+
+fn workflow_label(state: &AppState) -> Option<String> {
     if let Some(run) = focus_run(state) {
         if run.mode == Some(RunMode::Solo) {
             return Some("solo".to_owned());
@@ -833,6 +846,39 @@ mod tests {
         run.workflows
             .insert(0, workflow(1, "solo-reviewed", &["Build"], None));
         assert_eq!(composer_label(&state).as_deref(), Some("solo-reviewed"));
+    }
+
+    #[test]
+    fn the_input_rule_shows_all_hands_beside_the_preset_while_it_is_on() {
+        let mut state = AppState::default();
+        let status = |all_hands: bool| argonauts_core::app::StatusLine {
+            title: String::new(),
+            repo: "~/code".into(),
+            preset: "peer-crew".into(),
+            all_hands,
+            run: None,
+            default_agent: "claude-code".parse().unwrap(),
+            quotas: Vec::new(),
+            spent: None,
+            limit: None,
+            narrator: NarratorMode::Off,
+            approval_mode: CoreApproval::Supervised,
+        };
+        state.status = Some(status(false));
+        assert_eq!(composer_label(&state).as_deref(), Some("peer-crew"));
+        state.status = Some(status(true));
+        assert_eq!(
+            composer_label(&state).as_deref(),
+            Some("peer-crew · all hands")
+        );
+
+        // A solo run started with /solo still says so.
+        let id = RunId::new("run-20260930-100000-a1b2").unwrap();
+        let mut run = crate::state::RunState::new(id.clone());
+        run.mode = Some(RunMode::Solo);
+        state.runs.insert(id.clone(), run);
+        state.mode = Some(AppMode::Working { run: id });
+        assert_eq!(composer_label(&state).as_deref(), Some("solo · all hands"));
     }
 
     fn workflow(id: u32, name: &str, phases: &[&str], parent: Option<StepRef>) -> WorkflowState {

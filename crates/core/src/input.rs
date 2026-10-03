@@ -98,6 +98,10 @@ pub enum SlashCommand {
         role: Option<RoleName>,
         /// One of [`EFFORT_LEVELS`].
         level: Option<String>,
+        /// `triage.all_hands`, as the slider's toggle set it, saved with the level. Alone, it's
+        /// saved without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        all_hands: Option<bool>,
     },
     Agents {
         #[serde(default)]
@@ -892,7 +896,11 @@ fn parse_effort(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         [role, word] => (Some(parse_role(name, role)?), Some(level(word)?)),
         _ => return Err(bad(name, "use /effort [role] [level]")),
     };
-    Ok(SlashCommand::Effort { role, level })
+    Ok(SlashCommand::Effort {
+        role,
+        level,
+        all_hands: None,
+    })
 }
 
 fn parse_agents(name: &str, args: &str) -> Result<SlashCommand, InputError> {
@@ -1156,10 +1164,10 @@ mod tests {
             ("/model -x", bad_args("model")),
             ("/model owner codex extra", bad_args("model")),
             ("/model reviewer high", bad_args("model")),
-            ("/effort", slash(SlashCommand::Effort { role: None, level: None })),
-            ("/effort high", slash(SlashCommand::Effort { role: None, level: Some("high".into()) })),
-            ("/effort reviewer", slash(SlashCommand::Effort { role: Some(RoleName::Reviewer), level: None })),
-            ("/effort owner max", slash(SlashCommand::Effort { role: Some(RoleName::Owner), level: Some("max".into()) })),
+            ("/effort", slash(SlashCommand::Effort { role: None, level: None, all_hands: None })),
+            ("/effort high", slash(SlashCommand::Effort { role: None, level: Some("high".into()), all_hands: None })),
+            ("/effort reviewer", slash(SlashCommand::Effort { role: Some(RoleName::Reviewer), level: None, all_hands: None })),
+            ("/effort owner max", slash(SlashCommand::Effort { role: Some(RoleName::Owner), level: Some("max".into()), all_hands: None })),
             ("/effort loud", bad_args("effort")),
             ("/effort boss high", bad_args("effort")),
             ("/effort owner high now", bad_args("effort")),

@@ -1,12 +1,13 @@
 //! What a list read out in plain mode offers on the next line, where the full screen has keys:
 //! `/rewind`'s checkpoints by number, `s` after `/status` for the narrator's summary, `l` after
 //! a workflow for the library, and the library's files by number, with `c`, `C`, or `d` before
-//! it to copy one, copy it to the repo, or diff it with the built-in. Any other line drops the offer and means what it
-//! always does.
+//! it to copy one, copy it to the repo, or diff it with the built-in. `a` after the default
+//! agent's `/effort` flips All hands, which the slider does with Tab. Any other line drops the
+//! offer and means what it always does.
 
 use argonauts_core::CardId;
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
-use argonauts_core::input::WorkflowAction;
+use argonauts_core::input::{SlashCommand, WorkflowAction};
 use argonauts_core::views::WorkflowFile;
 
 use crate::text::sanitize_line;
@@ -18,6 +19,8 @@ pub(super) enum Offer {
     /// The run's workflow was read out; `l` reads the library.
     Workflow,
     Library(Vec<WorkflowFile>),
+    /// The default agent's effort was read out with All hands, which is on when `true`.
+    AllHands(bool),
 }
 
 /// What a line taken by an offer comes to.
@@ -44,6 +47,7 @@ impl Offer {
                 workflows,
                 refresh: false,
             } if !workflows.is_empty() => Some(Self::Library(workflows.clone())),
+            ViewData::Effort { slider } => slider.all_hands.map(|toggle| Self::AllHands(toggle.on)),
             _ => None,
         }
     }
@@ -60,6 +64,8 @@ impl Offer {
                 "workflows: type a number to read one, or c, C, or d and a number to copy it, \
                  copy it to the repo, or diff it with the built-in."
             }
+            Self::AllHands(false) => "all hands: type a to turn it on.",
+            Self::AllHands(true) => "all hands: type a to turn it off.",
         }
     }
 
@@ -69,6 +75,16 @@ impl Offer {
         match self {
             Self::Summary => (line == "s").then(|| Taken {
                 command: Some(UiCommand::Summary),
+                ..Taken::default()
+            }),
+            Self::AllHands(on) => (line == "a").then(|| Taken {
+                command: Some(UiCommand::Slash {
+                    command: SlashCommand::Effort {
+                        role: None,
+                        level: None,
+                        all_hands: Some(!on),
+                    },
+                }),
                 ..Taken::default()
             }),
             Self::Workflow => (line == "l").then(|| Taken {
@@ -162,6 +178,51 @@ mod tests {
         for other in ["3", "0", "2 please", "s", ""] {
             assert!(offer.take(other).is_none(), "{other}");
         }
+    }
+
+    /// The default agent's effort offers All hands by `a`, which asks to flip it, where the
+    /// slider would take Tab.
+    #[test]
+    fn a_after_the_effort_flips_all_hands() {
+        use argonauts_core::model_picker::EffortSlider;
+
+        let view = |on: bool| {
+            let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
+            let slider = EffortSlider::without_levels(None, worker, "Haiku 4.5");
+            ViewData::Effort {
+                slider: slider.with_all_hands(on),
+            }
+        };
+        for on in [false, true] {
+            let offer = Offer::for_view(&view(on)).unwrap();
+            assert!(
+                offer.hint().contains("type a to turn it"),
+                "{}",
+                offer.hint()
+            );
+            assert_eq!(
+                offer.take(" a ").unwrap().command,
+                Some(UiCommand::Slash {
+                    command: SlashCommand::Effort {
+                        role: None,
+                        level: None,
+                        all_hands: Some(!on),
+                    }
+                })
+            );
+            for other in ["A", "all", "s", ""] {
+                assert!(offer.take(other).is_none(), "{other}");
+            }
+        }
+        let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
+        let without = ViewData::Effort {
+            slider: EffortSlider::without_levels(
+                Some(argonauts_core::names::RoleName::Reviewer),
+                worker,
+                "Haiku 4.5",
+            ),
+        };
+        assert_eq!(Offer::for_view(&without), None);
     }
 
     #[test]

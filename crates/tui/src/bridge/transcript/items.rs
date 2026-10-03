@@ -9,6 +9,7 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
+use argonauts_core::settings::protocol::TriageSettings;
 
 use crate::cell::{AgentReady, Cell, Notice, Recap, ResultLine, SessionHeader, Tone};
 use crate::format;
@@ -227,7 +228,8 @@ pub(super) fn setting_changed(
 }
 
 /// `⎿  Set model to Opus 5.5 · just you · was Claude Code's default`, the value by its display
-/// name in the accent color, for the keys `/model` and `/effort` write.
+/// name in the accent color, for the keys `/model` and `/effort` write. All hands reads
+/// `⎿  Turned All hands on · just you`.
 fn command_result(
     key: &str,
     value: &str,
@@ -238,6 +240,11 @@ fn command_result(
     let (name, model) = match model_role(key) {
         Some(None) => ("model".to_owned(), true),
         Some(Some(role)) => (format!("{}'s model", role.as_str()), true),
+        None if key == TriageSettings::ALL_HANDS => {
+            let on = if value.trim() == "true" { "on" } else { "off" };
+            let after = format!("· {}", scope_words(scope));
+            return Some(ResultLine::valued("Turned All hands", on).with_after(after));
+        }
         None => {
             let role = key.strip_prefix("roles.")?.strip_suffix(".effort")?;
             let name = match role {

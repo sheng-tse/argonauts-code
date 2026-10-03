@@ -51,6 +51,7 @@ pub struct Launch {
     env: Vec<(String, OsString)>,
     name: Option<String>,
     shell: Option<Shell>,
+    unanswered: bool,
 }
 
 /// Runs the harness from a shell, which prints a line first, as a prompt would, and can start
@@ -80,6 +81,12 @@ impl Launch {
 
     pub fn env(mut self, name: &str, value: impl Into<OsString>) -> Self {
         self.env.push((name.to_owned(), value.into()));
+        self
+    }
+
+    /// A terminal that answers none of the start-up queries, so the app waits them out.
+    pub fn unanswered(mut self) -> Self {
+        self.unanswered = true;
         self
     }
 
@@ -159,6 +166,9 @@ impl Launch {
             command = command.env_remove(name);
         }
         command = command.envs(self.env);
+        if self.unanswered {
+            command = command.unanswered();
+        }
         let pty = Pty::spawn(command).expect("starting the harness in a pty");
         let name = self.name.unwrap_or_else(test_name);
         Harness {
@@ -216,6 +226,7 @@ impl Harness {
             env: Vec::new(),
             name: None,
             shell: None,
+            unanswered: false,
         }
     }
 

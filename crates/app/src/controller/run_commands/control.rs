@@ -292,12 +292,15 @@ pub(crate) async fn continue_run(
         }
     };
     let settings = ctx.settings();
+    // It goes on the way the merged run went, unless All hands sends every task to the crew.
+    let triage = argonauts_crew::triage::all_hands(&settings.triage);
+    let mode = triage.as_ref().map_or(merged.mode, |crew| crew.mode);
     let follow_up = StartRun {
         request: request.clone(),
-        mode: merged.mode,
+        mode,
         forced: false,
         estimate: None,
-        triage: None,
+        triage,
         chat_turn: None,
         continues: Some(merged.run.clone()),
         overrides: ctx.settings.run_overrides(),
@@ -313,6 +316,5 @@ pub(crate) async fn continue_run(
         .continue_run(&merged.run, follow_up)
         .await
         .with_context(|| format!("continuing {}", merged.run))?;
-    let mode = merged.mode;
     runs::started(ctx, runs, handle.run, title_from_task(&request), mode).await
 }

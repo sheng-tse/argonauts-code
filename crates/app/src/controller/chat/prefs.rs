@@ -9,7 +9,7 @@ use argonauts_core::events::run::RunMode;
 use argonauts_core::events::session::{InputPart, InputPartKind};
 
 use super::{ChatState, planned, request_planned, run_request};
-use crate::controller::turn::{self, fastest_effort};
+use crate::controller::turn::{self, fast_choice};
 use crate::controller::{Ctx, Effect};
 
 /// Kept across `/clear`, `/branch`, and `/resume` until the app closes.
@@ -104,9 +104,16 @@ pub(crate) fn fast(
     chat.prefs.fast = on;
     let text = if on {
         let (worker, _) = turn::chat_agent(ctx.settings(), &ctx.settings().default_agent);
-        let effort = fastest_effort(ctx, &worker);
-        let name = ctx.names.worker(&worker);
-        format!("Fast is on: {name} answers at {effort} effort until /fast off.")
+        match fast_choice(ctx, &worker) {
+            Some((fast, effort)) => {
+                let name = ctx.names.worker(&fast);
+                format!("Fast is on: {name} answers at {effort} effort until /fast off.")
+            }
+            None => {
+                let name = ctx.names.worker(&worker);
+                format!("Fast is on, but {name} has no faster level, so answers come as before.")
+            }
+        }
     } else {
         "Fast is off: answers use the effort you set again.".to_owned()
     };

@@ -488,7 +488,7 @@ fn with_no_effort_set_the_slider_starts_on_the_models_default() {
     ];
     let theme = theme();
     for (name, unset, says) in cases {
-        let level = unset.level().to_owned();
+        let level = unset.level().expect("the model has levels").to_owned();
         let mut picked = unset.clone();
         picked.chosen = picked.default.expect("the model has a default");
         let unset = flow::effort_picker("effort", unset);
@@ -557,6 +557,7 @@ fn effort_slider() {
             command: argonauts_core::input::SlashCommand::Effort {
                 role: None,
                 level: Some("max".into()),
+                all_hands: None,
             }
         })
     );
@@ -581,6 +582,134 @@ fn effort_slider() {
         .unwrap();
     assert_eq!(low.style.fg, theme.style(Role::Card).fg);
     assert_eq!(max.style.fg, theme.style(Role::Dim).fg);
+}
+
+/// All hands beside the slider, off and then on, as Claude Code places Ultracode: its name and
+/// state level with the line, `Tab to toggle` under them, and while it's on a line saying what
+/// it does. Tab flips it, and Enter saves it without pinning the level it left alone.
+#[test]
+fn effort_slider_all_hands() {
+    let theme = theme();
+    let mut picker = flow::effort_picker("effort", slider("xhigh").with_all_hands(false));
+    for (state, on) in [("off", false), ("on", true)] {
+        if on {
+            let event = picker.handle_key(KeyEvent::from(KeyCode::Tab));
+            assert_eq!(event, PickerEvent::Toggled);
+            assert_eq!(flow::advance(&mut picker, event), Step::Stay);
+        }
+        for width in WIDTHS {
+            assert_lines(&picker.lines(&still(&theme, width)), width);
+        }
+        for width in [80, 100, 120, 200] {
+            let shown = picker_lines(&picker, width);
+            insta::assert_snapshot!(format!("effort_slider_all_hands_{state}_{width}"), shown);
+            let lines: Vec<&str> = shown.lines().collect();
+            let rule = lines.iter().position(|line| line.contains('▲')).unwrap();
+            assert!(
+                lines[rule].ends_with(&format!("All hands  {state}")),
+                "{shown}"
+            );
+            assert!(lines[rule + 1].ends_with("Tab to toggle"), "{shown}");
+            let column = |line: &str, part: &str| line[..line.find(part).unwrap()].chars().count();
+            assert_eq!(
+                column(lines[rule], "All hands"),
+                column(lines[rule + 1], "Tab to toggle"),
+                "{shown}"
+            );
+            let means = "All hands: every task goes to the crew, and the lead designs its workflow";
+            assert_eq!(shown.contains(means), on, "{shown}");
+        }
+    }
+    let lines = picker.lines(&still(&theme, 80));
+    assert_eq!(
+        style_of(&lines, "All hands").and_then(|style| style.fg),
+        fg(Role::Label)
+    );
+
+    // Too narrow to sit beside the slider, it takes a row of its own.
+    let narrow = picker_lines(&picker, 50);
+    assert!(
+        narrow.contains("    All hands  on · Tab to toggle"),
+        "{narrow}"
+    );
+
+    let event = picker.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        flow::advance(&mut picker, event),
+        Step::Done(UiCommand::Slash {
+            command: argonauts_core::input::SlashCommand::Effort {
+                role: None,
+                level: None,
+                all_hands: Some(true),
+            }
+        })
+    );
+
+    // Moved too, the level goes with it; flipped back, only the level does.
+    let mut picker = flow::effort_picker("effort", slider("xhigh").with_all_hands(true));
+    for code in [KeyCode::Tab, KeyCode::Left] {
+        let event = picker.handle_key(KeyEvent::from(code));
+        flow::advance(&mut picker, event);
+    }
+    assert!(!picker_lines(&picker, 80).contains("All hands:"));
+    let event = picker.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        flow::advance(&mut picker, event),
+        Step::Done(UiCommand::Slash {
+            command: argonauts_core::input::SlashCommand::Effort {
+                role: None,
+                level: Some("high".into()),
+                all_hands: Some(false),
+            }
+        })
+    );
+    let mut picker = flow::effort_picker("effort", slider("xhigh").with_all_hands(true));
+    for _ in 0..2 {
+        let event = picker.handle_key(KeyEvent::from(KeyCode::Tab));
+        flow::advance(&mut picker, event);
+    }
+    let event = picker.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        flow::advance(&mut picker, event),
+        Step::Done(UiCommand::Slash {
+            command: argonauts_core::input::SlashCommand::Effort {
+                role: None,
+                level: Some("xhigh".into()),
+                all_hands: None,
+            }
+        })
+    );
+}
+
+/// With nothing to slide, All hands takes a row of its own under what the model runs at: a
+/// level fixed by the model, or none at all.
+#[test]
+fn effort_all_hands_without_a_slider() {
+    let fixed = EffortSlider::new(
+        None,
+        "antigravity-cli/gemini-3.8-flash-high".parse().unwrap(),
+        "Gemini 3.8 Flash (High)",
+        vec![EffortStop {
+            level: "high".into(),
+            description: String::new(),
+        }],
+        None,
+        None,
+    )
+    .unwrap();
+    let none =
+        EffortSlider::without_levels(None, "claude-code/haiku".parse().unwrap(), "Haiku 4.5");
+    for (name, slider) in [("fixed", fixed), ("none", none)] {
+        for (state, on) in [("off", false), ("on", true)] {
+            let picker = flow::effort_picker("effort", slider.clone().with_all_hands(on));
+            let shown = picker_lines(&picker, 100);
+            insta::assert_snapshot!(format!("effort_all_hands_{name}_{state}_100"), shown);
+            assert!(
+                shown.contains(&format!("    All hands  {state} · Tab to toggle")),
+                "{shown}"
+            );
+        }
+    }
 }
 
 const CONTEXTS: [&str; 4] = [

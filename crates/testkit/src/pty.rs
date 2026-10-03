@@ -33,6 +33,7 @@ pub struct PtyCommand {
     env_remove: Vec<String>,
     rows: u16,
     cols: u16,
+    answers: bool,
 }
 
 impl PtyCommand {
@@ -45,7 +46,15 @@ impl PtyCommand {
             env_remove: Vec::new(),
             rows: 32,
             cols: 100,
+            answers: true,
         }
+    }
+
+    /// A terminal that answers none of the app's queries, as some don't, so the app waits out
+    /// its own timeouts at start.
+    pub fn unanswered(mut self) -> Self {
+        self.answers = false;
+        self
     }
 
     pub fn args<I, S>(mut self, args: I) -> Self
@@ -224,12 +233,13 @@ impl Pty {
             raw: Vec::new(),
             closed: false,
         }));
+        let answers = command.answers;
         let reader = {
             let terminal = terminal.clone();
             let writer = writer.clone();
             thread::Builder::new()
                 .name("argonauts-pty-reader".to_owned())
-                .spawn(move || read_output(reader, &terminal, &writer))
+                .spawn(move || read_output(reader, &terminal, &writer, answers))
                 .context("starting the pty reader")?
         };
         Ok(Self {
@@ -385,6 +395,7 @@ fn read_output(
     mut reader: Box<dyn Read + Send>,
     terminal: &Mutex<Terminal>,
     writer: &SharedWriter,
+    answers: bool,
 ) {
     let mut buffer = [0u8; 8192];
     let mut responder = Responder::default();
@@ -400,7 +411,7 @@ fn read_output(
                     let cursor = terminal.emulator.screen().cursor_position();
                     responder.replies(chunk, cursor)
                 };
-                if !replies.is_empty() {
+                if answers && !replies.is_empty() {
                     let mut writer = lock(writer);
                     let _ = writer.write_all(&replies);
                     let _ = writer.flush();

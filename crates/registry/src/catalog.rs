@@ -412,6 +412,11 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "spikes.enabled",
         "Small experiments settle what the plans disagree on",
     ),
+    (
+        "triage.all_hands",
+        "All hands: every task goes to the crew, and the lead designs its workflow. Questions \
+         are still just answered, and /solo still runs one task solo",
+    ),
     ("triage.use_recipes", "A matching recipe decides the mode"),
     (
         "triage.otherwise",
@@ -1329,6 +1334,7 @@ mod tests {
             "agents.*.price.output_per_mtok",
             "agents.*.price.cached_input_per_mtok",
             "triage.force",
+            "triage.all_hands",
             "handoff.strategy",
             "handoff.race_count",
             "handoff.on_return",
@@ -1403,6 +1409,7 @@ mod tests {
         let allowed = |key: &str| setting_meta(key).unwrap().allowed;
         for key in [
             "mcp.pause",
+            "triage.all_hands",
             "handoff.checkpoint",
             "roles.owner.blind",
             "ui.panel.agents",

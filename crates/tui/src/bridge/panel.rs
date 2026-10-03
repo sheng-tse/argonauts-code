@@ -252,6 +252,7 @@ mod tests {
             title: String::new(),
             repo: "~/code".into(),
             preset: "peer-crew".into(),
+            all_hands: false,
             run: Some(RunId::new(run).unwrap()),
             default_agent: "claude-code/opus".parse().unwrap(),
             quotas: Vec::new(),

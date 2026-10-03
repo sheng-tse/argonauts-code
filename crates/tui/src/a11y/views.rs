@@ -275,15 +275,32 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
         ViewData::Learning { view } if view.refresh => Vec::new(),
         ViewData::Learning { view } => learning_lines(view),
         ViewData::Effort { slider } => {
-            let levels: Vec<&str> = slider
-                .stops
-                .iter()
-                .map(|stop| stop.level.as_str())
-                .collect();
-            vec![
-                format!("effort for {}: {}", one(&slider.model), slider.level()),
-                format!("levels: {}", levels.join(", ")),
-            ]
+            let model = one(&slider.model);
+            let mut lines = match slider.level() {
+                None => vec![format!(
+                    "effort for {model}: none, it takes no effort setting"
+                )],
+                Some(level) if slider.is_fixed() => {
+                    vec![format!(
+                        "effort for {model}: {}, fixed by the model",
+                        one(level)
+                    )]
+                }
+                Some(level) => {
+                    let levels: Vec<String> =
+                        slider.stops.iter().map(|stop| one(&stop.level)).collect();
+                    vec![
+                        format!("effort for {model}: {}", one(level)),
+                        format!("levels: {}", levels.join(", ")),
+                    ]
+                }
+            };
+            // How to flip it follows, as the view's offer.
+            if let Some(toggle) = slider.all_hands {
+                let state = if toggle.on { "on" } else { "off" };
+                lines.push(format!("all hands: {state}"));
+            }
+            lines
         }
         ViewData::Crew { panel } => {
             let mut lines = vec![format!("crew: {} rows", panel.rows.len())];

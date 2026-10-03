@@ -370,6 +370,7 @@ fn the_effort_slider_adjusts_and_sends_the_level() {
             command: SlashCommand::Effort {
                 role: None,
                 level: Some("medium".into()),
+                all_hands: None,
             },
         }]
     );
@@ -443,6 +444,46 @@ fn with_no_level_set_the_slider_says_the_cli_picks_and_esc_keeps_that() {
     assert!(shown(&screen, 80).contains("What high means"));
 }
 
+/// Tab flips All hands on the default agent's slider, and Esc leaves it as it was. A role's
+/// slider doesn't offer it, since it's about every task rather than how one role thinks.
+#[test]
+fn tab_flips_all_hands_on_the_default_agents_slider_only() {
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(slider(None, None).with_all_hands(false)));
+    assert!(shown(&screen, 80).contains("All hands  off"));
+    screen.press(KeyCode::Tab);
+    let text = shown(&screen, 80);
+    assert!(text.contains("All hands  on"), "{text}");
+    assert!(
+        text.contains("All hands: every task goes to the crew"),
+        "{text}"
+    );
+    screen.press(KeyCode::Tab);
+    assert!(shown(&screen, 80).contains("All hands  off"));
+    screen.press(KeyCode::Tab);
+    let out = screen.press(KeyCode::Esc);
+    assert!(out.commands.is_empty());
+    let transcript = screen.transcript();
+    assert!(transcript.contains("Kept effort as xhigh"), "{transcript}");
+
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(slider(Some(RoleName::Reviewer), None)));
+    screen.press(KeyCode::Tab);
+    let text = shown(&screen, 80);
+    assert!(!text.contains("All hands"), "{text}");
+    let out = screen.press(KeyCode::Enter);
+    assert_eq!(
+        out.commands,
+        [UiCommand::Slash {
+            command: SlashCommand::Effort {
+                role: Some(RoleName::Reviewer),
+                level: Some("xhigh".into()),
+                all_hands: None,
+            },
+        }]
+    );
+}
+
 #[test]
 fn the_effort_slider_fits_every_width() {
     let mut screen = Screen::new();
@@ -457,4 +498,269 @@ fn the_effort_slider_fits_every_width() {
         narrow.contains("Faster") && narrow.contains("max"),
         "{narrow}"
     );
+}
+
+/// agy's models as the controller sends them: its default takes agy's levels, a model named
+/// for one takes that one only, and a model named without one takes none.
+fn agy() -> Vec<ModelChoice> {
+    let usual = levels(&["low", "medium", "high", "max"]);
+    let fixed = |worker: &str, name: &str, level: &str| ModelChoice {
+        name: name.into(),
+        efforts: levels(&[level]),
+        default_effort: Some(level.into()),
+        ..noted(worker, None, false)
+    };
+    vec![
+        ModelChoice {
+            efforts: usual.clone(),
+            ..noted("antigravity-cli", None, false)
+        },
+        fixed(
+            "antigravity-cli/gemini-3.8-flash-high",
+            "Gemini 3.8 Flash (High)",
+            "high",
+        ),
+        fixed(
+            "antigravity-cli/gemini-3.8-flash-low",
+            "Gemini 3.8 Flash (Low)",
+            "low",
+        ),
+        ModelChoice {
+            name: "Claude Opus 4.6 (Thinking)".into(),
+            ..noted("antigravity-cli/claude-opus-4-6-thinking", None, false)
+        },
+    ]
+}
+
+#[test]
+fn a_model_fixed_at_one_level_shows_it_with_nothing_to_adjust() {
+    let mut screen = Screen::new();
+    screen.answer(models(None, agy()));
+    screen.press(KeyCode::Enter);
+    screen.press(KeyCode::Down);
+    assert_eq!(pointed_label(&screen), "Gemini 3.8 Flash (High)");
+    let text = shown(&screen, 80);
+    assert!(
+        text.contains("◉ high effort (fixed by the model)"),
+        "{text}"
+    );
+    assert!(!text.contains("to adjust"), "{text}");
+    screen.press(KeyCode::Left);
+    screen.press(KeyCode::Right);
+    assert_eq!(effort(&screen).unwrap().level(), Some("high"));
+
+    screen.press(KeyCode::Down);
+    assert!(shown(&screen, 80).contains("◉ low effort (fixed by the model)"));
+    // One named without a level takes none, so it has no effort line.
+    screen.press(KeyCode::Down);
+    assert_eq!(pointed_label(&screen), "Claude Opus 4.6 (Thinking)");
+    let text = shown(&screen, 80);
+    assert!(!text.contains('◉'), "{text}");
+    // Nothing carries over from a fixed level, so agy's own default starts as it would.
+    for _ in 0..3 {
+        screen.press(KeyCode::Up);
+    }
+    let text = shown(&screen, 80);
+    assert!(
+        text.contains("◉ the CLI's own effort  ←/→ to adjust"),
+        "{text}"
+    );
+    screen.press(KeyCode::Down);
+    screen.press(KeyCode::Down);
+    let out = screen.press(KeyCode::Enter);
+    assert_eq!(
+        picked(&out),
+        (
+            None,
+            Some("antigravity-cli/gemini-3.8-flash-low".parse().unwrap()),
+            None
+        ),
+        "a fixed level is the model's own, so nothing more is saved"
+    );
+
+    // A level set before that the model can't run is replaced by the one it runs.
+    let mut choices = agy();
+    for choice in &mut choices {
+        choice.effort = Some("medium".into());
+    }
+    let mut screen = Screen::new();
+    screen.answer(models(None, choices));
+    screen.press(KeyCode::Enter);
+    screen.press(KeyCode::Down);
+    let (_, worker, effort) = picked(&screen.press(KeyCode::Enter));
+    assert_eq!(
+        worker,
+        Some("antigravity-cli/gemini-3.8-flash-high".parse().unwrap())
+    );
+    assert_eq!(effort.as_deref(), Some("high"));
+}
+
+fn fixed_slider() -> EffortSlider {
+    let stops = vec![EffortStop {
+        level: "high".into(),
+        description: String::new(),
+    }];
+    EffortSlider::new(
+        None,
+        "antigravity-cli/gemini-3.8-flash-high".parse().unwrap(),
+        "Gemini 3.8 Flash (High)",
+        stops,
+        Some("high"),
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn effort_on_a_model_fixed_at_one_level_shows_it_instead_of_a_slider() {
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(fixed_slider()));
+    let text = shown(&screen, 100);
+    for part in [
+        "How long Gemini 3.8 Flash (High) thinks before it answers, for the default agent",
+        "◉ high effort (fixed by the model)",
+        "To change it, pick another model with /model.",
+        "Esc to close",
+    ] {
+        assert!(text.contains(part), "{part:?} in\n{text}");
+    }
+    for absent in ["Faster", "Smarter", "▲", "to adjust", "Enter to confirm"] {
+        assert!(!text.contains(absent), "{absent:?} in\n{text}");
+    }
+    screen.press(KeyCode::Right);
+    assert_eq!(shown(&screen, 100), text);
+
+    let out = screen.press(KeyCode::Enter);
+    assert!(out.commands.is_empty(), "{:?}", out.commands);
+    assert!(screen.model.bottom.picker.is_none());
+    let transcript = screen.transcript();
+    assert!(transcript.contains("Kept effort as high"), "{transcript}");
+}
+
+#[test]
+fn a_fixed_level_fits_every_width() {
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(fixed_slider()));
+    let theme = Theme::dark();
+    for width in crate::stability::WIDTHS {
+        let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
+        crate::stability::assert_lines(&picker(&screen).lines(&ctx), width);
+    }
+}
+
+/// The default agent on a model fixed at one level still offers All hands: Tab flips it, Enter
+/// saves only it, and with the toggle back as it was Enter closes as Esc does.
+#[test]
+fn tab_then_enter_on_a_fixed_slider_saves_all_hands_alone() {
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(fixed_slider().with_all_hands(false)));
+    let text = shown(&screen, 100);
+    for part in [
+        "◉ high effort (fixed by the model)",
+        "All hands  off · Tab to toggle",
+        "To change it, pick another model with /model.",
+        "Enter to confirm · Esc to cancel",
+    ] {
+        assert!(text.contains(part), "{part:?} in\n{text}");
+    }
+    assert!(!text.contains("every task goes to the crew"), "{text}");
+    screen.press(KeyCode::Tab);
+    let text = shown(&screen, 100);
+    assert!(text.contains("All hands  on · Tab to toggle"), "{text}");
+    assert!(
+        text.contains("All hands: every task goes to the crew"),
+        "{text}"
+    );
+    let out = screen.press(KeyCode::Enter);
+    assert_eq!(
+        out.commands,
+        [UiCommand::Slash {
+            command: SlashCommand::Effort {
+                role: None,
+                level: None,
+                all_hands: Some(true),
+            },
+        }]
+    );
+
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(fixed_slider().with_all_hands(true)));
+    screen.press(KeyCode::Tab);
+    screen.press(KeyCode::Tab);
+    let out = screen.press(KeyCode::Enter);
+    assert!(out.commands.is_empty(), "{:?}", out.commands);
+    assert!(screen.model.bottom.picker.is_none());
+    let transcript = screen.transcript();
+    assert!(transcript.contains("Kept effort as high"), "{transcript}");
+}
+
+fn no_levels() -> EffortSlider {
+    EffortSlider::without_levels(None, "claude-code/haiku".parse().unwrap(), "Haiku 4.5")
+}
+
+/// Haiku takes no effort setting, so the default agent's `/effort` holds All hands alone:
+/// the arrows do nothing, Tab flips it, and Enter saves it.
+#[test]
+fn a_model_without_levels_still_offers_all_hands() {
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(no_levels().with_all_hands(false)));
+    assert_eq!(screen.title(), "Effort");
+    let text = shown(&screen, 100);
+    for part in [
+        "Haiku 4.5 takes no effort setting.",
+        "All hands  off · Tab to toggle",
+        "To set an effort, pick another model with /model.",
+        "Enter to confirm · Esc to cancel",
+    ] {
+        assert!(text.contains(part), "{part:?} in\n{text}");
+    }
+    for absent in [
+        "Faster",
+        "Smarter",
+        "▲",
+        "◉",
+        "to adjust",
+        "fixed by the model",
+    ] {
+        assert!(!text.contains(absent), "{absent:?} in\n{text}");
+    }
+    screen.press(KeyCode::Right);
+    screen.press(KeyCode::Left);
+    assert_eq!(shown(&screen, 100), text);
+    screen.press(KeyCode::Tab);
+    assert!(shown(&screen, 100).contains("All hands  on"));
+    let out = screen.press(KeyCode::Enter);
+    assert_eq!(
+        out.commands,
+        [UiCommand::Slash {
+            command: SlashCommand::Effort {
+                role: None,
+                level: None,
+                all_hands: Some(true),
+            },
+        }]
+    );
+
+    let mut screen = Screen::new();
+    screen.answer(effort_answer(no_levels().with_all_hands(true)));
+    screen.press(KeyCode::Tab);
+    let out = screen.press(KeyCode::Esc);
+    assert!(out.commands.is_empty());
+    let transcript = screen.transcript();
+    assert!(transcript.contains("Nothing changed"), "{transcript}");
+}
+
+#[test]
+fn all_hands_without_a_slider_fits_every_width() {
+    let theme = Theme::dark();
+    for slider in [fixed_slider(), no_levels()] {
+        for on in [false, true] {
+            let mut screen = Screen::new();
+            screen.answer(effort_answer(slider.clone().with_all_hands(on)));
+            for width in crate::stability::WIDTHS {
+                let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
+                crate::stability::assert_lines(&picker(&screen).lines(&ctx), width);
+            }
+        }
+    }
 }

@@ -66,16 +66,24 @@ pub struct EffortLine {
 }
 
 impl EffortLine {
-    /// Starts on `wanted` when the model supports it, else on the model's default.
+    /// Starts on `wanted` when the model supports it, else on the model's default. A model
+    /// that takes one level is always at it.
     pub fn new(levels: &[String], default: Option<&str>, wanted: Option<&str>) -> Self {
         let at =
             |level: Option<&str>| level.and_then(|level| levels.iter().position(|l| l == level));
         let default = at(default);
+        let only = (levels.len() == 1).then_some(0);
         Self {
             levels: levels.to_vec(),
-            chosen: at(wanted).or(default),
+            chosen: at(wanted).or(default).or(only),
             default,
         }
+    }
+
+    /// The model takes one level only, so there's nothing to adjust, as with agy's
+    /// `gemini-3.8-flash-high`, whose level is part of the model.
+    pub fn is_fixed(&self) -> bool {
+        self.levels.len() == 1
     }
 
     /// For a highlighted choice, carrying over `wanted`, the level picked on the row before.
@@ -135,7 +143,8 @@ pub struct EffortSlider {
     pub worker: WorkerRef,
     /// Its display name.
     pub model: String,
-    /// Lowest first, never empty.
+    /// Lowest first. Empty only on the default agent's view of a model that takes no effort
+    /// setting, which opens for All hands alone.
     pub stops: Vec<EffortStop>,
     pub chosen: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,6 +153,32 @@ pub struct EffortSlider {
     /// only starts in the middle. Moving it clears this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cli_default: bool,
+    /// The All hands toggle beside the slider, which Tab flips. Only the default agent's
+    /// slider offers it, since it decides how every task runs, not how one role thinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all_hands: Option<AllHandsToggle>,
+}
+
+/// `triage.all_hands` as `/effort` shows it: on or off now, and as the slider opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllHandsToggle {
+    pub on: bool,
+    pub was: bool,
+}
+
+impl AllHandsToggle {
+    pub const NAME: &'static str = "All hands";
+    /// What it does, shown while it's on.
+    pub const MEANS: &'static str =
+        "every task goes to the crew, and the lead designs its workflow";
+
+    pub fn new(on: bool) -> Self {
+        Self { on, was: on }
+    }
+
+    pub fn changed(&self) -> bool {
+        self.on != self.was
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +208,8 @@ impl EffortSlider {
         let default = at(default);
         let set = at(current);
         let chosen = set.or(default).unwrap_or(stops.len().checked_sub(1)? / 2);
+        // A model with one level runs at it, so the CLI has nothing to choose.
+        let cli_default = set.is_none() && default.is_none() && stops.len() > 1;
         Some(Self {
             role,
             worker,
@@ -180,16 +217,65 @@ impl EffortSlider {
             stops,
             chosen,
             default,
-            cli_default: set.is_none() && default.is_none(),
+            cli_default,
+            all_hands: None,
         })
     }
 
-    pub fn level(&self) -> &str {
-        &self.stops[self.chosen].level
+    /// The default agent's view when its model takes no effort setting, so All hands still has
+    /// somewhere to be.
+    pub fn without_levels(
+        role: Option<RoleName>,
+        worker: WorkerRef,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            role,
+            worker,
+            model: model.into(),
+            stops: Vec::new(),
+            chosen: 0,
+            default: None,
+            cli_default: false,
+            all_hands: None,
+        }
     }
 
-    pub fn description(&self) -> &str {
-        &self.stops[self.chosen].description
+    /// Offers the All hands toggle, as it is now.
+    pub fn with_all_hands(self, on: bool) -> Self {
+        Self {
+            all_hands: Some(AllHandsToggle::new(on)),
+            ..self
+        }
+    }
+
+    /// Tab, where the slider offers the toggle.
+    pub fn toggle_all_hands(&mut self) {
+        if let Some(toggle) = self.all_hands.as_mut() {
+            toggle.on = !toggle.on;
+        }
+    }
+
+    /// The model takes one level only, so the slider has nothing to move. See
+    /// [`EffortLine::is_fixed`].
+    pub fn is_fixed(&self) -> bool {
+        self.stops.len() == 1
+    }
+
+    /// Levels to pick from, so ←/→ move the marker.
+    pub fn moves(&self) -> bool {
+        self.stops.len() > 1
+    }
+
+    /// `None` when the model takes no effort setting.
+    pub fn level(&self) -> Option<&str> {
+        self.stops.get(self.chosen).map(|stop| stop.level.as_str())
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.stops
+            .get(self.chosen)
+            .map(|stop| stop.description.as_str())
     }
 
     pub fn is_default(&self) -> bool {
@@ -206,7 +292,7 @@ impl EffortSlider {
     /// →, toward Smarter. Returns whether the level changed.
     pub fn raise(&mut self) -> bool {
         let before = self.chosen;
-        self.chosen = (self.chosen + 1).min(self.stops.len() - 1);
+        self.chosen = (self.chosen + 1).min(self.stops.len().saturating_sub(1));
         self.moved(before)
     }
 
@@ -339,14 +425,14 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(slider.level(), "high");
-        assert!(slider.is_default());
+        assert_eq!(slider.level(), Some("high"));
+        assert!(slider.is_default() && slider.moves());
         assert!(slider.raise());
-        assert_eq!(slider.description(), "max effort");
+        assert_eq!(slider.description(), Some("max effort"));
         assert!(!slider.raise());
         assert!(slider.lower() && slider.lower());
         assert!(!slider.lower());
-        assert_eq!(slider.level(), "low");
+        assert_eq!(slider.level(), Some("low"));
 
         let current = EffortSlider::new(
             None,
@@ -374,5 +460,49 @@ mod tests {
             serde_json::from_value::<EffortSlider>(value).unwrap(),
             slider
         );
+    }
+
+    /// agy's `gemini-3.8-flash-high` takes high only: the line and the slider sit on it, with
+    /// nothing set and no default, and the arrows don't move them.
+    #[test]
+    fn a_model_with_one_level_is_fixed_at_it() {
+        let only = vec!["high".to_owned()];
+        for wanted in [None, Some("low")] {
+            let mut line = EffortLine::new(&only, None, wanted);
+            assert!(line.is_fixed());
+            assert_eq!(line.level(), Some("high"));
+            assert!(!line.raise() && !line.lower());
+        }
+        assert!(!EffortLine::new(&["low".into(), "high".into()], None, None).is_fixed());
+
+        let stops = vec![EffortStop {
+            level: "high".into(),
+            description: String::new(),
+        }];
+        let worker: WorkerRef = "antigravity-cli/gemini-3.8-flash-high".parse().unwrap();
+        let mut slider =
+            EffortSlider::new(None, worker, "Gemini 3.8 Flash (High)", stops, None, None).unwrap();
+        assert!(slider.is_fixed() && !slider.cli_default && !slider.moves());
+        assert_eq!(slider.level(), Some("high"));
+        assert!(!slider.raise() && !slider.lower());
+    }
+
+    /// Haiku takes no effort setting, so the default agent's view has no level, and the arrows
+    /// have nothing to move.
+    #[test]
+    fn a_model_with_no_levels_has_a_view_without_them() {
+        let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
+        let mut view =
+            EffortSlider::without_levels(None, worker, "Haiku 4.5").with_all_hands(false);
+        assert_eq!((view.level(), view.description()), (None, None));
+        assert!(!view.is_fixed() && !view.moves() && !view.is_default());
+        assert!(!view.raise() && !view.lower());
+        view.toggle_all_hands();
+        assert!(
+            view.all_hands
+                .is_some_and(|toggle| toggle.on && toggle.changed())
+        );
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(serde_json::from_value::<EffortSlider>(value).unwrap(), view);
     }
 }

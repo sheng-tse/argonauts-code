@@ -479,3 +479,86 @@ fn an_answer_goes_to_its_card() {
     );
     assert_eq!(card.picked(&pick), "you: 2. Crew run");
 }
+
+/// Screen-reader mode reads All hands after the levels, on the slider that offers it, and `a`
+/// flips it there, since Tab never reaches a typed line.
+#[test]
+fn the_effort_slider_reads_all_hands_and_a_flips_it() {
+    use argonauts_core::app::ViewData;
+    use argonauts_core::display_names::DisplayNames;
+    use argonauts_core::input::SlashCommand;
+    use argonauts_core::model_picker::{EffortSlider, EffortStop};
+
+    let stops = ["low", "high"]
+        .iter()
+        .map(|&level| EffortStop {
+            level: level.into(),
+            description: String::new(),
+        })
+        .collect();
+    let slider = EffortSlider::new(
+        None,
+        "claude-code/claude-opus-5-5".parse().unwrap(),
+        "Opus 5.5",
+        stops,
+        Some("high"),
+        None,
+    )
+    .unwrap();
+    let read = |slider: EffortSlider| {
+        super::views::view_lines(&ViewData::Effort { slider }, &DisplayNames::default())
+    };
+    assert_eq!(
+        read(slider.clone().with_all_hands(true)),
+        [
+            "effort for Opus 5.5: high",
+            "levels: low, high",
+            "all hands: on"
+        ]
+    );
+    assert!(
+        !read(slider.clone())
+            .iter()
+            .any(|line| line.contains("all hands"))
+    );
+
+    let mut reader = Reader::new(&UiOptions::default());
+    let view = AppEvent::View {
+        data: Box::new(ViewData::Effort {
+            slider: slider.clone().with_all_hands(false),
+        }),
+    };
+    let said = reader.event(&view);
+    assert_eq!(
+        said.lines.last().map(String::as_str),
+        Some("all hands: type a to turn it on.")
+    );
+    assert!(
+        !said.lines.iter().any(|line| line.contains("tab")),
+        "{:?}",
+        said.lines
+    );
+    assert_eq!(
+        reader.typed("a").commands,
+        [UiCommand::Slash {
+            command: SlashCommand::Effort {
+                role: None,
+                level: None,
+                all_hands: Some(true),
+            },
+        }]
+    );
+    // The offer is used up, so `a` is a message again.
+    assert_eq!(reader.typed("a").commands, submit("a"));
+
+    // A model that takes no effort setting still offers it.
+    let haiku =
+        EffortSlider::without_levels(None, "claude-code/haiku".parse().unwrap(), "Haiku 4.5");
+    assert_eq!(
+        read(haiku.with_all_hands(true)),
+        [
+            "effort for Haiku 4.5: none, it takes no effort setting",
+            "all hands: on"
+        ]
+    );
+}

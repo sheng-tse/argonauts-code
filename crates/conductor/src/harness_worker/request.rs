@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use argonauts_core::adapter::Transport;
 use argonauts_core::driver::McpServerSpec;
 use argonauts_core::layout::{self, session_files};
-use argonauts_core::names::SessionKey;
-use argonauts_core::registry::{ModelAccess, ModelRegistry, RegistryKind};
+use argonauts_core::names::{SessionKey, WorkerRef};
+use argonauts_core::registry::{ModelAccess, ModelRegistry, RegistryKind, effort_to_run};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::UserHooks;
 use argonauts_core::settings::sessions::Compaction;
@@ -93,11 +93,18 @@ pub fn session_request(
             ))
         })?);
     }
+    // A level set before a model fixed at one was picked, as agy's level-named ids are, would
+    // pick another model for agy, so the model's own levels win.
+    let runs = WorkerRef::new(spec.worker.worker.clone(), model.clone());
+    let effort = match registry {
+        Some(registry) => effort_to_run(registry, &runs, spec.effort.clone()),
+        None => spec.effort.clone(),
+    };
     Ok(SessionRequest {
         workdir: spec.workdir.clone(),
         prompt: prompt_text(&spec.prompt),
         model,
-        effort: spec.effort.clone(),
+        effort,
         role: session_role(spec.access),
         auth: agent.map(|agent| agent.auth).unwrap_or_default(),
         json_schema: spec.json_schema.clone(),
@@ -514,6 +521,34 @@ mod tests {
         let other = TestAdapter::new("true");
         let request = session_request(&spec("fake"), &other, &settings, Some(&empty)).unwrap();
         assert_eq!(request.model, None);
+    }
+
+    /// A level set before a model fixed at one was picked never reaches the CLI: agy would run
+    /// the sibling model named for it. A model with levels to pick from runs at the one set.
+    #[test]
+    fn a_model_fixed_at_one_level_runs_at_it_whatever_is_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = TestAdapter::new("true");
+        let registry = StaticRegistry::default();
+        let mut fixed = local_entry("fake", "flash-high", RegistryKind::Harness, true);
+        fixed.efforts = vec!["high".into()];
+        registry.add(fixed);
+        let mut picks = local_entry("fake", "pro", RegistryKind::Harness, true);
+        picks.efforts = vec!["low".into(), "high".into()];
+        registry.add(picks);
+        let settings = Settings::default();
+        let mut spec = spec_in(dir.path(), dir.path(), "go");
+        spec.effort = Some("low".into());
+        for (worker, effort) in [
+            ("fake/flash-high", Some("high")),
+            ("fake/pro", Some("low")),
+            ("fake/unlisted", Some("low")),
+            ("fake", Some("low")),
+        ] {
+            spec.worker = worker.parse().unwrap();
+            let request = session_request(&spec, &adapter, &settings, Some(&registry)).unwrap();
+            assert_eq!(request.effort.as_deref(), effort, "{worker}");
+        }
     }
 
     #[test]

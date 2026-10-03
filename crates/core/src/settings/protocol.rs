@@ -22,6 +22,9 @@ pub struct IntakeSettings {
 pub struct TriageSettings {
     /// Force a mode for every request, as the `solo` presets do.
     pub force: Option<ForcedMode>,
+    /// All hands: every task goes to the crew, and the lead designs its workflow. Questions
+    /// are still just answered, and `/solo` still runs one task solo.
+    pub all_hands: bool,
     pub use_recipes: bool,
     /// Solo at this many files or fewer...
     pub solo_max_files: u32,
@@ -32,10 +35,16 @@ pub struct TriageSettings {
     pub otherwise: TriageMiddle,
 }
 
+impl TriageSettings {
+    /// The All hands key, which `/effort`'s toggle writes.
+    pub const ALL_HANDS: &'static str = "triage.all_hands";
+}
+
 impl Default for TriageSettings {
     fn default() -> Self {
         Self {
             force: None,
+            all_hands: false,
             use_recipes: true,
             solo_max_files: 3,
             solo_requires_tests: true,

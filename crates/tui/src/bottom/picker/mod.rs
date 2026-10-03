@@ -112,6 +112,8 @@ pub enum PickerEvent {
     Right,
     /// Enter where there are no rows to pick, such as on the effort slider.
     Confirmed,
+    /// Tab on the effort slider, which flips All hands beside it.
+    Toggled,
     Unhandled,
 }
 
@@ -245,11 +247,17 @@ impl Picker {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// The effort slider takes ←/→ (`h`/`l` with vim keys), Enter, and Esc, and keeps every
-    /// other plain key from the composer under it.
+    /// The effort slider takes ←/→ (`h`/`l` with vim keys), Tab where it offers All hands,
+    /// Enter, and Esc, and keeps every other plain key from the composer under it.
     fn slider_key(&mut self, key: KeyEvent, plain: bool) -> PickerEvent {
         let vim = self.vim && plain;
+        let toggles = self
+            .flow
+            .slider
+            .as_ref()
+            .is_some_and(|slider| slider.all_hands.is_some());
         match key.code {
+            KeyCode::Tab if plain && toggles => PickerEvent::Toggled,
             KeyCode::Left => PickerEvent::Left,
             KeyCode::Char('h') if vim => PickerEvent::Left,
             KeyCode::Right => PickerEvent::Right,

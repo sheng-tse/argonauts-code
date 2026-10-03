@@ -181,11 +181,20 @@ fn codex_and_agy_name_their_own_models_in_their_own_order() {
 
     let flash = catalog.label(&id("antigravity-cli/gemini-3.8-flash-high"));
     assert_eq!(flash.name, "Gemini 3.8 Flash (High)");
+    let entry = catalog
+        .entry(&id("antigravity-cli/gemini-3.8-flash-high"))
+        .unwrap();
+    assert_eq!(entry.rank, Some(1));
+    // Its level is in its name, so it takes that one only.
+    assert_eq!(entry.efforts.as_deref(), Some(&["high".to_owned()][..]));
+    assert_eq!(entry.default_effort.as_deref(), Some("high"));
+    // A model agy lists without a level takes none.
+    let thinking = catalog
+        .entry(&id("antigravity-cli/claude-opus-4-6-thinking"))
+        .unwrap();
     assert_eq!(
-        catalog
-            .entry(&id("antigravity-cli/gemini-3.8-flash-high"))
-            .and_then(|entry| entry.rank),
-        Some(1)
+        (&thinking.efforts, &thinking.default_effort),
+        (&Some(Vec::new()), &None)
     );
 }
 

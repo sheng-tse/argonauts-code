@@ -212,7 +212,8 @@ fn not_installed(ctx: &Ctx) -> Vec<MissingCli> {
 
 /// `/effort`'s slider over the levels the role's model takes, starting on the level set now,
 /// else the model's default, which for a CLI's default is that of the model it runs. `None`
-/// while the router picks the worker, so there's no one model.
+/// while the router picks the worker, so there's no one model, and for a role whose model takes
+/// no effort setting. The default agent's view always opens, since it holds All hands.
 fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
     let role = role.filter(|role| *role != RoleName::Default);
     let (worker, levels) = models::efforts(ctx, role);
@@ -237,14 +238,21 @@ fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
         })
         .collect();
     let current = labels::effort_set(ctx.settings(), role, &worker.worker);
-    EffortSlider::new(
+    let slider = EffortSlider::new(
         role,
-        worker,
-        name,
+        worker.clone(),
+        name.clone(),
         stops,
         default.as_deref(),
         current.as_deref(),
-    )
+    );
+    match role {
+        None => {
+            let slider = slider.unwrap_or_else(|| EffortSlider::without_levels(None, worker, name));
+            Some(slider.with_all_hands(ctx.settings().triage.all_hands))
+        }
+        Some(_) => slider,
+    }
 }
 
 /// Each role's effort, offering only the levels its model takes.

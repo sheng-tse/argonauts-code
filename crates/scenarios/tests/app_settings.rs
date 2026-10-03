@@ -428,6 +428,69 @@ fn app_effort_offers_only_supported_levels() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// All hands from `/effort`: Tab flips it beside the slider, Enter asks where to
+/// save it, and only `triage.all_hands` is written. The input rule's label then shows it.
+#[test]
+fn app_effort_tab_turns_all_hands_on() -> anyhow::Result<()> {
+    let scenario = scenario()?;
+    let local = project_local_config(&scenario);
+    let mut pty = start(&scenario)?;
+
+    submit(&mut pty, "/effort")?;
+    pty.wait_for("All hands  off", WAIT)?;
+    pty.press(Key::Tab)?;
+    pty.wait_for("All hands: every task goes to the crew", WAIT)?;
+    scenario.shot(&pty, "app_effort_tab_turns_all_hands_on_slider")?;
+    pty.press(Key::Enter)?;
+    answer_scope(&scenario, &mut pty, 'm', None)?;
+    let value = wait_setting_changed(&scenario, "triage.all_hands", 1)?;
+    assert!(same_toml(&value, "true"), "{value}");
+    let file = read(&local)?;
+    assert!(
+        same_toml(
+            &toml_value(&file, "triage.all_hands").unwrap_or_default(),
+            "true"
+        ),
+        "{file}"
+    );
+    assert!(
+        !file.contains("effort"),
+        "the level it left alone stays unset:\n{file}"
+    );
+    pty.wait_for("Turned All hands on · just you", WAIT)?;
+    pty.wait_for("─ peer-crew · all hands ─", WAIT)?;
+    scenario.shot(&pty, "app_effort_tab_turns_all_hands_on")?;
+    Ok(())
+}
+
+/// Haiku takes no effort setting, so `/effort` has no slider for it, yet All hands is still
+/// there: Tab flips it and Enter saves it.
+#[test]
+fn app_effort_offers_all_hands_on_a_model_without_levels() -> anyhow::Result<()> {
+    let config = GLOBAL_CONFIG.replace(
+        "default_agent = \"claude-code\"",
+        "default_agent = \"claude-code/haiku\"",
+    );
+    let scenario = scenario_with(&config)?;
+    let mut pty = start(&scenario)?;
+
+    submit(&mut pty, "/effort")?;
+    pty.wait_for("Haiku.* takes no effort setting", WAIT)?;
+    pty.wait_for("All hands  off · Tab to toggle", WAIT)?;
+    pty.press(Key::Tab)?;
+    pty.wait_for("All hands: every task goes to the crew", WAIT)?;
+    scenario.shot(
+        &pty,
+        "app_effort_offers_all_hands_on_a_model_without_levels",
+    )?;
+    pty.press(Key::Enter)?;
+    answer_scope(&scenario, &mut pty, 'm', None)?;
+    let value = wait_setting_changed(&scenario, "triage.all_hands", 1)?;
+    assert!(same_toml(&value, "true"), "{value}");
+    pty.wait_for("Turned All hands on · just you", WAIT)?;
+    Ok(())
+}
+
 #[test]
 fn app_setting_reset_falls_back_a_layer() -> anyhow::Result<()> {
     let scenario = scenario_with(&format!(

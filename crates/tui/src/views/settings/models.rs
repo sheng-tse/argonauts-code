@@ -206,13 +206,14 @@ fn pick_with(role: Option<RoleName>, worker: WorkerRef, effort: Option<String>) 
 }
 
 /// A model from the list, with the effort its line shows when you moved it, or when the level
-/// set now is one this model doesn't take.
+/// set now is one this model doesn't take. A model fixed at one level can't have been moved.
 pub fn pick_listed(picker: &Picker, role: Option<RoleName>, worker: WorkerRef) -> Step {
     let wanted = picker.flow.effort_wanted.as_deref();
     let effort = listed(&picker.flow, &worker).and_then(|choice| {
         let line = EffortLine::for_choice(choice, wanted);
         let level = line.level()?;
-        let changed = wanted.is_some() || choice.effort.as_deref().is_some_and(|set| set != level);
+        let moved = wanted.is_some() && !line.is_fixed();
+        let changed = moved || choice.effort.as_deref().is_some_and(|set| set != level);
         changed.then(|| level.to_owned())
     });
     pick_with(role, worker, effort)
