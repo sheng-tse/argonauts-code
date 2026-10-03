@@ -1,0 +1,16 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: text
+---
+solo-reviewed                                                 [ Run ]  Library
+One small change, reviewed by another family          0/2 agents · 1m30s · $0.12
+
+╭ Phases ───────┬ Build · 2 agents ────────────────────────────────────────────╮
+│ ❯ 1 Build 0/2 │   ● owner · card-001     Qwen3 Coder 480B A35b Inst…   1m01s │
+│               │   ○ reviewer · card-001  GPT 5.6 on Codex                 0s │
+│               │                                                              │
+│               │                                                              │
+│               │                                                              │
+│               │                                                              │
+╰───────────────┴──────────────────────────────────────────────────────────────╯
+↑↓ select · tab switch pane · → open · x stop · p pause · l library · esc back

@@ -188,6 +188,9 @@ pub enum ErrorCategory {
     Interrupted,
     /// The CLI failed in a way the adapter did not expect.
     Cli,
+    /// Not a failure: the CLI went quiet past its own heartbeat while a tool ran. Shown dim,
+    /// never acted on.
+    Stalled,
     Unknown,
 }
 

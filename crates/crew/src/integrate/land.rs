@@ -1,8 +1,10 @@
 //! Landing after your merge answer. Right before landing the integration head is re-read; if it
 //! moved since the approval, landing is refused (`HardLimit::HeadMoved`) and the checkpoint
-//! opens again. Main unchanged and clean: fast-forward. Main moved, even while landing: merge it
-//! in and rerun the suite; the approval carries over only if the run's own diff is unchanged
-//! and the suite passes.
+//! opens again. Main unchanged: fast-forward, once nothing of yours is in the way, which waits
+//! on you and never fails the run. Whenever it waited, everything is read again before landing,
+//! since your checkout may have changed meanwhile. Main moved, even while landing: merge it in
+//! and rerun the suite; the approval carries over only if the run's own diff is unchanged and
+//! the suite passes. A refused landing gives back the auto-merge your rules took.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -16,8 +18,11 @@ use argonauts_core::events::run::{Party, RunOutcome};
 use argonauts_core::policy::{EvidenceSubject, HardLimit, Violation};
 use argonauts_core::{Note, NoteLevel};
 
+use crate::checkpoints;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
+use crate::git::GitError;
+use crate::integrate::in_the_way::{self, Blocked, Way};
 use crate::integrate::{final_check, merge_packet};
 
 /// How many times main may move under a landing before you're asked again.
@@ -30,6 +35,8 @@ pub enum Landing {
     Done(RunOutcome),
     /// The checkpoint opens again, for this reason.
     Again(String),
+    /// Your files were in the way, and you chose to merge later.
+    Later,
 }
 
 /// Acts on your answer to the merge checkpoint that showed `approved`.
@@ -39,7 +46,14 @@ pub async fn act(
     approved: &EvidenceSubject,
 ) -> EngineResult<Landing> {
     match &decided.action {
-        AnswerAction::Merge | AnswerAction::Approve => land(host, decided, approved).await,
+        AnswerAction::Merge | AnswerAction::Approve => {
+            let landing = land(host, decided, approved).await?;
+            if matches!(landing, Landing::Again(_)) {
+                // Nothing merged, so an auto-merge your rules took goes back.
+                checkpoints::landing_refused(host, &decided.id);
+            }
+            Ok(landing)
+        }
         AnswerAction::PullRequest => pull_request(host, &decided.by).await,
         AnswerAction::KeepBranch => Ok(Landing::Done(RunOutcome::BranchLeft)),
         AnswerAction::Abandon => abandon(host),
@@ -85,9 +99,15 @@ async fn land(
     };
     // Main can move again while the suite runs, or between reading it and landing. Each time it
     // does, the carry-over runs again; it never lands a combination the suite didn't run on.
-    for _ in 0..LANDING_TRIES {
+    // Waiting on you doesn't count: once you answer, everything is read again.
+    let mut moved = 0;
+    loop {
         let main = git.resolve(&root, &target).await?;
         if !git.is_ancestor(&root, &main, &head).await? {
+            if moved == LANDING_TRIES {
+                break;
+            }
+            moved += 1;
             match carry_over(host, &worktree, &target, approved).await? {
                 Ok(new_head) => head = new_head,
                 Err(why) => return Ok(Landing::Again(why)),
@@ -96,34 +116,65 @@ async fn land(
         }
         if git.current_branch(&root).await?.as_deref() != Some(target.as_str()) {
             // Not checked out, so only the branch moves, and only if nobody moved it meanwhile.
-            match git.update_branch(&root, &target, &head, &main).await {
+            let refused = match git.update_branch(&root, &target, &head, &main).await {
                 Ok(()) => {
                     landed(host, &target, &head, true)?;
                     return Ok(Landing::Done(RunOutcome::Merged));
                 }
-                Err(err) => {
-                    if git.resolve(&root, &target).await? == main {
-                        return Err(err.into());
-                    }
+                Err(_) if git.resolve(&root, &target).await? != main && moved < LANDING_TRIES => {
+                    moved += 1;
                     continue;
                 }
+                Err(err) => git_words(&err),
+            };
+            let blocked = Blocked {
+                refused: Some(refused),
+                ..Blocked::default()
+            };
+            if in_the_way::ask(host, &decided.id, &target, &blocked).await? == Way::Later {
+                return Ok(Landing::Later);
             }
+            continue;
         }
-        if !git.tracked_changes(&root).await?.is_empty() {
-            return Ok(Landing::Again(format!(
-                "your checkout of {target} has uncommitted changes. Commit or stash them, then \
-                 answer again"
-            )));
+        let blocked = in_the_way::find(host, &main, &head).await?;
+        if !blocked.is_empty() {
+            if in_the_way::ask(host, &decided.id, &target, &blocked).await? == Way::Later {
+                return Ok(Landing::Later);
+            }
+            continue;
         }
-        // False only when main is no longer an ancestor, so it moved since it was read.
-        if git.fast_forward(&root, &head).await? {
-            landed(host, &target, &head, true)?;
-            return Ok(Landing::Done(RunOutcome::Merged));
+        in_the_way::withdraw_open(host)?;
+        match git.fast_forward(&root, &head).await {
+            Ok(true) => {
+                landed(host, &target, &head, true)?;
+                return Ok(Landing::Done(RunOutcome::Merged));
+            }
+            // False only when main is no longer an ancestor, so it moved since it was read.
+            Ok(false) => {}
+            // Something turned up after the look, or git has a reason of its own: you're asked,
+            // in its words if nothing of yours is in the way.
+            Err(err) => {
+                let mut blocked = in_the_way::find(host, &main, &head).await?;
+                if blocked.is_empty() {
+                    blocked.refused = Some(git_words(&err));
+                }
+                if in_the_way::ask(host, &decided.id, &target, &blocked).await? == Way::Later {
+                    return Ok(Landing::Later);
+                }
+            }
         }
     }
     Ok(Landing::Again(format!(
         "{target} kept moving while the run landed. Answer again once it settles"
     )))
+}
+
+/// What git said, without the command around it.
+fn git_words(err: &GitError) -> String {
+    match err {
+        GitError::Failed { stderr, .. } if !stderr.trim().is_empty() => stderr.trim().to_owned(),
+        other => other.to_string(),
+    }
 }
 
 /// Main moved while the merge waited: bring it in and rerun the suite. Returns the new

@@ -7,13 +7,13 @@ argonauts › crew                                                              
 
 ~/code/export                                                                                                                                 │ Add a --json flag to export
   Add a --json flag to export                                                                                                                 │ ◆ Needs you
-  ❯ ◆ Add a --json flag to export                                                asks: Merge this run into main?                     just now │
-    ◆ Add the JSON writer                     GPT 5.6 on Codex                   asks: Keep a CSV fallback?                            2m ago │ Last message
-    ● Wire the --json flag                    Opus on Claude Code                Update(src/mw/limit.ts)                               5m ago │ Merge this run into main?
-    ○ Wire the --json flag                    Gemini 3.6 Pro on Antigravity CLI  waiting on other work                                 1m ago │
-    ✓ Rename the CSV writer                   GPT 5.6 on Codex                   Integrated card-001.                                  3m ago │ Repo     ~/code/export
-    ✓ Restater · Add a --json flag to export  Haiku on Claude Code               done                                                 15m ago │ Run      run-01 · Add a --json flag to export
-    ✓ Drafter · Add a --json flag to export   Haiku on Claude Code               done                                                 15m ago │
+  ❯ ◆ Add a --json flag to export                                                           asks: Merge this run into main?          just now │
+    ◆ Add the JSON writer                     GPT 5.6 on Codex                   12.4k tok  asks: Keep a CSV fallback?                 2m ago │ Last message
+    ● Wire the --json flag                    Opus on Claude Code                  71k tok  Update(src/mw/limit.ts)                    5m ago │ Merge this run into main?
+    ○ Wire the --json flag                    Gemini 3.6 Pro on Antigravity CLI     4k tok  waiting on other work                      1m ago │
+    ✓ Rename the CSV writer                   GPT 5.6 on Codex                     61k tok  Integrated card-001.                       3m ago │ Repo     ~/code/export
+    ✓ Restater · Add a --json flag to export  Haiku on Claude Code                          done                                      15m ago │ Run      run-01 · Add a --json flag to export
+    ✓ Drafter · Add a --json flag to export   Haiku on Claude Code                          done                                      15m ago │
                                                                                                                                               │
 Listing conversations and CLI sessions…                                                                                                       │
                                                                                                                                               │

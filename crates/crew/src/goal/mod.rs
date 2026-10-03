@@ -18,6 +18,7 @@ pub mod context;
 pub mod differ;
 pub mod draft;
 pub mod file;
+pub mod lead;
 pub mod materiality;
 pub mod restate;
 pub mod round;
@@ -87,7 +88,8 @@ pub async fn differ_step(host: &Host, call: &StepCall) -> EngineResult<StepDone>
 
     let listings = differ::compare(host, call).await?;
     let outputs: Vec<DifferOutput> = listings.into_iter().map(|(_, output)| output).collect();
-    let settled = materiality::settle(&outputs, restated.len(), &host.settings().goal);
+    let goal_settings = materiality::goal_settings(host.settings());
+    let settled = materiality::settle(&outputs, restated.len(), &goal_settings);
     let request = host.read(round::request)?;
     round::settle_and_draft(host, host.run_id(), &request, &restated, &settled, enough).await?;
     Ok(StepDone::done(summary(outputs.len(), &settled)))

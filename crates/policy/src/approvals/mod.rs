@@ -55,6 +55,10 @@ impl ApprovalPolicy for ApprovalsPolicy {
         )
     }
 
+    fn landing_refused(&self, point: &DecisionPoint) {
+        self.parts.autonomy.landing_refused(point);
+    }
+
     fn auto_off(&self) {
         self.parts.autonomy.auto_off();
     }

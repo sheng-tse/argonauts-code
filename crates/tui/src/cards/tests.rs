@@ -6,7 +6,7 @@ use argonauts_core::app::{AppChoice, ChoiceKind, ViewRequest};
 use argonauts_core::events::card::CardKind;
 use argonauts_core::events::checkpoint::{
     CheckpointKind, CheckpointPacket, EscalationPacket, FreeText, MergePacket, MergeRow,
-    VendorDownPacket,
+    QuestionPacket, VendorDownPacket,
 };
 use argonauts_core::events::run::Party;
 use argonauts_core::events::vendor::HandoffPlan;
@@ -221,6 +221,9 @@ fn merge() -> CheckpointOpened {
         spent: Spend::default(),
         limit: None,
         partial: false,
+        in_the_way: Vec::new(),
+        edited: Vec::new(),
+        refused: None,
     };
     opened(
         CheckpointKind::Merge,
@@ -367,10 +370,7 @@ fn answer_carries_rendered_evidence_hash() {
     let mut screen = Screen::new();
     let out = screen.event(opened_event(merge()));
     assert!(out.bell, "a card that needs you rings once");
-    assert!(
-        !screen.card().focused,
-        "a card never takes the keys by itself"
-    );
+    assert!(screen.card().focused, "and takes the keys as it shows");
 
     let id = screen.card().id;
     let (taken, out) = screen.action(UiAction::Answer {
@@ -502,19 +502,21 @@ fn a_choice_you_set_off_opens_with_the_keys() {
         let card = choice_card(1, &choice(kind, Vec::new()));
         assert!(card.focused && card.esc_answers, "{kind:?}");
     }
-    // The unclear request follows the lead's reply, so it waits for ↑ like a run's card.
+    // The unclear request holds your request, so it takes the keys like a run's card that
+    // needs you, and Esc sets it aside instead of answering.
     let unclear = choice_card(2, &choice(ChoiceKind::StartWork, Vec::new()));
-    assert!(!unclear.focused && !unclear.takes_focus);
+    assert!(unclear.needs_you && !unclear.takes_focus && !unclear.esc_answers);
 
-    // A number answers it, never a letter.
+    // A number answers it, never a letter, and after letters only once a key meant for the
+    // card comes first.
     let card = screen.model.bottom.card.as_mut().unwrap();
-    for c in ['s', 'm', 'p', 'e', '/'] {
+    for c in ['s', 'm', 'p', 'e', '/', '4'] {
         assert_eq!(
             card.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
             CardEvent::Unhandled
         );
     }
-    let effects = screen.keys(&[KeyCode::Char('4')]);
+    let effects = screen.keys(&[KeyCode::Up, KeyCode::Char('4')]);
     assert_eq!(
         effects[0].commands,
         vec![UiCommand::Answer {
@@ -537,7 +539,10 @@ fn a_choice_you_set_off_goes_before_a_waiting_run_card() {
     let mut screen = Screen::new();
     screen.event(opened_event(merge()));
     let run_card = screen.card().id;
-    assert!(!screen.card().focused, "a run's card waits for ↑");
+    assert!(
+        screen.card().focused,
+        "a run's card that needs you takes the keys"
+    );
     screen.event(AppEvent::Choice {
         choice: scope_choice(),
     });
@@ -553,7 +558,23 @@ fn a_choice_you_set_off_goes_before_a_waiting_run_card() {
         outcome: "Saved.".into(),
     });
     assert_eq!(screen.card().id, run_card, "the run's card comes back");
-    assert!(!screen.card().focused, "and waits again");
+    assert!(
+        screen.card().focused,
+        "and takes the keys again, since you never set it aside"
+    );
+
+    // Set aside, it comes back after the next question as its pinned line.
+    screen.keys(&[KeyCode::Esc]);
+    screen.event(AppEvent::Choice {
+        choice: scope_choice(),
+    });
+    screen.keys(&[KeyCode::Char('1')]);
+    screen.event(AppEvent::ChoiceClosed {
+        id: ChoiceId::numbered(7),
+        outcome: "Saved.".into(),
+    });
+    assert_eq!(screen.card().id, run_card);
+    assert!(screen.card().pinned && !screen.card().focused);
 }
 
 #[test]
@@ -646,6 +667,11 @@ fn handoff_remember_toggle_sets_remember() {
     screen.keys(&[KeyCode::Char('m')]);
     assert!(!screen.cards.open[&id].remember, "a letter does nothing");
     screen.keys(&[KeyCode::Char(number)]);
+    assert!(
+        !screen.cards.open[&id].remember,
+        "nor the number after it, until a key meant for the card"
+    );
+    screen.keys(&[KeyCode::Down, KeyCode::Char(number)]);
     assert!(screen.cards.open[&id].remember);
     assert!(screen.card().options.last().unwrap().on);
     screen.keys(&[KeyCode::Char(number)]);
@@ -762,6 +788,44 @@ fn spot_check_sends_spot_check() {
     );
 }
 
+#[test]
+fn a_card_auto_leaves_to_you_rings_and_says_why_once() {
+    let mut screen = Screen::new();
+    let mut auto = merge();
+    auto.mode = ApprovalMode::Auto;
+    auto.needs_you = false;
+    let out = screen.event(opened_event(auto));
+    assert!(!out.bell, "nothing rings while auto decides");
+    let check = |shadow: bool, reasons: &[&str]| {
+        checkpoint(CheckpointEvent::Checked(
+            argonauts_core::events::checkpoint::PolicyCheck {
+                id: CheckpointId::numbered(1),
+                violations: Vec::new(),
+                verdict: shadow.then_some(argonauts_core::policy::Verdict::Escalate),
+                by: None,
+                approver: None,
+                reasons: reasons.iter().map(|reason| (*reason).to_owned()).collect(),
+                shadow,
+            },
+        ))
+    };
+    let out = screen.event(check(false, &["a hard limit, the gates didn't run"]));
+    assert!(out.bell, "a card auto couldn't settle rings");
+    // The shadow record that follows carries every reason, which Ctrl+O shows instead.
+    screen.event(check(true, &["the gates didn't run", "no review result"]));
+    screen.event(check(false, &["a hard limit, the gates didn't run"]));
+    let why: Vec<&String> = screen
+        .card()
+        .detail
+        .iter()
+        .filter(|line| line.starts_with("Auto couldn't decide"))
+        .collect();
+    assert_eq!(
+        why,
+        ["Auto couldn't decide: a hard limit, the gates didn't run"]
+    );
+}
+
 /// Through the whole bridge, as the screen sends it: once your answer goes out, the spot check
 /// no longer waits, so `/approvals` can't list it or send a second answer.
 #[test]
@@ -865,7 +929,7 @@ fn record_line_after_decided() {
     assert_eq!(
         screen.history().last().map(String::as_str),
         // The screen shows one run, so its record says "the run" rather than its id.
-        Some("◆ Merged the run into main · you, 10:58 AM")
+        Some("◆ Approved merging the run into main · you, 10:58 AM")
     );
 }
 
@@ -1379,4 +1443,262 @@ fn a_plans_author_reads_as_its_session_did() {
         detail.contains("Plan 1 by GPT 5.6 Luna on Codex scored best"),
         "{detail}"
     );
+}
+
+/// The merge waits on your untracked files: the conversation names them, the card asks only
+/// what to do, and its record never says the run merged.
+#[test]
+fn files_in_the_way_wait_to_merge() {
+    let mut waiting = merge();
+    waiting.title = "Waiting to merge into main".into();
+    waiting.free_text = FreeText::None;
+    if let CheckpointPacket::Merge(packet) = &mut waiting.packet {
+        packet.in_the_way = vec![
+            "textkit/__pycache__/core.cpython-312.pyc".into(),
+            "notes.md".into(),
+        ];
+    }
+    let choose = |value: &str| AnswerAction::Choose {
+        value: value.into(),
+    };
+    waiting.options = vec![
+        option(
+            'm',
+            "Move them aside and merge",
+            choose("Move them aside and merge"),
+        ),
+        option('t', "Try again", choose("Try again")),
+        option('l', "Merge later", choose("Merge later")),
+    ];
+
+    let card = checkpoint_card(1, &waiting, None);
+    assert_eq!(
+        card.detail,
+        ["textkit/__pycache__/core.cpython-312.pyc and 1 other in the way"]
+    );
+    assert_eq!(
+        card.question.as_deref(),
+        Some("Move them aside and merge, or merge later?")
+    );
+    assert!(!card.allow_note, "a choice, not something to type");
+
+    let mut screen = Screen::new();
+    screen.event(opened_event(waiting));
+    let about = screen.history().join("\n");
+    assert!(about.contains("Waiting to merge into main"), "{about}");
+    assert!(
+        about.contains("2 untracked files in your checkout"),
+        "{about}"
+    );
+    assert!(about.contains("notes.md"), "{about}");
+    assert!(!about.contains("Suite passed"), "{about}");
+
+    screen.event(checkpoint(CheckpointEvent::Decided(decided(
+        choose("Merge later"),
+        Party::User,
+    ))));
+    let record = screen.history().last().cloned().unwrap_or_default();
+    assert_eq!(
+        record,
+        "◆ Waiting to merge into main · Merge later · you, 10:58 AM"
+    );
+    assert!(!record.contains("Merged"));
+}
+
+/// Your edits to files the run changes, or git's own reason, wait the same way: the
+/// conversation says which and why, and the card offers only trying again or merging later.
+#[test]
+fn edits_and_git_refusals_wait_to_merge_too() {
+    let choose = |value: &str| AnswerAction::Choose {
+        value: value.into(),
+    };
+    let waiting = |edited: Vec<String>, refused: Option<String>| {
+        let mut waiting = merge();
+        waiting.title = "Waiting to merge into main".into();
+        waiting.free_text = FreeText::None;
+        if let CheckpointPacket::Merge(packet) = &mut waiting.packet {
+            packet.edited = edited;
+            packet.refused = refused;
+        }
+        waiting.options = vec![
+            option('t', "Try again", choose("Try again")),
+            option('l', "Merge later", choose("Merge later")),
+        ];
+        waiting
+    };
+
+    let edited = waiting(vec!["README.md".into()], None);
+    let card = checkpoint_card(1, &edited, None);
+    assert_eq!(card.detail, ["README.md is in the way"]);
+    assert_eq!(card.question.as_deref(), Some("Try again, or merge later?"));
+    let mut screen = Screen::new();
+    screen.event(opened_event(edited));
+    let about = screen.history().join("\n");
+    assert!(
+        about.contains("You have uncommitted edits to a file the run changes"),
+        "{about}"
+    );
+    assert!(about.contains("README.md"), "{about}");
+
+    let lock = "fatal: Unable to create '.git/index.lock': File exists.";
+    let refused = waiting(Vec::new(), Some(lock.into()));
+    let card = checkpoint_card(1, &refused, None);
+    assert_eq!(card.detail, [format!("Git said: {lock}")]);
+    let mut screen = Screen::new();
+    screen.event(opened_event(refused));
+    let about = screen.history().join("\n");
+    assert!(
+        about.contains("Git wouldn't move your checkout of main forward:"),
+        "{about}"
+    );
+    assert!(about.contains("index.lock"), "{about}");
+}
+
+fn check(verdict: Option<Verdict>, shadow: bool) -> AppEvent {
+    checkpoint(CheckpointEvent::Checked(PolicyCheck {
+        id: CheckpointId::numbered(1),
+        violations: Vec::new(),
+        verdict,
+        by: Some(DecideWith::Rules),
+        approver: None,
+        reasons: vec!["The plan goes over the budget".into()],
+        shadow,
+    }))
+}
+
+#[test]
+fn a_card_your_rules_still_decide_takes_the_keys_once_it_needs_you() {
+    let mut screen = Screen::new();
+    let mut auto = merge();
+    auto.mode = ApprovalMode::Auto;
+    auto.needs_you = false;
+    screen.event(opened_event(auto));
+    assert!(!screen.card().focused, "it waits while your rules decide");
+    let out = screen.event(check(Some(Verdict::Escalate), true));
+    assert!(
+        !out.bell && !screen.card().focused,
+        "a shadow check is only recorded"
+    );
+    // The engine's own shape for "ask the user": no verdict, and maybe no reason either.
+    let out = screen.event(checkpoint(CheckpointEvent::Checked(PolicyCheck {
+        id: CheckpointId::numbered(1),
+        violations: Vec::new(),
+        verdict: None,
+        by: None,
+        approver: None,
+        reasons: Vec::new(),
+        shadow: false,
+    })));
+    assert!(out.bell);
+    assert!(screen.card().needs_you && screen.card().focused);
+
+    // Your rules escalating says the same.
+    let mut screen = Screen::new();
+    let mut auto = merge();
+    auto.mode = ApprovalMode::Auto;
+    auto.needs_you = false;
+    screen.event(opened_event(auto));
+    screen.event(check(Some(Verdict::Escalate), false));
+    assert!(screen.card().needs_you && screen.card().focused);
+}
+
+#[test]
+fn a_card_that_needs_you_goes_before_a_waiting_spot_check() {
+    let mut screen = Screen::new();
+    let mut auto = merge();
+    auto.mode = ApprovalMode::Auto;
+    auto.needs_you = false;
+    screen.event(opened_event(auto));
+    screen.event(checkpoint(CheckpointEvent::Decided(decided(
+        AnswerAction::Merge,
+        Party::Rules,
+    ))));
+    screen.event(checkpoint(CheckpointEvent::SpotCheckQueued {
+        id: CheckpointId::numbered(1),
+    }));
+    assert!(screen.card().title.starts_with("Spot check"));
+    assert!(!screen.card().focused, "a spot check waits for ↑");
+
+    let mut next = handoff();
+    next.id = CheckpointId::numbered(2);
+    screen.event(opened_event(next));
+    assert_eq!(screen.card().title, "Handoff · card-003 Middleware");
+    assert!(screen.card().focused);
+    screen.keys(&[KeyCode::Esc]);
+    assert!(screen.card().title.starts_with("Spot check"));
+    assert!(!screen.card().focused);
+}
+
+#[test]
+fn a_card_that_shows_while_you_type_waits_for_the_draft() {
+    let mut screen = Screen::new();
+    let t0 = std::time::Instant::now();
+    screen.model.bottom.composer.set_text("keep the CSV pa");
+    screen.model.bottom.typed_at(t0);
+    screen.event(opened_event(merge()));
+    assert!(screen.card().waits(), "the draft keeps the keys");
+    assert!(!screen.model.bottom.hand_keys_to_card(t0));
+    screen.model.bottom.composer.clear();
+    let soon = t0 + std::time::Duration::from_millis(200);
+    assert!(
+        !screen.model.bottom.hand_keys_to_card(soon),
+        "just cleared, the input may be rewritten"
+    );
+    let quiet = t0 + crate::bottom::CARD_WAITS_FOR_QUIET;
+    assert!(screen.model.bottom.hand_keys_to_card(quiet));
+    assert!(
+        screen.card().focused,
+        "sent or cleared and left alone, the card takes them"
+    );
+}
+
+/// The goal's own-answer option opens a line inside the card, and only that answer goes out.
+#[test]
+fn a_goal_question_takes_your_own_answer_inside_the_card() {
+    let mut screen = Screen::new();
+    let mut question = opened(
+        CheckpointKind::Question,
+        "Keep a CSV fallback?",
+        CheckpointPacket::Question(QuestionPacket {
+            from: worker("claude-code/opus"),
+            card: card_id(2),
+            text: "Keep a CSV fallback?".into(),
+            options: vec!["Yes, keep it".into(), "No, drop it".into()],
+        }),
+        vec![
+            option(
+                'y',
+                "Yes, keep it",
+                AnswerAction::Choose {
+                    value: "yes".into(),
+                },
+            ),
+            option(
+                'n',
+                "No, drop it",
+                AnswerAction::Choose { value: "no".into() },
+            ),
+            option(' ', "Type my own answer", AnswerAction::Answer),
+        ],
+    );
+    question.free_text = FreeText::Answer;
+    screen.event(opened_event(question));
+    assert!(screen.card().focused);
+    let own = screen.card().options[2].clone();
+    assert_eq!(own.kind, OptionKind::FreeText);
+    screen.keys(&[KeyCode::Char('3')]);
+    assert!(screen.card().has_open_note());
+    assert_eq!(screen.card().input_hint(), "Typing goes into the card");
+    let typed: Vec<KeyCode> = "only behind a flag".chars().map(KeyCode::Char).collect();
+    screen.keys(&typed);
+    assert!(
+        screen.model.bottom.composer.is_empty(),
+        "nothing reaches the input"
+    );
+    let effects = screen.keys(&[KeyCode::Enter]);
+    let UiCommand::Answer { action, text, .. } = &effects[0].commands[0] else {
+        panic!("{:?}", effects[0].commands);
+    };
+    assert_eq!(*action, AnswerAction::Answer);
+    assert_eq!(text.as_deref(), Some("only behind a flag"));
 }

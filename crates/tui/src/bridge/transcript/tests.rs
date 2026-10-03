@@ -1164,6 +1164,9 @@ fn merge_opened(cards: usize, combined: argonauts_core::DiffStat) -> AppEvent {
         spent: Spend::default(),
         limit: None,
         partial: false,
+        in_the_way: Vec::new(),
+        edited: Vec::new(),
+        refused: None,
     };
     run_event(RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(
         CheckpointOpened {
@@ -1283,4 +1286,57 @@ fn a_shell_command_runs_live_and_prints_once_it_ends() {
         stopped: true,
     }));
     assert_eq!(h.printed(), "\n! sleep 25\n  ⎿  Stopped");
+}
+
+#[test]
+fn the_goal_line_counts_the_leads_answers_apart() {
+    use argonauts_core::events::goal::{
+        Assumption, Criterion, GoalEvent, GoalFile, GoalSource, LEAD_ANSWER,
+    };
+
+    let mut harness = Harness::new();
+    harness.send(started());
+    harness.send(note(
+        NoteLevel::Info,
+        "The lead answered 1 of the goal's questions for you. Its answers are assumptions in \
+         the goal, which Ctrl+O and /status show",
+    ));
+    let assumption = |text: &str, basis: String| Assumption {
+        text: text.into(),
+        basis,
+    };
+    harness.send(run_event(RunEventKind::Goal(GoalEvent::Approved {
+        file: GoalFile {
+            run: run_id(),
+            version: 1,
+            summary: "Add a --verbose flag".into(),
+            criteria: vec![Criterion {
+                id: "G1".into(),
+                text: "--verbose logs at trace".into(),
+            }],
+            in_scope: vec![],
+            out_of_scope: vec![],
+            assumptions: vec![
+                assumption(
+                    "Which log level: trace",
+                    format!("{LEAD_ANSWER}: the README"),
+                ),
+                assumption("the flag's name: --verbose", "a detail".into()),
+            ],
+            answers: vec![],
+            source: GoalSource::Restatements,
+            path: PathBuf::from("goal.md"),
+            sha256: String::new(),
+        },
+        by: Party::User,
+    })));
+    let printed = harness.printed();
+    assert!(
+        printed.contains("The lead answered 1 of the goal's questions for you"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("1 question answered by the lead · 1 assumption stated"),
+        "{printed}"
+    );
 }

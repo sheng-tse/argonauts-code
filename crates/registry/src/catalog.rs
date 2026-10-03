@@ -347,6 +347,14 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     ("merge.pr_draft", "Open pull requests as drafts"),
     (
+        "merge.leave_out",
+        "Untracked files left out of Argonauts' commits, such as coverage/ or *.log",
+    ),
+    (
+        "merge.leave_out_builtin",
+        "Also leave a built-in list of build and cache output, such as __pycache__/, out of commits",
+    ),
+    (
         "native_fanout.max",
         "Most subagents a harness session may start",
     ),
@@ -663,6 +671,14 @@ fn named() -> Vec<SettingMeta> {
             BOOL,
         ),
         // /approvals
+        words(
+            "approvals.answered_by",
+            "Who answers the crew's questions, the goal's open questions and the plan approval: \
+             you, or the lead, whose answers become assumptions you can review. Unset, the lead \
+             in auto mode, leaving you the questions goal.always_ask names, and you otherwise. \
+             Set to the lead, it answers those too",
+            &["you", "lead"],
+        ),
         words(
             "approvals.goal_changes",
             "When an agent asks to change the approved goal: ask you, allow clarifications, or \

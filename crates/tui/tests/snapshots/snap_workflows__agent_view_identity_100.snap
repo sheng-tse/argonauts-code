@@ -6,8 +6,8 @@ peer-crew
 Fix the race in the export test and add a regression test                6/11 agents · 46m0s · $3.02
 
 ╭ Understand · 2 agents ─────────┬ restater ───────────────────────────────────────────────────────╮
-│ ❯ ✓ restater · Opus on Claude… │ Opus on Claude Code (claude-code/opus) · run-01                 │
-│   ✓ restater · GPT 5.6 on Cod… │ ✓ Completed · Opus on Claude Code · 31k tok · $0.09 · 58s       │
+│ ❯ ✓ restater  Opus on Claude … │ Opus on Claude Code (claude-code/opus) · run-01                 │
+│   ✓ restater  GPT 5.6 on Codex │ ✓ Completed · Opus on Claude Code · 31k tok · $0.09 · 58s       │
 │                                │                                                                 │
 │                                │ Prompt · 14 lines · ↵expand                                     │
 │                                │   Build the terminal and the whole bottom region of the UI kit. │

@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: text
+---
+  ○ fix the export race                     1/3 agents · via desktop-client
+    ◐ OpenCode  card-001  ↓ 18.1k tokens  ctx 120k/200k · +3 subagents    4m12s
+    ◐ Codex     card-002  ↓ 18.1k tokens  ◌ needs review · ↺ for Claude…  4m12s

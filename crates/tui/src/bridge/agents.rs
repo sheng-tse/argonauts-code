@@ -19,7 +19,7 @@ use argonauts_core::events::session::{
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{SessionKey, WorkerRef};
 use argonauts_core::settings::ui::Glyphs as GlyphChoice;
-use argonauts_core::{AgentEvent, CardId, RunId, TodoItem, TodoStatus, Verbosity};
+use argonauts_core::{AgentEvent, CardId, ErrorCategory, RunId, TodoItem, TodoStatus, Verbosity};
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -232,10 +232,18 @@ impl AgentBlocks {
                 live.retry = Some(Retry { at, attempt });
             }
             AgentEvent::Subagent { update } => live.subagent(update, cx),
-            AgentEvent::Error { message, .. } => {
+            AgentEvent::Error {
+                category, message, ..
+            } => {
+                // A stall may yet pass, so it reads as a note.
+                let tone = if *category == ErrorCategory::Stalled {
+                    Tone::Dim
+                } else {
+                    Tone::Error
+                };
                 let item = ToolItem::Text {
                     text: message.clone(),
-                    tone: Tone::Error,
+                    tone,
                 };
                 live.note(item, Verbosity::Normal, cx);
             }

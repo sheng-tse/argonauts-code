@@ -164,7 +164,8 @@ fn phase_name(phase: RunPhase) -> &'static str {
         RunPhase::Retro => "The retro",
     }
 }
-/// `● Goal(Add a --json flag to export)` then `⎿  Agreed by 3 agents · 1 question answered`.
+/// `● Goal(Add a --json flag to export)` then `⎿  Agreed by 3 agents · 1 question answered`,
+/// with the questions the lead answered for you counted apart from the other assumptions.
 /// A solo run's goal is your prompt, which triage already said.
 pub(super) fn goal(story: &RunStory, file: &GoalFile, by: &Party, cx: &mut Cx<'_>) {
     if file.source == GoalSource::Prompt {
@@ -181,10 +182,22 @@ pub(super) fn goal(story: &RunStory, file: &GoalFile, by: &Party, cx: &mut Cx<'_
             plural(file.answers.len(), "question", "questions")
         ));
     }
-    if !file.assumptions.is_empty() {
+    let by_lead = file
+        .assumptions
+        .iter()
+        .filter(|assumption| assumption.by_lead())
+        .count();
+    if by_lead > 0 {
+        parts.push(format!(
+            "{} answered by the lead",
+            plural(by_lead, "question", "questions")
+        ));
+    }
+    let stated = file.assumptions.len() - by_lead;
+    if stated > 0 {
         parts.push(format!(
             "{} stated",
-            plural(file.assumptions.len(), "assumption", "assumptions")
+            plural(stated, "assumption", "assumptions")
         ));
     }
     if parts.is_empty() {

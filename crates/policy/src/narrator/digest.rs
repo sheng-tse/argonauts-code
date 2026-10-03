@@ -3,7 +3,6 @@
 //! and spend. Never transcripts, file contents, prompts, diffs, long tool output, or
 //! credentials.
 
-use argonauts_core::AgentEvent;
 use argonauts_core::PhaseStatus;
 use argonauts_core::events::checkpoint::CheckpointEvent;
 use argonauts_core::events::goal::GoalEvent;
@@ -15,6 +14,7 @@ use argonauts_core::events::{
     BudgetEvent, CardEvent, IntegrationEvent, ReviewEvent, RunEvent, RunEventKind,
 };
 use argonauts_core::limits::{HealthState, QuotaStatus};
+use argonauts_core::{AgentEvent, ErrorCategory};
 use serde::Serialize;
 
 use crate::session::clean_text;
@@ -283,6 +283,10 @@ fn agent_line(event: &RunEvent, agent: &AgentEvent) -> Option<String> {
                 None => format!("{who}: a tool call failed"),
             }
         }
+        AgentEvent::Error {
+            category: ErrorCategory::Stalled,
+            ..
+        } => return None,
         AgentEvent::Error { message, .. } => {
             format!("{who} hit an error: {}", short(message, SHORT_MAX))
         }
@@ -508,6 +512,22 @@ mod tests {
 
     fn agent(agent: AgentEvent) -> RunEvent {
         event(RunEventKind::Agent(agent))
+    }
+
+    #[test]
+    fn a_stall_gets_no_line() {
+        let stall = AgentEvent::Error {
+            category: ErrorCategory::Stalled,
+            message: "Claude Code has sent nothing for 45 seconds, not even its heartbeat".into(),
+            retryable: true,
+        };
+        assert_eq!(agent_line(&agent(stall.clone()), &stall), None);
+        let failed = AgentEvent::Error {
+            category: ErrorCategory::Server,
+            message: "the server failed".into(),
+            retryable: true,
+        };
+        assert!(agent_line(&agent(failed.clone()), &failed).is_some());
     }
 
     #[test]

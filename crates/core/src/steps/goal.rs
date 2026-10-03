@@ -1,4 +1,4 @@
-//! Goal alignment steps: restate and differ.
+//! Goal alignment steps: restate, differ, and the lead answering the open questions.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -106,4 +106,55 @@ pub struct McQuestion {
     pub recommended: u8,
     /// Why it's recommended, such as "2 of 3 restatements read it this way".
     pub basis: String,
+}
+
+/// When the lead answers the crew's questions, it answers the goal's open questions in a
+/// read-only session. Its answers become assumptions in the goal, and the approval after them
+/// still follows its mode.
+pub struct AnswerQuestions;
+
+impl Step for AnswerQuestions {
+    const NAME: StepName = StepName::AnswerQuestions;
+    type Input = AnswerQuestionsInput;
+    type Output = AnswerQuestionsOutput;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AnswerQuestionsInput {
+    pub request: String,
+    /// The goal draft, as its file reads.
+    pub goal: String,
+    pub questions: Vec<OpenQuestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OpenQuestion {
+    /// 1-based.
+    pub n: u8,
+    pub text: String,
+    pub options: Vec<String>,
+    /// Index into `options` of the answer the differs recommend, if any.
+    pub recommended: Option<u8>,
+    /// Why they recommend it.
+    pub basis: Option<String>,
+    pub tag: DiffTag,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AnswerQuestionsOutput {
+    pub answers: Vec<LeadAnswer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LeadAnswer {
+    /// The question's `n`.
+    pub n: u8,
+    /// Index into the question's options. `None` only with `needs_user`.
+    pub option: Option<u8>,
+    /// Why this answer, in one line.
+    pub why: String,
+    /// Set only when the answer turns on a fact no agent can find out from the request, the
+    /// repo, or the web, such as a credential or a choice only the user can make. Names that
+    /// fact in one line.
+    pub needs_user: Option<String>,
 }

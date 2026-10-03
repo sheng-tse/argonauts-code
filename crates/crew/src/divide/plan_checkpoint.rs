@@ -214,7 +214,7 @@ struct Shown<'a> {
 
 /// The commit the run started from, which the plan was made against. `None`, which asks you,
 /// when it can't be read.
-async fn subject(host: &Host) -> Option<EvidenceSubject> {
+pub(super) async fn subject(host: &Host) -> Option<EvidenceSubject> {
     let base = host.read(|state| {
         state
             .run

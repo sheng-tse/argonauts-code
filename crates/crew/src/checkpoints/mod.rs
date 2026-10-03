@@ -18,10 +18,10 @@ use argonauts_core::events::run::Party;
 use argonauts_core::names::{CheckpointId, WorkerRef};
 use argonauts_core::policy::{
     DecisionPoint, EvidenceDocument, EvidenceFacts, EvidencePacket, EvidenceSubject, PolicyOutcome,
-    ShadowRecord, UserDecision, Verdict,
+    ShadowRecord, UserDecision, Verdict, Violation,
 };
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::approvals::{ApprovalMode, DecideWith, Otherwise};
+use argonauts_core::settings::approvals::{Answerer, ApprovalMode, DecideWith, Otherwise};
 use argonauts_core::{CardId, Note, NoteLevel};
 
 use crate::engine::host::Host;
@@ -63,6 +63,9 @@ pub struct CheckpointRequest {
 pub struct Desk {
     waiters: Mutex<BTreeMap<CheckpointId, Vec<oneshot::Sender<CheckpointDecided>>>>,
     points: Mutex<BTreeMap<CheckpointId, DecisionPoint>>,
+    /// Why a checkpoint goes to you even in auto, when the step that opened it knows, such as
+    /// the fact the lead said only you have.
+    because: Mutex<BTreeMap<CheckpointId, String>>,
     evaluating: Mutex<BTreeSet<CheckpointId>>,
     /// Auto-approvals you already spot-checked in this process, so a second verdict on one is
     /// refused rather than counted twice.
@@ -111,6 +114,16 @@ pub async fn open_and_wait(
     request: CheckpointRequest,
 ) -> EngineResult<CheckpointDecided> {
     open(host, request)?.decided(host).await
+}
+
+/// [`open_and_wait`] for a checkpoint the step knows auto can't settle, and `because` says why
+/// on its card.
+pub async fn open_and_wait_because(
+    host: &Host,
+    request: CheckpointRequest,
+    because: Option<String>,
+) -> EngineResult<CheckpointDecided> {
+    open_because(host, request, because)?.decided(host).await
 }
 
 /// An opened checkpoint, or the decision it already has.
@@ -177,6 +190,14 @@ impl Opening {
 /// Opens the checkpoint without waiting: finds the one this step already opened (withdrawing
 /// it when its evidence changed), or records a new one, and starts the policy on it.
 pub fn open(host: &Host, request: CheckpointRequest) -> EngineResult<Opening> {
+    open_because(host, request, None)
+}
+
+fn open_because(
+    host: &Host,
+    request: CheckpointRequest,
+    because: Option<String>,
+) -> EngineResult<Opening> {
     let evidence = evidence::packet(
         host,
         request.kind,
@@ -186,30 +207,38 @@ pub fn open(host: &Host, request: CheckpointRequest) -> EngineResult<Opening> {
     )?;
     let sha256 = evidence.sha256();
     let desk = &host.shared().desk;
+    let policy = !only_yours(&request.packet);
     let (id, receiver, evaluate) = {
         let _deciding = lock(&desk.deciding);
         match host.read(|state| find(state, &request, &sha256)) {
             Found::Decided(decided) => return Ok(Opening::Decided(decided)),
             Found::Open { id, policy_done } => {
                 let receiver = desk.wait(&id);
-                let evaluate = !policy_done && lock(&desk.evaluating).insert(id.clone());
+                let evaluate = policy && !policy_done && lock(&desk.evaluating).insert(id.clone());
                 (id, receiver, evaluate)
             }
             Found::Stale(stale) => {
                 withdraw_locked(host, &stale, "the evidence changed")?;
                 let id = record_opened(host, &request, &evidence, &sha256)?;
-                lock(&desk.evaluating).insert(id.clone());
-                (id.clone(), desk.wait(&id), true)
+                if policy {
+                    lock(&desk.evaluating).insert(id.clone());
+                }
+                (id.clone(), desk.wait(&id), policy)
             }
             Found::None => {
                 let id = record_opened(host, &request, &evidence, &sha256)?;
-                lock(&desk.evaluating).insert(id.clone());
-                (id.clone(), desk.wait(&id), true)
+                if policy {
+                    lock(&desk.evaluating).insert(id.clone());
+                }
+                (id.clone(), desk.wait(&id), policy)
             }
         }
     };
     let point = decision_point(host, &id, &request);
     lock(&desk.points).insert(id.clone(), point.clone());
+    if let Some(because) = because.filter(|because| !because.trim().is_empty()) {
+        lock(&desk.because).insert(id.clone(), because);
+    }
     if evaluate {
         spawn_policy(host, point, evidence);
     }
@@ -307,6 +336,28 @@ pub fn decided_in_round(
     Ok(Some((decided, subject)))
 }
 
+/// A card about your own files, such as the ones in the way of landing the run: no rule or
+/// approver can move them, so only you answer it and the policy never weighs in.
+pub fn only_yours(packet: &CheckpointPacket) -> bool {
+    matches!(packet, CheckpointPacket::Merge(merge) if merge.waits_on_you())
+}
+
+/// Landing what your rules or the approver approved at checkpoint `id` was refused, so the
+/// auto-merge it took goes back.
+pub fn landing_refused(host: &Host, id: &CheckpointId) {
+    let Some(record) = host.read(|state| state.checkpoints.by_id.get(id).cloned()) else {
+        return;
+    };
+    let auto = record
+        .decided
+        .as_ref()
+        .is_some_and(|decided| matches!(decided.by, Party::Rules | Party::Approver { .. }));
+    if auto {
+        let point = recorded_point(host, &record);
+        host.services().policy.landing_refused(&point);
+    }
+}
+
 /// A change to a running workflow, rather than an owner's change request on a card.
 pub fn is_workflow_change(kind: CheckpointKind, card: Option<&CardId>) -> bool {
     kind == CheckpointKind::ChangeRequest && card.is_none()
@@ -369,10 +420,16 @@ fn record_opened(
     });
     let configured = configured(host.settings(), request.kind);
     // Your records may lower the mode, such as back to shadow after a reverted auto-merge.
-    let mode = host.services().policy.effective_mode(
-        &decision_point(host, &id, request),
-        override_mode.unwrap_or(configured.mode),
-    );
+    let mode = if only_yours(&request.packet) {
+        ApprovalMode::Supervised
+    } else {
+        effective_mode(
+            host,
+            &decision_point(host, &id, request),
+            override_mode,
+            configured.mode,
+        )
+    };
     let mut options = request
         .options
         .clone()
@@ -401,6 +458,41 @@ fn record_opened(
         RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened))),
     )?;
     Ok(id)
+}
+
+/// Shift+Tab's mode, else your settings'. Your records may lower it, such as back to shadow
+/// after a reverted auto-merge.
+fn effective_mode(
+    host: &Host,
+    point: &DecisionPoint,
+    chosen: Option<ApprovalMode>,
+    configured: ApprovalMode,
+) -> ApprovalMode {
+    host.services()
+        .policy
+        .effective_mode(point, chosen.unwrap_or(configured))
+}
+
+/// The mode a checkpoint of `kind` would open in now.
+pub fn mode_now(host: &Host, kind: CheckpointKind) -> ApprovalMode {
+    let (mode_override, recipe) = host.read(|state| (state.run.approval_mode, recipe_of(state)));
+    let point = DecisionPoint {
+        run: host.run_id().clone(),
+        // No checkpoint is open yet; the records look only at the kind and the recipe.
+        checkpoint: CheckpointId::numbered(0),
+        kind,
+        recipe,
+        authors: Vec::new(),
+        mode_override,
+    };
+    let configured = configured(host.settings(), kind).mode;
+    effective_mode(host, &point, mode_override, configured)
+}
+
+/// Who answers the crew's questions at a checkpoint of `kind` now: `approvals.answered_by`,
+/// else the lead in auto mode and you otherwise.
+pub fn answerer(host: &Host, kind: CheckpointKind) -> Answerer {
+    host.settings().approvals.answerer(mode_now(host, kind))
 }
 
 fn decision_point(host: &Host, id: &CheckpointId, request: &CheckpointRequest) -> DecisionPoint {
@@ -468,7 +560,7 @@ fn spawn_policy(host: &Host, point: DecisionPoint, evidence: EvidencePacket) {
 /// shadow records can be scored.
 pub fn answer(host: &Host, answer: CheckpointAnswer) -> Result<(), String> {
     let desk = &host.shared().desk;
-    let (decided, point) = {
+    let (decided, point, yours) = {
         let _deciding = lock(&desk.deciding);
         let record = host
             .read(|state| state.checkpoints.by_id.get(&answer.id).cloned())
@@ -508,8 +600,13 @@ pub fn answer(host: &Host, answer: CheckpointAnswer) -> Result<(), String> {
         // Before waking the waiter, so it finds the change already recorded.
         change::on_decided(host, &record.opened, &decided);
         desk.wake(&decided);
-        (decided, recorded_point(host, &record))
+        let yours = only_yours(&record.opened.packet);
+        (decided, recorded_point(host, &record), yours)
     };
+    // Only you could answer it, so there's no policy to score against your answer.
+    if yours {
+        return Ok(());
+    }
     host.services().policy.user_decided(&UserDecision {
         point,
         edited: matches!(decided.action, AnswerAction::ApproveWithEdits),
@@ -629,13 +726,22 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
     match outcome {
         PolicyOutcome::AskUser { violations, shadow } => {
             if !late {
+                // In auto the card says why it still came to you, in one line.
+                let why = (record.opened.mode == ApprovalMode::Auto)
+                    .then(|| {
+                        lock(&desk.because)
+                            .get(id)
+                            .cloned()
+                            .or_else(|| why_asked(&violations, shadow.as_ref()))
+                    })
+                    .flatten();
                 checked(PolicyCheck {
                     id: id.clone(),
                     violations,
                     verdict: None,
                     by: None,
                     approver: None,
-                    reasons: Vec::new(),
+                    reasons: why.into_iter().collect(),
                     shadow: false,
                 })?;
             }
@@ -705,6 +811,23 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
             Ok(())
         }
     }
+}
+
+/// Why auto left a card to you: the first hard limit that failed, else what its own check
+/// turned on. A check that would approve puts what stopped it last; one that wouldn't puts what
+/// held it back first.
+fn why_asked(violations: &[Violation], shadow: Option<&ShadowRecord>) -> Option<String> {
+    if let Some(first) = violations.first() {
+        return Some(format!("a hard limit, {}", first.detail.trim()));
+    }
+    let shadow = shadow?;
+    let reason = match shadow.would {
+        Verdict::Approve => shadow.reasons.last(),
+        Verdict::Reject | Verdict::Escalate => shadow.reasons.first(),
+    };
+    reason
+        .map(|reason| reason.trim().to_owned())
+        .filter(|reason| !reason.is_empty())
 }
 
 /// What your settings' verdict does on this card: approve takes its approving option; reject

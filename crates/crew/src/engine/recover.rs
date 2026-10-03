@@ -360,6 +360,9 @@ mod tests {
             spent: Spend::default(),
             limit: None,
             partial: false,
+            in_the_way: Vec::new(),
+            edited: Vec::new(),
+            refused: None,
         });
         let mut state = RunState::default();
         state

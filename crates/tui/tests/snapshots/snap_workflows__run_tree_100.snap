@@ -6,9 +6,9 @@ peer-crew                                                                       
 Fix the race in the export test and add a regression test                6/11 agents · 46m0s · $3.02
 
 ╭ Phases ────────────┬ Do · 3 agents ──────────────────────────────────────────────────────────────╮
-│   ✓ Understand 2/2 │   ✓ owner · card-001        Opus on Claude Code · +3 subagents       25m40s │
-│   ✓ Plan       1/1 │   ● owner · card-002        GPT 5.6 on Codex · ↺ for Opus on Claud…  10m12s │
-│ ❯ 3 Do         1/3 │   ● owner · card-003        Gemini 3.6 on agy · +1 subagent           7m11s │
+│   ✓ Understand 2/2 │   ✓ owner · card-001        Opus on Claude Code  +3 subagents        25m40s │
+│   ✓ Plan       1/1 │   ● owner · card-002        GPT 5.6 on Codex     ↺ for Opus on Cla…  10m12s │
+│ ❯ 3 Do         1/3 │   ● owner · card-003        Gemini 3.6 on agy    +1 subagent          7m11s │
 │   · Check      0/2 │                                                                             │
 │                    │                                                                             │
 │                    │                                                                             │

@@ -33,6 +33,9 @@ use time::OffsetDateTime;
 
 const SIZES: [(u16, u16); 2] = [(100, 32), (80, 24)];
 
+/// The views whose rows list agents in columns, at the widths those columns change at.
+const ROW_SIZES: [(u16, u16); 4] = [(80, 24), (100, 32), (120, 32), (200, 40)];
+
 fn run() -> RunId {
     RunId::new("run-01").unwrap()
 }
@@ -482,7 +485,7 @@ fn open_agent(view: &mut WorkflowView, data: &WorkflowData, session: &str, state
 #[test]
 fn workflow_view() {
     let state = AppState::default();
-    for (width, height) in SIZES {
+    for (width, height) in ROW_SIZES {
         let mut view = WorkflowView::new(ui_kit());
         insta::assert_snapshot!(
             format!("workflow_view_{width}"),
@@ -531,10 +534,75 @@ fn workflow_view() {
     ));
 }
 
+/// The review's probe at 80 columns: one long open-weight model name used to drop the model
+/// from every row. Now names and labels are cut with `…` first, so each row still says whose
+/// model ran.
+#[test]
+fn long_model_names_stay_visible_at_80_columns() {
+    let state = AppState::default();
+    let long = "opencode/openrouter/qwen3-coder-480b-a35b-instruct-turbo";
+    let data = |label: &str| WorkflowData {
+        run: run(),
+        id: WorkflowId::numbered(3),
+        name: "solo-reviewed".into(),
+        description: "One small change, reviewed by another family".into(),
+        breadcrumb: Vec::new(),
+        agents_done: 0,
+        agents_total: 2,
+        elapsed_ms: 90_000,
+        spent: usd(0.12),
+        phases: vec![phase(
+            "Build",
+            StandardPhase::Do,
+            RowStatus::Running,
+            0,
+            vec![
+                WorkflowRow::Agent(agent(
+                    "s-021",
+                    label,
+                    long,
+                    RowStatus::Running,
+                    41_000,
+                    0.08,
+                    61,
+                )),
+                WorkflowRow::Agent(agent(
+                    "s-022",
+                    "reviewer · card-001",
+                    "codex/gpt-5.6",
+                    RowStatus::Waiting,
+                    0,
+                    0.0,
+                    0,
+                )),
+            ],
+        )],
+    };
+    for (name, label) in [
+        ("long_model_80", "owner · card-001"),
+        (
+            "long_model_and_label_80",
+            "build:card-017-rewrite-the-entire-slugify-module",
+        ),
+    ] {
+        let mut view = WorkflowView::new(data(label));
+        let text = screen(&mut view, 80, 12, &state);
+        insta::assert_snapshot!(name, text);
+        let row = |needle: &str| {
+            text.lines()
+                .find(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle:?} row:\n{text}"))
+                .to_owned()
+        };
+        assert!(row("reviewer").contains("GPT 5.6 on"), "{text}");
+        assert!(row("1m01s").contains("Qwen3 Coder"), "{text}");
+    }
+}
+
 #[test]
 fn agent_view() {
     let state = AppState::default();
-    for (width, height) in SIZES {
+    for (width, height) in ROW_SIZES {
         let data = ui_kit();
         let mut view = WorkflowView::new(data.clone());
         open_agent(&mut view, &data, "s-002", &state);
@@ -614,8 +682,9 @@ fn agent_view_names_the_agent_and_its_run_and_tells_alike_steps_apart() {
             );
         }
         if width == 200 {
-            assert!(text.contains("restater · Opus on Claude Code"), "{text}");
-            assert!(text.contains("restater · GPT 5.6 on Codex"), "{text}");
+            // The agents' names sit in a column of their own, whole on a wide screen.
+            assert!(text.contains("restater  Opus on Claude Code"), "{text}");
+            assert!(text.contains("restater  GPT 5.6 on Codex"), "{text}");
         }
     }
 }
@@ -915,7 +984,7 @@ fn crew_run() -> WorkflowData {
 #[test]
 fn run_tree() {
     let state = AppState::default();
-    for (width, height) in SIZES {
+    for (width, height) in ROW_SIZES {
         let mut view = WorkflowView::new(crew_run());
         insta::assert_snapshot!(
             format!("run_tree_{width}"),
@@ -1075,6 +1144,7 @@ fn session(
         end: None,
         unknown: Vec::new(),
         doing: Doing::Nothing,
+        stalled: false,
         vendor_session: None,
     }
 }
@@ -1241,6 +1311,75 @@ fn agent_panel_row_ctx() {
             .lines()
             .count(),
         1
+    );
+}
+
+/// The agents under a run line up in columns at every width: steps, tokens, and spend
+/// right-aligned, the markers after them, and the times ending at the same cell.
+#[test]
+fn agent_panel_columns() {
+    let mut state = crew_state(OffsetDateTime::now_utc());
+    if let Some(run) = state.runs.get_mut(&run()) {
+        if let Some(claude) = run.sessions.get_mut(&key("s-104")) {
+            claude.cost_usd = Some(0.84);
+        }
+        if let Some(codex) = run.sessions.get_mut(&key("s-105")) {
+            codex.tokens_out = 2_400;
+        }
+    }
+    let model = synced(&state, true);
+    let bottom = &model.bottom;
+    for width in [80u16, 100, 120, 200] {
+        let text = panel_text(&bottom.workflows, &bottom.agents, width);
+        insta::assert_snapshot!(format!("agent_panel_columns_{width}"), text);
+        let rows: Vec<&str> = text.lines().skip(1).collect();
+        assert_eq!(rows.len(), 2, "{text}");
+        let cells = |row: &str| row.trim_end().chars().count();
+        // The times end one cell short of the edge, as the mode line's parts do.
+        assert!(
+            rows.iter().all(|row| cells(row) == usize::from(width) - 1),
+            "{text}"
+        );
+        let ends_at = |row: &str, needle: &str| {
+            row.find(needle)
+                .map(|at| row[..at].chars().count() + needle.chars().count())
+        };
+        if let (Some(long), Some(short)) = (
+            ends_at(rows[0], "18.1k tokens"),
+            ends_at(rows[1], "2.4k tokens"),
+        ) {
+            assert_eq!(long, short, "tokens right-aligned:\n{text}");
+        }
+    }
+    let wide = panel_text(&bottom.workflows, &bottom.agents, 200);
+    assert!(wide.contains("$0.84"), "{wide}");
+}
+
+/// The review's probe: under a run at 80 columns, names too long for their model drop it, and
+/// the card stays beside the harness instead of past the cells the models would have filled.
+#[test]
+fn harness_names_keep_their_card_beside_them() {
+    let mut state = crew_state(OffsetDateTime::now_utc());
+    if let Some(run) = state.runs.get_mut(&run())
+        && let Some(owner) = run.sessions.get_mut(&key("s-104"))
+    {
+        owner.worker = worker("opencode/openrouter/qwen3-coder-480b-a35b-instruct-turbo");
+        owner.vendor = owner.worker.worker.clone();
+    }
+    let model = synced(&state, true);
+    let text = panel_text(&model.bottom.workflows, &model.bottom.agents, 80);
+    insta::assert_snapshot!("agent_panel_harness_names_80", text);
+    // The cards line up two cells after the widest harness, OpenCode.
+    let card_at = |row: &str| {
+        row.find("card-")
+            .map(|at| row[..at].chars().count())
+            .unwrap_or_default()
+    };
+    let rows: Vec<&str> = text.lines().skip(1).collect();
+    assert!(rows[0].contains("OpenCode  card-001"), "{text}");
+    assert!(
+        rows.iter().all(|row| card_at(row) == card_at(rows[0])),
+        "{text}"
     );
 }
 

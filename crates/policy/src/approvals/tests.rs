@@ -15,7 +15,8 @@ use argonauts_core::policy::{
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    ApprovalMode, CheckpointSettings, DecideWith, GoalChanges, Otherwise, Presence, SandboxChoice,
+    Answerer, ApprovalMode, CheckpointSettings, DecideWith, GoalChanges, Otherwise, Presence,
+    SandboxChoice,
 };
 use argonauts_core::worker::SessionSpec;
 use argonauts_testkit::FakeClock;
@@ -1148,6 +1149,153 @@ async fn auto_that_does_not_decide_says_why() {
         .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
         .await;
     assert_eq!(outcome, asks());
+}
+
+/// A plan nobody judged, as a workflow the lead picked runs: within budget, nothing flagged.
+fn unjudged_plan(protected: &[&str]) -> EvidencePacket {
+    evidence(
+        CheckpointKind::Plan,
+        EvidenceFacts {
+            estimate_usd: Some(1.0),
+            protected_paths: protected.iter().map(|path| (*path).to_owned()).collect(),
+            ..EvidenceFacts::default()
+        },
+    )
+}
+
+/// The review's probe: in auto the lead answers the crew's questions, yet your plan rules
+/// still hold. A plan with no judging facts asks, by your rules alone too, and so does a close
+/// call or a partly priced spend under a dollar budget. An uncontested plan's facts, which a
+/// workflow the lead picks without drafting carries, go through.
+#[tokio::test]
+async fn the_plan_rules_hold_when_the_lead_answers() {
+    for decide_with in [DecideWith::RulesAndModel, DecideWith::Rules] {
+        let mut settings = Settings::default();
+        settings.approvals.plan.decide_with = decide_with;
+        let h = harness(settings);
+        let outcome = h
+            .policy
+            .evaluate(&point(CheckpointKind::Plan), &unjudged_plan(&[]))
+            .await;
+        assert_outcome(
+            &outcome,
+            Expect::Would(Verdict::Escalate),
+            &format!("unjudged, {decide_with:?}"),
+        );
+        if decide_with == DecideWith::Rules {
+            assert_eq!(
+                h.approver.calls(),
+                0,
+                "your rules alone never ask the approver"
+            );
+        }
+    }
+
+    let uncontested = EvidenceFacts {
+        open_questions: Some(0),
+        max_score_spread: Some(0.0),
+        winner_margin: Some(10.0),
+        judges_other_family: Some(true),
+        disputes_settled: Some(true),
+        flagged_plans: Some(0),
+        estimate_usd: Some(1.0),
+        ..EvidenceFacts::default()
+    };
+    let h = harness(Settings::default());
+    let outcome = h
+        .policy
+        .evaluate(
+            &point(CheckpointKind::Plan),
+            &evidence(CheckpointKind::Plan, uncontested.clone()),
+        )
+        .await;
+    assert!(
+        matches!(
+            &outcome,
+            PolicyOutcome::Decided { verdict: Verdict::Approve, approver: Some(model), .. }
+                if *model == approver_model()
+        ),
+        "{outcome:?}"
+    );
+
+    let close_call = EvidenceFacts {
+        winner_margin: Some(0.1),
+        ..uncontested.clone()
+    };
+    let outcome = harness(Settings::default())
+        .policy
+        .evaluate(
+            &point(CheckpointKind::Plan),
+            &evidence(CheckpointKind::Plan, close_call),
+        )
+        .await;
+    assert!(
+        matches!(outcome, PolicyOutcome::AskUser { .. }),
+        "a near tie asks: {outcome:?}"
+    );
+
+    let mut dollars = Settings::default();
+    dollars.budget.run_usd = Some(20.0);
+    let mut partly_priced = uncontested;
+    partly_priced.spent.cost_partial = true;
+    let outcome = harness(dollars)
+        .policy
+        .evaluate(
+            &point(CheckpointKind::Plan),
+            &evidence(CheckpointKind::Plan, partly_priced),
+        )
+        .await;
+    assert_outcome(
+        &outcome,
+        Expect::Would(Verdict::Escalate),
+        "a partly priced spend under a dollar budget",
+    );
+}
+
+#[tokio::test]
+async fn when_rules_approve_and_the_model_does_not_its_reasons_come_first() {
+    let mut settings = Settings::default();
+    settings.approvals.answered_by = Some(Answerer::You);
+    let fakes = Fakes {
+        approver: FakeApprover::answering(Verdict::Escalate),
+        ..Fakes::default()
+    };
+    let facts = EvidenceFacts {
+        open_questions: Some(0),
+        ..EvidenceFacts::default()
+    };
+    let outcome = harness_with(settings, fakes)
+        .policy
+        .evaluate(
+            &point(CheckpointKind::Goal),
+            &evidence(CheckpointKind::Goal, facts),
+        )
+        .await;
+    let PolicyOutcome::AskUser {
+        shadow: Some(shadow),
+        ..
+    } = &outcome
+    else {
+        panic!("the model escalated: {outcome:?}");
+    };
+    assert_eq!(shadow.reasons[0], "the model says Escalate");
+}
+
+#[test]
+fn who_answers_takes_the_stricter_side() {
+    let pick = |a: Option<Answerer>, b: Option<Answerer>| {
+        let mut x = Settings::default();
+        let mut y = Settings::default();
+        x.approvals.answered_by = a;
+        y.approvals.answered_by = b;
+        stricter(&x, &y).approvals.answered_by
+    };
+    use Answerer::{Lead, You};
+    assert_eq!(pick(Some(Lead), Some(You)), Some(You));
+    assert_eq!(pick(None, Some(You)), Some(You));
+    assert_eq!(pick(Some(Lead), None), None);
+    assert_eq!(pick(Some(Lead), Some(Lead)), Some(Lead));
+    assert_eq!(pick(None, None), None);
 }
 
 #[test]

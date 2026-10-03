@@ -43,7 +43,8 @@ pub fn from_error(
         // Adapters keep `Cli` for a CLI that no longer takes what they give it, such as a
         // rejected config or another protocol version. A crash or a missing result is `Unknown`.
         ErrorCategory::Cli => EndReason::AdapterBroken { detail: message },
-        ErrorCategory::Unknown => EndReason::Crashed { message },
+        // The conductor's own stall note, which no parser sends, ends nothing by itself.
+        ErrorCategory::Stalled | ErrorCategory::Unknown => EndReason::Crashed { message },
         ErrorCategory::Overloaded
         | ErrorCategory::Server
         | ErrorCategory::Network

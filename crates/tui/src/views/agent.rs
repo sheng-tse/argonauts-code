@@ -23,10 +23,11 @@ use crate::render::{Clock, RenderCtx};
 use crate::text::{KEEP, Part, fit_parts, sanitize, sanitize_line, str_width, wrap_text};
 use crate::theme::{Role, Theme};
 
+use super::columns::{self, Column, GAP, Give};
 use super::follow::{Follower, Shown};
-use super::layout::{cut, left};
+use super::layout::{cut, left, right};
 use super::list;
-use super::panes::{self, Footer, Header, Marks, Side};
+use super::panes::{self, ELAPSED_SLOT, Footer, Header, Marks, Side};
 use super::workflow::agents_in_phase;
 use super::{View, ViewCtx, ViewOutcome};
 
@@ -38,7 +39,10 @@ const OUTCOME_PREVIEW: usize = 6;
 
 /// The left pane is never wider than this, or than three tenths of the screen, so the sections
 /// keep most of it.
-const MAX_LEFT: usize = 40;
+const MAX_LEFT: usize = 64;
+
+/// A repeated label's agent name is cut to no less than this before the label is.
+const MIN_SIBLING_WORKER: usize = 8;
 
 /// Longer subagent names are cut, so their states still line up.
 const MAX_CHILD_LABEL: usize = 24;
@@ -186,20 +190,15 @@ impl AgentView {
             ),
             None => String::new(),
         };
-        let sibling_names = sibling_names(&self.siblings, &ctx.state.names);
+        let siblings = self.sibling_cells(ctx, seen_at);
         let left_width = if self.phase.is_some() {
-            let widest = sibling_names
-                .iter()
-                .map(|(label, agent)| {
-                    str_width(label) + agent.as_deref().map_or(0, |agent| 3 + str_width(agent))
-                })
-                .max()
-                .unwrap_or(0);
+            let most = MAX_LEFT.min(usize::from(area.width) * 3 / 10);
+            let lead = lead(marks.slot());
+            let fitted = SiblingColumns::fit(&siblings, most.saturating_sub(lead));
             // The title sits on the border with a space each side, over the pane's padding.
-            (2 + marks.slot() + 1 + widest)
+            (lead + fitted.width())
                 .max(str_width(&phase_title))
-                .min(MAX_LEFT)
-                .min(usize::from(area.width) * 3 / 10) as u16
+                .min(most) as u16
         } else {
             0
         };
@@ -210,7 +209,7 @@ impl AgentView {
             .to_owned();
         panes::draw_box(buf, &panes, [&phase_title, &label], Side::Left, theme);
         if panes.left.width > 0 {
-            let rows = self.sibling_lines(&sibling_names, panes.left, theme);
+            let rows = self.sibling_lines(&siblings, panes.left, theme);
             panes::put_lines(buf, panes.left, &rows);
         }
 
@@ -298,53 +297,79 @@ impl AgentView {
         Footer::hints(&hints)
     }
 
+    /// Each agent of the phase in the left pane's columns, its time counting while it runs.
+    fn sibling_cells(&self, ctx: &ViewCtx<'_>, seen_at: Instant) -> Vec<SiblingCells> {
+        let ticking = millis(ctx.now.saturating_duration_since(seen_at));
+        let names = sibling_names(&self.siblings, &ctx.state.names);
+        self.siblings
+            .iter()
+            .zip(names)
+            .map(|(row, (label, repeated))| {
+                let running = self.loaded() && row.status == RowStatus::Running;
+                SiblingCells {
+                    label,
+                    repeated,
+                    worker: sanitize_line(&ctx.state.names.worker(&row.worker))
+                        .trim()
+                        .to_owned(),
+                    tokens: if row.tokens > 0 {
+                        panes::tokens(row.tokens)
+                    } else {
+                        String::new()
+                    },
+                    spend: panes::spend(&row.spent).unwrap_or_default(),
+                    elapsed: panes::elapsed(row.elapsed_ms + if running { ticking } else { 0 }),
+                }
+            })
+            .collect()
+    }
+
     fn sibling_lines(
         &self,
-        names: &[(String, Option<String>)],
+        siblings: &[SiblingCells],
         area: Rect,
         theme: &Theme,
     ) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
         let slot = marks.slot();
-        let label_width = usize::from(area.width).saturating_sub(2 + slot + 1);
+        let width = usize::from(area.width);
+        let fitted = SiblingColumns::fit(siblings, width.saturating_sub(lead(slot)));
+        let dim = theme.style(Role::Dim);
         let height = usize::from(area.height);
         let skip = (self.selected + 1).saturating_sub(height);
         self.siblings
             .iter()
+            .zip(siblings)
             .enumerate()
             .skip(skip)
-            .map(|(i, row)| {
+            .map(|(i, (row, cells))| {
                 let (glyph, _, role) = marks.status(row.status);
                 let selected = i == self.selected;
-                let lead = if selected {
-                    Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
-                } else {
-                    Span::raw("  ")
-                };
+                let lead = vec![
+                    if selected {
+                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
+                    } else {
+                        Span::raw("  ")
+                    },
+                    Span::styled(panes::pad_glyph(glyph, slot), theme.style(role)),
+                    Span::raw(" "),
+                ];
                 let label_style = if selected {
                     theme.style(Role::Label)
                 } else {
                     theme.style(Role::Text)
                 };
-                let mut spans = vec![
-                    lead,
-                    Span::styled(panes::pad_glyph(glyph, slot), theme.style(role)),
-                    Span::raw(" "),
+                let text = |text: &str| vec![Span::styled(text.to_owned(), dim)];
+                let row = [
+                    vec![Span::styled(cells.label.clone(), label_style)],
+                    text(&cells.worker),
+                    text(&cells.tokens),
+                    text(&cells.spend),
                 ];
-                let (label, agent) = names.get(i).cloned().unwrap_or_default();
-                let label = cut(&label, label_width);
-                let room = label_width.saturating_sub(str_width(&label) + 3);
-                match agent {
-                    Some(agent) if room > 1 => {
-                        spans.push(Span::styled(label, label_style));
-                        spans.push(Span::styled(
-                            format!(" · {}", cut(&agent, room)),
-                            theme.style(Role::Dim),
-                        ));
-                    }
-                    _ => spans.push(Span::styled(label, label_style)),
-                }
-                Line::from(spans)
+                let edge = fitted
+                    .time
+                    .then(|| text(&right(&cells.elapsed, ELAPSED_SLOT)));
+                columns::line(lead, &fitted.columns, &row, edge, width)
             })
             .collect()
     }
@@ -820,7 +845,9 @@ fn subagent_line(
 /// Each agent's label, and its agent's name when others in the phase share the label, so six
 /// drafters read apart. Any still alike number their label, which a narrow pane keeps when it
 /// cuts the name.
-fn sibling_names(siblings: &[AgentRow], names: &DisplayNames) -> Vec<(String, Option<String>)> {
+/// Each agent's label, numbered when the label and the agent both repeat, and whether the
+/// label alone repeats, since then only the agent's name tells the rows apart.
+fn sibling_names(siblings: &[AgentRow], names: &DisplayNames) -> Vec<(String, bool)> {
     let labels: Vec<String> = siblings
         .iter()
         .map(|row| sanitize_line(&row.label).trim().to_owned())
@@ -840,11 +867,99 @@ fn sibling_names(siblings: &[AgentRow], names: &DisplayNames) -> Vec<(String, Op
         .map(|(i, name)| match &name.1 {
             Some(_) if named.iter().filter(|other| *other == name).count() > 1 => {
                 let nth = named[..=i].iter().filter(|other| *other == name).count();
-                (format!("{} {nth}", name.0), name.1.clone())
+                (format!("{} {nth}", name.0), true)
             }
-            _ => name.clone(),
+            _ => (name.0.clone(), name.1.is_some()),
         })
         .collect()
+}
+
+/// The cells of one agent in the left pane, before padding.
+struct SiblingCells {
+    label: String,
+    /// Another agent has the same label.
+    repeated: bool,
+    worker: String,
+    tokens: String,
+    spend: String,
+    elapsed: String,
+}
+
+/// The left pane's columns: the label, the agent's name, tokens, and spend, each padded to its
+/// widest, and the time at the pane's edge.
+struct SiblingColumns {
+    columns: [Column; 4],
+    time: bool,
+}
+
+const LABEL: usize = 0;
+const WORKER: usize = 1;
+const TOKENS: usize = 2;
+const SPEND: usize = 3;
+
+impl SiblingColumns {
+    fn full(siblings: &[SiblingCells]) -> [Column; 4] {
+        let widest = |cell: fn(&SiblingCells) -> &str| {
+            siblings
+                .iter()
+                .map(|cells| str_width(cell(cells)))
+                .max()
+                .unwrap_or(0)
+        };
+        [
+            Column::left(widest(|c| &c.label)),
+            Column::left(widest(|c| &c.worker)),
+            Column::right(widest(|c| &c.tokens)),
+            Column::right(widest(|c| &c.spend)),
+        ]
+    }
+
+    /// The cells the fitted columns and the time take.
+    fn width(&self) -> usize {
+        columns::used(&self.columns) + if self.time { GAP + ELAPSED_SLOT } else { 0 }
+    }
+
+    /// Spend, then tokens, give way, then the agent's name unless a label repeats, when it's
+    /// cut instead. The time goes before the label, or a repeated label's agent, is cut, since
+    /// those tell the rows apart.
+    fn fit(siblings: &[SiblingCells], room: usize) -> Self {
+        let full = Self::full(siblings);
+        let repeated = siblings.iter().any(|cells| cells.repeated);
+        let worker = if repeated {
+            Give::Cut {
+                column: WORKER,
+                min: MIN_SIBLING_WORKER,
+            }
+        } else {
+            Give::Drop(WORKER)
+        };
+        let gives = [Give::Drop(SPEND), Give::Drop(TOKENS), worker];
+        let whole =
+            |columns: &[Column; 4], column: usize| columns[column].width >= full[column].width;
+        let mut columns = full;
+        columns::fit(
+            &mut columns,
+            room.saturating_sub(GAP + ELAPSED_SLOT),
+            &gives,
+        );
+        if whole(&columns, LABEL) && (!repeated || whole(&columns, WORKER)) {
+            return Self {
+                columns,
+                time: true,
+            };
+        }
+        let mut columns = full;
+        columns::fit(&mut columns, room, &gives);
+        Self {
+            columns,
+            time: false,
+        }
+    }
+}
+
+/// The selection mark, the glyph, and the space after it.
+fn lead(slot: usize) -> usize {
+    2 + slot + 1
 }
 
 /// Under the title, since this is a detail view: the agent's name with its id, and the run,
@@ -1142,10 +1257,14 @@ impl View for AgentView {
 
     fn next_change(&self, now: Instant) -> Option<Instant> {
         let seen_at = self.seen_at?;
-        if !self.loaded() || self.data.row.status != RowStatus::Running {
+        if !self.loaded() {
             return None;
         }
-        let shown = self.data.row.elapsed_ms + millis(now.saturating_duration_since(seen_at));
+        // The agent's own time counts, or else a running agent's in the left pane.
+        let row = std::iter::once(&self.data.row)
+            .chain(&self.siblings)
+            .find(|row| row.status == RowStatus::Running)?;
+        let shown = row.elapsed_ms + millis(now.saturating_duration_since(seen_at));
         Some(now + Duration::from_millis(1000 - shown % 1000))
     }
 }
@@ -1548,9 +1667,10 @@ mod tests {
                 .map(|line| line.split('│').nth(1).unwrap_or_default().trim().to_owned())
                 .unwrap_or_else(|| panic!("{needle}: {text}"))
         };
-        assert_eq!(left("✓ drafter · Claude Code"), "✓ drafter · Claude Code");
-        assert!(left("❯ ✓ drafter").ends_with("drafter · Codex"), "{text}");
-        assert_eq!(left("✓ judge"), "✓ judge");
+        // The agents' names line up in a column of their own, whole while a label repeats.
+        assert_eq!(left("✓ drafter  Claude Code"), "✓ drafter  Claude Code");
+        assert!(left("❯ ✓ drafter").ends_with("drafter  Codex"), "{text}");
+        assert_eq!(left("✓ judge"), "✓ judge    Codex");
     }
 
     /// Two judges on one agent still read alike by name, so their labels take a number.
@@ -1569,19 +1689,11 @@ mod tests {
         ];
         let shown: Vec<String> = sibling_names(&rows, &DisplayNames::default())
             .into_iter()
-            .map(|(label, agent)| match agent {
-                Some(agent) => format!("{label} · {agent}"),
-                None => label,
-            })
+            .map(|(label, repeated)| format!("{label} {repeated}"))
             .collect();
         assert_eq!(
             shown,
-            [
-                "judge 1 · Codex",
-                "judge 2 · Codex",
-                "judge · Claude Code",
-                "owner"
-            ]
+            ["judge 1 true", "judge 2 true", "judge true", "owner false"]
         );
     }
 

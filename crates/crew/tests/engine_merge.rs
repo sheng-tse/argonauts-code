@@ -31,7 +31,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::handoff::QualityDebt;
 use argonauts_core::limits::{HealthState, VendorHealth};
 use argonauts_core::names::{CheckpointId, RoleName, WorkerRef, WorkflowId};
-use argonauts_core::policy::HardLimit;
+use argonauts_core::policy::{HardLimit, PolicyOutcome, Verdict};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
@@ -43,6 +43,8 @@ use argonauts_core::{CardId, RepoId, RunId};
 use argonauts_crew::checkpoints;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::Shared;
+use argonauts_crew::error::EngineError;
+use argonauts_crew::integrate::in_the_way::{MERGE_LATER, MOVE_ASIDE, TRY_AGAIN};
 use argonauts_crew::integrate::{branch, final_check, merge};
 use argonauts_crew::retro;
 use argonauts_crew::state::RunState;
@@ -82,6 +84,17 @@ impl Bench {
         cards: Vec<CardSpec>,
         debt: Option<QualityDebt>,
         settings: Settings,
+    ) -> anyhow::Result<Self> {
+        Self::with_work(cards, debt, settings, &[]).await
+    }
+
+    /// As [`Bench::with`], with `files` beside the first card's work. The engine's own git
+    /// commits them, so the leave-out settings decide what goes in.
+    async fn with_work(
+        cards: Vec<CardSpec>,
+        debt: Option<QualityDebt>,
+        settings: Settings,
+        files: &[(&str, &str)],
     ) -> anyhow::Result<Self> {
         let services = FakeServices::new();
         let repo = TempRepo::new()?;
@@ -149,7 +162,23 @@ impl Bench {
                 (format!("{}.rs", card.id), format!("// {}\n", card.id))
             };
             let message = format!("Merge {}", card.id);
-            commit_in(&repo, &integration, &file, &text, &message)?;
+            if i == 0 && !files.is_empty() {
+                std::fs::write(integration.join(&file), &text)?;
+                for (path, text) in files {
+                    let path = integration.join(path);
+                    if let Some(folder) = path.parent() {
+                        std::fs::create_dir_all(folder)?;
+                    }
+                    std::fs::write(path, text)?;
+                }
+                host.git()
+                    .commit_work(&integration, &message)
+                    .await?
+                    .sha
+                    .context("nothing to commit")?;
+            } else {
+                commit_in(&repo, &integration, &file, &text, &message)?;
+            }
             host.record(
                 None,
                 None,
@@ -998,6 +1027,450 @@ async fn a_withdrawn_merge_card_opens_again() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    Ok(())
+}
+
+fn choose(label: &str) -> AnswerAction {
+    AnswerAction::Choose {
+        value: label.to_owned(),
+    }
+}
+
+impl Bench {
+    /// The card asking about your files in the way, other than the ones in `seen`.
+    async fn in_the_way_card(&self, seen: &[CheckpointId]) -> anyhow::Result<CheckpointOpened> {
+        let opened = self.next_merge_card(seen).await?;
+        let CheckpointPacket::Merge(packet) = &opened.packet else {
+            bail!("not a merge packet");
+        };
+        ensure!(
+            packet.waits_on_you(),
+            "a merge card without files in the way: {}",
+            opened.title
+        );
+        Ok(opened)
+    }
+
+    fn landed(&self) -> bool {
+        self.integration_events()
+            .iter()
+            .any(|event| matches!(event, IntegrationEvent::Landed { .. }))
+    }
+
+    fn notes(&self) -> Vec<String> {
+        self.sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                RunEventKind::Note(note) => Some(note.text),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// The sample run's failure: your checkout had an untracked file where the run adds one, and
+/// git refused the fast-forward. Now the run waits to merge and asks you, and moving the file
+/// aside lands it, with nothing of yours deleted.
+#[tokio::test]
+async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.repo.write("store.rs", "// my own draft\n")?;
+    bench
+        .repo
+        .write("__pycache__/store.cpython-312.pyc", "not in the way")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            assert_eq!(asked.title, "Waiting to merge into main");
+            assert_eq!(keys(&asked), ['m', 't', 'l']);
+            assert!(asked.needs_you, "only you can move your files");
+            assert_eq!(asked.mode, ApprovalMode::Supervised);
+            assert_eq!(
+                asked.free_text,
+                FreeText::None,
+                "you choose, you don't type"
+            );
+            let CheckpointPacket::Merge(packet) = &asked.packet else {
+                bail!("not a merge packet");
+            };
+            assert_eq!(packet.in_the_way, ["store.rs"]);
+            assert_eq!(packet.rows.len(), 1, "the merge's evidence, shown again");
+            ensure!(
+                !bench.landed(),
+                "nothing landed while the files were in the way"
+            );
+            ensure!(
+                bench
+                    .integration_events()
+                    .contains(&IntegrationEvent::WaitingToMerge {
+                        target: "main".to_owned(),
+                        in_the_way: vec!["store.rs".to_owned()],
+                    })
+            );
+            bench.answer(&asked, choose(MOVE_ASIDE))
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
+        "fn store() {}\n"
+    );
+    let set_aside = bench.host.repo().run_dir.join("set-aside/store.rs");
+    assert_eq!(std::fs::read_to_string(set_aside)?, "// my own draft\n");
+    assert!(
+        bench
+            .repo
+            .root()
+            .join("__pycache__/store.cpython-312.pyc")
+            .exists()
+    );
+    let notes = bench.notes();
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.starts_with("Moved store.rs out of the way, into ")),
+        "{notes:?}"
+    );
+    Ok(())
+}
+
+/// The sample case with the built-in list off, as it is by default: the tests left bytecode
+/// beside the work, the run's commit took it, and your checkout has the same file untracked.
+/// Git won't overwrite yours, so the run waits to merge on a card with choices instead of
+/// failing, and its work stays on its branch.
+#[tokio::test]
+async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Result<()> {
+    const BYTECODE: &str = "__pycache__/store.cpython-312.pyc";
+    let settings = suite_settings();
+    ensure!(
+        !settings.merge.leave_out_builtin,
+        "the built-in list is opt-in"
+    );
+    let bench = Bench::with_work(
+        vec![spec(&CardId::numbered(1))],
+        None,
+        settings,
+        &[(BYTECODE, "bytecode the tests left")],
+    )
+    .await?;
+    let work = bench.integration_head()?;
+    let committed = git_in(
+        &bench.repo,
+        &bench.integration,
+        &["show", "--name-only", "--format=", "HEAD"],
+    )?;
+    assert_eq!(
+        committed.lines().collect::<Vec<_>>(),
+        [BYTECODE, "store.rs"]
+    );
+    bench.repo.write(BYTECODE, "your own bytecode")?;
+    let main = bench.repo.head()?;
+
+    let call = step_call()?;
+    let step = merge::merge_step(&bench.host, &call);
+    let answering = async {
+        let first = bench.next_merge_card(&[]).await?;
+        bench.answer(&first, AnswerAction::Merge)?;
+        let asked = bench
+            .in_the_way_card(std::slice::from_ref(&first.id))
+            .await?;
+        assert_eq!(asked.title, "Waiting to merge into main");
+        let labels: Vec<&str> = asked
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        assert_eq!(labels, [MOVE_ASIDE, TRY_AGAIN, MERGE_LATER]);
+        assert!(asked.needs_you);
+        let CheckpointPacket::Merge(packet) = &asked.packet else {
+            bail!("not a merge packet");
+        };
+        assert_eq!(packet.in_the_way, [BYTECODE]);
+        ensure!(!bench.landed(), "nothing landed over your file");
+        ensure!(
+            bench
+                .integration_events()
+                .contains(&IntegrationEvent::WaitingToMerge {
+                    target: "main".to_owned(),
+                    in_the_way: vec![BYTECODE.to_owned()],
+                })
+        );
+        bench.answer(&asked, choose(MERGE_LATER))
+    };
+    let (done, answered) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(20), step),
+        answering
+    );
+    answered?;
+    match done.context("the merge step timed out")? {
+        Err(EngineError::Interrupted) => {}
+        other => bail!("expected the run to wait to merge, got {other:?}"),
+    }
+    let finished = bench
+        .sink
+        .events()
+        .into_iter()
+        .any(|event| matches!(event.kind, RunEventKind::Run(RunLifecycle::Finished { .. })));
+    assert!(!finished, "the run waits to merge, it hasn't failed");
+    assert!(bench.host.read(|state| state.run.paused));
+    assert_eq!(
+        bench
+            .host
+            .read(|state| state.integration.waiting_to_merge.clone()),
+        [BYTECODE]
+    );
+    // The work stays on the run's branch, and your checkout and your file are as they were.
+    let run_branch = branch::integration_branch(bench.host.run_id());
+    assert_eq!(
+        git_in(&bench.repo, bench.repo.root(), &["rev-parse", &run_branch])?,
+        work
+    );
+    assert_eq!(bench.integration_head()?, work);
+    assert_eq!(bench.repo.head()?, main);
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join(BYTECODE))?,
+        "your own bytecode"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn try_again_asks_while_files_are_still_in_the_way() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.repo.write("store.rs", "// mine\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            bench.answer(&asked, choose(TRY_AGAIN))?;
+            let again = bench
+                .in_the_way_card(&[first.id.clone(), asked.id.clone()])
+                .await?;
+            std::fs::remove_file(bench.repo.root().join("store.rs"))?;
+            bench.answer(&again, choose(TRY_AGAIN))
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    Ok(())
+}
+
+/// A landing your rules approved and that was refused merged nothing, so the auto-merge
+/// they took goes back; the card you answer yourself takes none.
+#[tokio::test]
+async fn a_refused_auto_landing_gives_back_its_auto_merge() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.services.policy.decide_next_after(
+        PolicyOutcome::Decided {
+            verdict: Verdict::Approve,
+            by: DecideWith::Rules,
+            approver: None,
+            reasons: vec!["within your rules".to_owned()],
+            spot_check: false,
+        },
+        Duration::from_millis(300),
+    );
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            // The branch moves before your rules' approval lands.
+            commit_in(
+                &bench.repo,
+                &bench.integration,
+                "late.rs",
+                "late\n",
+                "late change",
+            )?;
+            let second = bench
+                .next_merge_card(std::slice::from_ref(&first.id))
+                .await?;
+            bench.answer(&second, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let refused: Vec<CheckpointId> = bench
+        .services
+        .policy
+        .refused_landings()
+        .into_iter()
+        .map(|point| point.checkpoint)
+        .collect();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    Ok(())
+}
+
+/// The review's first probe: you switch branches while the card waits, then choose Try
+/// again. Landing reads the checkout again, so main lands and your branch is left alone,
+/// instead of a "Merged" that moved the branch you were on.
+#[tokio::test]
+async fn a_branch_switched_while_the_card_waits_leaves_it_alone() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let base = bench.repo.head()?;
+    bench.repo.write("store.rs", "// mine\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            std::fs::remove_file(bench.repo.root().join("store.rs"))?;
+            git_in(
+                &bench.repo,
+                bench.repo.root(),
+                &["checkout", "-qb", "experiment"],
+            )?;
+            bench.answer(&asked, choose(TRY_AGAIN))
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let main = git_in(&bench.repo, bench.repo.root(), &["rev-parse", "main"])?;
+    assert_eq!(main, bench.integration_head()?, "main has the run");
+    assert_eq!(bench.repo.head()?, base, "your branch didn't move");
+    assert!(bench.integration_events().iter().any(|event| matches!(
+        event,
+        IntegrationEvent::Landed { target, .. } if target == "main"
+    )));
+    Ok(())
+}
+
+/// The review's second probe: while the card waits you clear the file in the way and edit
+/// one the run changes. Try again asks about the edit, in plain words, instead of failing the
+/// run with git's "Aborting", and lands once it's committed or undone.
+#[tokio::test]
+async fn an_edit_made_while_the_card_waits_asks_instead_of_failing() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    commit_in(
+        &bench.repo,
+        &bench.integration,
+        "README.md",
+        "# Test repo\n\nRun `store` to save.\n",
+        "Document the store",
+    )?;
+    bench.repo.write("store.rs", "// mine\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            std::fs::remove_file(bench.repo.root().join("store.rs"))?;
+            bench.repo.write("README.md", "# Test repo, my notes\n")?;
+            bench.answer(&asked, choose(TRY_AGAIN))?;
+
+            let edited = bench
+                .next_merge_card(&[first.id.clone(), asked.id.clone()])
+                .await?;
+            let CheckpointPacket::Merge(packet) = &edited.packet else {
+                bail!("not a merge packet");
+            };
+            assert_eq!(edited.title, "Waiting to merge into main");
+            assert_eq!(packet.edited, ["README.md"]);
+            assert!(packet.in_the_way.is_empty());
+            assert_eq!(keys(&edited), ['t', 'l'], "nothing to move aside");
+            assert_eq!(edited.mode, ApprovalMode::Supervised);
+            ensure!(!bench.landed());
+            git_in(
+                &bench.repo,
+                bench.repo.root(),
+                &["checkout", "--", "README.md"],
+            )?;
+            bench.answer(&edited, choose(TRY_AGAIN))
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    Ok(())
+}
+
+/// An uncommitted edit to a file the run leaves alone rides along with the fast-forward, so
+/// it neither stops the merge nor sends the card back to your rules again and again.
+#[tokio::test]
+async fn an_edit_to_a_file_the_run_leaves_alone_rides_along() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.repo.write("README.md", "# Test repo, my notes\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("README.md"))?,
+        "# Test repo, my notes\n"
+    );
+    let merge_cards = bench.host.read(|state| {
+        state
+            .checkpoints
+            .by_id
+            .values()
+            .filter(|record| record.opened.kind == CheckpointKind::Merge)
+            .count()
+    });
+    assert_eq!(merge_cards, 1, "asked once");
+    Ok(())
+}
+
+/// Merge later pauses the run at the merge, waiting to merge rather than failed, and resuming
+/// acts on the same approval once the way is clear.
+#[tokio::test]
+async fn merge_later_pauses_and_resuming_merges() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.repo.write("store.rs", "// mine\n")?;
+    let call = step_call()?;
+    let step = merge::merge_step(&bench.host, &call);
+    let answering = async {
+        let first = bench.next_merge_card(&[]).await?;
+        bench.answer(&first, AnswerAction::Merge)?;
+        let asked = bench
+            .in_the_way_card(std::slice::from_ref(&first.id))
+            .await?;
+        bench.answer(&asked, choose(MERGE_LATER))
+    };
+    let (done, answered) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(20), step),
+        answering
+    );
+    answered?;
+    match done.context("the merge step timed out")? {
+        Err(EngineError::Interrupted) => {}
+        other => bail!("expected the run to pause, got {other:?}"),
+    }
+    assert!(bench.host.read(|state| state.run.paused));
+    assert!(!bench.landed());
+    assert_eq!(
+        bench
+            .host
+            .read(|state| state.integration.waiting_to_merge.clone()),
+        ["store.rs"]
+    );
+    assert!(
+        bench
+            .notes()
+            .iter()
+            .any(|note| note.contains("/resume run-") && note.contains("waits to merge"))
+    );
+
+    std::fs::remove_file(bench.repo.root().join("store.rs"))?;
+    let done = bench.run(async { Ok(()) }).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert!(
+        bench
+            .host
+            .read(|state| state.integration.waiting_to_merge.is_empty())
+    );
     Ok(())
 }
 

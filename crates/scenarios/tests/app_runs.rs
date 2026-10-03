@@ -74,6 +74,10 @@ fn codex_config(base: &str) -> String {
     format!("{base}\n[agents.codex]\nmodel = \"gpt-5.6-luna\"\n")
 }
 
+/// The goal's questions come to you, for the scenarios that walk through its question card.
+/// In auto the lead would answer them otherwise.
+const YOU_ANSWER: &str = "\n[approvals]\nanswered_by = \"you\"\n";
+
 fn is_finished(outcome: RunOutcome) -> impl Fn(&argonauts_core::events::RunEvent) -> bool {
     move |event| matches!(&event.kind, RunEventKind::Run(RunLifecycle::Finished { outcome: o, .. }) if *o == outcome)
 }
@@ -127,7 +131,7 @@ fn app_example_small_fix_solo() -> anyhow::Result<()> {
     );
 
     merge(&mut pty, &run_dir)?;
-    pty.wait_for(r"◆ Merged the run into main · you", WAIT)?;
+    pty.wait_for(r"◆ Approved merging the run into main · you", WAIT)?;
     pty.wait_for(r"✻ \w+ for \d", WAIT)?;
     check_mode_line(&pty)?;
     let readme = scenario.repo.git(&["show", "main:README.md"])?;
@@ -140,7 +144,8 @@ fn app_example_small_fix_solo() -> anyhow::Result<()> {
 fn app_example_bigger_task_crew() -> anyhow::Result<()> {
     // The example runs the preset's own workflow, without the lead designing one.
     let scenario = scenario_with(&codex_config(&format!(
-        "{GLOBAL_CONFIG}\n[workflows]\nlead_designs = false\nadapt_at_phase_ends = false\n"
+        "{GLOBAL_CONFIG}\n[workflows]\nlead_designs = false\nadapt_at_phase_ends = false\n\
+         {YOU_ANSWER}"
     )))?;
     let mut pty = start(&scenario)?;
     submit(&mut pty, requests::CREW_TASK)?;
@@ -790,6 +795,7 @@ fn app_checkpoints_and_revert_commands() -> anyhow::Result<()> {
     let tag = format!("argonauts/{run}/card-001/handoff-1");
     let kept_on = format!("argonauts/{run}/card-001-replaced-1");
 
+    set_card_aside(&mut pty)?;
     let listed = list_checkpoints(&scenario, &mut pty)?;
     let [row] = listed.as_slice() else {
         bail!("one checkpoint, not {listed:?}");
@@ -858,7 +864,7 @@ fn app_checkpoints_and_revert_commands() -> anyhow::Result<()> {
 
 #[test]
 fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
-    let scenario = scenario_with(&codex_config(GLOBAL_CONFIG))?;
+    let scenario = scenario_with(&codex_config(&format!("{GLOBAL_CONFIG}{YOU_ANSWER}")))?;
     // The review panel is a project's own workflow, offered to the lead beside the built-ins.
     scenario
         .repo

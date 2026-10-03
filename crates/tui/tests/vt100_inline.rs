@@ -699,6 +699,10 @@ fn keys_do_what_the_reference_says() {
     );
     assert!(h.key(KeyCode::Char('x')).is_empty());
     assert_eq!(h.ui.model().bottom.card.as_ref().unwrap().armed, None);
+    // After a letter, a number waits for a key meant for the card.
+    assert!(h.key(KeyCode::Char('2')).is_empty());
+    assert_eq!(h.ui.model().bottom.card.as_ref().unwrap().armed, None);
+    h.key(KeyCode::Up);
     assert!(h.key(KeyCode::Char('2')).is_empty());
     h.settle();
     assert!(

@@ -3,22 +3,23 @@
 
 use futures::future::join_all;
 
-use argonauts_core::CardId;
 use argonauts_core::PhaseStatus;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::CardState;
 use argonauts_core::events::checkpoint::{
     AnswerAction, AnswerOption, CheckpointDecided, CheckpointKind, CheckpointPacket, FreeText,
 };
-use argonauts_core::events::run::{PhaseChange, RunOutcome, RunPhase};
+use argonauts_core::events::run::{Party, PhaseChange, RunOutcome, RunPhase};
 use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::handoff::QualityDebt;
 use argonauts_core::names::{CheckpointId, VendorId};
 use argonauts_core::policy::EvidenceSubject;
 use argonauts_core::settings::protocol::MergeMode;
+use argonauts_core::{CardId, Note, NoteLevel};
 
 use crate::card::pipeline;
 use crate::checkpoints::{self, CheckpointRequest, options};
+use crate::engine::commands;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::handoff::merge_return::{self, Rerun};
@@ -136,9 +137,31 @@ pub async fn merge_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
                     return finish(host, outcome, outcome_summary(outcome));
                 }
                 Landing::Again(why) => notices.push(why),
+                Landing::Later => return merge_later(host).await,
             },
         }
     }
+}
+
+/// You chose to merge later: the run pauses at the merge, waiting to merge, and resuming it
+/// acts on the same approval and tries again.
+async fn merge_later(host: &Host) -> EngineResult<StepDone> {
+    let text = format!(
+        "The run waits to merge. Once those files are out of the way, /resume {} merges it.",
+        host.run_id()
+    );
+    host.record(
+        None,
+        None,
+        RunEventKind::Note(Note {
+            level: NoteLevel::Info,
+            text,
+        }),
+    )?;
+    if commands::begin_pause_by(host, false, Party::User)? {
+        commands::finish_pause(host).await?;
+    }
+    Err(EngineError::Interrupted)
 }
 
 /// Your answer, already given, or the final check the checkpoint opens with.

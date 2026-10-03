@@ -99,7 +99,6 @@ impl Host<StdoutWriter> for Smoke {
         let mut working = WorkingLine::new("Rowing", now);
         working.activity = Activity::Thinking { since: now };
         working.tokens_down = 3_600;
-        working.last_progress = Some(now);
         model.bottom.working = Some(working);
     }
 
@@ -132,7 +131,6 @@ impl Host<StdoutWriter> for Smoke {
                 model.bottom.mode.background_agents = 3;
                 if let Some(working) = &mut model.bottom.working {
                     working.details = vec!["build".into(), "3 agents".into()];
-                    working.last_progress = Some(now);
                 }
             }
             1 => {

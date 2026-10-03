@@ -1,5 +1,6 @@
 //! ◆ cards above the input: focus, keys, notes, the evidence hash, the bell, Esc, and the
-//! guided setup's steps.
+//! guided setup's steps. A card that needs you takes the keys as it shows, unless a draft is
+//! being typed, which keeps them until it's sent.
 
 mod pty_support;
 
@@ -8,6 +9,11 @@ use serde_json::{Value, json};
 
 const MERGE_CARD: &str = "◆ Merge";
 const PLACEHOLDER: &str = "↑ to answer the card, or type to guide the run";
+/// The input's hint while a card has the keys.
+const CARD_KEYS: &str = "❯ ↑↓ to move · Enter or a number to answer · Esc to set aside";
+/// The hint once something was typed at the card.
+const TYPED_AT: &str =
+    "❯ Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside";
 
 /// A finished build waiting at its merge checkpoint `cp-001`.
 fn merge_waiting() -> (RunScript, Script) {
@@ -27,7 +33,7 @@ fn checkpoint_target(id: &str) -> Value {
 }
 
 #[test]
-fn card_keys_work_with_empty_prompt() {
+fn a_card_that_needs_you_takes_the_keys_as_it_shows() {
     let (mut run, script) = merge_waiting();
     let decided = run.decided(
         "cp-001",
@@ -36,15 +42,9 @@ fn card_keys_work_with_empty_prompt() {
     );
     let script = script.await_command("answer").at(0, decided);
     let mut harness = Harness::start(script);
-    let screen = harness.wait_visible(MERGE_CARD);
-    assert!(
-        row_of(&screen, "❯ 1\\. Merge").is_none(),
-        "a card never takes focus by itself:\n{}",
-        screen.visible_text()
-    );
-    harness.wait_visible(PLACEHOLDER);
-    harness.press(Key::Tab);
+    harness.wait_visible(MERGE_CARD);
     harness.wait_visible("❯ 1\\. Merge");
+    harness.wait_visible(CARD_KEYS);
     harness.press(Key::Down);
     harness.wait_visible("❯ 2\\. Open a pull request");
     harness.press(Key::Enter);
@@ -55,15 +55,35 @@ fn card_keys_work_with_empty_prompt() {
 }
 
 #[test]
-fn typed_text_never_answers_card() {
+fn chat_typed_at_a_card_never_answers_it() {
     let (_, script) = merge_waiting();
     let mut harness = Harness::start(script);
-    harness.wait_visible(MERGE_CARD);
-    for text in ["yes, let's merge", "1", "y"] {
-        harness.submit(text);
-    }
+    harness.wait_visible("❯ 1\\. Merge");
+    // The pointer is on Merge, so the Enter that ends a chat line must not confirm it, and
+    // neither may a number in the next line or another Enter.
+    harness.send("yes, let's merge");
+    harness.wait_visible(TYPED_AT);
+    harness.press(Key::Enter);
+    harness.send("also 2 more");
+    harness.press(Key::Enter);
+    harness.wait_visible(TYPED_AT);
     harness.assert_no_command("answer");
-    harness.wait_visible(MERGE_CARD);
+    harness.assert_no_command("submit");
+    // A key meant for the card ends it.
+    harness.press(Key::Down);
+    harness.wait_visible(CARD_KEYS);
+    harness.wait_visible("❯ 2\\. Open a pull request");
+    harness.assert_no_command("answer");
+
+    // Set aside, the input takes typing again, and ↑ brings the card back.
+    harness.press(Key::Esc);
+    harness.wait_visible("· needs you · ↑ to answer");
+    harness.wait_visible(PLACEHOLDER);
+    harness.submit("keep the CSV path");
+    harness.press(Key::Up);
+    harness.wait_visible("❯ 2\\. Open a pull request");
+    harness.wait_visible(CARD_KEYS);
+    harness.assert_no_command("answer");
 }
 
 #[test]
@@ -74,9 +94,9 @@ fn own_answer_option_opens_line_in_card() {
         .at(0, run.question_checkpoint("cp-001", &crew[0]));
     let mut harness = Harness::start(script);
     harness.wait_visible("Keep a CSV fallback\\?");
-    harness.press(Key::Up);
     harness.wait_visible("❯ 1\\. Yes, keep it");
     harness.press(Key::Char('3'));
+    harness.wait_visible("❯ Typing goes into the card");
     harness.send("only behind a flag");
     let screen = harness.wait_visible("only behind a flag");
     let typed = expect_row(&screen, "only behind a flag");
@@ -110,7 +130,6 @@ fn card_tab_adds_note() {
     );
     let mut harness = Harness::start(script);
     harness.wait_visible("Approve with edits");
-    harness.press(Key::Up);
     harness.wait_visible("❯ 1\\. Approve the plan");
     harness.press(Key::Down);
     harness.wait_visible("❯ 2\\. Approve with edits");
@@ -146,6 +165,9 @@ fn keys_typed_as_card_appears_kept() {
     );
     harness.press(Key::Enter);
     harness.wait_command_where("submit", |c| c["text"] == "keep going");
+    // With the draft sent, the card takes the keys.
+    harness.wait_visible("❯ 1\\. Yes, keep it");
+    harness.wait_visible(CARD_KEYS);
     harness.assert_no_command("answer");
 }
 

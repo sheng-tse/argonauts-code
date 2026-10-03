@@ -1229,6 +1229,9 @@ fn open_merge_card(bench: &Bench) -> anyhow::Result<CheckpointId> {
         spent: Spend::default(),
         limit: None,
         partial: false,
+        in_the_way: Vec::new(),
+        edited: Vec::new(),
+        refused: None,
     };
     bench.host.record(
         None,

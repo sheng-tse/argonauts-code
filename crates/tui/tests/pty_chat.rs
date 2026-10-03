@@ -278,12 +278,15 @@ fn busy_screen_keeps_its_layout() {
             "^  ǁ supervised mode on \\(shift\\+tab to cycle\\) · esc to interrupt · ← 3 agents · ↓ to manage( {2,}\\S.*)?$",
             // The panel has a row per run, named by its workflow and title, with its agents
             // under it, and the kit keeps Claude Code's space
-            // after the arrow. An agent's row is its circle, name, card, bar, and stats, and a
-            // name too long for the column is cut.
-            "^  ○ peer-crew · Add a --json flag to ex\\S*… +0/3 agents · ",
-            &format!("^    ◐ Opus on Claude Code +card-\\d+ +{ELAPSED} · ↓ "),
-            &format!("^    ◐ GPT 5\\.6 on Codex +card-\\d+ +{ELAPSED} · ↓ "),
-            &format!("^    ◐ Gemini 3\\.6 Pro on Antig\\S*… +card-\\d+ +{ELAPSED} · ↓ "),
+            // after the arrow. An agent's row is its circle, name, card, bar, and stats in
+            // columns with the time at the edge. Names longer than the column take the room the
+            // row has to spare, and are cut only past it.
+            "^  ○ peer-crew · Add a --json flag to export +0/3 agents · ",
+            &format!("^    ◐ Opus on Claude Code +card-\\d+ +↓ [\\d.]+k tokens +{ELAPSED}"),
+            &format!("^    ◐ GPT 5\\.6 on Codex +card-\\d+ +↓ [\\d.]+k tokens +{ELAPSED}"),
+            &format!(
+                "^    ◐ Gemini 3\\.6 Pro on Antigravity CLI +card-\\d+ +↓ [\\d.]+k tokens +{ELAPSED}"
+            ),
         ],
     );
     let working = expect_row(&screen, WORKING_LINE);

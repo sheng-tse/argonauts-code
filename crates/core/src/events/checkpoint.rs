@@ -166,6 +166,26 @@ pub struct MergePacket {
     pub limit: Option<BudgetAmount>,
     /// Set when an agent was stopped early, so the work may be partial.
     pub partial: bool,
+    /// Your untracked files at paths the merge brings, which git won't overwrite. Set only on
+    /// the card that asks what to do with them; a folder ends in `/`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub in_the_way: Vec<String>,
+    /// Your uncommitted edits to files the merge changes, which git won't merge over. Set only
+    /// on the card that waits to merge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edited: Vec<String>,
+    /// Why git wouldn't move your checkout forward when nothing of yours was in the way, in
+    /// its words. Set only on the card that waits to merge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+}
+
+impl MergePacket {
+    /// The card waits to merge into your checkout: something of yours is in the way, or git
+    /// refused, and only you can clear it.
+    pub fn waits_on_you(&self) -> bool {
+        !self.in_the_way.is_empty() || !self.edited.is_empty() || self.refused.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

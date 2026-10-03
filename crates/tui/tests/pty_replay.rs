@@ -70,7 +70,8 @@ fn replayed_events_ring_no_bell() {
     let harness = Harness::start(script);
     harness.wait_visible(&format!("※ recap: {REPLAY_RECAP}"));
     harness.wait_visible("Keep a CSV fallback\\?");
-    harness.wait_visible("esc to interrupt");
+    // Still open, the question takes the keys, though it never rings.
+    harness.wait_visible("❯ 1\\. Yes, keep it");
     assert_eq!(harness.bells(), 0, "history never rings");
     harness.signal("live");
     harness.wait_until("the bell for the new card", |_| harness.bells() > 0);

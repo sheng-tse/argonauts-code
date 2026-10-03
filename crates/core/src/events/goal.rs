@@ -63,6 +63,17 @@ pub struct Assumption {
     pub basis: String,
 }
 
+/// How the basis of an answer the lead gave for you starts, when the lead answers the crew's
+/// questions. The goal file shows the basis, so this marks it there too.
+pub const LEAD_ANSWER: &str = "the lead's answer";
+
+impl Assumption {
+    /// The lead answered it for you.
+    pub fn by_lead(&self) -> bool {
+        self.basis.starts_with(LEAD_ANSWER)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GoalQuestion {
     /// 1-based, out of `of`.

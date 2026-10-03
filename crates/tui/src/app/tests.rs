@@ -6,8 +6,8 @@ use ratatui::layout::{Position, Size};
 use super::input::QUIT_WINDOW;
 use super::*;
 use crate::bottom::{
-    AgentRow, AgentState, ApprovalMode, CardOption, CardPrompt, HistorySearch, Picker, PickerEvent,
-    PickerRow, VimMode, WorkingLine,
+    AgentRow, AgentState, ApprovalMode, CARD_WAITS_FOR_QUIET, CardOption, CardPrompt,
+    HistorySearch, Picker, PickerEvent, PickerRow, VimMode, WorkingLine,
 };
 use crate::prompt_history::PromptEntry;
 use crate::theme::Glyphs;
@@ -432,6 +432,271 @@ fn a_card_you_set_off_keeps_typing_and_slash_out_of_the_input() {
 }
 
 #[test]
+fn a_card_that_needs_you_keeps_typing_out_until_set_aside() {
+    let (mut ui, t0) = ui_at(100);
+    ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
+    let mut merge = card(9);
+    merge.needs_you = true;
+    ui.model_mut().bottom.card = Some(merge);
+    // Any event hands it the keys while the input is empty, as a card arriving does.
+    ui.handle_event(Event::FocusGained, t0);
+    assert!(ui.model().bottom.focused_card().is_some());
+    ui.frame(t0).unwrap();
+    let rows = screen(&ui);
+    assert!(
+        rows.iter()
+            .any(|row| row == "❯ ↑↓ to move · Enter or a number to answer · Esc to set aside"),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("type to guide the run")),
+        "{rows:#?}"
+    );
+
+    // Letters, a paste, and the Enter after them reach neither the input nor the card.
+    for c in "keep it".chars() {
+        assert!(press(&mut ui, KeyCode::Char(c), t0).is_empty());
+    }
+    ui.handle_event(Event::Paste("keep the branch".into()), t0);
+    assert!(ui.model().bottom.composer.is_empty());
+    ui.frame(t0 + Duration::from_millis(20)).unwrap();
+    assert!(
+        screen(&ui).iter().any(|row| row
+            == "❯ Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"),
+        "{:#?}",
+        screen(&ui)
+    );
+    assert!(press(&mut ui, KeyCode::Enter, t0).is_empty());
+    assert!(ui.model().bottom.card.is_some());
+
+    // Set aside, the input takes typing again, and ↑ on an empty input brings the card back.
+    assert_eq!(
+        press(&mut ui, KeyCode::Esc, t0),
+        [UiAction::SetAside { card: 9 }]
+    );
+    assert!(ui.model().bottom.composer_has_focus());
+    type_text(&mut ui, "keep it", t0);
+    assert_eq!(
+        press(&mut ui, KeyCode::Enter, t0),
+        [UiAction::submit("keep it")]
+    );
+    assert!(
+        ui.model().bottom.composer_has_focus(),
+        "set aside, it waits for ↑"
+    );
+    assert!(press(&mut ui, KeyCode::Up, t0).is_empty());
+    assert!(ui.model().bottom.focused_card().is_some());
+    assert_eq!(press(&mut ui, KeyCode::Char('2'), t0), answer(9, 1));
+}
+
+#[test]
+fn a_card_that_needs_you_waits_for_a_draft_to_be_sent() {
+    let (mut ui, t0) = ui();
+    type_text(&mut ui, "keep go", t0);
+    let mut merge = card(9);
+    merge.needs_you = true;
+    ui.model_mut().bottom.card = Some(merge);
+    type_text(&mut ui, "ing", t0);
+    assert_eq!(ui.model().bottom.composer.text(), "keep going");
+    assert!(ui.model().bottom.waiting_card().is_some());
+    assert_eq!(
+        press(&mut ui, KeyCode::Enter, t0),
+        [UiAction::submit("keep going")]
+    );
+    // The next message may follow at once, so the card waits for the input to go quiet.
+    let soon = t0 + Duration::from_millis(100);
+    ui.frame(soon).unwrap();
+    assert!(ui.model().bottom.waiting_card().is_some());
+    let quiet = t0 + CARD_WAITS_FOR_QUIET;
+    assert!(ui.next_deadline(soon).is_some_and(|at| at <= quiet));
+    ui.frame(quiet).unwrap();
+    assert!(
+        ui.model().bottom.focused_card().is_some(),
+        "with the draft sent and the input quiet, the card takes the keys"
+    );
+}
+
+/// The probe from the review: a draft cleared with Ctrl+U never hands the keys to the card,
+/// so the line typed after it lands in the input whole.
+#[test]
+fn clearing_a_draft_never_hands_a_card_the_keys() {
+    let (mut ui, t0) = ui();
+    type_text(&mut ui, "fix", t0);
+    let mut merge = card(9);
+    merge.needs_you = true;
+    ui.model_mut().bottom.card = Some(merge);
+    let at = |ms| t0 + Duration::from_millis(ms);
+    ui.handle_event(Event::FocusGained, at(10));
+    chord(&mut ui, 'u', at(20));
+    assert!(ui.model().bottom.composer.is_empty());
+    assert!(ui.model().bottom.focused_card().is_none());
+    for (n, c) in "fix the slug bug, then 2 more".chars().enumerate() {
+        let typed = press(&mut ui, KeyCode::Char(c), at(30 + n as u64 * 40));
+        assert!(typed.is_empty(), "{c:?} did {typed:?}");
+    }
+    assert_eq!(
+        ui.model().bottom.composer.text(),
+        "fix the slug bug, then 2 more"
+    );
+    assert!(ui.model().bottom.waiting_card().is_some());
+}
+
+/// The unclear request follows the lead's reply, which you may answer by typing, so once you
+/// type it leaves the keys with you even after the input goes quiet.
+#[test]
+fn the_unclear_request_leaves_the_keys_once_you_type() {
+    let (mut ui, t0) = ui();
+    let mut unclear = card(9);
+    unclear.needs_you = true;
+    unclear.yields_to_typing = true;
+    ui.model_mut().bottom.card = Some(unclear);
+    press(&mut ui, KeyCode::Char('i'), t0);
+    press(&mut ui, KeyCode::Backspace, t0);
+    ui.frame(t0 + CARD_WAITS_FOR_QUIET * 3).unwrap();
+    assert!(ui.model().bottom.waiting_card().is_some());
+    assert!(press(&mut ui, KeyCode::Up, t0 + CARD_WAITS_FOR_QUIET * 3).is_empty());
+    assert!(
+        ui.model().bottom.focused_card().is_some(),
+        "↑ still brings it up"
+    );
+}
+
+/// The paste-then-Enter and vim probes from the review, on a card that took the keys from a
+/// quiet input: nothing typed answers it, Merge least of all.
+#[test]
+fn typing_meant_for_the_input_never_answers_a_card_that_took_the_keys() {
+    let take = |vim: bool| {
+        let (mut ui, t0) = ui();
+        if vim {
+            ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
+        }
+        let mut merge = card(9);
+        merge.needs_you = true;
+        ui.model_mut().bottom.card = Some(merge);
+        ui.frame(t0).unwrap();
+        assert!(ui.model().bottom.focused_card().is_some());
+        (ui, t0)
+    };
+    let (mut ui, t0) = take(false);
+    assert!(
+        ui.handle_event(Event::Paste("keep the branch".into()), t0)
+            .is_empty()
+    );
+    assert!(press(&mut ui, KeyCode::Enter, t0).is_empty());
+    assert!(ui.model().bottom.card.is_some());
+
+    for line in ["let me check", "we will see"] {
+        let (mut ui, t0) = take(true);
+        for c in line.chars() {
+            let typed = press(&mut ui, KeyCode::Char(c), t0);
+            assert!(typed.is_empty(), "{line:?}: {c:?} did {typed:?}");
+        }
+        assert!(press(&mut ui, KeyCode::Enter, t0).is_empty(), "{line:?}");
+        assert!(ui.model().bottom.focused_card().is_some(), "{line:?}");
+    }
+
+    let (mut ui, t0) = take(false);
+    for c in "also fix 2 more bugs".chars() {
+        assert!(press(&mut ui, KeyCode::Char(c), t0).is_empty(), "{c:?}");
+    }
+    assert!(press(&mut ui, KeyCode::Enter, t0).is_empty());
+    assert!(ui.model().bottom.card.is_some());
+}
+
+/// While a card that needs you has the keys, Ctrl+R and vim's `/` don't open the prompt
+/// search and `!` doesn't start shell mode. Set aside, each works as before.
+#[test]
+fn a_card_with_the_keys_holds_off_the_search_and_shell_mode() {
+    let (mut ui, t0) = ui();
+    ui.model_mut().bottom.mode.vim = Some(VimMode::Normal);
+    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.frame(t0).unwrap();
+    assert!(ui.model().bottom.focused_card().is_some());
+
+    assert!(chord(&mut ui, 'r', t0).is_empty());
+    assert!(press(&mut ui, KeyCode::Char('/'), t0).is_empty());
+    assert!(press(&mut ui, KeyCode::Char('!'), t0).is_empty());
+    let bottom = &ui.model().bottom;
+    assert!(bottom.history_search.is_none());
+    assert!(bottom.focused_card().is_some());
+    assert!(!bottom.composer.is_shell());
+    assert!(bottom.composer.is_empty());
+
+    assert_eq!(
+        press(&mut ui, KeyCode::Esc, t0),
+        [UiAction::SetAside { card: 9 }]
+    );
+    assert_eq!(
+        press(&mut ui, KeyCode::Char('/'), t0),
+        [UiAction::SearchHistory]
+    );
+    open_search(&mut ui);
+    assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
+    assert_eq!(chord(&mut ui, 'r', t0), [UiAction::SearchHistory]);
+    open_search(&mut ui);
+    assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
+    assert_eq!(ui.model().bottom.mode.vim, Some(VimMode::Normal));
+    type_text(&mut ui, "i!", t0);
+    assert!(ui.model().bottom.composer.is_shell());
+    assert!(
+        ui.model()
+            .bottom
+            .card
+            .as_ref()
+            .is_some_and(|card| card.pinned)
+    );
+}
+
+fn needs_you(id: u64) -> CardPrompt {
+    let mut card = card(id);
+    card.needs_you = true;
+    card
+}
+
+/// An open prompt search is a draft in use: a card that needs you waits however long it
+/// stays quiet, and takes the keys once the search closes on an empty input and it's quiet.
+#[test]
+fn an_open_search_keeps_a_card_waiting() {
+    let (mut ui, t0) = ui();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    assert_eq!(chord(&mut ui, 'r', t0), [UiAction::SearchHistory]);
+    open_search(&mut ui);
+    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.frame(at(5000)).unwrap();
+    assert!(ui.model().bottom.waiting_card().is_some());
+    assert_eq!(ui.model().bottom.card_takes_keys_at(), None);
+    type_text(&mut ui, "exp", at(5000));
+    assert_eq!(ui.model().bottom.composer.text(), "", "typing filters");
+    assert!(press(&mut ui, KeyCode::Esc, at(6000)).is_empty());
+    assert!(ui.model().bottom.history_search.is_none());
+    ui.frame(at(6100)).unwrap();
+    assert!(ui.model().bottom.waiting_card().is_some());
+    assert!(
+        ui.next_deadline(at(6100))
+            .is_some_and(|due| due <= at(6000) + CARD_WAITS_FOR_QUIET)
+    );
+    ui.frame(at(6000) + CARD_WAITS_FOR_QUIET).unwrap();
+    assert!(ui.model().bottom.focused_card().is_some());
+}
+
+/// `!` waiting for its command is a draft too, until Backspace leaves shell mode.
+#[test]
+fn shell_mode_keeps_a_card_waiting() {
+    let (mut ui, t0) = ui();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    press(&mut ui, KeyCode::Char('!'), t0);
+    assert!(ui.model().bottom.composer.is_shell());
+    ui.model_mut().bottom.card = Some(needs_you(9));
+    ui.frame(at(5000)).unwrap();
+    assert!(ui.model().bottom.waiting_card().is_some());
+    assert_eq!(ui.model().bottom.card_takes_keys_at(), None);
+    press(&mut ui, KeyCode::Backspace, at(6000));
+    assert!(!ui.model().bottom.composer.is_shell());
+    ui.frame(at(6000) + CARD_WAITS_FOR_QUIET).unwrap();
+    assert!(ui.model().bottom.focused_card().is_some());
+}
+
+#[test]
 fn a_focused_card_takes_keys_and_answers() {
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.card = Some(card(9));
@@ -462,6 +727,10 @@ fn a_focused_card_takes_keys_and_answers() {
     press(&mut ui, KeyCode::Down, t0);
     assert!(press(&mut ui, KeyCode::Char('y'), t0).is_empty());
     assert_eq!(ui.model().bottom.card.as_ref().unwrap().armed, None);
+    // After a letter a number waits for a key meant for the card.
+    assert!(press(&mut ui, KeyCode::Char('1'), t0).is_empty());
+    assert_eq!(ui.model().bottom.card.as_ref().unwrap().armed, None);
+    press(&mut ui, KeyCode::Up, t0);
     assert!(press(&mut ui, KeyCode::Char('1'), t0).is_empty());
     assert_eq!(ui.model().bottom.card.as_ref().unwrap().armed, Some(0));
     assert_eq!(
@@ -550,11 +819,13 @@ fn answer(card: u64, option: usize) -> Vec<UiAction> {
 
 #[test]
 fn a_card_moves_with_vim_keys_and_answers_by_number() {
-    // Without vim keys `k` does nothing, and the number answers.
+    // Without vim keys `k` is a letter, so a number waits for a key meant for the card.
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.card = Some(card(20));
     press(&mut ui, KeyCode::Up, t0);
     assert!(press(&mut ui, KeyCode::Char('k'), t0).is_empty());
+    assert!(press(&mut ui, KeyCode::Char('2'), t0).is_empty());
+    press(&mut ui, KeyCode::Up, t0);
     assert_eq!(press(&mut ui, KeyCode::Char('2'), t0), answer(20, 1));
 
     let (mut ui, t0) = ui_at(80);

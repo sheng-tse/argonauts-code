@@ -6,6 +6,7 @@
 //! ([`crate::stability`] checks it).
 
 pub mod agent;
+pub mod columns;
 pub mod context;
 pub mod crew;
 pub mod follow;

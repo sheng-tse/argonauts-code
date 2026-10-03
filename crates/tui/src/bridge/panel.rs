@@ -3,11 +3,11 @@
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::TodoStatus;
 use argonauts_core::app::StatusLine;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{ParkReason, RunOutcome};
 use argonauts_core::settings::budget::BudgetUnit;
+use argonauts_core::{Spend, TodoStatus};
 use time::OffsetDateTime;
 
 use crate::bottom::{AgentRow, AgentState, WorkflowRow, WorkflowRowState};
@@ -203,6 +203,12 @@ fn agent_row(
     row.started_at = instant_at(session.started, wall, now);
     row.ended_at = session.ended.and_then(|end| instant_at(end, wall, now));
     row.tokens_down = session.tokens_out;
+    row.spend = session.cost_usd.and_then(|cost_usd| {
+        panes::spend(&Spend {
+            cost_usd,
+            ..Spend::default()
+        })
+    });
     if session.status == SessionStatus::Stopped {
         row.note = Some("stopped".to_owned());
     }
@@ -233,7 +239,6 @@ fn millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::Spend;
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::budget::BudgetAmount;
     use argonauts_core::settings::ui::NarratorMode;

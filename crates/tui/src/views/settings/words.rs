@@ -216,6 +216,7 @@ fn default_meaning(key: &str) -> Option<&'static str> {
     let segments: Vec<&str> = key.split('.').collect();
     Some(match segments.as_slice() {
         ["approvals", "approver", "model"] => "cheapest, other company",
+        ["approvals", "answered_by"] => "the lead in auto, else you",
         ["handoff", "fallback"] | ["roles", _, "handoff", "fallback"] => "other logged-in CLIs",
         ["roles", _, "sandbox", _] => "same as every agent",
         _ => return None,

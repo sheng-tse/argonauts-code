@@ -59,6 +59,12 @@ impl Adapter for ClaudeCodeAdapter {
         TESTED_VERSIONS
     }
 
+    /// Claude Code 2.1.284 writes a `tool_progress` line every 30 seconds during a long tool
+    /// call in the main conversation, and never while the model thinks or inside a subagent.
+    fn heartbeat(&self) -> Option<Duration> {
+        Some(Duration::from_secs(30))
+    }
+
     fn cheapest_model(&self) -> (&'static str, Option<&'static str>) {
         ("haiku", Some("low"))
     }

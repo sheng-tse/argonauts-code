@@ -64,6 +64,9 @@ impl ClaudeStreamParser {
             "user" => Some(self.on_user(line)),
             "result" => Some(self.on_result(line)),
             "rate_limit_event" => Some(self.on_rate_limit(line)),
+            // The heartbeat during a long tool call. Every line already counts as output for
+            // the watchdog, so it needs no event, and as an unknown one it would pile up.
+            "tool_progress" => Some(Vec::new()),
             _ => None,
         }
     }
@@ -737,6 +740,14 @@ mod tests {
             let line = line.to_string();
             assert!(parser.parse_stdout_line(&line).is_empty(), "{line}");
         }
+    }
+
+    #[test]
+    fn a_heartbeat_produces_no_event() {
+        let mut parser = ClaudeStreamParser::new();
+        let line = json!({"type": "tool_progress", "tool_use_id": "t1",
+                          "elapsed_time_seconds": 30, "heartbeat": true});
+        assert!(parser.parse_stdout_line(&line.to_string()).is_empty());
     }
 
     #[test]

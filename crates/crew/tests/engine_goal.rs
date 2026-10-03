@@ -16,7 +16,7 @@ use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::hash::sha256_hex;
 use argonauts_core::names::MessageId;
-use argonauts_core::settings::approvals::{ApprovalMode, GoalChanges};
+use argonauts_core::settings::approvals::{Answerer, ApprovalMode, GoalChanges};
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::goal::DiffTag;
 use argonauts_core::worker::Access;
@@ -101,6 +101,8 @@ fn crew(listing: &Value, rounds: usize) -> anyhow::Result<(Crew, Vec<Arc<FakeWor
         .write(".argonauts/workflows/goal-alignment.yaml", GOAL_ALIGNMENT)?;
     crew.repo.commit_all("Add the goal alignment workflow")?;
     crew.settings.workflow = WorkflowRef::new("goal-alignment");
+    // These cover the questions you answer; `engine_autonomy` covers the lead answering them.
+    crew.settings.approvals.answered_by = Some(Answerer::You);
     let summaries = [
         "Add a per user rate limit to the public API.",
         "Limit each user's requests to the public API.",
@@ -236,7 +238,7 @@ async fn goal_scope_difference_becomes_question() -> anyhow::Result<()> {
     crew.settings.approvals.goal.mode = ApprovalMode::Auto;
     let outcome = crew.start(RunMode::Crew, REQUEST).await?;
 
-    // Two of three agree, but scope always reaches you, even in auto mode.
+    // Two of three agree, but scope is always a question, and here you answer, even in auto.
     assert_eq!(settled(&outcome.events), (0, 1, vec![DiffTag::Scope], 0));
     assert!(parked(&outcome), "{:?}", outcome.exit);
     let goal_cards = opened(&outcome.events, CheckpointKind::Goal);

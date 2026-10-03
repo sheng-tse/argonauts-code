@@ -21,6 +21,7 @@ use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{PlanLabel, RoleName, WorkerRef, WorkflowId};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::Answerer;
 use argonauts_core::settings::protocol::RoutingAlgorithm;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::plan::{CoordinateInput, JudgeInput, LabeledPlan, MapInput};
@@ -1507,8 +1508,8 @@ fn judged_results(bench: &Bench) -> Vec<JudgingResult> {
 
 #[tokio::test]
 async fn a_near_tie_is_yours_to_pick_before_dividing() -> anyhow::Result<()> {
-    const EVEN: &[(&str, f64)] = &[("CLAUDE", 7.0), ("CODEX", 7.2), ("AGY", 6.9)];
-    let bench = Bench::new(three(true, EVEN), |_| {}, vec![approved_goal()?])?;
+    let yours = |settings: &mut Settings| settings.approvals.answered_by = Some(Answerer::You);
+    let bench = Bench::new(three(true, EVEN), yours, vec![approved_goal()?])?;
     let mut running = run_planning(&bench)?;
 
     let mut picked = None;
@@ -1549,6 +1550,32 @@ async fn a_near_tie_is_yours_to_pick_before_dividing() -> anyhow::Result<()> {
             .any(|event| matches!(event, PlanEvent::Decided(_)))
     );
     assert_eq!(state.cards.by_id.len(), 3);
+    Ok(())
+}
+
+const EVEN: &[(&str, f64)] = &[("CLAUDE", 7.0), ("CODEX", 7.2), ("AGY", 6.9)];
+
+/// In auto the lead answers the crew's questions, so a near tie goes to the plan the judges
+/// scored highest, and only the plan approval after it remains.
+#[tokio::test]
+async fn in_auto_a_near_tie_goes_to_the_top_scored_plan() -> anyhow::Result<()> {
+    let bench = Bench::new(three(true, EVEN), |_| {}, vec![approved_goal()?])?;
+    let mut running = run_planning(&bench)?;
+    let checkpoint = answer_plan(&bench, &mut running, 1, |_| AnswerAction::Approve, None).await?;
+    assert_eq!(checkpoint.title, "Approve this plan?");
+    assert_eq!(running.await??, Flow::Continue);
+
+    let state = bench.state();
+    let chosen = state.plan.chosen().expect("the top-scored plan");
+    assert_eq!(chosen.worker, CODEX.parse()?);
+    let judging = packet(&checkpoint)?.judging.clone().expect("judged");
+    assert_eq!(judging.winner, Some(chosen.label));
+    let noted = bench.sink.events().into_iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Note(note)
+            if note.text.contains("couldn't separate the plans")
+                && note.text.contains(&format!("Plan {}", chosen.label)))
+    });
+    assert!(noted);
     Ok(())
 }
 

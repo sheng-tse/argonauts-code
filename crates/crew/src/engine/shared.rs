@@ -115,6 +115,9 @@ pub struct Shared {
     pub reusing: Mutex<()>,
     /// The run's spend against its budget, from every session's meter readings.
     pub run_meter: Mutex<RunMeter>,
+    /// The build and cache output the run's commits left out that it has named so far, so each
+    /// commit names only what's new.
+    pub told_left_out: Mutex<BTreeSet<String>>,
 }
 
 impl Shared {
@@ -144,7 +147,11 @@ impl Shared {
             services: context.services.clone(),
             git: GIT_ENV
                 .try_with(|env| Git::with_env(env.clone()))
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .leaving_out(
+                    context.settings.merge.leave_out_builtin,
+                    &context.settings.merge.leave_out,
+                ),
             mode: state.run.mode.unwrap_or(RunMode::Solo),
             allocated: Mutex::new(state.ids.clone()),
             state: Mutex::new(state),
@@ -172,6 +179,7 @@ impl Shared {
             replay: replay_terms::read(&context.repo.run_dir)?,
             reusing: Mutex::new(()),
             run_meter: Mutex::new(run_meter),
+            told_left_out: Mutex::new(BTreeSet::new()),
             settings,
         })
     }

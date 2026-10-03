@@ -70,6 +70,7 @@ pub fn category_words(category: ErrorCategory) -> &'static str {
         ErrorCategory::Timeout => "timed out",
         ErrorCategory::Interrupted => "interrupted",
         ErrorCategory::Cli => "CLI error",
+        ErrorCategory::Stalled => "quiet past its heartbeat",
         ErrorCategory::Unknown => "unknown error",
     }
 }

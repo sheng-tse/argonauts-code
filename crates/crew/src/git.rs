@@ -1,7 +1,7 @@
 //! The git operations the conductor runs, through the git CLI with hooks, fsmonitor, and commit
 //! signing turned off so nothing in the repository runs code as a side effect.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use std::process::{Output, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use argonauts_core::DiffStat;
-use argonauts_core::build_output::{self, is_build_output};
+use argonauts_core::build_output::BuildOutput;
 use tokio::process::Command;
 
 mod refs;
@@ -87,6 +87,23 @@ pub enum StagedMerge {
     Conflict(Vec<String>),
 }
 
+/// What a commit of everything in a worktree did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Committed {
+    /// `None` when there was nothing to commit.
+    pub sha: Option<String>,
+    /// Untracked build output left in the tree, uncommitted.
+    pub left_out: Vec<LeftOut>,
+}
+
+/// An untracked file a commit left out as build output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftOut {
+    pub path: String,
+    /// What made it build output: the folder it's in, ending in `/`, or the file itself.
+    pub because: String,
+}
+
 /// Makes `dir` an empty repository of its own, with no template and so no hooks, unless it is
 /// one already. A harness that looks upward for its project's files then stops at `dir`
 /// instead of walking into folders its sandbox closes: OpenCode over ACP refused to start a
@@ -124,6 +141,8 @@ pub struct Git {
     env: Vec<(String, String)>,
     bound: Option<Bound>,
     known: Arc<Known>,
+    /// What commits leave out while it's untracked.
+    build_output: Arc<BuildOutput>,
 }
 
 /// Answers that hold while the engine runs, by the directory they were asked in.
@@ -160,7 +179,20 @@ impl Git {
             env: self.env.clone(),
             bound: Some(Bound { git_dir, work_tree }),
             known: self.known.clone(),
+            build_output: self.build_output.clone(),
         }
+    }
+
+    /// What commits leave out while it's untracked.
+    pub fn build_output(&self) -> &BuildOutput {
+        &self.build_output
+    }
+
+    /// Commits leave out untracked files that `extra` names, such as `merge.leave_out`, and
+    /// the built-in list's when `builtin` is set.
+    pub fn leaving_out(mut self, builtin: bool, extra: &[String]) -> Self {
+        self.build_output = Arc::new(BuildOutput::of(builtin, extra));
+        self
     }
 
     pub async fn absolute_git_dir(&self, dir: &Path) -> Result<PathBuf, GitError> {
@@ -226,26 +258,73 @@ impl Git {
         self.run(repo, &["branch", "-D", branch]).await.map(drop)
     }
 
-    /// Stages everything in `worktree` and commits it, except untracked build output such as
-    /// `__pycache__`, which stays in the tree as it was. `None` when there was nothing to commit.
+    /// Stages everything in `worktree` and commits it, except untracked files the leave-out
+    /// settings name, which stay in the tree as they were. `None` when there was nothing to
+    /// commit.
     pub async fn commit_all(
         &self,
         worktree: &Path,
         message: &str,
     ) -> Result<Option<String>, GitError> {
-        let left_out: Vec<String> = self
-            .untracked_files(worktree)
-            .await?
-            .into_iter()
-            .filter(|path| is_build_output(path))
-            .collect();
+        Ok(self.commit_work(worktree, message).await?.sha)
+    }
+
+    /// [`Git::commit_all`], saying which untracked files it left out as build output.
+    pub async fn commit_work(&self, worktree: &Path, message: &str) -> Result<Committed, GitError> {
+        let left_out = self.stage_all(worktree).await?;
+        let sha = self.commit_index(worktree, message).await?;
+        Ok(Committed { sha, left_out })
+    }
+
+    /// Stages everything but the untracked files the leave-out settings name. Returns what it
+    /// left out.
+    async fn stage_all(&self, worktree: &Path) -> Result<Vec<LeftOut>, GitError> {
+        let untracked = self.untracked_files(worktree).await?;
+        let left_out = self.untracked_build_output(worktree, untracked).await?;
         self.run(worktree, &["add", "--all"]).await?;
-        for paths in left_out.chunks(PATHS_PER_CALL) {
+        for chunk in left_out.chunks(PATHS_PER_CALL) {
             let mut args = vec!["--literal-pathspecs", "rm", "--cached", "--quiet", "--"];
-            args.extend(paths.iter().map(String::as_str));
+            args.extend(chunk.iter().map(|left| left.path.as_str()));
             self.run(worktree, &args).await?;
         }
-        self.commit_index(worktree, message).await
+        Ok(left_out)
+    }
+
+    /// The build output among `untracked`. A folder the repo already tracks files in, such as
+    /// a `build/` that holds scripts, is the repo's own, so what's new there is committed,
+    /// unless an inner folder or the file itself is build output, such as `build/__pycache__/`.
+    async fn untracked_build_output(
+        &self,
+        dir: &Path,
+        untracked: Vec<String>,
+    ) -> Result<Vec<LeftOut>, GitError> {
+        let mut tracked_folders: HashMap<String, bool> = HashMap::new();
+        let mut left_out = Vec::new();
+        for path in untracked {
+            for found in self.build_output.matches(&path) {
+                if found.folder {
+                    let tracked = match tracked_folders.get(&found.path) {
+                        Some(tracked) => *tracked,
+                        None => {
+                            let tracked = self.is_tracked(dir, &found.path).await?;
+                            tracked_folders.insert(found.path.clone(), tracked);
+                            tracked
+                        }
+                    };
+                    if tracked {
+                        continue;
+                    }
+                }
+                let because = if found.folder {
+                    format!("{}/", found.path)
+                } else {
+                    found.path
+                };
+                left_out.push(LeftOut { path, because });
+                break;
+            }
+        }
+        Ok(left_out)
     }
 
     /// Commits what is staged and nothing else. `None` when nothing is.
@@ -328,9 +407,9 @@ impl Git {
     /// like any added line instead of stopping the card as unreadable.
     pub async fn scan_diff(&self, dir: &Path, from: &str, to: &str) -> Result<String, GitError> {
         let mut rest = vec!["--".to_owned(), ".".to_owned()];
-        rest.extend(build_output::pathspecs(true));
+        rest.extend(BuildOutput::pathspecs(true));
         let mut built = vec!["--".to_owned()];
-        built.extend(build_output::pathspecs(false));
+        built.extend(BuildOutput::pathspecs(false));
         let mut diff = self.diff_with(dir, &[], from, to, &rest).await?;
         diff.push_str(&self.diff_with(dir, &["--text"], from, to, &built).await?);
         Ok(diff)
@@ -760,7 +839,16 @@ impl Git {
 
     /// Stages everything and commits the merge in progress, even when its tree equals HEAD's.
     pub async fn finish_merge(&self, worktree: &Path, message: &str) -> Result<String, GitError> {
-        self.run(worktree, &["add", "--all"]).await?;
+        Ok(self.finish_merge_work(worktree, message).await?.0)
+    }
+
+    /// [`Git::finish_merge`], saying which untracked files it left out as build output.
+    pub async fn finish_merge_work(
+        &self,
+        worktree: &Path,
+        message: &str,
+    ) -> Result<(String, Vec<LeftOut>), GitError> {
+        let left_out = self.stage_all(worktree).await?;
         let identity = self.identity_env(worktree).await;
         let commit = [
             "commit",
@@ -774,7 +862,7 @@ impl Git {
         if !out.status.success() {
             return Err(failed(&commit, &out));
         }
-        self.resolve(worktree, "HEAD").await
+        Ok((self.resolve(worktree, "HEAD").await?, left_out))
     }
 
     /// Undoes a merge in progress. Does nothing when there is none, and fails when the abort
@@ -879,6 +967,145 @@ impl Git {
             .collect())
     }
 
+    /// Your files in the checkout at `dir` that moving it from `from` to `to` would overwrite,
+    /// where git stops: one at a path `to` adds, one where a folder of `to` goes, and a folder
+    /// with something in it where a file of `to` goes, listed with a `/`. Ignored files count
+    /// too, since git would overwrite those without a word. What `from` tracks is git's to
+    /// replace, so of a tracked folder only what you added to it counts.
+    pub async fn in_the_way(
+        &self,
+        dir: &Path,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<String>, GitError> {
+        let args = [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-ext-diff",
+            "-z",
+            "--diff-filter=A",
+            from,
+            to,
+        ];
+        let added = self.run(dir, &args).await?;
+        let mut found = BTreeSet::new();
+        'paths: for path in added.split('\0').filter(|path| !path.is_empty()) {
+            let parts: Vec<&str> = path.split('/').collect();
+            for end in 1..parts.len() {
+                let folder = parts[..end].join("/");
+                match std::fs::symlink_metadata(dir.join(&folder)) {
+                    Ok(meta) if meta.is_dir() => {}
+                    // A file of `from` the run turns into a folder: git replaces it.
+                    Ok(_) if self.in_tree(dir, from, &folder).await? => continue 'paths,
+                    Ok(_) => {
+                        found.insert(folder);
+                        continue 'paths;
+                    }
+                    // Nothing there, so nothing below it either.
+                    Err(_) => continue 'paths,
+                }
+            }
+            let Ok(meta) = std::fs::symlink_metadata(dir.join(path)) else {
+                continue;
+            };
+            if !meta.is_dir() {
+                found.insert(path.to_owned());
+            } else if self.in_tree(dir, from, path).await? {
+                // A folder of `from` the run turns into a file: git takes its files out, so
+                // only what you added to it stays in the way.
+                found.extend(self.untracked_under(dir, path).await?);
+            } else if std::fs::read_dir(dir.join(path))
+                .is_ok_and(|mut entries| entries.next().is_some())
+            {
+                found.insert(format!("{path}/"));
+            }
+        }
+        Ok(found.into_iter().collect())
+    }
+
+    /// Your uncommitted changes, staged or not, to files that moving the checkout at `dir`
+    /// from `from` to `to` changes. Git stops there; changes to other files ride along.
+    pub async fn edited_in_the_way(
+        &self,
+        dir: &Path,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<String>, GitError> {
+        let edited = self.edited_paths(dir).await?;
+        if edited.is_empty() {
+            return Ok(Vec::new());
+        }
+        let args = [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-ext-diff",
+            "-z",
+            from,
+            to,
+        ];
+        let changed = self.run(dir, &args).await?;
+        let changed: BTreeSet<&str> = changed
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .collect();
+        Ok(edited
+            .into_iter()
+            .filter(|path| changed.contains(path.as_str()))
+            .collect())
+    }
+
+    /// Tracked files with uncommitted changes, staged or not, both sides of a rename.
+    async fn edited_paths(&self, dir: &Path) -> Result<BTreeSet<String>, GitError> {
+        let args = [
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=no",
+        ];
+        let out = self.run(dir, &args).await?;
+        let mut paths = BTreeSet::new();
+        let mut entries = out.split('\0').filter(|entry| !entry.is_empty());
+        while let Some(entry) = entries.next() {
+            let (status, path) = entry.split_at(entry.len().min(3));
+            paths.insert(path.to_owned());
+            // A rename or copy names where it came from next.
+            if status.contains(['R', 'C'])
+                && let Some(from) = entries.next()
+            {
+                paths.insert(from.to_owned());
+            }
+        }
+        Ok(paths)
+    }
+
+    /// Whether `rev`'s tree holds `path`, as a file or a folder.
+    async fn in_tree(&self, dir: &Path, rev: &str, path: &str) -> Result<bool, GitError> {
+        let args = ["ls-tree", "--name-only", rev, "--", path];
+        Ok(!self.run(dir, &args).await?.is_empty())
+    }
+
+    /// Untracked files under the folder `path`, ignored ones too.
+    async fn untracked_under(&self, dir: &Path, path: &str) -> Result<Vec<String>, GitError> {
+        let folder = format!("{}/", path.trim_end_matches('/'));
+        let args = [
+            "--literal-pathspecs",
+            "ls-files",
+            "--others",
+            "-z",
+            "--",
+            &folder,
+        ];
+        let out = self.run(dir, &args).await?;
+        Ok(out
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+
     async fn unmerged_paths(&self, dir: &Path) -> Result<Vec<String>, GitError> {
         let args = ["diff", "--name-only", "-z", "--diff-filter=U"];
         let out = self.run(dir, &args).await?;
@@ -889,8 +1116,9 @@ impl Git {
             .collect())
     }
 
+    /// Whether git tracks `path`, or any file under it when it's a folder.
     async fn is_tracked(&self, dir: &Path, path: &str) -> Result<bool, GitError> {
-        let args = ["ls-files", "-z", "--", path];
+        let args = ["--literal-pathspecs", "ls-files", "-z", "--", path];
         Ok(!self.run(dir, &args).await?.is_empty())
     }
 }
@@ -991,10 +1219,15 @@ mod tests {
         assert!(matches!(err, GitError::Failed { .. }), "{err}");
     }
 
+    /// Git that leaves the built-in list of build output out, as `merge.leave_out_builtin` asks.
+    fn listing() -> Git {
+        git().leaving_out(true, &[])
+    }
+
     #[tokio::test]
     async fn commits_leave_untracked_build_output_out() {
         let repo = TestRepo::new();
-        let git = git();
+        let git = listing();
         repo.write("legacy/old.pyc", "tracked on purpose");
         repo.git(&["add", "legacy/old.pyc"]);
         repo.git(&["commit", "-qm", "track a pyc"]);
@@ -1022,6 +1255,318 @@ mod tests {
         // Nothing but build output left means nothing to commit.
         repo.write("stats/__pycache__/other.cpython-312.pyc", "more bytecode");
         assert_eq!(git.commit_all(&repo.root, "again").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn packages_caches_and_settings_patterns_stay_out() {
+        let repo = TestRepo::new();
+        repo.write("build/release.sh", "#!/bin/sh\n");
+        repo.git(&["add", "build/release.sh"]);
+        repo.git(&["commit", "-qm", "track a build script"]);
+        let leaving_logs = git().leaving_out(true, &["*.log".to_owned()]);
+        repo.write("app.js", "export {}\n");
+        repo.write("build/deploy.sh", "#!/bin/sh\n");
+        repo.write("dist/app.min.js", "minified");
+        repo.write("web/node_modules/left-pad/index.js", "module.exports = 1");
+        repo.write(".DS_Store", "finder");
+        repo.write("logs/test.log", "ran");
+
+        let committed = leaving_logs.commit_work(&repo.root, "work").await.unwrap();
+        assert!(committed.sha.is_some());
+        let names = repo.git(&["show", "--name-only", "--format=", "HEAD"]);
+        let names: Vec<&str> = names.lines().collect();
+        assert_eq!(
+            names,
+            ["app.js", "build/deploy.sh", "dist/app.min.js"],
+            "build/ and dist/ hold source as often as not"
+        );
+        let mut left_out: Vec<(String, String)> = committed
+            .left_out
+            .into_iter()
+            .map(|left| (left.path, left.because))
+            .collect();
+        left_out.sort();
+        let pair = |path: &str, because: &str| (path.to_owned(), because.to_owned());
+        assert_eq!(
+            left_out,
+            [
+                pair(".DS_Store", ".DS_Store"),
+                pair("logs/test.log", "logs/test.log"),
+                pair("web/node_modules/left-pad/index.js", "web/node_modules/")
+            ]
+        );
+        // Without the setting, a log is the agent's work.
+        assert!(
+            git()
+                .commit_all(&repo.root, "logs")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_commit_leaves_build_output_out() {
+        let repo = TestRepo::new();
+        let git = listing();
+        let base = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-qb", "side"]);
+        repo.write("side.py", "x = 1\n");
+        repo.git(&["add", "side.py"]);
+        repo.git(&["commit", "-qm", "side"]);
+        let side = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-q", &base]);
+        repo.git(&["checkout", "-qb", "integration"]);
+        repo.write("main.py", "y = 2\n");
+        repo.git(&["add", "main.py"]);
+        repo.git(&["commit", "-qm", "main"]);
+        assert_eq!(
+            git.merge_staged(&repo.root, &side, false).await.unwrap(),
+            StagedMerge::Staged
+        );
+        // The final check ran the tests in the tree before the merge commit.
+        repo.write("__pycache__/side.cpython-312.pyc", "bytecode");
+        let merge = git.finish_merge(&repo.root, "Merge side").await.unwrap();
+        let names = repo.git(&[
+            "show",
+            "--name-only",
+            "--format=",
+            "-m",
+            "--first-parent",
+            &merge,
+        ]);
+        assert_eq!(names.lines().collect::<Vec<_>>(), ["side.py"]);
+        assert!(repo.root.join("__pycache__/side.cpython-312.pyc").exists());
+    }
+
+    #[tokio::test]
+    async fn files_in_the_way_of_a_fast_forward_are_found_before_git_refuses() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write(".gitignore", "*.log\n");
+        repo.git(&["add", ".gitignore"]);
+        repo.git(&["commit", "-qm", "ignore logs"]);
+        let main = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-qb", "run"]);
+        for path in [
+            "stats/__pycache__/core.cpython-312.pyc",
+            "notes.md",
+            "lib/util.py",
+            "data/a.csv",
+            "debug.log",
+            "clean.py",
+        ] {
+            repo.write(path, "the run's\n");
+        }
+        repo.git(&["add", "--all", "--force"]);
+        repo.git(&["commit", "-qm", "run"]);
+        let run = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-q", "main"]);
+
+        assert!(
+            git.in_the_way(&repo.root, &main, &run)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        repo.write("stats/__pycache__/core.cpython-312.pyc", "yours");
+        repo.write("notes.md", "yours");
+        repo.write("lib", "a file where a folder goes");
+        repo.write("data/a.csv/inner.txt", "a folder where a file goes");
+        repo.write("debug.log", "ignored, and still yours");
+        std::fs::create_dir_all(repo.root.join("clean.py")).unwrap();
+        assert_eq!(
+            git.in_the_way(&repo.root, &main, &run).await.unwrap(),
+            [
+                "data/a.csv/",
+                "debug.log",
+                "lib",
+                "notes.md",
+                "stats/__pycache__/core.cpython-312.pyc"
+            ],
+            "an empty folder is no loss"
+        );
+        assert!(
+            git.fast_forward(&repo.root, &run).await.is_err(),
+            "git refuses too"
+        );
+    }
+
+    /// The review's probe: what main tracks is git's to replace, so a tracked file the run
+    /// turns into a folder, or a tracked folder it turns into a file, is in nobody's way. Only
+    /// what you added to that folder is.
+    #[tokio::test]
+    async fn what_main_tracks_is_never_in_the_way() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("config", "debug = true\n");
+        repo.write("docs/guide.md", "# Guide\n");
+        repo.git(&["add", "--all"]);
+        repo.git(&["commit", "-qm", "a config file and a docs folder"]);
+        let main = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-qb", "run"]);
+        repo.git(&["rm", "-q", "config", "docs/guide.md"]);
+        repo.write("config/settings.toml", "debug = true\n");
+        repo.write("docs", "see the wiki\n");
+        repo.git(&["add", "--all"]);
+        repo.git(&["commit", "-qm", "run"]);
+        let run = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-q", "main"]);
+
+        assert_eq!(
+            git.in_the_way(&repo.root, &main, &run).await.unwrap(),
+            Vec::<String>::new()
+        );
+        repo.write("docs/draft.md", "yours");
+        assert_eq!(
+            git.in_the_way(&repo.root, &main, &run).await.unwrap(),
+            ["docs/draft.md"]
+        );
+        std::fs::remove_file(repo.root.join("docs/draft.md")).unwrap();
+        assert!(git.fast_forward(&repo.root, &run).await.unwrap());
+    }
+
+    /// Your uncommitted edits stop a fast-forward only where the merge changes the file.
+    #[tokio::test]
+    async fn edits_to_files_the_merge_changes_are_in_the_way() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("README.md", "# Store\n");
+        repo.write("store.rs", "fn get() {}\n");
+        repo.write("old.rs", "fn old() {}\n");
+        repo.git(&["add", "--all"]);
+        repo.git(&["commit", "-qm", "base"]);
+        let main = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-qb", "run"]);
+        repo.write("store.rs", "fn get() {}\nfn put() {}\n");
+        repo.git(&["commit", "-qam", "run"]);
+        let run = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.git(&["checkout", "-q", "main"]);
+
+        repo.write("README.md", "# Store, edited\n");
+        repo.git(&["mv", "old.rs", "older.rs"]);
+        assert!(
+            git.edited_in_the_way(&repo.root, &main, &run)
+                .await
+                .unwrap()
+                .is_empty(),
+            "edits to files the merge leaves alone ride along"
+        );
+        repo.write("store.rs", "fn get() { todo!() }\n");
+        assert_eq!(
+            git.edited_in_the_way(&repo.root, &main, &run)
+                .await
+                .unwrap(),
+            ["store.rs"]
+        );
+        repo.git(&["add", "store.rs"]);
+        assert_eq!(
+            git.edited_in_the_way(&repo.root, &main, &run)
+                .await
+                .unwrap(),
+            ["store.rs"],
+            "staged counts too"
+        );
+        assert!(git.fast_forward(&repo.root, &run).await.is_err());
+        repo.git(&["checkout", "-q", "HEAD", "--", "store.rs"]);
+        assert!(git.fast_forward(&repo.root, &run).await.unwrap());
+        assert_eq!(
+            std::fs::read_to_string(repo.root.join("README.md")).unwrap(),
+            "# Store, edited\n"
+        );
+    }
+
+    /// The review's probe: folders named like build output that hold source, and a 3D model,
+    /// all go into the commit, and each left-out file says why.
+    #[tokio::test]
+    async fn source_named_like_build_output_is_committed() {
+        let repo = TestRepo::new();
+        for path in [
+            "app.py",
+            "textkit/build/__init__.py",
+            "textkit/build/steps.py",
+            "action/dist/index.js",
+            "assets/cube.obj",
+            "docs/target/README.md",
+            "textkit/__pycache__/steps.cpython-312.pyc",
+        ] {
+            repo.write(path, "work\n");
+        }
+        let committed = listing().commit_work(&repo.root, "work").await.unwrap();
+        let names = repo.git(&["show", "--name-only", "--format=", "HEAD"]);
+        let names: Vec<&str> = names.lines().collect();
+        assert_eq!(
+            names,
+            [
+                "action/dist/index.js",
+                "app.py",
+                "assets/cube.obj",
+                "docs/target/README.md",
+                "textkit/build/__init__.py",
+                "textkit/build/steps.py"
+            ]
+        );
+        assert_eq!(
+            committed.left_out,
+            [LeftOut {
+                path: "textkit/__pycache__/steps.cpython-312.pyc".into(),
+                because: "textkit/__pycache__/".into()
+            }]
+        );
+    }
+
+    /// The review's probe: a folder the repo keeps files in is its own, and build output
+    /// inside it still stays out.
+    #[tokio::test]
+    async fn build_output_inside_a_tracked_folder_stays_out() {
+        let repo = TestRepo::new();
+        repo.write("build/release.sh", "#!/bin/sh\n");
+        repo.git(&["add", "build/release.sh"]);
+        repo.git(&["commit", "-qm", "track a build script"]);
+        repo.write("build/__pycache__/x.cpython-312.pyc", "bytecode");
+        repo.write("build/out.o", "object");
+        repo.write("build/deploy.sh", "#!/bin/sh\n");
+        let leaving_build = git().leaving_out(true, &["build/".to_owned()]);
+        let committed = leaving_build.commit_work(&repo.root, "work").await.unwrap();
+        let names = repo.git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(names.lines().collect::<Vec<_>>(), ["build/deploy.sh"]);
+        let mut because: Vec<String> = committed
+            .left_out
+            .into_iter()
+            .map(|left| left.because)
+            .collect();
+        because.sort();
+        assert_eq!(because, ["build/__pycache__/", "build/out.o"]);
+    }
+
+    /// By default a commit takes what git doesn't ignore, bytecode too, and
+    /// `merge.leave_out` alone still leaves out what it names.
+    #[tokio::test]
+    async fn the_built_in_list_is_opt_in() {
+        let repo = TestRepo::new();
+        repo.write("__pycache__/app.cpython-312.pyc", "bytecode");
+        let committed = git().commit_work(&repo.root, "work").await.unwrap();
+        assert!(committed.sha.is_some());
+        assert!(committed.left_out.is_empty());
+        let names = repo.git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(
+            names.lines().collect::<Vec<_>>(),
+            ["__pycache__/app.cpython-312.pyc"]
+        );
+
+        repo.write("__pycache__/util.cpython-312.pyc", "bytecode");
+        repo.write("run.log", "ran");
+        let committed = git()
+            .leaving_out(false, &["*.log".to_owned()])
+            .commit_work(&repo.root, "work")
+            .await
+            .unwrap();
+        let names = repo.git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(
+            names.lines().collect::<Vec<_>>(),
+            ["__pycache__/util.cpython-312.pyc"]
+        );
+        assert_eq!(committed.left_out.len(), 1);
     }
 
     #[tokio::test]

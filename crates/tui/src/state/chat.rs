@@ -1,6 +1,6 @@
-use argonauts_core::AgentEvent;
 use argonauts_core::app::ChatEvent;
 use argonauts_core::names::{TurnId, WorkerRef};
+use argonauts_core::{AgentEvent, ErrorCategory};
 
 use super::session::{Doing, ToolRecord};
 
@@ -17,8 +17,8 @@ pub struct ChatState {
     pub tokens_out: u64,
     pub cost_usd: Option<f64>,
     pub doing: Doing,
-    /// Events of the current turn folded in, so the screen can tell that something arrived.
-    pub events: u64,
+    /// The conductor said the stream stalled, and nothing has come from the agent since.
+    pub stalled: bool,
     /// A whole message closed the text so far, so more text starts a new paragraph.
     message_closed: bool,
     /// The turn's tool calls, so a result can be read with the call it answers.
@@ -35,7 +35,6 @@ impl ChatState {
                     turn: Some(turn.clone()),
                     worker: Some(worker.clone()),
                     queued: std::mem::take(&mut self.queued),
-                    events: self.events + 1,
                     ..Self::default()
                 };
                 // The bridge queued it while the last turn ran; now it's this turn's prompt.
@@ -48,7 +47,6 @@ impl ChatState {
                 }
             }
             ChatEvent::Agent { turn, event } if self.turn.as_ref() == Some(turn) => {
-                self.events += 1;
                 self.apply_agent(event);
             }
             ChatEvent::Agent { .. } => {}
@@ -70,6 +68,13 @@ impl ChatState {
     }
 
     fn apply_agent(&mut self, event: &AgentEvent) {
+        self.stalled = matches!(
+            event,
+            AgentEvent::Error {
+                category: ErrorCategory::Stalled,
+                ..
+            }
+        );
         match event {
             AgentEvent::TextDelta { text, parent: None } => {
                 self.new_paragraph_if_closed();
@@ -141,7 +146,7 @@ impl ChatState {
         self.turn = None;
         self.streamed.clear();
         self.doing = Doing::Nothing;
+        self.stalled = false;
         self.message_closed = false;
-        self.events += 1;
     }
 }

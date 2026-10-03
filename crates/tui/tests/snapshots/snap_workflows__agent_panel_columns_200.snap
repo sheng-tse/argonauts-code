@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: text
+---
+  ○ fix the export race                                            1/3 agents · 4m12s · ↓ 38.6k tokens · $0.84 · via desktop-client
+    ◐ Opus on Claude Code        card-001                          ↓ 18.1k tokens  $0.84  ctx 120k/200k · +3 subagents                                                                            4m12s
+    ◐ GPT 5.6 on Codex           card-002                           ↓ 2.4k tokens         ◌ needs review · ↺ for Claude Code                                                                      4m12s

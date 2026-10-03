@@ -102,6 +102,9 @@ fn live_region_keeps_its_order() {
         .start();
     harness.wait_visible("※ narrator:");
     harness.wait_visible("◆");
+    // The question takes the keys, so guiding the run sets it aside first.
+    harness.press(Key::Esc);
+    harness.wait_visible("· needs you · ↑ to answer");
     harness.submit("keep the CSV path");
     let screen = harness.wait_visible("keep the CSV path");
     assert_order(

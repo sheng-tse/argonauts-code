@@ -71,8 +71,6 @@ pub struct RunState {
     pub summary: Option<StatusSummary>,
     /// When its last event happened.
     pub updated: Option<OffsetDateTime>,
-    /// Events folded in, so the screen can tell that something arrived.
-    pub events: u64,
 }
 
 impl RunState {
@@ -106,7 +104,6 @@ impl RunState {
             budget: None,
             summary: None,
             updated: None,
-            events: 0,
         }
     }
 
@@ -268,7 +265,6 @@ impl RunState {
     /// Folds one event of this run in. Returns a checkpoint that just opened.
     pub(super) fn apply(&mut self, event: &RunEvent, replaying: bool) -> Option<CheckpointId> {
         self.seq = event.seq;
-        self.events += 1;
         self.updated = Some(event.ts);
         let at = event.ts;
         if let Some(key) = &event.session

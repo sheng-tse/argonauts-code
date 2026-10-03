@@ -26,8 +26,9 @@ use crate::text::{sanitize_line, spans_width, str_width};
 use crate::theme::{Role, Theme};
 
 use super::agent::{AgentView, needs_review, vendor_internals};
+use super::columns::{self, Column, GAP, Give};
 use super::follow::{Follower, Shown};
-use super::layout::{cut, left, right};
+use super::layout::{left, right};
 use super::library::{Library, LibraryKey, WorkflowTab, draw_tabs, tab_key};
 use super::list::{self, Nav};
 use super::panes::{self, ELAPSED_SLOT, Footer, Header, Marks, Side};
@@ -46,6 +47,11 @@ const MIN_MARKERS: usize = 14;
 const LABEL_GIVE: usize = 4;
 const MIN_LABEL: usize = 12;
 const MIN_WORKER: usize = 16;
+
+/// Before the agent's name goes, it's cut with `…` to no less than this, and then the label to
+/// no less than [`CUT_LABEL`], so a long name still shows whose model ran.
+const CUT_WORKER: usize = 12;
+const CUT_LABEL: usize = 16;
 
 #[derive(Debug)]
 pub struct WorkflowView {
@@ -729,17 +735,20 @@ impl PhaseColumns {
 }
 
 /// The right pane's columns, fitted across every phase's rows so they hold when the phase
-/// changes: the state glyph, the label, then dim worker, tokens, spend, and markers, and the
-/// duration right-aligned in its slot at the pane's edge.
+/// changes: the state glyph, the label, then dim the agent's name, tokens, spend, and markers,
+/// each padded to its widest, and the duration right-aligned at the pane's edge.
 struct RowColumns {
     width: usize,
     slot: usize,
-    label: usize,
-    worker: usize,
-    tokens: usize,
-    spend: usize,
-    markers: usize,
+    columns: [Column; 5],
 }
+
+/// The columns, by place.
+const LABEL: usize = 0;
+const WORKER: usize = 1;
+const TOKENS: usize = 2;
+const SPEND: usize = 3;
+const MARKERS: usize = 4;
 
 /// The cells of one agent row, before padding.
 struct AgentCells {
@@ -751,8 +760,7 @@ struct AgentCells {
 
 impl RowColumns {
     fn fit(data: &WorkflowData, width: usize, ctx: &ViewCtx<'_>) -> Self {
-        let theme = ctx.theme;
-        let marks = Marks::for_theme(theme);
+        let marks = Marks::for_theme(ctx.theme);
         let rows = || data.phases.iter().flat_map(|phase| &phase.rows);
         let label = rows()
             .map(|row| str_width(&row_label(row)))
@@ -766,64 +774,65 @@ impl RowColumns {
             })
             .collect();
         let widest = |cell: fn(&AgentCells) -> usize| cells.iter().map(cell).max().unwrap_or(0);
-        let mut columns = Self {
-            width,
-            slot: marks.slot(),
-            label,
-            worker: widest(|c| str_width(&c.worker)),
-            tokens: widest(|c| str_width(&c.tokens)),
-            spend: widest(|c| str_width(&c.spend)),
-            markers: widest(|c| spans_width(&c.markers)),
-        };
-        // The markers shrink to the room left, down to a few words. Past that, a few cells come
-        // off the agent's name or else the label, then spend, tokens, the markers, and the
-        // worker give way in turn, and then the label is cut.
-        let full = columns.markers;
-        let shrink_markers = |columns: &mut Self| {
-            if columns.markers > 0 {
-                columns.markers = full;
-                let over = columns.used().saturating_sub(width);
-                columns.markers = full.saturating_sub(over).max(MIN_MARKERS.min(full));
-            }
-        };
-        let order: [fn(&mut Self) -> &mut usize; 4] = [
-            |c| &mut c.spend,
-            |c| &mut c.tokens,
-            |c| &mut c.markers,
-            |c| &mut c.worker,
+        let markers = widest(|c| spans_width(&c.markers));
+        let mut columns = [
+            Column::left(label),
+            Column::left(widest(|c| str_width(&c.worker))),
+            Column::right(widest(|c| str_width(&c.tokens))),
+            Column::right(widest(|c| str_width(&c.spend))),
+            // The markers take what room is left, so they count at their least while the rest
+            // fit.
+            Column::left(markers.min(MIN_MARKERS)),
         ];
-        for column in order {
-            shrink_markers(&mut columns);
-            let over = columns.used().saturating_sub(width);
-            if over == 0 {
-                break;
-            }
-            if over <= LABEL_GIVE && columns.worker >= MIN_WORKER + over {
-                columns.worker -= over;
-                break;
-            }
-            if over <= LABEL_GIVE.min(columns.label.saturating_sub(MIN_LABEL)) {
-                columns.label -= over;
-                break;
-            }
-            *column(&mut columns) = 0;
+        let slot = marks.slot();
+        let room = Self::room(width, slot);
+        // A few cells come off the agent's name or else the label, then spend, tokens, and the
+        // markers give way in turn. Then the agent's name and the label are cut with `…`, and
+        // only then does the name go, and the label is cut further.
+        let trims = [
+            Give::Trim {
+                column: WORKER,
+                most: LABEL_GIVE,
+                min: MIN_WORKER,
+            },
+            Give::Trim {
+                column: LABEL,
+                most: LABEL_GIVE,
+                min: MIN_LABEL,
+            },
+        ];
+        let mut gives: Vec<Give> = [SPEND, TOKENS, MARKERS]
+            .into_iter()
+            .flat_map(|column| trims.into_iter().chain([Give::Drop(column)]))
+            .collect();
+        gives.extend(trims);
+        gives.extend([
+            Give::Cut {
+                column: WORKER,
+                min: CUT_WORKER,
+            },
+            Give::Cut {
+                column: LABEL,
+                min: CUT_LABEL,
+            },
+            Give::Drop(WORKER),
+        ]);
+        columns::fit(&mut columns, room, &gives);
+        if columns[MARKERS].width > 0 {
+            let left = room.saturating_sub(columns::used(&columns));
+            columns[MARKERS].width = markers.min(columns[MARKERS].width + left);
         }
-        let fixed = columns.used() - columns.label;
-        columns.label = columns.label.min(width.saturating_sub(fixed));
-        columns
+        Self {
+            width,
+            slot,
+            columns,
+        }
     }
 
-    /// The middle columns and their dots.
-    fn middle(&self) -> usize {
-        let columns = [self.worker, self.tokens, self.spend, self.markers];
-        let shown = columns.iter().filter(|&&w| w > 0).count();
-        columns.iter().sum::<usize>() + shown.saturating_sub(1) * 3
-    }
-
-    fn used(&self) -> usize {
-        let middle = self.middle();
-        let gap = if middle > 0 { 2 } else { 0 };
-        2 + self.slot + 1 + self.label + gap + middle + 2 + ELAPSED_SLOT
+    /// What the columns share: the pane less the selection mark, the glyph, and the duration
+    /// with its gap.
+    fn room(width: usize, slot: usize) -> usize {
+        width.saturating_sub(2 + slot + 1 + GAP + ELAPSED_SLOT)
     }
 
     fn line(
@@ -845,11 +854,15 @@ impl RowColumns {
                 (marks.nested, Role::Label, nested.status, nested.elapsed_ms)
             }
         };
-        let lead = if selected {
-            Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
-        } else {
-            Span::raw("  ")
-        };
+        let lead = vec![
+            if selected {
+                Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
+            } else {
+                Span::raw("  ")
+            },
+            Span::styled(panes::pad_glyph(glyph, self.slot), theme.style(glyph_role)),
+            Span::raw(" "),
+        ];
         let label_style = if selected {
             theme.style(Role::Label)
         } else if status == RowStatus::Waiting {
@@ -857,80 +870,43 @@ impl RowColumns {
         } else {
             theme.style(Role::Text)
         };
-        let mut spans = vec![
-            lead,
-            Span::styled(panes::pad_glyph(glyph, self.slot), theme.style(glyph_role)),
-            Span::raw(" "),
-            Span::styled(left(&row_label(row), self.label), label_style),
-        ];
-        // Everything between the label and the duration's slot.
-        let middle_room = self
-            .width
-            .saturating_sub(spans_width(&spans) + 2 + ELAPSED_SLOT);
-        match row {
-            WorkflowRow::Agent(agent) => {
-                spans.extend(self.agent_middle(agent_cells(agent, ctx), middle_room, theme));
-            }
-            WorkflowRow::Workflow(nested) if middle_room > 2 => {
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    left(&nested_detail(nested, &ctx.state.names), middle_room - 2),
-                    dim,
-                ));
-            }
-            WorkflowRow::Workflow(_) => spans.push(Span::raw(" ".repeat(middle_room))),
-        }
-        let pad = self
-            .width
-            .saturating_sub(spans_width(&spans) + ELAPSED_SLOT);
-        spans.push(Span::raw(" ".repeat(pad)));
+        let label = vec![Span::styled(row_label(row), label_style)];
         let elapsed = elapsed_ms
             + if status == RowStatus::Running {
                 ticking
             } else {
                 0
             };
-        spans.push(Span::styled(
+        let edge = vec![Span::styled(
             right(&panes::elapsed(elapsed), ELAPSED_SLOT),
             dim,
-        ));
-        Line::from(spans)
-    }
-
-    /// The model, tokens, spend, and markers joined with ` · ` right after one another, so no
-    /// dot floats after padding. A column that gave way leaves its cell out on every row, and
-    /// the markers take what room the row has left.
-    fn agent_middle(&self, cells: AgentCells, room: usize, theme: &Theme) -> Vec<Span<'static>> {
-        let dim = theme.style(Role::Dim);
-        if self.middle() == 0 || room < 2 {
-            return Vec::new();
-        }
-        let text = |text: String| vec![Span::styled(text, dim)];
-        let mut spans = vec![Span::raw("  ")];
-        let mut first = true;
-        let mut join = |spans: &mut Vec<Span<'static>>, cell: Vec<Span<'static>>| {
-            if !first {
-                spans.push(Span::styled(" · ", dim));
+        )];
+        match row {
+            WorkflowRow::Agent(agent) => {
+                let cells = agent_cells(agent, ctx);
+                let text = |text: String| vec![Span::styled(text, dim)];
+                let cells = [
+                    label,
+                    text(cells.worker),
+                    text(cells.tokens),
+                    text(cells.spend),
+                    cells.markers,
+                ];
+                columns::line(lead, &self.columns, &cells, Some(edge), self.width)
             }
-            first = false;
-            spans.extend(cell);
-        };
-        for (width, cell) in [
-            (self.worker, cut(&cells.worker, self.worker)),
-            (self.tokens, cells.tokens),
-            (self.spend, cells.spend),
-        ] {
-            if width > 0 && !cell.is_empty() {
-                join(&mut spans, text(cell));
+            // A nested workflow's detail spans the agent columns.
+            WorkflowRow::Workflow(nested) => {
+                let label_column = self.columns[LABEL];
+                let detail =
+                    Self::room(self.width, self.slot).saturating_sub(label_column.width + GAP);
+                let cells = [
+                    label,
+                    vec![Span::styled(nested_detail(nested, &ctx.state.names), dim)],
+                ];
+                let columns = [label_column, Column::left(detail)];
+                columns::line(lead, &columns, &cells, Some(edge), self.width)
             }
         }
-        let dot = if spans.len() > 1 { 3 } else { 0 };
-        let markers_room = room.saturating_sub(spans_width(&spans) + dot);
-        let markers = crate::text::truncate_spans(&cells.markers, markers_room);
-        if self.markers > 0 && spans_width(&markers) > 0 {
-            join(&mut spans, markers);
-        }
-        spans
     }
 }
 
@@ -1338,9 +1314,19 @@ mod tests {
         assert!(text.contains("+ Phases ---"), "{text}");
         assert!(!text.contains(['↑', '↓', '→']), "{text}");
         assert!(text.contains("up/down select"), "{text}");
-        // One cell short at 100 columns cuts the label, not the tokens.
+        // A few cells short at 100 columns cut the agent's name, not the tokens, and every
+        // column starts where the one above it does.
         let row = row_with(&text, "build:b");
-        assert!(row.contains("381k tok · +2 subagents"), "{text}");
+        assert!(row.contains("381k tok  +2 subagents"), "{text}");
+        assert!(
+            row_with(&text, "build:a").contains("Opus on Claude C…  381k tok"),
+            "{text}"
+        );
+        let tokens_at = ["build:a", "build:b", "build:d"].map(|label| {
+            let row = row_with(&text, label);
+            row[..row.find("381k").unwrap_or_default()].chars().count()
+        });
+        assert!(tokens_at.iter().all(|at| *at == tokens_at[0]), "{text}");
         let mut buf = Buffer::empty(Rect::new(0, 0, 100, 12));
         let ctx = ViewCtx {
             theme: &ascii,

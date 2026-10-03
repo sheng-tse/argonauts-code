@@ -8,6 +8,11 @@ use crate::names::WorkerRef;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ApprovalSettings {
+    /// Who answers the crew's questions: the goal's open questions and the plan approval.
+    /// Unset follows the mode, so the lead answers in auto mode and you do otherwise, and the
+    /// questions `goal.always_ask` names stay yours. Set to the lead, it answers those too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<Answerer>,
     pub goal_changes: GoalChanges,
     /// Share of auto-approvals queued for your spot check.
     pub spot_check_sample: f64,
@@ -33,6 +38,7 @@ pub struct ApprovalSettings {
 impl Default for ApprovalSettings {
     fn default() -> Self {
         Self {
+            answered_by: None,
             goal_changes: GoalChanges::Ask,
             spot_check_sample: 0.1,
             pause_auto_when_spot_checks_waiting: 5,
@@ -51,6 +57,27 @@ impl Default for ApprovalSettings {
             refuse_ancestor_env: vec!["OPENCLAW_SHELL".to_owned(), "HERMES_SESSION_ID".to_owned()],
         }
     }
+}
+
+impl ApprovalSettings {
+    /// Who answers the crew's questions at a decision point running in `mode`.
+    pub fn answerer(&self, mode: ApprovalMode) -> Answerer {
+        self.answered_by.unwrap_or(match mode {
+            ApprovalMode::Auto => Answerer::Lead,
+            ApprovalMode::Supervised | ApprovalMode::Shadow => Answerer::You,
+        })
+    }
+}
+
+/// Who answers the crew's questions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Answerer {
+    You,
+    /// The lead answers, and its answers become assumptions you can review. The approvals
+    /// after them still follow their mode and rules, so in auto the approver model checks
+    /// them, and a question it can't answer comes to you.
+    Lead,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]

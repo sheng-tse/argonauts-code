@@ -7,8 +7,9 @@ use ratatui::text::{Line, Span};
 
 use crate::format;
 use crate::render::{Clock, RenderCtx};
-use crate::text::{KEEP, Part, fit_parts, full_width, sanitize_line, str_width, truncate_line};
+use crate::text::{sanitize_line, spans_width, str_width, truncate_line};
 use crate::theme::{AgentColor, Role, Theme};
+use crate::views::columns::{self, Cell, Column, GAP, Give};
 use crate::views::layout::left;
 use crate::views::panes::Marks;
 
@@ -51,6 +52,8 @@ pub struct AgentRow {
     /// Freezes the elapsed time once the agent stops.
     pub ended_at: Option<Instant>,
     pub tokens_down: u64,
+    /// Spent so far, such as `$0.12`, once anything was priced.
+    pub spend: Option<String>,
     /// Replaces the stats when set, such as `waiting`.
     pub note: Option<String>,
     /// The name's color for the whole run. Without one the name is in normal text.
@@ -96,6 +99,7 @@ impl AgentRow {
             started_at: None,
             ended_at: None,
             tokens_down: 0,
+            spend: None,
             note: None,
             color: None,
             key: None,
@@ -319,16 +323,18 @@ impl AgentPanel {
     ) -> Vec<Line<'static>> {
         let cells: Vec<RowCells> = indices.iter().map(|&i| self.cells(i, false, ctx)).collect();
         let widest = |cell: fn(&RowCells) -> usize| cells.iter().map(cell).max().unwrap_or(0);
-        let layout = RowLayout::fit(
+        let stats: Vec<&Stats> = cells.iter().map(|row| &row.stats).collect();
+        let mut layout = RowLayout::fit(
             usize::from(ctx.width),
             [
                 widest(|row| str_width(&row.name)),
                 widest(|row| str_width(&row.harness)),
             ],
             widest(|row| str_width(&row.task)),
-            widest(|row| full_width(&row.stats)),
+            StatColumns::wanted(&stats),
             ctx.theme.style(Role::BarFill),
         );
+        layout.fit_stats(&stats, usize::from(ctx.width));
         indices
             .iter()
             .zip(&cells)
@@ -439,54 +445,66 @@ impl AgentPanel {
             spans.push(Span::raw("  "));
             spans.extend(bar(row.steps, layout.bar_cells, layout.fill, theme));
         }
-        spans.push(Span::raw("  "));
-        // Stats give way whole, so a narrow row never ends in half a number.
-        fit_parts(spans, &cells.stats, usize::from(ctx.width))
+        spans.push(Span::raw(" ".repeat(GAP)));
+        layout
+            .stats
+            .line(spans, &cells.stats, usize::from(ctx.width), dim)
     }
 
-    fn stats(&self, index: usize, ctx: &RenderCtx<'_>) -> Vec<Part> {
-        let dim = ctx.theme.style(Role::Dim);
-        let whole = |text: String| vec![Part::new(vec![Span::styled(text, dim)], KEEP)];
+    fn stats(&self, index: usize, ctx: &RenderCtx<'_>) -> Stats {
         let row = &self.rows[index];
+        let notes = markers(&row.markers, self.vendor_internals, ctx);
         if let Some(note) = &row.note {
-            let mut parts = whole(sanitize_line(note).trim().to_owned());
-            parts.extend(markers(&row.markers, self.vendor_internals, ctx));
-            return parts;
-        }
-        let mut parts = Vec::new();
-        let mut push = |text: String, rank: u16| {
-            parts.push(Part::joined(
-                Span::styled(" · ", dim),
-                vec![Span::styled(text, dim)],
-                rank,
-            ));
-        };
-        if let Some((done, total)) = row.steps {
-            push(format!("{done}/{total}"), 2);
-        }
-        if let Some(start) = row.started_at {
-            let end = row.ended_at.unwrap_or(ctx.clock.now);
-            push(
-                format::duration_compact(end.saturating_duration_since(start)),
-                1,
+            let note = Span::styled(
+                sanitize_line(note).trim().to_owned(),
+                ctx.theme.style(Role::Dim),
             );
+            return Stats {
+                notes_only: true,
+                notes: joined(vec![vec![note]].into_iter().chain(notes), ctx.theme),
+                ..Stats::default()
+            };
         }
-        // The space after the arrow is Claude Code's. Fonts like Iosevka draw the arrow two cells
-        // wide, so it covers the space instead of the first digit. A run's row writes its
-        // tokens the same way, so the rows under it do too.
-        if row.tokens_down > 0 {
-            push(
+        Stats {
+            notes_only: false,
+            steps: row
+                .steps
+                .map_or(String::new(), |(done, total)| format!("{done}/{total}")),
+            // The space after the arrow is Claude Code's. Fonts like Iosevka draw the arrow two
+            // cells wide, so it covers the space instead of the first digit. A run's row writes
+            // its tokens the same way, so the rows under it do too.
+            tokens: if row.tokens_down > 0 {
                 format!(
                     "{} {} tokens",
                     ctx.theme.glyphs.tokens,
                     format::tokens(row.tokens_down)
-                ),
-                0,
-            );
+                )
+            } else {
+                String::new()
+            },
+            spend: row.spend.as_deref().map_or(String::new(), |spend| {
+                sanitize_line(spend).trim().to_owned()
+            }),
+            notes: joined(notes, ctx.theme),
+            time: row.started_at.map_or(String::new(), |start| {
+                let end = row.ended_at.unwrap_or(ctx.clock.now);
+                format::duration_compact(end.saturating_duration_since(start))
+            }),
         }
-        parts.extend(markers(&row.markers, self.vendor_internals, ctx));
-        parts
     }
+}
+
+/// Notes joined with ` · `, since they're one cell of a row, not columns of their own.
+fn joined(notes: impl IntoIterator<Item = Cell>, theme: &Theme) -> Cell {
+    let dot = Span::styled(" · ", theme.style(Role::Dim));
+    let mut spans = Vec::new();
+    for note in notes {
+        if !spans.is_empty() {
+            spans.push(dot.clone());
+        }
+        spans.extend(note);
+    }
+    spans
 }
 
 /// `↓ N more` under a panel's window, or `↑ N more` over it.
@@ -531,19 +549,24 @@ pub(super) fn window(
     count - (lines - 1)..count
 }
 
-/// The markers rank above the stats, so a narrow row keeps its debt and handoff to the end.
-fn markers(markers: &RowMarkers, internals: VendorInternals, ctx: &RenderCtx<'_>) -> Vec<Part> {
+/// What a row notes after its stats, the debt and the handoff first, so a cut row keeps them.
+fn markers(markers: &RowMarkers, internals: VendorInternals, ctx: &RenderCtx<'_>) -> Vec<Cell> {
     let theme = ctx.theme;
     let marks = Marks::for_theme(theme);
     let dim = theme.style(Role::Dim);
-    let mut parts = Vec::new();
-    let mut push = |text: String, style: Style, rank: u16| {
-        parts.push(Part::joined(
-            Span::styled(" · ", dim),
-            vec![Span::styled(text, style)],
-            rank,
-        ));
-    };
+    let mut notes = Vec::new();
+    if markers.needs_review {
+        notes.push(vec![Span::styled(
+            format!("{} needs review", marks.debt),
+            theme.style(Role::Warning),
+        )]);
+    }
+    if let Some(worker) = &markers.stands_in_for {
+        notes.push(vec![Span::styled(
+            format!("{} for {}", marks.stands_in, sanitize_line(worker).trim()),
+            dim,
+        )]);
+    }
     if let Some((used, cap)) = markers.context {
         // Past nine tenths of the cap the session is about to rotate.
         let near = cap > 0 && used.saturating_mul(10) >= cap.saturating_mul(9);
@@ -552,25 +575,10 @@ fn markers(markers: &RowMarkers, internals: VendorInternals, ctx: &RenderCtx<'_>
         } else {
             dim
         };
-        push(
+        notes.push(vec![Span::styled(
             format!("ctx {}/{}", format::tokens(used), format::tokens(cap)),
             style,
-            3,
-        );
-    }
-    if let Some(worker) = &markers.stands_in_for {
-        push(
-            format!("{} for {}", marks.stands_in, sanitize_line(worker).trim()),
-            dim,
-            5,
-        );
-    }
-    if markers.needs_review {
-        push(
-            format!("{} needs review", marks.debt),
-            theme.style(Role::Warning),
-            5,
-        );
+        )]);
     }
     if markers.subagents > 0 && internals != VendorInternals::Hidden {
         let noun = if markers.subagents == 1 {
@@ -578,9 +586,149 @@ fn markers(markers: &RowMarkers, internals: VendorInternals, ctx: &RenderCtx<'_>
         } else {
             "subagents"
         };
-        push(format!("+{} {noun}", markers.subagents), dim, 0);
+        notes.push(vec![Span::styled(
+            format!("+{} {noun}", markers.subagents),
+            dim,
+        )]);
     }
-    parts
+    notes
+}
+
+/// A row's stats, before padding: steps, tokens, and spend, then its notes, and the time.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Stats {
+    /// Only the notes show, in the stats' place, as `waiting for card-002` does.
+    pub notes_only: bool,
+    pub steps: String,
+    pub tokens: String,
+    pub spend: String,
+    pub notes: Cell,
+    pub time: String,
+}
+
+/// The stats' columns, fitted across every row the panel draws: steps, tokens, and spend
+/// right-aligned, the notes in what room is left, and the time right-aligned at the edge, as
+/// Claude Code ends its agent rows.
+#[derive(Debug, Clone, Default)]
+pub(super) struct StatColumns {
+    columns: [Column; 4],
+    /// The widest time, which ends one cell short of the edge, as the mode line's parts do.
+    time: usize,
+    /// The cells the stats were fitted into, which a note spans.
+    room: usize,
+}
+
+const STEPS: usize = 0;
+const TOKENS: usize = 1;
+const SPEND: usize = 2;
+const NOTES: usize = 3;
+
+/// Notes are cut rather than dropped while they have this much room.
+const MIN_NOTES: usize = 14;
+
+impl StatColumns {
+    fn full(stats: &[&Stats]) -> Self {
+        let widest = |cell: fn(&Stats) -> usize| stats.iter().map(|s| cell(s)).max().unwrap_or(0);
+        let counted = |cell: fn(&Stats) -> usize| {
+            stats
+                .iter()
+                .filter(|s| !s.notes_only)
+                .map(|s| cell(s))
+                .max()
+                .unwrap_or(0)
+        };
+        Self {
+            columns: [
+                Column::right(counted(|s| str_width(&s.steps))),
+                Column::right(counted(|s| str_width(&s.tokens))),
+                Column::right(counted(|s| str_width(&s.spend))),
+                Column::left(counted(|s| spans_width(&s.notes))),
+            ],
+            time: widest(|s| str_width(&s.time)),
+            room: 0,
+        }
+    }
+
+    /// The cells the stats take whole, after the gap before them.
+    pub fn wanted(stats: &[&Stats]) -> usize {
+        let full = Self::full(stats);
+        let noted = stats
+            .iter()
+            .filter(|s| s.notes_only)
+            .map(|s| spans_width(&s.notes))
+            .max()
+            .unwrap_or(0);
+        columns::used(&full.columns).max(noted) + full.edge()
+    }
+
+    /// The time with its gap, and the cell after it.
+    fn edge(&self) -> usize {
+        if self.time > 0 {
+            GAP + self.time + 1
+        } else {
+            0
+        }
+    }
+
+    /// Fits the stats into `room` cells: the notes shrink to a few words, then spend, tokens,
+    /// and steps give way, and then the notes are cut further. The time stays to the end.
+    fn fit(stats: &[&Stats], room: usize) -> Self {
+        let mut fitted = Self::full(stats);
+        fitted.room = room;
+        let notes = fitted.columns[NOTES].width;
+        fitted.columns[NOTES].width = notes.min(MIN_NOTES);
+        let room = room.saturating_sub(fitted.edge());
+        let gives = [
+            Give::Drop(SPEND),
+            Give::Drop(TOKENS),
+            Give::Drop(STEPS),
+            Give::Cut {
+                column: NOTES,
+                min: 0,
+            },
+        ];
+        columns::fit(&mut fitted.columns, room, &gives);
+        // The notes take what the others leave.
+        if fitted.columns[NOTES].width > 0 {
+            let left = room.saturating_sub(columns::used(&fitted.columns));
+            fitted.columns[NOTES].width = notes.min(fitted.columns[NOTES].width + left);
+        }
+        fitted
+    }
+
+    /// `lead`, then the row's stats in their columns, the time ending a cell short of `width`.
+    /// A note spans the stats' columns.
+    fn line(
+        &self,
+        lead: Vec<Span<'static>>,
+        stats: &Stats,
+        width: usize,
+        dim: Style,
+    ) -> Line<'static> {
+        let plain = |text: &str| vec![Span::styled(text.to_owned(), dim)];
+        let edge = (!stats.time.is_empty()).then(|| plain(&stats.time));
+        let right_end = width.saturating_sub(1);
+        let line = if stats.notes_only {
+            let edge_room = if edge.is_some() { self.edge() } else { 0 };
+            let span = Column::left(self.room.saturating_sub(edge_room));
+            columns::line(
+                lead,
+                &[span],
+                std::slice::from_ref(&stats.notes),
+                edge,
+                right_end,
+            )
+        } else {
+            let cells = [
+                plain(&stats.steps),
+                plain(&stats.tokens),
+                plain(&stats.spend),
+                stats.notes.clone(),
+            ];
+            columns::line(lead, &self.columns, &cells, edge, right_end)
+        };
+        truncate_line(&line, width)
+    }
 }
 
 pub(super) struct RowCells {
@@ -589,7 +737,7 @@ pub(super) struct RowCells {
     /// The CLI alone, for rows too narrow for the model.
     pub harness: String,
     pub task: String,
-    pub stats: Vec<Part>,
+    pub stats: Stats,
 }
 
 /// Where a row's columns sit. A width of zero leaves the column out, and a name wider than its
@@ -604,9 +752,29 @@ pub(super) struct RowLayout {
     pub bar_cells: usize,
     /// The bar's fill color, as a background.
     pub fill: Style,
+    /// Set by [`RowLayout::fit_stats`] once the rest is laid out.
+    pub stats: StatColumns,
 }
 
 impl RowLayout {
+    /// Fits the stats into what the row leaves them, the same for every row.
+    pub fn fit_stats(&mut self, stats: &[&Stats], width: usize) {
+        let task = if self.task_width > 0 {
+            GAP + self.task_width
+        } else {
+            0
+        };
+        let bar = if self.bar_cells > 0 {
+            GAP + self.bar_cells
+        } else {
+            0
+        };
+        // The mark, the indent, the circle and its space, the name, the task, the bar, and the
+        // gap before the stats.
+        let lead = 2 + self.indent + 2 + self.name_width + task + bar + GAP;
+        self.stats = StatColumns::fit(stats, width.saturating_sub(lead));
+    }
+
     /// The agent panel's own layout. So the stats stay whole, the bar shrinks, then goes, then
     /// names drop their model, and then the task column goes. `names` holds the widest full
     /// name and the widest harness.
@@ -639,6 +807,7 @@ impl RowLayout {
                 task_width,
                 bar_cells,
                 fill,
+                stats: StatColumns::default(),
             };
         }
         let with_model = row(full, task_width) <= width || full == harness;
@@ -654,6 +823,7 @@ impl RowLayout {
             },
             bar_cells: 0,
             fill,
+            stats: StatColumns::default(),
         }
     }
 }
@@ -702,11 +872,13 @@ mod tests {
         let ctx = RenderCtx::new(100, &theme, Clock::new(t0, t0 + Duration::from_secs(252)));
         let lines = panel(t0).lines(&ctx);
         let bar = " ".repeat(20);
+        // The stats line up in columns, and the times end a cell short of the edge.
+        let pad = " ".repeat(21);
         assert_eq!(
             plain_text(&lines),
             format!(
-                "  ◐ claude-code/opus  card-002  {bar}  2/5 · 4m12s · ↓ 18.1k tokens\n\
-                 \x20 ◐ codex/gpt-5.6     card-003  {bar}  1/5 · 3m40s · ↓ 12.9k tokens\n\
+                "  ◐ claude-code/opus  card-002  {bar}  2/5  ↓ 18.1k tokens{pad}4m12s\n\
+                 \x20 ◐ codex/gpt-5.6     card-003  {bar}  1/5  ↓ 12.9k tokens{pad}3m40s\n\
                  \x20 ○ agy/gemini-3.6    review    {bar}  waiting for card-002"
             )
         );
@@ -751,25 +923,26 @@ mod tests {
             let ctx = RenderCtx::new(width, &theme, Clock::new(t0, t0 + Duration::from_secs(252)));
             plain_text(&panel(t0).lines(&ctx)[..1])
         };
-        // With 28 columns of stats, a row needs 60 without its bar and 66 with the shortest one.
+        // With 27 cells of stats, a row needs 60 without its bar and 66 with the shortest one.
         assert_eq!(
             first_row(66),
-            "  ◐ claude-code/opus  card-002        2/5 · 4m12s · ↓ 18.1k tokens"
+            "  ◐ claude-code/opus  card-002        2/5  ↓ 18.1k tokens   4m12s"
         );
         assert_eq!(
             first_row(65),
-            "  ◐ claude-code/opus  card-002  2/5 · 4m12s · ↓ 18.1k tokens"
+            "  ◐ claude-code/opus  card-002  2/5  ↓ 18.1k tokens        4m12s"
         );
         assert_eq!(
             first_row(59),
-            "  ◐ claude-code  card-002  2/5 · 4m12s · ↓ 18.1k tokens"
+            "  ◐ claude-code  card-002  2/5  ↓ 18.1k tokens       4m12s"
         );
         assert_eq!(
             first_row(50),
-            "  ◐ claude-code  2/5 · 4m12s · ↓ 18.1k tokens"
+            "  ◐ claude-code  2/5  ↓ 18.1k tokens        4m12s"
         );
-        assert_eq!(first_row(30), "  ◐ claude-code  2/5 · 4m12s");
-        assert_eq!(first_row(24), "  ◐ claude-code  2/5");
+        // Then the tokens and the steps give way, and the time stays at the edge.
+        assert_eq!(first_row(30), "  ◐ claude-code  2/5    4m12s");
+        assert_eq!(first_row(24), "  ◐ claude-code   4m12s");
     }
 
     #[test]

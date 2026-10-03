@@ -2,7 +2,7 @@
 //! retries. Streamed text is left to [`super::Reader`], which speaks it a line at a time.
 
 use argonauts_core::steps::summary_line;
-use argonauts_core::{AgentEvent, TodoItem, Verbosity};
+use argonauts_core::{AgentEvent, ErrorCategory, TodoItem, Verbosity};
 use serde_json::Value;
 
 use crate::bridge::tools::{finish_call, is_own, start_call};
@@ -88,6 +88,11 @@ pub fn agent_lines(
                 .unwrap_or_default();
             vec![format!("{who}: retrying, {}{delay}", word(reason))]
         }
+        AgentEvent::Error {
+            category: ErrorCategory::Stalled,
+            message,
+            ..
+        } => vec![format!("{who}: {}", sanitize_line(message).trim())],
         AgentEvent::Error { message, .. } => {
             vec![format!("{who} error: {}", sanitize_line(message).trim())]
         }

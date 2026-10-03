@@ -30,7 +30,6 @@ fn crew() -> BottomState {
     let mut working = WorkingLine::new("Building", t0());
     working.tokens_down = 48_200;
     working.details = vec!["build".into(), "3 agents".into()];
-    working.last_progress = Some(at(NOW));
     bottom.working = Some(working);
     bottom.agents.rows = vec![
         agent(
@@ -175,8 +174,22 @@ fn working_with_agents() {
             "{row} has a row:\n{all}"
         );
     }
-    assert!(all.contains("2/5 · 4m12s · ↓ 18.1k tokens"), "{all}");
-    assert!(all.contains("1/5 · 3m40s · ↓ 12.9k tokens"), "{all}");
+    // Steps and tokens in their columns, and the times at the edge.
+    let row = |name: &str| {
+        row_with(&view.lines, name)
+            .map(row_text)
+            .unwrap_or_default()
+    };
+    let claude = row("claude-code/opus");
+    assert!(claude.contains("2/5  ↓ 18.1k tokens"), "{all}");
+    assert!(claude.trim_end().ends_with("4m12s"), "{all}");
+    let codex = row("codex/gpt-5.6");
+    assert!(codex.contains("1/5  ↓ 12.9k tokens"), "{all}");
+    assert_eq!(
+        claude.trim_end().chars().count(),
+        codex.trim_end().chars().count(),
+        "{all}"
+    );
     assert!(
         row_with(&view.lines, "agy/gemini-3.6")
             .is_some_and(|row| row_text(row).ends_with("waiting for card-002"))
@@ -208,7 +221,6 @@ fn the_working_line_reads_like_claude_code() {
     let mut bottom = idle();
     let mut working = WorkingLine::new("Rowing", t0());
     working.activity = Activity::Thinking { since: t0() };
-    working.last_progress = Some(at(NOW));
     bottom.working = Some(working);
     let first = |bottom: &BottomState, elapsed: f64| {
         text(&bottom.render(&ctx(&theme, 100, elapsed)).lines[..1])
@@ -257,7 +269,38 @@ fn card_expanded() {
         merge.trim_end().ends_with("Merge"),
         "the number alone picks it, with no letter after: {merge}"
     );
-    assert!(all.contains("peer-crew ─\n❯"), "{all}");
+    assert!(
+        all.contains("peer-crew ─\n❯ ↑↓ to move · Enter or a number to answer · Esc to set aside"),
+        "the input names the card's keys: {all}"
+    );
+}
+
+/// A card that needs you, under the working line, took the keys as it showed. Letters typed
+/// at it change the input's hint, and nothing offers to guide the run.
+#[test]
+fn a_card_that_needs_you_holds_the_keys() {
+    let mut bottom = crew();
+    let mut card = merge_card();
+    card.focused = false;
+    card.needs_you = true;
+    bottom.card = Some(card);
+    assert!(bottom.hand_keys_to_card(std::time::Instant::now()));
+    snapshot_widths("card_needs_you", &bottom);
+    let view = bottom.render(&ctx(&theme(), 80, NOW));
+    let all = text(&view.lines);
+    assert!(all.contains("❯ 1. Merge"), "{all}");
+    assert!(!all.contains("guide the run"), "{all}");
+
+    bottom.card.as_mut().unwrap().stray_typing = true;
+    snapshot_widths("card_needs_you_typed_at", &bottom);
+    let view = bottom.render(&ctx(&theme(), 80, NOW));
+    assert!(
+        text(&view.lines).contains(
+            "❯ Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+        ),
+        "{}",
+        text(&view.lines)
+    );
 }
 
 #[test]

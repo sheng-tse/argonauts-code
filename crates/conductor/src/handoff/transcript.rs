@@ -21,7 +21,7 @@ use argonauts_core::names::SessionKey;
 use argonauts_core::paths::{create_private_dir_all, exclude_from_git, write_private_file};
 use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::worker::Access;
-use argonauts_core::{AgentEvent, CardId, TodoItem, TodoStatus};
+use argonauts_core::{AgentEvent, CardId, ErrorCategory, TodoItem, TodoStatus};
 use serde_json::Value;
 
 use super::packet::Step;
@@ -253,6 +253,11 @@ impl Reader {
                 self.flush_deltas();
                 self.push(Block::Todo(items.clone()));
             }
+            // A stall is a warning the agent may yet answer, not why it ended.
+            AgentEvent::Error {
+                category: ErrorCategory::Stalled,
+                ..
+            } => {}
             AgentEvent::Error {
                 category, message, ..
             } => {

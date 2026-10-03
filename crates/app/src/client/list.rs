@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use argonauts_core::api::{ApiError, RunState, RunSummary};
-use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointKind};
+use argonauts_core::events::card::IntegrationEvent;
+use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointKind, CheckpointPacket};
 use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome, RunPhase};
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::vendor::BudgetEvent;
@@ -145,6 +146,8 @@ struct Tally {
     budget: Option<Spend>,
     snapshot_spend: Option<Spend>,
     session_spend: Spend,
+    /// Your files in the way while the run waits to merge.
+    waiting_to_merge: Vec<String>,
 }
 
 impl Tally {
@@ -161,6 +164,27 @@ impl Tally {
                         .collect();
                     tally.snapshot_spend =
                         snapshot.summary.budget.as_ref().map(|budget| budget.spent);
+                    let waiting = snapshot
+                        .open_checkpoints
+                        .iter()
+                        .find_map(|opened| match &opened.packet {
+                            CheckpointPacket::Merge(merge)
+                                if !merge.in_the_way.is_empty() || !merge.edited.is_empty() =>
+                            {
+                                Some(
+                                    merge
+                                        .in_the_way
+                                        .iter()
+                                        .chain(&merge.edited)
+                                        .cloned()
+                                        .collect(),
+                                )
+                            }
+                            _ => None,
+                        });
+                    if let Some(waiting) = waiting {
+                        tally.waiting_to_merge = waiting;
+                    }
                 }
                 RunEventKind::Run(lifecycle) => {
                     tally.last_lifecycle = Some((event.ts, lifecycle.clone()));
@@ -192,6 +216,12 @@ impl Tally {
                 }
                 RunEventKind::Budget(BudgetEvent::Run(budget)) => {
                     tally.budget = Some(budget.spent);
+                }
+                RunEventKind::Integration(IntegrationEvent::WaitingToMerge {
+                    in_the_way, ..
+                }) => tally.waiting_to_merge = in_the_way.clone(),
+                RunEventKind::Integration(IntegrationEvent::Landed { .. }) => {
+                    tally.waiting_to_merge.clear();
                 }
                 _ => {}
             }
@@ -240,6 +270,9 @@ fn state_of(tally: &Tally, live: bool) -> (RunState, String) {
         Some((_, RunLifecycle::StopRequested { .. })) if live => {
             (RunState::Pausing, "stopping".to_owned())
         }
+        _ if live && !tally.waiting_to_merge.is_empty() => {
+            (RunState::Running, waiting_to_merge_words(tally))
+        }
         _ if live => {
             let waiting = tally.open_needing_you();
             let words = match waiting.first().and_then(|id| tally.kind_of(id)) {
@@ -283,7 +316,22 @@ fn outcome_words(outcome: RunOutcome) -> &'static str {
     }
 }
 
+/// A run that waits to merge hasn't failed: it waits for your files to move.
+fn waiting_to_merge_words(tally: &Tally) -> String {
+    let files = tally.waiting_to_merge.len();
+    let files = if files == 1 {
+        "1 file of yours".to_owned()
+    } else {
+        format!("{files} files of yours")
+    };
+    format!("waiting to merge, {files} in the way")
+}
+
 fn parked_words(tally: &Tally, reason: &ParkReason, waiting_on: &[CheckpointId]) -> String {
+    let at_merge = matches!(reason, ParkReason::Checkpoint | ParkReason::Paused);
+    if at_merge && !tally.waiting_to_merge.is_empty() {
+        return waiting_to_merge_words(tally);
+    }
     match reason {
         ParkReason::Checkpoint => match waiting_on.first().and_then(|id| tally.kind_of(id)) {
             Some(kind) => format!("{} checkpoint, waiting for you", kind_words(kind)),
@@ -344,4 +392,54 @@ fn phase_words(phase: RunPhase) -> &'static str {
 
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or_default().trim().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(seq: u64, kind: RunEventKind) -> RunEvent {
+        RunEvent {
+            seq,
+            ts: OffsetDateTime::UNIX_EPOCH,
+            run_id: RunId::new("run-01").unwrap(),
+            card_id: None,
+            session: None,
+            source: "conductor".to_owned(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_run_your_files_hold_up_waits_to_merge_instead_of_failing() {
+        let waiting = event(
+            1,
+            RunEventKind::Integration(IntegrationEvent::WaitingToMerge {
+                target: "main".to_owned(),
+                in_the_way: vec!["a.pyc".to_owned(), "b.pyc".to_owned()],
+            }),
+        );
+        let parked = event(
+            2,
+            RunEventKind::Run(RunLifecycle::Parked {
+                reason: ParkReason::Paused,
+                waiting_on: Vec::new(),
+            }),
+        );
+        let words = "waiting to merge, 2 files of yours in the way".to_owned();
+        let tally = Tally::of(&[waiting.clone(), parked]);
+        assert_eq!(state_of(&tally, false), (RunState::Parked, words.clone()));
+        let tally = Tally::of(std::slice::from_ref(&waiting));
+        assert_eq!(state_of(&tally, true), (RunState::Running, words));
+
+        let landed = event(
+            3,
+            RunEventKind::Integration(IntegrationEvent::Landed {
+                target: "main".to_owned(),
+                sha: "abc".to_owned(),
+                fast_forward: true,
+            }),
+        );
+        assert!(Tally::of(&[waiting, landed]).waiting_to_merge.is_empty());
+    }
 }

@@ -21,7 +21,7 @@ use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{Access, WorkerKind};
 use argonauts_core::{
-    AgentEvent, CardId, RetryReason, RunId, Spend, TodoItem, TodoStatus, Verbosity,
+    AgentEvent, CardId, ErrorCategory, RetryReason, RunId, Spend, TodoItem, TodoStatus, Verbosity,
 };
 use argonauts_tui::HistoryCell;
 use argonauts_tui::bridge::agents::AgentBlocks;
@@ -315,6 +315,7 @@ fn session_state(
         end: None,
         unknown: Vec::new(),
         doing: Doing::Nothing,
+        stalled: false,
         vendor_session: None,
     }
 }
@@ -463,6 +464,42 @@ fn live_block_all_parts() {
         .tool("s-001", "t6", "Read", json!({"file_path": "src/lib.rs"}));
     assert!(!text(&crew.live(140)).contains("retrying"));
     assert!(!text(&crew.printed(140)).contains("Next I'll add"));
+}
+
+/// A CLI that missed its heartbeat may yet answer, so the stall reads as a dim note while an
+/// error keeps the error color.
+#[test]
+fn a_stall_reads_dim_and_an_error_red() {
+    let mut crew = Crew::new(Verbosity::Normal);
+    crew.start("s-001", "claude-code/opus", None);
+    let stall = "Claude Code has sent nothing for 45 seconds, not even its heartbeat";
+    crew.agent(
+        "s-001",
+        AgentEvent::Error {
+            category: ErrorCategory::Stalled,
+            message: stall.to_owned(),
+            retryable: true,
+        },
+    );
+    crew.agent(
+        "s-001",
+        AgentEvent::Error {
+            category: ErrorCategory::Network,
+            message: "the stream broke".to_owned(),
+            retryable: true,
+        },
+    );
+    let lines = crew.live(100);
+    assert_eq!(
+        style_of(&lines, "sent nothing for 45 seconds").and_then(|s| s.fg),
+        theme().style(Role::Dim).fg,
+        "{}",
+        text(&lines)
+    );
+    assert_eq!(
+        style_of(&lines, "the stream broke").and_then(|s| s.fg),
+        theme().style(Role::Error).fg
+    );
 }
 
 #[test]

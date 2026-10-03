@@ -56,6 +56,7 @@ pub(crate) struct TestAdapter {
     stop_plan: StopPlan,
     removed_env: Vec<String>,
     card_home: bool,
+    heartbeat: Option<Duration>,
 }
 
 impl TestAdapter {
@@ -74,7 +75,14 @@ impl TestAdapter {
             stop_plan: fast_stop_plan(),
             removed_env: Vec::new(),
             card_home: false,
+            heartbeat: None,
         }
+    }
+
+    /// Claims a heartbeat during tool calls, as Claude Code's.
+    pub(crate) fn with_heartbeat(mut self, every: Duration) -> Self {
+        self.heartbeat = Some(every);
+        self
     }
 
     /// Points `FAKE_HOME` at the folder the worker passes for a home kept for the card, as an
@@ -219,6 +227,9 @@ impl Adapter for TestAdapter {
     }
     fn stop_plan(&self) -> StopPlan {
         self.stop_plan.clone()
+    }
+    fn heartbeat(&self) -> Option<Duration> {
+        self.heartbeat
     }
     fn capabilities(&self) -> Capabilities {
         Capabilities {

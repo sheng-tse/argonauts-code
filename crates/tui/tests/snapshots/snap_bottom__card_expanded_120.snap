@@ -16,6 +16,6 @@ expression: text(&view.lines)
   Enter to choose · Tab to add a note · Esc to set aside
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
-❯
+❯ ↑↓ to move · Enter or a number to answer · Esc to set aside
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on

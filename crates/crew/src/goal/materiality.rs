@@ -6,6 +6,8 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::events::goal::{Assumption, ChoiceOption, GoalQuestion};
+use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::Answerer;
 use argonauts_core::settings::protocol::GoalSettings;
 use argonauts_core::steps::goal::{DiffTag, DifferOutput, Difference, McQuestion, Reading};
 
@@ -32,6 +34,23 @@ struct Merged {
     must_ask: bool,
     readings: Vec<Reading>,
     question: Option<McQuestion>,
+}
+
+/// The goal settings differences settle by. The question limit spares your attention, so when
+/// you chose the lead to answer the crew's questions it answers every one, and nothing is
+/// held back over the limit.
+pub fn goal_settings(settings: &Settings) -> GoalSettings {
+    let mut goal = settings.goal.clone();
+    if settings.approvals.answered_by == Some(Answerer::Lead) {
+        goal.max_questions = u32::MAX;
+    }
+    goal
+}
+
+/// Whether the lead may answer a question tagged `tag` for you. Questions `goal.always_ask`
+/// names stay yours unless you chose the lead to answer the crew's questions yourself.
+pub fn lead_may_answer(tag: DiffTag, settings: &Settings) -> bool {
+    settings.approvals.answered_by == Some(Answerer::Lead) || !always_asks(tag, &settings.goal)
 }
 
 /// Settles every differ's listing of `restaters` restatements.

@@ -7,7 +7,7 @@ use argonauts_core::settings::sessions::SessionSettings;
 use argonauts_core::steps::StepName;
 use argonauts_core::views::ContextUse;
 use argonauts_core::workflow::StepRef;
-use argonauts_core::{CardId, RetryReason, TodoItem};
+use argonauts_core::{CardId, ErrorCategory, RetryReason, TodoItem};
 use time::OffsetDateTime;
 
 /// One agent session of a run, everything the live block, the panel, the crew view, and the
@@ -60,6 +60,8 @@ pub struct SessionState {
     pub unknown: Vec<serde_json::Value>,
     /// What its last event says it's doing, for the working line's words.
     pub doing: Doing,
+    /// The conductor said its stream stalled, and nothing has come from it since.
+    pub stalled: bool,
     /// The vendor's own session id, for resuming.
     pub vendor_session: Option<String>,
 }
@@ -164,6 +166,7 @@ impl SessionState {
             end: None,
             unknown: Vec::new(),
             doing: Doing::Nothing,
+            stalled: false,
             vendor_session: None,
         }
     }
@@ -218,6 +221,13 @@ impl SessionState {
     /// Folds one event from its stream in.
     pub(super) fn apply_agent(&mut self, event: &AgentEvent, at: OffsetDateTime) {
         self.last_event = at;
+        self.stalled = matches!(
+            event,
+            AgentEvent::Error {
+                category: ErrorCategory::Stalled,
+                ..
+            }
+        );
         if self.status == SessionStatus::Starting {
             self.status = SessionStatus::Working;
         }
@@ -358,6 +368,7 @@ impl SessionState {
         self.last_event = at;
         self.retry = None;
         self.doing = Doing::Nothing;
+        self.stalled = false;
         if self.cost_usd.is_none() && end.spend.cost_usd > 0.0 {
             self.cost_usd = Some(end.spend.cost_usd);
         }

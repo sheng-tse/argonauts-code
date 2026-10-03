@@ -12,6 +12,7 @@ pub mod card_merge;
 pub mod conductor;
 pub mod diff;
 pub mod final_check;
+pub mod in_the_way;
 pub mod land;
 pub mod merge;
 pub mod merge_packet;

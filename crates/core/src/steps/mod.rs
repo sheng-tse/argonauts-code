@@ -32,6 +32,8 @@ pub enum StepName {
     ChatAnswer,
     Restate,
     Differ,
+    /// The lead answers the goal's open questions for you.
+    AnswerQuestions,
     Draft,
     Map,
     Critique,

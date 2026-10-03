@@ -53,6 +53,12 @@ pub trait Adapter: Send + Sync {
         Capabilities::default()
     }
 
+    /// How often the CLI writes while a tool call runs, so a longer silence then is a stall.
+    /// `None` for a CLI that says nothing while it works, where silence is normal.
+    fn heartbeat(&self) -> Option<Duration> {
+        None
+    }
+
     /// Like `wrap_up_input`, for sessions opened with `keep_input_open`. `None` means
     /// interrupt and resume.
     fn input_line(&self, message: &str) -> Option<String> {

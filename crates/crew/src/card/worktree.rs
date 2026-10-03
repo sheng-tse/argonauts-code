@@ -7,16 +7,18 @@ use std::path::{Component, Path, PathBuf};
 
 use globset::Glob;
 
+use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::CardEvent;
 use argonauts_core::layout;
 use argonauts_core::names::{SessionKey, WorkerRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::{CardId, CommitInfo, DiffStat, RunId};
+use argonauts_core::{CardId, CommitInfo, DiffStat, Note, NoteLevel, RunId};
 
 use crate::card::support::{record_card, record_card_in, record_of};
 use crate::engine::host::Host;
+use crate::engine::shared::lock;
 use crate::error::{EngineError, EngineResult};
-use crate::git::Git;
+use crate::git::{Git, LeftOut};
 use crate::handoff::notes;
 use crate::idempotency;
 use crate::integrate::branch::{
@@ -202,9 +204,13 @@ pub(crate) async fn commit_in(
                 if !git.leftover_markers(&tree.path).await?.is_empty() {
                     return finish(host, card, &git, &tree, made).await;
                 }
-                Some(git.finish_merge(&tree.path, &message).await?)
+                let (sha, left_out) = git.finish_merge_work(&tree.path, &message).await?;
+                tell_left_out(host, card, &left_out)?;
+                Some(sha)
             } else {
-                git.commit_all(&tree.path, &message).await?
+                let committed = git.commit_work(&tree.path, &message).await?;
+                tell_left_out(host, card, &committed.left_out)?;
+                committed.sha
             };
             if let (None, Some((key, _))) = (&committed, session) {
                 let nothing = CommitInfo {
@@ -226,6 +232,46 @@ pub(crate) async fn commit_in(
         made.push(info);
     }
     finish(host, card, &git, &tree, made).await
+}
+
+/// The most a note names before it says how many more.
+const LEFT_OUT_NAMED: usize = 6;
+
+/// Names what a commit of `card` left out as build output, each folder or file once per card,
+/// so a file left out by mistake shows while it's still in the worktree, before the merge. A
+/// repo with no `.gitignore` would otherwise see those files go missing without a word.
+fn tell_left_out(host: &Host, card: &CardId, left_out: &[LeftOut]) -> EngineResult<()> {
+    let new: Vec<&str> = {
+        let mut told = lock(&host.shared().told_left_out);
+        let mut new: Vec<&str> = Vec::new();
+        for left in left_out {
+            if told.insert(format!("{card}:{}", left.because)) {
+                new.push(&left.because);
+            }
+        }
+        new
+    };
+    if new.is_empty() {
+        return Ok(());
+    }
+    let shown = new.len().min(LEFT_OUT_NAMED);
+    let mut named = new[..shown].join(", ");
+    if new.len() > shown {
+        named.push_str(&format!(" and {} more", new.len() - shown));
+    }
+    let text = format!(
+        "Left out of {card}'s commit as build and cache output, and kept in its worktree: \
+         {named}. merge.leave_out and merge.leave_out_builtin set what's left out."
+    );
+    host.record(
+        Some(card),
+        None,
+        RunEventKind::Note(Note {
+            level: NoteLevel::Info,
+            text,
+        }),
+    )?;
+    Ok(())
 }
 
 /// The commits on the branch's own line in `range` that the log hasn't recorded, oldest

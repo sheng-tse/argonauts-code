@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::app::{AppMode, QuotaChip};
 use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::{Party, RunMode, RunPhase};
 use argonauts_core::events::session::{Delivery, QueuedMessage};
 use argonauts_core::input::MentionTarget;
@@ -116,10 +117,16 @@ impl Work<'_> {
         }
     }
 
-    fn events(&self) -> u64 {
+    /// Whether the conductor said the stream stalled. A crew's run stalls only once every agent
+    /// still running has, since one at work keeps the run going.
+    fn stalled(&self) -> bool {
         match self {
-            Work::Chat(chat) => chat.events,
-            Work::Run(run) | Work::Pausing(run) => run.events,
+            Work::Chat(chat) => chat.stalled,
+            Work::Run(run) => {
+                let mut running = run.running_sessions().peekable();
+                running.peek().is_some() && running.all(|session| session.stalled)
+            }
+            Work::Pausing(_) => false,
         }
     }
 }
@@ -127,7 +134,7 @@ impl Work<'_> {
 fn current_work(state: &AppState) -> Option<Work<'_>> {
     let run_work = |id| {
         let run = state.runs.get(id)?;
-        if run.finished.is_some() {
+        if run.finished.is_some() || waits_on_you(run) {
             return None;
         }
         Some(if run.pausing {
@@ -149,6 +156,27 @@ fn current_work(state: &AppState) -> Option<Work<'_>> {
     }
 }
 
+/// A card waits on your answer, and neither an agent nor the conductor's gates or merges are at
+/// work on the run, so nothing is going on but the wait. The line steps aside, as Claude Code's
+/// spinner does while a permission prompt is up, and comes back with the run's own clock once
+/// you answer.
+fn waits_on_you(run: &RunState) -> bool {
+    let card_at_work = run.cards.values().any(|card| {
+        matches!(
+            card.state,
+            Some(
+                CardState::Running
+                    | CardState::Gating
+                    | CardState::InReview
+                    | CardState::Integrating
+            )
+        )
+    });
+    run.checkpoints.iter().any(|open| open.opened.needs_you)
+        && run.running_sessions().next().is_none()
+        && !card_at_work
+}
+
 fn sync_working(
     state: &AppState,
     bottom: &mut crate::bottom::BottomState,
@@ -161,7 +189,6 @@ fn sync_working(
         return;
     };
     let key = work.key();
-    let events = work.events();
     let same = bottom.synced.work.as_deref() == Some(key.as_str());
     let previous = bottom.working.take().filter(|_| same);
 
@@ -169,7 +196,6 @@ fn sync_working(
         Some(line) => line.clone(),
         None => WorkingLine::new(verb_for(&work, pick), started_at(&work, now)),
     };
-    let moved = !same || bottom.synced.events != events;
     match &work {
         Work::Chat(chat) => {
             line.tokens_down = chat.tokens_out;
@@ -196,14 +222,15 @@ fn sync_working(
             line.timed = false;
         }
     }
-    if matches!(work, Work::Pausing(_)) {
-        line.last_progress = None;
-    } else if moved {
-        line.last_progress = Some(now);
-    }
+    // The fade runs from the stall the conductor reported, never from a quiet spell, since a
+    // model can think for minutes without a word.
+    line.stalled_since = if work.stalled() {
+        line.stalled_since.or(Some(now))
+    } else {
+        None
+    };
     bottom.working = Some(line);
     bottom.synced.work = Some(key);
-    bottom.synced.events = events;
 }
 
 /// A new word for each stretch of work; the same turn or run keeps its word.
@@ -941,6 +968,59 @@ mod tests {
         // Between steps, the phase whose step started last.
         run.workflows[0].steps[1].end = Some(StepEnd::Done);
         assert_eq!(run_details(&run), ["Plan"]);
+    }
+
+    #[test]
+    fn the_working_line_fades_on_a_reported_stall_until_the_agent_speaks() {
+        let turn = TurnId::numbered(1);
+        let mut state = AppState::default();
+        state.mode = Some(AppMode::Answering { turn: turn.clone() });
+        state.chat.turn = Some(turn.clone());
+        let agent = |state: &mut AppState, event: AgentEvent| {
+            state.apply(&AppEvent::Chat {
+                event: ChatEvent::Agent {
+                    turn: turn.clone(),
+                    event,
+                },
+            });
+        };
+        let t0 = Instant::now();
+        let mut bottom = crate::bottom::BottomState::new();
+        let mut stalled_since = |state: &AppState, secs: u64| {
+            let now = t0 + Duration::from_secs(secs);
+            sync_working(state, &mut bottom, || "Rowing", now);
+            let line = bottom.working.as_ref().expect("a working line");
+            line.stalled_since
+        };
+
+        // Ten quiet minutes of thinking are no stall.
+        agent(&mut state, AgentEvent::Reasoning { text: "hm".into() });
+        assert_eq!(stalled_since(&state, 0), None);
+        assert_eq!(stalled_since(&state, 600), None);
+
+        agent(
+            &mut state,
+            AgentEvent::Error {
+                category: argonauts_core::ErrorCategory::Stalled,
+                message: "Claude Code has sent nothing for 45 seconds, not even its heartbeat"
+                    .into(),
+                retryable: true,
+            },
+        );
+        // The fade runs from the stall on.
+        let stalled_at = Some(t0 + Duration::from_secs(645));
+        assert_eq!(stalled_since(&state, 645), stalled_at);
+        assert_eq!(stalled_since(&state, 650), stalled_at);
+
+        // Anything from the agent clears it.
+        agent(
+            &mut state,
+            AgentEvent::TextDelta {
+                text: "Done.".into(),
+                parent: None,
+            },
+        );
+        assert_eq!(stalled_since(&state, 651), None);
     }
 
     #[test]

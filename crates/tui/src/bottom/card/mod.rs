@@ -1,8 +1,10 @@
-//! A card from an agent or a run never takes focus by itself, so nothing you're typing when it
-//! appears can answer it. ↑ or Tab on an empty input hands it the keys, and ↓ past its last
-//! option hands them back. A card you set off yourself, such as a confirm or the save-scope
-//! question, opens with the keys and keeps them until you answer it or press Esc, the way Claude
-//! Code shows its questions.
+//! A card you set off yourself, such as a confirm or the save-scope question, opens with the
+//! keys and keeps them until you answer it or press Esc, the way Claude Code shows its
+//! questions. A card work waits on takes the keys too, but only from an input left alone for a
+//! moment, and keeps them until you answer or set it aside. Typing at a card answers nothing:
+//! letters mark it as chat meant for the input, and until you move the pointer neither a number
+//! nor Enter answers. Any other card waits above the input; ↑ or Tab on an empty input hands it
+//! the keys, and ↓ past its last option hands them back.
 
 mod render;
 
@@ -37,6 +39,22 @@ pub struct CardPrompt {
     pub focused: bool,
     /// You set it off yourself, so it holds the keys whenever it's on screen.
     pub takes_focus: bool,
+    /// Work waits on your answer, so it takes the keys when it shows and keeps them until
+    /// you answer or set it aside. A draft in the input holds them off until it's sent or
+    /// cleared.
+    pub needs_you: bool,
+    /// Letters or a paste came to it, likely chat meant for the input, so nothing answers it
+    /// until you move the pointer: not a number, and not the Enter that ends the line.
+    pub stray_typing: bool,
+    /// You worked it with keys meant for it: you brought it up with ↑ or Tab, moved with the
+    /// arrows, or set it off yourself. Until then vim's `l` and `h` are letters here, since a
+    /// chat line can start with them.
+    pub engaged: bool,
+    /// It takes the keys by itself only while nothing was typed in the input since it showed,
+    /// as the unclear request does, which you may answer by typing.
+    pub yields_to_typing: bool,
+    /// Something was typed in the input while it waited.
+    pub typed_while_up: bool,
     /// Set aside to one line.
     pub pinned: bool,
     pub allow_note: bool,
@@ -220,6 +238,11 @@ impl CardPrompt {
             selected: 0,
             focused: false,
             takes_focus: false,
+            needs_you: false,
+            stray_typing: false,
+            engaged: false,
+            yields_to_typing: false,
+            typed_while_up: false,
             pinned: false,
             allow_note: false,
             note: None,
@@ -236,26 +259,98 @@ impl CardPrompt {
         !self.focused
     }
 
+    /// You gave it the keys, such as with ↑ on an empty input.
     pub fn focus(&mut self) {
         self.pinned = false;
         self.focused = true;
+        self.stray_typing = false;
+        self.engaged = true;
     }
 
     /// A card you set off yourself: it opens with the keys, as Claude Code's questions do.
     pub fn yours(mut self) -> Self {
         self.takes_focus = true;
         self.focused = true;
+        self.engaged = true;
         self
     }
 
-    /// The key as the card reads it with vim keys on: `j` and `k` move, `g` and `G` go to the
-    /// first and last option, `l` answers as Enter does, and `h` sets the card aside as Esc
-    /// does. A note being typed keeps its letters.
-    pub fn vim_key(&self, key: KeyEvent) -> KeyEvent {
+    /// Whether it takes the keys as it shows: yours always, one that needs you until set aside.
+    pub fn claims_keys(&self) -> bool {
+        !self.pinned && (self.takes_focus || self.needs_you)
+    }
+
+    /// Takes the keys if it claims them. One that needs you waits for `input_free`, an empty
+    /// input nobody touched for a moment, so a draft being typed or just cleared is never cut
+    /// off and never lands on the card.
+    pub fn take_keys(&mut self, input_free: bool) -> bool {
+        let free = input_free && !(self.yields_to_typing && self.typed_while_up);
+        let takes = !self.focused && self.claims_keys() && (self.takes_focus || free);
+        if takes {
+            self.focus();
+            self.engaged = self.takes_focus;
+        }
+        takes
+    }
+
+    /// A paste came to it while it had the keys. It goes nowhere, as typing does.
+    pub fn pasted_at(&mut self) {
+        self.stray_typing = true;
+        self.armed = None;
+    }
+
+    /// The input's hint while this card has the keys, which names them, since nothing typed
+    /// reaches the input then.
+    pub fn input_hint(&self) -> String {
         if self.note.is_some() {
-            key
-        } else {
-            list::standard(key, true, KeyCode::Esc)
+            return "Typing goes into the card".to_owned();
+        }
+        if self.checklist.is_some() {
+            return "Space to tick the card's rows".to_owned();
+        }
+        if self.stray_typing {
+            let mut hint = "Typing waits while the card has the keys · ↑↓ to choose".to_owned();
+            let esc = sanitize_line(&self.esc_hint).trim().to_owned();
+            if !esc.is_empty() {
+                hint.push_str(" · ");
+                hint.push_str(&esc);
+            }
+            return hint;
+        }
+        if self.armed.is_some() {
+            return "Enter or the same number to confirm · Esc to cancel".to_owned();
+        }
+        let mut hint = "↑↓ to move · Enter or a number to answer".to_owned();
+        let esc = sanitize_line(&self.esc_hint).trim().to_owned();
+        if !esc.is_empty() {
+            hint.push_str(" · ");
+            hint.push_str(&esc);
+        }
+        hint
+    }
+
+    /// The key as the card reads it. Arrows, Home, End, and Tab are meant for the card, so
+    /// they engage it. With vim keys on, `j` and `k` move, `g` and `G` go to the first and last
+    /// option, and once the card is engaged `l` answers as Enter does and `h` sets it aside as
+    /// Esc does. None of them work while stray typing waits, and a note being typed keeps its
+    /// letters.
+    pub fn read_key(&mut self, key: KeyEvent, vim: bool) -> KeyEvent {
+        if matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End | KeyCode::Tab
+        ) {
+            self.engaged = true;
+        }
+        if !vim || self.note.is_some() || self.stray_typing {
+            return key;
+        }
+        match list::vim_stand_in(&key, KeyCode::Esc) {
+            Some(stand_in)
+                if self.engaged || !matches!(stand_in.code, KeyCode::Enter | KeyCode::Esc) =>
+            {
+                stand_in
+            }
+            _ => key,
         }
     }
 
@@ -279,13 +374,20 @@ impl CardPrompt {
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        if let Some(event) = self.stray_key(key, plain) {
+            return event;
+        }
         match key.code {
             KeyCode::Up => {
                 self.move_to(self.selected.saturating_sub(1));
                 CardEvent::Moved
             }
-            // A card you set off keeps the keys, so typing never slips into the input under it.
-            KeyCode::Down if self.selected + 1 == self.options.len() && self.takes_focus => {
+            // A card you set off, or one work waits on, keeps the keys, so typing never slips
+            // into the input under it. Esc is the way out.
+            KeyCode::Down
+                if self.selected + 1 == self.options.len()
+                    && (self.takes_focus || self.needs_you) =>
+            {
                 CardEvent::Moved
             }
             KeyCode::Down if self.selected + 1 == self.options.len() => self.back_to_input(),
@@ -324,6 +426,33 @@ impl CardPrompt {
                 None => CardEvent::Unhandled,
             },
             _ => CardEvent::Unhandled,
+        }
+    }
+
+    /// Letters do nothing here, and they disarm an option that can't be undone. They're likely
+    /// a chat line typed as the card took the keys, so until a key meant for the card, nothing
+    /// after them answers: not a number in the line, and not the Enter that ends it.
+    fn stray_key(&mut self, key: KeyEvent, plain: bool) -> Option<CardEvent> {
+        if !plain {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char(c) if self.stray_typing || self.option_for_digit(c).is_none() => {
+                self.stray_typing = true;
+                self.armed = None;
+                Some(CardEvent::Unhandled)
+            }
+            _ if !self.stray_typing => None,
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::Tab
+            | KeyCode::Esc => {
+                self.stray_typing = false;
+                None
+            }
+            _ => Some(CardEvent::Moved),
         }
     }
 
@@ -562,6 +691,7 @@ impl CardPrompt {
     fn pin(&mut self) -> CardEvent {
         self.pinned = true;
         self.focused = false;
+        self.stray_typing = false;
         self.note = None;
         self.armed = None;
         self.checklist = None;

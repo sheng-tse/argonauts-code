@@ -420,6 +420,26 @@ Error, usage limit: You've hit your limit
 }
 
 #[test]
+fn a_stall_the_agent_got_past_is_no_error() {
+    let mut log = one_session();
+    log.tool(1, "t1", "Bash", json!({"command": "cargo test"}));
+    log.agent(
+        1,
+        AgentEvent::Error {
+            category: ErrorCategory::Stalled,
+            message: "Claude Code has sent nothing for 45 seconds, not even its heartbeat".into(),
+            retryable: true,
+        },
+    );
+    log.finished(1, "t1", true, Some("test result: ok"));
+    log.message(1, "The tests pass.");
+    let text = transcript_of(&log);
+    assert!(!text.contains("Error,"), "{text}");
+    assert!(!text.contains("heartbeat"), "{text}");
+    assert!(text.contains("The tests pass."), "{text}");
+}
+
+#[test]
 fn a_session_without_its_end_takes_the_reason_given() {
     let mut log = one_session();
     log.message(1, "Working.");

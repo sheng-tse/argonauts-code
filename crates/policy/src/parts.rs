@@ -73,6 +73,10 @@ pub trait Autonomy: Send + Sync {
     /// A wrong auto-approval demotes its kind. A wrong checkpoint you approved yourself, such
     /// as a reverted merge, turns its match into a miss. Reporting it again changes nothing.
     fn spot_checked(&self, point: &DecisionPoint, correct: bool, settings: &Settings);
+    /// Landing what auto approved at `point` was refused: the auto-merge it took goes back.
+    fn landing_refused(&self, point: &DecisionPoint) {
+        let _ = point;
+    }
     fn auto_off(&self);
     fn view(&self, settings: &Settings) -> ApprovalsView;
 }

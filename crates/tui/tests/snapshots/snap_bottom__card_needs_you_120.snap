@@ -1,0 +1,27 @@
+---
+source: crates/tui/tests/snap_bottom.rs
+expression: text(&view.lines)
+---
+✻ Building… (4m 12s · ↓ 48.2k tokens · build · 3 agents)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Merge card-002 into main?
+  3 files · +48 -6 · tests passed · agy reviewed it and approved
+
+  ❯ 1. Merge
+    2. Open a pull request
+    3. Request changes on some cards
+    4. Keep the branch
+    5. Abandon the run
+    6. Show the diff
+
+  Enter to choose · Tab to add a note · Esc to set aside
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+❯ ↑↓ to move · Enter or a number to answer · Esc to set aside
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised mode on
+
+  ◐ claude-code/opus  card-002                        2/5  ↓ 18.1k tokens                                         4m12s
+  ◐ codex/gpt-5.6     card-003                        1/5  ↓ 12.9k tokens                                         3m40s
+  ○ agy/gemini-3.6    review                          waiting for card-002

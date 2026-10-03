@@ -1,8 +1,10 @@
-//! The goal checkpoint. Questions wait for you in every mode when they concern scope, security,
-//! data, or cost. With none left, the approval card: approve, approve with edits (rewrite and
-//! re-hash), send back (restate and differ once more with your note) while the goal's loop has
-//! a round left, abandon, show.
+//! The goal checkpoint. The open questions go to whoever answers the crew's questions: you, or
+//! the lead, whose answers become assumptions and leave you only the questions that turn on a
+//! fact no agent can find out. Once you've answered them all, that approves the goal. Otherwise
+//! the approval card: approve, approve with edits (rewrite and re-hash), send back (restate and
+//! differ once more with your note) while the goal's loop has a round left, abandon, show.
 
+use argonauts_core::NoteLevel;
 use argonauts_core::PhaseStatus;
 use argonauts_core::RunId;
 use argonauts_core::events::RunEventKind;
@@ -15,6 +17,7 @@ use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::Answerer;
 use argonauts_core::steps::goal::DifferOutput;
 use argonauts_core::workflow::StepRef;
 
@@ -25,6 +28,7 @@ use crate::state::RunState;
 use crate::state::goal::SettledGoal;
 use crate::workflow::{Flow, StepCall, StepDone, kinds};
 
+use super::lead::{self, Pick};
 use super::materiality::{self, one_line};
 use super::{draft, file, round};
 
@@ -41,38 +45,121 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         .clone()
         .ok_or_else(|| EngineError::Refused("there is no goal draft to check yet".to_owned()))?;
 
+    let by_lead = checkpoints::answerer(host, CheckpointKind::Goal) == Answerer::Lead;
+    let mut drafted = drafted;
+    let mut lead_answered = None;
     let questions = &view.settled.questions;
     if !questions.is_empty() {
+        let for_lead: Vec<bool> = questions
+            .iter()
+            .map(|question| by_lead && materiality::lead_may_answer(question.tag, host.settings()))
+            .collect();
+        let lead_questions: Vec<GoalQuestion> = questions
+            .iter()
+            .zip(&for_lead)
+            .filter(|(_, for_lead)| **for_lead)
+            .map(|(question, _)| question.clone())
+            .collect();
+        let answered = if lead_questions.is_empty() {
+            if let Some(yours) = lead::without_answers(&drafted) {
+                drafted = round::write_draft(host, yours).await?;
+            }
+            None
+        } else {
+            Some(lead::answer(host, call, &drafted, &lead_questions).await?)
+        };
+        // Yours are the questions the lead may not answer, and the ones it couldn't.
+        let mut picks = answered.iter().flat_map(|answered| answered.picks.iter());
+        let yours: Vec<(GoalQuestion, Option<String>)> = questions
+            .iter()
+            .zip(&for_lead)
+            .filter_map(|(question, for_lead)| {
+                if !*for_lead {
+                    let why = by_lead.then(|| {
+                        format!(
+                            "goal.always_ask keeps {} questions yours",
+                            materiality::tag_name(question.tag)
+                        )
+                    });
+                    return Some((question.clone(), why));
+                }
+                match picks.next() {
+                    Some(Pick::Answered(_)) => None,
+                    Some(Pick::Yours(why)) => Some((question.clone(), Some(why.clone()))),
+                    None => Some((question.clone(), None)),
+                }
+            })
+            .collect();
+        let assumed = answered
+            .as_ref()
+            .map(lead::LeadAnswers::assumptions)
+            .unwrap_or_default();
+        if let Some(answered) = &answered
+            && !assumed.is_empty()
+        {
+            // Written before you're asked anything, so a re-entered step finds them and the
+            // transcript says it once.
+            let first_time = !drafted
+                .assumptions
+                .iter()
+                .any(|assumption| assumption.by_lead());
+            drafted = round::write_draft(host, lead::with_assumptions(&drafted, &assumed)).await?;
+            if first_time {
+                round::note(
+                    host,
+                    NoteLevel::Info,
+                    lead::answered_line(assumed.len(), yours.len()),
+                )?;
+            }
+            lead_answered = Some((answered.lead.clone(), assumed.len()));
+        }
+
+        let renumbered = renumber(yours.iter().map(|(question, _)| question.clone()).collect());
         let mut answers = Vec::new();
         let mut by = Party::User;
-        for (question, decided) in questions.iter().zip(&view.answered) {
+        for (question, decided) in renumbered.iter().zip(&view.answered) {
             answers.push(answer_text(question, decided)?);
             by = decided.by.clone();
         }
         let asked = answers.len();
-        for (index, question) in questions.iter().enumerate().skip(asked) {
-            let request = question_request(call, &drafted, &view, index);
-            let decided = checkpoints::open_and_wait(host, request).await?;
-            answers.push(answer_text(question, &decided)?);
+        for index in asked..renumbered.len() {
+            let request = question_request(call, &drafted, &view, &renumbered[index..]);
+            let because = yours[index].1.clone();
+            let decided = checkpoints::open_and_wait_because(host, request, because).await?;
+            answers.push(answer_text(&renumbered[index], &decided)?);
             by = decided.by;
         }
-        // Answering the last question approves the goal, with every answer written in.
-        let goal = round::write_draft(host, draft::with_answers(&drafted, &answers)).await?;
-        approve(host, goal, by)?;
-        return Ok(StepDone::done(match answers.len() {
-            1 => "You answered 1 question and approved the goal".to_owned(),
-            n => format!("You answered {n} questions and approved the goal"),
-        }));
+        if !answers.is_empty() {
+            drafted = round::write_draft(host, draft::with_answers(&drafted, &answers)).await?;
+        }
+        if lead_answered.is_none() {
+            // Answering the last question approves the goal, with every answer written in.
+            approve(host, drafted, by)?;
+            return Ok(StepDone::done(match answers.len() {
+                1 => "You answered 1 question and approved the goal".to_owned(),
+                n => format!("You answered {n} questions and approved the goal"),
+            }));
+        }
+        // The lead's answers still need the approval, which in auto the approver gives.
     }
 
     let decided = match view.decided.clone() {
         Some(decided) => decided,
-        None => checkpoints::open_and_wait(host, approval_request(call, &drafted, &view)).await?,
+        None => {
+            let request = approval_request(call, &drafted, &view, by_lead, lead_answered.clone());
+            checkpoints::open_and_wait(host, request).await?
+        }
     };
     match decided.action {
         AnswerAction::Approve => {
             approve(host, drafted, decided.by)?;
-            Ok(StepDone::done("The goal is approved"))
+            Ok(StepDone::done(match lead_answered {
+                Some((_, 1)) => "The lead answered 1 question, and the goal is approved".to_owned(),
+                Some((_, n)) => {
+                    format!("The lead answered {n} questions, and the goal is approved")
+                }
+                None => "The goal is approved".to_owned(),
+            }))
         }
         AnswerAction::ApproveWithEdits => {
             let note = decided.text.unwrap_or_default();
@@ -167,8 +254,13 @@ pub struct View {
     /// Reasons the approval card must wait for you even with no question open: differences
     /// in `always_ask` over the question limit, and restatements no differ compared.
     pub waits: u32,
+    /// Differences in `always_ask` over the question limit, adopted with their recommended
+    /// answers. No approver may settle those in your place.
+    pub held_back: u32,
     /// Sending the draft back runs another round, since the goal's loop has one left.
     pub send_back: bool,
+    /// Restatements no differ compared.
+    pub unchecked: bool,
     /// The restaters and differs, who must not approve their own goal.
     pub authors: Vec<WorkerRef>,
     /// Each difference the differs tagged, one line each.
@@ -207,8 +299,9 @@ impl View {
                 differences: differences.clone(),
             })
             .collect();
+        let goal_settings = materiality::goal_settings(settings);
         let held_back =
-            materiality::settle(&listings, goal.restated.len(), &settings.goal).held_back;
+            materiality::settle(&listings, goal.restated.len(), &goal_settings).held_back;
         let unchecked = round::mode(state) == RunMode::Crew
             && goal.restated.len() >= 2
             && goal.compared.is_empty();
@@ -247,7 +340,9 @@ impl View {
             answered,
             decided: approvals.into_iter().last(),
             waits: held_back + u32::from(unchecked),
+            held_back,
             send_back: kinds::another_round(state, at),
+            unchecked,
             authors,
             tags,
         }
@@ -281,9 +376,9 @@ pub fn question_request(
     call: &StepCall,
     drafted: &GoalFile,
     view: &View,
-    index: usize,
+    remaining: &[GoalQuestion],
 ) -> CheckpointRequest {
-    let remaining = view.settled.questions[index..].to_vec();
+    let remaining = remaining.to_vec();
     let question = &remaining[0];
     CheckpointRequest {
         at: Some(call.at.clone()),
@@ -314,8 +409,35 @@ fn question_title(n: u8, of: u8) -> String {
 }
 
 /// The approval card, with the kind's standard options, less "Send back" when no round is left
-/// to send the draft back to. Auto may approve it only when nothing waits for you.
-pub fn approval_request(call: &StepCall, drafted: &GoalFile, view: &View) -> CheckpointRequest {
+/// to send the draft back to. Auto may approve it only when nothing waits for you. When the
+/// lead answers the crew's questions nothing does: the approver checks the goal, and the
+/// lead's answers in it, in your place.
+pub fn approval_request(
+    call: &StepCall,
+    drafted: &GoalFile,
+    view: &View,
+    by_lead: bool,
+    lead_answered: Option<(WorkerRef, usize)>,
+) -> CheckpointRequest {
+    let mut agent_outputs = view.tags.clone();
+    let mut authors = view.authors.clone();
+    if by_lead && view.unchecked {
+        agent_outputs.push("No differ compared the restatements".to_owned());
+    }
+    if let Some((lead, answered)) = lead_answered {
+        agent_outputs.push(format!(
+            "The lead, {lead}, answered {answered} of the open questions for the user. Its \
+             answers are the assumptions whose basis starts with \"{}\"; check them against the \
+             request",
+            argonauts_core::events::goal::LEAD_ANSWER
+        ));
+        if !authors.contains(&lead) {
+            authors.push(lead);
+        }
+    }
+    // When the lead answers, the approver weighs restatements nobody compared, from the line
+    // above; what your rules hold back over the question limit still waits for you.
+    let waits = if by_lead { view.held_back } else { view.waits };
     CheckpointRequest {
         at: Some(call.at.clone()),
         kind: CheckpointKind::Goal,
@@ -323,10 +445,10 @@ pub fn approval_request(call: &StepCall, drafted: &GoalFile, view: &View) -> Che
         card: None,
         packet: packet(drafted, view, Vec::new()),
         facts: EvidenceFacts {
-            open_questions: Some(view.waits),
+            open_questions: Some(waits),
             ..EvidenceFacts::default()
         },
-        agent_outputs: view.tags.clone(),
+        agent_outputs,
         documents: vec![document(drafted)],
         options: (!view.send_back).then(|| {
             options::standard(CheckpointKind::Goal)
@@ -335,6 +457,20 @@ pub fn approval_request(call: &StepCall, drafted: &GoalFile, view: &View) -> Che
                 .collect()
         }),
         free_text: FreeText::Edits,
-        authors: view.authors.clone(),
+        authors,
     }
+}
+
+/// The questions that go to you, numbered among themselves, so the card counts only those.
+fn renumber(questions: Vec<GoalQuestion>) -> Vec<GoalQuestion> {
+    let of = u8::try_from(questions.len()).unwrap_or(u8::MAX);
+    questions
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut question)| {
+            question.n = u8::try_from(index + 1).unwrap_or(u8::MAX);
+            question.of = of;
+            question
+        })
+        .collect()
 }

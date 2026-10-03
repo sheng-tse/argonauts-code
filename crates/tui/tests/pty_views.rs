@@ -23,6 +23,9 @@ fn crew_view_tabs_and_quotas() {
     let (_, _, script) = crew_needing_you();
     let mut harness = Harness::start(script);
     harness.wait_visible("Keep a CSV fallback\\?");
+    // The question has the keys until it's set aside.
+    harness.press(Key::Esc);
+    harness.wait_visible("· needs you · ↑ to answer");
     harness.press(Key::Left);
     let view = harness.wait_gone(TOP_RULE);
     let title = expect_row(&view, "argonauts › crew");
@@ -77,6 +80,9 @@ fn crew_view_lists_conversations_and_other_repos() {
     let script = script.await_command("request").at(0, crew_view_data(rows));
     let mut harness = Harness::start(script);
     harness.wait_visible("Keep a CSV fallback\\?");
+    // The question has the keys until it's set aside.
+    harness.press(Key::Esc);
+    harness.wait_visible("· needs you · ↑ to answer");
     harness.press(Key::Left);
     let request = harness.wait_command("request");
     assert_eq!(request["view"], json!({"view": "crew"}));

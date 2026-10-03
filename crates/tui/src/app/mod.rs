@@ -322,6 +322,10 @@ impl<W: Write> Ui<W> {
             self.model.bottom.agents.blur();
         }
         self.settle_paste_burst(None, now);
+        // A card that waited for the input to go quiet takes the keys now that it has.
+        if self.model.bottom.hand_keys_to_card(now) {
+            self.dirty = true;
+        }
         let mut wrote = self.update_title(now)?;
         let wanted = self.wants_alternate_screen();
         if wanted != self.on_alternate {
@@ -454,6 +458,14 @@ impl<W: Write> Ui<W> {
         }
         if let Some(at) = self.model.bottom.composer.paste_burst_due() {
             sooner(at);
+        }
+        if let Some(at) = self
+            .model
+            .bottom
+            .card_takes_keys_at()
+            .filter(|at| *at > now)
+        {
+            sooner(at.max(earliest));
         }
         next
     }

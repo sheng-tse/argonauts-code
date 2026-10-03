@@ -660,6 +660,9 @@ mod tests {
             spent: Spend::default(),
             limit: None,
             partial: false,
+            in_the_way: Vec::new(),
+            edited: Vec::new(),
+            refused: None,
         };
         let merge = CheckpointPacket::Merge(packet);
         let parked_at = OffsetDateTime::now_utc() - time::Duration::hours(1);

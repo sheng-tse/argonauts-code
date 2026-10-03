@@ -6,8 +6,8 @@ argonauts-ui-kit › build:c-demo-tests                         [ Run ]  Library
 Demo scenes and snapshot tests for every part of th…  2/4 agents · 12m0s · $0.92
 
 ╭ Phases ───────┬ Test · 2 agents ─────────────────────────────────────────────╮
-│   ✓ Draft 2/2 │   ● test:scenes      Opus on Claude Co… · 41k tok      2m50s │
-│ ❯ 2 Test  0/2 │   ● test:snapshots   GPT 5.6 on Codex · 38.2k tok      2m30s │
+│   ✓ Draft 2/2 │   ● test:scenes      Opus on Claude Code     41k tok   2m50s │
+│ ❯ 2 Test  0/2 │   ● test:snapshots   GPT 5.6 on Codex      38.2k tok   2m30s │
 │               │                                                              │
 │               │                                                              │
 │               │                                                              │

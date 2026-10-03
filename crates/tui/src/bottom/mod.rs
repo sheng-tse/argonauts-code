@@ -16,7 +16,7 @@ pub mod verbs;
 mod workflows;
 mod working;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::KeyEvent;
 use ratatui::text::{Line, Span};
@@ -46,7 +46,7 @@ pub use workflows::{
     PanelRowId, StopAsk, WorkflowPanel, WorkflowRow, WorkflowRowState, ask_before_stop,
     handle_panel_key, panel_has_rows, panel_lines,
 };
-pub use working::{Activity, SPINNER_PERIOD, STALL_AFTER, WorkingLine};
+pub use working::{Activity, SPINNER_PERIOD, WorkingLine};
 
 use crate::cell::Tone;
 
@@ -92,7 +92,13 @@ pub struct BottomState {
     /// `ui.live_area_max`: the most of the screen's height the live region may take.
     pub live_area_max: Option<f64>,
     pub synced: Synced,
+    /// When a key or a paste last went anywhere but a card that has the keys.
+    pub last_typed: Option<Instant>,
 }
+
+/// How long the input sits empty and untouched before a card that needs you takes the keys, so
+/// the next message after one you sent, or a draft you cleared to rewrite, never lands on it.
+pub const CARD_WAITS_FOR_QUIET: Duration = Duration::from_millis(1500);
 
 /// What the status sync last applied, so running it again changes nothing, and a change made
 /// on screen (Shift+Tab) stays until the controller says otherwise.
@@ -100,8 +106,6 @@ pub struct BottomState {
 pub struct Synced {
     /// The work the working line shows, so its clock keeps running from one sync to the next.
     pub work: Option<String>,
-    /// That work's event count when the line last moved, for the stall fade.
-    pub events: u64,
     /// The approval mode last taken from the controller.
     pub approval: Option<ApprovalMode>,
 }
@@ -223,6 +227,47 @@ impl BottomState {
     /// A card that waits without focus leaves the keys with the composer.
     pub fn composer_has_focus(&self) -> bool {
         self.focused_card().is_none() && !self.agents.has_focus() && !self.pick_selected()
+    }
+
+    /// The card on screen takes the keys if it claims them, and one that needs you only from
+    /// an empty input nobody has touched for [`CARD_WAITS_FOR_QUIET`]. Returns whether it did.
+    pub fn hand_keys_to_card(&mut self, now: Instant) -> bool {
+        let free = self.input_free(now);
+        self.card.as_mut().is_some_and(|card| card.take_keys(free))
+    }
+
+    /// When the card on screen will take the keys if nothing is typed before then.
+    pub fn card_takes_keys_at(&self) -> Option<Instant> {
+        let card = self.card.as_ref()?;
+        let waiting = !card.focused && card.claims_keys() && self.input_empty();
+        waiting.then(|| self.last_typed.map(|at| at + CARD_WAITS_FOR_QUIET))?
+    }
+
+    /// No draft: no text, no `!` waiting for a command, and no prompt search open.
+    fn input_empty(&self) -> bool {
+        self.composer.is_empty() && !self.composer.is_shell() && self.history_search.is_none()
+    }
+
+    /// Something went to the input, or to whatever had the keys besides a card.
+    pub fn typed_at(&mut self, now: Instant) {
+        self.last_typed = Some(now);
+        if let Some(card) = self.card.as_mut().filter(|card| !card.focused) {
+            card.typed_while_up = true;
+        }
+    }
+
+    /// An empty input you aren't using: nothing else has the keys, and nothing was typed for a
+    /// moment.
+    fn input_free(&self, now: Instant) -> bool {
+        let quiet = self
+            .last_typed
+            .is_none_or(|at| now.saturating_duration_since(at) >= CARD_WAITS_FOR_QUIET);
+        quiet
+            && self.input_empty()
+            && self.picker.is_none()
+            && !self.agents.has_focus()
+            && !self.workflows.has_focus()
+            && !self.pick_selected()
     }
 
     /// ↑ picked the answered handoff pick's line, and no card covers it.
@@ -395,10 +440,13 @@ impl BottomState {
         let focused = self.composer_has_focus();
         let busy = self.working.is_some();
         let waiting = self.waiting_card().is_some();
-        let placeholder = waiting.then_some(if busy || self.run_takes_text {
-            CARD_PLACEHOLDER_RUN
-        } else {
-            CARD_PLACEHOLDER
+        let card_keys = self.focused_card().map(CardPrompt::input_hint);
+        let placeholder = card_keys.as_deref().or_else(|| {
+            waiting.then_some(if busy || self.run_takes_text {
+                CARD_PLACEHOLDER_RUN
+            } else {
+                CARD_PLACEHOLDER
+            })
         });
         // An example prompt is a way to start, so it waits while work runs or a card is up.
         let offer_example = !busy && self.card.is_none();

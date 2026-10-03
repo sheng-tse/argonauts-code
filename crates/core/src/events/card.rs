@@ -290,6 +290,13 @@ pub enum IntegrationEvent {
         sha: String,
         fast_forward: bool,
     },
+    /// The merge into your checkout waits on your files, which git won't overwrite: untracked
+    /// ones where the run's files go, and uncommitted edits to files it changes. A folder ends
+    /// in `/`. Empty when git refused for a reason of its own.
+    WaitingToMerge {
+        target: String,
+        in_the_way: Vec<String>,
+    },
     /// A pull request was opened (`url`), or only the command to open one was suggested.
     PullRequest {
         branch: String,

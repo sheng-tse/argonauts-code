@@ -36,6 +36,7 @@ use crate::bottom::{AnsweredPick, CardPrompt};
 use crate::bridge::Cx;
 use crate::cell::{Cell, Notice, Tone};
 use crate::state::DecisionRecord;
+use crate::text::sanitize_line;
 use crate::views::ViewOutcome;
 
 pub(crate) use about::details;
@@ -304,18 +305,31 @@ impl Cards {
         self.show(cx);
     }
 
-    /// A checkpoint your rules couldn't settle now waits for you.
+    /// A checkpoint your rules couldn't settle now waits for you. In auto its card says why.
     fn checked(&mut self, run: &RunId, check: &PolicyCheck, cx: &mut Cx<'_>) {
         let key = (run.clone(), check.id.clone());
+        let why = auto_left_it(check);
+        // A check with no verdict is the policy leaving it to you, with or without a reason.
         let waits = !check.shadow
             && (!check.violations.is_empty()
-                || matches!(check.verdict, Some(Verdict::Reject | Verdict::Escalate)));
+                || why.is_some()
+                || matches!(
+                    check.verdict,
+                    None | Some(Verdict::Reject | Verdict::Escalate)
+                ));
+        if let Some(why) = why {
+            self.add_detail(&checkpoint_target(run, &check.id), why, cx);
+        }
         let was_quiet = self
             .checkpoints
             .get(&key)
             .is_some_and(|opened| !opened.needs_you);
         if waits && was_quiet {
             cx.out.ring();
+            if let Some(id) = self.find(&checkpoint_target(run, &check.id)) {
+                self.needs_you(id, cx);
+                self.show(cx);
+            }
         }
         if let Some(decision) = self
             .decisions
@@ -667,11 +681,42 @@ impl Cards {
         true
     }
 
+    /// A line under a waiting card's details, once, wherever the card is.
+    fn add_detail(&mut self, target: &CardTarget, line: String, cx: &mut Cx<'_>) {
+        let Some(id) = self.find(target) else {
+            return;
+        };
+        let card = match cx.model.bottom.card.as_mut() {
+            Some(card) if card.id == id => Some(card),
+            _ => self
+                .held
+                .get_mut(&id)
+                .and_then(|held| held.stashed.as_mut()),
+        };
+        if let Some(card) = card
+            && !card.detail.contains(&line)
+        {
+            card.detail.push(line);
+        }
+    }
+
     fn find(&self, target: &CardTarget) -> Option<u64> {
         self.open
             .iter()
             .find(|(_, card)| card.target == *target)
             .map(|(id, _)| *id)
+    }
+
+    /// Marks card `id` as one work waits on, on screen or set back.
+    fn needs_you(&mut self, id: u64, cx: &mut Cx<'_>) {
+        let shown = cx.model.bottom.card.as_mut().filter(|card| card.id == id);
+        let stashed = self
+            .held
+            .get_mut(&id)
+            .and_then(|held| held.stashed.as_mut());
+        if let Some(card) = shown.or(stashed) {
+            card.needs_you = true;
+        }
     }
 
     fn close_target(&mut self, target: &CardTarget, cx: &mut Cx<'_>) -> Option<Held> {
@@ -694,8 +739,9 @@ impl Cards {
     }
 
     /// Several cards can wait at once. One you set off yourself comes first, since you're
-    /// waiting on it. Otherwise the one on screen stays while it's expanded, then the oldest
-    /// card not set aside shows, or the oldest one pinned.
+    /// waiting on it. Then the one on screen stays while it holds the keys, then a card work
+    /// waits on and not set aside, then the one on screen while it's expanded, then the oldest
+    /// card not set aside, or the oldest one pinned.
     fn show(&mut self, cx: &mut Cx<'_>) {
         let shown = cx.model.bottom.card.as_ref();
         let prompt = |id: &u64| match shown.filter(|card| card.id == *id) {
@@ -704,12 +750,16 @@ impl Cards {
         };
         let pinned = |id: &u64| prompt(id).is_some_and(|card| card.pinned);
         let yours = |id: &u64| prompt(id).is_some_and(|card| card.takes_focus && !card.pinned);
+        let asks = |id: &u64| prompt(id).is_some_and(CardPrompt::claims_keys);
         let current = shown
             .map(|card| card.id)
             .filter(|id| self.open.contains_key(id) && !pinned(id));
+        let holding = current.filter(|_| shown.is_some_and(|card| card.focused || card.needs_you));
         let wanted = current
             .filter(|id| yours(id))
             .or_else(|| self.open.keys().find(|id| yours(id)).copied())
+            .or(holding)
+            .or_else(|| self.open.keys().find(|id| asks(id)).copied())
             .or(current)
             .or_else(|| self.open.keys().find(|id| !pinned(id)).copied())
             .or_else(|| self.open.keys().next().copied());
@@ -720,7 +770,8 @@ impl Cards {
     }
 
     /// Puts card `id` on screen, keeping the one it replaces for later. A card you set off
-    /// takes the keys whenever it shows; a run's card only when `focus` asks.
+    /// takes the keys whenever it shows, and one work waits on until you set it aside, once
+    /// the input is empty; any other card only when `focus` asks.
     fn display(&mut self, id: u64, focus: bool, cx: &mut Cx<'_>) {
         let on_screen = cx.model.bottom.card.as_ref().map(|card| card.id);
         if on_screen != Some(id) {
@@ -733,12 +784,26 @@ impl Cards {
             }
             cx.model.bottom.card = self.held.get_mut(&id).and_then(|held| held.stashed.take());
         }
-        if let Some(card) = cx.model.bottom.card.as_mut()
-            && (focus || card.takes_focus && !card.pinned)
-        {
-            card.focus();
+        if focus {
+            if let Some(card) = cx.model.bottom.card.as_mut() {
+                card.focus();
+            }
+        } else {
+            cx.model.bottom.hand_keys_to_card(cx.now);
         }
     }
+}
+
+/// Why auto left a card to you, as its line: the engine gives the reason only on the check
+/// that sends a card opened in auto to you.
+fn auto_left_it(check: &PolicyCheck) -> Option<String> {
+    if check.shadow || check.verdict.is_some() {
+        return None;
+    }
+    let why = check.reasons.first()?;
+    let why = sanitize_line(why);
+    let why = why.trim();
+    (!why.is_empty()).then(|| format!("Auto couldn't decide: {why}"))
 }
 
 /// The resume picker says the same.

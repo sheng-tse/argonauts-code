@@ -86,6 +86,9 @@ pub fn about_item(
         CheckpointPacket::Goal(goal) if goal.questions.is_empty() => Some(goal_file(&goal.goal)),
         CheckpointPacket::Goal(goal) => readings(goal),
         CheckpointPacket::Plan(plan) => Some(plan_item(plan, names)),
+        CheckpointPacket::Merge(merge) if merge.waits_on_you() => {
+            Some(in_the_way_item(merge, Some(IN_THE_WAY_SHOWN)))
+        }
         CheckpointPacket::Merge(merge) => Some(merge_item(merge, names)),
         CheckpointPacket::Handoff(plan) => Some(handoff_item(plan, names)),
         CheckpointPacket::VendorDown(down) => Some(vendor_down_item(down, offset)),
@@ -100,6 +103,7 @@ pub fn details(opened: &CheckpointOpened, offset: UtcOffset, names: &DisplayName
     let mut item = match &opened.packet {
         CheckpointPacket::Goal(goal) => goal_file(&goal.goal),
         CheckpointPacket::Plan(plan) => plan_item(plan, names),
+        CheckpointPacket::Merge(merge) if merge.waits_on_you() => in_the_way_item(merge, None),
         CheckpointPacket::Merge(merge) => merge_item(merge, names),
         CheckpointPacket::Handoff(plan) => handoff_item(plan, names),
         CheckpointPacket::VendorDown(down) => vendor_down_item(down, offset),
@@ -269,6 +273,61 @@ fn plan_item(plan: &PlanPacket, names: &DisplayNames) -> AboutCell {
         for flag in &plan.flags {
             item.push(flag, Role::Warning, 1);
         }
+    }
+    item
+}
+
+/// Files of yours the conversation names before the rest are left to Show the details.
+const IN_THE_WAY_SHOWN: usize = 8;
+
+/// The merge waiting on your files, which ones and why git stops there, or on git's own reason.
+fn in_the_way_item(merge: &MergePacket, shown: Option<usize>) -> AboutCell {
+    let into = merge.target.as_deref().unwrap_or("main");
+    let mut item = AboutCell::new(format!("Waiting to merge into {into}"));
+    let mut list = |files: &[String], one: &str, many: String| {
+        if files.is_empty() {
+            return;
+        }
+        let why = if files.len() == 1 {
+            one.to_owned()
+        } else {
+            many
+        };
+        item.push(why, Role::Text, 0);
+        let shown = shown.unwrap_or(files.len()).min(files.len());
+        for file in &files[..shown] {
+            item.push(file.as_str(), Role::Text, 1);
+        }
+        if files.len() > shown {
+            item.push(format!("and {} more", files.len() - shown), Role::Dim, 1);
+        }
+    };
+    list(
+        &merge.in_the_way,
+        "An untracked file in your checkout is where the run's file goes, so git won't merge \
+         over it:",
+        format!(
+            "{} untracked files in your checkout are where the run's files go, so git won't \
+             merge over them:",
+            merge.in_the_way.len()
+        ),
+    );
+    list(
+        &merge.edited,
+        "You have uncommitted edits to a file the run changes, so git won't merge over them:",
+        format!(
+            "You have uncommitted edits to {} files the run changes, so git won't merge over \
+             them:",
+            merge.edited.len()
+        ),
+    );
+    if let Some(refused) = &merge.refused {
+        item.push(
+            format!("Git wouldn't move your checkout of {into} forward:"),
+            Role::Text,
+            0,
+        );
+        item.push(refused.as_str(), Role::Text, 1);
     }
     item
 }

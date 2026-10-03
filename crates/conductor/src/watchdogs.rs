@@ -10,8 +10,8 @@ use argonauts_core::events::session::{SubagentStatus, SubagentUpdate, Watchdog};
 use argonauts_core::worker::SessionLimits;
 use serde_json::Value;
 
-/// Claude Code sends a heartbeat every 30 seconds, so longer silence is worth a warning.
-pub const STALL_AFTER: Duration = Duration::from_secs(30);
+/// How late a heartbeat may be before the silence counts as a stall.
+pub const HEARTBEAT_GRACE: Duration = Duration::from_secs(15);
 
 /// The fixed note an agent gets for repeating the same call.
 pub const REPEAT_NOTE: &str = "You have made the same tool call several times in a row with the \
@@ -20,9 +20,16 @@ same input. Stop repeating it: try a different approach, or finish and report wh
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchdogVerdict {
     Quiet,
-    /// No event for longer than [`STALL_AFTER`]; shown, not acted on.
+    /// No output past the CLI's heartbeat and [`HEARTBEAT_GRACE`] while a tool call ran;
+    /// shown, not acted on.
     Stalled {
         silent_for: Duration,
+    },
+    /// Quiet, with no output and no CPU, for half the inactivity limit. A forecast of the stop
+    /// that claims no stall, for CLIs that send no heartbeat; shown, not acted on.
+    Quieting {
+        quiet_for: Duration,
+        stops_after: Duration,
     },
     /// Deliver [`REPEAT_NOTE`].
     Nudge {
@@ -44,6 +51,11 @@ pub enum WatchdogVerdict {
 pub struct Watchdogs {
     limits: SessionLimits,
     fanout_cap: Option<u32>,
+    /// The CLI's own heartbeat while a tool call runs. Without one, silence is no stall.
+    heartbeat: Option<Duration>,
+    /// The main agent's tool calls still running. A heartbeat comes only during one that hosts
+    /// no subagent, since a subagent's work sends none.
+    tools: HashSet<String>,
     started: Instant,
     last_event: Option<Instant>,
     last_output: Option<Instant>,
@@ -66,6 +78,8 @@ impl Watchdogs {
         Self {
             limits: limits.clone(),
             fanout_cap,
+            heartbeat: None,
+            tools: HashSet::new(),
             started: Instant::now(),
             last_event: None,
             last_output: None,
@@ -74,15 +88,34 @@ impl Watchdogs {
         }
     }
 
+    /// Warn of a stall once the CLI misses its `heartbeat` during a tool call.
+    pub fn with_heartbeat(mut self, heartbeat: Option<Duration>) -> Self {
+        self.heartbeat = heartbeat;
+        self
+    }
+
     pub fn observe(&mut self, event: &AgentEvent, now: Instant) -> WatchdogVerdict {
         self.last_event = Some(now);
         match event {
             AgentEvent::ToolStarted {
+                id,
                 name,
                 input,
                 parent,
-                ..
-            } => self.repeat(parent, name, input),
+            } => {
+                if parent.is_none() {
+                    self.tools.insert(id.clone());
+                }
+                self.repeat(parent, name, input)
+            }
+            AgentEvent::ToolFinished { id, .. } => {
+                self.tools.remove(id);
+                WatchdogVerdict::Quiet
+            }
+            AgentEvent::Result { .. } => {
+                self.tools.clear();
+                WatchdogVerdict::Quiet
+            }
             AgentEvent::Subagent { update } => self.fanout(update),
             _ => WatchdogVerdict::Quiet,
         }
@@ -104,11 +137,31 @@ impl Watchdogs {
             .inactivity_min
             .filter(|minutes| *minutes > 0.0)
             .and_then(|minutes| Duration::try_from_secs_f64(minutes * 60.0).ok());
-        if inactive_after.is_some_and(|limit| now.saturating_duration_since(last_active) >= limit) {
-            return WatchdogVerdict::Stuck(Watchdog::Inactivity);
+        let quiet_for = now.saturating_duration_since(last_active);
+        if let Some(limit) = inactive_after {
+            if quiet_for >= limit {
+                return WatchdogVerdict::Stuck(Watchdog::Inactivity);
+            }
+            if quiet_for >= limit / 2 {
+                return WatchdogVerdict::Quieting {
+                    quiet_for,
+                    stops_after: limit,
+                };
+            }
         }
-        let silent_for = now.saturating_duration_since(self.last_event.unwrap_or(self.started));
-        if silent_for >= STALL_AFTER {
+        // A model that thinks sends nothing, and that's normal. Only a tool call comes with a
+        // heartbeat, so only then does silence past it mean the CLI stalled. A call that hosts
+        // a subagent waits on the subagent's work, which sends none. Its id is the call's.
+        let owed = self.tools.iter().any(|id| !self.running.contains(id));
+        let Some(heartbeat) = self.heartbeat.filter(|_| owed) else {
+            return WatchdogVerdict::Quiet;
+        };
+        let heard = [self.last_event, self.last_output]
+            .into_iter()
+            .flatten()
+            .fold(self.started, Instant::max);
+        let silent_for = now.saturating_duration_since(heard);
+        if silent_for >= heartbeat + HEARTBEAT_GRACE {
             return WatchdogVerdict::Stalled { silent_for };
         }
         WatchdogVerdict::Quiet
@@ -195,6 +248,15 @@ mod tests {
         }
     }
 
+    fn finished(id: &str) -> AgentEvent {
+        AgentEvent::ToolFinished {
+            id: id.into(),
+            ok: true,
+            output: None,
+            parent: None,
+        }
+    }
+
     fn subagent(id: &str, status: SubagentStatus) -> AgentEvent {
         AgentEvent::Subagent {
             update: SubagentUpdate {
@@ -222,10 +284,7 @@ mod tests {
     fn watchdogs_inactivity_repeat() {
         let mut dogs = Watchdogs::new(&limits(), None);
         let t0 = Instant::now();
-        assert!(matches!(
-            dogs.tick(t0 + MINUTE * 14, None),
-            WatchdogVerdict::Stalled { .. }
-        ));
+        assert_eq!(dogs.tick(t0 + MINUTE * 7, None), WatchdogVerdict::Quiet);
         assert_eq!(
             dogs.tick(t0 + MINUTE * 16, None),
             WatchdogVerdict::Stuck(Watchdog::Inactivity)
@@ -233,14 +292,11 @@ mod tests {
 
         // Output and CPU each keep it alive, though neither is an event.
         dogs.output(t0 + MINUTE * 10);
-        assert!(matches!(
-            dogs.tick(t0 + MINUTE * 16, None),
-            WatchdogVerdict::Stalled { .. }
-        ));
-        assert!(matches!(
-            dogs.tick(t0 + MINUTE * 30, Some(t0 + MINUTE * 20)),
-            WatchdogVerdict::Stalled { .. }
-        ));
+        assert_eq!(dogs.tick(t0 + MINUTE * 16, None), WatchdogVerdict::Quiet);
+        assert_eq!(
+            dogs.tick(t0 + MINUTE * 26, Some(t0 + MINUTE * 20)),
+            WatchdogVerdict::Quiet
+        );
         assert_eq!(
             dogs.tick(t0 + MINUTE * 36, Some(t0 + MINUTE * 20)),
             WatchdogVerdict::Stuck(Watchdog::Inactivity)
@@ -274,10 +330,8 @@ mod tests {
             dogs.observe(&call("ls -la", None), at),
             WatchdogVerdict::Quiet
         );
-        assert_eq!(
-            dogs.tick(at + MINUTE, None),
-            WatchdogVerdict::Stalled { silent_for: MINUTE }
-        );
+        // Without a heartbeat, silence during a call is no stall.
+        assert_eq!(dogs.tick(at + MINUTE, None), WatchdogVerdict::Quiet);
 
         let mut unlimited = Watchdogs::new(&SessionLimits::default(), None);
         for _ in 0..20 {
@@ -286,33 +340,97 @@ mod tests {
                 WatchdogVerdict::Quiet
             );
         }
-        assert!(matches!(
+        assert_eq!(
             unlimited.tick(at + MINUTE * 600, None),
-            WatchdogVerdict::Stalled { .. }
-        ));
+            WatchdogVerdict::Quiet
+        );
     }
 
     #[test]
-    fn stall_warning_after_30_seconds() {
+    fn a_stall_shows_past_the_heartbeat_only_while_a_tool_runs() {
+        let heartbeat = Duration::from_secs(30);
+        let late = heartbeat + HEARTBEAT_GRACE;
+        let second = Duration::from_secs(1);
+        let mut dogs = Watchdogs::new(&limits(), None).with_heartbeat(Some(heartbeat));
+        let t0 = Instant::now();
+        // A model that thinks for minutes sends nothing, and that's normal.
+        dogs.observe(&text(), t0);
+        assert_eq!(dogs.tick(t0 + MINUTE * 5, None), WatchdogVerdict::Quiet);
+        // While the main agent's tool call runs, the heartbeat should come.
+        let at = t0 + MINUTE * 5;
+        dogs.observe(&call("cargo test", None), at);
+        assert_eq!(dogs.tick(at + late - second, None), WatchdogVerdict::Quiet);
+        assert_eq!(
+            dogs.tick(at + late, None),
+            WatchdogVerdict::Stalled { silent_for: late }
+        );
+        // Any output counts, such as Claude Code's heartbeat line, which makes no event.
+        dogs.output(at + late);
+        assert_eq!(dogs.tick(at + late + second, None), WatchdogVerdict::Quiet);
+        // Once the call is done, and while only a subagent's runs, nothing is owed.
+        dogs.observe(&finished("call-cargo test"), at + late);
+        dogs.observe(&call("ls", Some("task-1")), at + late);
+        assert_eq!(dogs.tick(at + late * 3, None), WatchdogVerdict::Quiet);
+
+        // A CLI with no heartbeat never stalls.
+        let mut silent = Watchdogs::new(&limits(), None);
+        silent.observe(&call("cargo test", None), t0);
+        assert_eq!(silent.tick(t0 + MINUTE * 7, None), WatchdogVerdict::Quiet);
+    }
+
+    #[test]
+    fn half_the_inactivity_limit_forecasts_the_stop() {
+        let limit = MINUTE * 15;
+        let half = limit / 2;
         let mut dogs = Watchdogs::new(&limits(), None);
         let t0 = Instant::now();
-        dogs.observe(&text(), t0);
+        dogs.observe(&call("cargo test", None), t0);
+        let second = Duration::from_secs(1);
+        assert_eq!(dogs.tick(t0 + half - second, None), WatchdogVerdict::Quiet);
         assert_eq!(
-            dogs.tick(t0 + Duration::from_secs(29), None),
-            WatchdogVerdict::Quiet
-        );
-        // Output without events is no heartbeat.
-        dogs.output(t0 + Duration::from_secs(30));
-        assert_eq!(
-            dogs.tick(t0 + Duration::from_secs(31), None),
-            WatchdogVerdict::Stalled {
-                silent_for: Duration::from_secs(31)
+            dogs.tick(t0 + half, None),
+            WatchdogVerdict::Quieting {
+                quiet_for: half,
+                stops_after: limit
             }
         );
-        dogs.observe(&text(), t0 + Duration::from_secs(32));
         assert_eq!(
-            dogs.tick(t0 + Duration::from_secs(33), None),
+            dogs.tick(t0 + limit, None),
+            WatchdogVerdict::Stuck(Watchdog::Inactivity)
+        );
+        // A process tree that uses CPU isn't quiet.
+        assert_eq!(
+            dogs.tick(t0 + MINUTE * 10, Some(t0 + MINUTE * 9)),
             WatchdogVerdict::Quiet
+        );
+    }
+
+    #[test]
+    fn a_call_that_hosts_a_subagent_owes_no_heartbeat() {
+        let late = Duration::from_secs(30) + HEARTBEAT_GRACE;
+        let mut dogs =
+            Watchdogs::new(&limits(), None).with_heartbeat(Some(Duration::from_secs(30)));
+        let t0 = Instant::now();
+        let spawn = AgentEvent::ToolStarted {
+            id: "task-1".into(),
+            name: "Agent".into(),
+            input: json!({}),
+            parent: None,
+        };
+        dogs.observe(&spawn, t0);
+        dogs.observe(&subagent("task-1", SubagentStatus::Started), t0);
+        dogs.observe(&call("cargo test", Some("task-1")), t0);
+        // The subagent's two-minute test run sends nothing, and that's normal.
+        assert_eq!(dogs.tick(t0 + MINUTE * 5, None), WatchdogVerdict::Quiet);
+
+        // Once it's done, the main agent's own call owes the heartbeat again.
+        let at = t0 + MINUTE * 5;
+        dogs.observe(&subagent("task-1", SubagentStatus::Done), at);
+        dogs.observe(&finished("task-1"), at);
+        dogs.observe(&call("ls", None), at);
+        assert_eq!(
+            dogs.tick(at + late, None),
+            WatchdogVerdict::Stalled { silent_for: late }
         );
     }
 

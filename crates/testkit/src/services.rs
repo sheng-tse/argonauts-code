@@ -239,6 +239,7 @@ pub struct AskingPolicy {
     decisions: Mutex<Vec<UserDecision>>,
     spot_checks: Mutex<Vec<(DecisionPoint, bool)>>,
     evaluated: Mutex<Vec<(DecisionPoint, EvidencePacket)>>,
+    refused_landings: Mutex<Vec<DecisionPoint>>,
 }
 
 impl AskingPolicy {
@@ -276,6 +277,11 @@ impl AskingPolicy {
     pub fn spot_checks(&self) -> Vec<(DecisionPoint, bool)> {
         lock(&self.spot_checks).clone()
     }
+
+    /// The points whose auto-approved landing was refused, in order.
+    pub fn refused_landings(&self) -> Vec<DecisionPoint> {
+        lock(&self.refused_landings).clone()
+    }
 }
 
 impl ApprovalPolicy for AskingPolicy {
@@ -310,6 +316,10 @@ impl ApprovalPolicy for AskingPolicy {
 
     fn spot_checked(&self, point: &DecisionPoint, correct: bool) {
         lock(&self.spot_checks).push((point.clone(), correct));
+    }
+
+    fn landing_refused(&self, point: &DecisionPoint) {
+        lock(&self.refused_landings).push(point.clone());
     }
 
     fn auto_off(&self) {}

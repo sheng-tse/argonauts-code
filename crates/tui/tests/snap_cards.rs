@@ -397,6 +397,9 @@ fn merge() -> CheckpointOpened {
         },
         limit: Some(usd(3.0)),
         partial: false,
+        in_the_way: Vec::new(),
+        edited: Vec::new(),
+        refused: None,
     };
     checkpoint(
         CheckpointKind::Merge,
@@ -1115,7 +1118,7 @@ fn spot_check_card() {
     let record = record_cell(&opened, &decided);
     assert_eq!(
         text(&record.lines(&still(&theme, 80))),
-        "◆ Merged the run into main · your rules"
+        "◆ Approved merging the run into main · your rules"
     );
 }
 

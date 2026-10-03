@@ -18,11 +18,7 @@ pub const SPINNER_HOLD: Duration = Duration::from_millis(450);
 /// The part in parentheses joins after this long.
 pub const STATUS_AFTER: Duration = Duration::from_secs(1);
 
-/// How long without an event before the line starts to fade toward the warning color. Claude
-/// Code sends a heartbeat every 30 s, so a longer quiet means the stream stalled.
-pub const STALL_AFTER: Duration = Duration::from_secs(30);
-
-/// How long the fade takes on terminals that can blend colors.
+/// How long the fade toward the warning color takes on terminals that can blend colors.
 const STALL_FADE: Duration = Duration::from_secs(2);
 
 /// The band's width in cells, and the steps it rests off the verb between sweeps.
@@ -37,9 +33,9 @@ pub struct WorkingLine {
     pub tokens_down: u64,
     pub activity: Activity,
     pub details: Vec<String>,
-    /// When this is a few seconds old, the line fades toward the warning color to show the
-    /// stream stalled.
-    pub last_progress: Option<Instant>,
+    /// When the conductor said the stream stalled. The line fades toward the warning color
+    /// from then until the agent is heard from again.
+    pub stalled_since: Option<Instant>,
     /// For chat turns, as in Claude Code and Codex. A crew run keeps its line, since the live
     /// blocks carry the streaming text.
     pub hide_while_text_streams: bool,
@@ -110,7 +106,7 @@ impl WorkingLine {
             tokens_down: 0,
             activity: Activity::None,
             details: Vec::new(),
-            last_progress: None,
+            stalled_since: None,
             hide_while_text_streams: false,
             timed: true,
         }
@@ -142,7 +138,7 @@ impl WorkingLine {
         let mut spans = vec![Span::styled(format!("{glyph} "), lead)];
 
         let verb = format!("{}{}", sanitize_line(&self.verb), glyphs.ellipsis);
-        if still || stall > 0.0 {
+        if still || stall.is_some() {
             spans.push(Span::styled(verb, lead));
         } else {
             let step = clock.frame(SPINNER_PERIOD, usize::MAX);
@@ -180,12 +176,6 @@ impl WorkingLine {
         if let Some(since) = self.activity.since() {
             next = next.min(next_second(since, now));
         }
-        if let Some(progress) = self.last_progress {
-            let stalls_at = progress + STALL_AFTER;
-            if stalls_at > now {
-                next = next.min(stalls_at);
-            }
-        }
         if !theme.reduced_motion {
             // The shimmer steps every period, and the spinner holds at the ends of its sweep.
             let frames = theme.glyphs.spinner.len();
@@ -221,16 +211,11 @@ impl WorkingLine {
         parts
     }
 
-    /// How far the line has faded toward the warning color, fully at 1 and above.
-    fn stall(&self, now: Instant) -> f32 {
-        let Some(progress) = self.last_progress else {
-            return 0.0;
-        };
-        let quiet = now.saturating_duration_since(progress);
-        if quiet < STALL_AFTER {
-            return 0.0;
-        }
-        (quiet - STALL_AFTER).as_secs_f32() / STALL_FADE.as_secs_f32()
+    /// How far the line has faded toward the warning color while the stream is stalled, fully
+    /// at 1 and above.
+    fn stall(&self, now: Instant) -> Option<f32> {
+        let since = self.stalled_since?;
+        Some(now.saturating_duration_since(since).as_secs_f32() / STALL_FADE.as_secs_f32())
     }
 }
 
@@ -261,11 +246,11 @@ pub fn spinner_frame(elapsed: Duration, frames: usize) -> (usize, Duration) {
 }
 
 /// Truecolor blends over the fade. Other levels, and reduced motion, switch at once.
-fn lead_style(theme: &Theme, stall: f32) -> Style {
+fn lead_style(theme: &Theme, stall: Option<f32>) -> Style {
     let accent = theme.style(Role::Accent);
-    if stall <= 0.0 {
+    let Some(stall) = stall else {
         return accent;
-    }
+    };
     let warning = theme.style(Role::Warning);
     let blend = theme.level == ColorLevel::TrueColor && !theme.reduced_motion;
     match (accent.fg, warning.fg) {
@@ -463,25 +448,28 @@ mod tests {
     fn a_stall_fades_toward_the_warning_color() {
         let theme = theme();
         let t0 = Instant::now();
+        let stalled_at = t0 + Duration::from_secs(40);
         let mut line = WorkingLine::new("Rowing", t0);
-        line.last_progress = Some(t0);
-        let glyph_fg = |theme: &Theme, secs: f32| {
+        let glyph_fg = |line: &WorkingLine, theme: &Theme, secs: f32| {
             let now = t0 + Duration::from_secs_f32(secs);
             let ctx = RenderCtx::new(80, theme, Clock::new(t0, now));
             line.line(&ctx).spans[0].style.fg
         };
         let accent = theme.style(Role::Accent).fg;
         let warning = theme.style(Role::Warning).fg;
-        assert_eq!(glyph_fg(&theme, 29.9), accent);
-        let halfway = glyph_fg(&theme, 31.0);
+        // Quiet alone is no stall: a model can think for minutes.
+        assert_eq!(glyph_fg(&line, &theme, 600.0), accent);
+
+        line.stalled_since = Some(stalled_at);
+        assert_eq!(glyph_fg(&line, &theme, 40.0), accent);
+        let halfway = glyph_fg(&line, &theme, 41.0);
         assert!(halfway != accent && halfway != warning, "{halfway:?}");
-        assert_eq!(glyph_fg(&theme, 32.0), warning);
+        assert_eq!(glyph_fg(&line, &theme, 42.0), warning);
 
         let ansi = Theme::dark().with_level(ColorLevel::Ansi256);
-        let accent = ansi.style(Role::Accent).fg;
-        let warning = ansi.style(Role::Warning).fg;
-        assert_eq!(glyph_fg(&ansi, 29.9), accent);
-        assert_eq!(glyph_fg(&ansi, 30.1), warning);
+        assert_eq!(glyph_fg(&line, &ansi, 40.0), ansi.style(Role::Warning).fg);
+        line.stalled_since = None;
+        assert_eq!(glyph_fg(&line, &ansi, 600.0), ansi.style(Role::Accent).fg);
     }
 
     #[test]

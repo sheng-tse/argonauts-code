@@ -23,6 +23,9 @@ use super::rows::clean;
 /// Cells between columns.
 pub(super) const GAP: usize = 2;
 
+/// An agent's name keeps at least this many cells while its column shows.
+const AGENT_MIN: usize = 12;
+
 /// Lines of a long message the details keep before cutting.
 const MESSAGE_LINES: usize = 6;
 const TITLE_LINES: usize = 3;
@@ -281,8 +284,9 @@ pub(super) fn list_lines(
     lines
 }
 
-/// The title, the agent, the latest message, and how long ago, in `room` cells. The agent
-/// gives way first, then the time. The title and the latest message share what's left: each
+/// The title, the agent, tokens, spend, the latest message, and how long ago, in `room` cells,
+/// each padded to its widest. Spend and then tokens give way first, then the agent, already cut
+/// with `…` where the row is short, and then the time. The title and the latest message share what's left: each
 /// whole when both fit, else the title gets at least half, and all of it that the messages
 /// leave free.
 pub(super) fn row_columns(
@@ -298,19 +302,64 @@ pub(super) fn row_columns(
             .as_ref()
             .map_or(String::new(), |worker| clean(&names.worker(worker)))
     };
+    let tokens = |row: &CrewRow| {
+        row.details
+            .spent
+            .as_ref()
+            .map(|spent| spent.input_tokens + spent.output_tokens)
+            .filter(|tokens| *tokens > 0)
+            .map_or(String::new(), panes::tokens)
+    };
+    let spend = |row: &CrewRow| {
+        row.details
+            .spent
+            .as_ref()
+            .and_then(panes::spend)
+            .unwrap_or_default()
+    };
+    let fitted = |mut column: Column| {
+        column.width = widest(&column);
+        column
+    };
     let mut title = Column::new("title", cells(&|row| clean(&row.title)));
     let title_wants = widest(&title).max(1);
     title.width = title_wants.min((room * 3 / 10).max(TITLE_MIN));
-    let mut agent = Column::new("worker", cells(&worker)).keep(1);
-    agent.width = widest(&agent).min((room / 4).max(12));
+    let mut agent = fitted(Column::new("worker", cells(&worker)).keep(3));
     let mut latest = Column::new("latest", cells(&|row| clean(&row.latest))).flex_min(14);
     let latest_wants = widest(&latest);
     latest.width = latest_wants;
-    let mut when = Column::new("ago", cells(&|row| ago(row.updated, now)))
-        .numeric()
-        .keep(2);
-    when.width = widest(&when);
-    let mut columns = fit_columns(vec![title, agent, latest, when], room, GAP);
+    let when = fitted(
+        Column::new("ago", cells(&|row| ago(row.updated, now)))
+            .numeric()
+            .keep(4),
+    );
+    // The agent is whole where the title and the messages leave room for it, else it keeps a
+    // quarter of the row before it's cut, since the messages say what each agent is doing.
+    let left_over = room.saturating_sub(title.width + latest_wants + when.width + GAP * 3);
+    agent.width = agent.width.min(left_over.max(room / 4).max(AGENT_MIN));
+    // Tokens, then spend, take only room the rest leave whole, so they never squeeze a title
+    // or a message, and spend never shows without the tokens.
+    let whole = title_wants + agent.width + latest_wants + when.width + GAP * 3;
+    let mut spare = Some(room.saturating_sub(whole));
+    let mut extra = |column: Column| {
+        if column.width == 0 {
+            return None;
+        }
+        spare = spare?.checked_sub(column.width + GAP);
+        spare.map(|_| column)
+    };
+    let tokens = extra(fitted(
+        Column::new("tokens", cells(&tokens)).numeric().keep(2),
+    ));
+    let spend = extra(fitted(
+        Column::new("spend", cells(&spend)).numeric().keep(1),
+    ));
+    let agent = (agent.width > 0).then_some(agent);
+    let columns = [Some(title), agent, tokens, spend, Some(latest), Some(when)]
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut columns = fit_columns(columns, room, GAP);
     let others: usize = columns
         .iter()
         .filter(|c| !matches!(c.heading, "title" | "latest"))

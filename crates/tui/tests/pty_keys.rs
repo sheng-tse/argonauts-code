@@ -237,22 +237,14 @@ fn agent_panel_rows_progress() {
         .start();
     let screen = harness.wait_visible("↓ 18\\.1k tokens");
     let mode = expect_row(&screen, "↓ to manage");
-    let mut last = expect_row(&screen, "peer-crew · Add a --json flag to ex");
+    let mut last = expect_row(&screen, "peer-crew · Add a --json flag to export ");
     assert!(last > mode, "the run's row under the mode line");
-    // A name too long for the panel's name column is cut.
-    let shown = |name: String| {
-        if name.chars().count() > 25 {
-            format!("{}…", name.chars().take(24).collect::<String>())
-        } else {
-            name
-        }
-    };
     for agent in &crew {
-        // Under the run's row: the circle, the name, the card, the bar, then steps, time, and
-        // tokens.
+        // Under the run's row: the circle, the name, the card, the bar, then steps and tokens
+        // in their columns, and the time at the edge. With room to spare, no name is cut.
         let pattern = format!(
-            "^    ◐ {} +{} +[█░]+ +2/5 · {ELAPSED} · ↓ [\\d.]+k tokens",
-            regex::escape(&shown(agent.name())),
+            "^    ◐ {} +{} +[█░]+ +2/5 +↓ [\\d.]+k tokens +{ELAPSED}",
+            regex::escape(&agent.name()),
             regex::escape(&agent.card),
         );
         let row = expect_row(&screen, &pattern);
@@ -267,7 +259,7 @@ fn agent_panel_rows_progress() {
     let bars: Vec<Option<usize>> = crew
         .iter()
         .map(|agent| {
-            let pattern = format!("^    ◐ {} ", regex::escape(&shown(agent.name())));
+            let pattern = format!("^    ◐ {} ", regex::escape(&agent.name()));
             let row = &screen.visible[expect_row(&screen, &pattern)];
             row.chars().position(|c| c == '█' || c == '░')
         })

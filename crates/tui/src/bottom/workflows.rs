@@ -15,13 +15,13 @@ use crate::theme::{Role, Theme};
 use crate::views::layout::left;
 use crate::views::panes::Marks;
 
-use super::agents::{AgentRef, RowCells, RowLayout, more_line, window};
+use super::agents::{AgentRef, RowCells, RowLayout, StatColumns, Stats, more_line, window};
 use super::bar::{BAR_CELLS, MIN_BAR_CELLS, bar, run_fill};
 use super::{AgentPanel, PanelEvent};
 
-/// The name column's width, so every bar starts in one column. Longer names are cut, so one long
-/// name can't push every bar off the row. This holds `peer-crew · add --json to export`, and under
-/// it `Opus 5.5 on Claude Code` with its card.
+/// The name column's width, so every bar starts in one column. A longer name widens it only into
+/// room the row has to spare, so one long name can't push every bar off the row. This holds
+/// `peer-crew · add --json to export`, and under it `Opus 5.5 on Claude Code` with its card.
 const MAX_NAME_CELLS: usize = 37;
 
 /// Names give up cells to keep the bar down to this, which holds a CLI and a short model.
@@ -265,14 +265,11 @@ pub fn panel_lines(
         harness: widest_agent(|cells| str_width(&cells.harness)),
         card: widest_agent(|cells| str_width(&cells.task)),
     };
+    let agent_stats: Vec<&Stats> = agent_cells.iter().map(|(_, cells)| &cells.stats).collect();
     let widest_stats = runs
         .iter()
         .map(|run| full_width(&run.stats))
-        .chain(
-            agent_cells
-                .iter()
-                .map(|(_, cells)| full_width(&cells.stats)),
-        )
+        .chain((!agent_cells.is_empty()).then(|| StatColumns::wanted(&agent_stats)))
         .max()
         .unwrap_or(0);
     let widest_name = runs
@@ -281,14 +278,24 @@ pub fn panel_lines(
         .chain((!agent_cells.is_empty()).then(|| agent_names.widest()))
         .max()
         .unwrap_or(0);
+    let longest_name = runs
+        .iter()
+        .map(|run| str_width(&run.name))
+        .chain((!agent_cells.is_empty()).then(|| agent_names.longest()))
+        .max()
+        .unwrap_or(0);
     let columns = PanelColumns::fit(
         usize::from(ctx.width),
-        widest_name,
-        agent_names.min_name(),
+        Names {
+            widest: widest_name,
+            longest: longest_name,
+            least: agent_names.min_name(),
+        },
         widest_stats,
     );
     let fill = run_fill(ctx.theme);
-    let agent_layout = agent_names.layout(&columns, fill);
+    let mut agent_layout = agent_names.layout(&columns, fill);
+    agent_layout.fit_stats(&agent_stats, usize::from(ctx.width));
 
     let mut lines = Vec::new();
     if visible.start > 0 {
@@ -530,25 +537,35 @@ struct PanelColumns {
     bar_cells: usize,
 }
 
+/// What the names ask of the column: `widest` with each cut as a tight row cuts it, `longest`
+/// with every name whole, and `least`, the fewest cells they can make do with.
+struct Names {
+    widest: usize,
+    longest: usize,
+    least: usize,
+}
+
 impl PanelColumns {
-    /// While the bar shows, it starts in one column whatever the names are, so a run's bar
-    /// stays put when its name changes, as it does once the lead picks the workflow. So the
-    /// stats stay whole, the bar shrinks, then the name column gives up cells down to
-    /// `min_name` to keep it, then it goes, and then names are cut further.
-    fn fit(width: usize, widest_name: usize, min_name: usize, stats_width: usize) -> Self {
+    /// While the bar shows, it starts in one column whatever names up to [`MAX_NAME_CELLS`]
+    /// are, so a run's bar stays put when its name changes, as it does once the lead picks the
+    /// workflow. A longer name takes the room past the full bar, then the bar's own down to its
+    /// least, so it's cut only once the row is full. As the row narrows, the stats stay whole,
+    /// the bar shrinks, then the name column gives up cells down to `names.least` to keep it,
+    /// then it goes, and then names are cut further.
+    fn fit(width: usize, names: Names, stats_width: usize) -> Self {
         // The mark, and the circle and its space.
         let lead = 2 + 2;
         // What the name and the bar share, after the gaps that follow each.
         let shared = width.saturating_sub(lead + 2 + 2 + stats_width);
-        let bar_cells = shared.saturating_sub(MAX_NAME_CELLS).min(BAR_CELLS);
-        if bar_cells >= MIN_BAR_CELLS {
+        if shared >= MAX_NAME_CELLS + MIN_BAR_CELLS {
+            let name_width = names.longest.clamp(MAX_NAME_CELLS, shared - MIN_BAR_CELLS);
             return Self {
-                name_width: MAX_NAME_CELLS,
-                bar_cells,
+                name_width,
+                bar_cells: (shared - name_width).min(BAR_CELLS),
             };
         }
         let kept = shared.saturating_sub(MIN_BAR_CELLS);
-        if kept >= min_name {
+        if kept >= names.least {
             return Self {
                 name_width: kept,
                 bar_cells: MIN_BAR_CELLS,
@@ -557,7 +574,9 @@ impl PanelColumns {
         // Without the bar, names take what they need, and keep at least half of what's left
         // after the lead.
         let room = width.saturating_sub(lead);
-        let name_width = widest_name.min(room.saturating_sub(stats_width + 2).max(room / 2));
+        let name_width = names
+            .widest
+            .min(room.saturating_sub(stats_width + 2).max(room / 2));
         Self {
             name_width,
             bar_cells: 0,
@@ -594,6 +613,11 @@ impl AgentNames {
         AGENT_INDENT + self.full.min(MAX_NAME_CELLS - AGENT_INDENT) + self.card_cells()
     }
 
+    /// The same with the whole name.
+    fn longest(&self) -> usize {
+        AGENT_INDENT + self.full + self.card_cells()
+    }
+
     /// The agent rows sit inside the name column, so their bars start where the runs' bars do.
     /// The card keeps its column while the harness still fits beside it, and once the bar is
     /// gone, names drop their model before the card goes.
@@ -605,13 +629,22 @@ impl AgentNames {
             0
         };
         let name_width = room - card_cells;
+        let harness_only = columns.bar_cells == 0 && self.full > name_width;
+        // Names without their model need only the widest harness, so the card stays beside
+        // them instead of past a gap the models would have filled.
+        let name_width = if harness_only {
+            self.harness.min(name_width)
+        } else {
+            name_width
+        };
         RowLayout {
             indent: AGENT_INDENT,
             name_width,
-            harness_only: columns.bar_cells == 0 && self.full > name_width,
+            harness_only,
             task_width: card_cells.saturating_sub(2),
             bar_cells: columns.bar_cells,
             fill,
+            stats: StatColumns::default(),
         }
     }
 }
@@ -967,6 +1000,23 @@ mod tests {
     }
 
     #[test]
+    fn a_long_run_name_takes_the_room_the_row_has() {
+        let theme = theme();
+        let name = "peer-crew · Add a --json flag to export, with tests";
+        for (width, whole) in [(80, false), (100, false), (120, true)] {
+            let (mut panel, _, clock) = crew(false);
+            panel.rows[0].name = name.into();
+            let ctx = RenderCtx::new(width, &theme, clock);
+            let lines = panel_lines(&panel, &AgentPanel::default(), &ctx);
+            assert_lines(&lines, width);
+            let text = plain_text(&lines);
+            assert_eq!(text.contains(name), whole, "{width} columns\n{text}");
+            assert!(text.contains("$0.21"), "{width} columns\n{text}");
+            assert!(bars(&lines, &theme)[0].is_some(), "{width} columns\n{text}");
+        }
+    }
+
+    #[test]
     fn run_and_agent_rows_share_one_set_of_columns() {
         let mut plain = Theme::dark().with_level(ColorLevel::None);
         plain.glyphs = Glyphs::UNICODE;
@@ -985,10 +1035,11 @@ mod tests {
                         bars.iter().all(|bar| *bar == bars[0]),
                         "{width} columns: {bars:?}\n{text}"
                     );
-                    // Every model stays, and only the name too long for its column is cut.
+                    // Every model stays, and only a name too long for the room the row has
+                    // is cut.
                     assert!(text.contains("claude-code/opus"), "{text}");
                     assert!(text.contains("agy/gemini-3.6-flash"), "{text}");
-                    assert_eq!(text.contains('…'), long, "{text}");
+                    assert_eq!(text.contains('…'), long && width == 80, "{text}");
                     assert!(text.contains("↓ 18.1k tokens"), "{text}");
                     // One lavender fill for the run and its agents.
                     let fill = theme.style(Role::Card).fg;

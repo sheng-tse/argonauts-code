@@ -20,6 +20,6 @@ expression: screen(&view)
 ────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 3 agents
 
-  ◐ claude-code  card-002                        2/5 · 1m0s · ↓ 18.1k tokens
-  ◐ codex        card-003                        1/5 · 28s · ↓ 12.9k tokens
+  ◐ claude-code  card-002                        2/5  ↓ 18.1k tokens       1m0s
+  ◐ codex        card-003                        1/5  ↓ 12.9k tokens        28s
   ○ agy          review                          waiting

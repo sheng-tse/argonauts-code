@@ -356,6 +356,8 @@ judges_see_authors = false
 [merge]
 mode = "ask"
 pr_draft = false
+leave_out = []
+leave_out_builtin = false
 
 [workflows]
 lead_designs = true

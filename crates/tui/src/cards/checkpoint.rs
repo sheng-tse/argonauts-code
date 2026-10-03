@@ -52,6 +52,8 @@ pub fn checkpoint_card_local(
     let mut card = CardPrompt::new(id, opened.title.clone(), opened.title.clone(), options);
     card.selected = first_recommended(&opened.options);
     card.allow_note = opened.free_text != FreeText::None;
+    // While the rules still decide, the card waits quietly; it takes the keys once it's yours.
+    card.needs_you = opened.needs_you;
     for (option, answer) in card.options.iter_mut().zip(&opened.options) {
         option.asks_note = carries_words(&answer.action);
     }
@@ -237,6 +239,30 @@ fn merge_card(
     run: Option<&RunState>,
     options: &[AnswerOption],
 ) {
+    // Waiting on your files: the conversation lists them just above, so the card asks.
+    if merge.waits_on_you() {
+        let files: Vec<&String> = merge.in_the_way.iter().chain(&merge.edited).collect();
+        if let [first, rest @ ..] = files.as_slice() {
+            card.detail.push(match rest.len() {
+                0 => format!("{first} is in the way"),
+                n => format!(
+                    "{first} and {} in the way",
+                    words::plural(u32::try_from(n).unwrap_or(u32::MAX), "other", "others")
+                ),
+            });
+        } else if let Some(refused) = &merge.refused {
+            card.detail.push(format!("Git said: {refused}"));
+        }
+        card.question = Some(
+            if merge.in_the_way.is_empty() {
+                "Try again, or merge later?"
+            } else {
+                "Move them aside and merge, or merge later?"
+            }
+            .into(),
+        );
+        return;
+    }
     let cards = u32::try_from(merge.rows.len()).unwrap_or(u32::MAX);
     let mut summary = vec![
         words::plural(cards, "card", "cards"),

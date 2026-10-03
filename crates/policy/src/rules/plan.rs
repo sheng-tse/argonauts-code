@@ -1,5 +1,7 @@
 //! Plan: close judges from other families, a clear winner, settled disputes, no flagged plan,
-//! an estimate within budget, allowlisted dependencies, and no protected owned paths.
+//! an estimate within budget, allowlisted dependencies, and no protected owned paths. They hold
+//! whoever answers the crew's questions: a plan nobody drafted or judged, such as a workflow
+//! the lead picked, carries an uncontested plan's facts instead.
 
 use argonauts_core::policy::EvidenceFacts;
 use argonauts_core::settings::approvals::{HardLimitSettings, PlanRules};
@@ -14,7 +16,12 @@ pub fn check(
     run_usd: Option<f64>,
 ) -> RuleVerdict {
     let mut c = Conditions::default();
+    judging(&mut c, facts, rules);
+    binding(&mut c, facts, limits, run_usd);
+    c.verdict()
+}
 
+fn judging(c: &mut Conditions, facts: &EvidenceFacts, rules: &PlanRules) {
     // Comparisons are written so a NaN fails them.
     let max_spread = rules.max_score_spread;
     c.measure(facts.max_score_spread, "no judge score spread", |spread| {
@@ -48,24 +55,28 @@ pub fn check(
         "a dispute with a proposed experiment wasn't settled",
         "no fact says whether disputes were settled",
     );
-    c.measure(
-        facts.flagged_plans,
-        "no count of flagged plans",
-        |flagged| {
-            if flagged == 0 {
-                Ok("no plan was flagged".to_owned())
-            } else {
-                Err(format!("{flagged} flagged for text addressed to judges"))
-            }
-        },
-    );
+}
+
+fn binding(
+    c: &mut Conditions,
+    facts: &EvidenceFacts,
+    limits: &HardLimitSettings,
+    run_usd: Option<f64>,
+) {
+    let flagged = |flagged: u32| {
+        if flagged == 0 {
+            Ok("no plan was flagged".to_owned())
+        } else {
+            Err(format!("{flagged} flagged for text addressed to judges"))
+        }
+    };
+    let fits = |estimate: f64| fits_budget(estimate, facts.spent.cost_usd, run_usd);
+    c.measure(facts.flagged_plans, "no count of flagged plans", flagged);
     if facts.spent.cost_partial && run_usd.is_some() {
         // The spend is only a lower bound, so an estimate that seems to fit may not.
         c.escalate("the run's spend isn't fully priced, so what's left of its budget is unknown");
     }
-    c.measure(facts.estimate_usd, "no cost estimate", |estimate| {
-        fits_budget(estimate, facts.spent.cost_usd, run_usd)
-    });
+    c.measure(facts.estimate_usd, "no cost estimate", fits);
 
     let unlisted: Vec<String> = facts
         .new_dependencies
@@ -83,7 +94,6 @@ pub fn check(
         "no card owns a protected path",
         "cards own protected paths",
     );
-    c.verdict()
 }
 
 /// The estimate has to fit what's left of the run's budget after what it already spent.

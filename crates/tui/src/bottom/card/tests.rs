@@ -234,7 +234,7 @@ fn down_inside_an_open_checklist_stays_in_it() {
 fn vim_keys_stand_in_for_the_arrows_inside_a_checklist_too() {
     let mut card = focused(merge_card());
     let vim = |card: &mut CardPrompt, c: char| {
-        let key = card.vim_key(key(KeyCode::Char(c)));
+        let key = card.read_key(key(KeyCode::Char(c)), true);
         card.handle_key(key)
     };
     vim(&mut card, 'G');
@@ -837,4 +837,176 @@ fn a_card_you_set_off_holds_the_keys_until_answered() {
     assert_eq!(card.handle_key(key(KeyCode::Char('2'))), answered(1));
     assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
     assert!(!card.focused);
+}
+
+#[test]
+fn a_card_that_needs_you_takes_the_keys_until_set_aside() {
+    let mut card = merge_card();
+    card.needs_you = true;
+    assert!(!card.take_keys(false), "a draft in the input holds it off");
+    assert!(card.waits());
+    assert!(card.take_keys(true), "an empty input lets it take the keys");
+    assert!(card.focused && !card.take_keys(true));
+    for c in ['s', 'm', '/'] {
+        assert_eq!(card.handle_key(key(KeyCode::Char(c))), CardEvent::Unhandled);
+    }
+    for _ in 0..card.options.len() {
+        assert_eq!(card.handle_key(key(KeyCode::Down)), CardEvent::Moved);
+    }
+    assert!(card.focused, "↓ past the last option keeps the keys");
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
+    assert!(!card.take_keys(true), "set aside, it leaves the keys alone");
+    card.focus();
+    assert_eq!(card.handle_key(key(KeyCode::Char('2'))), answered(1));
+}
+
+#[test]
+fn letters_typed_at_a_card_never_confirm_it() {
+    let mut card = focused(merge_card());
+    // "1 more thing" and Enter: the 1 arms Merge, and the rest must not let Enter confirm it.
+    assert_eq!(card.handle_key(key(KeyCode::Char('1'))), CardEvent::Moved);
+    assert_eq!(card.armed, Some(0));
+    for c in " more thing".chars() {
+        assert_eq!(card.handle_key(key(KeyCode::Char(c))), CardEvent::Unhandled);
+    }
+    assert!(card.stray_typing && card.armed.is_none());
+    // Neither the Enter that ends the line nor one pressed again answers.
+    for _ in 0..2 {
+        assert_eq!(card.handle_key(key(KeyCode::Enter)), CardEvent::Moved);
+        assert!(card.stray_typing);
+    }
+    assert_eq!(card.selected, 0);
+    // Moving the pointer is meant for the card, and the Enter after it answers.
+    card.handle_key(key(KeyCode::Up));
+    assert!(!card.stray_typing);
+    assert_eq!(card.handle_key(key(KeyCode::Enter)), answered(0));
+
+    // A deliberate key after the letters clears them too.
+    let mut card = focused(merge_card());
+    card.handle_key(key(KeyCode::Char('x')));
+    card.handle_key(key(KeyCode::Down));
+    assert_eq!(card.handle_key(key(KeyCode::Enter)), answered(1));
+}
+
+#[test]
+fn the_input_names_the_keys_while_a_card_has_them() {
+    let mut card = focused(merge_card());
+    assert_eq!(
+        card.input_hint(),
+        "↑↓ to move · Enter or a number to answer · Esc to set aside"
+    );
+    card.esc_hint = "Esc to cancel".into();
+    assert_eq!(
+        card.input_hint(),
+        "↑↓ to move · Enter or a number to answer · Esc to cancel"
+    );
+    card.esc_hint = ESC_HINT.into();
+    card.handle_key(key(KeyCode::Char('5')));
+    assert_eq!(
+        card.input_hint(),
+        "Enter or the same number to confirm · Esc to cancel"
+    );
+    card.handle_key(key(KeyCode::Char('y')));
+    assert_eq!(
+        card.input_hint(),
+        "Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+    );
+    card.handle_key(key(KeyCode::Enter));
+    card.handle_key(key(KeyCode::Tab));
+    assert_eq!(card.input_hint(), "Typing goes into the card");
+    card.handle_key(key(KeyCode::Esc));
+    card.handle_key(key(KeyCode::Char('3')));
+    assert_eq!(card.input_hint(), "Space to tick the card's rows");
+}
+
+/// A card that took the keys by itself, as one work waits on does from a quiet input.
+fn took_the_keys() -> CardPrompt {
+    let mut card = merge_card();
+    card.needs_you = true;
+    assert!(card.take_keys(true));
+    assert!(!card.engaged);
+    card
+}
+
+/// What `text` typed at `card` does, key by key, with vim keys on or off, then Enter.
+fn type_at(card: &mut CardPrompt, text: &str, vim: bool) -> Vec<CardEvent> {
+    text.chars()
+        .map(KeyCode::Char)
+        .chain([KeyCode::Enter])
+        .map(|code| {
+            let read = card.read_key(key(code), vim);
+            card.handle_key(read)
+        })
+        .collect()
+}
+
+fn answers(events: &[CardEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, CardEvent::Answered { .. }))
+}
+
+#[test]
+fn a_paste_and_the_enter_after_it_never_answer() {
+    let mut card = took_the_keys();
+    card.pasted_at();
+    assert!(card.stray_typing);
+    assert_eq!(card.handle_key(key(KeyCode::Enter)), CardEvent::Moved);
+    assert_eq!(
+        card.handle_key(key(KeyCode::Char('1'))),
+        CardEvent::Unhandled
+    );
+    assert!(card.focused && card.armed.is_none());
+    assert_eq!(
+        card.input_hint(),
+        "Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+    );
+}
+
+#[test]
+fn vim_letters_never_answer_a_card_that_took_the_keys_by_itself() {
+    for line in ["let me check", "we will see", "hold on", "glad it works"] {
+        let mut card = took_the_keys();
+        let events = type_at(&mut card, line, true);
+        assert!(!answers(&events), "{line:?} answered: {events:?}");
+        assert!(card.focused && !card.pinned, "{line:?} set it aside");
+    }
+    // Once you've moved with the arrows, `l` answers as Enter does.
+    let mut card = took_the_keys();
+    card.read_key(key(KeyCode::Down), true);
+    card.handle_key(key(KeyCode::Down));
+    let read = card.read_key(key(KeyCode::Char('l')), true);
+    assert_eq!(card.handle_key(read), answered(1));
+    // A card you brought up yourself takes them from the start.
+    let mut card = focused(merge_card());
+    let read = card.read_key(key(KeyCode::Char('j')), true);
+    card.handle_key(read);
+    let read = card.read_key(key(KeyCode::Char('l')), true);
+    assert_eq!(card.handle_key(read), answered(1));
+}
+
+#[test]
+fn a_number_after_letters_never_answers() {
+    let mut card = took_the_keys();
+    let events = type_at(&mut card, "also fix 2 more bugs", false);
+    assert!(!answers(&events), "{events:?}");
+    assert!(card.stray_typing && card.armed.is_none());
+    assert_eq!(
+        card.handle_key(key(KeyCode::Char('2'))),
+        CardEvent::Unhandled
+    );
+}
+
+#[test]
+fn the_unclear_request_leaves_the_keys_to_you_once_you_type() {
+    let mut card = merge_card();
+    card.needs_you = true;
+    card.yields_to_typing = true;
+    card.typed_while_up = true;
+    assert!(!card.take_keys(true));
+    card.yields_to_typing = false;
+    assert!(
+        card.take_keys(true),
+        "a run's card takes them once it's quiet"
+    );
 }

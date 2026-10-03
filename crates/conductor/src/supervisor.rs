@@ -647,6 +647,11 @@ impl SessionState {
                     is_error: *is_error,
                 });
             }
+            // A stall is a warning the agent may yet answer, not why it ended.
+            AgentEvent::Error {
+                category: ErrorCategory::Stalled,
+                ..
+            } => {}
             AgentEvent::Error { message, .. } => self.last_error = Some(message.clone()),
             _ => {}
         }
@@ -838,6 +843,29 @@ mod tests {
     }
 
     const REPORT_RESULT: &str = r#"{"type":"result","text":null,"structured":{"status":"done","summary":"ok","files_changed":[],"tests_run":[],"concerns":[]},"is_error":false}"#;
+
+    #[test]
+    fn a_stall_is_never_why_a_session_failed() {
+        let error = |category, message: &str| AgentEvent::Error {
+            category,
+            message: message.into(),
+            retryable: true,
+        };
+        let stall = "Fake Agent has sent nothing for 45 seconds, not even its heartbeat";
+        let mut state = SessionState::default();
+        state.observe(&error(ErrorCategory::Stalled, stall));
+        let outcome = state.into_outcome(Some(1), None, Duration::ZERO, None);
+        assert_eq!(outcome.last_error, None);
+        let failure = outcome.failure().unwrap_or_default();
+        assert!(!failure.contains("heartbeat"), "{failure}");
+
+        // A real error stays the reason, though a stall comes after it.
+        let mut state = SessionState::default();
+        state.observe(&error(ErrorCategory::Server, "the server failed"));
+        state.observe(&error(ErrorCategory::Stalled, stall));
+        let outcome = state.into_outcome(Some(1), None, Duration::ZERO, None);
+        assert_eq!(outcome.last_error.as_deref(), Some("the server failed"));
+    }
 
     #[tokio::test]
     async fn records_the_session_and_its_events() {

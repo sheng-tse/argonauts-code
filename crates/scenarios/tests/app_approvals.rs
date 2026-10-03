@@ -166,6 +166,8 @@ fn app_answer_refused_from_chat_agent_descendant() -> anyhow::Result<()> {
         &[("PATH", path_with_first(&scenario, &wrap))],
     )?;
     wait_ready(&scenario, &pty)?;
+    // The parked run's question takes the keys as the app opens, so `/ask` sets it aside first.
+    set_card_aside(&mut pty)?;
     submit(&mut pty, &format!("/ask {}", requests::ASK))?;
     wait_turns_finished(&scenario, 1)?;
 

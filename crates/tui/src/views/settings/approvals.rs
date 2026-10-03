@@ -32,6 +32,8 @@ use crate::views::{View, ViewCtx, ViewOutcome};
 /// Where rows start, after the pointer.
 const INDENT: usize = 2;
 
+const ANSWERED_BY: &str = "approvals.answered_by";
+
 #[derive(Debug)]
 pub struct ApprovalsView {
     pub data: ApprovalsData,
@@ -146,6 +148,18 @@ impl ApprovalsView {
 
     fn items(&self, names: &DisplayNames) -> Vec<Item> {
         let mut items = Vec::new();
+        // Who answers comes first, since it decides whether the run asks you anything at all.
+        if let Some(index) = self.rows.iter().position(|row| row.key == ANSWERED_BY) {
+            items.push(Item::Heading {
+                name: "The crew's questions".to_owned(),
+                note: "the goal's open questions and the plan approval".to_owned(),
+            });
+            items.push(Item::Setting {
+                index,
+                label: setting_name("answered_by"),
+            });
+            items.push(Item::Blank);
+        }
         let mut checkpoints: Vec<String> = self.data.points.iter().map(kind_name).collect();
         for row in &self.rows {
             if let Some((group, _)) = split_key(&row.key)
@@ -186,7 +200,11 @@ impl ApprovalsView {
             .rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| row.key.starts_with("approvals.") && split_key(&row.key).is_none())
+            .filter(|(_, row)| {
+                row.key.starts_with("approvals.")
+                    && row.key != ANSWERED_BY
+                    && split_key(&row.key).is_none()
+            })
             .map(|(index, row)| Item::Setting {
                 index,
                 label: setting_name(row.key.trim_start_matches("approvals.")),
@@ -556,6 +574,7 @@ fn setting_name(leaf: &str) -> String {
         "spot_check_sample" => "Share of auto calls to check",
         "pause_auto_when_spot_checks_waiting" => "Spot checks that pause auto",
         "goal_changes" => "Changes to an approved goal",
+        "answered_by" => "Who answers the crew's questions",
         "presence" => "Check on always-on agents",
         "refuse_ancestor_env" => "Shells refused approval",
         other => return words_of(other.trim_start_matches("rules.")),
@@ -585,6 +604,8 @@ fn value_words(row: &SettingRow, names: &DisplayNames) -> String {
         ("decide_with", "model") => "the approver",
         ("decide_with", "rules_and_model") => "both agree",
         ("decide_with", "rules_or_model") => "rules, then approver",
+        ("answered_by", "you") => "you",
+        ("answered_by", "lead") => "the lead",
         (_, "ask") => "ask you",
         (_, "send_back") => "send it back",
         (_, "open_pull_request") => "open a pull request",
@@ -697,5 +718,35 @@ mod tests {
         );
         let none = row("approvals.recipe_promotion.rules.change_classes", "[]");
         assert_eq!(value_words(&none, &names), "none");
+    }
+
+    #[test]
+    fn who_answers_the_crews_questions_comes_first_in_words() {
+        let names = DisplayNames::default();
+        let unset = row(ANSWERED_BY, "");
+        assert_eq!(value_words(&unset, &names), "the lead in auto, else you");
+        assert_eq!(
+            value_words(&row(ANSWERED_BY, "\"lead\""), &names),
+            "the lead"
+        );
+        assert_eq!(value_words(&row(ANSWERED_BY, "\"you\""), &names), "you");
+
+        let view = ApprovalsView::with_rows(vec![
+            row("approvals.goal_changes", "\"ask\""),
+            row("approvals.merge.mode", "\"auto\""),
+            unset,
+        ]);
+        let items = view.items(&names);
+        assert!(matches!(&items[0], Item::Heading { name, .. } if name == "The crew's questions"));
+        assert!(matches!(
+            &items[1],
+            Item::Setting { index: 2, label } if label == "Who answers the crew's questions"
+        ));
+        // It isn't listed again with the other settings.
+        let listed = items
+            .iter()
+            .filter(|item| matches!(item, Item::Setting { index: 2, .. }))
+            .count();
+        assert_eq!(listed, 1);
     }
 }

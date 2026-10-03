@@ -26,6 +26,9 @@ pub struct IntegrationState {
     pub final_check: Option<bool>,
     pub dependencies: Vec<String>,
     pub landed: Option<Landed>,
+    /// Your files in the way of landing, while the merge waits for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_to_merge: Vec<String>,
     pub pull_request: Option<PullRequest>,
     /// The branches kept when you abandoned the run.
     pub abandoned: Option<Vec<String>>,
@@ -96,11 +99,15 @@ impl IntegrationState {
                 sha,
                 fast_forward,
             } => {
+                self.waiting_to_merge.clear();
                 self.landed = Some(Landed {
                     target: target.clone(),
                     sha: sha.clone(),
                     fast_forward: *fast_forward,
                 });
+            }
+            IntegrationEvent::WaitingToMerge { in_the_way, .. } => {
+                self.waiting_to_merge = in_the_way.clone();
             }
             IntegrationEvent::PullRequest {
                 branch,

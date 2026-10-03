@@ -344,10 +344,8 @@ fn state_folds_phase() {
 fn folds_as_progress(kind: RunEventKind) {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
-    let before = run(&state).events;
     let cards = run(&state).cards.clone();
     state.apply(&log.at(None, Some(key(1)), kind));
-    assert_eq!(run(&state).events, before + 1);
     assert_eq!(run(&state).seq, 3);
     assert_eq!(run(&state).updated, Some(T0 + Duration::seconds(3)));
     assert_eq!(session(&state).last_event, T0 + Duration::seconds(3));
@@ -566,6 +564,28 @@ fn state_folds_session() {
 }
 
 #[test]
+fn a_stall_marks_the_session_until_it_is_heard_from() {
+    let mut log = Log::new();
+    let mut state = fold(&crew(&mut log));
+    let stall = AgentEvent::Error {
+        category: argonauts_core::ErrorCategory::Stalled,
+        message: "Claude Code has sent nothing for 45 seconds, not even its heartbeat".into(),
+        retryable: true,
+    };
+    state.apply(&log.agent(1, stall));
+    assert!(session(&state).stalled);
+    let usage = AgentEvent::Usage {
+        input_tokens: 10,
+        output_tokens: 10,
+        cached_tokens: 0,
+        cost_usd: None,
+        cumulative: true,
+    };
+    state.apply(&log.agent(1, usage));
+    assert!(!session(&state).stalled);
+}
+
+#[test]
 fn state_folds_agent() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
@@ -728,7 +748,7 @@ fn state_folds_review() {
     };
     state.apply(&log.at(Some(card_id(1)), None, RunEventKind::Review(tests)));
     assert_eq!(run(&state).cards[&card_id(1)].reviews, 0);
-    assert_eq!(run(&state).events, 4);
+    assert_eq!(run(&state).seq, 3);
 }
 
 #[test]

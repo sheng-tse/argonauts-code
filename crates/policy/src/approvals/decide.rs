@@ -99,9 +99,14 @@ fn from_model(model: ModelVerdict, by: DecideWith) -> Decision {
     }
 }
 
+/// What held the verdict back comes first, so a card left to you leads with it.
 fn combine(verdict: Verdict, rules: RuleVerdict, model: ModelVerdict, by: DecideWith) -> Decision {
-    let mut reasons = rules.reasons;
-    reasons.extend(model.reasons);
+    let model_first = verdict != Verdict::Approve && rules.verdict == Verdict::Approve;
+    let reasons = if model_first {
+        model.reasons.into_iter().chain(rules.reasons).collect()
+    } else {
+        rules.reasons.into_iter().chain(model.reasons).collect()
+    };
     Decision {
         verdict,
         by,

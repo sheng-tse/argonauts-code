@@ -237,6 +237,7 @@ impl Limits {
             | ErrorCategory::Permission
             | ErrorCategory::Interrupted
             | ErrorCategory::Cli
+            | ErrorCategory::Stalled
             | ErrorCategory::Unknown => self.ladder(stop),
         }
     }

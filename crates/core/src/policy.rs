@@ -282,6 +282,11 @@ pub trait ApprovalPolicy: Send + Sync {
         let _ = point;
         requested
     }
+    /// Landing what auto approved at `point` was refused, such as when the branch moved after
+    /// the approval, so nothing merged: the auto-merge it took goes back to today's count.
+    fn landing_refused(&self, point: &DecisionPoint) {
+        let _ = point;
+    }
     /// Every decision point back to supervised, now, for every run.
     fn auto_off(&self);
     fn hard_limits(&self) -> &dyn HardLimits;

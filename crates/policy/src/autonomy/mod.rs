@@ -422,6 +422,29 @@ impl Autonomy for StateAutonomy {
         }
     }
 
+    /// Gives back the auto-merge that a refused landing took, and records that the
+    /// reservation is gone.
+    fn landing_refused(&self, point: &DecisionPoint) {
+        let now = self.clock.now();
+        let mut released: Option<String> = None;
+        self.write("a refused landing", |records| {
+            let log = records::checkpoint_log(records, &point.run, &point.checkpoint);
+            match log.reservation.and_then(|reserved| reserved.merge_key) {
+                Some(key) => {
+                    released = Some(key.to_owned());
+                    vec![Record::new(point, now, Event::Released)]
+                }
+                None => Vec::new(),
+            }
+        });
+        if let Some(key) = released {
+            // A failed release keeps the auto-merge taken, the safe side.
+            let _ = self
+                .ledger()
+                .map(|ledger| ledger.release_auto_merge(&key, now));
+        }
+    }
+
     fn spot_checked(&self, point: &DecisionPoint, correct: bool, settings: &Settings) {
         let now = self.clock.now();
         let fingerprint = scoring::point_settings(&settings.approvals, point.kind)
@@ -907,6 +930,43 @@ mod tests {
             matches!(refused, Err(Refusal::Unavailable(_))),
             "{refused:?}"
         );
+    }
+
+    /// The review's probe: each refused landing took one of the day's auto-merges, so a
+    /// dirty checkout used up the cap for every other run. Now it gives it back.
+    #[test]
+    fn a_refused_landing_gives_back_its_auto_merge() {
+        let mut f = fixture();
+        let merge = CheckpointKind::Merge;
+        f.settings.approvals.merge.mode = ApprovalMode::Auto;
+        f.settings.limits.auto_merges_per_day = 1;
+        let first = point("run-a", 1, merge);
+        assert!(
+            f.autonomy
+                .reserve(&first, &evidence(merge), &f.settings)
+                .is_ok()
+        );
+        let second = point("run-b", 1, merge);
+        assert!(matches!(
+            f.autonomy.reserve(&second, &evidence(merge), &f.settings),
+            Err(Refusal::Capped(_))
+        ));
+
+        f.autonomy.landing_refused(&first);
+        assert!(
+            f.autonomy
+                .reserve(&second, &evidence(merge), &f.settings)
+                .is_ok(),
+            "the refused landing's auto-merge went back"
+        );
+        // Giving it back twice, or for a point that took none, changes nothing.
+        f.autonomy.landing_refused(&first);
+        f.autonomy.landing_refused(&point("run-c", 1, merge));
+        let third = point("run-d", 1, merge);
+        assert!(matches!(
+            f.autonomy.reserve(&third, &evidence(merge), &f.settings),
+            Err(Refusal::Capped(_))
+        ));
     }
 
     #[test]

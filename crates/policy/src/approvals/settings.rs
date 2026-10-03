@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    ApprovalMode, ApprovalSettings, ApproverSettings, BudgetRules, CheckpointSettings, DecideWith,
-    EscalationRules, GoalChanges, GoalRules, HardLimitSettings, MergeRules, NoRules, Otherwise,
-    PlanRules, Presence, PromotionRules, SandboxChoice, SandboxSettings, UntrustedRepos, UserHooks,
+    Answerer, ApprovalMode, ApprovalSettings, ApproverSettings, BudgetRules, CheckpointSettings,
+    DecideWith, EscalationRules, GoalChanges, GoalRules, HardLimitSettings, MergeRules, NoRules,
+    Otherwise, PlanRules, Presence, PromotionRules, SandboxChoice, SandboxSettings, UntrustedRepos,
+    UserHooks,
 };
 
 use crate::SettingsReloader;
@@ -51,6 +52,7 @@ pub fn stricter(run_start: &Settings, reloaded: &Settings) -> Settings {
 
 fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     ApprovalSettings {
+        answered_by: answered_by(a.answered_by, b.answered_by),
         goal_changes: goal_changes(a.goal_changes, b.goal_changes),
         spot_check_sample: a.spot_check_sample.max(b.spot_check_sample),
         pause_auto_when_spot_checks_waiting: pause_limit(
@@ -74,6 +76,15 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
         approver: approver(&a.approver, &b.approver),
         presence: presence(a.presence, b.presence),
         refuse_ancestor_env: union(&a.refuse_ancestor_env, &b.refuse_ancestor_env),
+    }
+}
+
+/// You answering is the strictest, then following the mode, then the lead in every mode.
+fn answered_by(a: Option<Answerer>, b: Option<Answerer>) -> Option<Answerer> {
+    match (a, b) {
+        (Some(Answerer::You), _) | (_, Some(Answerer::You)) => Some(Answerer::You),
+        (Some(Answerer::Lead), Some(Answerer::Lead)) => Some(Answerer::Lead),
+        _ => None,
     }
 }
 

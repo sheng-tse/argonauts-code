@@ -2,8 +2,12 @@
 //! open settings picker, a focused card, the answered handoff pick's line when ↑ picked it, a
 //! second Esc that clears the input, the focused agent panel, the open menu, vim's modes, the
 //! global keys, and last the composer. The search, a picker, or a focused card lets only the
-//! quit keys past it. A run's card never takes the keys by itself, so typing reaches the input
-//! until ↑ or Tab on an empty input hands them over; a card you set off yourself opens with them.
+//! quit keys past it, so while a card has the keys, Ctrl+R and `/` don't open the search and
+//! `!` doesn't start shell mode. A card you set off yourself opens with the keys. One work
+//! waits on takes them once the input is empty and left alone for a moment, so typing never
+//! reaches the input under it, and a draft, even one just cleared, is never cut off. An open
+//! search or shell mode counts as a draft. Esc sets a run's card aside and gives the keys
+//! back, and ↑ or Tab on an empty input hands them to a waiting card again.
 //! What the named keys do comes from the [`Keymap`].
 //!
 //! [`Keymap`]: crate::keymap::Keymap
@@ -47,6 +51,14 @@ impl<W: Write> Ui<W> {
         let mut actions = Vec::new();
         let bottom = &mut self.model.bottom;
         bottom.composer.adopt_vim_mode(bottom.mode.vim);
+        let typed = match &event {
+            Event::Key(key) => matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat),
+            Event::Paste(_) => true,
+            _ => false,
+        };
+        if typed && bottom.focused_card().is_none() {
+            bottom.typed_at(now);
+        }
         match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
                 self.handle_key(key, now, &mut actions);
@@ -62,6 +74,10 @@ impl<W: Write> Ui<W> {
             Event::FocusLost => actions.push(UiAction::Focus(false)),
         }
         self.show_vim_mode();
+        // A card that came up while you typed takes the keys once the input is empty and quiet.
+        if self.model.bottom.hand_keys_to_card(now) {
+            self.dirty = true;
+        }
         if actions
             .iter()
             .any(|action| matches!(action, UiAction::Submit { .. } | UiAction::Shell { .. }))
@@ -337,8 +353,14 @@ impl<W: Write> Ui<W> {
             return false;
         };
         let id = card.id;
-        let key = if vim { card.vim_key(key) } else { key };
-        match card.handle_key(key) {
+        let key = card.read_key(key, vim);
+        let was_stray = card.stray_typing;
+        let event = card.handle_key(key);
+        // Stray letters change the input's hint, though the card does nothing with them.
+        if card.stray_typing != was_stray {
+            self.dirty = true;
+        }
+        match event {
             CardEvent::Answered {
                 index,
                 note,
@@ -602,7 +624,9 @@ impl<W: Write> Ui<W> {
     }
 
     /// A paste goes where typing would: the history search's filter, an open picker, a focused
-    /// card's note, or the composer.
+    /// card's note, or the composer. A focused card with no note open takes no text, so the
+    /// paste goes nowhere, as typing does, and the card waits for a key meant for it before
+    /// anything answers it.
     fn handle_paste(&mut self, text: &str, actions: &mut Vec<UiAction>) {
         self.disarm_clear();
         let bottom = &mut self.model.bottom;
@@ -618,11 +642,16 @@ impl<W: Write> Ui<W> {
             self.dirty = true;
             return;
         }
+        let card_focused = bottom.focused_card().is_some();
         let into_note = bottom
             .card
             .as_mut()
             .is_some_and(|card| card.handle_paste(text));
-        if !into_note {
+        if card_focused && !into_note {
+            if let Some(card) = bottom.card.as_mut() {
+                card.pasted_at();
+            }
+        } else if !into_note {
             bottom.composer.handle_paste(text);
             bottom.menus.text_changed();
             bottom.agents.blur();

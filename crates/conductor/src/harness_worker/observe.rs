@@ -139,7 +139,8 @@ impl Observer {
             context_window,
         });
         meter.resumed_from(meter::spent_before(spec, ctx.adapter.id()));
-        let watchdogs = Watchdogs::new(&spec.limits, fanout_cap(&ctx));
+        let watchdogs =
+            Watchdogs::new(&spec.limits, fanout_cap(&ctx)).with_heartbeat(ctx.adapter.heartbeat());
         let diffs = Diffs::start(FileDiffer::new(spec.workdir.clone()), out.clone());
         let boards = Boards::start(ctx.clone(), out.clone());
         let asked_for = spec.worker.model.clone().or_else(|| {
@@ -188,9 +189,10 @@ impl Observer {
         });
     }
 
-    /// Any output at all counts as activity.
+    /// Any output at all counts as activity, and ends a silence.
     pub fn output(&mut self) {
         self.watchdogs.output(Instant::now());
+        self.stalled = false;
     }
 
     pub fn stderr(&mut self, line: &str) {
@@ -442,13 +444,25 @@ impl Observer {
                 None
             }
             WatchdogVerdict::Stalled { silent_for } => {
-                if !self.stalled {
-                    self.stalled = true;
-                    self.out.notice(format!(
-                        "the agent has sent nothing for {} seconds",
+                self.stalled_once(|cli| {
+                    format!(
+                        "{cli} has sent nothing for {} seconds, not even its heartbeat",
                         silent_for.as_secs()
-                    ));
-                }
+                    )
+                });
+                None
+            }
+            WatchdogVerdict::Quieting {
+                quiet_for,
+                stops_after,
+            } => {
+                self.stalled_once(|cli| {
+                    format!(
+                        "{cli} has been quiet for {} and stops after {} of quiet",
+                        spelled(quiet_for),
+                        spelled(stops_after)
+                    )
+                });
                 None
             }
             WatchdogVerdict::Nudge { call, times } => Some(Action::Nudge { call, times }),
@@ -457,6 +471,14 @@ impl Observer {
             WatchdogVerdict::FanoutExceeded { running, max } => {
                 Some(Action::Stop(StopCause::Fanout { running, max }))
             }
+        }
+    }
+
+    /// One note per silence, whichever watchdog sees it first.
+    fn stalled_once(&mut self, note: impl FnOnce(&str) -> String) {
+        if !self.stalled {
+            self.stalled = true;
+            self.out.stalled(note(self.ctx.adapter.display_name()));
         }
     }
 
@@ -510,6 +532,17 @@ fn fanout_cap(ctx: &Context) -> Option<u32> {
     }
 }
 
+/// `7 minutes`, or under a minute `30 seconds`.
+fn spelled(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    let (count, unit) = match secs / 60 {
+        0 => (secs, "second"),
+        minutes => (minutes, "minute"),
+    };
+    let s = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{s}")
+}
+
 /// A line longer than the reader keeps can't be parsed; it's reported instead.
 pub fn oversized_line(text: &str, dropped: usize) -> AgentEvent {
     let start: String = text.chars().take(200).collect();
@@ -526,9 +559,9 @@ pub fn oversized_line(text: &str, dropped: usize) -> AgentEvent {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::EndReason;
+    use argonauts_core::events::session::{EndReason, Watchdog};
     use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
-    use argonauts_core::worker::{SessionSpec, Worker};
+    use argonauts_core::worker::{SessionHandle, SessionLimits, SessionSpec, Worker, WorkerEvent};
 
     use super::*;
     use crate::harness_worker::capabilities::CLAUDE_CODE;
@@ -539,6 +572,122 @@ mod tests {
     use crate::health::is_vendor_trouble;
 
     const MINUTE: Duration = Duration::from_secs(60);
+
+    /// An observer of one session, with what it needs kept alive.
+    struct Watched {
+        obs: Observer,
+        handle: SessionHandle,
+        started: Instant,
+        _harness: Harness,
+        _dir: tempfile::TempDir,
+    }
+
+    fn watched(adapter: TestAdapter, limits: SessionLimits) -> Watched {
+        let harness = Harness::new(adapter);
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_in(dir.path(), dir.path(), "hi");
+        spec.limits = limits;
+        let (handle, out, _control) = outbox::open(spec.key.clone());
+        let home = harness.worker.home().unwrap();
+        let ctx = Arc::new(Context::new(&harness.worker, spec, home));
+        let started = Instant::now();
+        Watched {
+            obs: Observer::new(ctx, out, started),
+            handle,
+            started,
+            _harness: harness,
+            _dir: dir,
+        }
+    }
+
+    impl Watched {
+        fn at(&self, after: Duration) -> Instant {
+            self.started + after
+        }
+
+        /// The stall notes sent so far.
+        async fn stalls(&mut self) -> Vec<String> {
+            let mut notes = Vec::new();
+            let wait = Duration::from_millis(100);
+            while let Ok(Some(event)) = tokio::time::timeout(wait, self.handle.events.recv()).await
+            {
+                if let WorkerEvent::Agent(AgentEvent::Error {
+                    category: ErrorCategory::Stalled,
+                    message,
+                    ..
+                }) = event
+                {
+                    notes.push(message);
+                }
+            }
+            notes
+        }
+    }
+
+    fn cargo_test() -> AgentEvent {
+        AgentEvent::ToolStarted {
+            id: "t1".into(),
+            name: "Bash".into(),
+            input: json!({ "command": "cargo test" }),
+            parent: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stall_past_the_heartbeat_is_noted_once_per_silence() {
+        let adapter = TestAdapter::new("true").with_heartbeat(Duration::from_secs(30));
+        let mut w = watched(adapter, SessionLimits::default());
+        w.obs.event(cargo_test());
+        let mut actions = Vec::new();
+        for secs in [46, 50] {
+            actions.extend(w.obs.tick_at(w.at(Duration::from_secs(secs)), None));
+        }
+        // A heartbeat ends the silence, so the next one is noted again.
+        w.obs.output();
+        actions.extend(w.obs.tick_at(w.at(Duration::from_secs(100)), None));
+        assert!(actions.is_empty(), "nothing acts on a stall: {actions:?}");
+        let stalls = w.stalls().await;
+        assert_eq!(stalls.len(), 2, "{stalls:?}");
+        for stall in &stalls {
+            assert!(
+                stall.starts_with("Fake Agent has sent nothing for "),
+                "{stall}"
+            );
+        }
+
+        // Without a heartbeat, silence during a tool call is never a stall.
+        let mut w = watched(TestAdapter::new("true"), SessionLimits::default());
+        w.obs.event(cargo_test());
+        for minutes in 1..=10 {
+            w.obs.tick_at(w.at(MINUTE * minutes), None);
+        }
+        assert_eq!(w.stalls().await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn half_the_quiet_limit_says_when_the_stop_comes_once() {
+        let limits = SessionLimits {
+            inactivity_min: Some(15.0),
+            ..SessionLimits::default()
+        };
+        let mut w = watched(TestAdapter::new("true"), limits);
+        w.obs.event(cargo_test());
+        let second = Duration::from_secs(1);
+        let mut actions = Vec::new();
+        for after in [MINUTE * 7, MINUTE * 8 + second, MINUTE * 9] {
+            actions.extend(w.obs.tick_at(w.at(after), None));
+        }
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(
+            w.stalls().await,
+            ["Fake Agent has been quiet for 8 minutes and stops after 15 minutes of quiet"]
+        );
+        let actions = w.obs.tick_at(w.at(MINUTE * 15 + second), None);
+        assert_eq!(
+            actions,
+            [Action::Stop(StopCause::Stuck(Watchdog::Inactivity))]
+        );
+    }
 
     #[tokio::test]
     async fn minutes_run_on_across_a_resume() {

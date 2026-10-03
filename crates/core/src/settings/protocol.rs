@@ -547,6 +547,14 @@ pub struct MergeSettings {
     /// The branch an approval lands on: the one checked out at start, or a named one.
     pub target: Option<String>,
     pub pr_draft: bool,
+    /// Untracked files Argonauts leaves out of its commits, such as `coverage/` or `*.log`. A
+    /// pattern ending in `/` is a folder. Empty by default, so commits take every file git
+    /// doesn't ignore.
+    pub leave_out: Vec<String>,
+    /// Whether its commits also leave out a built-in list of build and cache output, such as
+    /// `__pycache__/`, `*.pyc`, and `node_modules/`. Off by default, since what counts as build
+    /// output differs by language and tool. Each commit says what it left out.
+    pub leave_out_builtin: bool,
 }
 
 impl Default for MergeSettings {
@@ -555,6 +563,8 @@ impl Default for MergeSettings {
             mode: MergeMode::Ask,
             target: None,
             pr_draft: false,
+            leave_out: Vec::new(),
+            leave_out_builtin: false,
         }
     }
 }

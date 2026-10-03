@@ -191,6 +191,9 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         spent,
         limit: budget.and_then(|budget| budget.limit),
         partial,
+        in_the_way: Vec::new(),
+        edited: Vec::new(),
+        refused: None,
     };
     let facts = EvidenceFacts {
         subject: Some(subject),

@@ -53,6 +53,15 @@ impl Outbox {
         });
     }
 
+    /// The CLI went quiet past its heartbeat. Screens show it dim, since it may yet answer.
+    pub fn stalled(&self, message: impl Into<String>) {
+        self.agent(AgentEvent::Error {
+            category: ErrorCategory::Stalled,
+            message: message.into(),
+            retryable: true,
+        });
+    }
+
     /// A message the agent never got, so whoever sent it can send it again.
     pub fn undelivered(&self, message: &MessageId, why: &str) {
         self.notice(format!("message {message} was not delivered: {why}"));

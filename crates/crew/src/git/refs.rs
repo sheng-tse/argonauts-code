@@ -15,7 +15,24 @@ impl Git {
             return Ok(false);
         }
         let args = ["merge", "--ff-only", "--quiet", &target];
-        self.run(worktree, &args).await.map(|_| true)
+        let out = self.output(worktree, &args, &[]).await?;
+        if out.status.success() {
+            return Ok(true);
+        }
+        // Git's last line is only "Aborting"; its first error says why.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let why = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
+            .or_else(|| stderr.lines().map(str::trim).rfind(|line| !line.is_empty()))
+            .unwrap_or("")
+            .to_owned();
+        Err(GitError::Failed {
+            args: args.join(" "),
+            status: out.status.to_string(),
+            stderr: why,
+        })
     }
 
     pub async fn is_ancestor(

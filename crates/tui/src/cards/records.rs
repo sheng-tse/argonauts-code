@@ -1,5 +1,5 @@
 //! One line in scrollback after a card is answered or withdrawn, such as
-//! `◆ Merged card-002 into main · you, 10:58 AM`.
+//! `◆ Approved merging card-002 into main · you, 10:58 AM`.
 
 use argonauts_core::RunId;
 use argonauts_core::app::NOT_CHANGED;
@@ -48,7 +48,7 @@ pub fn record(
     notice
 }
 
-/// What the answer did, in a few words: `Merged card-002 into main`, `Plan approved`.
+/// What the answer did, in a few words: `Approved merging card-002 into main`, `Plan approved`.
 pub fn outcome(
     opened: &CheckpointOpened,
     decided: &CheckpointDecided,
@@ -63,7 +63,8 @@ pub fn outcome(
     let title = opened.title.trim();
     let text = decided.text.as_deref().map(str::trim).unwrap_or_default();
     match (&decided.action, opened.kind) {
-        (A::Merge, _) => format!("Merged {subject} into {}", merge_target(opened)),
+        // The decision, not the landing: the run's last line says when it merged.
+        (A::Merge, _) => format!("Approved merging {subject} into {}", merge_target(opened)),
         (A::PullRequest, _) => format!("Opened a pull request for {subject}"),
         (A::RequestChanges, _) if decided.cards.is_empty() => {
             "Sent every card back with changes".to_owned()

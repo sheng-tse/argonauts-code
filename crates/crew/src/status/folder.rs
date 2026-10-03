@@ -211,12 +211,19 @@ impl Folder {
     fn goal(&mut self, event: &GoalEvent) -> Option<Audience> {
         match event {
             GoalEvent::Approved { file, .. } => {
+                // The lead's answers for you stay in view for you to review.
+                let by_lead = file
+                    .assumptions
+                    .iter()
+                    .filter(|assumption| assumption.by_lead())
+                    .map(|assumption| format!("Answered by the lead · {}", assumption.text));
                 self.tagged.goal = std::iter::once(file.summary.clone())
                     .chain(
                         file.criteria
                             .iter()
                             .map(|criterion| format!("{}: {}", criterion.id, criterion.text)),
                     )
+                    .chain(by_lead)
                     .collect();
                 self.line(format!("Goal approved, version {}", file.version))
             }
@@ -505,6 +512,10 @@ impl Folder {
             IntegrationEvent::FinalCheck { passed: true } => "The final check passed".to_owned(),
             IntegrationEvent::FinalCheck { passed: false } => "The final check failed".to_owned(),
             IntegrationEvent::Landed { target, .. } => format!("Landed on {target}"),
+            IntegrationEvent::WaitingToMerge { target, in_the_way } => format!(
+                "Waiting to merge into {target}: {} in your checkout in the way",
+                and_list(in_the_way)
+            ),
             IntegrationEvent::PullRequest { url: Some(url), .. } => {
                 format!("Pull request opened: {url}")
             }
@@ -917,6 +928,56 @@ mod tests {
         };
         assert_eq!(now(&folder, &owner), None);
         assert!(now(&folder, &Viewer::User).is_some());
+    }
+
+    #[test]
+    fn status_lists_what_the_lead_answered_for_you() {
+        use argonauts_core::events::goal::{Assumption, GoalFile, GoalSource, LEAD_ANSWER};
+        use argonauts_core::events::run::Party;
+
+        let assumption = |text: &str, basis: String| Assumption {
+            text: text.to_owned(),
+            basis,
+        };
+        let file = GoalFile {
+            run: RunId::new("run-01").unwrap(),
+            version: 1,
+            summary: "Add a --verbose flag".to_owned(),
+            criteria: Vec::new(),
+            in_scope: Vec::new(),
+            out_of_scope: Vec::new(),
+            assumptions: vec![
+                assumption(
+                    "Which log level: trace",
+                    format!("{LEAD_ANSWER}: the README"),
+                ),
+                assumption("the flag's name: --verbose", "a detail".to_owned()),
+            ],
+            answers: Vec::new(),
+            source: GoalSource::Restatements,
+            path: Default::default(),
+            sha256: String::new(),
+        };
+        let mut folder = Folder::default();
+        folder.push(&RunEvent {
+            seq: 1,
+            ts: OffsetDateTime::UNIX_EPOCH,
+            run_id: RunId::new("run-01").unwrap(),
+            card_id: None,
+            session: None,
+            source: "conductor".to_owned(),
+            kind: RunEventKind::Goal(GoalEvent::Approved {
+                file,
+                by: Party::User,
+            }),
+        });
+        assert_eq!(
+            folder.summary(&Viewer::User).goal,
+            [
+                "Add a --verbose flag",
+                "Answered by the lead · Which log level: trace"
+            ]
+        );
     }
 
     #[test]

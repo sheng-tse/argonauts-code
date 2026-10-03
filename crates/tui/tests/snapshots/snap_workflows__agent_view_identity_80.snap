@@ -6,8 +6,8 @@ peer-crew
 Fix the race in the export test and add a regressi…  6/11 agents · 46m0s · $3.02
 
 ╭ Understand · 2 agents ───┬ restater ─────────────────────────────────────────╮
-│ ❯ ✓ restater · Opus on … │ Opus on Claude Code (claude-code/opus) · run-01   │
-│   ✓ restater · GPT 5.6 … │ ✓ Completed · Opus on Claude Code · 31k tok · 58s │
+│ ❯ ✓ restater  Opus on C… │ Opus on Claude Code (claude-code/opus) · run-01   │
+│   ✓ restater  GPT 5.6 o… │ ✓ Completed · Opus on Claude Code · 31k tok · 58s │
 │                          │                                                   │
 │                          │ Prompt · 14 lines · ↵expand                       │
 │                          │   Build the terminal and the whole bottom region… │

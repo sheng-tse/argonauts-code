@@ -260,25 +260,29 @@ fn working_line_states() {
     chat.chat.turn = Some(TurnId::numbered(1));
     chat.chat.tokens_out = 3_600;
     chat.chat.doing = Doing::Thinking;
-    chat.chat.events = 1;
     let mut thinking = synced(&chat, &ui, 0.0);
     let mut tool_state = chat.clone();
     tool_state.chat.doing = Doing::RunningTool;
-    tool_state.chat.events = 2;
     let mut tool = thinking.clone_model();
     sync(&mut tool, &tool_state, &ui, 9.0);
     let mut thought_state = chat.clone();
     thought_state.chat.doing = Doing::Thinking;
-    thought_state.chat.events = 3;
     sync(&mut thinking, &thought_state, &ui, 1.0);
     thought_state.chat.doing = Doing::Writing;
-    thought_state.chat.events = 4;
     let mut thought = thinking.clone_model();
     sync(&mut thought, &thought_state, &ui, 3.0);
 
     let crew_state = crew();
     let crew = synced(&crew_state, &ui, NOW);
-    let stalled = synced(&crew_state, &ui, NOW - 40.0);
+    let stall = |state: &mut AppState, sessions: usize| {
+        let run = state.runs.get_mut(&run_id(1)).unwrap();
+        for session in run.sessions.values_mut().take(sessions) {
+            session.stalled = true;
+        }
+    };
+    let mut stalled_state = crew_state.clone();
+    stall(&mut stalled_state, 3);
+    let stalled = synced(&stalled_state, &ui, NOW - 40.0);
     let mut pausing_state = crew_state.clone();
     pausing_state.mode = Some(AppMode::Pausing { run: run_id(1) });
     let pausing = synced(&pausing_state, &ui, NOW);
@@ -297,7 +301,7 @@ fn working_line_states() {
             ("chat running a tool", line(&tool, 12.0, width)),
             ("chat between thinking spells", line(&thought, 4.0, width)),
             ("crew run", line(&crew, NOW, width)),
-            ("crew run with no event for 40s", line(&stalled, NOW, width)),
+            ("crew run stalled for 40s", line(&stalled, NOW, width)),
             ("pausing", line(&pausing, NOW, width)),
         ]
     };
@@ -332,15 +336,22 @@ fn working_line_states() {
         again.bottom.working.as_ref().map(|line| line.started_at),
         crew.bottom.working.as_ref().map(|line| line.started_at)
     );
-    assert_eq!(
-        again
+    let stalled_since = |model: &ViewModel| {
+        model
             .bottom
             .working
             .as_ref()
-            .and_then(|line| line.last_progress),
-        Some(at(NOW)),
-        "no new event, so the stall clock keeps running"
-    );
+            .and_then(|line| line.stalled_since)
+    };
+    assert_eq!(stalled_since(&again), None, "quiet alone is no stall");
+    // A stall keeps fading from when it was reported.
+    let mut later = stalled.clone_model();
+    sync(&mut later, &stalled_state, &ui, NOW);
+    assert_eq!(stalled_since(&later), Some(at(NOW - 40.0)));
+    // While one of the crew's agents still works, the run doesn't stall.
+    let mut one_stalled = crew_state.clone();
+    stall(&mut one_stalled, 2);
+    assert_eq!(stalled_since(&synced(&one_stalled, &ui, NOW)), None);
 }
 
 #[test]
@@ -596,6 +607,59 @@ fn question() -> CheckpointOpened {
         free_text: FreeText::Answer,
         needs_you: true,
     }
+}
+
+#[test]
+fn the_working_line_steps_aside_while_the_run_waits_on_you() {
+    let ui = UiSettings::default();
+    let mut state = crew();
+    let open = |state: &mut AppState, needs_you: bool, set_aside: bool| {
+        let run = state.runs.get_mut(&run_id(1)).unwrap();
+        run.checkpoints = vec![OpenCheckpoint {
+            opened: Box::new(CheckpointOpened {
+                needs_you,
+                ..question()
+            }),
+            set_aside,
+            replayed: false,
+        }];
+    };
+    let working = |state: &AppState| synced(state, &ui, NOW).bottom.working.is_some();
+    let card_state = |state: &mut AppState, card: &str, to: CardState| {
+        let run = state.runs.get_mut(&run_id(1)).unwrap();
+        let card = CardId::new(card).unwrap();
+        run.cards.get_mut(&card).unwrap().state = Some(to);
+    };
+
+    // One agent's question while the others work: the run goes on.
+    open(&mut state, true, false);
+    assert!(working(&state));
+
+    // With every agent done and every card held up, nothing goes on but the wait, set aside or
+    // not.
+    let run = state.runs.get_mut(&run_id(1)).unwrap();
+    for session in run.sessions.values_mut() {
+        session.status = argonauts_tui::state::SessionStatus::Done;
+    }
+    card_state(&mut state, "card-003", CardState::Blocked);
+    card_state(&mut state, "card-004", CardState::Integrated);
+    card_state(&mut state, "card-005", CardState::Waiting);
+    assert!(!working(&state));
+    open(&mut state, true, true);
+    assert!(!working(&state));
+
+    // Gates running for another card are work too.
+    card_state(&mut state, "card-004", CardState::Gating);
+    assert!(working(&state));
+    card_state(&mut state, "card-004", CardState::Integrated);
+
+    // While the policy still decides, something is at work.
+    open(&mut state, false, false);
+    assert!(working(&state));
+
+    // Answered, the run goes on.
+    state.runs.get_mut(&run_id(1)).unwrap().checkpoints.clear();
+    assert!(working(&state));
 }
 
 /// `ViewModel` isn't `Clone`, since history holds cells; these tests only need the bottom.

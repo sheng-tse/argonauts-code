@@ -164,19 +164,30 @@ pub fn start_with(scenario: &Scenario, args: &[&str]) -> anyhow::Result<Pty> {
     Ok(pty)
 }
 
-/// The app said hello and the mode line is up without vim's INSERT label.
+/// The app said hello and the mode line is up without vim's INSERT label, or a card that needs
+/// you has the keys.
 pub fn wait_ready(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
     scenario
         .trace
         .wait_for_event(|event| matches!(event, AppEvent::Welcome { .. }), WAIT)
         .context("waiting for the app's welcome")?;
-    check_mode_line(pty)
+    check_ready(pty)
 }
 
 /// Before typing: the mode line shows, vim's INSERT or NORMAL label doesn't, and nothing looks
 /// like a history search, which could resend old prompts.
 pub fn check_mode_line(pty: &Pty) -> anyhow::Result<()> {
-    let screen = pty.wait_for(r"shift\+tab to cycle", WAIT)?;
+    check_screen_for(pty, r"shift\+tab to cycle")
+}
+
+/// [`check_mode_line`], or a card that needs you holding the keys, as a parked run's question
+/// does when the app opens.
+fn check_ready(pty: &Pty) -> anyhow::Result<()> {
+    check_screen_for(pty, r"shift\+tab to cycle|Enter or a number to answer")
+}
+
+fn check_screen_for(pty: &Pty, ready: &str) -> anyhow::Result<()> {
+    let screen = pty.wait_for(ready, WAIT)?;
     let text = screen.visible_text();
     if text.contains("-- INSERT --") || text.contains("-- NORMAL --") {
         bail!("vim keys are on in the app under test:\n{text}");
@@ -231,6 +242,14 @@ pub fn answer_card(pty: &mut Pty, number: char) -> anyhow::Result<()> {
     pty.wait_for(r"↑ to answer|❯ \d+\. ", WAIT)?;
     pty.press(Key::Up)?;
     pty.press(Key::Char(number))
+}
+
+/// A card that needs you takes the keys once the input is quiet, so a command typed while it
+/// waits needs it set aside first, as you would with Esc.
+pub fn set_card_aside(pty: &mut Pty) -> anyhow::Result<()> {
+    pty.wait_for(r"Enter or a number to answer", WAIT)?;
+    pty.press(Key::Esc)?;
+    pty.wait_for(r"needs you · ↑ to answer", WAIT).map(drop)
 }
 
 /// For Merge, Abandon, and the other options that wait for Enter after their number.

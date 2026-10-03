@@ -3,7 +3,7 @@
 //! read from their names at full verbosity, so nothing is dropped.
 
 use argonauts_core::events::card::CardEvent;
-use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::checkpoint::{CheckpointEvent, PolicyCheck};
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::vendor::{BudgetEvent, VendorEvent};
@@ -208,9 +208,11 @@ fn checkpoint_lines(
                 "card: {id} decided on its own, queued for a spot check"
             )]
         }
-        CheckpointEvent::Checked(check) if full || !check.violations.is_empty() => {
+        CheckpointEvent::Checked(check)
+            if full || !check.violations.is_empty() || auto_left_it(check) =>
+        {
             let mut line = format!("policy: {} checked", check.id);
-            if !check.violations.is_empty() {
+            if !check.violations.is_empty() || auto_left_it(check) {
                 line.push_str(", it waits for you");
             }
             if let Some(reason) = check.reasons.first() {
@@ -220,6 +222,11 @@ fn checkpoint_lines(
         }
         CheckpointEvent::Checked(_) => Vec::new(),
     }
+}
+
+/// Auto couldn't settle a card opened in auto, and the check says why.
+fn auto_left_it(check: &PolicyCheck) -> bool {
+    !check.shadow && check.verdict.is_none() && !check.reasons.is_empty()
 }
 
 fn one_line(text: &str) -> String {

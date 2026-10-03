@@ -374,6 +374,7 @@ pub(crate) mod fixture {
             end: None,
             unknown: Vec::new(),
             doing: Doing::Nothing,
+            stalled: false,
             vendor_session: None,
         }
     }

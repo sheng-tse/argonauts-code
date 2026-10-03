@@ -9,6 +9,6 @@ expression: screen(&view)
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage
 
-  ◐ claude-code  card-002                        2/5 · 4m12s · ↓ 18.1k tokens
-  ◐ codex        card-003                        1/5 · 3m40s · ↓ 12.9k tokens
+  ◐ claude-code  card-002                        2/5  ↓ 18.1k tokens                                              4m12s
+  ◐ codex        card-003                        1/5  ↓ 12.9k tokens                                              3m40s
   ○ agy          review                          waiting
