@@ -91,8 +91,9 @@ impl Repo {
         }
     }
 
+    /// How messages name the project file: by its path from the repo.
     fn project_file(&self) -> String {
-        self.dot().join("config.toml").display().to_string()
+        ".argonauts/config.toml".to_owned()
     }
 
     fn global_file(&self) -> String {

@@ -9,6 +9,7 @@ use time::OffsetDateTime;
 
 use argonauts_core::events::run::Party;
 use argonauts_core::settings::Settings;
+use argonauts_core::text::sentence_case;
 use argonauts_core::views::LearningCommand;
 use argonauts_crew::retro::{action_note, notes};
 use argonauts_learning::Store;
@@ -294,11 +295,7 @@ pub(crate) fn sync_line(report: &SyncReport, store: &Store) -> String {
     } else {
         let mut line = parts.join("; ");
         line.push('.');
-        let mut chars = line.chars();
-        match chars.next() {
-            Some(first) => first.to_uppercase().chain(chars).collect(),
-            None => line,
-        }
+        sentence_case(&line)
     }
 }
 

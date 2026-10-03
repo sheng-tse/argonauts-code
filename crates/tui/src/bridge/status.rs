@@ -74,6 +74,7 @@ pub fn sync(cx: &mut Cx<'_>) {
     bottom.status_line = status_parts(state, wall);
     bottom.enter_sends = enter_sends(state);
     bottom.run_takes_text = run_takes_text(state);
+    bottom.shell_running = state.shell.is_some();
     bottom.exit_note = exit_note(state);
 }
 

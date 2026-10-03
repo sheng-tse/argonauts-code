@@ -236,6 +236,70 @@ fn mention_autocomplete() {
     assert_eq!(mention["text"], "use EVAL for the counter");
 }
 
+fn repo_files(paths: &[&str]) -> argonauts_core::app::AppEvent {
+    app(json!({"type": "repo_files", "paths": paths}))
+}
+
+#[test]
+fn file_mentions_list_the_repo_and_complete() {
+    let script = Script::idle()
+        .at(0, repo_files(&["README.md", "src/main.rs", "src/menu.rs"]))
+        .await_command("request")
+        .at(
+            0,
+            repo_files(&["README.md", "notes.txt", "src/main.rs", "src/menu.rs"]),
+        )
+        .await_command("submit")
+        .timed(chat_turn(
+            "t-001",
+            "@src/main.rs explain it",
+            "It starts the app.",
+            5,
+        ));
+    let mut harness = Harness::start(script);
+    harness.wait_visible(MODE_IDLE);
+    // A fresh `@` reads the files again, so one made since the start is listed.
+    harness.send("@");
+    harness.wait_command_where("request", |c| c["view"]["view"] == "repo_files");
+    let list = harness.wait_visible("^  \\+ notes\\.txt *$");
+    let rule = expect_row(&list, TOP_RULE);
+    assert!(
+        expect_row(&list, "^  \\+ README\\.md *$") > rule,
+        "under the input:\n{}",
+        list.visible_text()
+    );
+    // Files first, ignoring case, then folders.
+    assert_order(&list, &["\\+ notes\\.txt", "\\+ README\\.md", "\\+ src/"]);
+    assert!(
+        row_of(&list, MODE_IDLE).is_none(),
+        "in place of the mode line"
+    );
+
+    harness.send("men");
+    let filtered = harness.wait_gone("^  \\+ notes\\.txt");
+    assert!(
+        row_of(&filtered, "^  \\+ src/menu\\.rs *$").is_some(),
+        "{}",
+        filtered.visible_text()
+    );
+    // Esc closes it, and the next key opens it again.
+    harness.press(Key::Esc);
+    harness.wait_visible(MODE_IDLE);
+    harness.press(Key::Backspace);
+    harness.wait_visible("^  \\+ src/menu\\.rs *$");
+    harness.press_all(&[Key::Backspace, Key::Backspace]);
+    harness.send("main");
+    harness.wait_gone("^  \\+ src/menu\\.rs");
+    harness.wait_visible("^  \\+ src/main\\.rs *$");
+    harness.press(Key::Tab);
+    wait_input(&harness, "❯ @src/main.rs");
+    harness.send("explain it");
+    harness.press(Key::Enter);
+    harness.wait_command_where("submit", |c| c["text"] == "@src/main.rs explain it");
+    harness.wait_visible("It starts the app\\.");
+    harness.assert_no_command("mention");
+}
+
 #[test]
 fn mention_ambiguous_opens_picker() {
     let (_, _, events) = crew_run(4);

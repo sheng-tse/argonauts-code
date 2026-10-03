@@ -7,11 +7,18 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::layout::{self, cells, drawn};
 use super::{Composer, ComposerState, ComposerView, MAX_INPUT_ROWS, ViewState};
 use crate::render::RenderCtx;
+use crate::text::marks;
 use crate::text::{sanitize_line, str_width, truncate_line};
 use crate::theme::Role;
 
 /// Columns before the text on each input row: `❯ ` or two spaces.
 const PROMPT_WIDTH: usize = 2;
+
+/// Shell mode's marker, in place of `❯`.
+pub const SHELL_PROMPT: &str = "!";
+
+/// What the empty input says in shell mode, where Enter runs what you type.
+pub const SHELL_PLACEHOLDER: &str = "Run a shell command in the repo folder";
 
 pub(super) fn render(
     composer: &Composer,
@@ -22,11 +29,21 @@ pub(super) fn render(
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
     let dim = theme.style(Role::Dim);
-    let prompt_style = if focused && !busy {
+    let shell = composer.shell;
+    let prompt_style = if shell {
+        theme.style(Role::Shell)
+    } else if focused && !busy {
         theme.style(Role::Text)
     } else {
         dim
     };
+    let prompt = if shell {
+        SHELL_PROMPT
+    } else {
+        theme.glyphs.prompt
+    };
+    // Shell mode draws both rules in its color, as Claude Code's bash mode does.
+    let rule_style = marks::decoration(theme.style(if shell { Role::Shell } else { Role::Rule }));
     let text = &composer.draft.text;
     let input_width = width.saturating_sub(PROMPT_WIDTH).max(1);
     let rows = layout::rows(text, input_width);
@@ -50,20 +67,24 @@ pub(super) fn render(
     let mut lines = Vec::with_capacity(rows.len().min(MAX_INPUT_ROWS) + 2);
     lines.push(top_rule(
         search.as_deref().or(composer.label.as_deref()),
+        rule_style,
         ctx,
     ));
     for (index, row) in rows.iter().enumerate().skip(scroll).take(MAX_INPUT_ROWS) {
         let prefix = if index == 0 {
-            Span::styled(format!("{} ", theme.glyphs.prompt), prompt_style)
+            marks::decorative(format!("{prompt} "), prompt_style)
         } else {
             Span::raw(" ".repeat(PROMPT_WIDTH))
         };
         let shown = layout::visible(text, *row, input_width);
         let mut spans = vec![prefix];
-        let placeholder = text
-            .is_empty()
-            .then(|| composer.placeholder_for(state))
-            .flatten();
+        let placeholder = if !text.is_empty() {
+            None
+        } else if shell {
+            Some(SHELL_PLACEHOLDER.to_owned())
+        } else {
+            composer.placeholder_for(state)
+        };
         match placeholder {
             Some(placeholder) => spans.extend(placeholder_spans(&placeholder, dim, focused)),
             None if let Some(selection) = &selection => {
@@ -78,7 +99,7 @@ pub(super) fn render(
     }
     lines.push(Line::from(Span::styled(
         theme.glyphs.rule.repeat(width),
-        theme.style(Role::Rule),
+        rule_style,
     )));
 
     let column = PROMPT_WIDTH + cursor_col;
@@ -92,10 +113,9 @@ pub(super) fn render(
     }
 }
 
-fn top_rule(label: Option<&str>, ctx: &RenderCtx<'_>) -> Line<'static> {
+fn top_rule(label: Option<&str>, dim: Style, ctx: &RenderCtx<'_>) -> Line<'static> {
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
-    let dim = theme.style(Role::Rule);
     let rule = theme.glyphs.rule;
     let label = label
         .map(|label| sanitize_line(label).trim().to_owned())

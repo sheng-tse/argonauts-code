@@ -45,13 +45,16 @@ pub(crate) enum Route {
 }
 
 /// For `Submit` and `Mention`. Anything else routes to `Nothing`. `commands` are the main
-/// agent's own, which `/` also takes.
+/// agent's own, which `/` also takes. Text that `leads_with_file`, such as `@README.md what
+/// is this?`, is about that file, so it isn't a mention.
 pub(crate) fn route(
     mode: &AppMode,
     command: UiCommand,
     commands: Option<&VendorCommandSet>,
+    leads_with_file: impl Fn(&str) -> bool,
 ) -> Route {
     match command {
+        UiCommand::Submit { text } if leads_with_file(&text) => plain(mode, text.trim().to_owned()),
         UiCommand::Submit { text } => submitted(mode, &text, commands),
         UiCommand::Mention { target, text } => mention(mode, target, text),
         _ => Route::Nothing,
@@ -117,6 +120,10 @@ mod tests {
 
     fn run() -> RunId {
         RunId::new("run-001").unwrap()
+    }
+
+    fn route(mode: &AppMode, command: UiCommand, commands: Option<&VendorCommandSet>) -> Route {
+        super::route(mode, command, commands, |_| false)
     }
 
     fn submit(text: &str) -> UiCommand {
@@ -223,6 +230,30 @@ mod tests {
                 text: "mail me@example.com".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn text_led_by_a_file_is_a_message_about_it_not_a_mention() {
+        let names_readme = |text: &str| text.trim_start().starts_with("@README.md");
+        let text = " @README.md what is this? ";
+        assert_eq!(
+            super::route(&AppMode::Idle, submit(text), None, names_readme),
+            Route::NewRequest {
+                text: "@README.md what is this?".to_owned()
+            }
+        );
+        let working = AppMode::Working { run: run() };
+        assert_eq!(
+            super::route(&working, submit(text), None, names_readme),
+            Route::Guidance {
+                run: run(),
+                text: "@README.md what is this?".to_owned()
+            }
+        );
+        assert!(matches!(
+            super::route(&working, submit("@codex look"), None, names_readme),
+            Route::Mention { .. }
+        ));
     }
 
     #[test]

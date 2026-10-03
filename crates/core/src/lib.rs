@@ -40,6 +40,7 @@ pub mod sanitize;
 pub mod session;
 pub mod settings;
 pub mod steps;
+pub mod text;
 pub mod vendor_commands;
 pub mod vendor_sessions;
 pub mod views;

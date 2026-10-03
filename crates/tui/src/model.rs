@@ -10,9 +10,9 @@ pub use crate::bottom::{
 };
 pub use crate::cell::{
     AgentReady, AgentsStarted, AssistantMessage, Cell, CollapsedGroup, DiffCell, DiffHunk,
-    DiffKind, DiffLine, DiffView, ExitNote, Notice, Recap, SessionHeader, StartedAgent, Todo,
-    TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolState, ToolStats, ToolTitle, TurnEnd,
-    UserMessage,
+    DiffKind, DiffLine, DiffView, ExitNote, Notice, Recap, SessionHeader, ShellEnd, ShellRun,
+    StartedAgent, Todo, TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolState, ToolStats,
+    ToolTitle, TurnEnd, UserMessage,
 };
 pub use crate::format::ClockTime;
 pub use crate::history::{CellId, History, LiveBlock};

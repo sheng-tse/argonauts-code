@@ -14,8 +14,8 @@ const HEADER: &str = r"Argonauts v\d";
 const SHELL_LINE: &str = "$ argonauts";
 const ENTER: &str = "\x1b[?1049h";
 const LEAVE: &str = "\x1b[?1049l";
-const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const BELOW: &str = r"rows? below · pgdn to scroll$";
 const WHEEL_UP: &str = "\x1b[<64;10;5M";
 const WHEEL_DOWN: &str = "\x1b[<65;10;5M";
@@ -422,4 +422,75 @@ fn the_frame_holds_at_every_width_while_scrolled() {
         let rule = expect_row(&screen, TOP_RULE);
         assert_eq!(width(&screen.visible[rule]), usize::from(cols));
     }
+}
+
+/// Standard base64 with padding, as OSC 52 carries it.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let at = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
+        let n = (at(0) << 16) | (at(1) << 8) | at(2);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_drag_copies_the_text_through_the_terminal_and_the_system() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Stand-ins for the system's copy commands, so the test never touches the real clipboard.
+    let fake = tempfile::tempdir().unwrap();
+    let clipboard = fake.path().join("clipboard.txt");
+    for name in ["pbcopy", "wl-copy", "xclip"] {
+        let tool = fake.path().join(name);
+        let body = format!("#!/bin/sh\ncat > '{}'\n", clipboard.display());
+        std::fs::write(&tool, body).unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake.path().to_path_buf()).chain(std::env::split_paths(&inherited)),
+    )
+    .unwrap();
+
+    let answer = "First line of the answer.\n\n- one\n- two";
+    let script = Script::idle()
+        .await_command("submit")
+        .timed(chat_turn("t-001", "hi", answer, 5));
+    let mut harness = Harness::launch(script).env("PATH", path).start();
+    harness.wait_visible(MODE_IDLE);
+    harness.submit("hi");
+    let screen = harness.wait_visible("- two");
+    let first = expect_row(&screen, "First line of the answer");
+    let last = expect_row(&screen, "- two");
+
+    // SGR reports count from 1: press on the answer's first letter, drag, and let go.
+    harness.send(&format!("\x1b[<0;3;{}M", first + 1));
+    harness.send(&format!("\x1b[<32;6;{}M", first + 2));
+    harness.send(&format!("\x1b[<32;9;{}M", last + 1));
+    harness.send(&format!("\x1b[<0;9;{}m", last + 1));
+    harness.wait_visible("Copied");
+    harness.shot("copied");
+    assert_eq!(std::fs::read_to_string(&clipboard).unwrap(), answer);
+    let osc52 = format!("\x1b]52;c;{}\x07", base64(answer.as_bytes()));
+    assert!(
+        raw_text(&harness).contains(&osc52),
+        "OSC 52 carries the text"
+    );
+
+    // A click selects nothing and copies nothing.
+    std::fs::remove_file(&clipboard).unwrap();
+    harness.send(&format!("\x1b[<0;3;{}M", first + 1));
+    harness.send(&format!("\x1b[<0;3;{}m", first + 1));
+    // Keys come in order, so once this is sent the click was taken.
+    harness.submit("still here");
+    assert!(!clipboard.exists());
 }

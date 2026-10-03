@@ -79,7 +79,10 @@ fn a_call_reads_like_claude_code() {
         text(&lines),
         "● Workflow(Add a --json flag to the export command, then\n          cover it with tests)\n  ⎿  Running in background · /workflows to monitor (/config)"
     );
-    assert_eq!(lines[0].spans[0].style, theme.style(Role::Success));
+    assert_eq!(
+        lines[0].spans[0].style,
+        crate::text::marks::decoration(theme.style(Role::Success))
+    );
     assert!(
         lines[0].spans[2]
             .style
@@ -109,7 +112,15 @@ fn the_bullet_carries_the_state() {
     let still = ctx(&theme, 40);
     let bullet = |call: &ToolCall, ctx: &RenderCtx<'_>| {
         let span = call.lines(ctx)[0].spans[0].clone();
-        (span.content.into_owned(), span.style)
+        assert_eq!(
+            span.style,
+            crate::text::marks::decoration(span.style),
+            "the bullet only decorates"
+        );
+        (
+            span.content.into_owned(),
+            crate::text::marks::unmarked(span.style),
+        )
     };
     let dim = theme.style(Role::Dim);
     let running = ToolCall::call(ToolKind::Shell, "Bash", "ls");

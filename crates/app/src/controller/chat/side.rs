@@ -57,7 +57,7 @@ pub(crate) fn btw(
         return Ok(Vec::new());
     }
     if chat.turn.is_some() {
-        chat.queued.push_back(Queued::Side(question));
+        chat.queue(Queued::Side(question));
         return Ok(Vec::new());
     }
     begin_side(ctx, chat, question, TurnStep::Side)?;

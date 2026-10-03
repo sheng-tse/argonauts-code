@@ -8,6 +8,7 @@ use anyhow::Context as _;
 use argonauts_core::layout::repo_state;
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::sha256_hex;
+use argonauts_registry::SettingsError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +87,20 @@ impl TrustStore {
         }
         write_private_file(&self.path, &text)
             .with_context(|| format!("writing {}", self.path.display()))
+    }
+}
+
+/// Why a file can't be trusted: its safety settings, once they apply, don't resolve. Said in
+/// place of the trust question, and never alongside "stays untrusted".
+pub(crate) fn cant_trust(shown: &str, err: &SettingsError) -> String {
+    match err {
+        SettingsError::Invalid { layer, message } if layer == shown => {
+            format!("{shown} needs a fix before you can trust it: {message}")
+        }
+        SettingsError::Invalid { layer, message } => {
+            format!("{shown} can't be trusted until {layer} is fixed: {message}")
+        }
+        other => format!("{shown} can't be trusted: {other}"),
     }
 }
 

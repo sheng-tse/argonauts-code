@@ -286,11 +286,11 @@ fn preset_rows(ctx: &Ctx) -> Vec<SettingRow> {
         .map(|preset| {
             let description = match (preset.description.is_empty(), preset.source.as_str()) {
                 (_, "built-in") => preset.description,
-                (true, source) => format!("From {}", ctx.env.display(Path::new(source))),
+                (true, source) => format!("From {}", ctx.env.shown(Path::new(source))),
                 (false, source) => format!(
                     "{} (from {})",
                     preset.description,
-                    ctx.env.display(Path::new(source))
+                    ctx.env.shown(Path::new(source))
                 ),
             };
             SettingRow {
@@ -333,7 +333,7 @@ fn workflow_rows(ctx: &Ctx) -> Vec<SettingRow> {
             let from = if info.source == "built-in" {
                 "Built in".to_owned()
             } else {
-                format!("From {}", ctx.env.display(Path::new(&info.source)))
+                format!("From {}", ctx.env.shown(Path::new(&info.source)))
             };
             let description = if info.description.is_empty() {
                 from

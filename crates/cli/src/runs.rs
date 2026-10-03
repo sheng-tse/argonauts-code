@@ -146,7 +146,8 @@ pub async fn inbox() -> anyhow::Result<ExitCode> {
     // Learning's proposals wait too; a repo whose learning files can't be read still lists
     // its runs.
     let proposals = argonauts_app::learning_inbox(None).unwrap_or_else(|err| {
-        eprintln!("argonauts: learning's proposals couldn't be read: {err:#}");
+        let err = sanitize_for_terminal(&format!("{err:#}"));
+        eprintln!("argonauts: learning's proposals couldn't be read: {err}");
         Vec::new()
     });
     if runs.is_empty() && proposals.is_empty() {

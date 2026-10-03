@@ -91,6 +91,7 @@ impl InputRouter {
             AppEvent::VendorCommands { set } => {
                 cx.model.bottom.menus.commands = command_items(Some(set));
             }
+            AppEvent::RepoFiles { paths } => cx.model.bottom.menus.set_files(paths),
             AppEvent::Attached { .. } | AppEvent::Detached { .. } | AppEvent::Run { .. } => {
                 let mentions = mentions::candidates(cx.state);
                 if cx.model.bottom.menus.mentions != mentions {
@@ -107,6 +108,7 @@ impl InputRouter {
         self.prepare_with(cx);
         match action {
             UiAction::Submit { text, shown } => self.submit(text, shown, cx),
+            UiAction::Shell { command } => self.shell(command, cx),
             UiAction::TakeBack(_) => take_back(cx),
             UiAction::OpenHelp => open_help(cx),
             _ => return false,
@@ -144,6 +146,9 @@ impl InputRouter {
         match parsed {
             Ok(ParsedInput::Empty) => empty_enter(cx),
             Ok(ParsedInput::Plain { text }) => plain(text, shown, cx),
+            Ok(ParsedInput::Mention { .. }) if cx.model.bottom.menus.leads_with_file(text) => {
+                plain(text.trim().to_owned(), shown, cx);
+            }
             Ok(ParsedInput::Mention {
                 target,
                 text: message,
@@ -154,6 +159,16 @@ impl InputRouter {
                 give_back(text, cx);
             }
         }
+    }
+
+    /// Saved with its `!`, so ↑ in a later session brings it back in shell mode.
+    fn shell(&mut self, command: &str, cx: &mut Cx<'_>) {
+        if let Err(error) = self.history.append(&format!("!{command}")) {
+            notice(cx, error.to_string(), Tone::Error);
+        }
+        cx.out.send(UiCommand::Shell {
+            command: command.to_owned(),
+        });
     }
 }
 
@@ -646,6 +661,38 @@ mod tests {
     }
 
     #[test]
+    fn a_message_led_by_a_repo_file_goes_as_plain_text() {
+        let files = AppEvent::RepoFiles {
+            paths: vec!["README.md".into(), "src/lib.rs".into()],
+        };
+        let mut idle = Screen::idle();
+        idle.event(files.clone());
+        let out = idle.submit("@README.md what is this?");
+        assert_eq!(
+            out.commands,
+            [UiCommand::Submit {
+                text: "@README.md what is this?".into()
+            }]
+        );
+        assert_eq!(idle.notice(), None);
+        assert!(idle.model.bottom.menus.is_open("@sr"));
+
+        // In a run, it's guidance for everyone, and an agent's name is still a mention.
+        let mut screen = Screen::new(fixture::working_state());
+        screen.event(files);
+        assert_eq!(
+            screen.submit("@src/ keep the API").commands,
+            [UiCommand::Submit {
+                text: "@src/ keep the API".into()
+            }]
+        );
+        assert!(matches!(
+            screen.submit("@claude-code see @README.md").commands[..],
+            [UiCommand::Mention { .. }]
+        ));
+    }
+
+    #[test]
     fn ambiguous_mention_opens_a_picker() {
         let mut screen = Screen::new(fixture::working_state());
         let out = screen.submit("@codex rebase first");
@@ -761,6 +808,39 @@ mod tests {
         screen.submit("/status");
         let saved = std::fs::read_to_string(&file).unwrap();
         assert_eq!(saved, "\"older prompt\"\n\"/status\"\n");
+    }
+
+    #[test]
+    fn a_shell_command_goes_to_the_app_and_history_keeps_its_bang() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("history.jsonl");
+        let options = UiOptions {
+            history_file: Some(file.clone()),
+            ..UiOptions::default()
+        };
+        // Whatever the mode, a run going or not, the command is yours to run.
+        let mut screen = Screen::new(fixture::working_state());
+        screen.router = InputRouter::new(&options);
+        let out = screen.act(UiAction::Shell {
+            command: "git status".into(),
+        });
+        assert_eq!(
+            out.commands,
+            [UiCommand::Shell {
+                command: "git status".into()
+            }]
+        );
+        assert_eq!(
+            screen.model.history.active_cells().count(),
+            0,
+            "the app echoes it once it starts"
+        );
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(saved, "\"!git status\"\n");
+        let mut later = Screen::idle();
+        later.router = InputRouter::new(&options);
+        later.router.prepare(&mut later.model.bottom);
+        assert_eq!(later.model.bottom.composer.history(), ["!git status"]);
     }
 
     #[test]

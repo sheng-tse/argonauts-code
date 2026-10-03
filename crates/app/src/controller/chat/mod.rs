@@ -17,6 +17,8 @@ mod copies;
 mod crew;
 mod excerpt;
 mod lifecycle;
+#[cfg(test)]
+mod mention_tests;
 mod offer;
 mod past;
 mod prefs;
@@ -60,6 +62,7 @@ use self::prefs::{Goal, Prefs};
 pub(crate) use self::prefs::{fast, goal, goal_run_started, output_style, plan};
 pub(crate) use self::side::{btw, compact, recap, rename, review};
 use super::recap::{mode_name, title_from_request};
+use super::shell::ShellRan;
 use super::turn::TurnStep;
 use super::{Ctx, Effect};
 use crate::chat_store::{ChatSession, ChatStore};
@@ -74,10 +77,19 @@ pub(crate) struct ChatState {
     /// Cancelled turns whose step hasn't ended yet. Their vendor process may still write the
     /// session, so no turn resumes it meanwhile.
     stopping: Vec<TurnId>,
-    /// Typed while a turn ran, oldest first. Each is sent once the turn ends.
-    queued: VecDeque<Queued>,
+    /// Typed while a turn ran, oldest first, each with the last `!` command that had ended by
+    /// then. Each is sent once the turn ends.
+    queued: VecDeque<(Queued, u32)>,
     /// Open `StartWork` questions.
     offers: HashMap<ChoiceId, Offer>,
+    /// `!` commands run since the lead's last turn, oldest first. Your next message takes
+    /// them: to the lead, or to the run going.
+    ran: Vec<ShellRan>,
+    /// The id of the last `!` command that ended.
+    last_shell: u32,
+    /// While a message typed during a turn goes out, the last command that had ended when you
+    /// typed it. Commands that ended later wait for your next message.
+    shell_cutoff: Option<u32>,
     /// Each request and its answer, for priming a fresh session.
     history: Vec<Exchange>,
     session: Option<ChatSession>,
@@ -107,6 +119,8 @@ struct Turn {
     run_began: bool,
     /// `/plan <task>`: a run it starts plans first and waits for you.
     plan_first: bool,
+    /// The `!` commands this turn took, back for a fallback's try.
+    ran: Vec<ShellRan>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +162,9 @@ impl ChatState {
             stopping: Vec::new(),
             queued: VecDeque::new(),
             offers: HashMap::new(),
+            ran: Vec::new(),
+            last_shell: 0,
+            shell_cutoff: None,
             history: Vec::new(),
             session: None,
             carried_model: None,
@@ -180,6 +197,9 @@ impl ChatState {
             stopping: Vec::new(),
             queued: VecDeque::new(),
             offers: HashMap::new(),
+            ran: Vec::new(),
+            last_shell: 0,
+            shell_cutoff: None,
             history,
             session,
             carried_model: None,
@@ -212,7 +232,15 @@ impl ChatState {
     fn succeed(&mut self, mut next: ChatState) {
         next.offers = std::mem::take(&mut self.offers);
         next.prefs = self.prefs.clone();
+        next.last_shell = self.last_shell;
         *self = next;
+    }
+
+    /// Typed while a turn runs, to go out once it ends. A message typed again as it goes out
+    /// keeps the commands it was typed after.
+    fn queue(&mut self, queued: Queued) {
+        let after = self.shell_cutoff.unwrap_or(self.last_shell);
+        self.queued.push_back((queued, after));
     }
 }
 
@@ -399,6 +427,41 @@ pub(crate) fn run_attached(chat: &mut ChatState) {
     }
 }
 
+/// A `!` command ended. The lead hears of it with your next message, never by itself.
+pub(crate) fn shell_ran(chat: &mut ChatState, ran: ShellRan) {
+    chat.last_shell = ran.id;
+    super::shell::hold(&mut chat.ran, ran);
+}
+
+/// The commands the message going out now hears of. One typed while a turn ran hears only of
+/// those that had ended when you typed it.
+pub(crate) fn take_shell(chat: &mut ChatState) -> Vec<ShellRan> {
+    match chat.shell_cutoff {
+        None => std::mem::take(&mut chat.ran),
+        Some(cutoff) => {
+            let (heard, later) = chat.ran.drain(..).partition(|ran| ran.id <= cutoff);
+            chat.ran = later;
+            heard
+        }
+    }
+}
+
+/// Commands a message took but couldn't deliver wait for the next one.
+pub(crate) fn give_back_shell(chat: &mut ChatState, ran: Vec<ShellRan>) {
+    chat.ran.splice(0..0, ran);
+}
+
+/// A message typed during a turn goes out now, or has gone: `typed_after` is the last
+/// command that had ended when you typed it.
+pub(crate) fn sending_queued(chat: &mut ChatState, typed_after: Option<u32>) {
+    chat.shell_cutoff = typed_after;
+}
+
+/// The commands you ran before a run started were for the conversation, not the run.
+pub(crate) fn run_started(chat: &mut ChatState) {
+    chat.ran.clear();
+}
+
 /// The chat session's row for `/context`.
 pub(crate) fn context_row(chat: &ChatState) -> Option<ContextRow> {
     chat.context.clone()
@@ -429,7 +492,7 @@ fn request(ctx: &mut Ctx, chat: &mut ChatState, text: String) -> anyhow::Result<
         return Ok(Vec::new());
     }
     if chat.turn.is_some() {
-        chat.queued.push_back(Queued::Request(text));
+        chat.queue(Queued::Request(text));
         return Ok(Vec::new());
     }
     let effects = name_the_chat(chat, &text);
@@ -446,7 +509,7 @@ fn request_planned(
     text: String,
 ) -> anyhow::Result<Vec<Effect>> {
     if chat.turn.is_some() {
-        chat.queued.push_back(Queued::Plan(text));
+        chat.queue(Queued::Plan(text));
         return Ok(Vec::new());
     }
     let effects = request(ctx, chat, text)?;
@@ -468,7 +531,7 @@ pub(crate) async fn ask(
         return Ok(Vec::new());
     }
     if chat.turn.is_some() {
-        chat.queued.push_back(Queued::Ask(question));
+        chat.queue(Queued::Ask(question));
         return Ok(Vec::new());
     }
     let run_status = run_status(ctx).await;
@@ -487,7 +550,7 @@ pub(crate) fn vendor_command(
     prompt: String,
 ) -> anyhow::Result<Vec<Effect>> {
     if chat.turn.is_some() {
-        chat.queued.push_back(Queued::Vendor {
+        chat.queue(Queued::Vendor {
             name: command.name.clone(),
             args: args.trim().to_owned(),
         });
@@ -534,7 +597,7 @@ pub(crate) fn cancel_turn(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result
     let texts: Vec<String> = chat
         .queued
         .drain(..)
-        .map(|queued| match queued {
+        .map(|(queued, _)| match queued {
             Queued::Request(text) => text,
             Queued::Ask(question) => format!("/ask {question}"),
             Queued::Vendor { name, args } if args.is_empty() => format!("/{name}"),
@@ -669,7 +732,7 @@ fn settle_mode(ctx: &mut Ctx, turn: &TurnId) {
 fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
     chat.queued
         .drain(..)
-        .map(|queued| {
+        .map(|(queued, typed_after)| {
             let command = match queued {
                 Queued::Request(text) => UiCommand::Submit { text },
                 Queued::Ask(question) => UiCommand::Slash {
@@ -687,7 +750,10 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
                     command: SlashCommand::Plan { task: Some(task) },
                 },
             };
-            Effect::Input(Box::new(command))
+            Effect::Queued {
+                command: Box::new(command),
+                typed_after,
+            }
         })
         .collect()
 }

@@ -225,7 +225,7 @@ fn write_file(
     if let Err(restore) = restored {
         err = err.context(format!(
             "and putting {} back failed: {restore}",
-            file.display()
+            ctx.env.shown(file)
         ));
     }
     if let Err(restore) = trust_restored {
@@ -248,7 +248,7 @@ fn write_and_reload(
         }
         Change::Reset(key) => {
             if !remove_setting(file, key)? {
-                anyhow::bail!("{key} isn't set in {}", ctx.env.display(file));
+                anyhow::bail!("{key} isn't set in {}", ctx.env.shown(file));
             }
         }
     }

@@ -2,6 +2,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::marks::{self, Join};
 use super::width::{ambiguous_width, spans_width, str_width};
 
 /// Wraps `spans` to `width` columns. The first row starts with `first` and later rows with
@@ -54,8 +55,13 @@ fn wrap_tokens(
                 } else if rows.used == 0 {
                     rows.push_split(token);
                 } else {
-                    rows.end_row();
-                    pending_space = None;
+                    // A break at a space drops the space, which a copy puts back.
+                    let join = if pending_space.take().is_some() {
+                        Join::Space
+                    } else {
+                        Join::Direct
+                    };
+                    rows.break_row(join);
                     if token.width <= rows.avail() {
                         rows.push(token);
                     } else {
@@ -121,6 +127,9 @@ pub fn hard_wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Vec<Span<'static
         }
     }
     rows.push(row);
+    for row in rows.iter_mut().skip(1) {
+        marks::continues(row, Join::Direct);
+    }
     rows
 }
 
@@ -170,6 +179,9 @@ pub fn wrap_code_spans(spans: &[Span<'_>], width: usize) -> Vec<Vec<Span<'static
         i += 1;
     }
     rows.push(styled_row(&cells[start..]));
+    for row in rows.iter_mut().skip(1) {
+        marks::continues(row, Join::Direct);
+    }
     rows
 }
 
@@ -391,6 +403,8 @@ struct Rows<'p> {
     lines: Vec<Line<'static>>,
     row: Vec<Span<'static>>,
     used: usize,
+    /// How the row being filled goes on from the one above.
+    join: Join,
 }
 
 impl<'p> Rows<'p> {
@@ -402,6 +416,7 @@ impl<'p> Rows<'p> {
             lines: Vec::new(),
             row: Vec::new(),
             used: 0,
+            join: Join::NewLine,
         }
     }
 
@@ -419,10 +434,18 @@ impl<'p> Rows<'p> {
     }
 
     fn end_row(&mut self) {
+        marks::continues(&mut self.row, self.join);
         let mut spans = self.prefix().to_vec();
         spans.append(&mut self.row);
         self.lines.push(Line::from(spans));
         self.used = 0;
+        self.join = Join::NewLine;
+    }
+
+    /// Ends the row where the line goes on in the next one.
+    fn break_row(&mut self, join: Join) {
+        self.end_row();
+        self.join = join;
     }
 
     fn push_text(&mut self, text: &str, style: Style) {
@@ -458,7 +481,7 @@ impl<'p> Rows<'p> {
             for grapheme in text.graphemes(true) {
                 let w = str_width(grapheme);
                 if self.used > 0 && self.used + w > self.avail() {
-                    self.end_row();
+                    self.break_row(Join::Direct);
                 }
                 self.push_text(grapheme, *style);
                 self.used += w;
@@ -543,7 +566,10 @@ mod tests {
         let spans = [Span::raw("plain "), "bold".bold(), Span::raw(" tail")];
         let lines = wrap_spans(&spans, 8, &[], &[]);
         assert_eq!(plain_text(&lines), "plain\nbold\ntail");
-        assert_eq!(lines[1].spans[0].style, Style::new().bold());
+        assert_eq!(
+            marks::unmarked(lines[1].spans[0].style),
+            Style::new().bold()
+        );
     }
 
     #[test]

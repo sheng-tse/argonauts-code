@@ -128,6 +128,30 @@ fn config_show_prints_the_settings_as_toml() {
     assert_eq!(table["ui"]["bell"].as_bool(), Some(false));
 }
 
+/// A repo you haven't trusted can't reach your terminal through an error about its file,
+/// which prints before any screen opens.
+#[test]
+fn a_config_that_wont_parse_prints_its_escapes_written_out() {
+    let repo = TempRepo::new().unwrap();
+    let escapes = "\u{1b}]52;c;cHduZWQ=\u{7} \u{1b}]0;owned\u{7}";
+    for text in [
+        format!("[ui]\n# {escapes}\nbell = true\n"),
+        format!("[ui]\ntheme = \"{escapes}\"\n"),
+    ] {
+        repo.write(".argonauts/config.toml", &text).unwrap();
+        let output = argonauts(&repo, repo.root(), &["config", "show"]);
+        assert!(!output.status.success(), "{}", describe(&output));
+        assert!(
+            !output.stderr.contains(&0x1b) && !output.stderr.contains(&0x07),
+            "{:?}",
+            stderr(&output)
+        );
+        let err = stderr(&output);
+        assert!(err.contains(".argonauts/config.toml"), "{err}");
+        assert!(err.contains("\\u{1b}]0;owned\\u{7}"), "{err}");
+    }
+}
+
 #[test]
 fn a_bad_set_is_a_usage_error() {
     let repo = TempRepo::new().unwrap();
@@ -185,6 +209,58 @@ fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
     assert!(repo.home().join("presets").is_dir());
     let stray = repo.user_home().join(".argonauts");
     assert!(!stray.exists(), "{} was written", stray.display());
+}
+
+/// The real app sends the repo's files to the screen, so `@` lists them, ignored ones left out,
+/// and Tab completes one into the input.
+#[test]
+fn at_lists_the_repos_files_and_completes_one() {
+    let repo = TempRepo::new().unwrap();
+    repo.write(".gitignore", "secret.env\n").unwrap();
+    repo.write("README.md", "# Demo\n").unwrap();
+    repo.write("src/main.rs", "fn main() {}\n").unwrap();
+    repo.commit_all("start").unwrap();
+    repo.write("notes.txt", "untracked\n").unwrap();
+    repo.write("secret.env", "TOKEN=shh\n").unwrap();
+    let bin = repo.scratch().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(real_git(), bin.join("git")).unwrap();
+    // Answers every call with its version, so nothing can reach a vendor.
+    script(&bin, "claude", "echo '2.1.284 (Claude Code)'");
+    let command = PtyCommand::new(env!("CARGO_BIN_EXE_argonauts"))
+        .cwd(repo.root())
+        .envs(repo.envs())
+        .env("PATH", bin.clone().into_os_string())
+        .env_remove("ARGONAUTS_SESSION")
+        .env_remove("ARGONAUTS_LOG")
+        .size(34, 100);
+    let mut pty = Pty::spawn(command).unwrap();
+    let wait = Duration::from_secs(30);
+    pty.wait_for(r"Welcome to Argonauts(.|\n)*Continue \(recommended\)", wait)
+        .unwrap();
+    pty.press(Key::Up).unwrap();
+    pty.wait_for(r"Esc to take the recommended answers", wait)
+        .unwrap();
+    pty.press(Key::Esc).unwrap();
+    pty.wait_for(r"/setup \(or argonauts init\) walks through", wait)
+        .unwrap();
+
+    pty.send("@").unwrap();
+    let list = pty
+        .wait_for(r"(?m)^  \+ notes\.txt *$(.|\n)*^  \+ src/ *$", wait)
+        .unwrap();
+    let shown = list.visible_text();
+    assert!(shown.contains("  + README.md"), "{shown}");
+    assert!(!shown.contains("secret.env"), "ignored:\n{shown}");
+    pty.send("main").unwrap();
+    pty.wait_for(r"(?m)^  \+ src/main\.rs *$", wait).unwrap();
+    pty.press(Key::Tab).unwrap();
+    pty.wait_for(r"(?m)^❯ @src/main\.rs *$", wait).unwrap();
+
+    pty.press(Key::Ctrl('c')).unwrap();
+    pty.press(Key::Ctrl('d')).unwrap();
+    pty.press(Key::Ctrl('d')).unwrap();
+    pty.wait_for_exit(wait).unwrap();
 }
 
 #[test]

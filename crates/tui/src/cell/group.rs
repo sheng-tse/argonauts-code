@@ -326,7 +326,8 @@ mod tests {
             plain_text(&lines),
             "● Reading 1 file, running 1 shell command…\n  ⎿  $ ls src"
         );
-        assert_eq!(lines[0].spans[0].style, theme.style(Role::Dim));
+        let bullet = crate::text::marks::decoration(theme.style(Role::Dim));
+        assert_eq!(lines[0].spans[0].style, bullet);
         assert_eq!(lines[0].spans[2].style, theme.style(Role::Text));
         assert_eq!(lines[1].spans.last().unwrap().style, theme.style(Role::Dim));
         let nested = group.render(&ctx, 5);

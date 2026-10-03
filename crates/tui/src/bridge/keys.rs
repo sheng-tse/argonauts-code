@@ -28,8 +28,8 @@ pub struct KeyActions {}
 impl KeyActions {
     /// Takes `Interrupt` (CancelTurn, then Pause, then Pause now, by the app mode), `ModeChanged`,
     /// `Focus`, `Quit`, `OpenCrewView`, `OpenAgent`, `OpenTree`, `OpenWorkflow`, `Follow`,
-    /// `OpenHelp`, `EditDraft`, `Command`, `Request`, `Notice`, `Picker`, `StopAgent`, and
-    /// `StopRun`. The panel already asked for the stop with its first `x`.
+    /// `OpenHelp`, `EditDraft`, `Command`, `Request`, `Notice`, `Copy`, `Picker`, `StopAgent`,
+    /// and `StopRun`. The panel already asked for the stop with its first `x`.
     pub fn on_action(&mut self, action: &UiAction, cx: &mut Cx<'_>) -> bool {
         match action {
             UiAction::Interrupt => interrupt(cx),
@@ -83,6 +83,10 @@ impl KeyActions {
             UiAction::Command(command) => cx.out.send(command.clone()),
             UiAction::Request(view) => cx.out.send(UiCommand::Request { view: view.clone() }),
             UiAction::Notice(text) => notice(text, cx),
+            UiAction::Copy(text) => {
+                cx.out.clipboard = Some(text.clone());
+                notice("Copied", cx);
+            }
             UiAction::Picker(event) => crate::views::settings::on_picker(event, cx),
             _ => return false,
         }
@@ -304,6 +308,14 @@ mod tests {
 
     fn run_id() -> RunId {
         RunId::new("run-01").unwrap()
+    }
+
+    #[test]
+    fn a_selection_goes_to_the_clipboard_with_a_short_notice() {
+        let (out, model) = act(&AppState::default(), &UiAction::Copy("a word".into()));
+        assert_eq!(out.clipboard.as_deref(), Some("a word"));
+        let notice = model.bottom.mode.notice.expect("a notice");
+        assert_eq!(notice.text, "Copied");
     }
 
     #[test]

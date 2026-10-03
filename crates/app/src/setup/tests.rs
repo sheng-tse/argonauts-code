@@ -624,3 +624,47 @@ async fn guided_setup_trusts_the_folder_only_when_asked() {
     let project = fixture.ctx.env.project_config();
     assert!(fixture.ctx.settings.trust().was_trusted(&project));
 }
+
+#[tokio::test]
+async fn guided_setup_leaves_a_file_that_needs_a_fix_untrusted_and_says_what_to_fix() {
+    let mut fixture = Fixture::prepared(true, |repo| {
+        repo.write(".argonauts/config.toml", "[ui]\nbell = false\n")
+            .unwrap();
+        repo.write(
+            ".argonauts/config.local.toml",
+            "[gates]\nrun = [\"cargo test\"]\n",
+        )
+        .unwrap();
+    });
+    let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    let (_, seen) = answer_all(&mut fixture, &mut setup, effects, |choice| {
+        if choice
+            .body
+            .iter()
+            .any(|line| line.contains("settings files"))
+        {
+            choice.options[1].action.clone()
+        } else {
+            enter(choice)
+        }
+    })
+    .await;
+    let project = fixture.ctx.env.project_config();
+    let local = fixture.ctx.env.project_local_config();
+    assert!(fixture.ctx.settings.trust().was_trusted(&project));
+    assert!(!fixture.ctx.settings.trust().was_trusted(&local));
+    let notices = notices(&seen);
+    assert!(
+        notices.iter().any(|notice| notice.starts_with(
+            ".argonauts/config.local.toml needs a fix before you can trust it: gates.run can't \
+             be a list of strings"
+        )),
+        "{notices:#?}"
+    );
+    assert!(
+        notices
+            .iter()
+            .all(|notice| !notice.contains("invalid type")),
+        "{notices:#?}"
+    );
+}

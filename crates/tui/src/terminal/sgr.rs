@@ -37,6 +37,8 @@ impl Pen {
         bg: Color,
         modifier: Modifier,
     ) -> io::Result<()> {
+        // The copy marks ride on the modifiers, and mean nothing to a terminal.
+        let modifier = crate::text::marks::drawn(modifier);
         if modifier != self.modifier {
             queue_modifier_change(writer, self.modifier, modifier)?;
             self.modifier = modifier;

@@ -1244,3 +1244,43 @@ fn the_finish_line_says_what_the_merge_card_said() {
     assert!(finished.contains(&spent), "{printed}");
     assert!(finished.contains("$0.26"), "{printed}");
 }
+
+#[test]
+fn a_shell_command_runs_live_and_prints_once_it_ends() {
+    use argonauts_core::app::ShellEvent;
+
+    let shell = |event| AppEvent::Shell { event };
+    let mut h = Harness::new();
+    h.send(shell(ShellEvent::Started {
+        id: 1,
+        command: "echo hi".into(),
+    }));
+    assert_eq!(h.printed(), "", "it runs in the live region");
+    assert_eq!(h.model.history.active_cells().count(), 1);
+    h.send(shell(ShellEvent::Output {
+        id: 1,
+        text: "hi\n".into(),
+    }));
+    h.send(shell(ShellEvent::Output {
+        id: 2,
+        text: "another command's\n".into(),
+    }));
+    h.send(shell(ShellEvent::Finished {
+        id: 1,
+        exit_code: Some(0),
+        stopped: false,
+    }));
+    assert_eq!(h.model.history.active_cells().count(), 0);
+    assert_eq!(h.printed(), "! echo hi\n  ⎿  hi");
+
+    h.send(shell(ShellEvent::Started {
+        id: 2,
+        command: "sleep 25".into(),
+    }));
+    h.send(shell(ShellEvent::Finished {
+        id: 2,
+        exit_code: None,
+        stopped: true,
+    }));
+    assert_eq!(h.printed(), "\n! sleep 25\n  ⎿  Stopped");
+}

@@ -36,12 +36,12 @@ use argonauts_core::names::{ChoiceId, RoleName, WorkerRef};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::ui::NarratorMode;
 use argonauts_core::{KeyScheme, NoteLevel, Verbosity};
-use argonauts_registry::{safety_keys_in, setting_meta};
+use argonauts_registry::{SettingsError, safety_keys_in, setting_meta};
 
 use super::{Ctx, Effect, ScopeRequest};
 use crate::choices::{self, NOT_CHANGED, OnSetAside};
 use crate::commands::refuse_safety_change;
-use crate::trust::hash_of;
+use crate::trust::{cant_trust, hash_of};
 use save::{Change, TrustAfter};
 
 const COORDINATED_CREW: &str = "coordinated-crew";
@@ -523,8 +523,13 @@ pub(crate) fn ask_trust_at_start(ctx: &mut Ctx, settings: &mut SettingsState) {
         let Some(hash) = hash_of(&file).filter(|_| !unsafe_lines.is_empty()) else {
             continue;
         };
-        let id = ctx.next_choice_id();
         let shown = shown_file(ctx, scope);
+        // A yes couldn't work, so this says what to fix instead of asking.
+        if let Err(err) = ctx.settings.check_trust(&ctx.env, &file) {
+            ctx.notice(NoteLevel::Warn, cant_trust(&shown, &err));
+            continue;
+        }
+        let id = ctx.next_choice_id();
         ctx.send(AppEvent::Choice {
             choice: confirm::start_trust_question(id.clone(), &shown, &unsafe_lines),
         });
@@ -561,14 +566,26 @@ fn trust_at_start(
         .collect();
     let before = ctx.settings().clone();
     let env = ctx.env.clone();
+    let recorded = ctx.settings.trust().recorded(file);
     let trusted = ctx
         .settings
         .trust_mut()
         .trust(file)
         .and_then(|()| ctx.settings.reload(&env));
     if let Err(err) = trusted {
-        close(ctx, id, format!("{shown} stays untrusted."));
-        return Err(err.context(format!("trusting {shown}")));
+        // Kept, the trust would break the next start on settings that don't resolve.
+        let put_back = ctx.settings.trust_mut().put_back(file, recorded);
+        close(ctx, id, NOT_CHANGED);
+        return match (put_back, err.downcast_ref::<SettingsError>()) {
+            (Ok(()), Some(settings_err)) => {
+                ctx.notice(NoteLevel::Warn, cant_trust(&shown, settings_err));
+                Ok(Vec::new())
+            }
+            (Ok(()), None) => Err(err.context(format!("trusting {shown}"))),
+            (Err(restore), _) => Err(err.context(format!(
+                "trusting {shown}, and putting its trust back failed: {restore:#}"
+            ))),
+        };
     }
     close(ctx, id, format!("Trusted {shown}."));
     if ctx.settings().ui != before.ui {

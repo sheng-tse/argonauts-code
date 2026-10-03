@@ -1,0 +1,8 @@
+---
+source: crates/tui/tests/snap_cells.rs
+expression: text(&lines)
+---
+! git status --short && echo done
+  ⎿   M crates/tui/src/cell/shell.rs
+     ?? notes.txt
+     done

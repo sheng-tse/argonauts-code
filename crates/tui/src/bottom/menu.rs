@@ -1,12 +1,16 @@
 //! The `/`, `@`, and `?` lists take the place of the mode line and everything under it, so
 //! what you type stays where it was and the conversation never moves. Before you type a
 //! letter, the `/` list shows its commands indented under category names in the accent color,
-//! dim and bold; typing filters across all of them, best match first. Every entry is one row.
+//! dim and bold; typing filters across all of them, best match first. The `@` list shows the
+//! repo's files and folders as `+ src/main.rs`, as Claude Code does, then the run's agents
+//! under their own heading. Every entry is one row.
 
+use argonauts_core::input::{at_word, at_words};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::files::RepoFiles;
 use crate::render::RenderCtx;
 use crate::text::{sanitize_line, spans_width, str_width, truncate_line, truncate_spans};
 use crate::theme::Role;
@@ -19,7 +23,13 @@ const ENTRY_INDENT: usize = 2;
 /// Columns between the `?` panel's columns of hints. Claude Code leaves two or three.
 const SHORTCUT_GAP: usize = 3;
 const MAX_COMMANDS: usize = 12;
-const MAX_MENTIONS: usize = 15;
+const MAX_MENTIONS: usize = 8;
+/// With agents to list too, files stop here so the agents stay a few rows away.
+const FILES_BESIDE_AGENTS: usize = 5;
+/// The heading over the run's agents, cards, and roles when files are listed above them.
+const AGENTS_GROUP: &str = "Agents";
+/// Before a file's path, as Claude Code marks one.
+const FILE_MARK: &str = "+ ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuItem {
@@ -84,16 +94,25 @@ pub struct Menus {
     /// Hints for the `?` panel, such as `ctrl + o for the transcript`.
     pub shortcuts: Vec<String>,
     pub shortcuts_open: bool,
+    /// The repo's files and folders for the `@` list.
+    files: RepoFiles,
     selected: usize,
     /// The input text Esc closed the menu for. It opens again at the next edit, or once the
     /// text is something else.
     dismissed: Option<String>,
 }
 
-/// `letters` are byte offsets into the name.
+/// `letters` are byte offsets into the name or path.
 struct Match<'a> {
-    item: &'a MenuItem,
+    entry: Entry<'a>,
     letters: Vec<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum Entry<'a> {
+    Item(&'a MenuItem),
+    /// A file or folder, a folder's path ending in `/`.
+    File(&'a str),
 }
 
 /// The list the input opens: which one, what follows its `/` or `@`, and where that sigil sits.
@@ -104,6 +123,30 @@ struct Opened<'t> {
 }
 
 impl Menus {
+    /// The files git lists in the repo, from the app.
+    pub fn set_files(&mut self, paths: &[String]) {
+        self.files = RepoFiles::new(paths);
+    }
+
+    /// Whether `text` starts with `@` and a file or folder in the repo, such as `@README.md
+    /// what is this?`, so it's a message about that file. A name someone in the run answers
+    /// to stays a mention.
+    pub fn leads_with_file(&self, text: &str) -> bool {
+        let text = text.trim_start();
+        at_words(text).first().is_some_and(|word| {
+            word.range.start == 0
+                && self.files.contains(&word.name)
+                && !self.mentions.iter().any(|item| item.name == word.name)
+        })
+    }
+
+    /// Whether `text` ends with an `@` that starts a word, so the `@` list just opened and its
+    /// files are worth reading again.
+    pub fn starts_mention(text: &str) -> bool {
+        text.strip_suffix('@')
+            .is_some_and(|before| before.is_empty() || before.ends_with(char::is_whitespace))
+    }
+
     /// The list `text` opens and the query after its `/` or `@`.
     pub fn open_for<'t>(&self, text: &'t str) -> Option<(MenuKind, &'t str)> {
         self.opened(text).map(|open| (open.kind, open.query))
@@ -146,7 +189,7 @@ impl Menus {
         }
         let query = word
             .strip_prefix('@')
-            .filter(|_| !self.mentions.is_empty())?;
+            .filter(|_| !self.mentions.is_empty() || !self.files.is_empty())?;
         Some(Opened {
             kind: MenuKind::Mentions,
             query,
@@ -184,7 +227,21 @@ impl Menus {
                 MenuEvent::Moved
             }
             KeyCode::Tab | KeyCode::Enter => {
-                let item = self.matches(kind, query)[selected].item;
+                let item = match self.matches(kind, query)[selected].entry {
+                    Entry::Item(item) => item,
+                    // A file gets a space after it. A folder doesn't, so the list stays open
+                    // on what's inside it.
+                    Entry::File(path) => {
+                        let path = path.to_owned();
+                        self.selected = 0;
+                        let space = if path.ends_with('/') { "" } else { " " };
+                        return MenuEvent::Complete(format!(
+                            "{}{}{space}",
+                            &text[..start],
+                            at_word(&path)
+                        ));
+                    }
+                };
                 let (name, needs_argument) = (item.name.clone(), item.needs_argument);
                 self.selected = 0;
                 let sigil = match kind {
@@ -228,7 +285,12 @@ impl Menus {
         };
         let selected = self.selected.min(matches.len() - 1);
         let grouped = kind == MenuKind::Commands && query.is_empty();
-        let group = |i: usize| matches[i].item.group.as_deref().filter(|_| grouped);
+        let has_files = matches.iter().any(|m| matches!(m.entry, Entry::File(_)));
+        let group = |i: usize| match matches[i].entry {
+            Entry::Item(item) if grouped => item.group.as_deref(),
+            Entry::Item(_) if has_files => Some(AGENTS_GROUP),
+            _ => None,
+        };
         let entries: Vec<Line<'static>> = matches
             .iter()
             .enumerate()
@@ -273,22 +335,37 @@ impl Menus {
     /// Entries whose name starts with `query`, ignoring case, then those with a word inside
     /// the name that does, such as `opus` in `claude-code/opus`, then those that match once
     /// the name's separators are gone, such as `adddir` for `add-dir`. Each group keeps the
-    /// list's order.
+    /// list's order. For `@`, the files that match come first, best first, and the agents
+    /// after them.
     fn matches(&self, kind: MenuKind, query: &str) -> Vec<Match<'_>> {
         let items = match kind {
             MenuKind::Commands => &self.commands,
             MenuKind::Mentions => &self.mentions,
         };
-        let query: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+        let lower: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
         let mut found: Vec<(u8, Match<'_>)> = items
             .iter()
             .filter_map(|item| {
-                let (rank, letters) = match_name(&item.name, &query)?;
-                Some((rank, Match { item, letters }))
+                let (rank, letters) = match_name(&item.name, &lower)?;
+                let entry = Entry::Item(item);
+                Some((rank, Match { entry, letters }))
             })
             .collect();
         found.sort_by_key(|(rank, _)| *rank);
-        found.into_iter().map(|(_, m)| m).collect()
+        let items: Vec<Match<'_>> = found.into_iter().map(|(_, m)| m).collect();
+        if kind == MenuKind::Commands {
+            return items;
+        }
+        let limit = if items.is_empty() {
+            usize::MAX
+        } else {
+            FILES_BESIDE_AGENTS
+        };
+        let files = self.files.matches(query, limit).into_iter().map(|m| Match {
+            entry: Entry::File(m.path),
+            letters: m.letters,
+        });
+        files.chain(items).collect()
     }
 
     /// Up to three columns, each as wide as its longest hint, as Claude Code sizes them. A
@@ -353,6 +430,10 @@ fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>)
     } else {
         (theme.style(Role::Dim), theme.style(Role::Dim))
     };
+    let item = match m.entry {
+        Entry::Item(item) => item,
+        Entry::File(path) => return file_row(path, &m.letters, name_style, width),
+    };
     let sigil = match kind {
         MenuKind::Commands => "/",
         MenuKind::Mentions => "@",
@@ -361,12 +442,11 @@ fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>)
         Span::raw(" ".repeat(indent)),
         Span::styled(sigil, name_style),
     ];
-    spans.extend(highlight(&m.item.name, &m.letters, name_style));
-    let name_width = str_width(sigil) + str_width(&m.item.name);
+    spans.extend(highlight(&item.name, &m.letters, name_style));
+    let name_width = str_width(sigil) + str_width(&item.name);
     let pad = NAME_COLUMNS.saturating_sub(name_width).max(2);
     spans.push(Span::raw(" ".repeat(pad)));
-    let kind_word = m
-        .item
+    let kind_word = item
         .kind
         .as_deref()
         .map(|kind| sanitize_line(kind).trim().to_owned())
@@ -374,7 +454,7 @@ fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>)
     let kind_width = kind_word.as_deref().map_or(0, |kind| str_width(kind) + 1);
     let text_col = indent + name_width + pad;
     let room = width.saturating_sub(text_col + kind_width);
-    let description = sanitize_line(&m.item.description).trim().to_owned();
+    let description = sanitize_line(&item.description).trim().to_owned();
     let description = truncate_spans(&[Span::styled(description, detail_style)], room);
     let used = text_col + spans_width(&description);
     spans.extend(description);
@@ -384,6 +464,35 @@ fn entry_row(m: &Match<'_>, kind: MenuKind, selected: bool, ctx: &RenderCtx<'_>)
         spans.push(Span::raw(" ".repeat(width + 1 - used - kind_width)));
         spans.push(Span::styled(kind, theme.style(Role::Dim)));
     }
+    truncate_line(&Line::from(spans), width)
+}
+
+/// `+ src/main.rs`. A path too long for the row keeps its end, where the file's name is, and
+/// starts with `…`.
+fn file_row(path: &str, letters: &[usize], style: Style, width: usize) -> Line<'static> {
+    let path = sanitize_line(path);
+    let room = width.saturating_sub(ENTRY_INDENT + str_width(FILE_MARK));
+    let mut cut = 0;
+    let mut shown = path.as_ref();
+    if str_width(shown) > room {
+        let keep = room.saturating_sub(1);
+        while str_width(&path[cut..]) > keep {
+            cut += path[cut..].chars().next().map_or(1, char::len_utf8);
+        }
+        shown = &path[cut..];
+    }
+    let mut spans = vec![
+        Span::raw(" ".repeat(ENTRY_INDENT)),
+        Span::styled(FILE_MARK, style),
+    ];
+    if cut > 0 {
+        spans.push(Span::styled("…", style));
+    }
+    let letters: Vec<usize> = letters
+        .iter()
+        .filter_map(|&at| at.checked_sub(cut))
+        .collect();
+    spans.extend(highlight(shown, &letters, style));
     truncate_line(&Line::from(spans), width)
 }
 
@@ -763,7 +872,7 @@ mod tests {
                 assert!(text.contains(hint.as_str()), "{width}: {hint}\n{text}");
             }
             let first = plain_text(&rows[..1]);
-            assert!(first.starts_with("  / for commands   "), "{first}");
+            assert!(first.starts_with("  ! for shell mode   "), "{first}");
             let third = &menus.shortcuts[2 * rows_per_column];
             assert!(first.trim_end().ends_with(third.as_str()), "{first}");
         }
@@ -797,5 +906,159 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::REVERSED)
         );
+    }
+
+    fn with_files(files: &[&str]) -> Menus {
+        let mut menus = menus();
+        menus.set_files(&files.iter().map(|f| (*f).to_owned()).collect::<Vec<_>>());
+        menus
+    }
+
+    #[test]
+    fn at_lists_files_first_then_the_agents_under_their_own_heading() {
+        let theme = theme();
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let menus = with_files(&["README.md", "src/main.rs", "src/menu.rs"]);
+        let rows = menus.rows("@", &ctx, 20).unwrap();
+        let text = plain_text(&rows);
+        let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+        assert_eq!(
+            lines[..3],
+            ["  + README.md", "  + src/", "Agents"],
+            "{text}"
+        );
+        assert!(lines[3].starts_with("  @codex"), "{text}");
+        assert!(lines[4].starts_with("  @card-002"), "{text}");
+        assert_eq!(rows[0].spans[1].style, theme.style(Role::Card));
+        assert_eq!(rows[1].spans[1].style, theme.style(Role::Dim));
+        assert_eq!(rows[2].spans[0].style, header_style(&ctx));
+
+        // Typing matches files anywhere in the path, with the letters in bold.
+        let rows = menus.rows("look at @men", &ctx, 20).unwrap();
+        assert_eq!(plain_text(&rows[..1]), "  + src/menu.rs");
+        let bold: String = rows[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(bold, "men");
+        // With no agent matching, there's no heading.
+        assert!(!plain_text(&rows).contains("Agents"));
+    }
+
+    #[test]
+    fn files_alone_open_the_list_with_no_run() {
+        let mut menus = Menus::default();
+        assert!(!menus.is_open("@"));
+        menus.set_files(&["notes.txt".to_owned()]);
+        assert!(menus.is_open("@"));
+        assert!(menus.is_open("see @no"));
+        assert!(!menus.is_open("see @zz"));
+        assert!(!menus.is_open("me@no"));
+    }
+
+    #[test]
+    fn tab_or_enter_completes_a_file_and_a_folder_stays_open_for_what_it_holds() {
+        let mut menus = with_files(&["src/main.rs", "my notes.md"]);
+        assert_eq!(
+            menus.handle_key(key(KeyCode::Tab), "explain @main"),
+            MenuEvent::Complete("explain @src/main.rs ".into())
+        );
+        assert_eq!(
+            menus.handle_key(key(KeyCode::Enter), "@sr"),
+            MenuEvent::Complete("@src/".into())
+        );
+        assert!(menus.is_open("@src/"));
+        assert_eq!(
+            menus.handle_key(key(KeyCode::Enter), "@src/"),
+            MenuEvent::Complete("@src/main.rs ".into())
+        );
+        assert_eq!(
+            menus.handle_key(key(KeyCode::Tab), "read @note"),
+            MenuEvent::Complete("read @\"my notes.md\" ".into())
+        );
+        // Esc closes it until the next edit.
+        assert_eq!(menus.handle_key(key(KeyCode::Esc), "@ma"), MenuEvent::Moved);
+        assert!(!menus.is_open("@ma"));
+        menus.text_changed();
+        assert!(menus.is_open("@ma"));
+    }
+
+    #[test]
+    fn the_list_shows_eight_rows_and_scrolls_to_the_pick() {
+        let theme = theme();
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let files: Vec<String> = (0..20).map(|n| format!("file-{n:02}.txt")).collect();
+        let mut menus = Menus::default();
+        menus.set_files(&files);
+        let rows = menus.rows("@file", &ctx, 40).unwrap();
+        assert_eq!(rows.len(), MAX_MENTIONS);
+        assert_eq!(plain_text(&rows[..1]), "  + file-00.txt");
+        for _ in 0..10 {
+            menus.handle_key(key(KeyCode::Down), "@file");
+        }
+        let rows = menus.rows("@file", &ctx, 40).unwrap();
+        assert_eq!(rows.len(), MAX_MENTIONS);
+        assert_eq!(plain_text(&rows[7..]), "  + file-10.txt");
+        assert_eq!(rows[7].spans[1].style, theme.style(Role::Card));
+        menus.handle_key(key(KeyCode::Up), "@file");
+        assert_eq!(
+            menus.handle_key(key(KeyCode::Tab), "@file"),
+            MenuEvent::Complete("@file-09.txt ".into())
+        );
+    }
+
+    #[test]
+    fn with_agents_to_list_a_few_files_come_first() {
+        let theme = theme();
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let files: Vec<String> = (0..20).map(|n| format!("codec-{n:02}.rs")).collect();
+        let mut menus = menus();
+        menus.set_files(&files);
+        let names = names(&menus, "@co", &ctx);
+        let files_shown = names.iter().filter(|name| *name == "+").count();
+        assert_eq!(files_shown, FILES_BESIDE_AGENTS, "{names:?}");
+        assert!(names.contains(&"Agents".to_owned()), "{names:?}");
+        assert!(names.contains(&"@codex".to_owned()), "{names:?}");
+    }
+
+    #[test]
+    fn a_long_path_keeps_its_end() {
+        let theme = theme();
+        let ctx = RenderCtx::new(30, &theme, Clock::still(Instant::now()));
+        let mut menus = Menus::default();
+        menus.set_files(&["crates/tui/src/bottom/composer/history_search.rs".to_owned()]);
+        let rows = menus.rows("@history", &ctx, 10).unwrap();
+        let text = plain_text(&rows[..1]);
+        assert_eq!(text, "  + …mposer/history_search.rs");
+        assert_eq!(rows[0].width(), 29, "the last column stays empty");
+        let bold: String = rows[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(bold, "history");
+    }
+
+    #[test]
+    fn a_message_led_by_a_file_is_about_it_unless_the_run_has_that_name() {
+        let menus = with_files(&["README.md", "codex/notes.md", "src/lib.rs"]);
+        assert!(menus.leads_with_file("@README.md what is this?"));
+        assert!(menus.leads_with_file("  @src tour it"));
+        assert!(!menus.leads_with_file("@codex look at this"));
+        assert!(!menus.leads_with_file("what is @README.md"));
+        assert!(!menus.leads_with_file("@nowhere.md hi"));
+    }
+
+    #[test]
+    fn a_fresh_at_sign_reads_the_files_again() {
+        assert!(Menus::starts_mention("@"));
+        assert!(Menus::starts_mention("look at @"));
+        assert!(Menus::starts_mention("line\n@"));
+        assert!(!Menus::starts_mention("me@"));
+        assert!(!Menus::starts_mention("@src"));
+        assert!(!Menus::starts_mention(""));
     }
 }

@@ -99,6 +99,41 @@ impl AppEnv {
         path.display().to_string()
     }
 
+    /// A file in the repo by its path from the repo, such as `.argonauts/config.toml`, and any
+    /// other as [`Self::display`] shows it.
+    pub(crate) fn shown(&self, path: &Path) -> String {
+        match path.strip_prefix(&self.repo_root) {
+            Ok(relative) if !relative.as_os_str().is_empty() => relative.display().to_string(),
+            _ => self.display(path),
+        }
+    }
+
+    /// `text` with each file in the repo named by its path from the repo, for messages from
+    /// parts that only know full paths.
+    pub(crate) fn shown_in(&self, text: &str) -> String {
+        let root = format!("{}/", self.repo_root.display());
+        if root == "/" {
+            return text.to_owned();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find(&root) {
+            let (before, after) = rest.split_at(at);
+            out.push_str(before);
+            // Only a whole path, not the tail of a longer one.
+            let starts_a_path = before
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_')));
+            if !starts_a_path {
+                out.push_str(&root);
+            }
+            rest = &after[root.len()..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     pub(crate) fn display_repo(&self) -> String {
         self.display(&self.repo_root)
     }
@@ -107,6 +142,31 @@ impl AppEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_in_the_repo_are_named_from_the_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut env = AppEnv::for_repo(Paths::new(home.path()), repo.path(), false).unwrap();
+        let root = env.repo_root.clone();
+        let outside = root.parent().unwrap().to_owned();
+        env.user_home = Some(outside.clone());
+        assert_eq!(
+            env.shown(&root.join(".argonauts/config.toml")),
+            ".argonauts/config.toml"
+        );
+        let name = root.file_name().unwrap().to_string_lossy();
+        assert_eq!(env.shown(&root), format!("~/{name}"));
+        assert_eq!(env.shown(&outside.join("x.toml")), "~/x.toml");
+        let root = root.display();
+        assert_eq!(
+            env.shown_in(&format!(
+                "invalid config in {root}/.argonauts/config.local.toml: see `{root}/a.rs` and \
+                 /x{root}/b.rs"
+            )),
+            format!("invalid config in .argonauts/config.local.toml: see `a.rs` and /x{root}/b.rs")
+        );
+    }
 
     #[test]
     fn home_shows_as_a_tilde() {

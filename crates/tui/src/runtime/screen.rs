@@ -21,7 +21,7 @@ use super::editor::edit_in_editor;
 use super::keys::KeySource;
 use super::takeover::{TakeOverPlan, TermEnv, plan_take_over, run_in_tmux, write_spec_files};
 use crate::UiOptions;
-use crate::app::{Ui, select_key};
+use crate::app::Ui;
 use crate::bottom::{ModeNotice, VimMode};
 use crate::bridge::keys::{exit_lines, watch_line};
 use crate::bridge::settings::theme_for;
@@ -98,8 +98,7 @@ impl<W: Write> Screen<W> {
         let (returns_tx, returns) = mpsc::unbounded_channel();
         let mut ui = Ui::new(terminal, theme, model, Instant::now());
         if options.settings.screen == ScreenMode::Fullscreen {
-            let term_program = std::env::var("TERM_PROGRAM").ok();
-            ui.use_fullscreen(select_key(term_program.as_deref()));
+            ui.use_fullscreen();
         }
         let mut screen = Self {
             io,

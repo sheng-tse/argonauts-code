@@ -3,6 +3,7 @@ use ratatui::text::{Line, Span};
 
 use super::HistoryCell;
 use crate::render::RenderCtx;
+use crate::text::marks;
 use crate::text::{fit_lines, sanitize_line, str_width, wrap_spans};
 use crate::theme::{AgentColor, Role};
 
@@ -57,7 +58,7 @@ impl HistoryCell for AgentsStarted {
         ];
         // The launch is done by the time this prints.
         let bullet = [
-            Span::styled(theme.glyphs.bullet, theme.style(Role::Success)),
+            marks::decorative(theme.glyphs.bullet, theme.style(Role::Success)),
             Span::raw(" "),
         ];
         let mut lines = wrap_spans(&head, width, &bullet, &[Span::raw("  ")]);
@@ -123,7 +124,10 @@ mod tests {
              ├ Opus 5.5 on Claude Code · owner · card-002 Add the JSON writer\n   \
              └ Gemini 3.6 on Antigravity CLI · reviewer · review"
         );
-        assert_eq!(lines[0].spans[0].style, theme.style(Role::Success));
+        assert_eq!(
+            lines[0].spans[0].style,
+            marks::decoration(theme.style(Role::Success))
+        );
         assert!(
             lines[0].spans[2]
                 .style

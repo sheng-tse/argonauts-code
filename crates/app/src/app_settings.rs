@@ -6,7 +6,7 @@ use std::sync::Arc;
 use argonauts_core::app::ConfigEntry;
 use argonauts_core::settings::{FILE_LAYERS, Settings};
 use argonauts_registry::harnesses::agents_turned_on;
-use argonauts_registry::{ResolvedSettings, SettingsSources, resolve};
+use argonauts_registry::{ResolvedSettings, SettingsError, SettingsSources, resolve};
 use tokio::sync::watch;
 
 use crate::env::AppEnv;
@@ -102,6 +102,22 @@ impl AppSettings {
                 .map(|(key, value)| format!("{key}={value}")),
         );
         overrides
+    }
+
+    /// Whether the settings would still resolve with `file` trusted, so its safety keys apply,
+    /// and if not, why. Nothing is trusted.
+    pub(crate) fn check_trust(
+        &self,
+        env: &AppEnv,
+        file: &std::path::Path,
+    ) -> Result<(), SettingsError> {
+        let mut sources = sources(env, &self.trust, self.run_overrides(), self.interactive);
+        if *file == env.project_config() {
+            sources.project_trusted = true;
+        } else if *file == env.project_local_config() {
+            sources.project_local_trusted = true;
+        }
+        resolve(&sources).map(drop)
     }
 
     /// Re-reads the files and `trusted.json`, keeping the flags and session overrides.

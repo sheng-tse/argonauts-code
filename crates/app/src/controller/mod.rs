@@ -25,6 +25,7 @@ mod route;
 mod run_commands;
 pub(crate) mod runs;
 pub(crate) mod settings;
+mod shell;
 mod status_line;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -52,6 +53,7 @@ pub(crate) use run_commands::CheckpointReply;
 pub(crate) use status_line::header_agent;
 
 use crate::FirstView;
+use crate::repo_files;
 use crate::setup::Setup;
 
 /// How often parked runs are checked for a wake while the app is open.
@@ -70,6 +72,15 @@ fn area_command(area: LearningArea) -> SlashCommand {
     }
 }
 
+/// The `@` list's files. Without them the list still offers the run's agents, so a failure
+/// is only logged.
+fn send_repo_files(ctx: &Ctx) {
+    match repo_files::list(&ctx.env.repo_root) {
+        Ok(paths) => ctx.send(AppEvent::RepoFiles { paths }),
+        Err(err) => tracing::warn!("listing the repo's files: {err:#}"),
+    }
+}
+
 /// What the controller does before it reads input.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Opening {
@@ -84,6 +95,7 @@ pub(crate) struct Controller {
     runs: runs::RunsState,
     settings: settings::SettingsState,
     connect: connect::ConnectState,
+    shell: shell::ShellState,
     /// The main agent CLI's own commands.
     vendor: vendor_commands::VendorCommands,
     setup: Option<Setup>,
@@ -106,6 +118,7 @@ impl Controller {
             runs,
             settings,
             connect: connect::ConnectState::default(),
+            shell: shell::ShellState::default(),
             vendor: vendor_commands::VendorCommands::default(),
             setup: None,
             first: None,
@@ -164,6 +177,7 @@ impl Controller {
     /// to end, so its vendor process doesn't outlive the app.
     async fn close(mut self) -> anyhow::Result<()> {
         chat::close(&mut self.ctx, &mut self.chat);
+        shell::close(&mut self.shell);
         self.ctx.send(AppEvent::Exit);
         let deadline = tokio::time::Instant::now() + STOP_GRACE;
         while !chat::settled(&self.chat) {
@@ -196,6 +210,7 @@ impl Controller {
         names::send(&mut self.ctx);
         settings::refresh_models(&self.ctx, &mut self.settings);
         vendor_commands::refresh(&self.ctx, &mut self.vendor);
+        send_repo_files(&self.ctx);
         let result = if opening.guided_setup {
             // The setup asks about the folder's settings itself.
             self.open_setup().await
@@ -261,6 +276,15 @@ impl Controller {
                 }
                 Effect::OpenSetup => self.open_setup().await,
                 Effect::Input(command) => self.command(*command).await,
+                Effect::Queued {
+                    command,
+                    typed_after,
+                } => {
+                    chat::sending_queued(&mut self.chat, Some(typed_after));
+                    let sent = self.command(*command).await;
+                    chat::sending_queued(&mut self.chat, None);
+                    sent
+                }
                 Effect::SetupDone => {
                     self.setup = None;
                     self.after_setup().await
@@ -279,6 +303,7 @@ impl Controller {
         let mut effects = self.settle(offered);
         let text = request.request.clone();
         effects.extend(runs::start(&mut self.ctx, &mut self.runs, request).await?);
+        chat::run_started(&mut self.chat);
         chat::goal_run_started(&mut self.chat, &text, runs::attached(&self.runs));
         Ok(effects)
     }
@@ -380,6 +405,14 @@ impl Controller {
             UiCommand::ResetSetting { key, scope } => {
                 settings::reset(ctx, &mut self.settings, key, scope).await
             }
+            UiCommand::Shell { command } => {
+                shell::run(ctx, &mut self.shell, command);
+                Ok(Vec::new())
+            }
+            UiCommand::StopShell => {
+                shell::stop(&mut self.shell);
+                Ok(Vec::new())
+            }
             UiCommand::Exit => Ok(vec![Effect::Exit]),
             UiCommand::RememberPick { run, id } => {
                 run_commands::remember_pick(ctx, runs, run, id).await
@@ -391,14 +424,28 @@ impl Controller {
     async fn route(&mut self, command: UiCommand) -> anyhow::Result<Vec<Effect>> {
         let ctx = &mut self.ctx;
         let runs = &mut self.runs;
-        match route::route(&ctx.mode, command, self.vendor.set()) {
+        let root = ctx.env.repo_root.clone();
+        let leads_with_file = |text: &str| repo_files::leads_with_file(&root, text);
+        match route::route(&ctx.mode, command, self.vendor.set(), leads_with_file) {
             Route::NewRequest { text } => chat::new_request(ctx, &mut self.chat, text).await,
             Route::NextTurn { text } => chat::queue_turn(ctx, &mut self.chat, text),
-            Route::Guidance { run, text } => run_commands::guidance(ctx, runs, run, text).await,
+            Route::Guidance { run, text } => {
+                let ran = chat::take_shell(&mut self.chat);
+                let sent = run_commands::guidance(ctx, runs, run, text, &ran).await;
+                if sent.is_err() {
+                    chat::give_back_shell(&mut self.chat, ran);
+                }
+                sent
+            }
             Route::CancelPause => run_commands::cancel_pause(ctx, runs).await,
             Route::Resume { run } => run_commands::resume(ctx, runs, Some(run)).await,
             Route::Mention { run, target, text } => {
-                run_commands::mention(ctx, runs, run, target, text).await
+                let ran = chat::take_shell(&mut self.chat);
+                let sent = run_commands::mention(ctx, runs, run, target, text, &ran).await;
+                if sent.is_err() {
+                    chat::give_back_shell(&mut self.chat, ran);
+                }
+                sent
             }
             Route::Notice { text } => {
                 ctx.notice(NoteLevel::Info, text);
@@ -570,6 +617,10 @@ impl Controller {
                 Ok(Vec::new())
             }
             ViewRequest::Crew => crew_panel::show(ctx, &self.chat).await,
+            ViewRequest::RepoFiles => {
+                send_repo_files(ctx);
+                Ok(Vec::new())
+            }
             ViewRequest::Learning { area } => {
                 settings::command(ctx, &mut self.settings, area_command(area)).await
             }
@@ -636,6 +687,12 @@ impl Controller {
                 Some(setup) => setup.on_update(&mut self.ctx, update).await,
                 None => Ok(Vec::new()),
             },
+            Internal::Shell(update) => {
+                if let Some(ran) = shell::on_update(&mut self.ctx, &mut self.shell, update) {
+                    chat::shell_ran(&mut self.chat, ran);
+                }
+                Ok(Vec::new())
+            }
             Internal::ModelsRefreshed => {
                 names::send(&mut self.ctx);
                 settings::models_refreshed(&self.ctx, &mut self.settings)

@@ -1581,3 +1581,102 @@ fn a_waiting_card_comes_before_the_answered_pick() {
     assert!(ui.model().bottom.focused_card().is_some());
     assert!(!ui.model().bottom.pick_selected());
 }
+
+#[test]
+fn a_bang_switches_to_shell_mode_and_esc_leaves_it_before_interrupting() {
+    let (mut ui, t0) = ui_at(100);
+    ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", t0));
+    type_text(&mut ui, "!git status", t0);
+    assert!(ui.model().bottom.composer.is_shell());
+    ui.frame(t0).unwrap();
+    let rows = screen(&ui);
+    assert!(rows.iter().any(|row| row == "! git status"), "{rows:#?}");
+    assert!(
+        rows.iter().any(|row| row == "  ! for shell mode"),
+        "the mode line says only that: {rows:#?}"
+    );
+
+    assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
+    assert!(!ui.model().bottom.composer.is_shell());
+    assert_eq!(ui.model().bottom.composer.text(), "git status");
+    assert_eq!(press(&mut ui, KeyCode::Esc, t0), [UiAction::Interrupt]);
+}
+
+#[test]
+fn with_vim_keys_esc_goes_to_normal_before_it_leaves_shell_mode() {
+    let (mut ui, t0) = ui();
+    ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
+    type_text(&mut ui, "!ls", t0);
+    assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
+    assert_eq!(ui.model().bottom.mode.vim, Some(VimMode::Normal));
+    assert!(ui.model().bottom.composer.is_shell());
+    assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
+    assert!(!ui.model().bottom.composer.is_shell());
+}
+
+#[test]
+fn enter_in_shell_mode_runs_the_command_and_ctrl_c_stops_it() {
+    use argonauts_core::app::UiCommand;
+
+    let (mut ui, t0) = ui();
+    type_text(&mut ui, "!sleep 25", t0);
+    assert_eq!(
+        press(&mut ui, KeyCode::Enter, t0),
+        [UiAction::Shell {
+            command: "sleep 25".into()
+        }]
+    );
+    assert!(!ui.model().bottom.composer.is_shell());
+
+    ui.model_mut().bottom.shell_running = true;
+    type_text(&mut ui, "draft", t0);
+    assert_eq!(
+        chord(&mut ui, 'c', t0),
+        [UiAction::Command(UiCommand::StopShell)]
+    );
+    assert_eq!(
+        ui.model().bottom.composer.text(),
+        "draft",
+        "stopping the command leaves the draft alone"
+    );
+    assert!(ui.model().bottom.hint.is_none(), "and never arms the exit");
+
+    ui.model_mut().bottom.shell_running = false;
+    assert!(chord(&mut ui, 'c', t0).is_empty());
+    assert!(ui.model().bottom.composer.is_empty());
+}
+
+#[test]
+fn ctrl_c_in_an_empty_shell_input_clears_the_mode() {
+    let (mut ui, t0) = ui();
+    type_text(&mut ui, "!", t0);
+    assert!(chord(&mut ui, 'c', t0).is_empty());
+    assert!(!ui.model().bottom.composer.is_shell());
+    assert_eq!(
+        ui.model().bottom.hint.as_ref().unwrap().text,
+        "Press Ctrl-C again to exit"
+    );
+}
+
+#[test]
+fn in_shell_mode_slash_question_mark_and_at_are_the_commands_own() {
+    let (mut ui, t0) = ui_at(80);
+    with_commands(&mut ui);
+    type_text(&mut ui, "!?", t0);
+    assert!(!ui.model().bottom.menus.shortcuts_open);
+    assert_eq!(ui.model().bottom.composer.text(), "?");
+    press(&mut ui, KeyCode::Backspace, t0);
+    type_text(&mut ui, "/bin/ls @src", t0);
+    ui.frame(t0).unwrap();
+    let rows = screen(&ui);
+    assert!(
+        !rows.iter().any(|row| row.contains("Pick the model")),
+        "no menu opens: {rows:#?}"
+    );
+    assert_eq!(
+        press(&mut ui, KeyCode::Enter, t0),
+        [UiAction::Shell {
+            command: "/bin/ls @src".into()
+        }]
+    );
+}

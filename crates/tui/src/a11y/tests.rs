@@ -562,3 +562,57 @@ fn the_effort_slider_reads_all_hands_and_a_flips_it() {
         ]
     );
 }
+
+#[test]
+fn a_shell_command_reads_as_typed_then_its_output_and_end() {
+    use argonauts_core::app::ShellEvent;
+
+    use super::lines_for;
+    use crate::state::AppState;
+
+    let state = AppState::default();
+    let said = |event| lines_for(&AppEvent::Shell { event }, &state);
+    assert_eq!(
+        said(ShellEvent::Started {
+            id: 1,
+            command: "echo hi".into()
+        }),
+        ["shell: ! echo hi"]
+    );
+    assert_eq!(
+        said(ShellEvent::Output {
+            id: 1,
+            text: "hi\n\nthere\n".into()
+        }),
+        ["output: hi", "output: there"]
+    );
+    assert_eq!(
+        said(ShellEvent::Finished {
+            id: 1,
+            exit_code: Some(2),
+            stopped: false
+        }),
+        ["shell: exit code 2"]
+    );
+    assert_eq!(
+        said(ShellEvent::Finished {
+            id: 1,
+            exit_code: None,
+            stopped: true
+        }),
+        ["shell: stopped"]
+    );
+}
+
+#[test]
+fn a_bang_line_runs_in_your_shell() {
+    let mut reader = Reader::new(&UiOptions::default());
+    let said = reader.typed("!git status");
+    assert_eq!(
+        said.commands,
+        [UiCommand::Shell {
+            command: "git status".into()
+        }]
+    );
+    assert!(reader.typed("!   ").commands.is_empty());
+}

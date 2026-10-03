@@ -3,6 +3,7 @@ use ratatui::text::{Line, Span};
 use super::HistoryCell;
 use crate::markdown::{Indent, render_markdown};
 use crate::render::RenderCtx;
+use crate::text::marks;
 use crate::text::str_width;
 use crate::theme::{Role, Theme};
 
@@ -34,7 +35,7 @@ impl AssistantMessage {
         let bullet = theme.glyphs.bullet;
         Indent::new(
             vec![
-                Span::styled(bullet, theme.style(Role::Bright)),
+                marks::decorative(bullet, theme.style(Role::Bright)),
                 Span::raw(" "),
             ],
             vec![Span::raw(" ".repeat(str_width(bullet) + 1))],

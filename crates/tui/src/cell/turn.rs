@@ -154,7 +154,11 @@ mod tests {
         );
         let italic = theme.style(Role::Dim).add_modifier(Modifier::ITALIC);
         assert_eq!(lines[0].spans[2].style, theme.style(Role::Dim));
-        assert_eq!(lines[1].spans.last().map(|s| s.style), Some(italic));
+        let last = lines[1]
+            .spans
+            .last()
+            .map(|s| crate::text::marks::unmarked(s.style));
+        assert_eq!(last, Some(italic));
     }
 
     #[test]

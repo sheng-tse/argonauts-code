@@ -6,6 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::{CardNote, CardOption, CardPrompt, OptionKind};
 use crate::render::RenderCtx;
+use crate::text::marks::decorative;
 use crate::text::{
     KEEP, Part, fit_lines, fit_parts, sanitize, sanitize_line, spans_width, str_width,
     truncate_line, wrap_spans, wrap_text,
@@ -49,7 +50,7 @@ impl CardPrompt {
         }
 
         let indent = [Span::raw("  ")];
-        let mut lines = vec![Line::from(Span::styled(glyphs.rule.repeat(width), card))];
+        let mut lines = vec![Line::from(decorative(glyphs.rule.repeat(width), card))];
         lines.extend(wrap_text(
             &sanitize_line(&self.title),
             card.add_modifier(Modifier::BOLD),

@@ -35,6 +35,8 @@ pub enum Role {
     ModeSupervised,
     ModeShadow,
     ModeAuto,
+    /// Shell mode: the input's `!`, its rules, and the mode line's words.
+    Shell,
     /// Background of a removed diff row.
     RemovedRow,
     /// Background of the changed words inside a removed row.
@@ -51,6 +53,8 @@ pub enum Role {
     DiffText,
     /// The band behind your own messages.
     UserBand,
+    /// Text selected with the mouse in the fullscreen app.
+    Selection,
     BarTrack,
     BarFill,
     AgentRed,
@@ -72,7 +76,7 @@ pub enum Role {
 }
 
 impl Role {
-    pub const COUNT: usize = 41;
+    pub const COUNT: usize = 43;
 
     pub const ALL: [Role; Role::COUNT] = [
         Role::Text,
@@ -91,6 +95,7 @@ impl Role {
         Role::ModeSupervised,
         Role::ModeShadow,
         Role::ModeAuto,
+        Role::Shell,
         Role::RemovedRow,
         Role::RemovedWord,
         Role::RemovedMarker,
@@ -99,6 +104,7 @@ impl Role {
         Role::AddedMarker,
         Role::DiffText,
         Role::UserBand,
+        Role::Selection,
         Role::BarTrack,
         Role::BarFill,
         Role::AgentRed,
@@ -137,6 +143,7 @@ impl Role {
             Role::ModeSupervised => "mode-supervised",
             Role::ModeShadow => "mode-shadow",
             Role::ModeAuto => "mode-auto",
+            Role::Shell => "shell",
             Role::RemovedRow => "removed-row",
             Role::RemovedWord => "removed-word",
             Role::RemovedMarker => "removed-marker",
@@ -145,6 +152,7 @@ impl Role {
             Role::AddedMarker => "added-marker",
             Role::DiffText => "diff-text",
             Role::UserBand => "user-band",
+            Role::Selection => "selection",
             Role::BarTrack => "bar-track",
             Role::BarFill => "bar-fill",
             Role::AgentRed => "agent-red",
@@ -368,6 +376,8 @@ fn dark_style(role: Role) -> Style {
         Role::ModeSupervised => fg(0x999999),
         Role::ModeShadow => fg(0x48968c),
         Role::ModeAuto => fg(0xffc107),
+        // Claude Code's bash mode pink.
+        Role::Shell => fg(0xfd5db1),
         Role::RemovedRow => bg(0x3d0100),
         Role::RemovedWord => bg(0x5c0200),
         Role::RemovedMarker => fg(0xdc5a5a),
@@ -376,6 +386,7 @@ fn dark_style(role: Role) -> Style {
         Role::AddedMarker => fg(0x50c850),
         Role::DiffText => fg(0xf8f8f2),
         Role::UserBand => bg(0x373737),
+        Role::Selection => bg(0x264f78),
         Role::BarTrack => bg(0x383945),
         Role::BarFill => bg(0xe6a23c),
         // Lighter shades of the eight, so names read on a dark background.
@@ -417,6 +428,7 @@ fn light_style(role: Role) -> Style {
         Role::ModeSupervised => fg(0x666666),
         Role::ModeShadow => fg(0x006666),
         Role::ModeAuto => fg(0x966c1e),
+        Role::Shell => fg(0xff0087),
         Role::RemovedRow => bg(0xffdcdc),
         Role::RemovedWord => bg(0xffc7c7),
         Role::RemovedMarker => fg(0xcf222e),
@@ -425,6 +437,7 @@ fn light_style(role: Role) -> Style {
         Role::AddedMarker => fg(0x248a3d),
         Role::DiffText => fg(0x333333),
         Role::UserBand => bg(0xf0f0f0),
+        Role::Selection => bg(0xadd6ff),
         Role::BarTrack => bg(0xd8dbe2),
         Role::BarFill => bg(0xb7791f),
         // Claude Code's subagent colors.

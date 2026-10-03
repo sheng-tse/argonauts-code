@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Widget};
 
 use crate::format;
-use crate::text::{spans_width, str_width, truncate_line};
+use crate::text::{marks, spans_width, str_width, truncate_line};
 use crate::theme::{Role, Theme};
 
 use super::layout::{cut, right};
@@ -95,7 +95,7 @@ pub fn draw_box(buf: &mut Buffer, panes: &Panes, titles: [&str; 2], focus: Side,
     if panes.body.width < 2 || panes.body.height < 2 {
         return;
     }
-    let rule = theme.style(Role::Rule);
+    let rule = marks::decoration(theme.style(Role::Rule));
     let frame = Frame::for_theme(theme);
     Block::bordered()
         .border_set(frame.border)

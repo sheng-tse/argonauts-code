@@ -1,4 +1,4 @@
-use argonauts_core::app::{AppEvent, ChatEvent, TurnReply};
+use argonauts_core::app::{AppEvent, ChatEvent, ShellEvent, TurnReply};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::checkpoint::CheckpointEvent;
@@ -48,7 +48,9 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             .iter()
             .flat_map(|text| labeled("taken back", text))
             .collect(),
-        AppEvent::VendorCommands { .. } | AppEvent::Names { .. } => Vec::new(),
+        AppEvent::VendorCommands { .. } | AppEvent::Names { .. } | AppEvent::RepoFiles { .. } => {
+            Vec::new()
+        }
         AppEvent::SettingChanged {
             key,
             value,
@@ -100,6 +102,7 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             said.extend(lines.iter().cloned());
             said
         }
+        AppEvent::Shell { event } => shell_lines(event),
         // A line-mode screen never gives the terminal away, so you run it yourself.
         AppEvent::RunInTerminal { argv, .. } => labeled(
             "run",
@@ -171,6 +174,23 @@ fn welcome_lines(state: &AppState) -> Vec<String> {
     }
     lines.push("Type a message and press Enter. /help lists the commands. Ctrl+D leaves.".into());
     lines
+}
+
+/// A `!` command reads as you typed it, its output line by line, and how it ended.
+fn shell_lines(event: &ShellEvent) -> Vec<String> {
+    match event {
+        ShellEvent::Started { command, .. } => labeled("shell", &format!("! {command}")),
+        ShellEvent::Output { text, .. } => labeled("output", text),
+        ShellEvent::Finished { stopped: true, .. } => vec!["shell: stopped".to_owned()],
+        ShellEvent::Finished {
+            exit_code: Some(0), ..
+        } => vec!["shell: done".to_owned()],
+        ShellEvent::Finished {
+            exit_code: Some(code),
+            ..
+        } => vec![format!("shell: exit code {code}")],
+        ShellEvent::Finished { .. } => vec!["shell: ended by a signal".to_owned()],
+    }
 }
 
 fn chat_lines(event: &ChatEvent, state: &AppState) -> Vec<String> {

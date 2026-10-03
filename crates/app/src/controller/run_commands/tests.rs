@@ -66,6 +66,7 @@ async fn guidance_ids_are_kept_and_take_back_answers_taken_back() {
         &mut rig.runs,
         run.clone(),
         "use --json".into(),
+        &[],
     )
     .await
     .expect("guidance is queued");
@@ -76,6 +77,7 @@ async fn guidance_ids_are_kept_and_take_back_answers_taken_back() {
         run.clone(),
         target,
         "and docs".into(),
+        &[],
     )
     .await
     .expect("the mention is queued");

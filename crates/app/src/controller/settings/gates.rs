@@ -66,27 +66,7 @@ pub(crate) fn offer(id: ChoiceId, commands: &[String]) -> AppChoice {
 }
 
 /// One gate per non-empty line, each an argument vector split on spaces, never a shell string.
-pub(crate) fn gate_commands(lines: &[String]) -> Vec<GateCommand> {
-    let mut gates: Vec<GateCommand> = Vec::new();
-    for line in lines {
-        let command: Vec<String> = line.split_whitespace().map(str::to_owned).collect();
-        // Named by its words before any flag: `cargo clippy -- -D warnings` is `clippy`.
-        let words: Vec<&str> = command
-            .iter()
-            .map(String::as_str)
-            .take_while(|word| !word.starts_with('-'))
-            .collect();
-        let Some(last) = words.last() else { continue };
-        // `npm run test` and `cargo test` would both be `test`, so the second spells it out.
-        let name = if gates.iter().any(|gate| gate.name == *last) {
-            words.join("-")
-        } else {
-            (*last).to_owned()
-        };
-        gates.push(GateCommand { name, command });
-    }
-    gates
-}
+pub(crate) use argonauts_registry::gate_commands;
 
 /// `gates.run` as TOML text.
 pub(crate) fn gates_value(gates: &[GateCommand]) -> anyhow::Result<String> {

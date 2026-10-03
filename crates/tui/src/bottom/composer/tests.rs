@@ -6,6 +6,7 @@ use ratatui::style::Modifier;
 use super::*;
 use crate::bottom::VimMode;
 use crate::render::Clock;
+use crate::text::marks::decoration;
 use crate::text::plain_text;
 use crate::theme::{Glyphs, Role, Theme};
 
@@ -342,7 +343,10 @@ fn renders_rules_label_prompt_and_cursor() {
     assert_eq!(view.cursor, (2, 1));
     let theme = theme();
     assert_eq!(view.lines[0].spans[2].style, theme.style(Role::Label));
-    assert_eq!(view.lines[1].spans[0].style, theme.style(Role::Text));
+    assert_eq!(
+        view.lines[1].spans[0].style,
+        decoration(theme.style(Role::Text))
+    );
     let input = &view.lines[1].spans;
     assert_eq!(input[1].content, "A");
     assert!(input[1].style.add_modifier.contains(Modifier::REVERSED));
@@ -350,9 +354,10 @@ fn renders_rules_label_prompt_and_cursor() {
     assert_eq!(input[2].style, theme.style(Role::Dim));
     let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
     let busy = c.render(&ctx, true, true);
-    assert_eq!(busy.lines[1].spans[0].style, theme.style(Role::Dim));
+    let dim = decoration(theme.style(Role::Dim));
+    assert_eq!(busy.lines[1].spans[0].style, dim);
     let unfocused = c.render(&ctx, false, false);
-    assert_eq!(unfocused.lines[1].spans[0].style, theme.style(Role::Dim));
+    assert_eq!(unfocused.lines[1].spans[0].style, dim);
     assert_eq!(unfocused.lines[1].spans[1].content, "Ask anything");
 
     type_text(&mut c, "hello");
@@ -704,4 +709,163 @@ fn submitted(text: &str) -> ComposerEvent {
         text: text.into(),
         shown: text.into(),
     }
+}
+
+fn shell(command: &str) -> ComposerEvent {
+    ComposerEvent::Shell {
+        command: command.into(),
+    }
+}
+
+#[test]
+fn a_bang_on_an_empty_input_switches_to_shell_mode_and_enter_runs_it() {
+    let mut c = Composer::new();
+    assert_eq!(c.handle_key(key(KeyCode::Char('!'))), ComposerEvent::Edited);
+    assert!(c.is_shell());
+    assert!(c.is_empty(), "the ! is the mode, not the text");
+    // A second ! is part of the command.
+    type_text(&mut c, "!! && git status");
+    assert_eq!(c.text(), "!! && git status");
+    assert_eq!(c.handle_key(key(KeyCode::Enter)), shell("!! && git status"));
+    assert!(!c.is_shell(), "the input goes back to messages");
+    assert!(c.is_empty());
+    assert_eq!(c.history(), ["!!! && git status"]);
+
+    // Anywhere but the start of an empty input, ! is just a character.
+    type_text(&mut c, "hi!");
+    assert_eq!(c.text(), "hi!");
+    assert!(!c.is_shell());
+}
+
+#[test]
+fn backspace_on_an_empty_input_or_leaving_keeps_what_was_typed() {
+    let mut c = Composer::new();
+    type_text(&mut c, "!a");
+    assert!(c.is_shell());
+    c.handle_key(key(KeyCode::Backspace));
+    assert!(c.is_shell(), "the first Backspace takes the letter");
+    assert_eq!(c.handle_key(key(KeyCode::Backspace)), ComposerEvent::Edited);
+    assert!(!c.is_shell(), "the next one leaves shell mode");
+    assert_eq!(
+        c.handle_key(key(KeyCode::Backspace)),
+        ComposerEvent::Unhandled
+    );
+
+    type_text(&mut c, "!ls -la");
+    assert!(c.leave_shell());
+    assert_eq!(c.text(), "ls -la", "Esc leaves the draft as typed");
+    assert!(!c.leave_shell());
+    c.clear();
+    type_text(&mut c, "!");
+    c.clear();
+    assert!(!c.is_shell(), "clearing the input clears its mode");
+    // Whitespace alone runs nothing.
+    type_text(&mut c, "!  ");
+    assert_eq!(c.handle_key(key(KeyCode::Enter)), ComposerEvent::Unhandled);
+}
+
+#[test]
+fn history_brings_a_command_back_in_shell_mode() {
+    let mut c = Composer::new();
+    type_text(&mut c, "!ls");
+    c.handle_key(key(KeyCode::Enter));
+    type_text(&mut c, "hello");
+    c.handle_key(key(KeyCode::Enter));
+    type_text(&mut c, "!pwd");
+
+    c.handle_key(key(KeyCode::Up));
+    assert_eq!((c.text(), c.is_shell()), ("hello", false));
+    c.handle_key(key(KeyCode::Up));
+    assert_eq!((c.text(), c.is_shell()), ("ls", true));
+    c.handle_key(key(KeyCode::Down));
+    assert_eq!((c.text(), c.is_shell()), ("hello", false));
+    c.handle_key(key(KeyCode::Down));
+    assert_eq!(
+        (c.text(), c.is_shell()),
+        ("pwd", true),
+        "the draft comes back in its own mode"
+    );
+
+    c.clear();
+    c.handle_key(ctrl('r'));
+    type_text(&mut c, "ls");
+    assert_eq!((c.text(), c.is_shell()), ("ls", true));
+    c.handle_key(ctrl('g'));
+    assert_eq!((c.text(), c.is_shell()), ("", false));
+}
+
+#[test]
+fn a_pasted_or_fast_typed_bang_command_opens_shell_mode() {
+    let mut c = Composer::new();
+    c.handle_paste("!git log -3");
+    assert_eq!((c.text(), c.is_shell()), ("git log -3", true));
+    c.clear();
+    type_text(&mut c, "see ");
+    c.handle_paste("!this");
+    assert_eq!((c.text(), c.is_shell()), ("see !this", false));
+
+    let mut fast = Composer::new();
+    let t0 = Instant::now();
+    key_at(&mut fast, "!echo hi", t0, Duration::from_millis(1));
+    fast.flush_paste_burst(t0 + Duration::from_secs(1));
+    assert_eq!((fast.text(), fast.is_shell()), ("echo hi", true));
+}
+
+/// Enter runs shell mode's text outside the sandbox, so none of it may hide behind a label.
+#[test]
+fn a_paste_of_several_lines_never_runs_hidden() {
+    // A notebook cell or a Markdown image opens with `!`, and stays a message.
+    let mut c = Composer::new();
+    let cell = "!pip install torch\nimport torch\nprint(torch.__version__)\nx = 1";
+    c.handle_paste(cell);
+    assert!(!c.is_shell());
+    assert_eq!(c.expanded_text(), cell);
+    assert!(matches!(
+        c.handle_key(key(KeyCode::Enter)),
+        ComposerEvent::Submitted { .. }
+    ));
+    c.handle_paste("![diagram](docs/flow.png)\nwhy does this loop?");
+    assert!(!c.is_shell());
+
+    // In shell mode a long paste shows in full and runs as shown.
+    let mut c = Composer::new();
+    type_text(&mut c, "!");
+    let script = (1..=6)
+        .map(|n| format!("echo {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    c.handle_paste(&script);
+    assert!(c.is_shell());
+    assert_eq!(c.text(), script, "no [Pasted text] label");
+    c.handle_paste(&format!(" {}", "x".repeat(900)));
+    assert!(!c.text().contains("[Pasted text"), "{}", c.text());
+    assert_eq!(
+        c.handle_key(key(KeyCode::Enter)),
+        shell(&format!("{script} {}", "x".repeat(900)))
+    );
+}
+
+#[test]
+fn shell_mode_draws_its_marker_rules_and_placeholder_in_its_color() {
+    let mut c = Composer::new();
+    c.label = Some("peer-crew".into());
+    type_text(&mut c, "!");
+    let view = render(&c, 50);
+    assert_eq!(
+        plain_text(&view.lines),
+        "────────────────────────────────────── peer-crew ─\n\
+         ! Run a shell command in the repo folder\n\
+         ──────────────────────────────────────────────────"
+    );
+    let theme = theme();
+    let pink = theme.style(Role::Shell);
+    assert_eq!(view.lines[0].spans[0].style, decoration(pink));
+    assert_eq!(view.lines[0].spans[2].style, theme.style(Role::Label));
+    assert_eq!(view.lines[1].spans[0].style, decoration(pink));
+    assert_eq!(view.lines[2].spans[0].style, decoration(pink));
+
+    type_text(&mut c, "git status");
+    let view = render(&c, 50);
+    assert_eq!(plain_text(&view.lines[1..2]), "! git status");
+    assert_eq!(view.cursor, (12, 1));
 }

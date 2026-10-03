@@ -22,6 +22,7 @@ pub use harnesses::{HarnessEntries, builtin_harnesses, harness_manifests};
 pub use models::{family_from_model_id, family_problems, registry};
 pub use presets::{builtin_preset, presets, presets_in, upgrade_presets, write_preset};
 pub use resolve::resolve;
+pub use settings::plain::gate_commands;
 pub use terms::TERMS_NOTE;
 pub use workflows::{WorkflowError, WorkflowInfo, find_workflow, workflows_in};
 pub use write::{remove_setting, safety_keys_in, write_setting};

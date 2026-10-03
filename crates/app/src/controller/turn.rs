@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 use super::chat::TurnUpdate;
 use super::{Ctx, Internal};
 use crate::git;
+use crate::repo_files;
 
 /// Where the request stood when it was sent.
 pub(crate) struct Record {
@@ -225,9 +226,21 @@ impl TurnStep {
         }
     }
 
+    /// Steps whose text is your own words, so the files they mention go along.
+    fn takes_mentions(&self) -> bool {
+        matches!(self, Self::Triage { .. } | Self::Ask { .. } | Self::Side)
+    }
+
     /// Only the main agent knows its own commands, so no fallback takes one.
     pub(crate) fn main_agent_only(&self) -> bool {
         matches!(self, Self::Vendor { .. })
+    }
+
+    /// A message of yours to the lead, so it hears of the `!` commands you ran before it. A
+    /// vendor command must be the whole prompt, and a side question, a title, a summary, and a
+    /// review stand apart from the conversation.
+    pub(crate) fn hears_shell(&self) -> bool {
+        matches!(self, Self::Triage { .. } | Self::Ask { .. })
     }
 
     /// Answered in a session of its own and left out of the journal and the history, so the
@@ -321,6 +334,8 @@ pub(crate) struct Launch<'a> {
     pub excerpt: Option<InputPart>,
     /// After the step's prompt, such as how to write the answer.
     pub notes: Vec<InputPart>,
+    /// The `!` commands you ran since the lead's last turn, ahead of your message.
+    pub shell: Option<InputPart>,
     /// `/fast`: the lowest effort the model takes, over the one set.
     pub fast: bool,
 }
@@ -495,11 +510,17 @@ pub(crate) fn session_spec(
         worker = fast;
         effort = Some(level);
     }
-    let mut prompt: Vec<InputPart> = launch.excerpt.iter().cloned().collect();
-    prompt.push(launch.step.prompt(launch.text));
-    prompt.extend(launch.notes.iter().cloned());
     // An endpoint has no tools, so it gets an empty folder and no sandbox of its own.
     let endpoint = launch.handle.kind() == WorkerKind::Endpoint;
+    let mut prompt: Vec<InputPart> = launch.excerpt.iter().cloned().collect();
+    prompt.extend(launch.shell.iter().cloned());
+    prompt.push(launch.step.prompt(launch.text));
+    if launch.step.takes_mentions() {
+        let root = &ctx.env.repo_root;
+        let mentioned = repo_files::mentioned(root, launch.text);
+        prompt.extend(repo_files::parts(root, &mentioned, !endpoint));
+    }
+    prompt.extend(launch.notes.iter().cloned());
     let (access, workdir, mode) = if endpoint {
         (Access::NoTools, session_dir.clone(), SandboxMode::None)
     } else {
@@ -730,6 +751,7 @@ mod tests {
             resume: None,
             excerpt: None,
             notes: Vec::new(),
+            shell: None,
             fast: false,
         };
         let key = SessionKey::numbered(1);

@@ -183,6 +183,13 @@ pub enum UiCommand {
         key: String,
         scope: SettingScope,
     },
+    /// A `!` command, run as you in the repo folder. Its output shows in the transcript and goes
+    /// to the lead with your next message, never by itself.
+    Shell {
+        command: String,
+    },
+    /// Ctrl+C while a `!` command runs.
+    StopShell,
     /// Closes the screen. Runs keep going.
     Exit,
     /// Saves the pick recorded for an answered handoff card as a replacement rule for the
@@ -248,6 +255,8 @@ pub enum ViewRequest {
     Crew,
     /// The Library tab of the workflow view: every workflow file and built-in.
     WorkflowLibrary,
+    /// The repo's files and folders again, for the `@` list. Answered with `RepoFiles`.
+    RepoFiles,
     /// A Learning picker's rows, such as after you change one of its settings.
     Learning {
         area: LearningArea,
@@ -368,6 +377,12 @@ pub enum AppEvent {
     VendorCommands {
         set: VendorCommandSet,
     },
+    /// The repo's files for the `@` list: those git tracks and those it would (untracked and
+    /// not ignored), relative to the repo with `/` between folders. Sent at start and in
+    /// answer to `Request { RepoFiles }`.
+    RepoFiles {
+        paths: Vec<String>,
+    },
     /// What the screen calls each CLI and model. Sent at start and whenever the model lists
     /// are read again.
     Names {
@@ -422,7 +437,32 @@ pub enum AppEvent {
         title: String,
         lines: Vec<String>,
     },
+    Shell {
+        event: ShellEvent,
+    },
     Exit,
+}
+
+/// A `!` command's life, numbered from 1 in each app session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "shell", rename_all = "snake_case")]
+pub enum ShellEvent {
+    Started {
+        id: u32,
+        command: String,
+    },
+    /// Standard output and error as they arrive, in one stream as a terminal shows them.
+    Output {
+        id: u32,
+        text: String,
+    },
+    Finished {
+        id: u32,
+        /// `None` when a signal ended it.
+        exit_code: Option<i32>,
+        /// Ctrl+C stopped it.
+        stopped: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

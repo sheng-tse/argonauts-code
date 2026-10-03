@@ -18,6 +18,7 @@ use crate::harnesses::declared_harness_ids;
 use crate::presets::DEFAULT_PRESET;
 use crate::settings::budget_units::BudgetUnits;
 use crate::settings::handoff::{drop_entry_billing, entry_billing, merge_top_level};
+use crate::settings::plain;
 use crate::settings::preset_layer::{PresetLayer, preset_layer};
 use crate::settings::roles::fill_fresh_sessions;
 use crate::settings::set_by::SetBy;
@@ -56,13 +57,14 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
             sources.project_local_trusted,
         ),
     ];
+    let repo = repo_root(sources);
     let mut file_tables = Vec::new();
     for (layer, path, trusted) in files {
         let Some(path) = path else { continue };
-        let Some(table) = read_file_layer(layer, path, trusted, &mut warnings)? else {
+        let source = shown(path, repo.as_deref());
+        let Some(table) = read_file_layer(layer, path, &source, trusted, &mut warnings)? else {
             continue;
         };
-        let source = path.display().to_string();
         set_by.record(&table, layer, &source);
         budget_units.note(layer, &source, &table)?;
         file_tables.push((layer, table.clone()));
@@ -128,13 +130,12 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
     }
     fill_fresh_sessions(&mut merged);
 
-    let mut settings: Settings = Value::Table(merged)
+    let mut settings: Settings = Value::Table(merged.clone())
         .try_into()
-        .map_err(|err: toml::de::Error| type_error(&err, &set_by))?;
+        .map_err(|err: toml::de::Error| type_error(&err, &set_by, &merged))?;
     let cleared = budget_units.apply(&mut settings.budget, &mut set_by);
 
     let resolved = leaves(&to_table(&settings, "the merged settings")?);
-    let repo = repo_root(sources);
     let harness_ids = declared_harnesses(sources);
     let context = Context {
         repo_root: repo.as_deref(),
@@ -225,13 +226,14 @@ fn to_table(settings: &Settings, layer: &str) -> Result<Table, SettingsError> {
 fn read_file_layer(
     layer: &str,
     path: &Path,
+    source: &str,
     trusted: bool,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Table>, SettingsError> {
-    let Some(mut table) = read_layer(path)? else {
+    let Some(mut table) = read_layer(path, source)? else {
         return Ok(None);
     };
-    check_plain_keys(&table, &path.display().to_string())?;
+    check_plain_keys(&table, source)?;
     if layer != GLOBAL
         && let Some((key, _)) = leaves(&table).into_iter().find(|(key, _)| {
             GLOBAL_ONLY_KEYS
@@ -240,9 +242,8 @@ fn read_file_layer(
         })
     {
         return Err(SettingsError::Refused(format!(
-            "{key} in {} can only be set in your global config, since it names a program for \
-             Argonauts to run",
-            path.display()
+            "{key} in {source} can only be set in your global config, since it names a program \
+             for Argonauts to run"
         )));
     }
     if !trusted {
@@ -250,24 +251,21 @@ fn read_file_layer(
             if is_safety_key(&key) {
                 remove_leaf(&mut table, &key);
                 warnings.push(format!(
-                    "{key} in {} is a safety setting and is ignored until you trust the file \
-                     (/setup, or the trust question when it changes)",
-                    path.display()
+                    "{key} in {source} is a safety setting and is ignored until you trust the \
+                     file (/setup, or the trust question when it changes)"
                 ));
             }
         }
         for key in drop_entry_billing(&mut table) {
             warnings.push(format!(
-                "{key} in {} is ignored until you trust the file, since only your own settings \
-                 let a fallback bill an API without asking",
-                path.display()
+                "{key} in {source} is ignored until you trust the file, since only your own \
+                 settings let a fallback bill an API without asking"
             ));
         }
         for key in drop_cost_claims(&mut table) {
             warnings.push(format!(
-                "{key} in {} is ignored until you trust the file, since it changes what work \
-                 is estimated to cost, and so what the dollar limits see",
-                path.display()
+                "{key} in {source} is ignored until you trust the file, since it changes what \
+                 work is estimated to cost, and so what the dollar limits see"
             ));
         }
     }
@@ -296,7 +294,16 @@ fn drop_cost_claims(layer: &mut Table) -> Vec<String> {
     dropped
 }
 
-fn read_layer(path: &Path) -> Result<Option<Table>, SettingsError> {
+/// A file by its path from the repo when it's in one, as you'd name it there.
+fn shown(path: &Path, repo: Option<&Path>) -> String {
+    repo.and_then(|repo| path.strip_prefix(repo).ok())
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn read_layer(path: &Path, source: &str) -> Result<Option<Table>, SettingsError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -310,8 +317,8 @@ fn read_layer(path: &Path) -> Result<Option<Table>, SettingsError> {
     text.parse::<Table>()
         .map(Some)
         .map_err(|err| SettingsError::Invalid {
-            layer: path.display().to_string(),
-            message: err.to_string(),
+            layer: source.to_owned(),
+            message: plain::syntax_message(&text, &err),
         })
 }
 
@@ -659,11 +666,16 @@ pub(crate) fn is_plain_key(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// Removes `key`, and the tables it leaves empty: an empty `[gates.run]` left behind would
+/// stand where the built-in list goes, and fail as if the built-ins were wrong.
 fn remove_leaf(table: &mut Table, key: &str) {
     match key.split_once('.') {
         Some((head, rest)) => {
             if let Some(Value::Table(inner)) = table.get_mut(head) {
                 remove_leaf(inner, rest);
+                if inner.is_empty() {
+                    table.remove(head);
+                }
             }
         }
         None => {

@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use crate::cell::{Cell as HistoryItem, HistoryCell};
 use crate::history::History;
 use crate::render::RenderCtx;
-use crate::text::{KEEP, Part, fit_parts, sanitize_line, str_width, truncate_line};
+use crate::text::{KEEP, Part, fit_parts, marks, sanitize_line, str_width, truncate_line};
 use crate::theme::{Role, Theme};
 
 #[derive(Debug, Default)]
@@ -171,7 +171,7 @@ impl TranscriptOverlay {
             .collect();
         lines.resize(rows, Line::default());
         let footer = [
-            Line::from(Span::styled(
+            Line::from(marks::decorative(
                 ctx.theme.glyphs.rule.repeat(usize::from(ctx.width)),
                 ctx.theme.style(Role::Rule),
             )),
@@ -323,7 +323,10 @@ mod tests {
             text.ends_with("  Showing detailed transcript · ctrl+o to toggle · esc to close"),
             "{text}"
         );
-        assert_eq!(lines[4].spans[0].style, theme.style(Role::Rule));
+        assert_eq!(
+            lines[4].spans[0].style,
+            marks::decoration(theme.style(Role::Rule))
+        );
 
         let lines = overlay.window(&rows(2), &rows(3)[2..], &ctx, 4);
         assert_eq!(plain_text(&lines[..2]), "row 1\nrow 2");

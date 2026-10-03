@@ -65,6 +65,8 @@ pub(crate) enum Internal {
     Chat(TurnUpdate),
     Run(RunUpdate),
     Setup(SetupUpdate),
+    /// A `!` command printed or ended.
+    Shell(super::shell::ShellUpdate),
     /// The CLIs' model lists were read again.
     ModelsRefreshed,
 }
@@ -86,8 +88,14 @@ pub(crate) enum Effect {
     OpenSetup,
     /// The guided setup finished or was set aside.
     SetupDone,
-    /// Input held while a chat turn ran, handled now as if you had just sent it.
+    /// Input to handle as if you had just sent it.
     Input(Box<UiCommand>),
+    /// Input typed while a chat turn ran, handled now as if you had just sent it. It hears of
+    /// the `!` commands up to `typed_after`, the last that had ended when you typed it.
+    Queued {
+        command: Box<UiCommand>,
+        typed_after: u32,
+    },
     /// Close the screen. Runs keep going.
     Exit,
 }
@@ -166,9 +174,10 @@ impl Ctx {
         });
     }
 
-    /// Every error a handler returns reaches you as a notice.
+    /// Every error a handler returns reaches you as a notice, naming files in the repo by
+    /// their path from it.
     pub(crate) fn error(&self, err: &anyhow::Error) {
-        self.notice(NoteLevel::Error, format!("{err:#}"));
+        self.notice(NoteLevel::Error, self.env.shown_in(&format!("{err:#}")));
     }
 
     /// Sends `Mode` only when it changed.

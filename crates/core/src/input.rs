@@ -1,6 +1,7 @@
 //! Parses what you type: slash commands, `@mentions`, and plain text. The UI's menus and the
 //! controller's routing share this parser, so they never disagree.
 
+mod at_words;
 mod shared;
 mod vendor;
 
@@ -15,6 +16,7 @@ use crate::names::{ChatId, RoleName, VendorId, WorkerRef};
 use crate::settings::ui::NarratorMode;
 use crate::vendor_sessions::VendorSessionRef;
 
+pub use at_words::{AtWord, at_word, at_words};
 pub use shared::SHARED_COMMANDS;
 pub use vendor::parse_input_with;
 

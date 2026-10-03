@@ -9,6 +9,7 @@ mod input;
 mod live;
 mod overlay;
 mod run;
+mod selection;
 mod views;
 
 #[cfg(test)]
@@ -27,14 +28,14 @@ use crate::keymap::{Action, Keymap};
 use crate::model::ViewModel;
 use crate::render::{Clock, RenderCtx};
 use crate::state::AppState;
-use crate::terminal::InlineTerminal;
 use crate::terminal::setup::{self, TerminalModes};
 use crate::terminal::title::{TitleStatus, title_text};
+use crate::terminal::{InlineTerminal, paint_rows};
 use crate::theme::Theme;
 use crate::views::ViewCtx;
 
 pub use frames::{FrameScheduler, MIN_FRAME_INTERVAL};
-pub use fullscreen::{Scrollback, select_key};
+pub use fullscreen::Scrollback;
 pub use live::{LiveView, compose_live};
 pub use overlay::{OverlayEvent, OverlayView, TranscriptOverlay};
 pub use run::{Flow, Host, StdoutWriter, run};
@@ -52,6 +53,10 @@ pub enum UiAction {
     Submit {
         text: String,
         shown: String,
+    },
+    /// Enter in shell mode. The composer is already cleared and back in its usual mode.
+    Shell {
+        command: String,
     },
     /// `note` is the text typed after Tab or into a free-text option; `checked` holds a
     /// checklist option's ticked rows. The card is already gone.
@@ -107,6 +112,8 @@ pub enum UiAction {
     },
     /// A short line for the mode line's notice slot.
     Notice(String),
+    /// Text selected with the mouse, for the system clipboard.
+    Copy(String),
     /// Edit the draft in `$EDITOR` through [`Ui::with_restored`].
     EditDraft,
     Focus(bool),
@@ -369,11 +376,20 @@ impl<W: Write> Ui<W> {
             let area = Rect::new(0, 0, screen.width, screen.height);
             let mut buffer = Buffer::empty(area);
             view.render(area, &mut buffer, &ctx);
+            self.paint_selection(&mut buffer);
             return self.terminal.draw_buffer(&buffer);
         }
         if let Some(overlay) = &self.overlay {
             let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now));
             let lines = overlay.render(&self.model.history, &ctx, screen.height);
+            // In fullscreen the transcript can be selected, which needs its cells.
+            if self.scrollback.is_some() {
+                let area = Rect::new(0, 0, screen.width, screen.height);
+                let mut buffer = Buffer::empty(area);
+                paint_rows(&mut buffer, area, &lines);
+                self.paint_selection(&mut buffer);
+                return self.terminal.draw_buffer(&buffer);
+            }
             self.terminal.draw_screen(&lines)?;
         }
         Ok(())
@@ -543,9 +559,10 @@ impl<W: Write> Ui<W> {
     }
 
     fn drain_history(&mut self, now: Instant) -> bool {
-        let width = self.terminal.screen_size().width;
+        let screen = self.terminal.screen_size();
         // History prints with a still clock, so its printed form never depends on frame timing.
-        let ctx = RenderCtx::new(width, &self.theme, Clock::still(now));
+        let ctx =
+            RenderCtx::new(screen.width, &self.theme, Clock::still(now)).with_rows(screen.height);
         let rows = self.model.history.drain_printable(&ctx);
         let header = self.model.history.take_header_rows();
         let redrawn = self.model.history.take_header_redrawn();
@@ -572,7 +589,8 @@ impl<W: Write> Ui<W> {
     fn draw_inline(&mut self, now: Instant) -> io::Result<()> {
         self.drain_history(now);
         let screen = self.terminal.screen_size();
-        let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now));
+        let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
+            .with_rows(screen.height);
         let blocks = self.model.history.live_blocks(&ctx);
         // Two rows stay above the live region, so some history always shows.
         let max_height = screen.height.saturating_sub(2);

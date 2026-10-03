@@ -12,6 +12,7 @@ use similar::{ChangeTag, TextDiff};
 use super::HistoryCell;
 use super::layout::{BODY_COL, result_prefix};
 use crate::render::RenderCtx;
+use crate::text::marks;
 use crate::text::{fit_lines, sanitize_line, wrap_spans};
 use crate::theme::{Role, Theme};
 
@@ -279,7 +280,7 @@ impl HistoryCell for DiffCell {
         let theme = ctx.theme;
         let width = usize::from(ctx.width);
         let first = [
-            Span::styled(theme.glyphs.bullet, theme.style(Role::Success)),
+            marks::decorative(theme.glyphs.bullet, theme.style(Role::Success)),
             Span::raw(" "),
         ];
         let title = [Span::styled(

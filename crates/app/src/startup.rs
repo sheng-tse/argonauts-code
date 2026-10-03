@@ -16,6 +16,7 @@ use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::handoff::FallbackEntry;
 use argonauts_core::steps::SchemaStepRunner;
+use argonauts_core::text::sentence_case;
 use argonauts_registry::{PresetUpgrade, PresetUpgradeOutcome, upgrade_presets};
 use argonauts_tui::{AppIo, UiOptions, run_app, run_screen_reader, stop_signal};
 use tokio::sync::mpsc;
@@ -329,17 +330,10 @@ pub(crate) fn start_notices(ctx: &mut Ctx) -> Vec<(NoteLevel, String)> {
 pub(crate) fn settings_warnings(warnings: &[String]) -> Vec<(NoteLevel, String)> {
     warnings
         .iter()
-        .map(|warning| (NoteLevel::Warn, sentence(warning)))
+        // `resolve` words its warnings for a log line, starting in lowercase, often with the
+        // key, which keeps its spelling.
+        .map(|warning| (NoteLevel::Warn, sentence_case(warning)))
         .collect()
-}
-
-/// `resolve` words its warnings for a log line, starting in lowercase.
-fn sentence(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 /// Only `~/.argonauts/presets/` is upgraded: a project's presets are the team's, reviewed and
@@ -777,6 +771,29 @@ mod tests {
                 && text.starts_with("Unknown setting ui.thme ")),
             "{notices:?}"
         );
+    }
+
+    #[test]
+    fn a_warning_that_starts_with_a_key_keeps_its_spelling() {
+        let (mut parts, _) = TestCtx::new(HarnessOptions {
+            prepare: Some(Box::new(|repo: &TempRepo| {
+                repo.write(
+                    ".argonauts/config.local.toml",
+                    "[budget]\nrun_usd = 1.0\n\n[gates]\nrun = [\"python3 -m unittest -q\"]\n",
+                )
+                .unwrap();
+            })),
+            ..HarnessOptions::default()
+        });
+        let notices = start_notices(&mut parts.ctx);
+        let texts: Vec<&str> = notices.iter().map(|(_, text)| text.as_str()).collect();
+        for key in ["budget.run_usd", "gates.run"] {
+            let warning = format!(
+                "{key} in .argonauts/config.local.toml is a safety setting and is ignored until \
+                 you trust the file (/setup, or the trust question when it changes)"
+            );
+            assert!(texts.contains(&warning.as_str()), "{texts:#?}");
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod group;
 mod header;
 pub(crate) mod layout;
 mod notice;
+mod shell;
 mod tool;
 mod turn;
 mod user;
@@ -26,6 +27,7 @@ pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView}
 pub use group::CollapsedGroup;
 pub use header::{AgentReady, SessionHeader};
 pub use notice::{ExitNote, Notice, ResultLine};
+pub use shell::{ShellEnd, ShellRun};
 pub use tool::{
     BLINK_PERIOD, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState, ToolStats, ToolTitle,
 };
@@ -96,6 +98,7 @@ pub enum Cell {
     Notice(Notice),
     Exit(ExitNote),
     AgentsStarted(AgentsStarted),
+    Shell(ShellRun),
     Custom(Box<dyn HistoryCell>),
 }
 
@@ -113,6 +116,7 @@ impl Cell {
             Cell::Notice(cell) => cell,
             Cell::Exit(cell) => cell,
             Cell::AgentsStarted(cell) => cell,
+            Cell::Shell(cell) => cell,
             Cell::Custom(cell) => cell.as_ref(),
         }
     }
@@ -127,6 +131,13 @@ impl Cell {
     pub fn as_tool_mut(&mut self) -> Option<&mut ToolCall> {
         match self {
             Cell::Tool(call) => Some(call),
+            _ => None,
+        }
+    }
+
+    pub fn as_shell_mut(&mut self) -> Option<&mut ShellRun> {
+        match self {
+            Cell::Shell(run) => Some(run),
             _ => None,
         }
     }
@@ -179,6 +190,7 @@ cell_from!(
     Notice(Notice),
     Exit(ExitNote),
     AgentsStarted(AgentsStarted),
+    Shell(ShellRun),
 );
 
 impl From<Box<dyn HistoryCell>> for Cell {

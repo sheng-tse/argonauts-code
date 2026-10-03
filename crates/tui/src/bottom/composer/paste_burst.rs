@@ -151,7 +151,10 @@ impl Composer {
             return None;
         }
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+        // `!` into an empty input switches to shell mode, which typing it as text would skip.
+        let enters_shell = !self.burst.active && !self.shell && self.is_empty();
         match key.code {
+            KeyCode::Char('!') if plain && enters_shell => None,
             KeyCode::Char(c) if plain => Some(match self.burst.on_char(now) {
                 Step::Buffer => {
                     self.burst.buffer.push(c);

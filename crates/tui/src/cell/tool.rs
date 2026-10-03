@@ -12,6 +12,7 @@ use super::group::CollapsedGroup;
 use super::{HistoryCell, Tone};
 use crate::format;
 use crate::render::RenderCtx;
+use crate::text::marks;
 use crate::text::{
     fit_lines, sanitize_line, spans_width, str_width, truncate_line, truncate_spans, wrap_spans,
 };
@@ -393,9 +394,11 @@ impl ToolCall {
         let theme = ctx.theme;
         match self.state {
             ToolState::Running => running_bullet(ctx),
-            ToolState::Stopped => Span::styled(theme.glyphs.bullet, theme.style(Role::Warning)),
-            ToolState::Done => Span::styled(theme.glyphs.bullet, theme.style(Role::Success)),
-            ToolState::Failed => Span::styled(theme.glyphs.bullet, theme.style(Role::Error)),
+            ToolState::Stopped => {
+                marks::decorative(theme.glyphs.bullet, theme.style(Role::Warning))
+            }
+            ToolState::Done => marks::decorative(theme.glyphs.bullet, theme.style(Role::Success)),
+            ToolState::Failed => marks::decorative(theme.glyphs.bullet, theme.style(Role::Error)),
         }
     }
 
@@ -603,7 +606,7 @@ pub(crate) fn running_bullet(ctx: &RenderCtx<'_>) -> Span<'static> {
     let theme = ctx.theme;
     let hidden = !theme.reduced_motion && ctx.clock.frame(BLINK_PERIOD, 2) == 1;
     let glyph = if hidden { " " } else { theme.glyphs.bullet };
-    Span::styled(glyph, theme.style(Role::Dim))
+    marks::decorative(glyph, theme.style(Role::Dim))
 }
 
 impl HistoryCell for ToolCall {

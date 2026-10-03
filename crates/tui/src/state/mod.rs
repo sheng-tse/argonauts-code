@@ -10,7 +10,8 @@ mod session;
 use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::app::{
-    AgentReady, AppChoice, AppEvent, AppMode, ChatEvent, StatusLine, UiCommand, ViewData,
+    AgentReady, AppChoice, AppEvent, AppMode, ChatEvent, ShellEvent, StatusLine, UiCommand,
+    ViewData,
 };
 use argonauts_core::crew_panel::CrewPanel;
 use argonauts_core::display_names::DisplayNames;
@@ -51,6 +52,8 @@ pub struct AppState {
     pub chat: ChatState,
     /// Open app choices, oldest first.
     pub choices: Vec<AppChoice>,
+    /// The `!` command that runs now, by its id, so Ctrl+C stops it.
+    pub shell: Option<u32>,
     pub replay: Replay,
     /// The last `[ui]` section the controller sent.
     pub ui: Option<UiSettings>,
@@ -244,10 +247,16 @@ impl AppState {
                 }
                 _ => {}
             },
+            AppEvent::Shell { event } => match event {
+                ShellEvent::Started { id, .. } => self.shell = Some(*id),
+                ShellEvent::Finished { id, .. } if self.shell == Some(*id) => self.shell = None,
+                ShellEvent::Output { .. } | ShellEvent::Finished { .. } => {}
+            },
             AppEvent::TakeOver { .. }
             | AppEvent::RunInTerminal { .. }
             | AppEvent::Recap { .. }
             | AppEvent::SettingChanged { .. }
+            | AppEvent::RepoFiles { .. }
             | AppEvent::CondensedReplay { .. }
             | AppEvent::ChatResumed { .. }
             | AppEvent::Report { .. }

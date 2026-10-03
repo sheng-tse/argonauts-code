@@ -150,6 +150,11 @@ fn fit_ansi16(role: Role, style: Style) -> Style {
         // A dark red or green row turns into a muddy named color, so rows lose their fill and
         // the diff text carries the color instead.
         Role::RemovedRow | Role::AddedRow | Role::UserBand => style.bg = None,
+        // The nearest named blue can hide the text on it, and reversed cells always read.
+        Role::Selection => {
+            style.bg = None;
+            style = style.add_modifier(Modifier::REVERSED);
+        }
         Role::RemovedWord | Role::AddedWord => {
             style.bg = None;
             style = style.add_modifier(Modifier::UNDERLINED);
@@ -197,6 +202,7 @@ fn fit_no_color(role: Role, style: Style) -> Style {
         Role::Dim | Role::Faint | Role::Rule => style.add_modifier(Modifier::DIM),
         Role::Accent | Role::Shimmer => style.add_modifier(Modifier::BOLD),
         Role::RemovedWord | Role::AddedWord => style.add_modifier(Modifier::UNDERLINED),
+        Role::Selection => style.add_modifier(Modifier::REVERSED),
         _ => style,
     }
 }
@@ -495,6 +501,13 @@ mod tests {
                 .style(Role::AddedWord)
                 .add_modifier
                 .contains(Modifier::UNDERLINED)
+        );
+        assert_eq!(theme.style(Role::Selection).bg, None);
+        assert!(
+            theme
+                .style(Role::Selection)
+                .add_modifier
+                .contains(Modifier::REVERSED)
         );
         assert_eq!(theme.style(Role::BarTrack).bg, Some(Color::DarkGray));
         assert_eq!(theme.style(Role::BarFill).bg, Some(Color::Yellow));

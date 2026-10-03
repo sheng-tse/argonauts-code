@@ -389,7 +389,7 @@ fn write_project_file(env: &AppEnv, file: &Path, key: &str, value: &str) -> anyh
         let note = format!(
             "{} stays untrusted, so its safety settings stay ignored until you trust it with \
              `argonauts init`.",
-            env.display(file)
+            env.shown(file)
         );
         return Ok(Saved {
             file: file.to_owned(),
@@ -495,7 +495,7 @@ fn show(
         files.push(env.project_local_config());
     }
     let shown = |path: &Path| match env {
-        Some(env) => env.display(path),
+        Some(env) => env.shown(path),
         None => path.display().to_string(),
     };
     let mut out = String::new();

@@ -25,11 +25,12 @@ static ALTERNATE_SCREEN: AtomicBool = AtomicBool::new(false);
 /// Set once the panic hook gave the terminal back, so a screen still running draws nothing more.
 static GIVEN_BACK: AtomicBool = AtomicBool::new(false);
 
-/// Clicks and the wheel reported as SGR mouse events, with no motion tracking. The terminal's
-/// own selection still works with its bypass key held, such as Shift.
-pub(crate) const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
-/// Turns off both kinds of mouse reporting the app uses, and alternate scroll mode.
-pub(crate) const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l\x1b[?1007l";
+/// Clicks, the wheel, and motion while a button is down, reported as SGR mouse events, so the
+/// app can select text. The terminal's own selection still works with its bypass key held,
+/// such as Shift.
+pub(crate) const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+/// Turns off every kind of mouse reporting the app uses, and alternate scroll mode.
+pub(crate) const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1007l";
 
 /// Raw mode, bracketed paste, focus events, and keyboard disambiguation where the terminal
 /// supports it. Dropping it restores the terminal.

@@ -159,3 +159,105 @@ fn mention_list_under_input() {
         "{shown}"
     );
 }
+
+fn in_shell_mode(command: &str) -> BottomState {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut bottom = typed("");
+    bottom
+        .composer
+        .handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
+    bottom.composer.set_text(command);
+    bottom
+}
+
+/// Claude Code's bash mode: a pink `!` and rules, and a mode line that says only that.
+#[test]
+fn shell_mode_input_and_mode_line() {
+    let empty = in_shell_mode("");
+    assert!(empty.composer.is_shell());
+    snapshot_widths("shell_mode_empty", &empty);
+    let typed = in_shell_mode("git status && ls /tmp");
+    snapshot_widths("shell_mode_typed", &typed);
+
+    let theme = theme();
+    let lines = typed.render(&ctx(&theme, 80, 0.0)).lines;
+    let pink = common::fg(argonauts_tui::theme::Role::Shell);
+    let marker = common::style_of(&lines, "! ").expect("the input row");
+    assert_eq!(marker.fg, pink, "the ! is pink");
+    let mode = common::style_of(&lines, "! for shell mode").expect("the mode line");
+    assert_eq!(mode.fg, pink);
+    let rules: Vec<_> = lines
+        .iter()
+        .filter(|line| common::row_text(line).starts_with('─'))
+        .collect();
+    assert_eq!(rules.len(), 2, "{}", text(&lines));
+    for rule in rules {
+        assert_eq!(rule.spans[0].style.fg, pink, "both rules are pink");
+    }
+}
+
+fn with_files(text: &str, run: bool) -> BottomState {
+    let mut bottom = typed("");
+    if !run {
+        bottom.menus.mentions.clear();
+    }
+    let files: Vec<String> = [
+        ".gitignore",
+        "Cargo.toml",
+        "README.md",
+        "crates/core/src/lib.rs",
+        "crates/tui/src/bottom/menu.rs",
+        "crates/tui/src/bottom/files.rs",
+        "crates/tui/src/mentions.rs",
+        "docs/manual.md",
+        "tests/main_test.rs",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    bottom.menus.set_files(&files);
+    bottom.composer.set_text(text);
+    bottom
+}
+
+#[test]
+fn file_mention_list_under_input() {
+    // No run: the repo's top level, files first, as Claude Code lists it.
+    let bottom = with_files("@", false);
+    snapshot_widths("file_mention_list_top_level", &bottom);
+    let theme = theme();
+    let shown = text(&bottom.render(&ctx(&theme, 80, 0.0)).lines);
+    let files: Vec<&str> = shown
+        .lines()
+        .filter_map(|row| row.strip_prefix("  + "))
+        .map(str::trim_end)
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ".gitignore",
+            "Cargo.toml",
+            "README.md",
+            "crates/",
+            "docs/",
+            "tests/"
+        ],
+        "{shown}"
+    );
+
+    // Typing narrows it anywhere in the path.
+    let bottom = with_files("explain @menu", false);
+    snapshot_widths("file_mention_list_filtered", &bottom);
+
+    // In a run, the agents follow under their own heading.
+    let bottom = with_files("@c", true);
+    snapshot_widths("file_mention_list_with_agents", &bottom);
+    let shown = text(&bottom.render(&ctx(&theme, 120, 0.0)).lines);
+    let rows: Vec<&str> = shown.lines().collect();
+    let heading = rows
+        .iter()
+        .position(|row| *row == "Agents")
+        .unwrap_or_else(|| panic!("an Agents heading:\n{shown}"));
+    assert!(rows[heading - 1].starts_with("  + "), "{shown}");
+    assert!(rows[heading + 1].starts_with("  @claude-code"), "{shown}");
+}

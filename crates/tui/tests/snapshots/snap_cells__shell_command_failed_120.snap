@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/snap_cells.rs
+expression: text(&lines)
+---
+! cargo test -q
+  ⎿  error: could not compile `argonauts-tui`
+     Exit code 101

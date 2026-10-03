@@ -71,6 +71,20 @@ fn is_bidi_control(c: char) -> bool {
     matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
+/// `text` with every control character and bidi override written out as `\u{1b}`, for quoting
+/// back a line from a file: you see what it holds, and the terminal never acts on it.
+pub fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if (c.is_control() && c != '\t') || is_bidi_control(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +133,17 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(&sanitize_for_terminal(input), want, "{input:?}");
         }
+    }
+
+    #[test]
+    fn escaped_controls_show_and_act_on_nothing() {
+        let line = "# \u{1b}]52;c;cHduZWQ=\u{7} tab\there \u{202e}txt";
+        let shown = escape_controls(line);
+        assert_eq!(
+            shown,
+            "# \\u{1b}]52;c;cHduZWQ=\\u{7} tab\there \\u{202e}txt"
+        );
+        assert_eq!(sanitize_for_terminal(&shown), shown);
     }
 
     #[test]

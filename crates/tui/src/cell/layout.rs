@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use crate::text::marks;
 use crate::text::str_width;
 use crate::theme::{Role, Theme};
 
@@ -21,7 +22,7 @@ pub(crate) fn result_prefix(theme: &Theme) -> Vec<Span<'static>> {
     let after = BODY_COL.saturating_sub(2 + str_width(hook)).max(1);
     vec![
         Span::styled("  ", open),
-        Span::styled(hook, theme.style(Role::Dim).bg(Color::Reset)),
+        marks::decorative(hook, theme.style(Role::Dim).bg(Color::Reset)),
         Span::styled(" ".repeat(after), open),
     ]
 }

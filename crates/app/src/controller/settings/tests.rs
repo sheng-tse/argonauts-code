@@ -1413,6 +1413,87 @@ async fn files_without_untrusted_safety_keys_ask_nothing_at_start() {
     );
 }
 
+/// The file the decision was made from: a gate written as a string, beside a safety key.
+const GATE_AS_STRING: &str =
+    "[budget]\nrun_usd = 1.0\n\n[gates]\nrun = [\"python3 -m unittest -q\"]\n";
+
+#[tokio::test]
+async fn a_file_that_needs_a_fix_says_what_to_fix_instead_of_asking_for_trust() {
+    let mut harness = Harness::start_with(harness_options(|repo| {
+        repo.write(".argonauts/config.local.toml", GATE_AS_STRING)
+            .unwrap();
+    }))
+    .await;
+    harness
+        .until(|event| matches!(event, AppEvent::Status { .. }))
+        .await;
+    let file = harness.repo.root().join(".argonauts/config.local.toml");
+    assert!(!TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
+    let events = harness.exit().await;
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AppEvent::Choice { .. })),
+        "{events:#?}"
+    );
+    let notices: Vec<(NoteLevel, &str)> = events
+        .iter()
+        .filter_map(|event| match event {
+            AppEvent::Notice { level, text } => Some((*level, text.as_str())),
+            _ => None,
+        })
+        .collect();
+    let fix = ".argonauts/config.local.toml needs a fix before you can trust it: gates.run \
+               can't be a list of strings; it takes a list of checks, each a [[gates.run]] table \
+               with a name and a command. Write it like this:\n\
+               [[gates.run]]\n\
+               name = \"python3\"\n\
+               command = [\"python3\", \"-m\", \"unittest\", \"-q\"]";
+    assert!(notices.contains(&(NoteLevel::Warn, fix)), "{notices:#?}");
+    assert!(
+        notices
+            .iter()
+            .all(|(_, text)| !text.contains("stays untrusted") && !text.contains("invalid type")),
+        "{notices:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_yes_that_cannot_resolve_keeps_nothing_trusted_and_says_why_once() {
+    let mut harness = Harness::start_with(harness_options(|repo| {
+        repo.write(".argonauts/config.toml", UNSAFE_PROJECT)
+            .unwrap();
+    }))
+    .await;
+    let trust = next_choice(&mut harness, ChoiceKind::TrustProject).await;
+    // Your global file breaks while the question is open.
+    let global = harness.repo.global_config();
+    std::fs::write(&global, "[ui\n").unwrap();
+    answer(&harness, &trust.id, AnswerAction::Approve, None).await;
+    let outcome = next_closed(&mut harness, &trust.id).await;
+    assert_eq!(outcome, NOT_CHANGED);
+    let notice = next_notice(&mut harness).await;
+    assert_eq!(
+        notice,
+        format!(
+            ".argonauts/config.toml can't be trusted until {} is fixed: line 1 isn't valid TOML \
+             (unclosed table, expected `]`): [ui",
+            global.display()
+        )
+    );
+    let file = harness.repo.root().join(".argonauts/config.toml");
+    assert!(!TrustStore::load(&state_dir(&harness.repo)).is_trusted(&file));
+    std::fs::remove_file(&global).unwrap();
+    let events = harness.exit().await;
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            AppEvent::Notice { text, .. } if text.contains("stays untrusted")
+        )),
+        "{events:#?}"
+    );
+}
+
 #[tokio::test]
 async fn a_trusted_or_new_project_file_stays_trusted_after_a_write() {
     let mut harness = Harness::start().await;

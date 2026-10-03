@@ -21,6 +21,7 @@ use argonauts_core::log::{Note, NoteLevel};
 use argonauts_core::names::{CheckpointId, RoleName, WorkflowId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::steps::design::{DesignInput, DesignOutput, DesignWorkflow, WorkflowExample};
+use argonauts_core::text::sentence_case;
 use argonauts_core::workflow::{StepKind, StepRef, Workflow, WorkflowParams, WorkflowRef};
 
 use crate::checkpoints::{self, CheckpointRequest};
@@ -518,14 +519,14 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
     Ok(None)
 }
 
-/// A reason as a sentence of its own: capitalized, with one closing period.
+/// A reason as a sentence of its own, with one closing period. A reason that starts with a
+/// step or a key keeps its spelling.
 fn sentence(reason: &str) -> String {
     let reason = reason.trim().trim_end_matches('.');
-    let mut chars = reason.chars();
-    match chars.next() {
-        Some(first) => format!("{}{}.", first.to_uppercase(), chars.as_str()),
-        None => String::new(),
+    if reason.is_empty() {
+        return String::new();
     }
+    format!("{}.", sentence_case(reason))
 }
 
 fn lead(host: &Host) -> argonauts_core::names::WorkerRef {

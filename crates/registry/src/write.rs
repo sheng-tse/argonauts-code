@@ -16,7 +16,8 @@ use crate::presets::{is_preset_name, not_a_preset_name, presets_in};
 use crate::resolve::{SESSION_ENV, is_plain_key, is_safety_path, key_matches};
 use crate::settings::budget_units::{BudgetUnits, other_units};
 use crate::settings::handoff::entry_billing;
-use crate::settings::validate::file_problems;
+use crate::settings::plain::{one_of, syntax_message};
+use crate::settings::validate::{file_problems, type_message};
 
 /// Sets one dotted key in a TOML file. A new key gets its catalog description as a comment, a
 /// bare word reads as a string as with `--set`, and a table value merges key by key. Picking a
@@ -45,7 +46,7 @@ fn write(
     in_agent_session: bool,
 ) -> Result<(), SettingsError> {
     let invalid = |message: String| SettingsError::Invalid {
-        layer: file.display().to_string(),
+        layer: shown(file),
         message,
     };
     let path = key_path(key).map_err(invalid)?;
@@ -96,7 +97,7 @@ fn write(
     if only_comments {
         text = format!("{}\n\n{text}", original.trim_end());
     }
-    resolves_alone(file, key, &text)?;
+    resolves_alone(file, &text)?;
 
     // Exclude before writing, so your own settings are never briefly committable.
     if let Some(repo_root) = local_config_repo(file) {
@@ -108,7 +109,7 @@ fn write(
 
 fn remove(file: &Path, key: &str, in_agent_session: bool) -> Result<bool, SettingsError> {
     let invalid = |message: String| SettingsError::Invalid {
-        layer: file.display().to_string(),
+        layer: shown(file),
         message,
     };
     let path = key_path(key).map_err(invalid)?;
@@ -150,18 +151,19 @@ fn remove(file: &Path, key: &str, in_agent_session: bool) -> Result<bool, Settin
 
 /// Refuses a file that `resolve` would refuse on its own, with the message it would give. A
 /// value of the wrong type never reaches the file.
-fn resolves_alone(file: &Path, key: &str, text: &str) -> Result<(), SettingsError> {
+fn resolves_alone(file: &Path, text: &str) -> Result<(), SettingsError> {
     let invalid = |message: String| SettingsError::Invalid {
-        layer: file.display().to_string(),
+        layer: shown(file),
         message,
     };
-    let settings: Settings =
-        toml::from_str(text).map_err(|err| invalid(format!("{key}: {}", err.message())))?;
     let table: toml::Table = text
         .parse()
-        .map_err(|err: toml::de::Error| invalid(err.to_string()))?;
+        .map_err(|err: toml::de::Error| invalid(syntax_message(text, &err)))?;
+    let settings: Settings = toml::Value::Table(table.clone())
+        .try_into()
+        .map_err(|err: toml::de::Error| invalid(type_message(&err, &table).1))?;
     // The layer name only labels what a later unit clears, and nothing is cleared here.
-    BudgetUnits::default().note("file", &file.display().to_string(), &table)?;
+    BudgetUnits::default().note("file", &shown(file), &table)?;
     match file_problems(&settings).into_iter().next() {
         Some(problem) => Err(invalid(problem.message)),
         None => Ok(()),
@@ -190,8 +192,19 @@ fn global_only_in_project(key: &str, file: &Path) -> SettingsError {
     SettingsError::Refused(format!(
         "{key} in {} can only be set in your global config, since it names a program for \
          Argonauts to run",
-        file.display()
+        shown(file)
     ))
+}
+
+/// A repo's settings file by its path from the repo, as `resolve` names it, and any other file
+/// by its full path.
+fn shown(file: &Path) -> String {
+    let global = Paths::from_env().ok().map(|paths| paths.global_config());
+    project_config_repo(file, global.as_deref())
+        .and_then(|repo| file.strip_prefix(repo).ok())
+        .unwrap_or(file)
+        .display()
+        .to_string()
 }
 
 fn remove_at(table: &mut dyn TableLike, path: &[&str]) -> Option<Item> {
@@ -375,16 +388,6 @@ fn plain(text: &str) -> Option<toml::Value> {
         .parse::<toml::Table>()
         .ok()?
         .remove("value")
-}
-
-/// `"a", "b", or "c"`.
-fn one_of(values: &[String]) -> String {
-    match values {
-        [] => String::new(),
-        [only] => only.clone(),
-        [first, second] => format!("{first} or {second}"),
-        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
-    }
 }
 
 /// Whether the catalog key `pattern` lies inside the table `key` names.
@@ -1352,6 +1355,25 @@ model = \"ollama/llama3.2\"
             Err(SettingsError::Invalid { message, .. }) => message,
             other => panic!("{key} = {value}: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_gate_written_as_a_string_is_refused_with_the_table_to_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("repo/.argonauts/config.toml");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let err = write(&file, "gates.run", "[\"cargo test\"]", false).unwrap_err();
+        assert_eq!(
+            err,
+            SettingsError::Invalid {
+                layer: ".argonauts/config.toml".to_owned(),
+                message: "gates.run can't be a list of strings; it takes a list of checks, each \
+                          a [[gates.run]] table with a name and a command. Write it like this:\n\
+                          [[gates.run]]\nname = \"test\"\ncommand = [\"cargo\", \"test\"]"
+                    .to_owned(),
+            }
+        );
+        assert!(!file.exists());
     }
 
     #[test]

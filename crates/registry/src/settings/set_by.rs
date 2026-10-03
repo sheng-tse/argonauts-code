@@ -4,13 +4,16 @@
 use std::collections::BTreeMap;
 
 use argonauts_core::settings::LAYERS;
-use toml::Table;
+use toml::{Table, Value};
 
 use crate::resolve::leaves;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SetBy {
     keys: BTreeMap<String, Origin>,
+    /// Every table a layer wrote, an empty one too: it sets no key, but a value that's wrong
+    /// there is still that file's.
+    tables: BTreeMap<String, Origin>,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +27,13 @@ impl SetBy {
     /// Records every leaf of `table`. A leaf replaces what an earlier layer set at that key,
     /// below it, or above it, since a value and a table at one key replace each other.
     pub fn record(&mut self, table: &Table, layer: &'static str, source: &str) {
+        let origin = Origin {
+            layer,
+            source: source.to_owned(),
+        };
+        for key in tables(table, "") {
+            self.tables.insert(key, origin.clone());
+        }
         for (key, _) in leaves(table) {
             self.forget_around(&key);
             let origin = Origin {
@@ -69,6 +79,7 @@ impl SetBy {
             .filter(|(set, _)| set.starts_with(&under) || key.starts_with(&format!("{set}.")))
             .map(|(_, origin)| origin)
             .max_by_key(|origin| rank(origin))
+            .or_else(|| self.tables.get(key))
             .map_or_else(|| "built-in".to_owned(), |origin| origin.source.clone())
     }
 
@@ -77,6 +88,23 @@ impl SetBy {
         self.keys
             .retain(|set, _| !set.starts_with(&under) && !key.starts_with(&format!("{set}.")));
     }
+}
+
+/// The dotted key of every table under `table`.
+fn tables(table: &Table, prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (key, value) in table {
+        if let Value::Table(inner) = value {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            out.extend(tables(inner, &path));
+            out.push(path);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -109,5 +137,8 @@ mod tests {
         assert_eq!(set_by.source("critique.rounds"), "built-in");
         set_by.record(&table("gates = { run = [] }"), "flag", "--set gates.run=[]");
         assert_eq!(set_by.source("gates.run.0.cmd"), "--set gates.run=[]");
+        // A table written empty sets nothing, yet it's still the file's.
+        set_by.record(&table("[steps.review]\n"), "project", "p.toml");
+        assert_eq!(set_by.source("steps.review"), "p.toml");
     }
 }

@@ -3,24 +3,24 @@
 //! conversation scrolls inside the app with the wheel, PgUp, and PgDn. New output follows the
 //! bottom unless you scrolled up.
 //!
-//! The app takes clicks and the wheel as SGR mouse reports, without motion tracking. Alternate
+//! The app takes the mouse as SGR reports, with motion while a button is down. Alternate
 //! scroll mode would leave the mouse alone, but it turns the wheel into ↑ and ↓, which in the
-//! chat walk the prompt history. So the terminal's own selection takes its bypass key, and a
-//! drag says which one.
+//! chat walk the prompt history. So the app selects text itself, as [`Selecting`] does, and
+//! the terminal's own selection still works with its bypass key held, such as Shift.
 
 use std::io::{self, Write};
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 
+use super::selection::{Point, Selecting};
 use super::{Ui, UiAction, compose_live};
-use crate::bottom::Hint;
 use crate::render::{Clock, RenderCtx};
 use crate::state::AppState;
 use crate::terminal::paint_rows;
@@ -30,9 +30,6 @@ use crate::theme::Role;
 
 /// Rows one notch of the wheel moves, as most terminals scroll their own scrollback.
 pub const WHEEL_ROWS: usize = 3;
-
-/// How long the hint about selecting text stays after a drag.
-const SELECT_HINT_FOR: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Default)]
 pub struct Scrollback {
@@ -55,18 +52,18 @@ pub struct Scrollback {
     /// As of the last frame.
     page: usize,
     max_offset: usize,
-    /// Where the left button went down, to tell a drag from a click.
-    pressed_at: Option<(u16, u16)>,
-    /// The key that lets the terminal select text while the app has the mouse.
-    select_key: &'static str,
+    /// Text selected with the mouse, on whatever the screen shows.
+    selecting: Selecting,
+    /// While the button is down on a view that follows new output, the row the view began at,
+    /// so the text under a drag holds still while output streams in.
+    held: Option<usize>,
+    /// The row the last frame's view began at.
+    start: usize,
 }
 
 impl Scrollback {
-    pub fn new(select_key: &'static str) -> Self {
-        Self {
-            select_key,
-            ..Self::default()
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// `header` is where the header sits in `rows`, if they hold it.
@@ -117,6 +114,18 @@ impl Scrollback {
         moved
     }
 
+    /// The mouse button went down: a view following new output holds still under it.
+    pub fn hold(&mut self) {
+        if self.offset == 0 {
+            self.held = Some(self.start);
+        }
+    }
+
+    /// The button came up: the view follows new output again. True when it was held.
+    pub fn let_go(&mut self) -> bool {
+        self.held.take().is_some()
+    }
+
     /// Rows PgUp and PgDn move, keeping a row of what was in view.
     pub fn page(&self) -> usize {
         self.page.max(1)
@@ -154,7 +163,12 @@ impl Scrollback {
 
         let shown = if self.offset > 0 { rows - foot } else { rows };
         let end = total - self.offset;
-        let start = end.saturating_sub(shown);
+        let start = match self.held {
+            Some(held) if self.offset == 0 => held.min(end.saturating_sub(shown)),
+            _ => end.saturating_sub(shown),
+        };
+        let end = end.min(start + shown);
+        self.start = start;
         let mut lines: Vec<Line<'static>> = self
             .wrapped
             .iter()
@@ -214,22 +228,12 @@ fn wrap_into(out: &mut Vec<Line<'static>>, line: &Line<'static>, width: u16) {
     }
 }
 
-/// The key a terminal takes, while an app has the mouse, to select text itself: Option in
-/// iTerm2, Fn in macOS Terminal, and Shift nearly everywhere else.
-pub fn select_key(term_program: Option<&str>) -> &'static str {
-    match term_program {
-        Some("iTerm.app") => "Option",
-        Some("Apple_Terminal") => "Fn",
-        _ => "Shift",
-    }
-}
-
 impl<W: Write> Ui<W> {
     /// From the next frame the app has the whole alternate screen, and the conversation
-    /// scrolls inside it. `select_key` is the key the terminal takes to select text.
-    pub fn use_fullscreen(&mut self, select_key: &'static str) {
+    /// scrolls inside it.
+    pub fn use_fullscreen(&mut self) {
         if self.scrollback.is_none() {
-            self.scrollback = Some(Scrollback::new(select_key));
+            self.scrollback = Some(Scrollback::new());
         }
         self.dirty = true;
     }
@@ -247,7 +251,8 @@ impl<W: Write> Ui<W> {
     /// to the bottom rows, laid out as the inline screen lays them.
     pub(super) fn draw_fullscreen(&mut self, now: Instant) -> io::Result<()> {
         let screen = self.terminal.screen_size();
-        let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now));
+        let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
+            .with_rows(screen.height);
         let blocks = self.model.history.live_blocks(&ctx);
         // Two rows stay above the live region, so some of the conversation always shows.
         let max_height = screen.height.saturating_sub(2);
@@ -279,6 +284,9 @@ impl<W: Write> Ui<W> {
             Rect::new(0, top, screen.width, pinned_rows),
             pinned,
         );
+        scrollback
+            .selecting
+            .paint(&mut buffer, self.theme.style(Role::Selection));
         let trailing_rows = u16::try_from(trailing.len()).unwrap_or(u16::MAX);
         let cursor = view.cursor.and_then(|(column, row)| {
             let row = top.checked_add(row.checked_sub(trailing_rows)?)?;
@@ -306,6 +314,42 @@ impl<W: Write> Ui<W> {
         true
     }
 
+    /// With text selected, Esc lets go of it and does nothing else. Any other key, Ctrl+C
+    /// too, lets go of it on its way, so Ctrl+C still stops a command or interrupts work: the
+    /// text was copied when the button came up. `None` when the key goes on.
+    pub(super) fn selection_key(&mut self, event: &Event) -> Option<Vec<UiAction>> {
+        let Event::Key(key) = event else {
+            return None;
+        };
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return None;
+        }
+        let scrollback = self.scrollback.as_mut()?;
+        // A release the terminal never reported can't keep the view from following.
+        self.dirty |= scrollback.let_go();
+        if !scrollback.selecting.clear() {
+            return None;
+        }
+        self.dirty = true;
+        (key.code == KeyCode::Esc).then(Vec::new)
+    }
+
+    /// A resize moves everything on screen, so a selection lets go.
+    pub(super) fn clear_selection(&mut self) {
+        if let Some(scrollback) = self.scrollback.as_mut() {
+            scrollback.selecting.clear();
+            scrollback.let_go();
+        }
+    }
+
+    /// Shows the selection on a frame about to be drawn.
+    pub(super) fn paint_selection(&mut self, frame: &mut Buffer) {
+        if let Some(scrollback) = self.scrollback.as_mut() {
+            let style = self.theme.style(Role::Selection);
+            scrollback.selecting.paint(frame, style);
+        }
+    }
+
     /// What you send shows at once, so the view goes back to the bottom.
     pub(super) fn follow_conversation(&mut self) {
         if self.scrollback.as_mut().is_some_and(Scrollback::follow) {
@@ -314,7 +358,7 @@ impl<W: Write> Ui<W> {
     }
 
     /// The wheel scrolls what is on top: a view or the transcript as its ↑ and ↓ would, else
-    /// the conversation. A drag says which key selects text, since the app has the mouse.
+    /// the conversation. The left button selects text on any of them and copies it on release.
     pub(super) fn mouse_event(
         &mut self,
         mouse: MouseEvent,
@@ -324,24 +368,30 @@ impl<W: Write> Ui<W> {
         let Some(scrollback) = self.scrollback.as_mut() else {
             return Vec::new();
         };
+        let at = Point::new(mouse.column, mouse.row);
+        // Selections are made on what the screen shows, so nothing selects before a frame.
+        let screen = self.terminal.screen_buffer();
+        let selecting = &mut scrollback.selecting;
         let up = match mouse.kind {
             MouseEventKind::ScrollUp => true,
             MouseEventKind::ScrollDown => false,
             MouseEventKind::Down(MouseButton::Left) => {
-                scrollback.pressed_at = Some((mouse.column, mouse.row));
+                if let Some(screen) = screen {
+                    self.dirty |= selecting.press(at, now, screen);
+                    scrollback.hold();
+                }
+                return Vec::new();
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(screen) = screen {
+                    self.dirty |= selecting.drag(at, screen);
+                }
                 return Vec::new();
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                let pressed = scrollback.pressed_at.take();
-                if pressed.is_some_and(|at| at != (mouse.column, mouse.row)) {
-                    let key = scrollback.select_key;
-                    self.model.bottom.hint = Some(Hint {
-                        text: format!("Hold {key} while you drag to select text"),
-                        until: now + SELECT_HINT_FOR,
-                    });
-                    self.dirty = true;
-                }
-                return Vec::new();
+                let copied = screen.and_then(|screen| selecting.release(at, screen));
+                self.dirty |= scrollback.let_go();
+                return copied.map(UiAction::Copy).into_iter().collect();
             }
             _ => return Vec::new(),
         };
@@ -403,7 +453,7 @@ mod tests {
     fn short_content_starts_at_the_top_and_long_content_ends_at_the_bottom() {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
-        let mut scrollback = Scrollback::new("Shift");
+        let mut scrollback = Scrollback::new();
         scrollback.push(rows(0, 3), None);
         let shown = scrollback.window(&[], 5, &ctx);
         assert_eq!(plain_text(&shown), "row 0\nrow 1\nrow 2");
@@ -418,7 +468,7 @@ mod tests {
     fn scrolled_up_the_view_stays_still_while_output_arrives() {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
-        let mut scrollback = Scrollback::new("Shift");
+        let mut scrollback = Scrollback::new();
         scrollback.push(rows(0, 20), None);
         scrollback.window(&[], 5, &ctx);
         assert!(scrollback.scroll(3));
@@ -446,7 +496,7 @@ mod tests {
     fn the_top_is_as_far_as_it_scrolls() {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
-        let mut scrollback = Scrollback::new("Shift");
+        let mut scrollback = Scrollback::new();
         scrollback.push(rows(0, 10), None);
         scrollback.window(&[], 6, &ctx);
         assert!(scrollback.scroll(isize::MAX));
@@ -458,7 +508,7 @@ mod tests {
         assert!(shown.ends_with("6 rows below · pgdn to scroll"), "{shown}");
         assert!(!scrollback.scroll(1));
 
-        let mut short = Scrollback::new("Shift");
+        let mut short = Scrollback::new();
         short.push(rows(0, 2), None);
         short.window(&[], 4, &ctx);
         assert!(!short.scroll(3), "nothing to scroll");
@@ -468,7 +518,7 @@ mod tests {
     fn a_changed_header_takes_the_old_ones_place() {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
-        let mut scrollback = Scrollback::new("Shift");
+        let mut scrollback = Scrollback::new();
         let mut first = vec![Line::default(), Line::from("old header")];
         first.extend(rows(0, 1));
         scrollback.push(first, Some(0..2));
@@ -485,7 +535,7 @@ mod tests {
     #[test]
     fn rows_wider_than_a_narrower_screen_wrap_and_come_back_when_it_widens() {
         let theme = theme();
-        let mut scrollback = Scrollback::new("Shift");
+        let mut scrollback = Scrollback::new();
         scrollback.push(vec![Line::from("abcdefghij")], None);
         let narrow = RenderCtx::new(4, &theme, Clock::still(Instant::now()));
         assert_eq!(
@@ -494,13 +544,5 @@ mod tests {
         );
         let wide = RenderCtx::new(20, &theme, Clock::still(Instant::now()));
         assert_eq!(plain_text(&scrollback.window(&[], 10, &wide)), "abcdefghij");
-    }
-
-    #[test]
-    fn the_select_key_follows_the_terminal() {
-        assert_eq!(select_key(Some("iTerm.app")), "Option");
-        assert_eq!(select_key(Some("Apple_Terminal")), "Fn");
-        assert_eq!(select_key(Some("ghostty")), "Shift");
-        assert_eq!(select_key(None), "Shift");
     }
 }

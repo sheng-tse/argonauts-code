@@ -122,6 +122,8 @@ pub struct ModeState<'a> {
     pub panel_focused: bool,
     /// A card has the keys.
     pub card_focused: bool,
+    /// The input is in shell mode, which takes the approval mode's place.
+    pub shell: bool,
     /// Shown in the notice slot while no notice is up.
     pub enter_sends: Option<&'a str>,
     /// Quotas, spend, and context, at the right end before any notice.
@@ -166,6 +168,16 @@ impl ModeLine {
         if let Some(vim) = self.vim {
             parts.push(Part::new(vec![Span::styled(vim.label(), dim)], KEEP));
         }
+        let status = status_parts(state.status, ctx);
+        // Claude Code's mode line says only this in bash mode, so Esc and Enter mean one thing.
+        if state.shell && !state.card_focused {
+            parts.push(Part::joined(
+                Span::raw(" "),
+                vec![Span::styled("! for shell mode", theme.style(Role::Shell))],
+                KEEP,
+            ));
+            return self.with_notice(lead, parts, status, ctx, None);
+        }
         let glyph = if self.approval.asks_first() {
             theme.glyphs.mode_ask
         } else {
@@ -181,7 +193,6 @@ impl ModeLine {
         ));
         // A focused card holds every key but the quit keys, so a hint here would name a key
         // that does nothing until the card lets go.
-        let status = status_parts(state.status, ctx);
         if state.card_focused {
             return two_sided(lead, &parts, &status, width);
         }
@@ -228,12 +239,27 @@ impl ModeLine {
             ));
         }
 
+        self.with_notice(lead, parts, status, ctx, state.enter_sends)
+    }
+
+    /// The notice, or else what Enter sends, at the right end after the status.
+    fn with_notice(
+        &self,
+        lead: Vec<Span<'static>>,
+        parts: Vec<Part>,
+        status: Vec<Part>,
+        ctx: &RenderCtx<'_>,
+        enter_sends: Option<&str>,
+    ) -> Line<'static> {
+        let theme = ctx.theme;
+        let dim = theme.style(Role::Dim);
+        let width = usize::from(ctx.width);
         let notice = self
             .notice
             .as_ref()
             .filter(|notice| notice.until > ctx.clock.now)
             .map(|notice| (notice.text.as_str(), theme.style(notice.tone.role())))
-            .or(state.enter_sends.map(|text| (text, dim)))
+            .or(enter_sends.map(|text| (text, dim)))
             .map(|(text, style)| Span::styled(sanitize_line(text).trim().to_owned(), style))
             .filter(|span| span.width() > 0);
         let mut right = status;
@@ -400,6 +426,43 @@ mod tests {
         mode.approval = ApprovalMode::Supervised;
         let line = mode.line(&ctx, idle());
         assert_eq!(line.spans[1].style, theme.style(Role::ModeSupervised));
+    }
+
+    /// As Claude Code's bash mode reads, `-- INSERT -- ! for shell mode`, with a notice still at
+    /// the right end.
+    #[test]
+    fn shell_mode_says_only_that() {
+        let theme = theme();
+        let now = Instant::now();
+        let ctx = RenderCtx::new(100, &theme, Clock::still(now));
+        let mut mode = ModeLine {
+            background_agents: 3,
+            vim: Some(VimMode::Insert),
+            ..ModeLine::default()
+        };
+        let shell = ModeState {
+            shell: true,
+            working: true,
+            ..idle()
+        };
+        let line = mode.line(&ctx, shell);
+        assert_eq!(text(line.clone()), "  -- INSERT -- ! for shell mode");
+        let words = line
+            .spans
+            .iter()
+            .find(|span| span.content == "! for shell mode")
+            .expect("the words");
+        assert_eq!(words.style, theme.style(Role::Shell));
+
+        mode.vim = None;
+        mode.notice = Some(ModeNotice {
+            text: "Copied".into(),
+            tone: Tone::Success,
+            until: now + Duration::from_secs(2),
+        });
+        let line = text(mode.line(&ctx, shell));
+        assert!(line.starts_with("  ! for shell mode  "), "{line}");
+        assert!(line.ends_with("Copied"), "{line}");
     }
 
     #[test]

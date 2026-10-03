@@ -21,6 +21,7 @@ use ratatui::text::{Line, Span};
 
 use crate::format::WallClock;
 use crate::state::{AppState, SessionStatus};
+use crate::text::marks;
 use crate::theme::{Role, Theme};
 
 use self::draw::BodyLine;
@@ -348,7 +349,7 @@ fn divider(buf: &mut Buffer, area: Rect, theme: &Theme) {
     for y in area.top()..area.bottom() {
         if let Some(cell) = buf.cell_mut((area.x, y)) {
             cell.set_symbol(glyph);
-            cell.set_style(theme.style(Role::Rule));
+            cell.set_style(marks::decoration(theme.style(Role::Rule)));
         }
     }
 }
@@ -426,7 +427,7 @@ impl View for CrewView {
                     ])
                     .areas(body);
                     self.draw_list(state, &rows, &panel, list_area, buf, theme);
-                    let rule_line = Line::from(Span::styled(
+                    let rule_line = Line::from(marks::decorative(
                         theme.glyphs.rule.repeat(usize::from(rule.width)),
                         theme.style(Role::Rule),
                     ));

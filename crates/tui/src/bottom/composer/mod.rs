@@ -21,6 +21,8 @@ use edit::{Clip, Draft};
 use history::Search;
 use paste_burst::PasteBurst;
 
+pub use view::{SHELL_PLACEHOLDER, SHELL_PROMPT};
+
 /// Longer drafts scroll to keep the cursor in view.
 pub const MAX_INPUT_ROWS: usize = 10;
 
@@ -44,10 +46,12 @@ pub struct Composer {
     /// Set by the first prompt. An example is a way to start a fresh session, so it goes then.
     started: bool,
     history: Vec<String>,
+    /// `!` at the start of an empty input: the text is a command for your shell.
+    shell: bool,
     /// The history index shown while walking history.
     browsing: Option<usize>,
     /// The draft from before history walking started, restored when walking past the newest.
-    stash: Option<Draft>,
+    stash: Option<Saved>,
     /// The column Up and Down aim for, kept across a run of vertical moves.
     preferred_col: Option<usize>,
     /// For numbering paste labels.
@@ -68,6 +72,13 @@ pub struct Composer {
     burst: PasteBurst,
 }
 
+/// A draft put aside while history shows, with the mode it was typed in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Saved {
+    draft: Draft,
+    shell: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ViewState {
     /// Columns for text on each input row, or zero before the first render.
@@ -81,6 +92,10 @@ pub enum ComposerEvent {
     Submitted {
         text: String,
         shown: String,
+    },
+    /// Enter in shell mode, with pastes expanded.
+    Shell {
+        command: String,
     },
     Edited,
     Moved,
@@ -173,6 +188,16 @@ impl Composer {
         self.draft.text.is_empty()
     }
 
+    /// In shell mode, Enter runs the text as a command rather than sending it.
+    pub fn is_shell(&self) -> bool {
+        self.shell
+    }
+
+    /// Esc leaves shell mode, keeping what was typed. True when it was on.
+    pub fn leave_shell(&mut self) -> bool {
+        std::mem::take(&mut self.shell)
+    }
+
     /// Escapes and controls are removed.
     pub fn set_text(&mut self, text: &str) {
         self.draft = Draft::from_text(&clean(text));
@@ -219,8 +244,10 @@ impl Composer {
         self.edited();
     }
 
+    /// Shell mode goes too.
     pub fn clear(&mut self) {
         self.set_text("");
+        self.shell = false;
     }
 
     pub fn is_browsing_history(&self) -> bool {
@@ -258,6 +285,14 @@ impl Composer {
             KeyCode::Enter if shift || alt => self.insert("\n"),
             KeyCode::Enter if ctrl => ComposerEvent::Unhandled,
             KeyCode::Enter => self.enter(),
+            KeyCode::Char('!') if ctrl == alt && self.is_empty() && !self.shell => {
+                self.shell = true;
+                self.edited()
+            }
+            KeyCode::Backspace if self.shell && self.is_empty() => {
+                self.shell = false;
+                self.edited()
+            }
             // AltGr arrives as Ctrl+Alt on some systems and types a character.
             KeyCode::Char(c) if ctrl == alt => self.insert(c.encode_utf8(&mut [0; 4])),
             KeyCode::Char('j') if ctrl => self.insert("\n"),
@@ -297,12 +332,23 @@ impl Composer {
     }
 
     fn insert_paste(&mut self, text: &str) {
-        let text = clean(text);
+        let mut text = clean(text);
         if text.is_empty() {
             return;
         }
+        // A pasted `!git status` reads as typed: shell mode, then the command. A paste of more
+        // lines, such as a notebook cell or Markdown that opens with `![image]`, stays text.
+        if self.is_empty()
+            && !self.shell
+            && !text.contains('\n')
+            && let Some(command) = text.strip_prefix('!')
+        {
+            self.shell = true;
+            text = command.to_owned();
+        }
+        // What Enter runs as a command always shows in full, never behind a label.
         let breaks = text.matches('\n').count();
-        if text.chars().count() > PASTE_CHARS || breaks + 1 > PASTE_LINES {
+        if !self.shell && (text.chars().count() > PASTE_CHARS || breaks + 1 > PASTE_LINES) {
             self.pastes += 1;
             let label = if breaks > 0 {
                 format!("[Pasted text #{} +{breaks} lines]", self.pastes)
@@ -344,6 +390,12 @@ impl Composer {
             return ComposerEvent::Unhandled;
         }
         let text = text.to_owned();
+        if self.shell {
+            // Kept with its `!`, so ↑ brings it back in shell mode.
+            self.remember(format!("!{text}"));
+            self.clear();
+            return ComposerEvent::Shell { command: text };
+        }
         // The echo keeps a long paste as its label, so it doesn't push the conversation away.
         let shown = self.draft.text.trim_end_matches('\n').to_owned();
         self.remember(text.clone());
@@ -472,6 +524,29 @@ impl Composer {
         });
         self.draft.cursor = offset;
         ComposerEvent::Moved
+    }
+
+    fn saved(&self) -> Saved {
+        Saved {
+            draft: self.draft.clone(),
+            shell: self.shell,
+        }
+    }
+
+    fn put_back(&mut self, saved: Saved) {
+        self.draft = saved.draft;
+        self.shell = saved.shell;
+    }
+
+    /// A history entry that starts with `!` was a shell command, and shows in shell mode.
+    fn show_entry(&mut self, index: usize) {
+        let entry = &self.history[index];
+        let (text, shell) = match entry.strip_prefix('!') {
+            Some(command) => (command, true),
+            None => (entry.as_str(), false),
+        };
+        self.draft = Draft::from_text(text);
+        self.shell = shell;
     }
 
     fn at_either_end(&self) -> bool {

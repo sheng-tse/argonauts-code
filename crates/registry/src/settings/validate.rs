@@ -8,9 +8,10 @@ use argonauts_core::settings::approvals::Otherwise;
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
 use argonauts_core::settings::sessions::NativeFanout;
 use argonauts_core::settings::{Settings, Span};
-use toml::Value;
+use toml::{Table, Value};
 
 use super::handoff;
+use super::plain;
 use super::roles::{self, Workers};
 use super::set_by::SetBy;
 use crate::SettingsError;
@@ -81,28 +82,39 @@ fn turned_on(context: &Context<'_>) -> Vec<String> {
         .collect()
 }
 
-/// A value serde refused, naming its key and the layer that set it.
-pub(crate) fn type_error(err: &toml::de::Error, set_by: &SetBy) -> SettingsError {
+/// A value serde refused, in plain words, naming its key and the layer that set it. `merged`
+/// holds what the layers wrote, so the message can quote it.
+pub(crate) fn type_error(err: &toml::de::Error, set_by: &SetBy, merged: &Table) -> SettingsError {
+    let (key, message) = type_message(err, merged);
+    SettingsError::Invalid {
+        layer: key.map_or_else(
+            || "the merged settings".to_owned(),
+            |key| set_by.source(&key),
+        ),
+        message,
+    }
+}
+
+/// The key serde refused, when it knows it, and what's wrong in plain words.
+pub(crate) fn type_message(err: &toml::de::Error, written: &Table) -> (Option<String>, String) {
     // The text ends with "in `key`" when serde knows the key.
     let text = err.to_string();
     let key = text
         .rsplit_once("in `")
         .and_then(|(_, rest)| rest.split_once('`'))
-        .map(|(key, _)| key);
-    match key {
-        Some(key) => SettingsError::Invalid {
-            layer: set_by.source(key),
-            message: format!("{key}: {}", plain_type_message(err.message())),
+        .map(|(key, _)| key.to_owned());
+    let message = match &key {
+        Some(key) => match untagged_form(err.message()) {
+            Some(form) => format!("{key}: {form}"),
+            None => plain::type_message(key, err.message(), plain::written_at(written, key)),
         },
-        None => SettingsError::Invalid {
-            layer: "the merged settings".to_owned(),
-            message: text.trim().to_owned(),
-        },
-    }
+        None => text.trim().to_owned(),
+    };
+    (key, message)
 }
 
 /// Serde names the type of a key that takes several forms, not the forms themselves.
-fn plain_type_message(message: &str) -> String {
+fn untagged_form(message: &str) -> Option<&'static str> {
     const FORMS: [(&str, &str); 3] = [
         (
             "FallbackEntry",
@@ -117,7 +129,7 @@ fn plain_type_message(message: &str) -> String {
     FORMS
         .iter()
         .find(|(name, _)| message.contains(&format!("untagged enum {name}")))
-        .map_or_else(|| message.to_owned(), |(_, plain)| (*plain).to_owned())
+        .map(|(_, plain)| *plain)
 }
 
 /// The checks that need nothing from the other layers, so writing a setting can refuse a value

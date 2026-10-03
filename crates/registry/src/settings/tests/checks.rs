@@ -370,3 +370,177 @@ fn the_older_sandbox_off_still_reads_as_the_tools_own() {
     let (layer, _) = invalid(resolve(&repo.trusted()));
     assert_eq!(layer, repo.project_file());
 }
+
+#[test]
+fn a_gate_written_as_a_string_shows_the_table_to_write_instead() {
+    let repo = Repo::new();
+    repo.local("[budget]\nrun_usd = 1.0\n\n[gates]\nrun = [\"python3 -m unittest -q\"]\n");
+    // Untrusted, the gates are a safety key left out, so the file resolves.
+    let resolved = resolve(&repo.sources()).unwrap();
+    assert!(
+        resolved.warnings.iter().any(|warning| warning.starts_with(
+            "gates.run in .argonauts/config.local.toml is a safety setting and is ignored"
+        )),
+        "{:?}",
+        resolved.warnings
+    );
+    let (layer, message) = invalid(resolve(&repo.trusted()));
+    assert_eq!(layer, ".argonauts/config.local.toml");
+    assert_eq!(
+        message,
+        "gates.run can't be a list of strings; it takes a list of checks, each a [[gates.run]] \
+         table with a name and a command. Write it like this:\n\
+         [[gates.run]]\n\
+         name = \"python3\"\n\
+         command = [\"python3\", \"-m\", \"unittest\", \"-q\"]"
+    );
+}
+
+/// The likeliest slip when writing a gate by hand: one bracket pair, or an inline table.
+#[test]
+fn a_gate_written_as_one_table_resolves_untrusted_and_shows_the_list_to_write() {
+    let repo = Repo::new();
+    let expected = "gates.run is written as a single table, but it takes a list of checks, \
+                    each a [[gates.run]] table with two brackets. Write it like this:\n\
+                    [[gates.run]]\n\
+                    name = \"unittest\"\n\
+                    command = [\"python3\", \"-m\", \"unittest\", \"-q\"]";
+    for text in [
+        "[gates.run]\nname = \"unittest\"\ncommand = [\"python3\", \"-m\", \"unittest\", \"-q\"]\n",
+        "[gates]\nrun = { name = \"unittest\", command = [\"python3\", \"-m\", \"unittest\", \"-q\"] }\n",
+    ] {
+        repo.local(text);
+        // Untrusted, its safety settings are left out and leave no empty table behind.
+        let resolved = resolve(&repo.sources()).unwrap_or_else(|err| panic!("{text}: {err}"));
+        assert!(
+            resolved.warnings.iter().any(|warning| warning.starts_with(
+                "gates.run.command in .argonauts/config.local.toml is a safety setting"
+            )),
+            "{:?}",
+            resolved.warnings
+        );
+        let (layer, message) = invalid(resolve(&repo.trusted()));
+        assert_eq!(layer, ".argonauts/config.local.toml", "{text}");
+        assert_eq!(message, expected, "{text}");
+    }
+
+    // An empty table sets no key, and the error still names the file, not the built-ins.
+    repo.local("[gates]\nrun = {}\n");
+    let (layer, message) = invalid(resolve(&repo.trusted()));
+    assert_eq!(layer, ".argonauts/config.local.toml");
+    assert!(
+        message.starts_with("gates.run is written as a single table"),
+        "{message}"
+    );
+
+    // Without a name, the check is named for its command.
+    repo.local("[gates.run]\ncommand = \"cargo test\"\n");
+    let (_, message) = invalid(resolve(&repo.trusted()));
+    assert!(
+        message.ends_with("[[gates.run]]\nname = \"test\"\ncommand = [\"cargo\", \"test\"]"),
+        "{message}"
+    );
+}
+
+#[test]
+fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
+    let repo = Repo::new();
+    let cases = [
+        // A string where the list of checks goes, and several of them.
+        (
+            "[gates]\nrun = \"cargo test\"\n",
+            "gates.run can't be \"cargo test\"; it takes a list of checks, each a [[gates.run]] \
+             table with a name and a command. Write it like this:\n[[gates.run]]\n\
+             name = \"test\"\n\
+             command = [\"cargo\", \"test\"]",
+        ),
+        (
+            "[gates]\nsetup = [\"npm ci\", \"npm run build\"]\n",
+            "gates.setup can't be a list of 2 strings; it takes a list of checks, each a \
+             [[gates.setup]] table with a name and a command. Write it like this:\n\
+             [[gates.setup]]\n\
+             name = \"ci\"\ncommand = [\"npm\", \"ci\"]\n\n[[gates.setup]]\n\
+             name = \"build\"\ncommand = [\"npm\", \"run\", \"build\"]",
+        ),
+        (
+            "[gates]\nrun = [{ name = \"lint\", command = [\"make\", \"lint\"] }, \"make test\"]\n",
+            "gates.run can't hold \"make test\"; each entry is a table, written [[gates.run]] with \
+             its settings under it",
+        ),
+        (
+            "[[gates.run]]\nname = \"tests\"\n",
+            "each [[gates.run]] table needs both a name and a command. Write it like this:\n\
+             [[gates.run]]\nname = \"test\"\ncommand = [\"make\", \"test\"]",
+        ),
+        (
+            "[[gates.run]]\nname = \"tests\"\ncommand = \"cargo test\"\n",
+            "gates.run.command can't be \"cargo test\"; it takes a list, such as \
+             [\"cargo\", \"test\"]",
+        ),
+        // The wrong type.
+        (
+            "[budget]\nrun_usd = \"1\"\n",
+            "budget.run_usd can't be \"1\"; it takes a number. Write it without quotes: \
+             run_usd = 1",
+        ),
+        (
+            "[drafting]\nblind = \"yes\"\n",
+            "drafting.blind can't be \"yes\"; it takes true or false",
+        ),
+        (
+            "[critique]\nrounds = \"many\"\n",
+            "critique.rounds can't be \"many\"; it takes a whole number, 0 or more",
+        ),
+        (
+            "crew = \"claude-code\"\n",
+            "crew can't be \"claude-code\"; it takes a list, such as [\"claude-code\"]",
+        ),
+        (
+            "crew = [1]\n",
+            "crew can't hold 1; each entry takes text in quotes",
+        ),
+        (
+            "ui = 3\n",
+            "ui can't be 3; it is a table, written [ui] with its settings under it",
+        ),
+        // A value of the right type the key doesn't take.
+        (
+            "[critique]\nrounds = -1\n",
+            "critique.rounds can't be -1; it takes a whole number, 0 or more",
+        ),
+        (
+            "[ui]\nkeys = \"emacs\"\n",
+            "ui.keys can't be \"emacs\"; it takes \"default\" or \"vim\"",
+        ),
+        (
+            "[ui]\nkeys = 3\n",
+            "ui.keys can't be 3; it takes \"default\" or \"vim\"",
+        ),
+        // Text that isn't TOML.
+        (
+            "[gates\n",
+            "line 1 isn't valid TOML (unclosed table, expected `]`): [gates",
+        ),
+        (
+            "[budget]\nrun_usd = 1\nrun_usd = 2\n",
+            "line 3 sets run_usd a second time; each key goes in a table once",
+        ),
+    ];
+    for (text, expected) in cases {
+        repo.local(text);
+        let (layer, message) = invalid(resolve(&repo.trusted()));
+        assert_eq!(layer, ".argonauts/config.local.toml", "{text}");
+        assert_eq!(message, expected, "{text}");
+    }
+}
+
+#[test]
+fn an_unknown_key_is_a_warning_naming_the_file_from_the_repo() {
+    let repo = Repo::new();
+    repo.project("[gates]\nruns = []\n");
+    let resolved = resolve(&repo.trusted()).unwrap();
+    assert_eq!(
+        resolved.warnings,
+        vec!["unknown setting gates.runs in .argonauts/config.toml, ignored".to_owned()]
+    );
+}

@@ -568,6 +568,34 @@ fn turn_end_recap_and_notices() {
     );
 }
 
+/// A settings file that needs a fix before you can trust it: the key keeps its spelling, the
+/// file is named from the repo, and the shape to write sits on lines of its own.
+#[test]
+fn a_settings_file_to_fix_shows_the_shape_to_write() {
+    let notice = Notice::new(
+        Tone::Warning,
+        ".argonauts/config.local.toml needs a fix before you can trust it: gates.run can't be a \
+         list of strings; it takes a list of checks, each a [[gates.run]] table with a name and \
+         a command. Write it like this:\n[[gates.run]]\nname = \"python3\"\n\
+         command = [\"python3\", \"-m\", \"unittest\", \"-q\"]",
+    );
+    snapshot_widths("notice_settings_fix", &notice);
+    let lines = text(&lines_of(&notice, 80));
+    assert!(
+        lines.starts_with("● .argonauts/config.local.toml needs a fix"),
+        "{lines}"
+    );
+    let shape: Vec<&str> = lines.lines().rev().take(3).collect();
+    assert_eq!(
+        shape,
+        [
+            "  command = [\"python3\", \"-m\", \"unittest\", \"-q\"]",
+            "  name = \"python3\"",
+            "  [[gates.run]]",
+        ]
+    );
+}
+
 #[test]
 fn untrusted_text_is_neutralized() {
     let evil = "\u{1b}]0;pwned\u{7}rm -rf \u{1b}[2J\u{1b}[31mred\u{1b}[0m\u{202e}txt.exe";
@@ -588,4 +616,51 @@ fn untrusted_text_is_neutralized() {
         );
         assert!(all.contains("rm -rf red"), "{all:?}");
     }
+}
+
+/// A `!` command as Claude Code shows bash mode: the command on your band behind a pink `!`,
+/// `Running… (3s)` until it ends, then its output, folded past a screen.
+#[test]
+fn shell_command_running_finished_and_folded() {
+    use argonauts_tui::model::{ShellEnd, ShellRun};
+
+    let theme = theme();
+    let running = ShellRun::new("sleep 25", common::t0());
+    for width in WIDTHS {
+        let lines = running.lines(&common::ctx(&theme, width, 3.0));
+        assert_fits(&lines, width);
+        insta::assert_snapshot!(format!("shell_command_running_{width}"), text(&lines));
+    }
+
+    let mut done = ShellRun::new("git status --short && echo done", common::t0());
+    done.push_output(" M crates/tui/src/cell/shell.rs\n?? notes.txt\ndone\n");
+    done.finish(ShellEnd::Exit(0));
+    snapshot_widths("shell_command_finished", &done);
+    let lines = lines_of(&done, 80);
+    assert_eq!(
+        style_of(&lines, "!").and_then(|style| style.fg),
+        fg(Role::Shell)
+    );
+    assert_eq!(
+        lines[0].style.bg,
+        bg(Role::UserBand),
+        "the command sits on your band"
+    );
+
+    let mut failed = ShellRun::new("cargo test -q", common::t0());
+    failed.push_output("error: could not compile `argonauts-tui`\n");
+    failed.finish(ShellEnd::Exit(101));
+    snapshot_widths("shell_command_failed", &failed);
+
+    let mut long = ShellRun::new("seq 100", common::t0());
+    for n in 1..=100 {
+        long.push_output(&format!("{n}\n"));
+    }
+    long.finish(ShellEnd::Exit(0));
+    let screen = still(&theme, 80).with_rows(24);
+    let folded = long.lines(&screen);
+    assert_eq!(folded.len(), 1 + 16 + 1, "{}", text(&folded));
+    insta::assert_snapshot!("shell_command_folded_80", text(&folded));
+    let all = long.lines(&screen.with_expanded(true));
+    assert_eq!(all.len(), 101, "Ctrl+O shows every line");
 }

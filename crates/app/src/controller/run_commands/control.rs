@@ -14,15 +14,19 @@ use argonauts_core::{NoteLevel, RunId};
 use super::{Handled, on_screen};
 use crate::controller::attach::Stage;
 use crate::controller::runs::{self, Queued, RunsState};
+use crate::controller::shell::{self, ShellRan};
 use crate::controller::{Ctx, Effect};
 
+/// `ran` are the `!` commands you ran since your last message, which go along with it.
 pub(crate) async fn guidance(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     run: RunId,
     text: String,
+    ran: &[ShellRan],
 ) -> Handled {
-    let sent = ctx.services.conductor.guidance(&run, text.clone()).await;
+    let message = with_commands(&text, ran);
+    let sent = ctx.services.conductor.guidance(&run, message).await;
     queued(ctx, runs, run, text, sent)
 }
 
@@ -32,13 +36,19 @@ pub(crate) async fn mention(
     run: RunId,
     target: MentionTarget,
     text: String,
+    ran: &[ShellRan],
 ) -> Handled {
-    let sent = ctx
-        .services
-        .conductor
-        .mention(&run, target, text.clone())
-        .await;
+    let message = with_commands(&text, ran);
+    let sent = ctx.services.conductor.mention(&run, target, message).await;
     queued(ctx, runs, run, text, sent)
+}
+
+/// Your message, then the commands you ran before it. The queue shows your words alone.
+fn with_commands(text: &str, ran: &[ShellRan]) -> String {
+    match shell::context_text(ran) {
+        Some(commands) => format!("{text}\n\n{commands}"),
+        None => text.to_owned(),
+    }
 }
 
 /// Keeps the message's id so it can be taken back until it's delivered.

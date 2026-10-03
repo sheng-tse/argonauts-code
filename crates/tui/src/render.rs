@@ -6,6 +6,8 @@ use crate::theme::Theme;
 pub struct RenderCtx<'a> {
     /// Columns to fill. Rendered lines are never wider than this.
     pub width: u16,
+    /// The screen's height, or 0 where it isn't known, for folding output longer than a screen.
+    pub rows: u16,
     pub theme: &'a Theme,
     /// Draw collapsed groups and long outputs in full, as the transcript overlay does.
     pub expanded: bool,
@@ -21,6 +23,7 @@ impl<'a> RenderCtx<'a> {
     pub fn new(width: u16, theme: &'a Theme, clock: Clock) -> Self {
         Self {
             width,
+            rows: 0,
             theme,
             expanded: false,
             live: false,
@@ -39,6 +42,10 @@ impl<'a> RenderCtx<'a> {
 
     pub fn with_width(self, width: u16) -> Self {
         Self { width, ..self }
+    }
+
+    pub fn with_rows(self, rows: u16) -> Self {
+        Self { rows, ..self }
     }
 
     pub fn with_vim(self, vim: bool) -> Self {

@@ -6,6 +6,7 @@
 use argonauts_core::names::WorkerRef;
 use argonauts_core::pricing::builtin_price;
 use argonauts_core::registry::{CostUnit, ModelEntry, ModelRegistry, company_of};
+use argonauts_core::text::sentence_case;
 use argonauts_core::worker::WorkerDirectory;
 
 use super::independence;
@@ -47,7 +48,7 @@ impl NoApprover {
         format!(
             "{}. Auto asks you instead until you set approvals.approver.model, or install and \
              log in to an agent from another company",
-            capitalized(&self.reason())
+            sentence_case(&self.reason())
         )
     }
 }
@@ -179,14 +180,6 @@ fn family(worker: &WorkerRef, sources: Sources<'_>) -> Option<String> {
         })
 }
 
-fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +302,15 @@ mod tests {
         assert!(none.warning().contains("approvals.approver.model"));
         let unknown = picked(&["mystery"], &workers, None).unwrap_err();
         assert_eq!(unknown, NoApprover::UnknownAuthor(r("mystery")));
+        // A worker's name keeps its spelling at the start of the warning.
+        let unknown = NoApprover::UnknownAuthor(r("my-cli/fast"));
+        assert!(
+            unknown
+                .warning()
+                .starts_with("my-cli/fast's model family is unknown"),
+            "{}",
+            unknown.warning()
+        );
     }
 
     #[test]

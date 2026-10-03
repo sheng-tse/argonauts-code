@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 
 use super::{Picker, VISIBLE_ROWS};
 use crate::render::RenderCtx;
+use crate::text::marks::decorative;
 use crate::text::{KEEP, Part, fit_lines, fit_parts, sanitize_line, str_width, wrap_text};
 use crate::theme::{Role, Theme};
 use crate::views::layout::cut;
@@ -65,7 +66,7 @@ impl Picker {
         let dim = theme.style(Role::Dim);
         let indent = [Span::raw("  ")];
 
-        let mut lines = vec![Line::from(Span::styled(
+        let mut lines = vec![Line::from(decorative(
             theme.glyphs.rule.repeat(width),
             card,
         ))];

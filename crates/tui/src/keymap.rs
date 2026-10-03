@@ -279,7 +279,12 @@ impl Keymap {
     /// key written with spaces, such as `ctrl + o for the transcript`. Short hints keep the
     /// panel to three columns at 80 cells, as Claude Code's is.
     pub fn shortcut_hints(&self) -> Vec<String> {
-        let typed = ["/ for commands", "@ for agents and cards"].map(str::to_owned);
+        let typed = [
+            "! for shell mode",
+            "/ for commands",
+            "@ for agents and cards",
+        ]
+        .map(str::to_owned);
         let bound = Action::ALL.into_iter().filter_map(|action| {
             let hint = action.hint()?;
             let key = self.keys(action).into_iter().next()?;
@@ -582,6 +587,7 @@ mod tests {
     fn shortcut_hints_are_short_key_to_or_for_phrases() {
         let hints = Keymap::default().shortcut_hints();
         for hint in [
+            "! for shell mode",
             "esc to interrupt",
             "shift + enter for newline",
             "shift + tab to cycle modes",

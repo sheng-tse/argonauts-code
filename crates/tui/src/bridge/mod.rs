@@ -68,7 +68,7 @@ pub struct Effects {
     pub take_over: Option<TakeOverJob>,
     /// An agent CLI's own command, such as its login, to run with the terminal handed over.
     pub run_in_terminal: Option<TerminalJob>,
-    /// Text for the system clipboard, from `/copy`.
+    /// Text for the system clipboard, from `/copy` or a selection.
     pub clipboard: Option<String>,
     /// Open `$VISUAL` or `$EDITOR` on the draft.
     pub edit_draft: bool,
@@ -316,6 +316,36 @@ mod view_answer_tests {
         let out = bridge.on_event(&mut model, &status(), Instant::now());
         assert!(out.views.is_empty());
         assert!(model.history.cells().len() > printed);
+    }
+
+    #[test]
+    fn ctrl_c_knows_while_a_shell_command_runs() {
+        use argonauts_core::app::ShellEvent;
+
+        let mut bridge = Bridge::new(&UiOptions::default());
+        let mut model = ViewModel::default();
+        let shell = |event| AppEvent::Shell { event };
+        bridge.on_event(
+            &mut model,
+            &shell(ShellEvent::Started {
+                id: 3,
+                command: "sleep 25".into(),
+            }),
+            Instant::now(),
+        );
+        assert_eq!(bridge.state.shell, Some(3));
+        assert!(model.bottom.shell_running);
+        bridge.on_event(
+            &mut model,
+            &shell(ShellEvent::Finished {
+                id: 3,
+                exit_code: None,
+                stopped: true,
+            }),
+            Instant::now(),
+        );
+        assert_eq!(bridge.state.shell, None);
+        assert!(!model.bottom.shell_running);
     }
 
     #[test]

@@ -133,6 +133,8 @@ pub enum InputPartKind {
     /// The step's input, as JSON.
     StepInput,
     Schema,
+    /// A file or folder you mentioned with `@`.
+    File,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

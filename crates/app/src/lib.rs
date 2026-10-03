@@ -16,6 +16,7 @@ mod host;
 mod learning;
 mod live_registry;
 mod prompts;
+mod repo_files;
 mod run_command;
 mod run_files;
 mod setup;

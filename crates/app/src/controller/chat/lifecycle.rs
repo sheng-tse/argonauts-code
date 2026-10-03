@@ -18,6 +18,7 @@ use super::offer::offer_to_start;
 use super::{ChatState, Turn, emit, planned, run_request, send_queued, settle_mode, side};
 use crate::chat_store::ChatSession;
 use crate::controller::recap::recap_from_turn;
+use crate::controller::shell;
 use crate::controller::triage::{Reading, read_answer, read_reply_with};
 use crate::controller::turn::{self, Launch, Record, TurnStep};
 use crate::controller::{Ctx, Effect};
@@ -122,6 +123,11 @@ fn attempt(
     } else {
         chat.prefs.notes()
     };
+    let ran = if step.hears_shell() {
+        super::take_shell(chat)
+    } else {
+        Vec::new()
+    };
     // A CLI session carried on keeps its model, unless you set one for the agent.
     let mut launch_worker = worker.clone();
     if resume.is_some() && turn::chat_agent(ctx.settings(), &worker).0.model.is_none() {
@@ -139,12 +145,14 @@ fn attempt(
             resume,
             excerpt,
             notes,
+            shell: shell::context_part(&ran),
             fast: chat.prefs.fast,
         },
     );
     let (key, cancel) = match launched {
         Ok(launched) => launched,
         Err(err) => {
+            chat.ran.splice(0..0, ran);
             emit(
                 ctx,
                 chat,
@@ -173,6 +181,7 @@ fn attempt(
         started: Instant::now(),
         run_began: false,
         plan_first: false,
+        ran,
     });
     Ok(())
 }
@@ -405,6 +414,8 @@ fn fail(
             other => other,
         };
         let id = turn.id.clone();
+        // The next try tells the lead about them again, ahead of any run since.
+        chat.ran.splice(0..0, turn.ran);
         if let Err(err) = attempt(ctx, chat, turn.id, turn.text, step, record, tried) {
             settle_mode(ctx, &id);
             // No turn is in flight now, so what was typed meanwhile goes out at once.

@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/snap_live.rs
-assertion_line: 205
 expression: styled(&lines)
 ---
 text              dark light
@@ -19,6 +18,7 @@ label             [fg=#af87ff]dark[/] [fg=#8700ff]light[/]
 mode-supervised   [fg=#999999]dark[/] [fg=#666666]light[/]
 mode-shadow       [fg=#48968c]dark[/] [fg=#006666]light[/]
 mode-auto         [fg=#ffc107]dark[/] [fg=#966c1e]light[/]
+shell             [fg=#fd5db1]dark[/] [fg=#ff0087]light[/]
 removed-row       [bg=#3d0100]dark[/] [bg=#ffdcdc]light[/]
 removed-word      [bg=#5c0200]dark[/] [bg=#ffc7c7]light[/]
 removed-marker    [fg=#dc5a5a]dark[/] [fg=#cf222e]light[/]
@@ -27,6 +27,7 @@ added-word        [bg=#044700]dark[/] [bg=#b2ffb2]light[/]
 added-marker      [fg=#50c850]dark[/] [fg=#248a3d]light[/]
 diff-text         [fg=#f8f8f2]dark[/] [fg=#333333]light[/]
 user-band         [bg=#373737]dark[/] [bg=#f0f0f0]light[/]
+selection         [bg=#264f78]dark[/] [bg=#add6ff]light[/]
 bar-track         [bg=#383945]dark[/] [bg=#d8dbe2]light[/]
 bar-fill          [bg=#e6a23c]dark[/] [bg=#b7791f]light[/]
 agent-red         [fg=#f87171]dark[/] [fg=#dc2626]light[/]

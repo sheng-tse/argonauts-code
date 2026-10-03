@@ -11,6 +11,7 @@ mod milestones;
 mod replay;
 #[cfg(test)]
 mod resumed_tests;
+mod shell;
 mod status;
 mod steps;
 #[cfg(test)]
@@ -30,6 +31,7 @@ pub use status::{NOTHING_RUNNING, status_cells, status_sections};
 
 use items::Items;
 use milestones::Milestones;
+use shell::ShellBlocks;
 
 #[derive(Debug, Default)]
 pub struct Transcript {
@@ -37,6 +39,7 @@ pub struct Transcript {
     pub replay: ReplayPrinter,
     items: Items,
     milestones: Milestones,
+    shell: ShellBlocks,
     clock: WallClock,
 }
 
@@ -89,6 +92,7 @@ impl Transcript {
             } => items::setting_changed(key, value, *scope, previous.as_deref(), *reset, cx),
             AppEvent::Notice { level, text } => self.items.notice(*level, text, cx),
             AppEvent::Narrator { line } => items::narrator(line, cx),
+            AppEvent::Shell { event } => self.shell.on_event(event, cx),
             AppEvent::View { data } => {
                 if let ViewData::Status { summary } = data.as_ref() {
                     for cell in status_cells(summary, &cx.state.names) {

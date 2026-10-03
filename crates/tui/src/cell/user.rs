@@ -1,10 +1,12 @@
-use ratatui::style::Style;
+use argonauts_core::input::at_words;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::HistoryCell;
 use crate::render::RenderCtx;
+use crate::text::marks;
 use crate::text::{fit_lines, sanitize, spans_width, str_width, wrap_spans};
-use crate::theme::Role;
+use crate::theme::{Role, Theme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserMessage {
@@ -60,7 +62,7 @@ impl HistoryCell for UserMessage {
         let theme = ctx.theme;
         let prompt = theme.glyphs.prompt;
         let first = [
-            Span::styled(prompt, theme.style(Role::Faint)),
+            marks::decorative(prompt, theme.style(Role::Faint)),
             Span::raw(" "),
         ];
         let rest = [Span::raw(" ".repeat(str_width(prompt) + 1))];
@@ -74,7 +76,7 @@ impl HistoryCell for UserMessage {
         } else {
             Role::Bright
         };
-        let spans = [Span::styled(text.into_owned(), theme.style(role))];
+        let spans = with_mentions(&text, theme.style(role), theme);
         let band = theme.style(Role::UserBand);
         let width = usize::from(ctx.width);
         let mut lines = wrap_spans(&spans, width, &first, &rest);
@@ -90,6 +92,29 @@ impl HistoryCell for UserMessage {
             })
             .collect()
     }
+}
+
+/// Each `@` word, such as `@src/main.rs` or `@codex`, in the color the `@` list picks with,
+/// or bold with no color.
+fn with_mentions(text: &str, style: Style, theme: &Theme) -> Vec<Span<'static>> {
+    let mention = if theme.has_color() {
+        theme.style(Role::Card)
+    } else {
+        style.add_modifier(Modifier::BOLD)
+    };
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for word in at_words(text) {
+        if word.range.start > at {
+            spans.push(Span::styled(text[at..word.range.start].to_owned(), style));
+        }
+        spans.push(Span::styled(text[word.range.clone()].to_owned(), mention));
+        at = word.range.end;
+    }
+    if at < text.len() || spans.is_empty() {
+        spans.push(Span::styled(text[at..].to_owned(), style));
+    }
+    spans
 }
 
 /// The band under the row's text and one cell past it, rather than across the whole row.
@@ -146,7 +171,10 @@ mod tests {
             assert_eq!(line.style.bg, theme.style(Role::UserBand).bg);
             assert!(line.style.bg.is_some_and(|bg| bg != Color::Reset));
         }
-        assert_eq!(lines[0].spans[0].style, theme.style(Role::Faint));
+        assert_eq!(
+            lines[0].spans[0].style,
+            marks::decoration(theme.style(Role::Faint))
+        );
         assert_eq!(lines[0].spans[2].style, theme.style(Role::Bright));
     }
 
@@ -166,6 +194,40 @@ mod tests {
         assert!(line.spans.iter().all(|span| span.style.bg == band));
         assert_eq!(line.spans[0].style.fg, theme.style(Role::Faint).fg);
         assert_eq!(line.spans[2].style.fg, theme.style(Role::Bright).fg);
+    }
+
+    #[test]
+    fn mentions_show_in_the_color_the_list_picks_with() {
+        let theme = theme();
+        let ctx = RenderCtx::new(60, &theme, Clock::still(Instant::now()));
+        let lines = UserMessage::new("explain @src/main.rs, ask @codex; me@x.example").lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "❯ explain @src/main.rs, ask @codex; me@x.example"
+        );
+        let colored: Vec<&str> = lines[0]
+            .spans
+            .iter()
+            .filter(|span| span.style.fg == theme.style(Role::Card).fg)
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(colored, ["@src/main.rs", "@codex"]);
+        assert_eq!(
+            lines[0].spans.last().unwrap().style.fg,
+            theme.style(Role::Bright).fg
+        );
+
+        let mut plain = Theme::dark().with_level(crate::theme::ColorLevel::None);
+        plain.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(60, &plain, Clock::still(Instant::now()));
+        let lines = UserMessage::new("see @notes.txt").lines(&ctx);
+        let bold: Vec<&str> = lines[0]
+            .spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(bold, ["@notes.txt"]);
     }
 
     #[test]

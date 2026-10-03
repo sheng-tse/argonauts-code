@@ -22,6 +22,7 @@ use crate::builtin_adapters;
 use crate::choices::app_choice;
 use crate::controller::{Ctx, Effect, Internal};
 use crate::startup::{runs_going, settings_warnings, welcome_from};
+use crate::trust::cant_trust;
 
 pub(crate) use probe::{FoundAgent, LocalServer, LoginState};
 use questions::{SetupView, Step};
@@ -333,6 +334,11 @@ impl Setup {
                 ));
             }
             for file in &self.view.untrusted {
+                // A file whose safety settings don't resolve would break the next start.
+                if let Err(err) = ctx.settings.check_trust(&env, file) {
+                    notices.push((NoteLevel::Warn, cant_trust(&env.shown(file), &err)));
+                    continue;
+                }
                 if let Err(err) = ctx.settings.trust_mut().trust(file) {
                     notices.push((NoteLevel::Error, format!("{err:#}")));
                 }

@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use argonauts_app::{FirstView, InteractiveOptions};
 use argonauts_core::RunId;
 use argonauts_core::names::ChatId;
+use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::vendor_sessions::VendorSessionRef;
 use clap::FromArgMatches as _;
 
@@ -132,7 +133,8 @@ async fn dispatch(cli: Cli) -> ExitCode {
         }
     };
     result.unwrap_or_else(|err| {
-        eprintln!("argonauts: {err:#}");
+        // An error can quote a file you haven't trusted, before any screen cleans it up.
+        eprintln!("argonauts: {}", sanitize_for_terminal(&format!("{err:#}")));
         if err.is::<usage::UsageError>() {
             ExitCode::from(usage::USAGE_EXIT)
         } else {

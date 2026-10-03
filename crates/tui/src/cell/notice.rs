@@ -5,6 +5,7 @@ use super::layout::{BODY_COL, EXPAND_HINT, indent, result_prefix};
 use super::tool::body::text_rows;
 use super::{HistoryCell, Tone};
 use crate::render::RenderCtx;
+use crate::text::marks;
 use crate::text::{fit_lines, sanitize, sanitize_line, spans_width, str_width, wrap_spans};
 use crate::theme::Role;
 
@@ -81,7 +82,7 @@ impl HistoryCell for Notice {
         };
         let hang = str_width(&glyph) + 1;
         let first = [
-            Span::styled(glyph, theme.style(self.tone.role())),
+            marks::decorative(glyph, theme.style(self.tone.role())),
             Span::raw(" "),
         ];
         let rest = [Span::raw(" ".repeat(hang))];
@@ -299,10 +300,16 @@ mod tests {
             plain_text(&lines),
             "◆ Merged card-002 into main\n  ⎿  Interrupted · What should Argonauts\n     do instead?\n     second"
         );
-        assert_eq!(lines[0].spans[0].style, theme.style(Role::Warning));
+        assert_eq!(
+            lines[0].spans[0].style,
+            marks::decoration(theme.style(Role::Warning))
+        );
         let plain = Notice::new(Tone::Error, "failed\x1b[31m hard").lines(&ctx);
         assert_eq!(plain_text(&plain), "● failed hard");
-        assert_eq!(plain[0].spans[0].style, theme.style(Role::Error));
+        assert_eq!(
+            plain[0].spans[0].style,
+            marks::decoration(theme.style(Role::Error))
+        );
     }
 
     #[test]
@@ -316,7 +323,10 @@ mod tests {
             plain_text(&lines),
             "◆ Merge card-002 into main? · merged by you, 10:58"
         );
-        assert_eq!(lines[0].spans[0].style, theme.style(Role::Success));
+        assert_eq!(
+            lines[0].spans[0].style,
+            marks::decoration(theme.style(Role::Success))
+        );
         assert_eq!(lines[0].spans[3].style, theme.style(Role::Dim));
     }
 

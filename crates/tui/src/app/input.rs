@@ -11,13 +11,14 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use argonauts_core::app::UiCommand;
+use argonauts_core::app::{UiCommand, ViewRequest};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Size};
 
 use super::{OverlayEvent, QuitArm, TranscriptOverlay, Ui, UiAction};
 use crate::bottom::{
-    CardEvent, CardPrompt, ComposerEvent, Hint, MenuEvent, PanelEvent, PickerEvent, REMEMBER_KEY,
+    CardEvent, CardPrompt, ComposerEvent, Hint, MenuEvent, Menus, PanelEvent, PickerEvent,
+    REMEMBER_KEY,
 };
 use crate::keymap::{Action, KeySpec, Layer};
 use crate::views::list;
@@ -33,6 +34,9 @@ impl<W: Write> Ui<W> {
     /// runtime passes its state through [`handle_event_in`](Self::handle_event_in).
     pub fn handle_event(&mut self, event: Event, now: Instant) -> Vec<UiAction> {
         if self.views.is_empty() {
+            if let Some(actions) = self.selection_key(&event) {
+                return actions;
+            }
             return self.handle_chat_event(event, now);
         }
         let state = crate::state::AppState::default();
@@ -60,7 +64,7 @@ impl<W: Write> Ui<W> {
         self.show_vim_mode();
         if actions
             .iter()
-            .any(|action| matches!(action, UiAction::Submit { .. }))
+            .any(|action| matches!(action, UiAction::Submit { .. } | UiAction::Shell { .. }))
         {
             self.follow_conversation();
         }
@@ -84,6 +88,7 @@ impl<W: Write> Ui<W> {
     pub fn resize(&mut self, size: Size, cursor: Option<Position>) {
         // Resizing only records the new size, so it has nothing to fail on.
         let _ = self.terminal.resize(size, cursor);
+        self.clear_selection();
         self.dirty = true;
     }
 
@@ -123,6 +128,7 @@ impl<W: Write> Ui<W> {
             || self.panel_key(key, actions)
             || self.menu_key(key, now, actions)
             || self.vim_key(key, actions)
+            || self.shell_key(key)
             || self.global_key(key, now, actions)
         {
             return;
@@ -145,8 +151,22 @@ impl<W: Write> Ui<W> {
             Some(ComposerEvent::Submitted { text, shown }) => {
                 actions.push(UiAction::Submit { text, shown });
             }
+            Some(ComposerEvent::Shell { command }) => actions.push(UiAction::Shell { command }),
             Some(_) => {}
         }
+        self.dirty = true;
+        true
+    }
+
+    /// Esc leaves shell mode and keeps what was typed, before it could interrupt anything.
+    /// With vim keys, Esc in INSERT first goes back to NORMAL, as anywhere else.
+    fn shell_key(&mut self, key: KeyEvent) -> bool {
+        let bottom = &mut self.model.bottom;
+        let esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
+        if !esc || !bottom.composer_has_focus() || !bottom.composer.leave_shell() {
+            return false;
+        }
+        bottom.menus.text_changed();
         self.dirty = true;
         true
     }
@@ -206,6 +226,10 @@ impl<W: Write> Ui<W> {
             if key.code == KeyCode::Esc {
                 return true;
             }
+        }
+        // In shell mode `?`, `/`, and `@` are a command's own characters.
+        if bottom.composer.is_shell() {
+            return false;
         }
         if self.keymap.is(Action::Shortcuts, &key)
             && bottom.composer.is_empty()
@@ -381,8 +405,12 @@ impl<W: Write> Ui<W> {
         actions: &mut Vec<UiAction>,
     ) -> bool {
         let bottom = &mut self.model.bottom;
-        let empty = bottom.composer.is_empty();
+        // Shell mode with nothing typed still has something to clear: the mode.
+        let empty = bottom.composer.is_empty() && !bottom.composer.is_shell();
         match action {
+            Action::ClearOrExit if bottom.shell_running => {
+                actions.push(UiAction::Command(UiCommand::StopShell));
+            }
             Action::ClearOrExit if empty => self.arm_quit(action, key, now, actions),
             Action::ClearOrExit => {
                 bottom.composer.clear();
@@ -464,7 +492,17 @@ impl<W: Write> Ui<W> {
                 bottom.answered_pick = None;
                 actions.push(UiAction::Submit { text, shown });
             }
-            ComposerEvent::Edited => bottom.menus.text_changed(),
+            ComposerEvent::Shell { command } => {
+                bottom.answered_pick = None;
+                actions.push(UiAction::Shell { command });
+            }
+            ComposerEvent::Edited => {
+                bottom.menus.text_changed();
+                // Files come and go while you work, so a fresh `@` reads them again.
+                if !bottom.composer.is_shell() && Menus::starts_mention(bottom.composer.text()) {
+                    actions.push(UiAction::Request(ViewRequest::RepoFiles));
+                }
+            }
             ComposerEvent::Moved => {}
             // With vim keys, Esc is how you get back to NORMAL, so pressing it twice is a
             // habit there and never clears; `cc` or `dd` does.

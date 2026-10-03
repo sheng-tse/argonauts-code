@@ -4,8 +4,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::edit::Draft;
-use super::{Composer, ComposerEvent};
+use super::{Composer, ComposerEvent, Saved};
 use crate::prompt_history::HISTORY_LIMIT;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +15,7 @@ pub(super) struct Search {
     /// The query has letters that no entry holds.
     pub(super) failed: bool,
     /// The draft from before the search, back on cancel.
-    stash: Draft,
+    stash: Saved,
 }
 
 impl Composer {
@@ -63,7 +62,7 @@ impl Composer {
         let index = match self.browsing {
             None if self.history.is_empty() => return ComposerEvent::AtTop,
             None => {
-                self.stash = Some(self.draft.clone());
+                self.stash = Some(self.saved());
                 self.history.len() - 1
             }
             Some(0) => return ComposerEvent::AtTop,
@@ -80,7 +79,8 @@ impl Composer {
         if index + 1 < self.history.len() {
             self.show_history(index + 1);
         } else {
-            self.draft = self.stash.take().unwrap_or_default();
+            let saved = self.stash.take().unwrap_or_default();
+            self.put_back(saved);
             self.browsing = None;
         }
         self.preferred_col = None;
@@ -88,7 +88,7 @@ impl Composer {
     }
 
     fn show_history(&mut self, index: usize) {
-        self.draft = Draft::from_text(&self.history[index]);
+        self.show_entry(index);
         self.browsing = Some(index);
         self.preferred_col = None;
     }
@@ -100,7 +100,7 @@ impl Composer {
             query: String::new(),
             found: None,
             failed: false,
-            stash: self.draft.clone(),
+            stash: self.saved(),
         });
         ComposerEvent::Moved
     }
@@ -149,7 +149,8 @@ impl Composer {
         if search.query.is_empty() {
             search.found = None;
             search.failed = false;
-            self.draft = search.stash.clone();
+            let saved = search.stash.clone();
+            self.put_back(saved);
             return ComposerEvent::Moved;
         }
         let query = search.query.to_lowercase();
@@ -159,7 +160,7 @@ impl Composer {
         search.failed = found.is_none();
         if let Some(index) = found {
             search.found = Some(index);
-            self.draft = Draft::from_text(&self.history[index]);
+            self.show_entry(index);
         }
         ComposerEvent::Moved
     }
@@ -173,7 +174,7 @@ impl Composer {
 
     fn cancel_search(&mut self) -> ComposerEvent {
         if let Some(search) = self.search.take() {
-            self.draft = search.stash;
+            self.put_back(search.stash);
         }
         ComposerEvent::Edited
     }

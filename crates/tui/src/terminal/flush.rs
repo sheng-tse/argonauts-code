@@ -58,7 +58,7 @@ fn diff<'b>(a: &Buffer, b: &'b Buffer) -> Vec<Command<'b>> {
             let cell_width = usize::from(cell.cell_width());
             if cell.symbol() != " "
                 || cell.bg != bg
-                || cell.modifier != Modifier::empty()
+                || crate::text::marks::drawn(cell.modifier) != Modifier::empty()
                 || cell.diff_option == CellDiffOption::AlwaysUpdate
             {
                 last_column = column + cell_width.saturating_sub(1);

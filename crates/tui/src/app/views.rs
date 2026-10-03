@@ -20,6 +20,9 @@ impl<W: Write> Ui<W> {
         now: Instant,
         state: &AppState,
     ) -> Vec<UiAction> {
+        if let Some(actions) = self.selection_key(&event) {
+            return actions;
+        }
         match event {
             Event::Key(key) if !self.views.is_empty() => {
                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {

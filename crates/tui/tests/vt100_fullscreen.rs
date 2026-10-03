@@ -7,14 +7,21 @@ mod common;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
+use argonauts_core::app::UiCommand;
+use argonauts_tui::keymap::Keymap;
 use argonauts_tui::model::{
     AgentReady, AssistantMessage, CardOption, CardPrompt, SessionHeader, ToolCall, ToolItem,
     UserMessage, ViewModel, WorkingLine,
 };
-use argonauts_tui::{InlineTerminal, Ui, stability};
+use argonauts_tui::theme::Role;
+use argonauts_tui::views::help::HelpView;
+use argonauts_tui::{InlineTerminal, Ui, UiAction, stability};
 use common::{t0, theme};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Position, Size};
+use ratatui::style::Color;
 
 const BEGIN: &str = "\x1b[?2026h";
 const END: &str = "\x1b[?2026l";
@@ -64,7 +71,7 @@ impl Fullscreen {
         };
         let terminal = InlineTerminal::new(recorder, Size::new(cols, ROWS), Position::new(0, 1));
         let mut ui = Ui::new(terminal, theme(), ViewModel::new("fullscreen"), t0());
-        ui.use_fullscreen("Shift");
+        ui.use_fullscreen();
         Self {
             ui,
             now: t0(),
@@ -100,6 +107,87 @@ impl Fullscreen {
             modifiers: KeyModifiers::NONE,
         };
         self.ui.handle_event(Event::Mouse(mouse), self.now);
+    }
+
+    fn mouse(&mut self, kind: MouseEventKind, (column, row): (u16, u16)) -> Vec<UiAction> {
+        let mouse = MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        self.ui.handle_event(Event::Mouse(mouse), self.now)
+    }
+
+    /// Presses at `from`, drags to `to`, and lets go there, drawing as a terminal would.
+    fn drag(&mut self, from: (u16, u16), to: (u16, u16)) -> Vec<UiAction> {
+        self.mouse(MouseEventKind::Down(MouseButton::Left), from);
+        self.frame();
+        self.mouse(MouseEventKind::Drag(MouseButton::Left), to);
+        self.frame();
+        let actions = self.mouse(MouseEventKind::Up(MouseButton::Left), to);
+        self.frame();
+        actions
+    }
+
+    /// `times` quick presses on one cell, and what the last one copied.
+    fn click(&mut self, at: (u16, u16), times: usize) -> Vec<UiAction> {
+        let mut actions = Vec::new();
+        for _ in 0..times {
+            self.mouse(MouseEventKind::Down(MouseButton::Left), at);
+            actions = self.mouse(MouseEventKind::Up(MouseButton::Left), at);
+        }
+        self.frame();
+        actions
+    }
+
+    fn press(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Vec<UiAction> {
+        self.ui
+            .handle_event(Event::Key(KeyEvent::new(code, modifiers)), self.now)
+    }
+
+    /// The first row holding `needle`.
+    fn row_of(&self, needle: &str) -> u16 {
+        let row = self
+            .rows()
+            .iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} on screen:\n{}", self.shown()));
+        u16::try_from(row).unwrap()
+    }
+
+    /// The screen with each run of selected cells in brackets.
+    fn marked(&self) -> String {
+        let Some(Color::Rgb(r, g, b)) = theme().style(Role::Selection).bg else {
+            panic!("the selection has a background");
+        };
+        let selected = vt100::Color::Rgb(r, g, b);
+        let screen = self.parser().screen();
+        let mut out = Vec::new();
+        for row in 0..ROWS {
+            let mut line = String::new();
+            let mut inside = false;
+            for column in 0..self.cols {
+                let Some(cell) = screen.cell(row, column) else {
+                    continue;
+                };
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                let on = cell.bgcolor() == selected;
+                if on != inside {
+                    line.push(if on { '[' } else { ']' });
+                    inside = on;
+                }
+                let contents = cell.contents();
+                line.push_str(if contents.is_empty() { " " } else { contents });
+            }
+            if inside {
+                line.push(']');
+            }
+            out.push(line.trim_end().to_owned());
+        }
+        out.join("\n")
     }
 
     fn parser(&self) -> &vt100::Parser {
@@ -173,7 +261,7 @@ fn frames_stay_on_the_alternate_screen_and_the_main_one_is_never_written() {
     f.frame();
     assert!(f.alternate());
     assert!(f.ui.terminal().writer().flushes[0].contains("\x1b[?1049h"));
-    assert!(f.ui.terminal().writer().flushes[0].contains("\x1b[?1000h\x1b[?1006h"));
+    assert!(f.ui.terminal().writer().flushes[0].contains("\x1b[?1000h\x1b[?1002h\x1b[?1006h"));
     conversation(&mut f);
     for _ in 0..6 {
         f.frame();
@@ -277,4 +365,270 @@ fn the_frame_is_sound_at_every_width() {
         f.assert_sound();
         insta::assert_snapshot!(format!("fullscreen_scrolled_{cols}"), f.shown());
     }
+}
+
+fn copied(actions: &[UiAction]) -> Option<&str> {
+    match actions {
+        [UiAction::Copy(text)] => Some(text),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_drag_selects_and_copies_the_text_without_the_screens_glyphs() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.frame();
+    let answer = f.row_of("● Answer 4.");
+    let actions = f.drag((2, answer), (13, answer + 5));
+    assert_eq!(
+        copied(&actions),
+        Some(
+            "Answer 4. The export writes JSON to stdout, one object per line, and --pretty \
+             indents it.\n\n- It reads the store\n- It writes each row\n- It flushes"
+        )
+    );
+    f.assert_sound();
+    insta::assert_snapshot!("selection_after_a_drag", f.marked());
+
+    // A drag back up from the press selects the other way.
+    let tool = f.row_of("⎿  step one");
+    let actions = f.drag((79, tool), (0, tool - 1));
+    assert_eq!(
+        copied(&actions),
+        Some("GPT on Codex · owner (Wire --json)\n   step one")
+    );
+}
+
+/// A copy pastes what was written: a wrapped link or command comes back whole, and box lines
+/// in an answer stay, since only what the screen draws around the text is left out.
+#[test]
+fn a_copy_keeps_wrapped_lines_whole_and_box_lines_in_the_text() {
+    let mut f = Fullscreen::new(60);
+    let url = "https://example.com/a/long/path/that/keeps/going/and/going/until/it/wraps";
+    let command = "pytest tests/ -q -k 'test_*.py' --verbose --maxfail=1 --durations=10";
+    f.ui.model_mut().history.push(AssistantMessage::new(format!(
+        "See {url} for the rest.\n\nRun `{command}` now.\n\n\
+         ```\nsrc/\n│   ├── app.rs\n│   └── lib.rs\n```\n\n```\n╭─────╮\n│ app │\n╰─────╯\n```"
+    )));
+    f.frame();
+    let first = f.row_of("● See");
+    let last = f.row_of("╰─────╯");
+    assert_eq!(f.row_of("now."), f.row_of("Run") + 1, "the command wraps");
+    let actions = f.drag((0, first), (59, last));
+    let text = copied(&actions).expect("a copy");
+    let rows: Vec<&str> = text.lines().map(str::trim).collect();
+    assert_eq!(rows[0], format!("See {url} for the rest."), "{text}");
+    assert_eq!(rows[2], format!("Run {command} now."), "{text}");
+    let code: Vec<&str> = rows[4..]
+        .iter()
+        .copied()
+        .filter(|row| !row.is_empty())
+        .collect();
+    assert_eq!(
+        code,
+        [
+            "src/",
+            "│   ├── app.rs",
+            "│   └── lib.rs",
+            "╭─────╮",
+            "│ app │",
+            "╰─────╯"
+        ],
+        "{text}"
+    );
+}
+
+/// Output that streams in while you drag would move the text out from under the pointer, so
+/// the view holds still until the button comes up, then follows again.
+#[test]
+fn the_text_under_a_drag_holds_still_while_output_streams_in() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.frame();
+    let answer = f.row_of("● Answer 4.");
+    let before = f.rows();
+    f.mouse(MouseEventKind::Down(MouseButton::Left), (2, answer));
+    for n in 1..=3 {
+        f.ui.model_mut()
+            .history
+            .push(AssistantMessage::new(format!("Streamed answer {n}.")));
+        f.frame();
+    }
+    assert_eq!(f.rows()[..10], before[..10], "{}", f.shown());
+    f.mouse(MouseEventKind::Drag(MouseButton::Left), (11, answer));
+    f.frame();
+    let actions = f.mouse(MouseEventKind::Up(MouseButton::Left), (11, answer));
+    assert_eq!(copied(&actions), Some("Answer 4."));
+    f.frame();
+    assert!(f.shown().contains("Streamed answer 3."), "{}", f.shown());
+    assert_eq!(f.ui.scroll_offset(), Some(0), "following again");
+
+    // A release the terminal never reports can't hold the view for good: a key lets go.
+    let before = f.rows();
+    f.mouse(MouseEventKind::Down(MouseButton::Left), (2, 2));
+    for n in 4..=6 {
+        f.ui.model_mut()
+            .history
+            .push(AssistantMessage::new(format!("Streamed answer {n}.")));
+        f.frame();
+    }
+    assert_eq!(f.rows()[..5], before[..5], "held");
+    f.press(KeyCode::Char('x'), KeyModifiers::NONE);
+    f.frame();
+    assert_ne!(f.rows()[..5], before[..5], "following again");
+    assert!(f.shown().contains("Streamed answer 6."), "{}", f.shown());
+}
+
+#[test]
+fn double_and_triple_clicks_take_a_word_and_a_row() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.frame();
+    let answer = f.row_of("● Answer 4.");
+    let stdout = u16::try_from(f.rows()[usize::from(answer)].find("stdout").unwrap()).unwrap();
+    assert_eq!(copied(&f.click((stdout + 1, answer), 1)), None);
+    assert!(!f.marked().contains('['), "a click selects nothing");
+
+    f.now += std::time::Duration::from_secs(2);
+    assert_eq!(copied(&f.click((stdout + 1, answer), 2)), Some("stdout"));
+    let tool = f.row_of("⎿  step one");
+    f.now += std::time::Duration::from_secs(2);
+    assert_eq!(copied(&f.click((30, tool), 3)), Some("step one"));
+    insta::assert_snapshot!("selection_after_a_triple_click", f.marked());
+}
+
+#[test]
+fn esc_lets_go_of_a_selection_and_does_nothing_else() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.frame();
+    let answer = f.row_of("● Answer 4.");
+    f.drag((2, answer), (20, answer));
+    assert!(f.marked().contains('['));
+
+    // Work is going, where Esc would interrupt it.
+    let actions = f.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(actions.is_empty(), "{actions:?}");
+    f.frame();
+    assert!(!f.marked().contains('['), "{}", f.marked());
+    let actions = f.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(actions.contains(&UiAction::Interrupt), "{actions:?}");
+
+    // The release copied it, so Ctrl+C lets go of it and does what it always does.
+    f.drag((2, answer), (7, answer));
+    let actions = f.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(copied(&actions), None, "{actions:?}");
+    f.frame();
+    assert!(!f.marked().contains('['));
+    assert!(f.shown().contains("again to exit"), "{}", f.shown());
+    f.now += Duration::from_secs(2);
+    f.frame();
+
+    // Typing lets go of it and still types.
+    f.drag((2, answer), (7, answer));
+    f.press(KeyCode::Char('x'), KeyModifiers::NONE);
+    f.frame();
+    assert!(!f.marked().contains('['));
+    assert!(f.shown().contains("❯ x"), "{}", f.shown());
+}
+
+/// You select an error, then stop the command that's hung: one Ctrl+C stops it.
+#[test]
+fn ctrl_c_stops_a_running_command_while_text_is_selected() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.ui.model_mut().bottom.shell_running = true;
+    f.frame();
+    let answer = f.row_of("● Answer 4.");
+    let actions = f.drag((2, answer), (20, answer));
+    assert!(copied(&actions).is_some());
+    let actions = f.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(actions, [UiAction::Command(UiCommand::StopShell)]);
+    f.frame();
+    assert!(!f.marked().contains('['), "{}", f.marked());
+}
+
+#[test]
+fn the_selection_goes_when_the_view_scrolls_away_from_it() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.frame();
+    let answer = f.row_of("● Answer 4.");
+    f.drag((2, answer), (20, answer));
+    assert!(f.marked().contains('['));
+    f.wheel(MouseEventKind::ScrollUp);
+    f.frame();
+    assert!(!f.marked().contains('['), "{}", f.marked());
+
+    // A resize lets go of it too.
+    f.wheel(MouseEventKind::ScrollDown);
+    f.frame();
+    let answer = f.row_of("● Answer 4.");
+    f.drag((2, answer), (20, answer));
+    f.ui.resize(Size::new(80, ROWS), None);
+    f.frame();
+    assert!(!f.marked().contains('['), "{}", f.marked());
+}
+
+#[test]
+fn the_transcript_and_full_screen_views_select_too() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.frame();
+    f.ui.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+        f.now,
+    );
+    f.frame();
+    let question = f.row_of("Question 4: what");
+    assert_eq!(
+        copied(&f.click((10, question), 3)),
+        Some("Question 4: what does the export do?")
+    );
+    // Esc lets go of the selection first, and the transcript stays.
+    f.press(KeyCode::Esc, KeyModifiers::NONE);
+    f.frame();
+    assert!(f.shown().contains("Showing detailed transcript"));
+    f.press(KeyCode::Esc, KeyModifiers::NONE);
+    f.frame();
+    assert!(!f.shown().contains("Showing detailed transcript"));
+
+    f.ui.push_view(Box::new(HelpView::new(Keymap::default())));
+    f.frame();
+    let row = f.row_of("│ ctrl+c ");
+    f.now += std::time::Duration::from_secs(2);
+    let text = f.click((4, row), 3);
+    let text = copied(&text).expect("a row copied");
+    assert!(text.starts_with("ctrl+c "), "{text:?}");
+    assert!(
+        text.ends_with("clear the prompt, twice to exit"),
+        "{text:?}"
+    );
+    insta::assert_snapshot!("selection_in_a_view", f.marked());
+    assert_eq!(f.ui.views_open(), 1);
+    f.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(f.ui.views_open(), 1, "Esc let go of the selection only");
+}
+
+#[test]
+fn the_inline_screen_leaves_the_mouse_to_the_terminal() {
+    let terminal = InlineTerminal::new(Vec::new(), Size::new(80, ROWS), Position::new(0, 0));
+    let mut inline = Ui::new(terminal, theme(), ViewModel::new("inline"), t0());
+    inline.frame(t0()).unwrap();
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        let mouse = MouseEvent {
+            kind,
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(inline.handle_event(Event::Mouse(mouse), t0()).is_empty());
+    }
+    let written = String::from_utf8_lossy(inline.terminal().writer()).into_owned();
+    assert!(!written.contains("\x1b[?1002h"), "{written:?}");
 }

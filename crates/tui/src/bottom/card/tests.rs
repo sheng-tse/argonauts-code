@@ -94,7 +94,10 @@ fn expanded_reads_like_the_reference() {
     let lines = &view.lines;
     let card_style = theme.style(Role::Card);
     let dim = theme.style(Role::Dim);
-    assert_eq!(lines[0].spans[0].style, card_style);
+    assert_eq!(
+        lines[0].spans[0].style,
+        crate::text::marks::decoration(card_style)
+    );
     assert_eq!(lines[1].spans[0].style, theme.style(Role::Warning));
     assert_eq!(
         lines[1].spans[1].style,

@@ -1,0 +1,7 @@
+---
+source: crates/tui/tests/snap_cells.rs
+expression: text(&lines)
+---
+! sleep 25
+  ⎿  Running… (3s)
+     (ctrl+c to stop)

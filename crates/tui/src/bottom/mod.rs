@@ -6,6 +6,7 @@ mod answered;
 mod bar;
 mod card;
 mod composer;
+mod files;
 mod menu;
 mod mode_line;
 mod narrator;
@@ -33,6 +34,7 @@ pub use card::{
 };
 pub use composer::{
     BUILT_IN_EXAMPLE, Composer, ComposerEvent, ComposerState, ComposerView, MAX_INPUT_ROWS,
+    SHELL_PLACEHOLDER, SHELL_PROMPT,
 };
 pub use menu::{MenuEvent, MenuItem, MenuKind, Menus};
 pub use mode_line::{ApprovalMode, ModeLine, ModeNotice, ModeState, VimMode, status_line};
@@ -81,6 +83,8 @@ pub struct BottomState {
     /// A run takes what you type, also while it's parked at a card, so a waiting card's
     /// placeholder offers guiding it.
     pub run_takes_text: bool,
+    /// A `!` command runs, so Ctrl+C stops it rather than clearing or quitting.
+    pub shell_running: bool,
     /// `ui.live_area_max`: the most of the screen's height the live region may take.
     pub live_area_max: Option<f64>,
     pub synced: Synced,
@@ -407,7 +411,7 @@ impl BottomState {
         let menu = if let Some(picker) = &self.picker {
             composer.lines.pop();
             picker.lines(ctx)
-        } else if focused {
+        } else if focused && !self.composer.is_shell() {
             self.menus
                 .rows(self.composer.text(), ctx, usize::MAX)
                 .unwrap_or_default()
@@ -430,6 +434,7 @@ impl BottomState {
                 panel: panel_has_rows(&self.workflows, &self.agents),
                 panel_focused: self.agents.has_focus() || self.workflows.selected.is_some(),
                 card_focused: self.focused_card().is_some(),
+                shell: self.composer.is_shell(),
                 enter_sends: self
                     .enter_sends
                     .as_deref()

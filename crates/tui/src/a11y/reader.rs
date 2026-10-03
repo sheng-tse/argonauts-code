@@ -158,6 +158,15 @@ impl Reader {
             said.commands.extend(taken.command);
             return said;
         }
+        // `!` runs the rest in your shell, as it does in the full screen.
+        if let Some(command) = line.trim().strip_prefix('!') {
+            if !command.trim().is_empty() {
+                said.commands.push(UiCommand::Shell {
+                    command: command.trim().to_owned(),
+                });
+            }
+            return said;
+        }
         match parse_input_with(line, self.state.vendor_commands.as_ref()) {
             Ok(ParsedInput::Empty) => {}
             Ok(ParsedInput::Slash { command }) => self.slash(command, &mut said),

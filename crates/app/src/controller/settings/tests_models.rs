@@ -658,6 +658,7 @@ fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::Sessio
         resume: None,
         excerpt: None,
         notes: Vec::new(),
+        shell: None,
         fast,
     };
     let dir = fixture.ctx.env.state_dir.join("chat-test");
