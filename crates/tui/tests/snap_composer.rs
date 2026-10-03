@@ -1,9 +1,12 @@
 mod common;
 
+use argonauts_tui::bottom::HistorySearch;
 use argonauts_tui::commands::command_items;
-use argonauts_tui::model::{BottomState, MenuItem};
+use argonauts_tui::model::{BottomState, MenuItem, VimMode};
+use argonauts_tui::prompt_history::PromptEntry;
 use argonauts_tui::stability::{self, samples};
 use common::{assert_fits, ctx, text, theme};
+use crossterm::event::{KeyCode, KeyEvent};
 
 const WIDTHS: [u16; 4] = [80, 100, 120, 200];
 
@@ -260,4 +263,85 @@ fn file_mention_list_under_input() {
         .unwrap_or_else(|| panic!("an Agents heading:\n{shown}"));
     assert!(rows[heading - 1].starts_with("  + "), "{shown}");
     assert!(rows[heading + 1].starts_with("  @claude-code"), "{shown}");
+}
+
+/// Ages count back from here.
+const SEARCH_NOW: u64 = 1_800_000_000;
+
+fn searching(vim: bool) -> BottomState {
+    let at = |minutes: u64| Some(SEARCH_NOW - minutes * 60);
+    let everywhere = vec![
+        PromptEntry::new("Should this be a workflow?", at(37)),
+        PromptEntry::new(
+            "Can we add a --json option to the export command and keep CSV output as it is?",
+            at(29),
+        ),
+        PromptEntry::new(samples::CJK, at(18)),
+        PromptEntry::new(samples::EMOJI, at(12)),
+        PromptEntry::new(samples::LONG_PATH, at(10)),
+        PromptEntry::new(samples::long_word(), at(4)),
+        PromptEntry::new(
+            "Follow-ups:\n1. Make sure the flag works in other workflows\n2. Add a test for the CSV",
+            at(2),
+        ),
+        PromptEntry::new("Show the status", at(2)),
+        PromptEntry::new("/usage", at(1)),
+    ];
+    let project = everywhere[6..].to_vec();
+    let mut bottom = BottomState::new();
+    bottom.mode.vim = vim.then_some(VimMode::Normal);
+    bottom.history_search = Some(HistorySearch::new(project, everywhere, SEARCH_NOW).with_vim(vim));
+    bottom
+}
+
+fn snapshot_search(name: &str, bottom: &BottomState) {
+    let theme = theme();
+    for width in stability::WIDTHS {
+        let view = bottom.render(&ctx(&theme, width, 0.0));
+        stability::assert_lines(&view.lines, width);
+        assert_fits(&view.lines, width);
+        if [80, 100, 120].contains(&width) {
+            insta::assert_snapshot!(format!("{name}_{width}"), text(&view.lines));
+        }
+    }
+}
+
+#[test]
+fn history_search_like_claude_codes() {
+    let bottom = searching(true);
+    snapshot_search("history_search", &bottom);
+    let theme = theme();
+    let view = bottom.render(&ctx(&theme, 120, 0.0));
+    let rows: Vec<String> = text(&view.lines).lines().map(str::to_owned).collect();
+    assert_eq!(rows[1], "  Search prompts · everywhere");
+    assert!(rows.last().unwrap().ends_with("Esc i / for slash commands"));
+    // The cursor waits in the filter box, after its search mark.
+    let filter = rows
+        .iter()
+        .position(|row| row.contains("Filter history"))
+        .unwrap();
+    assert_eq!(view.cursor, Some((6, filter as u16)));
+}
+
+#[test]
+fn history_search_filtered() {
+    let mut bottom = searching(false);
+    let search = bottom.history_search.as_mut().unwrap();
+    for c in "workflow".chars() {
+        search.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    search.handle_key(KeyEvent::from(KeyCode::Up));
+    snapshot_search("history_search_filtered", &bottom);
+}
+
+#[test]
+fn history_search_on_a_short_screen_keeps_its_filter() {
+    let bottom = searching(true);
+    let theme = theme();
+    let view = bottom.render_within(&ctx(&theme, 100, 0.0), 9);
+    let shown = text(&view.lines);
+    assert_eq!(view.lines.len(), 9, "{shown}");
+    assert!(shown.contains("Search prompts"), "{shown}");
+    assert!(shown.contains("❯ 1m ago   /usage"), "{shown}");
+    assert!(shown.contains("Filter history"), "{shown}");
 }

@@ -6,9 +6,10 @@ use ratatui::layout::{Position, Size};
 use super::input::QUIT_WINDOW;
 use super::*;
 use crate::bottom::{
-    AgentRow, AgentState, ApprovalMode, CardOption, CardPrompt, Picker, PickerEvent, PickerRow,
-    VimMode, WorkingLine,
+    AgentRow, AgentState, ApprovalMode, CardOption, CardPrompt, HistorySearch, Picker, PickerEvent,
+    PickerRow, VimMode, WorkingLine,
 };
+use crate::prompt_history::PromptEntry;
 use crate::theme::Glyphs;
 
 const COLUMNS: u16 = 60;
@@ -160,6 +161,158 @@ fn esc_means_what_the_context_says() {
     assert!(ui.model().bottom.agents.has_focus());
     assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
     assert!(!ui.model().bottom.agents.has_focus());
+}
+
+/// What the host opens on `SearchHistory`.
+fn open_search(ui: &mut Ui<vt100::Parser>) {
+    let prompts = vec![
+        PromptEntry::new("fix the export test", Some(100)),
+        PromptEntry::new("add a README", Some(200)),
+    ];
+    let search = HistorySearch::new(prompts.clone(), prompts, 260).with_vim(true);
+    ui.model_mut().bottom.history_search = Some(search);
+}
+
+#[test]
+fn vim_slash_searches_history_and_enter_only_fills_the_input() {
+    let (mut ui, t0) = ui_at(100);
+    ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
+    type_text(&mut ui, "draft", t0);
+    press(&mut ui, KeyCode::Esc, t0);
+    assert_eq!(
+        press(&mut ui, KeyCode::Char('/'), t0),
+        [UiAction::SearchHistory]
+    );
+    open_search(&mut ui);
+    type_text(&mut ui, "exp", t0);
+    assert_eq!(ui.model().bottom.composer.text(), "draft", "typing filters");
+    ui.frame(t0).unwrap();
+    let rows = screen(&ui);
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("  Search prompts · everywhere")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("❯ 2m ago   fix the export test")),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("-- NORMAL --")),
+        "the search stands in for the input and the mode line: {rows:#?}"
+    );
+
+    assert!(
+        press(&mut ui, KeyCode::Enter, t0).is_empty(),
+        "Enter never sends"
+    );
+    let bottom = &ui.model().bottom;
+    assert!(bottom.history_search.is_none());
+    assert_eq!(bottom.composer.text(), "fix the export test");
+    assert_eq!(bottom.mode.vim, Some(VimMode::Normal));
+
+    // Ctrl+R opens it too; Esc closes it with the input as it was, and a paste filters.
+    assert_eq!(chord(&mut ui, 'r', t0), [UiAction::SearchHistory]);
+    open_search(&mut ui);
+    ui.handle_event(Event::Paste("READ".into()), t0);
+    let search = ui.model().bottom.history_search.as_ref().unwrap();
+    assert_eq!(search.filter(), "READ");
+    assert_eq!(search.selected(), Some("add a README"));
+    assert!(press(&mut ui, KeyCode::Esc, t0).is_empty());
+    assert!(ui.model().bottom.history_search.is_none());
+    assert_eq!(ui.model().bottom.composer.text(), "fix the export test");
+    assert_eq!(ui.model().bottom.mode.vim, Some(VimMode::Normal));
+}
+
+#[test]
+fn ctrl_r_searches_history_with_default_keys() {
+    let (mut ui, t0) = ui();
+    type_text(&mut ui, "half typed", t0);
+    assert_eq!(chord(&mut ui, 'r', t0), [UiAction::SearchHistory]);
+    open_search(&mut ui);
+    // Ctrl+C leaves the search, not the app.
+    assert!(chord(&mut ui, 'c', t0).is_empty());
+    assert!(ui.model().bottom.history_search.is_none());
+    assert_eq!(ui.model().bottom.composer.text(), "half typed");
+}
+
+/// Keys `ms` milliseconds apart from `start`, as a terminal delivers a write.
+fn type_at(ui: &mut Ui<vt100::Parser>, keys: &str, start: Instant, ms: u64) -> Vec<UiAction> {
+    let mut actions = Vec::new();
+    for (n, c) in keys.chars().enumerate() {
+        let code = if c == '\r' {
+            KeyCode::Enter
+        } else {
+            KeyCode::Char(c)
+        };
+        let at = start + Duration::from_millis(ms * n as u64);
+        actions.extend(press(ui, code, at));
+    }
+    actions
+}
+
+#[test]
+fn a_paste_typed_out_as_keys_goes_in_whole_and_never_sends() {
+    let (mut ui, t0) = ui();
+    ui.time_keys(true);
+    let actions = type_at(&mut ui, "wor\r\rbar", t0, 1);
+    assert!(actions.is_empty(), "{actions:?}");
+    // It goes in once the keys stop.
+    let due = ui.next_deadline(t0 + Duration::from_millis(10)).unwrap();
+    assert!(due <= t0 + Duration::from_millis(20), "{due:?}");
+    ui.frame(t0 + Duration::from_millis(30)).unwrap();
+    assert_eq!(ui.model().bottom.composer.text(), "wor\n\nbar");
+
+    // Typed at a person's pace, Enter sends.
+    let later = t0 + Duration::from_secs(5);
+    assert!(type_at(&mut ui, "!", later, 0).is_empty());
+    let actions = press(&mut ui, KeyCode::Enter, later + Duration::from_millis(300));
+    assert!(
+        matches!(&actions[..], [UiAction::Submit { text, .. }] if text == "wor\n\nbar!"),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn a_paste_typed_out_as_keys_never_picks_a_prompt_in_the_search() {
+    let (mut ui, t0) = ui();
+    ui.time_keys(true);
+    open_search(&mut ui);
+    let actions = type_at(&mut ui, "add\r\rREAD", t0, 1);
+    assert!(actions.is_empty(), "{actions:?}");
+    let bottom = &ui.model().bottom;
+    let search = bottom
+        .history_search
+        .as_ref()
+        .expect("the search stays open");
+    assert_eq!(search.filter(), "add READ");
+    assert_eq!(bottom.composer.text(), "", "nothing went in the input");
+
+    // Enter on its own picks the prompt and still sends nothing.
+    let actions = press(&mut ui, KeyCode::Enter, t0 + Duration::from_secs(1));
+    assert!(actions.is_empty(), "{actions:?}");
+    assert_eq!(ui.model().bottom.composer.text(), "add a README");
+}
+
+#[test]
+fn esc_and_i_together_leave_the_search_for_insert() {
+    let (mut ui, t0) = ui();
+    ui.model_mut().bottom.mode.vim = Some(VimMode::Insert);
+    type_text(&mut ui, "draft", t0);
+    press(&mut ui, KeyCode::Esc, t0);
+    press(&mut ui, KeyCode::Char('/'), t0);
+    open_search(&mut ui);
+    // tmux, ssh, or quick fingers send Esc i in one read, which comes as Alt+i.
+    let alt_i = Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT));
+    assert!(ui.handle_event(alt_i, t0).is_empty());
+    let bottom = &ui.model().bottom;
+    assert!(bottom.history_search.is_none());
+    assert_eq!(bottom.mode.vim, Some(VimMode::Insert));
+    assert_eq!(bottom.composer.text(), "draft");
+    // `i` inserts before the cursor, which Esc moved back onto the last letter.
+    press(&mut ui, KeyCode::Char('/'), t0);
+    assert_eq!(ui.model().bottom.composer.text(), "draf/t");
 }
 
 #[test]

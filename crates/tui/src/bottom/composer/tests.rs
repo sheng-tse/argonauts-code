@@ -495,44 +495,34 @@ fn history_walks_multiline_draft_first() {
 }
 
 #[test]
-fn history_search_enter_fills_never_sends() {
+fn ctrl_r_and_vim_slash_ask_for_the_history_search() {
     let mut c = Composer::new();
-    c.set_history(["fix the export test", "add a README", "fix lint"].map(String::from));
     type_text(&mut c, "draft");
-    assert_eq!(c.handle_key(ctrl('r')), ComposerEvent::Moved);
-    assert!(c.is_searching());
-    type_text(&mut c, "FIX");
-    assert_eq!(c.search_query(), Some("FIX"));
-    assert_eq!(c.text(), "fix lint");
-    c.handle_key(ctrl('r'));
-    assert_eq!(c.text(), "fix the export test");
-    let top = plain_text(&render(&c, 60).lines[..1]);
-    assert!(top.ends_with(" search: FIX ─"), "{top}");
-
-    assert_eq!(c.handle_key(key(KeyCode::Enter)), ComposerEvent::Edited);
-    assert!(!c.is_searching());
-    assert_eq!(c.text(), "fix the export test");
-    assert_eq!(c.cursor(), c.text().len());
+    assert_eq!(c.handle_key(ctrl('r')), ComposerEvent::SearchHistory);
     assert_eq!(
-        c.handle_key(key(KeyCode::Enter)),
-        submitted("fix the export test")
+        c.text(),
+        "draft",
+        "the draft waits while the search is open"
     );
 
-    type_text(&mut c, "mine");
-    c.handle_key(ctrl('r'));
-    type_text(&mut c, "readme");
-    assert_eq!(c.text(), "add a README");
-    c.handle_key(ctrl('c'));
-    assert_eq!(c.text(), "mine");
-
-    c.handle_key(ctrl('r'));
-    type_text(&mut c, "zzz");
-    assert_eq!(c.text(), "mine");
-    let top = plain_text(&render(&c, 60).lines[..1]);
-    assert!(top.contains("search: zzz (no match)"), "{top}");
+    c.set_vim(true);
+    // `/` in INSERT is typed; in NORMAL it searches, as in Claude Code.
+    type_text(&mut c, "/");
+    assert_eq!(c.text(), "draft/");
     c.handle_key(key(KeyCode::Esc));
-    assert!(!c.is_searching());
-    assert_eq!(c.text(), "mine");
+    assert_eq!(c.vim_mode(), Some(VimMode::Normal));
+    assert_eq!(
+        c.handle_key(key(KeyCode::Char('/'))),
+        ComposerEvent::SearchHistory
+    );
+    assert_eq!(c.text(), "draft/");
+    assert_eq!(c.vim_mode(), Some(VimMode::Normal));
+
+    // A picked prompt fills the input, the cursor on its last letter in NORMAL.
+    c.fill("fix the export test");
+    assert_eq!(c.text(), "fix the export test");
+    assert_eq!(c.cursor(), "fix the export tes".len());
+    assert_eq!(c.vim_mode(), Some(VimMode::Normal));
 }
 
 fn key_at(c: &mut Composer, text: &str, start: Instant, gap: Duration) -> Vec<ComposerEvent> {
@@ -786,12 +776,17 @@ fn history_brings_a_command_back_in_shell_mode() {
         "the draft comes back in its own mode"
     );
 
+    // The history search hands back an entry as it was kept, with its `!`.
     c.clear();
-    c.handle_key(ctrl('r'));
-    type_text(&mut c, "ls");
+    assert_eq!(c.handle_key(ctrl('r')), ComposerEvent::SearchHistory);
+    c.fill("!ls");
     assert_eq!((c.text(), c.is_shell()), ("ls", true));
-    c.handle_key(ctrl('g'));
-    assert_eq!((c.text(), c.is_shell()), ("", false));
+    c.fill("hello");
+    assert_eq!(
+        (c.text(), c.is_shell()),
+        ("hello", false),
+        "a prompt picked in shell mode never runs as a command"
+    );
 }
 
 #[test]

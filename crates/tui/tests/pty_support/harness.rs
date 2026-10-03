@@ -52,6 +52,8 @@ pub struct Launch {
     name: Option<String>,
     shell: Option<Shell>,
     unanswered: bool,
+    /// Written under the private home before start, by path within it.
+    home_files: Vec<(String, String)>,
 }
 
 /// Runs the harness from a shell, which prints a line first, as a prompt would, and can start
@@ -81,6 +83,13 @@ impl Launch {
 
     pub fn env(mut self, name: &str, value: impl Into<OsString>) -> Self {
         self.env.push((name.to_owned(), value.into()));
+        self
+    }
+
+    /// A file under the private home, such as another repo's prompt history, written before
+    /// the harness starts.
+    pub fn home_file(mut self, path: &str, contents: &str) -> Self {
+        self.home_files.push((path.to_owned(), contents.to_owned()));
         self
     }
 
@@ -117,6 +126,13 @@ impl Launch {
         let signals = dir.path().join("signals");
         for folder in [&home, &work, &signals] {
             fs::create_dir_all(folder).expect("making the harness folders");
+        }
+        for (path, contents) in &self.home_files {
+            let file = home.join(path);
+            if let Some(dir) = file.parent() {
+                fs::create_dir_all(dir).expect("making a home file's folder");
+            }
+            fs::write(file, contents).expect("writing a home file");
         }
         let script = dir.path().join("script.jsonl");
         fs::write(&script, self.script.to_jsonl()).expect("writing the script");
@@ -227,6 +243,7 @@ impl Harness {
             name: None,
             shell: None,
             unanswered: false,
+            home_files: Vec::new(),
         }
     }
 
@@ -262,7 +279,14 @@ impl Harness {
 
     /// Pastes the way a terminal does when the app turned bracketed paste on.
     pub fn paste(&mut self, text: &str) {
-        self.send(&format!("\x1b[200~{text}\x1b[201~"));
+        self.send_at_once(&format!("\x1b[200~{text}\x1b[201~"));
+    }
+
+    /// Writes the text in one go, as a terminal without bracketed paste delivers a paste.
+    pub fn send_at_once(&mut self, text: &str) {
+        self.pty
+            .send_at_once(text)
+            .expect("typing into the harness");
     }
 
     pub fn screen(&self) -> Screen {

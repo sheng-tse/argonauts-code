@@ -236,6 +236,7 @@ impl Composer {
                 self.vim_pending.g = true;
                 ComposerEvent::Moved
             }
+            '/' => ComposerEvent::SearchHistory,
             'p' => self.put(true),
             'P' => self.put(false),
             '~' => self.toggle_case(),

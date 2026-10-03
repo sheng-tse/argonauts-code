@@ -1,0 +1,18 @@
+---
+source: crates/tui/tests/snap_composer.rs
+expression: text(&view.lines)
+---
+────────────────────────────────────────────────────────────────────────────────
+  Search prompts · everywhere
+  ↑ 29m ago  Can we add a --json option…  ╭──────────────────────────────────╮
+    18m ago  修复导出测试中的竞态条件并…  │ /usage                           │
+    12m ago  Ship it 🚀 then celebrate …  │                                  │
+    10m ago  /Users/someone/github/argo…  │                                  │
+    4m ago   xxxxxxxxxxxxxxxxxxxxxxxxxx…  │                                  │
+    2m ago   Follow-ups:                  │                                  │
+    2m ago   Show the status              │                                  │
+  ❯ 1m ago   /usage                       ╰──────────────────────────────────╯
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │ ⌕ Filter history…                                                        │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  ↑/↓ to navigate · Enter to use · Esc to cancel · ctrl+s to scope

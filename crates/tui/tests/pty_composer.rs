@@ -325,3 +325,211 @@ fn mention_ambiguous_opens_picker() {
         "the picked agent: {mention}"
     );
 }
+
+/// Another repo's prompt history, three days old, for the everywhere scope.
+fn other_repo_history() -> (&'static str, String) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let line = json!({ "prompt": "deploy the web app", "at": now - 3 * 86_400 });
+    (
+        ".argonauts/state/web-111/history.jsonl",
+        format!("{line}\n"),
+    )
+}
+
+fn submits(harness: &Harness) -> usize {
+    harness
+        .command_types()
+        .iter()
+        .filter(|kind| *kind == "submit")
+        .count()
+}
+
+#[test]
+fn vim_slash_searches_prompt_history_and_enter_only_fills_the_input() {
+    let (path, history) = other_repo_history();
+    let script = Script::idle()
+        .await_command("submit")
+        .timed(chat_turn("t-001", "send me", "Sent.", 5));
+    let mut harness = Harness::launch(script)
+        .ui("keys = \"vim\"")
+        .home_file(path, &history)
+        .start();
+    harness.wait_visible("-- INSERT --");
+    harness.submit("send me");
+    harness.wait_visible("Sent\\.");
+
+    harness.send("draft");
+    wait_input(&harness, "draft");
+    harness.press(Key::Esc);
+    harness.wait_visible("-- NORMAL --");
+    harness.press(Key::Char('/'));
+    let screen = harness.wait_visible("Search prompts · everywhere");
+    expect_row(&screen, "^ {4}3d ago {3}deploy the web app");
+    expect_row(&screen, "^  ❯ \\S+( ago)? +send me");
+    expect_row(&screen, "│ ⌕ Filter history…");
+    expect_row(
+        &screen,
+        "^  ↑/↓ to navigate · Enter to use · Esc to cancel · ctrl\\+s to scope · Esc i / for slash commands$",
+    );
+    assert!(
+        row_of(&screen, "-- NORMAL --").is_none(),
+        "the search stands in for the input and the mode line"
+    );
+
+    // Typing filters; the input keeps its draft until a prompt is picked.
+    harness.send("dwa");
+    let screen = harness.wait_visible("│ ⌕ dwa");
+    expect_row(&screen, "^  ❯ 3d ago   deploy the web app");
+    assert!(
+        row_of(&screen, "ago +send me").is_none(),
+        "{}",
+        screen.visible.join("\n")
+    );
+
+    // Enter puts it in the input and sends nothing.
+    harness.press(Key::Enter);
+    let screen = harness.wait_visible("-- NORMAL --");
+    assert_eq!(input_rows(&screen), ["❯ deploy the web app"]);
+    assert_eq!(submits(&harness), 1, "only the first prompt went out");
+
+    // Ctrl+S narrows to this project, and Esc leaves the input as it was.
+    harness.press(Key::Char('/'));
+    harness.wait_visible("Search prompts · everywhere");
+    harness.press(Key::Ctrl('s'));
+    let screen = harness.wait_visible("Search prompts · this project");
+    assert!(row_of(&screen, "deploy the web app").is_none());
+    expect_row(&screen, "^  ❯ \\S+( ago)? +send me");
+    harness.press(Key::Esc);
+    let screen = harness.wait_visible("-- NORMAL --");
+    assert_eq!(input_rows(&screen), ["❯ deploy the web app"]);
+    assert_eq!(submits(&harness), 1);
+}
+
+#[test]
+fn ctrl_r_searches_prompt_history_with_default_keys() {
+    let (path, history) = other_repo_history();
+    let mut harness = Harness::launch(Script::idle())
+        .home_file(path, &history)
+        .start();
+    harness.wait_for(TOP_RULE);
+    harness.wait_visible(MODE_IDLE);
+    harness.send("half typed");
+    wait_input(&harness, "half typed");
+
+    harness.press(Key::Ctrl('r'));
+    let screen = harness.wait_visible("Search prompts · everywhere");
+    expect_row(&screen, "^  ❯ 3d ago   deploy the web app");
+    let hints = expect_row(&screen, "^  ↑/↓ to navigate");
+    assert!(
+        !screen.visible[hints].contains("Esc i /"),
+        "the way to `/` commands is for vim keys"
+    );
+    harness.press(Key::Esc);
+    let screen = harness.wait_visible(MODE_IDLE);
+    assert_eq!(input_rows(&screen), ["❯ half typed"]);
+
+    harness.press(Key::Ctrl('r'));
+    harness.wait_visible("Search prompts");
+    harness.send("web");
+    harness.wait_visible("│ ⌕ web");
+    harness.press(Key::Enter);
+    let screen = wait_input(&harness, "deploy the web app");
+    assert_eq!(input_rows(&screen), ["❯ deploy the web app"]);
+    harness.assert_no_command("submit");
+}
+
+/// This repo's prompt history from an earlier session, an hour old.
+fn this_repo_history(prompts: &[&str]) -> (String, String) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let lines: String = prompts
+        .iter()
+        .map(|prompt| format!("{}\n", json!({ "prompt": prompt, "at": now - 3_600 })))
+        .collect();
+    (".argonauts/state/web-111/history.jsonl".to_owned(), lines)
+}
+
+/// A terminal without bracketed paste types a paste out as keys in one write. Its line breaks
+/// are Enter, and none of them may send.
+#[test]
+fn a_paste_typed_out_as_keys_never_sends() {
+    let mut harness = Harness::launch(Script::idle()).start();
+    harness.wait_for(TOP_RULE);
+    harness.wait_visible(MODE_IDLE);
+    harness.send_at_once("wor\r\rbar");
+    let screen = wait_input(&harness, "bar");
+    assert_eq!(input_rows(&screen), ["❯ wor", "", "  bar"]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    harness.assert_no_command("submit");
+}
+
+#[test]
+fn a_paste_typed_out_as_keys_never_picks_a_prompt_in_the_search() {
+    let (path, history) = other_repo_history();
+    let (_, mine) = this_repo_history(&["Should this be a workflow?"]);
+    let mut harness = Harness::launch(Script::idle())
+        .ui("keys = \"vim\"")
+        .home_file(path, &format!("{history}{mine}"))
+        .start();
+    harness.wait_visible("-- INSERT --");
+    harness.press(Key::Esc);
+    harness.wait_visible("-- NORMAL --");
+    harness.press(Key::Char('/'));
+    harness.wait_visible("Search prompts · everywhere");
+
+    harness.send_at_once("wor\r\rbar");
+    let screen = harness.wait_visible("│ ⌕ wor bar");
+    expect_row(&screen, "Search prompts · everywhere");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let screen = harness.screen();
+    expect_row(&screen, "│ ⌕ wor bar");
+    harness.assert_no_command("submit");
+
+    // The search is still yours: Esc leaves it with the input as it was.
+    harness.press(Key::Esc);
+    let screen = harness.wait_visible("-- NORMAL --");
+    let input = input_rows(&screen);
+    assert!(input[0].starts_with("❯ Try "), "still empty: {input:?}");
+    harness.assert_no_command("submit");
+}
+
+/// The footer's Esc i / reaches the `/` commands, so it shows only where it does, and works
+/// when Esc and i arrive together, as Alt+i.
+#[test]
+fn esc_i_slash_from_the_search_opens_the_slash_menu() {
+    let (path, history) = other_repo_history();
+    let mut harness = Harness::launch(Script::idle())
+        .ui("keys = \"vim\"")
+        .home_file(path, &history)
+        .start();
+    harness.wait_visible("-- INSERT --");
+
+    // Ctrl+R in INSERT goes back to INSERT, where Esc i / would type, so no hint.
+    harness.press(Key::Ctrl('r'));
+    let screen = harness.wait_visible("Search prompts · everywhere");
+    let hints = expect_row(&screen, "^  ↑/↓ to navigate");
+    assert!(
+        !screen.visible[hints].contains("Esc i /"),
+        "{}",
+        screen.visible[hints]
+    );
+    harness.press(Key::Esc);
+    harness.wait_visible("-- INSERT --");
+
+    harness.press(Key::Esc);
+    harness.wait_visible("-- NORMAL --");
+    harness.press(Key::Char('/'));
+    harness.wait_visible("Esc i / for slash commands");
+    harness.send_at_once("\x1bi");
+    let screen = harness.wait_visible("-- INSERT --");
+    assert!(row_of(&screen, "Search prompts").is_none());
+    let input = input_rows(&screen);
+    assert!(input[0].starts_with("❯ Try "), "nothing typed: {input:?}");
+    harness.send("/");
+    harness.wait_visible("^  /clear ");
+}

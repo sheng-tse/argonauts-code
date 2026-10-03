@@ -1,0 +1,18 @@
+---
+source: crates/tui/tests/snap_composer.rs
+expression: text(&view.lines)
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Search prompts · everywhere
+  ↑ 29m ago  Can we add a --json option to the export comma…  ╭──────────────────────────────────────────────────────╮
+    18m ago  修复导出测试中的竞态条件并添加回归测试           │ /usage                                               │
+    12m ago  Ship it 🚀 then celebrate 🎉 with the crew 👩🚀  │                                                      │
+    10m ago  /Users/someone/github/argonauts/crates/tui/src…  │                                                      │
+    4m ago   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…  │                                                      │
+    2m ago   Follow-ups:                                      │                                                      │
+    2m ago   Show the status                                  │                                                      │
+  ❯ 1m ago   /usage                                           ╰──────────────────────────────────────────────────────╯
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ⌕ Filter history…                                                                                                │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  ↑/↓ to navigate · Enter to use · Esc to cancel · ctrl+s to scope · Esc i / for slash commands

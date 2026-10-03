@@ -24,6 +24,13 @@ const SCROLLBACK: usize = 5000;
 
 const POLL: Duration = Duration::from_millis(20);
 
+/// Enter this soon after typed text could be a line break in a paste that a terminal without
+/// bracketed paste types out key by key, which the app reads as part of the text. The app's
+/// window is 120 ms.
+const ENTER_GAP: Duration = Duration::from_millis(150);
+/// The longest Enter waits for the app to draw the typed text first.
+const ENTER_WAIT: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Clone)]
 pub struct PtyCommand {
     program: PathBuf,
@@ -177,6 +184,8 @@ pub struct Pty {
     terminal: Arc<Mutex<Terminal>>,
     reader: Option<JoinHandle<()>>,
     size: (u16, u16),
+    /// When text was last typed, and how many bytes the app had drawn by then.
+    typed: Option<(Instant, usize)>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -249,16 +258,63 @@ impl Pty {
             terminal,
             reader: Some(reader),
             size: (command.rows, command.cols),
+            typed: None,
         })
     }
 
-    /// Types text as if pasted key by key. `\r` is Enter.
+    /// Types text the way a person does: the text at once, and each `\r` as Enter once the app
+    /// has the text, so the Enter sends it rather than joining it as a pasted line break.
     pub fn send(&mut self, text: &str) -> anyhow::Result<()> {
+        let mut parts = text.split('\r').peekable();
+        while let Some(part) = parts.next() {
+            if !part.is_empty() {
+                self.write(part.as_bytes())?;
+                self.typed = Some((Instant::now(), self.drawn()));
+            }
+            if parts.peek().is_some() {
+                self.press(Key::Enter)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the bytes in one go, as a terminal without bracketed paste delivers a paste.
+    pub fn send_at_once(&mut self, text: &str) -> anyhow::Result<()> {
+        self.typed = None;
         self.write(text.as_bytes())
     }
 
     pub fn press(&mut self, key: Key) -> anyhow::Result<()> {
+        match key {
+            Key::Enter => self.settle_typing(),
+            Key::Char(_) => self.typed = Some((Instant::now(), self.drawn())),
+            _ => {}
+        }
         self.write(&key.bytes())
+    }
+
+    /// Waits until [`ENTER_GAP`] after the app drew the last typed text, so it reads the next
+    /// Enter as a key of its own.
+    fn settle_typing(&mut self) {
+        let Some((typed_at, drawn)) = self.typed.take() else {
+            return;
+        };
+        let mut drew_at = None;
+        loop {
+            let now = Instant::now();
+            if drew_at.is_none() && self.drawn() > drawn {
+                drew_at = Some(now);
+            }
+            let settled = drew_at.is_some_and(|at| now >= at + ENTER_GAP);
+            if settled || now >= typed_at + ENTER_WAIT {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn drawn(&self) -> usize {
+        lock(&self.terminal).raw.len()
     }
 
     fn write(&mut self, bytes: &[u8]) -> anyhow::Result<()> {

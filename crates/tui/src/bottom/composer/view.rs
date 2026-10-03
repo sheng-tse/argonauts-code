@@ -56,20 +56,9 @@ pub(super) fn render(
         scroll,
     });
 
-    let search = composer.search.as_ref().map(|search| {
-        let mut label = format!("search: {}", search.query);
-        if search.failed {
-            label.push_str(" (no match)");
-        }
-        label
-    });
     let selection = composer.visual_range();
     let mut lines = Vec::with_capacity(rows.len().min(MAX_INPUT_ROWS) + 2);
-    lines.push(top_rule(
-        search.as_deref().or(composer.label.as_deref()),
-        rule_style,
-        ctx,
-    ));
+    lines.push(top_rule(composer.label.as_deref(), rule_style, ctx));
     for (index, row) in rows.iter().enumerate().skip(scroll).take(MAX_INPUT_ROWS) {
         let prefix = if index == 0 {
             marks::decorative(format!("{prompt} "), prompt_style)

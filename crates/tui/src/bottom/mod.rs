@@ -7,6 +7,7 @@ mod bar;
 mod card;
 mod composer;
 mod files;
+mod history_search;
 mod menu;
 mod mode_line;
 mod narrator;
@@ -36,6 +37,7 @@ pub use composer::{
     BUILT_IN_EXAMPLE, Composer, ComposerEvent, ComposerState, ComposerView, MAX_INPUT_ROWS,
     SHELL_PLACEHOLDER, SHELL_PROMPT,
 };
+pub use history_search::{HistorySearch, SearchEvent, SearchScope};
 pub use menu::{MenuEvent, MenuItem, MenuKind, Menus};
 pub use mode_line::{ApprovalMode, ModeLine, ModeNotice, ModeState, VimMode, status_line};
 pub use narrator::{NARRATOR_MAX_ROWS, narrator_lines};
@@ -72,6 +74,8 @@ pub struct BottomState {
     pub narrator: Option<String>,
     /// A settings picker open under the input, in place of the bottom rule and what follows.
     pub picker: Option<Picker>,
+    /// Prompt history search, open in place of the input and everything below it.
+    pub history_search: Option<HistorySearch>,
     pub hint: Option<Hint>,
     /// A first `x` on a panel row, shown on the mode line until the next key.
     pub stop_asked: Option<StopAsk>,
@@ -306,7 +310,7 @@ impl BottomState {
         max_rows: usize,
         text_streaming: bool,
     ) -> BottomView {
-        let mut parts = self.parts(ctx, text_streaming);
+        let mut parts = self.parts(ctx, text_streaming, max_rows);
         parts.fit(max_rows);
         parts.assemble(max_rows)
     }
@@ -339,7 +343,7 @@ impl BottomState {
         .min()
     }
 
-    fn parts(&self, ctx: &RenderCtx<'_>, text_streaming: bool) -> Parts {
+    fn parts(&self, ctx: &RenderCtx<'_>, text_streaming: bool, max_rows: usize) -> Parts {
         let theme = ctx.theme;
         let width = usize::from(ctx.width);
         let dim = theme.style(Role::Dim);
@@ -398,17 +402,25 @@ impl BottomState {
         });
         // An example prompt is a way to start, so it waits while work runs or a card is up.
         let offer_example = !busy && self.card.is_none();
-        let mut composer = self.composer.render_with(
-            ctx,
-            ComposerState {
-                focused,
-                busy,
-                offer_example,
-                placeholder,
-            },
-        );
+        let mut composer = match &self.history_search {
+            Some(search) => {
+                let (lines, cursor) = search.lines(ctx, max_rows);
+                ComposerView { lines, cursor }
+            }
+            None => self.composer.render_with(
+                ctx,
+                ComposerState {
+                    focused,
+                    busy,
+                    offer_example,
+                    placeholder,
+                },
+            ),
+        };
         // An open picker's edge rule takes the bottom rule's place, and its rows take the menu's.
-        let menu = if let Some(picker) = &self.picker {
+        let menu = if self.history_search.is_some() {
+            Vec::new()
+        } else if let Some(picker) = &self.picker {
             composer.lines.pop();
             picker.lines(ctx)
         } else if focused && !self.composer.is_shell() {
@@ -443,6 +455,7 @@ impl BottomState {
             },
         );
         let card_rows = card.lines.len();
+        let searching = self.history_search.is_some();
         Parts {
             working,
             queued,
@@ -453,11 +466,15 @@ impl BottomState {
             card_head_rows: card_rows.min(2),
             card_cursor: card.cursor,
             card: card.lines,
-            composer_cursor: focused.then_some(composer.cursor),
+            composer_cursor: (focused || searching).then_some(composer.cursor),
             composer: composer.lines,
             menu,
-            mode,
-            agents: panel_lines(&self.workflows, &self.agents, ctx),
+            mode: (!searching).then_some(mode),
+            agents: if searching {
+                Vec::new()
+            } else {
+                panel_lines(&self.workflows, &self.agents, ctx)
+            },
         }
     }
 }
@@ -479,7 +496,8 @@ struct Parts {
     /// (column, row) within `composer`.
     composer_cursor: Option<(u16, u16)>,
     menu: Vec<Line<'static>>,
-    mode: Line<'static>,
+    /// `None` while the prompt search stands in for it.
+    mode: Option<Line<'static>>,
     agents: Vec<Line<'static>>,
 }
 
@@ -502,7 +520,7 @@ impl Parts {
             + usize::from(self.card_gap)
             + self.queued.len()
             + self.composer.len()
-            + 1
+            + usize::from(self.mode.is_some())
             + agents
     }
 
@@ -558,8 +576,8 @@ impl Parts {
         lines.extend(self.composer);
         if !self.menu.is_empty() {
             lines.extend(self.menu);
-        } else {
-            lines.push(self.mode);
+        } else if let Some(mode) = self.mode {
+            lines.push(mode);
             if !self.agents.is_empty() {
                 lines.push(Line::default());
                 lines.extend(self.agents);

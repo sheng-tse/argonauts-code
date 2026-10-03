@@ -10,12 +10,12 @@ use argonauts_core::{KeyScheme, Verbosity};
 
 use crate::UiOptions;
 use crate::app::UiAction;
-use crate::bottom::{BottomState, ModeNotice};
+use crate::bottom::{BottomState, HistorySearch, ModeNotice, VimMode};
 use crate::cell::{Cell, Tone, UserMessage};
 use crate::commands::{self, command_items};
 use crate::keymap::Keymap;
 use crate::mentions::{self, MentionPicker, Resolved};
-use crate::prompt_history::PromptHistory;
+use crate::prompt_history::{PromptHistory, unix_now};
 use crate::views::help::HelpView;
 
 use super::Cx;
@@ -48,10 +48,7 @@ impl InputRouter {
                 ..Self::default()
             },
             Err(error) => Self {
-                history: PromptHistory {
-                    file: Some(file.clone()),
-                    entries: Vec::new(),
-                },
+                history: PromptHistory::unread(file),
                 load_error: Some(error.to_string()),
                 prepared: false,
                 status_view: false,
@@ -70,7 +67,7 @@ impl InputRouter {
         let typed = bottom.composer.history().to_vec();
         bottom
             .composer
-            .set_history(self.history.entries.iter().cloned().chain(typed));
+            .set_history(self.history.texts().map(str::to_owned).chain(typed));
         if bottom.menus.commands.is_empty() {
             bottom.menus.commands = command_items(None);
         }
@@ -103,7 +100,7 @@ impl InputRouter {
     }
 
     /// Takes `Submit` (parsed with `parse_input_with` and the main agent's commands into `Submit`, `Slash`, or `Mention`, or run
-    /// here for `Ui` and `Both` commands), `TakeBack`, and `OpenHelp`.
+    /// here for `Ui` and `Both` commands), `TakeBack`, `OpenHelp`, and `SearchHistory`.
     pub fn on_action(&mut self, action: &UiAction, cx: &mut Cx<'_>) -> bool {
         self.prepare_with(cx);
         match action {
@@ -111,9 +108,25 @@ impl InputRouter {
             UiAction::Shell { command } => self.shell(command, cx),
             UiAction::TakeBack(_) => take_back(cx),
             UiAction::OpenHelp => open_help(cx),
+            UiAction::SearchHistory => self.open_search(cx),
             _ => return false,
         }
         true
+    }
+
+    /// This repo's prompts and every repo's, read now, so a prompt sent in another window
+    /// since start is there too.
+    fn open_search(&mut self, cx: &mut Cx<'_>) {
+        let bottom = &mut cx.model.bottom;
+        let search = HistorySearch::new(
+            self.history.this_project(),
+            self.history.everywhere(),
+            unix_now(),
+        );
+        // Esc goes back to the mode the search opened from, and only NORMAL reaches the `/`
+        // commands by Esc i /.
+        let from_normal = bottom.mode.vim == Some(VimMode::Normal);
+        bottom.history_search = Some(search.with_vim(from_normal));
     }
 
     fn prepare_with(&mut self, cx: &mut Cx<'_>) {
@@ -807,7 +820,98 @@ mod tests {
 
         screen.submit("/status");
         let saved = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(saved, "\"older prompt\"\n\"/status\"\n");
+        let (older, added) = saved.split_once('\n').unwrap();
+        assert_eq!(older, "\"older prompt\"");
+        assert!(
+            added.starts_with("{\"prompt\":\"/status\",\"at\":") && added.ends_with("}\n"),
+            "{added}"
+        );
+    }
+
+    #[test]
+    fn search_history_opens_with_this_repos_prompts_and_every_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(state.join("web-111")).unwrap();
+        std::fs::write(
+            state.join("web-111").join("history.jsonl"),
+            "{\"prompt\":\"deploy the web app\",\"at\":5}\n",
+        )
+        .unwrap();
+        let options = UiOptions {
+            history_file: Some(state.join("here-222").join("history.jsonl")),
+            ..UiOptions::default()
+        };
+        let mut screen = Screen::idle();
+        screen.router = InputRouter::new(&options);
+        screen.model.bottom.mode.vim = Some(crate::bottom::VimMode::Normal);
+        screen.router.history.append("fix the export test").unwrap();
+
+        let out = screen.act(UiAction::SearchHistory);
+        assert!(out.commands.is_empty(), "opening the search sends nothing");
+        let search = screen.model.bottom.history_search.as_mut().unwrap();
+        assert_eq!(search.scope(), crate::bottom::SearchScope::Everywhere);
+        assert_eq!(
+            search.shown(),
+            ["deploy the web app", "fix the export test"]
+        );
+        assert!(search.shows_slash_hint(), "Esc i / works from NORMAL");
+        search.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_eq!(search.shown(), ["fix the export test"]);
+    }
+
+    #[test]
+    fn the_slash_hint_shows_only_when_esc_goes_back_to_normal() {
+        for (mode, hint) in [
+            (Some(VimMode::Normal), true),
+            (Some(VimMode::Insert), false),
+            (None, false),
+        ] {
+            let mut screen = Screen::idle();
+            screen.model.bottom.mode.vim = mode;
+            screen.act(UiAction::SearchHistory);
+            let search = screen.model.bottom.history_search.as_ref().unwrap();
+            assert_eq!(search.shows_slash_hint(), hint, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn search_history_has_prompts_another_window_in_this_repo_sent_since_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("state")
+            .join("here-222")
+            .join("history.jsonl");
+        let options = UiOptions {
+            history_file: Some(file.clone()),
+            ..UiOptions::default()
+        };
+        let mut screen = Screen::idle();
+        screen.router = InputRouter::new(&options);
+        screen.router.history.append("fix the export test").unwrap();
+        let line = "{\"prompt\":\"sent from the other window\",\"at\":4000000000}\n";
+        let mut out = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        std::io::Write::write_all(&mut out, line.as_bytes()).unwrap();
+        drop(out);
+
+        screen.act(UiAction::SearchHistory);
+        let search = screen.model.bottom.history_search.as_mut().unwrap();
+        let both = ["fix the export test", "sent from the other window"];
+        assert_eq!(search.scope(), crate::bottom::SearchScope::Everywhere);
+        assert_eq!(search.shown(), both);
+        search.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_eq!(search.scope(), crate::bottom::SearchScope::Project);
+        assert_eq!(search.shown(), both);
     }
 
     #[test]
@@ -836,7 +940,10 @@ mod tests {
             "the app echoes it once it starts"
         );
         let saved = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(saved, "\"!git status\"\n");
+        assert!(
+            saved.starts_with("{\"prompt\":\"!git status\",\"at\":") && saved.ends_with("}\n"),
+            "{saved}"
+        );
         let mut later = Screen::idle();
         later.router = InputRouter::new(&options);
         later.router.prepare(&mut later.model.bottom);

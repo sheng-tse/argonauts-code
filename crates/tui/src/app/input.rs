@@ -1,7 +1,7 @@
-//! Keys go to the transcript overlay when it is open, then to an open settings picker, a
-//! focused card, the answered handoff pick's line when ↑ picked it, a second Esc that clears
-//! the input, the focused agent panel, the open menu,
-//! vim's modes, the global keys, and last the composer. A picker or a focused card lets only the
+//! Keys go to the transcript overlay when it is open, then to the prompt history search, an
+//! open settings picker, a focused card, the answered handoff pick's line when ↑ picked it, a
+//! second Esc that clears the input, the focused agent panel, the open menu, vim's modes, the
+//! global keys, and last the composer. The search, a picker, or a focused card lets only the
 //! quit keys past it. A run's card never takes the keys by itself, so typing reaches the input
 //! until ↑ or Tab on an empty input hands them over; a card you set off yourself opens with them.
 //! What the named keys do comes from the [`Keymap`].
@@ -18,7 +18,7 @@ use ratatui::layout::{Position, Size};
 use super::{OverlayEvent, QuitArm, TranscriptOverlay, Ui, UiAction};
 use crate::bottom::{
     CardEvent, CardPrompt, ComposerEvent, Hint, MenuEvent, Menus, PanelEvent, PickerEvent,
-    REMEMBER_KEY,
+    REMEMBER_KEY, SearchEvent,
 };
 use crate::keymap::{Action, KeySpec, Layer};
 use crate::views::list;
@@ -106,6 +106,15 @@ impl<W: Write> Ui<W> {
             }
             return;
         }
+        if self.key_times {
+            self.settle_paste_burst(Some(&key), now);
+        }
+        if self.model.bottom.history_search.is_some() {
+            if !self.search_key(key, now, actions) {
+                self.quit_key(key, now, actions);
+            }
+            return;
+        }
         if self.model.bottom.picker.is_some() {
             if !self.picker_key(key, actions) {
                 self.quit_key(key, now, actions);
@@ -148,6 +157,7 @@ impl<W: Write> Ui<W> {
         match bottom.composer.vim_key(key) {
             None => return false,
             Some(ComposerEvent::Edited) => bottom.menus.text_changed(),
+            Some(ComposerEvent::SearchHistory) => actions.push(UiAction::SearchHistory),
             Some(ComposerEvent::Submitted { text, shown }) => {
                 actions.push(UiAction::Submit { text, shown });
             }
@@ -251,6 +261,57 @@ impl<W: Write> Ui<W> {
                 actions.push(UiAction::submit(command));
             }
             MenuEvent::Unhandled => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// A paste typed out as keys goes in once they stop, or before a key that can't be part of
+    /// it, so the text keeps its order.
+    pub(super) fn settle_paste_burst(&mut self, key: Option<&KeyEvent>, now: Instant) {
+        let bottom = &mut self.model.bottom;
+        let part_of_it = key.is_none_or(|key| {
+            matches!(key.code, KeyCode::Char(_) | KeyCode::Enter)
+                && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+        });
+        let changed = if part_of_it {
+            bottom.composer.flush_paste_burst(now)
+        } else {
+            bottom.composer.end_paste_burst()
+        };
+        if changed {
+            bottom.menus.text_changed();
+            self.dirty = true;
+        }
+    }
+
+    /// The search takes every key it knows, so typing filters it. Enter only fills the input,
+    /// never sends, and Esc leaves the input as it was.
+    fn search_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
+        let bottom = &mut self.model.bottom;
+        let Some(search) = bottom.history_search.as_mut() else {
+            return false;
+        };
+        let event = if self.key_times {
+            search.handle_key_at(key, now)
+        } else {
+            search.handle_key(key)
+        };
+        match event {
+            SearchEvent::Unhandled => return false,
+            SearchEvent::Moved => {}
+            SearchEvent::Cancel => bottom.history_search = None,
+            SearchEvent::CancelThen(next) => {
+                bottom.history_search = None;
+                self.dirty = true;
+                self.handle_key(next, now, actions);
+                return true;
+            }
+            SearchEvent::Use(text) => {
+                bottom.history_search = None;
+                bottom.composer.fill(&text);
+                bottom.menus.text_changed();
+            }
         }
         self.dirty = true;
         true
@@ -487,7 +548,12 @@ impl<W: Write> Ui<W> {
             None => key,
         };
         let bottom = &mut self.model.bottom;
-        match bottom.composer.handle_key(key) {
+        let event = if self.key_times {
+            bottom.composer.handle_key_at(key, now)
+        } else {
+            bottom.composer.handle_key(key)
+        };
+        match event {
             ComposerEvent::Submitted { text, shown } => {
                 bottom.answered_pick = None;
                 actions.push(UiAction::Submit { text, shown });
@@ -504,6 +570,7 @@ impl<W: Write> Ui<W> {
                 }
             }
             ComposerEvent::Moved => {}
+            ComposerEvent::SearchHistory => actions.push(UiAction::SearchHistory),
             // With vim keys, Esc is how you get back to NORMAL, so pressing it twice is a
             // habit there and never clears; `cc` or `dd` does.
             ComposerEvent::Unhandled
@@ -534,10 +601,16 @@ impl<W: Write> Ui<W> {
         self.dirty = true;
     }
 
-    /// A paste goes where typing would: an open picker, a focused card's note, or the composer.
+    /// A paste goes where typing would: the history search's filter, an open picker, a focused
+    /// card's note, or the composer.
     fn handle_paste(&mut self, text: &str, actions: &mut Vec<UiAction>) {
         self.disarm_clear();
         let bottom = &mut self.model.bottom;
+        if let Some(search) = bottom.history_search.as_mut() {
+            search.handle_paste(text);
+            self.dirty = true;
+            return;
+        }
         if let Some(picker) = bottom.picker.as_mut() {
             if picker.handle_paste(text) == PickerEvent::Moved {
                 actions.push(UiAction::Picker(PickerEvent::Moved));

@@ -777,8 +777,11 @@ fn app_checkpoints_and_revert_commands() -> anyhow::Result<()> {
     let RunEventKind::Card(CardEvent::CheckpointTagged { commit, .. }) = tagged.kind else {
         unreachable!("matched a tag")
     };
-    // Codex's commit is in once the merge card opens.
+    // Codex's commit is in once the merge card opens. No agent works while it waits, so the
+    // run parks; the commands below wait for that, since one sent as it parks is refused.
     let merge_card = wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    wait_journal(&run_dir, "the run to park", is_parked)?;
+    wait_pid_gone(supervisor_pid(&run_dir)?)?;
     let CheckpointPacket::Merge(merge_packet) = merge_card.packet else {
         bail!("the merge card has no merge packet: {merge_card:?}");
     };

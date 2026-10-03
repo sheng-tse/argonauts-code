@@ -97,6 +97,7 @@ impl<W: Write> Screen<W> {
         bridge.state.terminal = info;
         let (returns_tx, returns) = mpsc::unbounded_channel();
         let mut ui = Ui::new(terminal, theme, model, Instant::now());
+        ui.time_keys(true);
         if options.settings.screen == ScreenMode::Fullscreen {
             ui.use_fullscreen();
         }

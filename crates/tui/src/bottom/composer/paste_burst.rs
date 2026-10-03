@@ -11,12 +11,12 @@ use super::{Composer, ComposerEvent, VimMode};
 
 /// Keys closer than this come from a paste; a person's fastest key repeat is several times
 /// slower.
-const CHAR_INTERVAL: Duration = Duration::from_millis(8);
+pub(crate) const CHAR_INTERVAL: Duration = Duration::from_millis(8);
 /// The run's third fast character starts a burst.
-const MIN_CHARS: usize = 3;
+pub(crate) const MIN_CHARS: usize = 3;
 /// Some terminals hand a paste over in chunks, so Enter this soon after a burst still belongs
 /// to it.
-const ENTER_WINDOW: Duration = Duration::from_millis(120);
+pub(crate) const ENTER_WINDOW: Duration = Duration::from_millis(120);
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PasteBurst {
@@ -127,6 +127,14 @@ impl Composer {
         }
     }
 
+    /// Puts a held burst in now, before a key that can't be part of it. True when the text
+    /// changed.
+    pub fn end_paste_burst(&mut self) -> bool {
+        let flushed = self.flush_burst();
+        self.burst.end_run();
+        flushed
+    }
+
     /// When a held burst should go in, if one is held.
     pub fn paste_burst_due(&self) -> Option<Instant> {
         self.burst.due()
@@ -142,11 +150,9 @@ impl Composer {
         }
     }
 
-    /// Only text typed into the draft can be a paste: vim's NORMAL letters are commands, and
-    /// a search takes its own letters.
+    /// Only text typed into the draft can be a paste: vim's NORMAL letters are commands.
     fn burst_key(&mut self, key: KeyEvent, now: Instant) -> Option<ComposerEvent> {
-        let typing =
-            self.search.is_none() && !matches!(self.vim, Some(VimMode::Normal | VimMode::Visual));
+        let typing = !matches!(self.vim, Some(VimMode::Normal | VimMode::Visual));
         if !typing {
             return None;
         }

@@ -18,8 +18,8 @@ use crate::render::RenderCtx;
 use crate::text::sanitize_line;
 
 use edit::{Clip, Draft};
-use history::Search;
 use paste_burst::PasteBurst;
+pub(super) use paste_burst::{CHAR_INTERVAL, ENTER_WINDOW, MIN_CHARS};
 
 pub use view::{SHELL_PLACEHOLDER, SHELL_PROMPT};
 
@@ -67,8 +67,6 @@ pub struct Composer {
     vim: Option<VimMode>,
     vim_pending: vim::Pending,
     visual: Option<vim::Visual>,
-    /// Ctrl+R's reverse search through history, while it is open.
-    search: Option<Search>,
     burst: PasteBurst,
 }
 
@@ -101,6 +99,8 @@ pub enum ComposerEvent {
     Moved,
     /// Up on the first row with no older history.
     AtTop,
+    /// Ctrl+R, or `/` in vim's NORMAL mode: open the prompt history search.
+    SearchHistory,
     Unhandled,
 }
 
@@ -205,11 +205,24 @@ impl Composer {
         self.stash = None;
         self.preferred_col = None;
         self.pastes = 0;
-        self.search = None;
         self.visual = None;
         self.vim_pending = vim::Pending::default();
         if self.vim == Some(VimMode::Visual) {
             self.vim = Some(VimMode::Normal);
+        }
+    }
+
+    /// A prompt picked in the history search, with the cursor at its end, on its last letter
+    /// in vim's NORMAL mode. A `!` command comes back in shell mode, as ↑ brings it.
+    pub fn fill(&mut self, entry: &str) {
+        let (text, shell) = shell_entry(entry);
+        self.set_text(text);
+        self.shell = shell;
+        if self.vim == Some(VimMode::Normal) {
+            let at = self.draft.cursor;
+            if at > self.draft.line_start(at) {
+                self.draft.cursor = self.draft.prev_stop(at);
+            }
         }
     }
 
@@ -237,7 +250,6 @@ impl Composer {
         if !self.is_empty() {
             block.push('\n');
         }
-        self.search = None;
         self.draft.cursor = 0;
         self.draft.insert(&block);
         self.draft.cursor = end;
@@ -269,9 +281,6 @@ impl Composer {
     }
 
     fn dispatch(&mut self, key: KeyEvent) -> ComposerEvent {
-        if self.search.is_some() {
-            return self.search_key(key);
-        }
         if let Some(event) = self.vim_key(key) {
             return event;
         }
@@ -296,7 +305,7 @@ impl Composer {
             // AltGr arrives as Ctrl+Alt on some systems and types a character.
             KeyCode::Char(c) if ctrl == alt => self.insert(c.encode_utf8(&mut [0; 4])),
             KeyCode::Char('j') if ctrl => self.insert("\n"),
-            KeyCode::Char('r') if ctrl => self.start_search(),
+            KeyCode::Char('r') if ctrl => ComposerEvent::SearchHistory,
             KeyCode::Char('a') if ctrl => self.move_to(draft.line_start(at)),
             KeyCode::Char('e') if ctrl => self.move_to(draft.line_end(at)),
             KeyCode::Char('b') if ctrl => self.move_to(draft.prev_stop(at)),
@@ -538,13 +547,8 @@ impl Composer {
         self.shell = saved.shell;
     }
 
-    /// A history entry that starts with `!` was a shell command, and shows in shell mode.
     fn show_entry(&mut self, index: usize) {
-        let entry = &self.history[index];
-        let (text, shell) = match entry.strip_prefix('!') {
-            Some(command) => (command, true),
-            None => (entry.as_str(), false),
-        };
+        let (text, shell) = shell_entry(&self.history[index]);
         self.draft = Draft::from_text(text);
         self.shell = shell;
     }
@@ -574,6 +578,14 @@ fn clean(text: &str) -> String {
         .map(sanitize_for_terminal)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A history entry that starts with `!` was a shell command: its text, and true.
+fn shell_entry(entry: &str) -> (&str, bool) {
+    match entry.strip_prefix('!') {
+        Some(command) => (command, true),
+        None => (entry, false),
+    }
 }
 
 #[cfg(test)]

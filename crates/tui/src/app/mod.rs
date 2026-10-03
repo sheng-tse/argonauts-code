@@ -97,6 +97,9 @@ pub enum UiAction {
     Follow(u8),
     /// `/help`.
     OpenHelp,
+    /// Ctrl+R, or `/` in vim's NORMAL mode. The host opens the prompt history search with the
+    /// prompts it keeps.
+    SearchHistory,
     /// A command a view sent, such as `Steer` or `StopAgent`.
     Command(argonauts_core::app::UiCommand),
     /// A view asked the controller for data.
@@ -155,6 +158,9 @@ pub struct Ui<W: Write> {
     modes: Option<TerminalModes>,
     next_animation: Option<Instant>,
     keymap: Keymap,
+    /// Keys come with the time they arrived, so a paste a terminal types out key by key reads
+    /// as one paste. Tests that hand keys over at one made-up time leave it off.
+    key_times: bool,
 }
 
 /// A second press of the same quit key before `until` quits.
@@ -189,7 +195,13 @@ impl<W: Write> Ui<W> {
             modes: None,
             next_animation: None,
             keymap,
+            key_times: false,
         }
+    }
+
+    /// For keys from a real terminal, with the times they arrived.
+    pub fn time_keys(&mut self, on: bool) {
+        self.key_times = on;
     }
 
     pub fn keymap(&self) -> &Keymap {
@@ -309,6 +321,7 @@ impl<W: Write> Ui<W> {
         if self.model.bottom.agents.rows.is_empty() {
             self.model.bottom.agents.blur();
         }
+        self.settle_paste_burst(None, now);
         let mut wrote = self.update_title(now)?;
         let wanted = self.wants_alternate_screen();
         if wanted != self.on_alternate {
@@ -438,6 +451,9 @@ impl<W: Write> Ui<W> {
         }
         if let Some(quit) = self.quit.filter(|quit| quit.until > now) {
             sooner(quit.until);
+        }
+        if let Some(at) = self.model.bottom.composer.paste_burst_due() {
+            sooner(at);
         }
         next
     }
