@@ -12,6 +12,7 @@ fn ran(command: &str, output: &str, exit_code: Option<i32>, stopped: bool) -> Sh
     ShellRan {
         id: 1,
         command: command.to_owned(),
+        folder: None,
         output: output.to_owned(),
         exit_code,
         stopped,
@@ -54,6 +55,42 @@ fn long_output_keeps_its_start_and_end() {
     let mut short = Kept::default();
     short.push("hi\n");
     assert_eq!(short.text(), "hi\n");
+}
+
+/// What the agent hears of the commands names the folder they ran in, which is a run's copy
+/// for a conversation that carries on one of its agents' sessions.
+#[test]
+fn the_commands_say_where_they_ran() {
+    let copy = std::path::PathBuf::from("/work/argonauts/worktrees/shop/run-01/card-001");
+    let elsewhere = ShellRan {
+        folder: Some(copy.clone()),
+        ..ran(
+            "pwd",
+            "/work/argonauts/worktrees/shop/run-01/card-001\n",
+            Some(0),
+            false,
+        )
+    };
+    let text = context_text(std::slice::from_ref(&elsewhere)).unwrap();
+    assert!(
+        text.starts_with(
+            "Before this message I ran these commands myself, in \
+             /work/argonauts/worktrees/shop/run-01/card-001."
+        ),
+        "{text}"
+    );
+    let text = context_text(&[ran("ls", "a\n", Some(0), false), elsewhere]).unwrap();
+    assert!(
+        text.starts_with(
+            "Before this message I ran these commands myself, each in the folder named after it."
+        ),
+        "{text}"
+    );
+    assert!(text.contains("\n$ ls\n(in the repo folder)\n"), "{text}");
+    assert!(
+        text.contains("\n$ pwd\n(in /work/argonauts/worktrees/shop/run-01/card-001)\n"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -357,7 +394,7 @@ fn guidance_sent(harness: &Harness) -> Vec<String> {
 async fn in_a_run_the_commands_go_with_your_guidance_cleaned_of_escapes() {
     use argonauts_core::input::SlashCommand;
 
-    let mut harness = Harness::start().await;
+    let mut harness = Harness::start_with(crate::controller::chat::checked_solo()).await;
     harness.send(shell("echo before")).await;
     harness.until(finished).await;
     harness

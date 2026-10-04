@@ -36,6 +36,16 @@ pub enum Access {
     Build,
     /// Like build, for a time-boxed spike worktree.
     Spike,
+    /// Direct solo: your own checkout, the CLI's own tools, and its own asking, as when you run
+    /// it yourself. Needs the goal hash, which for a direct turn is your message's.
+    Direct,
+}
+
+impl Access {
+    /// Whether the session may change files in its folder.
+    pub fn writes(self) -> bool {
+        matches!(self, Self::Build | Self::Spike | Self::Direct)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +92,21 @@ pub struct SessionSpec {
     /// The worker always sets `ARGONAUTS_SESSION=<key>`, which refuses approvals, over anything
     /// given here.
     pub env: Vec<(String, String)>,
+    /// Where a direct session's questions go, such as Claude Code's permission prompts. `None`
+    /// asks nothing: what the CLI would ask about is refused, or allowed by its flags.
+    pub asking: Option<Asking>,
+}
+
+/// A direct session's questions, and the app's listener that answers them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asking {
+    pub asks: crate::session::Asks,
+    /// `127.0.0.1:<port>`, which the session's MCP server connects to with each question.
+    pub endpoint: String,
+    /// Sent with every question, so nothing else on this machine can ask in its name.
+    pub token: String,
+    /// The `argonauts_start_run` tool is offered.
+    pub start_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +161,12 @@ pub struct SandboxProfile {
     /// proxy, which tunnels only to its harness's API hosts. `None` leaves every loopback port
     /// open and nothing beyond, as gates have it.
     pub proxy_port: Option<u16>,
+    /// With `network` off, the app's loopback port for a direct turn's questions, which the
+    /// session reaches as it reaches the proxy, so a card can ask you before an edit.
+    pub ask_port: Option<u16>,
+    /// Paths no write may make or change even where they don't exist yet, inside a writable
+    /// folder: a direct turn's protected paths, which every later session and your own CLI load.
+    pub closed: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

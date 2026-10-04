@@ -1,7 +1,9 @@
 //! `argonauts mcp session`, started by a harness for one agent session: the read-only
 //! `argonauts_status` tool, which returns the session's pre-filtered `status.json` and reads
-//! nothing else, plus `argonauts_report` for a step with an output schema.
+//! nothing else, plus `argonauts_report` for a step with an output schema. A direct turn's
+//! server also has `approve`, Claude Code's permission prompt tool, and `argonauts_start_run`.
 
+pub mod ask;
 pub mod report;
 
 use std::io::ErrorKind;
@@ -18,14 +20,16 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::ReportTool;
+use crate::{AskTool, ReportTool};
 
 pub const STATUS_TOOL: &str = "argonauts_status";
 pub const REPORT_TOOL: &str = "argonauts_report";
+pub use ask::{APPROVE_TOOL, START_RUN_TOOL};
 
 pub struct SessionServer {
     status_file: Option<PathBuf>,
     report: Option<report::ReportState>,
+    asking: Option<AskTool>,
 }
 
 impl SessionServer {
@@ -33,7 +37,13 @@ impl SessionServer {
         Self {
             status_file,
             report: report.map(report::ReportState::new),
+            asking: None,
         }
+    }
+
+    pub fn with_asking(mut self, asking: Option<AskTool>) -> Self {
+        self.asking = asking;
+        self
     }
 
     /// `argonauts_status` when there's a status file, and `argonauts_report` when a schema was
@@ -69,11 +79,19 @@ impl SessionServer {
                 Arc::new(report.input_schema()),
             ));
         }
+        if let Some(asking) = &self.asking {
+            tools.extend(ask::tools(asking));
+        }
         tools
     }
 
     /// Runs one tool. Every failure is a tool error the agent can read.
     pub async fn call(&self, name: &str, arguments: serde_json::Value) -> CallToolResult {
+        if let Some(asking) = &self.asking
+            && let Some(result) = ask::call(asking, name, &arguments).await
+        {
+            return result;
+        }
         match (name, &self.report) {
             (STATUS_TOOL, _) if let Some(status_file) = &self.status_file => {
                 status(status_file, &arguments).await
@@ -129,7 +147,15 @@ where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    let server = SessionServer::new(status_file, report);
+    serve(SessionServer::new(status_file, report), read, write).await
+}
+
+/// Serves `server` until the harness closes the stream.
+pub async fn serve<R, W>(server: SessionServer, read: R, write: W) -> anyhow::Result<()>
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+{
     server.serve((read, write)).await?.waiting().await?;
     Ok(())
 }

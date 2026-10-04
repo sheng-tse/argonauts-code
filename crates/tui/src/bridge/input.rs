@@ -87,6 +87,7 @@ impl InputRouter {
             }
             AppEvent::VendorCommands { set } => {
                 cx.model.bottom.menus.commands = command_items(Some(set));
+                cx.model.bottom.composer.keywords.clone_from(&set.keywords);
             }
             AppEvent::RepoFiles { paths } => cx.model.bottom.menus.set_files(paths),
             AppEvent::Attached { .. } | AppEvent::Detached { .. } | AppEvent::Run { .. } => {
@@ -209,6 +210,7 @@ fn empty_enter(cx: &mut Cx<'_>) {
 fn plain(text: String, shown: &str, cx: &mut Cx<'_>) {
     let idle = matches!(cx.state.mode, None | Some(AppMode::Idle)) && !cx.model.is_working();
     if idle {
+        let keywords = cx.keywords();
         let history = &mut cx.model.history;
         // One the controller took for something other than a turn still prints, in order.
         let sent: Vec<_> = history
@@ -222,7 +224,9 @@ fn plain(text: String, shown: &str, cx: &mut Cx<'_>) {
             }
             history.finish_active(id);
         }
-        let echo = UserMessage::pending(shown.trim()).with_full(text.clone());
+        let echo = UserMessage::pending(shown.trim())
+            .with_full(text.clone())
+            .with_keywords(keywords);
         history.push_active(echo);
     }
     cx.out.send(UiCommand::Submit { text });
@@ -649,6 +653,36 @@ mod tests {
         let mut working = Screen::new(fixture::working_state());
         working.submit("keep the old API");
         assert!(working.model.history.cells().is_empty());
+    }
+
+    #[test]
+    fn keywords_reach_the_input_and_echo_and_the_text_goes_out_as_typed() {
+        use argonauts_core::keywords::{Keyword, KeywordLook};
+
+        let ultrathink = Keyword::new("ultrathink", KeywordLook::Rainbow, true);
+        let mut screen = Screen::idle();
+        let set = crate::commands::tests::claude_commands()
+            .with_keywords(std::slice::from_ref(&ultrathink));
+        screen.event(AppEvent::VendorCommands { set: set.clone() });
+        assert_eq!(
+            screen.model.bottom.composer.keywords,
+            std::slice::from_ref(&ultrathink)
+        );
+        screen.state.vendor_commands = Some(set);
+
+        let out = screen.submit("please ultrathink about this");
+        assert_eq!(
+            out.commands,
+            [UiCommand::Submit {
+                text: "please ultrathink about this".into()
+            }]
+        );
+        let echoes: Vec<_> = screen.model.history.active_cells().collect();
+        let [(_, Cell::User(echo))] = echoes.as_slice() else {
+            panic!("one echo");
+        };
+        assert_eq!(echo.text, "please ultrathink about this");
+        assert_eq!(echo.keywords, [ultrathink]);
     }
 
     #[test]

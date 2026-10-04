@@ -795,6 +795,7 @@ fn history(
         harness_versions: BTreeMap::new(),
         version: "0.0.1".into(),
         front_end: None,
+        instructions: Vec::new(),
     };
     let goal = GoalFile {
         run: run.clone(),

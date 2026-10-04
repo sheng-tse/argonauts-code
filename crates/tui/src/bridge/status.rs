@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::app::{AppMode, QuotaChip};
+use argonauts_core::app::{AppMode, ChoiceKind, QuotaChip};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::{Party, RunMode, RunPhase};
@@ -143,7 +143,14 @@ fn current_work(state: &AppState) -> Option<Work<'_>> {
             Work::Run(run)
         })
     };
+    // While the agent waits on your answer to what it asked, nothing goes on but the wait, as
+    // Claude Code hides its spinner while a permission prompt is up.
+    let asks_you = state
+        .choices
+        .iter()
+        .any(|choice| choice.kind == ChoiceKind::Permission);
     match &state.mode {
+        Some(AppMode::Answering { .. }) if asks_you => None,
         Some(AppMode::Answering { .. }) => Some(Work::Chat(&state.chat)),
         Some(AppMode::Working { run }) => run_work(run),
         Some(AppMode::Pausing { run }) => state.runs.get(run).map(Work::Pausing),

@@ -1,6 +1,7 @@
 //! Views as flat lines: a table row reads as `header: value` pairs, a list as numbered items,
 //! and a pager as its lines.
 
+use argonauts_core::agent_sessions::{AgentSession, Resume};
 use argonauts_core::api::RunSummary;
 use argonauts_core::app::ViewData;
 use argonauts_core::display_names::DisplayNames;
@@ -19,6 +20,8 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             runs,
             chats,
             sessions,
+            agents,
+            ..
         } => {
             let mut lines = Vec::new();
             if !chats.is_empty() {
@@ -39,6 +42,12 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                         format::vendor_label(&one(&session.vendor.0))
                     )
                 })));
+            }
+            if !agents.is_empty() {
+                lines.push(format!("agent sessions: {}", agents.len()));
+                lines.extend(numbered(
+                    agents.iter().map(|agent| agent_line(agent, names)),
+                ));
             }
             if !runs.is_empty() || !chats.is_empty() || !sessions.is_empty() {
                 lines.push(
@@ -338,6 +347,13 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             ));
             lines
         }
+        ViewData::AgentSessions { run, agents } => {
+            let mut lines = vec![format!("agent sessions of {run}: {}", agents.len())];
+            lines.extend(numbered(
+                agents.iter().map(|agent| agent_line(agent, names)),
+            ));
+            lines
+        }
         ViewData::Checkpoints {
             run, checkpoints, ..
         } => {
@@ -349,6 +365,31 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             lines
         }
     }
+}
+
+/// An agent's session by the id `/resume` takes, with whether it carries on, and its helpers,
+/// which come back with it.
+fn agent_line(agent: &AgentSession, names: &DisplayNames) -> String {
+    let resume = match &agent.resume {
+        Resume::Ready => "resumable".to_owned(),
+        Resume::Working => "working".to_owned(),
+        Resume::RunOwns => "its run owns it until the run ends".to_owned(),
+        Resume::Cannot { why } => format!("can't resume, {}", one(why)),
+    };
+    let mut line = format!(
+        "{}: {}, {}, {resume}",
+        one(&agent.reference().to_string()),
+        agent.role.as_str(),
+        one(&names.worker(&agent.worker))
+    );
+    let helpers = agent.helper_counts();
+    if !helpers.is_empty() {
+        line.push_str(&format!(
+            ", inside it: {}, not resumable on their own",
+            one(&helpers)
+        ));
+    }
+    line
 }
 
 /// A Learning picker as lines: each tab's rows as `header: value` pairs with their detail and
@@ -521,6 +562,8 @@ mod tests {
                 branch: None,
                 last_message: None,
             }],
+            agents: Vec::new(),
+            agents_read: Vec::new(),
         };
         assert_eq!(
             view_lines(&data, &Default::default()),

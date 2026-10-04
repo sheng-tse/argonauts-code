@@ -45,6 +45,11 @@ pub(crate) async fn start(client: &Client, request: StartRun) -> Result<RunHandl
         ));
     }
     let resolved = resolve_settings(client, &request.overrides, None)?;
+    let resolved = if request.request_settings.is_empty() {
+        resolved
+    } else {
+        with_request(client, &request, None)?
+    };
     // The recipe triage matched, at the version that runs now, over the preset.
     let recipe = request.estimate.as_ref().and_then(|estimate| {
         learning::recipe::matched(
@@ -57,7 +62,7 @@ pub(crate) async fn start(client: &Client, request: StartRun) -> Result<RunHandl
     let overlay = recipe.as_ref().and_then(learning::recipe::overlay);
     let recipe = recipe.filter(|_| overlay.is_some());
     let resolved = match overlay {
-        Some(overlay) => resolve_settings(client, &request.overrides, Some(overlay))?,
+        Some(overlay) => with_request(client, &request, Some(overlay))?,
         None => resolved,
     };
     start_resolved(client, request, resolved, recipe.as_ref()).await
@@ -220,6 +225,25 @@ pub(crate) fn resolve_settings(
     let mut sources =
         app_settings::sources(&client.env, &trust, overrides.to_vec(), client.interactive);
     sources.recipe = recipe;
+    resolve(&sources).map_err(|err| ApiError::Refused(err.to_string()))
+}
+
+/// Your layers, the request's `overrides`, `recipe` in the preset layer, and what the request
+/// itself said about how to run it, above them all.
+fn with_request(
+    client: &Client,
+    request: &StartRun,
+    recipe: Option<RecipeOverlay>,
+) -> Result<ResolvedSettings, ApiError> {
+    let trust = TrustStore::load(&client.env.state_dir);
+    let mut sources = app_settings::sources(
+        &client.env,
+        &trust,
+        request.overrides.clone(),
+        client.interactive,
+    );
+    sources.recipe = recipe;
+    sources.request = request.request_settings.clone();
     resolve(&sources).map_err(|err| ApiError::Refused(err.to_string()))
 }
 

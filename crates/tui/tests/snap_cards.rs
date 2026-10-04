@@ -1171,3 +1171,80 @@ fn guided_setup_step() {
         assert_eq!(card.esc_hint, "Esc to take the recommended answers");
     }
 }
+
+/// What a direct turn's CLI asks, as Claude Code asks it, and agy's refused commands after its
+/// answer, at 100 and 120 columns.
+#[test]
+fn direct_turn_cards() {
+    let cards = [
+        app_choice(
+            ChoiceKind::Permission,
+            "Make this edit to invoice/money.py?",
+            &[
+                "- sign = 1",
+                "+ negative = text.startswith(\"-\")",
+                "+ text = text.lstrip(\"-\")",
+            ],
+            vec![
+                choose('y', "Yes", "yes"),
+                choose(
+                    'a',
+                    "Yes, and allow edits for the rest of this conversation",
+                    "always",
+                ),
+                choose(
+                    'n',
+                    "No, and tell Claude Code what to do instead (esc)",
+                    "no",
+                ),
+            ],
+        ),
+        app_choice(
+            ChoiceKind::Permission,
+            "Run this command?",
+            &["python -m pytest -q"],
+            vec![
+                choose('y', "Yes", "yes"),
+                choose(
+                    'a',
+                    "Yes, and don't ask again for python -m pytest in this project",
+                    "always",
+                ),
+                choose(
+                    'n',
+                    "No, and tell Claude Code what to do instead (esc)",
+                    "no",
+                ),
+            ],
+        ),
+        app_choice(
+            ChoiceKind::RefusedCommands,
+            "Let Antigravity CLI run what it was refused?",
+            &["python -m pytest -q"],
+            vec![
+                AnswerOption {
+                    detail: Some(
+                        "one more turn in which agy runs commands without asking, in our sandbox"
+                            .into(),
+                    ),
+                    ..choose('y', "Yes, and continue", "continue")
+                },
+                choose('n', "No", "no"),
+            ],
+        ),
+    ];
+    for width in [100, 120] {
+        let mut lines = Vec::new();
+        for choice in &cards {
+            lines.extend(card_lines(&focused(choice_card(1, choice)), width));
+            lines.push(Line::default());
+        }
+        assert_fits(&lines, width);
+        insta::assert_snapshot!(format!("direct_turn_cards_{width}"), text(&lines));
+    }
+    let permission = choice_card(1, &cards[0]);
+    assert_eq!(permission.esc_hint, "Esc for No");
+    for choice in cards {
+        holds_its_shape(|width| card_lines(&focused(choice_card(1, &choice)), width));
+    }
+}

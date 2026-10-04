@@ -59,6 +59,7 @@ pub(crate) fn run_started(
         harness_versions: BTreeMap::new(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         front_end: request.front_end.clone(),
+        instructions: request.instructions.clone(),
     })
 }
 
@@ -84,7 +85,8 @@ fn override_records(
     recorded: &SettingsRecord,
 ) -> Vec<OverrideRecord> {
     let trust = TrustStore::load(&env.state_dir);
-    let sources = sources(env, &trust, start.overrides.clone(), start.interactive);
+    let mut sources = sources(env, &trust, start.overrides.clone(), start.interactive);
+    sources.request = start.request.request_settings.clone();
     match resolve(&sources) {
         Ok(resolved) if resolved.sha256 == recorded.sha256 => resolved.overrides,
         _ => start

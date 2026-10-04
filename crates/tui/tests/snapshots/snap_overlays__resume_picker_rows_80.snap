@@ -25,4 +25,4 @@ Parked runs never expire, so resume it or stop it                         3 runs
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ resume · x stop · d diff · r raw · esc back
+↑↓ select · ⏎ resume · → agents · x stop · d diff · r raw · / search · esc back

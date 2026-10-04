@@ -182,6 +182,7 @@ fn turn_started(n: u32, text: &str) -> AppEvent {
         commit: "8b41d07".into(),
         uncommitted: vec![],
         settings_sha256: None,
+        continues: false,
     })
 }
 
@@ -259,6 +260,7 @@ fn started(mode: RunMode, request: &str) -> RunEventKind {
         harness_versions: Default::default(),
         version: "0.0.1".into(),
         front_end: None,
+        instructions: Vec::new(),
     })))
 }
 
@@ -1099,4 +1101,129 @@ fn interrupted_turn_line() {
             }),
         ]);
     });
+}
+
+/// Claude Code's own screen for the same turn (2.1.284, `ref/claude-code/25-edit-done.txt`).
+const CLAUDE_CODE_EDIT_TURN: &str = "\
+❯ In greet.txt, change hello to hi.
+
+  Read 1 file
+
+⏺ Update(greet.txt)
+  ⎿  Added 1 line, removed 1 line
+      1 -hello world
+      1 +hi world
+
+⏺ Changed hello to hi in greet.txt.
+
+✻ Worked for 3s · done 1:07 PM";
+
+/// A direct solo turn as Claude Code ran it in your checkout: your message, its calls drawn as
+/// Argonauts draws a CLI's, its own answer, and nothing after it but the `✻` line. No Triage
+/// item, card, report, merge, or recap. Shown beside Claude Code's own screen for the turn.
+fn direct_edit_turn(harness: &mut Harness, text: Option<&str>) {
+    harness.settings.verbosity = Verbosity::Normal;
+    let answer = text.unwrap_or("Changed hello to hi in greet.txt.");
+    harness.send(chat(ChatEvent::TurnStarted {
+        turn: TurnId::numbered(1),
+        text: "In greet.txt, change hello to hi.".into(),
+        worker: worker("claude-code", "haiku"),
+        read_only: false,
+        commit: "8b41d07".into(),
+        uncommitted: vec![],
+        settings_sha256: None,
+        continues: false,
+    }));
+    let read = serde_json::json!({ "file_path": "greet.txt" });
+    harness.send_all(call(1, "t1", "Read", read, true, "1\thello world"));
+    let edit = serde_json::json!({
+        "file_path": "greet.txt",
+        "old_string": "hello world",
+        "new_string": "hi world",
+    });
+    harness.send_all(call(1, "t2", "Edit", edit, true, "ok"));
+    harness.send_all([delta(1, answer), answered(1, answer, 3)]);
+}
+
+#[test]
+fn a_direct_solo_turn_reads_like_claude_codes() {
+    snapshot("direct_solo_turn", direct_edit_turn);
+    for width in [100, 120] {
+        let lines = render(direct_edit_turn, None, width);
+        let printed = text(&lines);
+        let last = printed.lines().last().unwrap_or_default();
+        assert!(last.starts_with("✻ "), "{printed}");
+        let answer_at = printed
+            .find("● Changed hello to hi")
+            .expect("the agent's answer");
+        let after: Vec<&str> = printed[answer_at..]
+            .lines()
+            .skip(1)
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        assert_eq!(
+            after.len(),
+            1,
+            "only the ✻ line follows the answer:\n{printed}"
+        );
+        insta::assert_snapshot!(
+            format!("direct_solo_turn_beside_claude_code_{width}"),
+            format!(
+                "Argonauts, direct solo:\n\n{printed}\n\nClaude Code:\n\n{CLAUDE_CODE_EDIT_TURN}"
+            )
+        );
+    }
+}
+
+/// The agent ran out mid-turn and the next one carries on under a `↷` line.
+#[test]
+fn a_direct_turn_handed_off_goes_on_under_one_line() {
+    let lines = render(
+        |harness, _| {
+            harness.settings.verbosity = Verbosity::Normal;
+            harness.send(chat(ChatEvent::TurnStarted {
+                turn: TurnId::numbered(1),
+                text: "Fix invoice/money.py".into(),
+                worker: worker("claude-code", "haiku"),
+                read_only: false,
+                commit: "8b41d07".into(),
+                uncommitted: vec![],
+                settings_sha256: None,
+                continues: false,
+            }));
+            let edit = serde_json::json!({
+                "file_path": "invoice/money.py",
+                "old_string": "sign = 1",
+                "new_string": "negative = True",
+            });
+            harness.send_all(call(1, "t1", "Edit", edit, true, "ok"));
+            harness.send(chat(ChatEvent::HandedOff {
+                turn: TurnId::numbered(1),
+                from: worker("claude-code", "haiku"),
+                to: worker("codex", "gpt-5.6-luna"),
+                why: "hit its usage limit".into(),
+                told: "your request, the transcript so far, and that invoice/money.py changed"
+                    .into(),
+            }));
+            let test = serde_json::json!({ "command": "python -m pytest -q" });
+            harness.send_all(call(1, "t2", "Bash", test, true, "6 passed in 0.04s"));
+            harness.send_all([
+                delta(1, "All 6 tests pass."),
+                answered(1, "All 6 tests pass.", 32),
+            ]);
+        },
+        None,
+        100,
+    );
+    let printed = text(&lines);
+    insta::assert_snapshot!("direct_turn_handed_off_100", printed);
+    assert!(
+        printed.contains("↷ Claude Code hit its usage limit · Codex continues with"),
+        "{printed}"
+    );
+    assert_eq!(
+        printed.matches("❯ Fix invoice/money.py").count(),
+        1,
+        "{printed}"
+    );
 }

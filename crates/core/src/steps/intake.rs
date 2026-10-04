@@ -29,6 +29,84 @@ pub struct IntakeReply {
     pub answer_markdown: String,
     /// Present for `change` and `unclear`.
     pub estimate: Option<ChangeEstimate>,
+    /// What the request itself says about how to run it, one entry per instruction. Empty when
+    /// it says nothing, and in replies from before there was a list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub how_to_run: Vec<Instruction>,
+}
+
+/// One thing a request says about how to run it, as the model sorted and copied it. The model
+/// names agents and models as the request does, and code resolves and checks every one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Instruction {
+    /// The request's own words for this instruction, copied exactly.
+    pub says: String,
+    pub kind: InstructionKind,
+    /// An agent, company, or model as the request names it ("codex", "gemini", "opus"), or
+    /// empty.
+    #[serde(default)]
+    pub who: String,
+    /// A model as the request names it, or empty.
+    #[serde(default)]
+    pub model: String,
+    /// An effort as the request names it, or empty.
+    #[serde(default)]
+    pub effort: String,
+    /// For `mode`, `solo` or `crew`. For `style`, `workflow` or `goal`. For `isolation`,
+    /// `checked` or `direct`. For the other kinds, what was asked, such as "$2".
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub scope: InstructionScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionKind {
+    /// Solo or the crew.
+    Mode,
+    /// A workflow or a goal.
+    Style,
+    /// A checked copy, or your own checkout.
+    Isolation,
+    /// Who leads the run.
+    Lead,
+    /// Who coordinates the crew.
+    Coordinate,
+    /// Who builds.
+    Build,
+    /// Who reviews.
+    Review,
+    /// Who plans, or how many plans.
+    Plan,
+    /// Who checks the goal.
+    Check,
+    /// Which agents make up the crew.
+    Crew,
+    /// An agent to leave out.
+    Exclude,
+    /// Which model.
+    Model,
+    /// How much effort.
+    Effort,
+    Approvals,
+    Merge,
+    Budget,
+    Network,
+    /// The tests and checks a change must pass.
+    Gates,
+    Sandbox,
+    /// Anything else about how the lead should shape the run, such as "no drafting phase".
+    ForTheLead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionScope {
+    #[default]
+    ThisRequest,
+    /// The request says to keep doing it, so a card asks where to save it.
+    FromNowOn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

@@ -953,7 +953,7 @@ fn resume_picker_rows() {
         assert!(parked.contains(cell), "{cell}:\n{text}");
     }
     assert!(!row_with(&text, "Fix the flaky export test").contains('◆'));
-    assert!(text.contains("⏎ resume · x stop · d diff · r raw · esc back"));
+    assert!(text.contains("⏎ resume · → agents · x stop · d diff · r raw · / search · esc back"));
 
     press(&mut view, KeyCode::Down, &state);
     let resume = press(&mut view, KeyCode::Enter, &state);
@@ -961,12 +961,22 @@ fn resume_picker_rows() {
         matches!(&resume, ViewOutcome::Send(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"),
         "{resume:?}"
     );
-    // The run on screen can be stopped; another run is resumed first.
+    // A run that ended has nothing to stop.
     press(&mut view, KeyCode::Down, &state);
-    press(&mut view, KeyCode::Char('x'), &state);
-    assert!(screen(&mut view, 100, 32, &state).contains("x again to stop run-01 · esc to keep"));
     assert!(matches!(
         press(&mut view, KeyCode::Char('x'), &state),
+        ViewOutcome::Notice(text) if text == "run-01 has ended, so it has nothing to stop"
+    ));
+    // The run on screen can be stopped; another run is resumed first.
+    let mut on_screen = state.clone();
+    on_screen.attached = Some(RunId::new("run-02").unwrap());
+    press(&mut view, KeyCode::Up, &on_screen);
+    press(&mut view, KeyCode::Char('x'), &on_screen);
+    assert!(
+        screen(&mut view, 100, 32, &on_screen).contains("x again to stop run-02 · esc to keep")
+    );
+    assert!(matches!(
+        press(&mut view, KeyCode::Char('x'), &on_screen),
         ViewOutcome::Send(UiCommand::Stop)
     ));
     press(&mut view, KeyCode::Up, &state);
@@ -987,6 +997,7 @@ fn resume_picker_rows() {
     ));
 
     // d and r ask for the diff and raw log of what this screen knows of the run.
+    press(&mut view, KeyCode::Down, &state);
     press(&mut view, KeyCode::Down, &state);
     let diff = press(&mut view, KeyCode::Char('d'), &state);
     assert!(
@@ -1086,7 +1097,7 @@ fn resume_picker_with_cli_sessions() {
         assert!(newest.contains(cell), "{cell}:\n{text}");
     }
     assert!(position(&text, "claude-code:0a1b2c3d-1") < position(&text, "chat-002"));
-    assert!(text.contains("⏎ resume · esc back"));
+    assert!(text.contains("⏎ resume · / search · esc back"));
     let resume = press(&mut view, KeyCode::Enter, &state);
     assert!(
         matches!(&resume, ViewOutcome::Send(UiCommand::Slash { .. })),

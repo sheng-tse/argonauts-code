@@ -225,7 +225,7 @@ fn app_change_request_runs_triage() -> anyhow::Result<()> {
         "{started:?}"
     );
     assert_eq!(started.triage.as_ref().map(|t| t.mode), Some(RunMode::Solo));
-    pty.wait_for(r"Triage\(solo\)", WAIT)?;
+    pty.wait_for(r"Triage\(solo, checked\)", WAIT)?;
     scenario.shot(&pty, "app_change_request_runs_triage")?;
     Ok(())
 }

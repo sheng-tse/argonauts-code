@@ -660,6 +660,7 @@ fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::Sessio
         notes: Vec::new(),
         shell: None,
         fast,
+        workdir: fixture.ctx.env.repo_root.clone(),
     };
     let dir = fixture.ctx.env.state_dir.join("chat-test");
     session_spec(&fixture.ctx, &launch, SessionKey::numbered(1), dir)

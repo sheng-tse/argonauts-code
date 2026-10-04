@@ -7,6 +7,7 @@ pub(crate) mod plain;
 pub(crate) mod preset_layer;
 pub(crate) mod roles;
 pub(crate) mod set_by;
+pub mod tighten;
 pub(crate) mod validate;
 
 #[cfg(test)]

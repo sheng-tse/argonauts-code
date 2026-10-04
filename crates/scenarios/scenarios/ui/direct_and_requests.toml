@@ -1,0 +1,75 @@
+# Direct turns and run requests through the real binary: a supervised direct turn asks before
+# its edit through Claude Code's permission prompt tool, and two requests say how to run them,
+# one followed and one that would loosen a safety setting.
+
+[version]
+claude = "2.1.289 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+# Supervised: Claude Code asks through the approve tool before its edit, waits for the answer,
+# then makes the edit and plays the live recording of a direct turn.
+[[rule]]
+argv0 = "claude"
+args_contain = ["--permission-prompt-tool"]
+prompt_contains = "notes.txt"
+stdin_prompt = "line"
+[[rule.step]]
+call_tool = { name = "approve", arguments = { tool_name = "Edit", tool_use_id = "toolu_01", input = { file_path = "notes.txt", old_string = "This is a draft.", new_string = "This is a final." } } }
+[[rule.step]]
+write = { path = "notes.txt", content = "This is a final.\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.289/direct_resume.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+# Who coordinates and who reviews, in the request's own words.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = "due dates"
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-due-dates","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-dates","message":{"id":"msg-due-dates","content":[{"type":"text","text":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-due-dates","result":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"I would add a due field to the task model, parse --due in the add command, and show it in list, with a test for each.","estimate":{"task_type":"feature","summary":"Add due dates to tasks","files_likely":["src/task.rs","src/cli.rs","tests/due.rs"],"file_count":5,"risk_labels":[],"tests_exist":true,"unknowns":[]},"how_to_run":[{"says":"Have codex coordinate","kind":"coordinate","who":"codex","model":"","effort":"","value":"","scope":"this_request"},{"says":"gemini review it","kind":"review","who":"gemini","model":"","effort":"","value":"","scope":"this_request"},{"says":"use grok to build","kind":"build","who":"grok","model":"","effort":"","value":"","scope":"this_request"}]}}'
+[[rule.step]]
+exit = 0
+
+# A request that would loosen a safety setting.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = "install command"
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-readme","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-readme","message":{"id":"msg-readme","content":[{"type":"text","text":"Fix the install command in README.md."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-readme","result":"Fix the install command in README.md.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"Fix the install command in README.md.","estimate":{"task_type":"docs","summary":"Fix the README install command","files_likely":["README.md"],"file_count":1,"risk_labels":[],"tests_exist":true,"unknowns":[]},"how_to_run":[{"says":"merge it without asking me","kind":"merge","who":"","model":"","effort":"","value":"","scope":"this_request"},{"says":"turn the sandbox off","kind":"sandbox","who":"","model":"","effort":"","value":"","scope":"this_request"}]}}'
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.284/read-only.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+[[rule.step]]
+emit_file = "../../../adapters/codex/fixtures/0.158.0/read_only_ok.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "agy"
+[[rule.step]]
+emit_file = "../../../adapters/antigravity-cli/fixtures/1.2.13/readonly_ok.stdout.jsonl"
+[[rule.step]]
+exit = 0

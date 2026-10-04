@@ -204,7 +204,7 @@ impl<'a> Supervisor<'a> {
                     self.adapter.display_name()
                 ))
             }
-            SessionRole::Build
+            SessionRole::Build | SessionRole::Direct
                 if request
                     .goal_hash
                     .as_deref()

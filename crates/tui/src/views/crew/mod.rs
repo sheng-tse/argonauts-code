@@ -329,6 +329,30 @@ impl CrewView {
     }
 }
 
+/// `c` on an agent: a finished one's session carries on as a direct conversation through its
+/// CLI's own resume once its run ended, and a running one is taken over in its agent view. An
+/// agent of another repo's run carries on from an app open there.
+fn carry_on(state: &AppState, panel: &CrewPanel, row: &CrewRow) -> ViewOutcome {
+    let CrewTarget::Agent { run, session } = &row.target else {
+        return ViewOutcome::Notice("c carries on a finished agent's session. → opens this".into());
+    };
+    if row.repo != panel.repo {
+        return ViewOutcome::Notice(format!(
+            "{} runs in {}. Open argonauts there to carry it on",
+            rows::clean(run.as_str()),
+            rows::clean(&row.repo)
+        ));
+    }
+    let running = match state.session(run, session) {
+        Some(agent) => agent.is_running(),
+        None => matches!(
+            row.state,
+            CrewState::NeedsYou | CrewState::Working | CrewState::Waiting
+        ),
+    };
+    super::carry_on(state, run, session, running)
+}
+
 fn empty_text(tab: CrewTab) -> &'static str {
     match tab {
         CrewTab::NeedsYou => "Nothing needs you",
@@ -496,6 +520,10 @@ impl View for CrewView {
             },
             KeyCode::Char('x') => match row {
                 Some(row) => self.stop(state, row),
+                None => ViewOutcome::Consumed,
+            },
+            KeyCode::Char('c') => match row {
+                Some(row) => carry_on(state, &panel, row),
                 None => ViewOutcome::Consumed,
             },
             _ => match list::nav_key(&key, self.page) {

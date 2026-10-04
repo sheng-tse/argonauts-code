@@ -48,6 +48,22 @@ pub struct ProfileInput<'a> {
     pub commits: bool,
 }
 
+/// What a direct turn may never change in your checkout: Argonauts' own config and the files
+/// that configure agent CLIs, which the main session and every later one load.
+pub const PROTECTED_PATHS: &[&str] = &[
+    ".argonauts/",
+    ".claude/",
+    ".mcp.json",
+    ".agents/",
+    ".codex/",
+    ".opencode/",
+    "opencode.json",
+    "opencode.jsonc",
+];
+
+/// Git's files that run code, closed even when a direct turn may commit.
+const DIRECT_GIT_KEPT: &[&str] = &["hooks", "config", "info"];
+
 /// Harnesses whose state and credentials sit at known places in your home. No session reads
 /// another one's.
 const KNOWN_VENDORS: &[&str] = &["claude-code", "codex", "antigravity-cli", "opencode"];
@@ -309,7 +325,7 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     writable.extend(own_transcripts.clone());
     writable.push(input.session_dir.join(session_files::REPORT));
     writable.push(input.session_dir.join(session_files::HOME));
-    let builds = matches!(input.access, Access::Build | Access::Spike);
+    let builds = input.access.writes();
     if builds {
         writable.push(input.workdir.to_path_buf());
         let fixed: Vec<PathBuf> = deny_read.iter().chain(&config).cloned().collect();
@@ -337,10 +353,28 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     // Readable paths that aren't writable become read-only, even inside the writable state.
     readable.extend(config);
     readable.extend(own_transcripts);
+    // A direct turn works in your checkout, which every later session and your own CLI load:
+    // their config stays closed, so nothing planted there reaches past this turn, even where it
+    // doesn't exist yet.
+    let closed = if input.access == Access::Direct {
+        protected(input.workdir)
+    } else {
+        Vec::new()
+    };
+    readable.extend(closed.iter().cloned());
     // A hook or config planted in git's files would run outside any sandbox the next time you
     // use git, so they stay read-only, and only what a commit on the session's own branch needs
-    // opens up when agents commit.
-    readable.push(input.workdir.join(".git"));
+    // opens up when agents commit. A direct turn commits in your checkout as its CLI would,
+    // with git's hooks and config still closed.
+    if input.access == Access::Direct && input.commits {
+        readable.extend(
+            DIRECT_GIT_KEPT
+                .iter()
+                .map(|path| input.workdir.join(".git").join(path)),
+        );
+    } else {
+        readable.push(input.workdir.join(".git"));
+    }
     let git = LinkedGit::of(input.workdir);
     let git_dirs = git.as_ref().map(LinkedGit::dirs).unwrap_or_default();
     readable.extend(outside_all(git_dirs.iter(), &hard_deny));
@@ -364,7 +398,38 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
         deny_read: dedup(deny_read),
         network: requested.network,
         proxy_port: requested.proxy_port,
+        ask_port: requested.ask_port,
+        closed,
     }
+}
+
+/// A direct turn's protected paths in `workdir`, and git's hooks folder where `core.hooksPath`
+/// moves it inside your checkout, such as `.husky`, since a hook planted there runs outside any
+/// sandbox at your next commit.
+fn protected(workdir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = PROTECTED_PATHS
+        .iter()
+        .map(|path| workdir.join(path.trim_end_matches('/')))
+        .collect();
+    paths.extend(hooks_folder(workdir));
+    paths
+}
+
+/// `core.hooksPath` when it names a folder inside `workdir`. One outside it isn't writable.
+fn hooks_folder(workdir: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["config", "--get", "core.hooksPath"])
+        .output()
+        .ok()?;
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    if !output.status.success() || value.is_empty() || value.starts_with('~') {
+        return None;
+    }
+    let folder = lexical_normal(&workdir.join(value));
+    (folder.starts_with(workdir) && folder != workdir).then_some(folder)
 }
 
 /// The git folders a linked worktree's `.git` file points at: its own, and through `commondir`
@@ -917,7 +982,7 @@ mod tests {
     fn profile_for(l: &Layout, access: Access, vendor: &str, extra: &[PathBuf]) -> SandboxProfile {
         let status = l.session.join(session_files::STATUS);
         let workdir = match access {
-            Access::Build | Access::Spike => l.own_tree.clone(),
+            Access::Build | Access::Spike | Access::Direct => l.own_tree.clone(),
             Access::ReadOnly => l.base_tree.clone(),
             Access::NoTools => l.session.join("work"),
         };
@@ -1119,7 +1184,7 @@ mod tests {
         ] {
             let profile = profile_for(&l, access, "claude-code", &[]);
             let workdir = match access {
-                Access::Build | Access::Spike => l.own_tree.clone(),
+                Access::Build | Access::Spike | Access::Direct => l.own_tree.clone(),
                 Access::ReadOnly => l.base_tree.clone(),
                 Access::NoTools => l.session.join("work"),
             };

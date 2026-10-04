@@ -28,7 +28,7 @@ use tokio::time::Instant;
 
 use crate::errors::{ErrorRules, failed, stop_for};
 use crate::mapping::{Mapper, end_turn_usage};
-use crate::permission::{Answer, Policy, is_bypass_mode};
+use crate::permission::{Answer, Policy, Verdict, is_bypass_mode};
 use crate::report::ReportStep;
 use crate::rpc::{Closed, INTERNAL_ERROR, Incoming, METHOD_NOT_FOUND, RpcError, Wire};
 
@@ -671,7 +671,17 @@ impl Session {
             return sent.map_err(|Closed| self.disconnected_now());
         }
         let call = params.get("toolCall").unwrap_or(&Value::Null);
-        let verdict = self.policy.judge(call);
+        let mut verdict = self.policy.judge(call);
+        // A direct turn that asks you: what the agent asks about and the policy allows is
+        // yours to answer, as it would be in the agent's own window. So is a folder outside
+        // the project, which the policy alone never allows.
+        if let Some(target) = self.start.asking.clone() {
+            let outside = crate::permission::outside_folder(call)
+                .is_some_and(|folder| self.policy.may_ask_outside(&folder));
+            if verdict == Verdict::Allow || outside {
+                verdict = crate::permission::ask_you(&target, call).await;
+            }
+        }
         let title = call
             .get("title")
             .and_then(Value::as_str)
@@ -856,7 +866,7 @@ impl Session {
 fn mode_for(profile: &AcpProfile, access: Access) -> Option<String> {
     match access {
         Access::NoTools | Access::ReadOnly => profile.modes.read_only.clone(),
-        Access::Build => profile.modes.build.clone(),
+        Access::Build | Access::Direct => profile.modes.build.clone(),
         Access::Spike => profile.modes.spike.clone(),
     }
 }
@@ -1037,6 +1047,77 @@ mod tests {
 
     fn tool_failed(id: &'static str) -> impl Fn(&AgentEvent) -> bool {
         move |event| matches!(event, AgentEvent::ToolFinished { id: done, ok: false, .. } if done == id)
+    }
+
+    /// A direct turn that asks you: what the policy allows goes to the app, whose answer picks
+    /// the option, as OpenCode's own window would have you pick it (checked live).
+    #[tokio::test]
+    async fn a_direct_turn_asks_you_what_the_agent_asks() {
+        use argonauts_core::asking::{AskLine, AskReply, AskTarget};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = AskTarget {
+            endpoint: app.local_addr().unwrap().to_string(),
+            token: "t".into(),
+        };
+        let answers = tokio::spawn(async move {
+            let mut asked = Vec::new();
+            for reply in [
+                AskReply::allow(&json!({})),
+                AskReply::deny("not now"),
+                AskReply::deny("not there"),
+            ] {
+                let (stream, _) = app.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut line = String::new();
+                BufReader::new(read).read_line(&mut line).await.unwrap();
+                asked.push(serde_json::from_str::<AskLine>(&line).unwrap());
+                let text = format!("{}\n", serde_json::to_string(&reply).unwrap());
+                write.write_all(text.as_bytes()).await.unwrap();
+            }
+            asked
+        });
+        let mut start = testing::start("/w");
+        start.access = Access::Direct;
+        start.scope.writable = vec!["/w".into()];
+        start.scope.roots = vec!["/w".into()];
+        start.asking = Some(target);
+        let mut driven = testing::launch(testing::profile(AcpProfile::default()), start);
+        driven.agent.open(json!({}), json!({})).await;
+        let _prompt = driven.agent.expect("session/prompt").await;
+        let edit = json!({
+            "toolCallId": "t1", "title": "hello.txt", "kind": "edit",
+            "locations": [{ "path": "/w/hello.txt" }],
+            "rawInput": { "filepath": "/w/hello.txt", "diff": "--- a\n+++ b\n-hello\n+hi\n" },
+        });
+        driven.agent.ask_permission("p1", edit).await;
+        let answer = driven.agent.recv().await;
+        assert_eq!(answer["result"]["outcome"]["optionId"], "yes");
+        let bash = json!({
+            "toolCallId": "t2", "title": "echo hi", "kind": "execute",
+            "rawInput": { "command": "echo hi" },
+        });
+        driven.agent.ask_permission("p2", bash).await;
+        let answer = driven.agent.recv().await;
+        assert_eq!(answer["result"]["outcome"]["optionId"], "no");
+        // A folder outside the project, as OpenCode asks for it (checked live): yours alone.
+        let outside = json!({
+            "toolCallId": "t3", "title": "/", "kind": "other",
+            "rawInput": { "filepath": "/", "parentDir": "/" },
+        });
+        driven.agent.ask_permission("p3", outside).await;
+        let answer = driven.agent.recv().await;
+        assert_eq!(answer["result"]["outcome"]["optionId"], "no");
+        let asked = answers.await.unwrap();
+        let tools: Vec<String> = asked
+            .iter()
+            .map(|line| match &line.ask {
+                argonauts_core::asking::Ask::Permission { tool_name, .. } => tool_name.clone(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(tools, ["Edit", "Bash", "ExternalDirectory"]);
     }
 
     #[tokio::test]

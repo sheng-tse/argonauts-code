@@ -11,7 +11,7 @@ use argonauts_core::clock::Clock;
 use argonauts_core::limits::{HealthBoard, QuotaBoard};
 use argonauts_core::names::ChoiceId;
 use argonauts_core::registry::ModelRegistry;
-use argonauts_core::settings::Settings;
+use argonauts_core::settings::{SettingScope, Settings};
 use argonauts_core::steps::StepRunner;
 use argonauts_core::worker::WorkerDirectory;
 use tokio::sync::mpsc;
@@ -82,6 +82,12 @@ pub(crate) enum Effect {
     SettingsApplied { keys: Vec<String> },
     /// Ask where to save a setting, as an argument like `/effort high` does.
     AskScope(Box<ScopeRequest>),
+    /// Save these `(key, TOML value)` settings where you picked, through the same confirming
+    /// and trust steps as `/config`.
+    SaveSettings {
+        pairs: Vec<(String, String)>,
+        scope: SettingScope,
+    },
     /// Send a new status line.
     Status,
     /// Open the guided setup again (`/setup`).
@@ -121,6 +127,8 @@ pub(crate) struct Ctx {
     reopen: Reopen,
     /// What the screen was last told to call each CLI and model.
     pub names: super::names::NamesSent,
+    /// The runs' agents' sessions as their journals were last read, for `/resume`.
+    pub agent_sessions: Arc<super::chat::SessionCache>,
 }
 
 /// Shared with whoever started the app, which outlives the controller.
@@ -144,6 +152,7 @@ impl Ctx {
             next_choice: 0,
             reopen: Reopen::default(),
             names: super::names::NamesSent::default(),
+            agent_sessions: Arc::default(),
         }
     }
 

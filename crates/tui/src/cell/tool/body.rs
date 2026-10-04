@@ -16,6 +16,17 @@ const OUTPUT_LINES: usize = 5;
 const COMMAND_LINES: usize = 10;
 
 pub(super) fn rows(call: &ToolCall, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+    let narrowed;
+    let ctx = match call.wrap_at {
+        Some(columns) if columns < ctx.width => {
+            narrowed = RenderCtx {
+                width: columns,
+                ..*ctx
+            };
+            &narrowed
+        }
+        _ => ctx,
+    };
     let output = output_role(call);
     let mut rows: Vec<Line<'static>> = call
         .body

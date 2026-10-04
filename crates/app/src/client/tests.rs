@@ -37,6 +37,8 @@ fn request(text: &str) -> StartRun {
         default_agent: None,
         approval_mode: None,
         front_end: Some("hermes".to_owned()),
+        instructions: Vec::new(),
+        request_settings: Vec::new(),
     }
 }
 

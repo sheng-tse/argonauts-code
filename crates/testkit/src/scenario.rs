@@ -151,6 +151,12 @@ pub enum FakeStep {
     /// Reads stdin lines until one contains the text; fails the run at end of input.
     ExpectStdinContains(String),
     Stderr(String),
+    /// Calls a tool of the first MCP server in the `--mcp-config` file the fake was given, as
+    /// Claude Code calls its permission prompt tool, and waits for the answer, however long.
+    CallTool {
+        name: String,
+        arguments: Value,
+    },
     Exit(i32),
     /// Waits until killed.
     Hang(bool),
@@ -186,6 +192,13 @@ pub enum LogLine {
         pid: u32,
         server: String,
         report: Value,
+        reply: Value,
+    },
+    /// A `call_tool` step's call, with the tool's result or the error.
+    ToolCall {
+        pid: u32,
+        name: String,
+        arguments: Value,
         reply: Value,
     },
 }

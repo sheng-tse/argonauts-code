@@ -1,6 +1,8 @@
-//! The main agent CLI's own commands: which ones the screen offers, and sending one to the
-//! chat. They're looked up at start and whenever the main agent changes.
+//! The conversation's CLI's own commands and keywords: which ones the screen offers, and
+//! sending one to the chat. They're the main agent's, or those of the agent whose session the
+//! conversation carries on, and they're looked up again whenever that CLI or its folder changes.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use argonauts_core::Adapter;
@@ -18,6 +20,8 @@ use super::{Ctx, Effect};
 pub(crate) struct VendorCommands {
     adapter: Option<Arc<dyn Adapter>>,
     set: Option<VendorCommandSet>,
+    /// The CLI they belong to and the folder they were found for.
+    found_for: Option<(String, PathBuf)>,
 }
 
 impl VendorCommands {
@@ -26,37 +30,51 @@ impl VendorCommands {
     }
 }
 
-/// Looks the main agent's commands up again, and tells the screen when they changed. An
+/// Looks the conversation's CLI's commands up again, and tells the screen when they changed. An
 /// agent with no CLI of its own, such as an endpoint, has none.
-pub(crate) fn refresh(ctx: &Ctx, state: &mut VendorCommands) {
-    let main = &ctx.settings().default_agent.worker;
+pub(crate) fn refresh(ctx: &Ctx, state: &mut VendorCommands, chat: &ChatState) {
+    let cli = chat.cli(ctx).to_owned();
+    let folder = chat.folder(ctx).to_path_buf();
     let adapter = match crate::commands::adapters_here(Some(&ctx.env), ctx.settings.resolved()) {
-        Ok(adapters) => adapters.into_iter().find(|adapter| adapter.id() == main),
+        Ok(adapters) => adapters.into_iter().find(|adapter| adapter.id() == cli),
         Err(err) => {
             ctx.notice(
                 NoteLevel::Warn,
                 format!(
                     "Couldn't list {}'s own commands: {err:#}",
-                    ctx.names.harness(main)
+                    ctx.names.harness(&cli)
                 ),
             );
             None
         }
     };
     let set = match &adapter {
-        Some(adapter) => command_set(ctx, adapter.as_ref()),
-        None => VendorCommandSet::new(VendorId(main.clone()), main.clone(), &[], Vec::new()),
+        Some(adapter) => command_set(ctx, adapter.as_ref(), &folder),
+        None => VendorCommandSet::new(VendorId(cli.clone()), cli.clone(), &[], Vec::new()),
     };
     if state.set.as_ref() != Some(&set) {
         ctx.send(AppEvent::VendorCommands { set: set.clone() });
     }
     state.adapter = adapter;
     state.set = Some(set);
+    state.found_for = Some((cli, folder));
 }
 
-/// The CLI's table and what it loads for this folder from the project and your home. A
-/// discovery that fails still leaves the table.
-fn command_set(ctx: &Ctx, adapter: &dyn Adapter) -> VendorCommandSet {
+/// Looks them up again once the conversation goes to another CLI or works in another folder, as
+/// when it carries on an agent's session from a run.
+pub(crate) fn follow(ctx: &Ctx, state: &mut VendorCommands, chat: &ChatState) {
+    let current = state
+        .found_for
+        .as_ref()
+        .is_some_and(|(cli, folder)| cli == chat.cli(ctx) && folder == chat.folder(ctx));
+    if !current {
+        refresh(ctx, state, chat);
+    }
+}
+
+/// The CLI's tables and what it loads for `folder` from the project and your home. A discovery
+/// that fails still leaves the tables.
+fn command_set(ctx: &Ctx, adapter: &dyn Adapter, folder: &Path) -> VendorCommandSet {
     let builtins = || {
         VendorCommandSet::new(
             VendorId(adapter.id().to_owned()),
@@ -64,11 +82,12 @@ fn command_set(ctx: &Ctx, adapter: &dyn Adapter) -> VendorCommandSet {
             adapter.builtin_commands(),
             Vec::new(),
         )
+        .with_keywords(adapter.keywords())
     };
     let Some(home) = &ctx.env.user_home else {
         return builtins();
     };
-    let scan = VendorScan::new(&ctx.env.repo_root, home);
+    let scan = VendorScan::new(folder, home);
     VendorCommandSet::of(adapter, &scan).unwrap_or_else(|err| {
         ctx.notice(
             NoteLevel::Warn,
@@ -81,8 +100,8 @@ fn command_set(ctx: &Ctx, adapter: &dyn Adapter) -> VendorCommandSet {
     })
 }
 
-/// `/<name>` as the main agent CLI has it: sent to the chat's session as the command itself,
-/// or Argonauts' own version when that's what it maps to.
+/// `/<name>` as the conversation's CLI has it: sent to the chat's session as the command
+/// itself, or Argonauts' own version when that's what it maps to.
 pub(crate) fn run(
     ctx: &mut Ctx,
     chat: &mut ChatState,
@@ -95,8 +114,8 @@ pub(crate) fn run(
         .as_ref()
         .and_then(|set| set.find(name).map(|command| (set, command)));
     let (Some(adapter), Some((set, command))) = (&state.adapter, found) else {
-        let main = ctx.names.harness(&ctx.settings().default_agent.worker);
-        ctx.notice(NoteLevel::Info, format!("{main} has no command /{name}."));
+        let cli = ctx.names.harness(chat.cli(ctx));
+        ctx.notice(NoteLevel::Info, format!("{cli} has no command /{name}."));
         return Ok(Vec::new());
     };
     if let CommandKind::Argonauts { command: ours } = &command.kind {

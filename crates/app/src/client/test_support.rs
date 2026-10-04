@@ -207,6 +207,7 @@ pub(crate) fn run_started(seq: u64, request: &str, front_end: Option<&str>) -> R
         harness_versions: BTreeMap::new(),
         version: "0.0.1".to_owned(),
         front_end: front_end.map(str::to_owned),
+        instructions: Vec::new(),
     };
     event(
         seq,

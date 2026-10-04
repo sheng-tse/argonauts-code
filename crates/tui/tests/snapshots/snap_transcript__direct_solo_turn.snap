@@ -1,0 +1,17 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: text(&lines)
+---
+❯ In greet.txt, change hello to hi.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(greet.txt)
+  ⎿  Added 1 line, removed 1 line
+        -hello world
+        +hi world
+     ok
+
+● Changed hello to hi in greet.txt.
+
+✻ Sailed for 3s · done 10:42 AM

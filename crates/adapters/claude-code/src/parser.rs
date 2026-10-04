@@ -594,6 +594,9 @@ fn tool_output_text(content: Option<&Value>) -> Option<String> {
                 .iter()
                 .map(|block| match str_at(block, "type") {
                     Some("text") => str_at(block, "text").unwrap_or_default().to_owned(),
+                    // ToolSearch's result names each tool it loaded (2.1.289).
+                    Some("tool_reference") => str_at(block, "tool_name")
+                        .map_or_else(|| "[tool_reference]".to_owned(), str::to_owned),
                     Some(other) => format!("[{other}]"),
                     None => String::new(),
                 })
@@ -1099,6 +1102,15 @@ mod tests {
             ))
             .as_deref(),
             Some("a\n[image]")
+        );
+        // What ToolSearch loaded, by name (2.1.289's direct turns load Edit and Bash this way).
+        let loaded = json!([
+            {"type": "tool_reference", "tool_name": "Edit"},
+            {"type": "tool_reference", "tool_name": "Bash"}
+        ]);
+        assert_eq!(
+            tool_output_text(Some(&loaded)).as_deref(),
+            Some("Edit\nBash")
         );
     }
 

@@ -6,6 +6,7 @@
 
 pub mod color;
 pub mod glyphs;
+mod rainbow;
 
 use ratatui::style::{Color, Modifier, Style};
 

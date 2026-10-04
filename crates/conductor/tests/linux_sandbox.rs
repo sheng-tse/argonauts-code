@@ -77,6 +77,8 @@ fn profile(
         deny_read: paths(deny),
         network,
         proxy_port: None,
+        ask_port: None,
+        closed: Vec::new(),
     }
 }
 

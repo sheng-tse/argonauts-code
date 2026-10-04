@@ -25,4 +25,6 @@ What code enforces whatever you write, so don't try to design around it:
 - Nesting stops at depth 2.
 - The workflow must fit what is left of the budget.
 
+When `as_you_asked` is not empty, the request said how to run it, and each line is a must: give each role it names to those agents only, and keep anything it says for you, such as which phases to leave out. Code refuses a workflow that gives such a role to another agent.
+
 When `errors` is not empty, your last answer broke these rules. Fix every error listed and answer again.

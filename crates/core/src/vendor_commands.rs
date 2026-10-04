@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::adapter::Adapter;
+use crate::keywords::Keyword;
 use crate::names::VendorId;
 use crate::vendor_sessions::VendorScan;
 
@@ -127,13 +128,16 @@ pub enum CommandScope {
     User,
 }
 
-/// The main agent's commands, which the `/` menu, `/help`, and the parser add to Argonauts' own.
+/// The main agent's commands, which the `/` menu, `/help`, and the parser add to Argonauts' own,
+/// and the words its CLI treats specially, which the input draws as the CLI does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VendorCommandSet {
     pub vendor: VendorId,
     /// The CLI's name, which titles its menu category, such as "Claude Code".
     pub title: String,
     pub commands: Vec<VendorCommand>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<Keyword>,
 }
 
 impl VendorCommandSet {
@@ -155,17 +159,24 @@ impl VendorCommandSet {
             vendor,
             title: title.into(),
             commands,
+            keywords: Vec::new(),
         }
     }
 
-    /// The adapter's table and discovery for `scan`.
+    /// The adapter's tables and discovery for `scan`.
     pub fn of(adapter: &dyn Adapter, scan: &VendorScan) -> anyhow::Result<Self> {
         Ok(Self::new(
             VendorId(adapter.id().to_owned()),
             adapter.display_name(),
             adapter.builtin_commands(),
             adapter.discover_commands(scan)?,
-        ))
+        )
+        .with_keywords(adapter.keywords()))
+    }
+
+    pub fn with_keywords(mut self, keywords: &[Keyword]) -> Self {
+        self.keywords = keywords.to_vec();
+        self
     }
 
     /// By name, then by alias.

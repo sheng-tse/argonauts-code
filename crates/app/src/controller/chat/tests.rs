@@ -234,7 +234,11 @@ async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
 async fn all_hands_sends_every_change_to_the_crew() {
     let all_hands = || HarnessOptions {
         prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
-            std::fs::write(repo.global_config(), "[triage]\nall_hands = true\n").unwrap();
+            std::fs::write(
+                repo.global_config(),
+                "[triage]\nall_hands = true\n[solo]\nstyle = \"checked\"\n",
+            )
+            .unwrap();
         })),
         ..HarnessOptions::default()
     };
@@ -292,9 +296,19 @@ async fn all_hands_sends_every_change_to_the_crew() {
     harness.exit().await;
 }
 
+/// Checked solo, which `/solo` runs as a run in a copy.
+pub(crate) fn checked_solo() -> HarnessOptions {
+    HarnessOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            std::fs::write(repo.global_config(), "[solo]\nstyle = \"checked\"\n").unwrap();
+        })),
+        ..HarnessOptions::default()
+    }
+}
+
 #[tokio::test]
-async fn solo_skips_the_estimate() {
-    let mut harness = Harness::start().await;
+async fn checked_solo_skips_the_estimate() {
+    let mut harness = Harness::start_with(checked_solo()).await;
     harness
         .send(UiCommand::Slash {
             command: SlashCommand::Solo {
@@ -325,7 +339,7 @@ async fn solo_skips_the_estimate() {
 
 /// `/solo` while triage still reads the same request: the triage reply starts nothing more.
 async fn solo_during_triage(kind: &str) -> Vec<AppEvent> {
-    let mut harness = Harness::start().await;
+    let mut harness = Harness::start_with(checked_solo()).await;
     harness
         .agent
         .push(reply(kind, "Add a middleware after auth.").with_delay(Duration::from_millis(300)));
@@ -375,7 +389,17 @@ async fn solo_while_triage_reads_an_unclear_request_offers_nothing() {
 
 #[tokio::test]
 async fn forced_runs_and_triaged_changes_carry_what_start_needs() {
-    let (mut parts, _) = TestCtx::new(HarnessOptions::default());
+    // With words left unread, `/crew` starts at once, as it always did.
+    let (mut parts, _) = TestCtx::new(HarnessOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            std::fs::write(
+                repo.global_config(),
+                "[triage]\nread_instructions = false\n",
+            )
+            .unwrap();
+        })),
+        ..HarnessOptions::default()
+    });
     let mut chat = ChatState::new(&parts.ctx).unwrap();
     let effects = chat::start_forced(
         &mut parts.ctx,

@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use argonauts_core::keywords::Keyword;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::vendor_commands::{BuiltinCommand, VendorCommand};
 use argonauts_core::vendor_sessions::{VendorScan, VendorSession, VendorTurn};
@@ -11,11 +12,13 @@ use argonauts_core::{
 
 use crate::command::{PARENT_SESSION_STATE, build_command, user_message_line};
 use crate::commands::{self, BUILTIN_COMMANDS};
+use crate::keywords::KEYWORDS;
 use crate::parser::ClaudeStreamParser;
 use crate::{sessions, tweaks};
 
 /// The first version is the original recordings, the second the steering and resume ones, the
-/// third a workflow Claude Code runs itself.
+/// third a workflow Claude Code runs itself, the permission prompt tool, and a read-only session
+/// resumed with every tool.
 pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285", "2.1.289"];
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -154,6 +157,10 @@ impl Adapter for ClaudeCodeAdapter {
         BUILTIN_COMMANDS
     }
 
+    fn keywords(&self) -> &'static [Keyword] {
+        KEYWORDS
+    }
+
     fn discover_commands(&self, scan: &VendorScan) -> anyhow::Result<Vec<VendorCommand>> {
         Ok(commands::discover(scan))
     }
@@ -165,7 +172,8 @@ mod tests {
     use crate::command::{SETTINGS_FILE, native_cap_args};
     use argonauts_core::settings::sessions::FanoutSwitch;
     use argonauts_core::{
-        AuthMode, SessionRole, TweakEffect, VENDOR_KEY_ENV_VARS, report_json_schema, sha256_hex,
+        Asks, AuthMode, SessionRole, TweakEffect, VENDOR_KEY_ENV_VARS, report_json_schema,
+        sha256_hex,
     };
     use serde_json::{Value, json};
     use std::path::PathBuf;
@@ -177,7 +185,7 @@ mod tests {
             workdir: PathBuf::from("/tmp/worktree"),
             prompt: "Fix the bug".into(),
             role,
-            goal_hash: (role == SessionRole::Build).then(|| sha256_hex(b"Fix the bug")),
+            goal_hash: (role != SessionRole::ReadOnly).then(|| sha256_hex(b"Fix the bug")),
             ..SessionRequest::default()
         }
     }
@@ -309,6 +317,91 @@ mod tests {
             Some("Read,Glob,Grep,Edit,Write,Bash,TaskCreate,TaskGet,TaskUpdate,TaskList")
         );
         assert_eq!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS"), Some("1"));
+    }
+
+    /// A direct turn as the worker launches one: the session server for asking, a schema never.
+    fn direct(asks: Asks, sandbox_off: bool) -> CommandSpec {
+        command(&SessionRequest {
+            asks,
+            tool_sandbox_off: sandbox_off,
+            mcp_config: Some("/tmp/state/t-001/mcp.json".into()),
+            scratch_dir: Some("/tmp/state/t-001".into()),
+            ..request(SessionRole::Direct)
+        })
+    }
+
+    /// A direct turn is Claude Code as you run it: its default tools and no `--tools` list,
+    /// your memory, no schema. Auto mode accepts edits and allows commands and fetches inside
+    /// our sandbox, and anything else that would ask is refused.
+    #[test]
+    fn a_direct_turn_in_auto_mode_has_the_default_tools_and_asks_nothing() {
+        for sandbox_off in [true, false] {
+            let spec = direct(Asks::Never, sandbox_off);
+            assert!(!has(&spec, "--tools"), "{:?}", spec.args);
+            assert!(!has(&spec, "--json-schema"));
+            assert!(!has(&spec, "--permission-prompt-tool"));
+            assert_eq!(value_after(&spec, "--permission-mode"), Some("acceptEdits"));
+            assert_eq!(value_after(&spec, "--permission-prompts"), Some("none"));
+            assert_eq!(
+                values_after(&spec, "--disallowedTools"),
+                ["SendMessage", "ListAgents"]
+            );
+            assert_eq!(
+                settings_file(&spec)["permissions"],
+                json!({"allow": ["Bash", "WebFetch", "WebSearch", "mcp__argonauts_status"]})
+            );
+            assert!(env(&spec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY").is_none());
+            assert!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS").is_none());
+            assert!(env(&spec, "MCP_TOOL_TIMEOUT").is_none());
+            // Not isolated: your agents, skills, plugins, and MCP servers load.
+            assert!(!has(&spec, "--strict-mcp-config"));
+            assert!(!has(&spec, "--setting-sources"));
+        }
+    }
+
+    /// Supervised, `like_cli`: no permission mode, so yours applies, and every call Claude
+    /// Code would ask about goes to the approval tool, which waits as long as you take.
+    #[test]
+    fn a_direct_turn_that_asks_like_the_cli_sends_its_prompts_to_the_approval_tool() {
+        let spec = direct(Asks::LikeCli, true);
+        assert!(!has(&spec, "--permission-mode"), "{:?}", spec.args);
+        assert!(!has(&spec, "--permission-prompts"));
+        assert!(!has(&spec, "--tools"));
+        assert_eq!(
+            value_after(&spec, "--permission-prompt-tool"),
+            Some("mcp__argonauts_status__approve")
+        );
+        // No Bash rule: commands ask, as Claude Code without its own sandbox asks.
+        assert_eq!(
+            settings_file(&spec)["permissions"],
+            json!({"allow": ["mcp__argonauts_status"]})
+        );
+        assert_eq!(env(&spec, "MCP_TOOL_TIMEOUT"), Some("86400000"));
+
+        let every = direct(Asks::EveryChange, true);
+        assert_eq!(value_after(&every, "--permission-mode"), Some("manual"));
+        assert!(has(&every, "--permission-prompt-tool"));
+    }
+
+    /// With nothing to ask through, a direct turn that should ask refuses instead, and one
+    /// without your message's hash gets the read-only flags.
+    #[test]
+    fn a_direct_turn_without_its_tool_or_its_hash_falls_back_closed() {
+        let unasked = command(&SessionRequest {
+            asks: Asks::LikeCli,
+            ..request(SessionRole::Direct)
+        });
+        assert_eq!(value_after(&unasked, "--permission-prompts"), Some("none"));
+        assert!(!has(&unasked, "--permission-prompt-tool"));
+        let unapproved = command(&SessionRequest {
+            goal_hash: None,
+            ..request(SessionRole::Direct)
+        });
+        assert_eq!(
+            value_after(&unapproved, "--permission-mode"),
+            Some("dontAsk")
+        );
+        assert_eq!(value_after(&unapproved, "--tools"), Some("Read,Glob,Grep"));
     }
 
     #[test]

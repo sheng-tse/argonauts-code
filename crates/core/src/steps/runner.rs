@@ -53,7 +53,11 @@ impl StepRunner for SchemaStepRunner {
                 )
                 .await?;
                 let output = output_of(&end);
-                let errors = match (&output, &validator) {
+                // What's checked and returned; a mismatch reports what the session sent.
+                let filled = output
+                    .clone()
+                    .map(|value| fill_left_out(value, spec.json_schema.as_ref()));
+                let errors = match (&filled, &validator) {
                     (Some(value), Some(validator)) => validator
                         .iter_errors(value)
                         .map(|err| describe_error(&err.instance_path().to_string(), &err))
@@ -61,7 +65,7 @@ impl StepRunner for SchemaStepRunner {
                     (Some(_), None) => Vec::new(),
                     (None, _) => vec!["the answer held no JSON object".to_owned()],
                 };
-                if let Some(value) = output.clone()
+                if let Some(value) = filled
                     && errors.is_empty()
                 {
                     return Ok(StepOutcome {
@@ -166,6 +170,25 @@ fn output_of(end: &SessionEnd) -> Option<Value> {
         .into_iter()
         .flatten()
         .find_map(|text| last_json_object(text))
+}
+
+/// Lists added to a step's output after replies were recorded. A reply that leaves one out
+/// means an empty one, as serde reads it, so recorded replies and the fakes written before
+/// still pass the schema.
+const MAY_BE_LEFT_OUT: &[&str] = &["how_to_run"];
+
+fn fill_left_out(mut value: Value, schema: Option<&Value>) -> Value {
+    let Some(properties) = schema.and_then(|schema| schema.get("properties")) else {
+        return value;
+    };
+    if let Value::Object(map) = &mut value {
+        for name in MAY_BE_LEFT_OUT {
+            if properties.get(*name).is_some() && !map.contains_key(*name) {
+                map.insert((*name).to_owned(), Value::Array(Vec::new()));
+            }
+        }
+    }
+    value
 }
 
 /// The last complete top-level JSON object in `text`, such as one inside a ```json fence.
@@ -393,6 +416,7 @@ mod tests {
             isolated: false,
             status_file: None,
             env: Vec::new(),
+            asking: None,
         }
     }
 
@@ -426,7 +450,29 @@ mod tests {
         let text = format!("Sure.\n```json\n{}\n```\n", answer());
         let worker = Scripted::new(vec![ending(EndReason::Completed, Some(&text), None)]);
         let (result, _) = run(worker).await;
-        assert_eq!(result.unwrap().value, answer());
+        let mut expected = answer();
+        expected["how_to_run"] = json!([]);
+        assert_eq!(result.unwrap().value, expected);
+    }
+
+    /// Replies recorded before the instruction list existed still pass on the first try.
+    #[tokio::test]
+    async fn a_reply_that_leaves_out_the_instruction_list_passes_with_an_empty_one() {
+        let worker = Scripted::new(vec![ending(EndReason::Completed, None, Some(answer()))]);
+        let (result, _) = run(worker).await;
+        let outcome = result.unwrap();
+        assert_eq!(outcome.attempts, 1);
+        assert_eq!(outcome.value["how_to_run"], json!([]));
+        let listed = json!({"kind": "answer", "answer_markdown": "Hi.", "estimate": null,
+            "how_to_run": [{"says": "codex reviews", "kind": "review", "who": "codex",
+                "model": "", "effort": "", "value": "", "scope": "this_request"}]});
+        let worker = Scripted::new(vec![ending(
+            EndReason::Completed,
+            None,
+            Some(listed.clone()),
+        )]);
+        let (result, _) = run(worker).await;
+        assert_eq!(result.unwrap().value, listed);
     }
 
     #[tokio::test]

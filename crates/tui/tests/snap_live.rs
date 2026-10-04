@@ -736,3 +736,54 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     assert!(model.bottom.working.is_none());
     assert_eq!(model.bottom.exit_note, None);
 }
+
+/// A direct turn's CLI waits on your answer to what it asked, and its stream says nothing
+/// meanwhile: the working line steps aside rather than fade as stalled, and comes back once
+/// you answer.
+#[test]
+fn the_working_line_steps_aside_while_the_cli_asks_you() {
+    use argonauts_core::app::{AppChoice, ChatEvent, ChoiceKind};
+    use argonauts_core::events::checkpoint::FreeText;
+    use argonauts_core::names::ChoiceId;
+
+    let ui = UiSettings::default();
+    let mut state = AppState::default();
+    let turn = TurnId::numbered(1);
+    state.apply(&AppEvent::Mode {
+        mode: AppMode::Answering { turn: turn.clone() },
+    });
+    state.apply(&AppEvent::Chat {
+        event: ChatEvent::TurnStarted {
+            turn,
+            text: "fix the rounding".into(),
+            worker: worker("claude-code", "haiku"),
+            read_only: false,
+            commit: String::new(),
+            uncommitted: Vec::new(),
+            settings_sha256: None,
+            continues: false,
+        },
+    });
+    let working = |state: &AppState| synced(state, &ui, NOW).bottom.working.is_some();
+    assert!(working(&state));
+
+    let id = ChoiceId::numbered(1);
+    state.apply(&AppEvent::Choice {
+        choice: AppChoice {
+            id: id.clone(),
+            kind: ChoiceKind::Permission,
+            title: "Make this edit to invoice/money.py?".into(),
+            body: vec!["- sign = 1".into(), "+ negative = True".into()],
+            options: Vec::new(),
+            free_text: FreeText::None,
+            bell: true,
+        },
+    });
+    assert!(!working(&state));
+
+    state.apply(&AppEvent::ChoiceClosed {
+        id,
+        outcome: "Yes".into(),
+    });
+    assert!(working(&state));
+}

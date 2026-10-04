@@ -12,9 +12,7 @@ use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{SandboxChoice, SandboxSettings};
 use argonauts_core::settings::endpoints::local_endpoint_addresses;
-use argonauts_core::worker::{
-    Access, SandboxMode, SandboxProfile, SessionSpec, WorkerCapabilities,
-};
+use argonauts_core::worker::{SandboxMode, SandboxProfile, SessionSpec, WorkerCapabilities};
 use argonauts_core::{Adapter, CommandSpec, Paths, SessionRequest, create_private_dir_all};
 
 use super::{HarnessWorker, capabilities, launch, request};
@@ -107,8 +105,17 @@ impl Context {
             profile.proxy_port = Some(port);
             set_env(&mut command, proxy::session_env(&url));
         }
-        if profile.mode != SandboxMode::None && matches!(spec.access, Access::Build | Access::Spike)
-        {
+        // A direct turn asks the app before an edit through its own port, which the network
+        // being off must not cut.
+        if !profile.network {
+            profile.ask_port = spec
+                .asking
+                .as_ref()
+                .and_then(|asking| asking.endpoint.parse::<std::net::SocketAddr>().ok())
+                .filter(|addr| addr.ip().is_loopback())
+                .map(|addr| addr.port());
+        }
+        if profile.mode != SandboxMode::None && spec.access.writes() {
             set_env(&mut command, build_cache_env(&build_cache_root()));
         }
         let sandbox_line = match profile.mode {
@@ -288,6 +295,7 @@ mod tests {
 
     use super::*;
     use crate::harness_worker::testing::{FakeDriver, Harness, TestAdapter, spec_in};
+    use argonauts_core::worker::Access;
 
     #[test]
     fn a_missing_rewritten_file_is_made_where_its_folder_is() {
@@ -636,6 +644,32 @@ mod tests {
             env_of(&launch.command, "HTTPS_PROXY"),
             Some(proxy.session_url(&allow).as_str())
         );
+    }
+
+    /// With the network off, a direct turn's profile names the app's port for its questions, so
+    /// the sandbox lets it through as it lets the proxy through. With network on it needs none.
+    #[test]
+    fn a_direct_turn_without_network_keeps_its_way_to_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = Proxy::start().unwrap();
+        let h = Harness::new(TestAdapter::new("true").with_driver(FakeDriver::default()));
+        let worker = h
+            .worker
+            .with_sandbox(Arc::new(Pretend(SandboxMode::Os)))
+            .with_proxy(proxy.clone());
+        let mut spec = spec_in(dir.path(), dir.path(), "hi");
+        spec.asking = Some(argonauts_core::worker::Asking {
+            asks: argonauts_core::session::Asks::LikeCli,
+            endpoint: "127.0.0.1:41234".to_owned(),
+            token: "t".to_owned(),
+            start_run: true,
+        });
+        let off = launch(&worker, &spec);
+        assert_eq!(off.profile.proxy_port, Some(proxy.port()));
+        assert_eq!(off.profile.ask_port, Some(41234));
+        spec.sandbox.network = true;
+        let on = launch(&worker, &spec);
+        assert_eq!(on.profile.ask_port, None);
     }
 
     #[test]

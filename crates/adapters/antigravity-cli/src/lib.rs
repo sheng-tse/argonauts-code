@@ -10,6 +10,7 @@ mod tweaks;
 
 use std::path::Path;
 
+use argonauts_core::keywords::Keyword;
 use argonauts_core::limits::QuotaReading;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::{
@@ -29,6 +30,10 @@ pub const CHEAPEST_MODEL: &str = "gemini-3.6-flash-low";
 pub const CHEAPEST_EFFORT: &str = "low";
 
 pub const TESTED_VERSIONS: &[&str] = &["1.2.13"];
+
+/// Words Antigravity CLI treats specially in a prompt: none in 1.2.16. Its rainbow belongs to
+/// the effort menu's max level, not to anything you type.
+pub const KEYWORDS: &[Keyword] = &[];
 
 /// From agy's install docs. It puts the binary at `~/.local/bin/agy`.
 pub const INSTALL_COMMAND: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
@@ -72,6 +77,10 @@ impl Adapter for AntigravityCli {
 
     fn parse_version(&self, output: &str) -> Option<String> {
         extract_version(output)
+    }
+
+    fn keywords(&self) -> &'static [Keyword] {
+        KEYWORDS
     }
 
     fn tested_versions(&self) -> &'static [&'static str] {

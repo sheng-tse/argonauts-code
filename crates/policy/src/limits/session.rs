@@ -31,22 +31,19 @@ pub fn check(
         };
         violations.push(violation(HardLimit::NoSandbox, detail, Vec::new()));
     }
-    let builds = matches!(spec.access, Access::Build | Access::Spike);
     let hashed = spec
         .goal_sha256
         .as_deref()
         .is_some_and(|hash| !hash.trim().is_empty());
-    if builds && !hashed {
+    if spec.access.writes() && !hashed {
+        let what = match spec.access {
+            Access::Build => "a build session needs the approved goal's hash",
+            Access::Spike => "a spike session needs the approved goal's hash",
+            _ => "a direct turn needs the hash of your message",
+        };
         violations.push(violation(
             HardLimit::NoGoalHash,
-            format!(
-                "a {} session needs the approved goal's hash",
-                if spec.access == Access::Build {
-                    "build"
-                } else {
-                    "spike"
-                }
-            ),
+            what.to_owned(),
             Vec::new(),
         ));
     }

@@ -81,6 +81,7 @@ impl SandboxWrap for Landlock {
             deny_read: profile.deny_read.clone(),
             network: profile.network,
             proxies: reachable_proxies(profile, &command),
+            closed: profile.closed.clone(),
         };
         let args = launcher_args(&plan, program.as_os_str(), &command.args);
         Ok(CommandSpec {
@@ -127,13 +128,21 @@ fn count(n: usize) -> String {
 }
 
 /// What a session without network may still reach on this machine's loopback: the Argonauts
-/// proxy when its profile names one, else the proxies `command` points its harness at.
+/// proxy when its profile names one, else the proxies `command` points its harness at, and the
+/// app's port for a direct turn's questions.
 pub fn reachable_proxies(profile: &SandboxProfile, command: &CommandSpec) -> Vec<SocketAddr> {
-    match (profile.network, profile.proxy_port) {
-        (true, _) => Vec::new(),
+    let mut reachable = match (profile.network, profile.proxy_port) {
+        (true, _) => return Vec::new(),
         (false, Some(port)) => vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))],
         (false, None) => loopback_proxies(command),
+    };
+    if let Some(port) = profile.ask_port {
+        let ask = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        if !reachable.contains(&ask) {
+            reachable.push(ask);
+        }
     }
+    reachable
 }
 
 /// The proxies on this machine's loopback that `command` points its harness at, which the
@@ -254,6 +263,13 @@ mod tests {
             Landlock::new().describe(&profile),
             "landlock · writes 0 paths · denies 0 paths · network only through the proxy on port 4128"
         );
+        // A direct turn's questions reach the app through its own port, bridged like the proxy.
+        profile.ask_port = Some(5005);
+        assert_eq!(
+            reachable_proxies(&profile, &command),
+            ["127.0.0.1:4128", "127.0.0.1:5005"].map(|addr| addr.parse::<SocketAddr>().unwrap())
+        );
+        profile.ask_port = None;
         // A gate has no proxy of ours, so the ones its command names stay reachable.
         profile.proxy_port = None;
         assert_eq!(
@@ -261,6 +277,7 @@ mod tests {
             vec!["127.0.0.1:7004".parse::<SocketAddr>().unwrap()]
         );
         profile.network = true;
+        profile.ask_port = Some(5005);
         assert!(reachable_proxies(&profile, &command).is_empty());
     }
 

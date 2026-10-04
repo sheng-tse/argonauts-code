@@ -1,14 +1,24 @@
 //! The resume picker: earlier conversations with the lead, parked or stopped runs, and the main
 //! agent CLI's own sessions for this repo, newest first, with where each stopped, when, what it
 //! spent, and what resuming restarts. Parked runs never expire.
+//!
+//! Each run's agents' sessions fold under it, and → shows them: a row per session, with the
+//! helpers its CLI started inside it counted on that row. A session carries on through its CLI's
+//! own resume once its run ended, one whose CLI can't resume opens its transcript, and a helper
+//! only comes back with its session. `/` narrows the list as you type, since its letters are
+//! keys: x stops a run, d shows its diff, and r its raw log.
 
+use std::collections::HashSet;
+
+use argonauts_core::agent_sessions::{AgentSession, AgentSessionRef, Resume};
 use argonauts_core::api::{DiffScope, RunState as RunPhase, RunSummary};
-use argonauts_core::app::{ChatSummary, UiCommand, ViewRequest};
+use argonauts_core::app::{ChatSummary, UiCommand, ViewData, ViewRequest};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
-use argonauts_core::vendor_sessions::VendorSession;
+use argonauts_core::names::ChatId;
+use argonauts_core::vendor_sessions::{VendorSession, VendorSessionRef};
 use argonauts_core::{RunId, Spend};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -29,6 +39,10 @@ const GAP: usize = 2;
 /// How much of a CLI session's id the list shows, unless two listed share that start.
 const SHORT_ID: usize = 8;
 
+/// The least of a title the list keeps while agents' sessions show, enough for a session's
+/// role, card, and helpers, before the column of who ran it gives way.
+const AGENT_TITLE_MIN: usize = 30;
+
 #[derive(Debug)]
 pub struct ResumePicker {
     pub runs: Vec<RunSummary>,
@@ -37,7 +51,17 @@ pub struct ResumePicker {
     pub sessions: Vec<VendorSession>,
     /// What the Id column shows for each session, such as `codex:019a5770`.
     session_ids: Vec<String>,
-    /// Every kind by when each was last used, newest first.
+    /// The agents' sessions of the runs read so far, each run's in the order they started.
+    pub agents: Vec<AgentSession>,
+    /// The runs whose agents `agents` holds. Another run's are asked for when you open it.
+    read: HashSet<RunId>,
+    /// The runs whose agents show under them.
+    open: HashSet<RunId>,
+    /// What you typed to narrow the list.
+    filter: String,
+    /// Typing goes to the filter, from `/` until Esc.
+    filtering: bool,
+    /// What shows, by when each was last used, newest first.
     rows: Vec<Row>,
     pub list: ListState,
     /// Shows times like `2h ago`; tests pin it.
@@ -52,6 +76,17 @@ enum Row {
     Chat(usize),
     Run(usize),
     Session(usize),
+    /// Under its run.
+    Agent(usize),
+}
+
+/// A row by what it lists, which a fresh list or a new filter keeps selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Picked {
+    Chat(ChatId),
+    Run(RunId),
+    Session(VendorSessionRef),
+    Agent(AgentSessionRef),
 }
 
 impl ResumePicker {
@@ -73,6 +108,11 @@ impl ResumePicker {
             chats,
             session_ids: short_ids(&sessions),
             sessions,
+            agents: Vec::new(),
+            read: HashSet::new(),
+            open: HashSet::new(),
+            filter: String::new(),
+            filtering: false,
             rows: Vec::new(),
             list: ListState::default(),
             clock: WallClock::local(),
@@ -83,9 +123,19 @@ impl ResumePicker {
         picker
     }
 
+    /// The agents' sessions of the runs in `read`, each listed under its run once you open it.
+    pub fn with_agents(mut self, agents: Vec<AgentSession>, read: Vec<RunId>) -> Self {
+        self.agents = agents;
+        self.read = read.into_iter().collect();
+        self.rows = self.merged();
+        self
+    }
+
     /// Each list is newest first already, so a merge keeps that. On a tie a conversation comes
-    /// first, then a run.
+    /// first, then a run. A run's agents follow it while it's open, or while what you typed
+    /// matches them, and a row that doesn't match what you typed is left out.
     fn merged(&self) -> Vec<Row> {
+        let words = search_words(&self.filter);
         let mut rows = Vec::with_capacity(self.runs.len() + self.chats.len() + self.sessions.len());
         let (mut chat, mut run, mut session) = (0, 0, 0);
         loop {
@@ -107,10 +157,101 @@ impl ResumePicker {
                 Row::Chat(_) => chat += 1,
                 Row::Run(_) => run += 1,
                 Row::Session(_) => session += 1,
+                Row::Agent(_) => {}
             }
-            rows.push(next);
+            match next {
+                Row::Run(r) => rows.extend(self.run_rows(r, &words)),
+                row if self.matches(row, &words) => rows.push(row),
+                _ => {}
+            }
         }
         rows
+    }
+
+    /// A run's row, then those of its agents that show.
+    fn run_rows(&self, r: usize, words: &[String]) -> Vec<Row> {
+        let run = &self.runs[r].run;
+        let agents = self
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| &agent.run == run)
+            .map(|(a, _)| Row::Agent(a));
+        let shown: Vec<Row> = if words.is_empty() {
+            agents.filter(|_| self.open.contains(run)).collect()
+        } else {
+            agents.filter(|row| self.matches(*row, words)).collect()
+        };
+        if shown.is_empty() && !self.matches(Row::Run(r), words) {
+            return Vec::new();
+        }
+        std::iter::once(Row::Run(r)).chain(shown).collect()
+    }
+
+    /// Whether the row's words hold every word you typed.
+    fn matches(&self, row: Row, words: &[String]) -> bool {
+        if words.is_empty() {
+            return true;
+        }
+        let text = self.search_text(row).to_lowercase();
+        words.iter().all(|word| text.contains(word.as_str()))
+    }
+
+    /// What a row is found by: its id and title, what it ran on, and an agent's run too.
+    fn search_text(&self, row: Row) -> String {
+        match row {
+            Row::Chat(i) => {
+                let chat = &self.chats[i];
+                let worker = chat.worker.as_ref().map_or_else(String::new, |worker| {
+                    format!("{worker} {}", vendor_label(&worker.worker))
+                });
+                format!("{} {} {worker}", chat.chat, chat.title)
+            }
+            Row::Run(i) => {
+                let run = &self.runs[i];
+                let state = state_word(run.state);
+                format!("{} {} {state} {}", run.run, run.title, run.stopped_at)
+            }
+            Row::Session(i) => {
+                let session = &self.sessions[i];
+                let branch = session.branch.as_deref().unwrap_or_default();
+                let vendor = vendor_label(&session.vendor.0);
+                let id = &self.session_ids[i];
+                format!("{id} {} {vendor} {branch}", session.title)
+            }
+            Row::Agent(a) => {
+                let agent = &self.agents[a];
+                [
+                    agent.run.to_string(),
+                    agent.session.to_string(),
+                    agent.role.as_str().to_owned(),
+                    agent.label.clone().unwrap_or_default(),
+                    agent.worker.to_string(),
+                    vendor_label(&agent.worker.worker),
+                    agent.last_message.clone().unwrap_or_default(),
+                    agent.helper_counts(),
+                ]
+                .join(" ")
+            }
+        }
+    }
+
+    fn picked(&self, row: Row) -> Picked {
+        match row {
+            Row::Chat(i) => Picked::Chat(self.chats[i].chat.clone()),
+            Row::Run(i) => Picked::Run(self.runs[i].run.clone()),
+            Row::Session(i) => Picked::Session(self.sessions[i].reference()),
+            Row::Agent(a) => Picked::Agent(self.agents[a].reference()),
+        }
+    }
+
+    /// Lists the rows again, keeping `keep` selected when it's still listed, else the first.
+    fn relist(&mut self, keep: Option<Picked>) {
+        self.rows = self.merged();
+        let index = keep
+            .and_then(|keep| self.rows.iter().position(|row| self.picked(*row) == keep))
+            .unwrap_or(0);
+        self.list.move_to(index, self.rows.len(), self.page);
     }
 
     fn selected_row(&self) -> Option<Row> {
@@ -120,106 +261,121 @@ impl ResumePicker {
     fn selected(&self) -> Option<&RunSummary> {
         match self.selected_row()? {
             Row::Run(i) => self.runs.get(i),
-            Row::Chat(_) | Row::Session(_) => None,
+            _ => None,
         }
     }
 
     fn selected_chat(&self) -> Option<&ChatSummary> {
         match self.selected_row()? {
             Row::Chat(i) => self.chats.get(i),
-            Row::Run(_) | Row::Session(_) => None,
+            _ => None,
         }
     }
 
     fn selected_session(&self) -> Option<(&VendorSession, &str)> {
         match self.selected_row()? {
             Row::Session(i) => Some((self.sessions.get(i)?, self.session_ids.get(i)?)),
-            Row::Run(_) | Row::Chat(_) => None,
+            _ => None,
+        }
+    }
+
+    fn selected_agent(&self) -> Option<&AgentSession> {
+        match self.selected_row()? {
+            Row::Agent(i) => self.agents.get(i),
+            _ => None,
         }
     }
 
     /// More than runs, so a Kind column tells them apart.
     fn mixed(&self) -> bool {
-        !self.chats.is_empty() || !self.sessions.is_empty()
+        !self.chats.is_empty() || !self.sessions.is_empty() || !self.agents.is_empty()
     }
 
     fn columns(&self, width: usize, names: &DisplayNames) -> Vec<Column> {
         let now = self.clock.now();
-        let cells = |run: &dyn Fn(&RunSummary) -> String,
-                     chat: &dyn Fn(&ChatSummary) -> String,
-                     session: &dyn Fn(usize, &VendorSession) -> String| {
-            self.rows
-                .iter()
-                .map(|row| match *row {
-                    Row::Run(i) => run(&self.runs[i]),
-                    Row::Chat(i) => chat(&self.chats[i]),
-                    Row::Session(i) => session(i, &self.sessions[i]),
-                })
-                .collect()
+        let cells = |cell: &dyn Fn(Row) -> String| -> Vec<String> {
+            self.rows.iter().map(|row| cell(*row)).collect()
         };
-        let blank = |_: &ChatSummary| String::new();
-        let none = |_: usize, _: &VendorSession| String::new();
         let mixed = self.mixed();
+        let agents_shown = self.rows.iter().any(|row| matches!(row, Row::Agent(_)));
         let mut columns = Vec::new();
         if mixed {
-            columns.push(
-                Column::new(
-                    "Kind",
-                    cells(&|_| "run".to_owned(), &|_| "chat".to_owned(), &|_, _| {
-                        "session".to_owned()
-                    }),
-                )
-                .keep(6),
-            );
+            columns.push(Column::new("Kind", cells(&|row| self.kind(row).to_owned())).keep(6));
         }
         columns.extend([
             Column::new(
                 if mixed { "Id" } else { "Run" },
-                cells(
-                    &|run| sanitize_line(run.run.as_str()).into_owned(),
-                    &|chat| sanitize_line(chat.chat.as_str()).into_owned(),
-                    &|i, _| sanitize_line(&self.session_ids[i]).into_owned(),
-                ),
+                cells(&|row| match row {
+                    Row::Run(i) => sanitize_line(self.runs[i].run.as_str()).into_owned(),
+                    Row::Chat(i) => sanitize_line(self.chats[i].chat.as_str()).into_owned(),
+                    Row::Session(i) => sanitize_line(&self.session_ids[i]).into_owned(),
+                    // Indented under its run.
+                    Row::Agent(a) => format!("  {}", clean(self.agents[a].session.as_str())),
+                }),
             ),
-            Column::new(
-                "Title",
-                cells(
-                    &|run| clean(&run.title),
-                    &|chat| clean(&chat.title),
-                    &|_, session| clean(&session.title),
-                ),
-            )
-            .flex(),
+            {
+                let title = Column::new(
+                    "Title",
+                    cells(&|row| match row {
+                        Row::Run(i) => clean(&self.runs[i].title),
+                        Row::Chat(i) => clean(&self.chats[i].title),
+                        Row::Session(i) => clean(&self.sessions[i].title),
+                        Row::Agent(a) => agent_title(&self.agents[a]),
+                    }),
+                );
+                if agents_shown {
+                    title.flex_min(AGENT_TITLE_MIN)
+                } else {
+                    title.flex()
+                }
+            },
             Column::new(
                 "State",
-                cells(&|run| state_word(run.state).to_owned(), &blank, &none),
+                cells(&|row| match row {
+                    Row::Run(i) => state_word(self.runs[i].state).to_owned(),
+                    Row::Agent(a) => agent_state(&self.agents[a]).to_owned(),
+                    _ => String::new(),
+                }),
             )
             .keep(5),
             Column::new(
                 if mixed { "Details" } else { "Stopped at" },
-                cells(
-                    &|run| clean(&run.stopped_at),
-                    &|chat| chat_details(chat, names),
-                    &|_, session| session_details(session),
-                ),
+                cells(&|row| match row {
+                    Row::Run(i) => clean(&self.runs[i].stopped_at),
+                    Row::Chat(i) => chat_details(&self.chats[i], names),
+                    Row::Session(i) => session_details(&self.sessions[i]),
+                    Row::Agent(a) => sanitize_line(&names.worker(&self.agents[a].worker))
+                        .trim()
+                        .to_owned(),
+                }),
             )
             .keep(1),
             Column::new(
                 "When",
-                cells(
-                    &|run| ago(run.updated, now),
-                    &|chat| ago(chat.updated, now),
-                    &|_, session| ago(session.updated, now),
-                ),
+                cells(&|row| match row {
+                    Row::Run(i) => ago(self.runs[i].updated, now),
+                    Row::Chat(i) => ago(self.chats[i].updated, now),
+                    Row::Session(i) => ago(self.sessions[i].updated, now),
+                    Row::Agent(a) => ago(self.agents[a].updated, now),
+                }),
             )
             .numeric()
             .keep(4),
-            Column::new("Spent", cells(&|run| spent(&run.spent), &blank, &none))
-                .numeric()
-                .keep(3),
+            Column::new(
+                "Spent",
+                cells(&|row| match row {
+                    Row::Run(i) => spent(&self.runs[i].spent),
+                    _ => String::new(),
+                }),
+            )
+            .numeric()
+            .keep(3),
             Column::new(
                 "Sessions",
-                cells(&|run| run.sessions_to_resume.to_string(), &blank, &none),
+                cells(&|row| match row {
+                    Row::Run(i) => self.runs[i].sessions_to_resume.to_string(),
+                    _ => String::new(),
+                }),
             )
             .numeric()
             .keep(2),
@@ -232,6 +388,15 @@ impl ResumePicker {
             });
         }
         fit_columns(columns, width, GAP)
+    }
+
+    fn kind(&self, row: Row) -> &'static str {
+        match row {
+            Row::Run(_) => "run",
+            Row::Chat(_) => "chat",
+            Row::Session(_) => "session",
+            Row::Agent(_) => "agent",
+        }
     }
 
     fn lines(&self, width: usize, names: &DisplayNames, theme: &Theme) -> Vec<Line<'static>> {
@@ -252,7 +417,7 @@ impl ResumePicker {
             let selected = i == self.list.selected;
             let run = match *row {
                 Row::Run(r) => Some(&self.runs[r]),
-                Row::Chat(_) | Row::Session(_) => None,
+                _ => None,
             };
             let mut spans = vec![
                 if selected {
@@ -282,36 +447,197 @@ impl ResumePicker {
             lines.push(Line::from(spans));
         }
         if self.rows.is_empty() {
-            lines.push(Line::from(Span::styled("  No parked or stopped runs", dim)));
+            let text = if self.filter.trim().is_empty() {
+                "  No parked or stopped runs"
+            } else {
+                "  Nothing matches"
+            };
+            lines.push(Line::from(Span::styled(text, dim)));
         }
         lines
     }
 
+    /// The keys for the row selected. While you type a search, letters are the search's, so
+    /// only the keys without them show.
     fn footer(&self) -> Footer {
-        match &self.confirm_stop {
-            Some(run) => {
-                let again = format!("x again to stop {}", sanitize_line(run.as_str()));
-                Footer::hints(&[(&again, 0), ("esc to keep", 0)])
+        if let Some(run) = &self.confirm_stop {
+            let again = format!("x again to stop {}", sanitize_line(run.as_str()));
+            return Footer::hints(&[(&again, 0), ("esc to keep", 0)]);
+        }
+        let letters = !self.filtering;
+        let mut hints = vec![("↑↓ select", 0)];
+        match self.selected_row() {
+            Some(Row::Agent(a)) => match &self.agents[a].resume {
+                Resume::Ready => hints.push(("⏎ continue", 6)),
+                Resume::Cannot { .. } => hints.push(("⏎ transcript", 6)),
+                Resume::Working | Resume::RunOwns => {}
+            },
+            Some(Row::Run(r)) => {
+                let run = &self.runs[r];
+                let open = self.open.contains(&run.run);
+                if run.state == RunPhase::Merged {
+                    hints.push((
+                        if open {
+                            "⏎ hide agents"
+                        } else {
+                            "⏎ agents"
+                        },
+                        6,
+                    ));
+                } else {
+                    hints.push(("⏎ resume", 6));
+                    hints.push((
+                        if open {
+                            "← hide agents"
+                        } else {
+                            "→ agents"
+                        },
+                        5,
+                    ));
+                }
+                if letters && !run.state.ended() {
+                    hints.push(("x stop", 4));
+                }
+                if letters {
+                    hints.push(("d diff", 3));
+                }
             }
-            // `x`, `d`, and `r` act on runs only, so a conversation doesn't offer them.
-            None if self.selected().is_none() => {
-                Footer::hints(&[("↑↓ select", 0), ("⏎ resume", 5), (panes::ESC_BACK, 0)])
+            Some(Row::Chat(_) | Row::Session(_)) => hints.push(("⏎ resume", 6)),
+            None => {}
+        }
+        let raw = matches!(self.selected_row(), Some(Row::Run(_) | Row::Agent(_)));
+        if letters && raw {
+            hints.push(("r raw", 2));
+        }
+        if letters {
+            hints.extend([("/ search", 1), (panes::ESC_BACK, 0)]);
+        } else {
+            hints.push(("esc clear search", 0));
+        }
+        Footer::hints(&hints)
+    }
+
+    /// Enter: a conversation or a CLI session carries on, a run resumes, and a merged run, which
+    /// can't, shows its agents. An agent's session carries on once its run ended, says why
+    /// not while the run still owns it, and shows its transcript when its CLI can't resume it.
+    fn enter(&mut self) -> ViewOutcome {
+        let resume = |target| {
+            ViewOutcome::Send(UiCommand::Slash {
+                command: SlashCommand::Resume {
+                    target: Some(target),
+                },
+            })
+        };
+        match self.selected_row() {
+            Some(Row::Agent(a)) => Self::open_agent(&self.agents[a]),
+            Some(Row::Chat(i)) => resume(ResumeTarget::Conversation(self.chats[i].chat.clone())),
+            Some(Row::Session(i)) => {
+                resume(ResumeTarget::VendorSession(self.sessions[i].reference()))
             }
-            None => Footer::hints(&[
-                ("↑↓ select", 0),
-                ("⏎ resume", 5),
-                ("x stop", 4),
-                ("d diff", 3),
-                ("r raw", 2),
-                (panes::ESC_BACK, 0),
-            ]),
+            Some(Row::Run(r)) if self.runs[r].state == RunPhase::Merged => {
+                if self.open.contains(&self.runs[r].run) {
+                    self.fold(r)
+                } else {
+                    self.unfold(r)
+                }
+            }
+            Some(Row::Run(r)) => ViewOutcome::Send(UiCommand::Resume {
+                run: Some(self.runs[r].run.clone()),
+            }),
+            None => ViewOutcome::Consumed,
+        }
+    }
+
+    fn open_agent(agent: &AgentSession) -> ViewOutcome {
+        let reference = clean(&agent.reference().to_string());
+        match &agent.resume {
+            Resume::Ready | Resume::Cannot { .. } => ViewOutcome::Send(UiCommand::Slash {
+                command: SlashCommand::Resume {
+                    target: Some(ResumeTarget::Agent(agent.reference())),
+                },
+            }),
+            Resume::Working => ViewOutcome::Notice(format!(
+                "{reference} is still working. t in its agent view takes it over"
+            )),
+            Resume::RunOwns => ViewOutcome::Notice(run_owns(&agent.run, &reference)),
+        }
+    }
+
+    /// Shows the run's agents under it, asking the app for them the first time when the list
+    /// came without them.
+    fn unfold(&mut self, r: usize) -> ViewOutcome {
+        let run = self.runs[r].run.clone();
+        self.open.insert(run.clone());
+        self.relist(Some(Picked::Run(run.clone())));
+        if !self.read.contains(&run) {
+            return ViewOutcome::Request(ViewRequest::AgentSessions { run });
+        }
+        if self.agents.iter().any(|agent| agent.run == run) {
+            ViewOutcome::Consumed
+        } else {
+            ViewOutcome::Notice(format!(
+                "{} has no agent sessions",
+                sanitize_line(run.as_str())
+            ))
+        }
+    }
+
+    /// Folds the run's agents back under it, with the run selected.
+    fn fold(&mut self, r: usize) -> ViewOutcome {
+        let run = self.runs[r].run.clone();
+        self.open.remove(&run);
+        self.relist(Some(Picked::Run(run)));
+        ViewOutcome::Consumed
+    }
+
+    /// The run of the row selected, or the run an agent row sits under.
+    fn run_at_selection(&self) -> Option<usize> {
+        match self.selected_row()? {
+            Row::Run(r) => Some(r),
+            Row::Agent(a) => {
+                let run = &self.agents[a].run;
+                self.runs.iter().position(|summary| &summary.run == run)
+            }
+            Row::Chat(_) | Row::Session(_) => None,
+        }
+    }
+
+    fn search(&mut self, change: impl FnOnce(&mut String)) -> ViewOutcome {
+        change(&mut self.filter);
+        self.relist(None);
+        ViewOutcome::Consumed
+    }
+
+    /// A key while you type a search: letters, Backspace, and Esc are the search's. `None`
+    /// for the keys that work the list as ever, such as Enter and the arrows.
+    fn search_key(&mut self, key: &KeyEvent) -> Option<ViewOutcome> {
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => {
+                self.filtering = false;
+                Some(self.search(String::clear))
+            }
+            KeyCode::Backspace => Some(self.search(|filter| {
+                filter.pop();
+            })),
+            KeyCode::Char(c) if plain => Some(self.search(|filter| filter.push(c))),
+            _ => None,
         }
     }
 
     fn stop(&mut self, state: &AppState) -> ViewOutcome {
-        let Some(run) = self.selected().map(|run| run.run.clone()) else {
+        let Some(summary) = self.selected() else {
             return self.not_a_run();
         };
+        let run = summary.run.clone();
+        if summary.state.ended() {
+            return ViewOutcome::Notice(format!(
+                "{} has ended, so it has nothing to stop",
+                sanitize_line(run.as_str())
+            ));
+        }
         if self.confirm_stop.as_ref() != Some(&run) {
             self.confirm_stop = Some(run);
             return ViewOutcome::Consumed;
@@ -328,8 +654,36 @@ impl ResumePicker {
         }
     }
 
-    /// `x`, `d`, and `r` act on runs; a conversation or a CLI session has none of those.
+    /// `d` and `r` on a run; `r` on an agent shows its own session's raw log.
+    fn run_view(&self, state: &AppState, diff: bool) -> ViewOutcome {
+        if let Some(agent) = self.selected_agent().filter(|_| !diff) {
+            return ViewOutcome::Request(ViewRequest::Raw {
+                run: agent.run.clone(),
+                session: agent.session.clone(),
+            });
+        }
+        let Some(run) = self.selected().map(|run| run.run.clone()) else {
+            return self.not_a_run();
+        };
+        let request = if diff {
+            diff_request(state, &run)
+        } else {
+            raw_request(state, &run)
+        };
+        match request {
+            Ok(request) => ViewOutcome::Request(request),
+            Err(why) => ViewOutcome::Notice(why),
+        }
+    }
+
+    /// The run keys on a conversation, a CLI session, or an agent's session.
     fn not_a_run(&self) -> ViewOutcome {
+        if let Some(agent) = self.selected_agent() {
+            return ViewOutcome::Notice(format!(
+                "{} is an agent's session. ⏎ carries it on",
+                clean(&agent.reference().to_string())
+            ));
+        }
         if let Some(chat) = self.selected_chat() {
             return ViewOutcome::Notice(format!(
                 "{} is a conversation. ⏎ carries it on",
@@ -347,13 +701,13 @@ impl ResumePicker {
     }
 
     /// `Resume a conversation or a run`, or a session too when the CLI has some, and how many
-    /// of each.
+    /// of each, or how many match what you typed.
     fn header(&self, theme: &Theme) -> Header {
         if !self.mixed() {
             return Header {
                 title: Line::from(Span::styled("Resume a run", theme.style(Role::Label))),
                 description: "Parked runs never expire, so resume it or stop it".to_owned(),
-                summary: panes::count(self.runs.len(), "run"),
+                summary: self.matching(panes::count(self.runs.len(), "run")),
             };
         }
         let sessions = self.sessions.first().map_or_else(String::new, |first| {
@@ -363,13 +717,14 @@ impl ResumePicker {
         let summary: Vec<String> = [
             (self.chats.len(), "conversation"),
             (self.runs.len(), "run"),
+            (self.agents.len(), "agent session"),
             (self.sessions.len(), sessions.as_str()),
         ]
         .into_iter()
         .filter(|(count, _)| *count > 0)
         .map(|(count, noun)| panes::count(count, noun))
         .collect();
-        let title = if self.sessions.is_empty() {
+        let title = if self.sessions.is_empty() && self.agents.is_empty() {
             "Resume a conversation or a run"
         } else {
             "Resume a conversation, a run, or a session"
@@ -377,9 +732,36 @@ impl ResumePicker {
         Header {
             title: Line::from(Span::styled(title, theme.style(Role::Label))),
             description: "Pick one to carry on. Parked runs never expire".to_owned(),
-            summary: summary.join(" · "),
+            summary: self.matching(summary.join(" · ")),
         }
     }
+
+    /// The counts, or how many rows match what you typed.
+    fn matching(&self, counts: String) -> String {
+        if self.filter.trim().is_empty() {
+            return counts;
+        }
+        let total = self.chats.len() + self.runs.len() + self.sessions.len() + self.agents.len();
+        format!("{} of {total} match", self.rows.len())
+    }
+}
+
+/// The words you typed, each to be found in a row, case aside.
+fn search_words(filter: &str) -> Vec<String> {
+    filter
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Why a finished agent's session waits for its run, said as the app says it.
+fn run_owns(run: &RunId, session: &str) -> String {
+    format!(
+        "{} hasn't ended, so it still owns {session}. t in its agent view takes it over, or it \
+         carries on once the run ends",
+        sanitize_line(run.as_str())
+    )
 }
 
 /// `codex:019a5770`: each id cut to its first [`SHORT_ID`] characters, or more where two
@@ -432,6 +814,61 @@ fn chat_details(chat: &ChatSummary, names: &DisplayNames) -> String {
     match &chat.worker {
         Some(worker) => format!("{turns} with {}", sanitize_line(&names.worker(worker))),
         None => turns,
+    }
+}
+
+/// `owner · build:money · 3 subagents · Fixed both functions.`, by the agent's name in the run
+/// (its card, for a run from before names). The helpers its CLI started come back with the
+/// session, so they're counted here rather than listed.
+fn agent_title(agent: &AgentSession) -> String {
+    let role = agent.role.as_str();
+    let parts = [
+        Some(role.to_owned()),
+        // A step named like its role, as the retro is, says it once.
+        agent
+            .label
+            .as_deref()
+            .map(clean)
+            .filter(|label| label != role),
+        helpers_short(agent),
+        agent.last_message.as_deref().map(said_before_a_block),
+    ];
+    join_parts(parts)
+}
+
+/// What an agent said before any fenced block, such as the report a build session ends with,
+/// which reads as noise on one line.
+fn said_before_a_block(text: &str) -> String {
+    clean(text.split("```").next().unwrap_or(text))
+}
+
+/// `2 subagents`, or `3 helpers` when they're of more than one kind.
+fn helpers_short(agent: &AgentSession) -> Option<String> {
+    let first = agent.helpers.first()?;
+    let count = agent.helpers.len();
+    if agent.helpers.iter().all(|helper| helper.kind == first.kind) {
+        Some(agent.helper_counts())
+    } else {
+        Some(panes::count(count, "helper"))
+    }
+}
+
+fn join_parts<const N: usize>(parts: [Option<String>; N]) -> String {
+    parts
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Whether it carries on: nothing when it does, and Enter on one that doesn't says why.
+fn agent_state(agent: &AgentSession) -> &'static str {
+    match &agent.resume {
+        Resume::Ready => "",
+        Resume::Working => "working",
+        Resume::RunOwns => "run owns it",
+        Resume::Cannot { .. } => "can't resume",
     }
 }
 
@@ -531,7 +968,12 @@ impl View for ResumePicker {
         let header = self.header(theme);
         let panes = panes::split(area, 0);
         panes::draw_header(buf, panes.header, &header, theme);
-        panes::draw_box(buf, &panes, ["", ""], Side::Right, theme);
+        let search = if self.filter.is_empty() && !self.filtering {
+            String::new()
+        } else {
+            format!("Search: {}", sanitize_line(&self.filter))
+        };
+        panes::draw_box(buf, &panes, ["", &search], Side::Right, theme);
 
         // The heading stays; the rows scroll under it.
         let height = usize::from(panes.right.height).saturating_sub(1);
@@ -549,50 +991,50 @@ impl View for ResumePicker {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome {
-        let key = list::standard(key, list::vim(ctx.state), KeyCode::Esc);
-        // Any other key keeps the run; Esc only does that.
-        if key.code != KeyCode::Char('x')
-            && self.confirm_stop.take().is_some()
-            && key.code == KeyCode::Esc
-        {
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        // A second `x` stops the run. Any other key keeps it, and Esc only does that.
+        let stopping = !self.filtering && plain && key.code == KeyCode::Char('x');
+        if !stopping && self.confirm_stop.take().is_some() && key.code == KeyCode::Esc {
             return ViewOutcome::Consumed;
         }
-        let run = self.selected().map(|run| run.run.clone());
+        if self.filtering {
+            if let Some(outcome) = self.search_key(&key) {
+                return outcome;
+            }
+        } else if plain && key.code == KeyCode::Char('/') {
+            self.filtering = true;
+            return ViewOutcome::Consumed;
+        }
+        let key = if self.filtering {
+            key
+        } else {
+            list::standard(key, list::vim(ctx.state), KeyCode::Esc)
+        };
+        // Outside a search, letters are keys.
+        let letters = !self.filtering && plain;
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => return ViewOutcome::Close,
-            KeyCode::Enter => {
-                let target = match (self.selected_chat(), self.selected_session()) {
-                    (Some(chat), _) => Some(ResumeTarget::Conversation(chat.chat.clone())),
-                    (None, Some((session, _))) => {
-                        Some(ResumeTarget::VendorSession(session.reference()))
-                    }
-                    (None, None) => None,
-                };
-                if let Some(target) = target {
-                    return ViewOutcome::Send(UiCommand::Slash {
-                        command: SlashCommand::Resume {
-                            target: Some(target),
-                        },
-                    });
-                }
-                return match run {
-                    Some(run) => ViewOutcome::Send(UiCommand::Resume { run: Some(run) }),
-                    None => ViewOutcome::Consumed,
+            KeyCode::Esc => return ViewOutcome::Close,
+            KeyCode::Char('q') if letters => return ViewOutcome::Close,
+            KeyCode::Char('x') if letters => return self.stop(ctx.state),
+            KeyCode::Char(c @ ('d' | 'r')) if letters => {
+                return self.run_view(ctx.state, c == 'd');
+            }
+            KeyCode::Enter => return self.enter(),
+            KeyCode::Right => {
+                return match self.selected_row() {
+                    Some(Row::Run(r)) => self.unfold(r),
+                    _ => ViewOutcome::Consumed,
                 };
             }
-            KeyCode::Char('x') => return self.stop(ctx.state),
-            KeyCode::Char(c @ ('d' | 'r')) => {
-                let Some(run) = run else {
-                    return self.not_a_run();
-                };
-                let request = if c == 'd' {
-                    diff_request(ctx.state, &run)
-                } else {
-                    raw_request(ctx.state, &run)
-                };
-                return match request {
-                    Ok(request) => ViewOutcome::Request(request),
-                    Err(why) => ViewOutcome::Notice(why),
+            KeyCode::Left => {
+                let open = self
+                    .run_at_selection()
+                    .filter(|&r| self.open.contains(&self.runs[r].run));
+                return match open {
+                    Some(r) => self.fold(r),
+                    None => ViewOutcome::Ignored,
                 };
             }
             _ => {}
@@ -606,39 +1048,54 @@ impl View for ResumePicker {
         }
     }
 
-    fn accept(&mut self, data: &argonauts_core::app::ViewData) -> bool {
-        // A fresh list replaces this one in place, keeping the selection on the same row.
-        let argonauts_core::app::ViewData::Runs {
-            runs,
-            chats,
-            sessions,
-        } = data
-        else {
-            return false;
-        };
-        let run = self.selected().map(|run| run.run.clone());
-        let chat = self.selected_chat().map(|chat| chat.chat.clone());
-        let session = self
-            .selected_session()
-            .map(|(session, _)| session.reference());
-        self.runs = runs.clone();
-        self.chats = chats.clone();
-        self.sessions = sessions.clone();
-        self.session_ids = short_ids(&self.sessions);
-        self.rows = self.merged();
-        let index = self
-            .rows
-            .iter()
-            .position(|row| match *row {
-                Row::Run(i) => run.as_ref() == Some(&self.runs[i].run),
-                Row::Chat(i) => chat.as_ref() == Some(&self.chats[i].chat),
-                Row::Session(i) => session.as_ref() == Some(&self.sessions[i].reference()),
-            })
-            .unwrap_or(0);
-        self.list.move_to(index, self.rows.len(), self.page);
+    /// A paste searches, as typing after `/` does.
+    fn handle_paste(&mut self, text: &str, _ctx: &ViewCtx<'_>) -> ViewOutcome {
+        self.filtering = true;
+        let pasted = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.search(|filter| filter.push_str(&pasted))
+    }
+
+    fn accept(&mut self, data: &ViewData) -> bool {
+        let keep = self.selected_row().map(|row| self.picked(row));
+        match data {
+            // A fresh list replaces this one in place, keeping the selection on the same row and
+            // the agents of the older runs you opened since.
+            ViewData::Runs {
+                runs,
+                chats,
+                sessions,
+                agents,
+                agents_read,
+            } => {
+                let kept: Vec<AgentSession> = self
+                    .agents
+                    .drain(..)
+                    .filter(|agent| !agents_read.contains(&agent.run))
+                    .collect();
+                self.read.extend(agents_read.iter().cloned());
+                self.runs = runs.clone();
+                self.chats = chats.clone();
+                self.sessions = sessions.clone();
+                self.agents = agents.clone();
+                self.agents.extend(kept);
+                self.session_ids = short_ids(&self.sessions);
+            }
+            // The agents of a run you opened, read when you asked.
+            ViewData::AgentSessions { run, agents } => {
+                self.agents.retain(|agent| &agent.run != run);
+                self.agents.extend(agents.iter().cloned());
+                self.read.insert(run.clone());
+            }
+            _ => return false,
+        }
+        self.relist(keep);
         true
     }
 }
+
+#[cfg(test)]
+#[path = "resume_agents_tests.rs"]
+mod agents_tests;
 
 #[cfg(test)]
 mod tests {
@@ -779,7 +1236,7 @@ mod tests {
                 .join(" · "),
             Footer::Line(_) => unreachable!(),
         };
-        assert_eq!(hints(&view), "↑↓ select · ⏎ resume · esc back");
+        assert_eq!(hints(&view), "↑↓ select · ⏎ resume · / search · esc back");
         press(&mut view, KeyCode::Down);
         assert!(hints(&view).contains("x stop · d diff · r raw"));
     }
@@ -924,6 +1381,8 @@ mod tests {
             runs: Vec::new(),
             chats: Vec::new(),
             sessions: view.sessions.clone(),
+            agents: Vec::new(),
+            agents_read: Vec::new(),
         };
         assert!(view.accept(&data));
         let (picked, _) = view.selected_session().unwrap();

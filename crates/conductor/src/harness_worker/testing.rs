@@ -200,6 +200,7 @@ impl Adapter for TestAdapter {
         let role = match req.role {
             SessionRole::ReadOnly => "read-only",
             SessionRole::Build => "build",
+            SessionRole::Direct => "direct",
         };
         spec.env_set.push(("FAKE_ROLE".to_owned(), role.to_owned()));
         if let Some(home) = req.project.as_ref().filter(|_| self.card_home) {
@@ -403,6 +404,7 @@ pub(crate) fn spec_in(workdir: &Path, session_dir: &Path, prompt: &str) -> Sessi
         isolated: false,
         status_file: None,
         env: Vec::new(),
+        asking: None,
     }
 }
 

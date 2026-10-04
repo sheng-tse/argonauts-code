@@ -6,12 +6,17 @@ mod parser;
 mod provider;
 mod user_config;
 
+use argonauts_core::keywords::Keyword;
 use argonauts_core::{
     Adapter, Capabilities, CommandSpec, SessionRequest, SetupHints, StopPlan, StreamParser,
     extract_version,
 };
 
 pub use provider::{LocalUrls, local_provider_config};
+
+/// Words OpenCode treats specially in a prompt: none known. It wasn't installed to check its
+/// program text, and nothing in this adapter's notes or fixtures names one.
+pub const KEYWORDS: &[Keyword] = &[];
 
 #[derive(Debug, Clone, Default)]
 pub struct OpenCodeAdapter {
@@ -60,6 +65,10 @@ impl Adapter for OpenCodeAdapter {
     }
 
     /// The versions with recorded fixtures. 1.18.33's were written by hand.
+    fn keywords(&self) -> &'static [Keyword] {
+        KEYWORDS
+    }
+
     fn tested_versions(&self) -> &'static [&'static str] {
         &["1.18.34"]
     }

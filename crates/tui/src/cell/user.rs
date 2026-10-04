@@ -1,8 +1,10 @@
 use argonauts_core::input::at_words;
+use argonauts_core::keywords::Keyword;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::HistoryCell;
+use crate::keywords;
 use crate::render::RenderCtx;
 use crate::text::marks;
 use crate::text::{fit_lines, sanitize, spans_width, str_width, wrap_spans};
@@ -20,6 +22,8 @@ pub struct UserMessage {
     /// The echo of a slash command you ran, whose band ends one cell past the text, as Claude
     /// Code echoes `/model`. A message's band fills the row.
     pub command: bool,
+    /// The keywords of the CLI the message went to that it draws in its echo too.
+    pub keywords: Vec<Keyword>,
 }
 
 impl UserMessage {
@@ -29,6 +33,7 @@ impl UserMessage {
             full: None,
             pending: false,
             command: false,
+            keywords: Vec::new(),
         }
     }
 
@@ -42,6 +47,16 @@ impl UserMessage {
     pub fn with_full(mut self, full: impl Into<String>) -> Self {
         let full = full.into();
         self.full = (full != self.text).then_some(full);
+        self
+    }
+
+    /// Keeps those of `keywords` the CLI draws in its echo.
+    pub fn with_keywords(mut self, keywords: &[Keyword]) -> Self {
+        self.keywords = keywords
+            .iter()
+            .filter(|keyword| keyword.echoed)
+            .cloned()
+            .collect();
         self
     }
 
@@ -77,6 +92,8 @@ impl HistoryCell for UserMessage {
             Role::Bright
         };
         let spans = with_mentions(&text, theme.style(role), theme);
+        let letters = keywords::letters(&text, &self.keywords, theme, None);
+        let spans = keywords::overlay(spans, &letters);
         let band = theme.style(Role::UserBand);
         let width = usize::from(ctx.width);
         let mut lines = wrap_spans(&spans, width, &first, &rest);
@@ -262,5 +279,33 @@ mod tests {
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
         let lines = UserMessage::new("hi\x1b[2J\x1b]0;pwned\x07 there").lines(&ctx);
         assert_eq!(plain_text(&lines), "❯ hi there");
+    }
+
+    #[test]
+    fn the_echo_draws_the_clis_echoed_keywords_held_still() {
+        use argonauts_core::keywords::KeywordLook;
+
+        let theme = theme();
+        let ctx = RenderCtx::new(60, &theme, Clock::new(Instant::now(), Instant::now()));
+        let echoed = Keyword::new("ultrathink", KeywordLook::Rainbow, true);
+        let input_only = Keyword::new("about", KeywordLook::Rainbow, false);
+        let message = UserMessage::new("please ultrathink about this @codex")
+            .with_keywords(&[echoed.clone(), input_only]);
+        assert_eq!(message.keywords, [echoed]);
+        let lines = message.lines(&ctx);
+        assert_eq!(plain_text(&lines), "❯ please ultrathink about this @codex");
+        let spans = &lines[0].spans;
+        let bright = theme.style(Role::Bright);
+        assert_eq!(spans[2], Span::styled("please ", bright));
+        assert_eq!(
+            spans[3],
+            Span::styled("u", bright.patch(theme.rainbow(0, false)))
+        );
+        assert_eq!(
+            spans[12],
+            Span::styled("k", bright.patch(theme.rainbow(9, false)))
+        );
+        assert_eq!(spans[13], Span::styled(" about this ", bright));
+        assert_eq!(spans[14].content, "@codex");
     }
 }

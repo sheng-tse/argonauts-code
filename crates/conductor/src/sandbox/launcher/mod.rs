@@ -45,6 +45,9 @@ pub struct LaunchPlan {
     /// Proxies on this machine's loopback that the session's harness is told to use. Each is
     /// reachable inside at the same address, and nothing else outside is.
     pub proxies: Vec<SocketAddr>,
+    /// Paths that stay closed even where they don't exist yet, as the profile's `closed`.
+    #[serde(default)]
+    pub closed: Vec<PathBuf>,
 }
 
 /// The launcher's arguments for running `program` with `args` under `plan`.
@@ -214,6 +217,7 @@ mod tests {
             deny_read: vec!["/d".into()],
             network: false,
             proxies: vec!["127.0.0.1:8080".parse().unwrap()],
+            closed: vec!["/w/.claude".into()],
         };
         let args = launcher_args(&plan, OsStr::new("/bin/echo"), &["hi".to_owned()]);
         assert_eq!(args[0], LAUNCHER_ARG);
@@ -235,6 +239,7 @@ mod tests {
             deny_read: Vec::new(),
             network: true,
             proxies: Vec::new(),
+            closed: Vec::new(),
         })
         .unwrap();
         assert!(err(&["os", &plan]).contains("no program"));

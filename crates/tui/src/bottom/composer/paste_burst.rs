@@ -90,6 +90,11 @@ impl PasteBurst {
         Some(std::mem::take(&mut self.buffer))
     }
 
+    /// Text of a paste is held back, not yet in the draft.
+    pub(super) fn holds(&self) -> bool {
+        self.active
+    }
+
     /// Any other key ends the run of fast characters.
     pub(super) fn end_run(&mut self) {
         self.run = 0;

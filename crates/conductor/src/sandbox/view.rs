@@ -131,6 +131,27 @@ pub fn plan(profile: &SandboxProfile, disk: &dyn Disk) -> View {
                     found = if dir { Entry::Dir } else { Entry::Other };
                     created.push((path.to_path_buf(), found));
                 }
+                // A closed folder that isn't there yet, inside a writable one, is made empty and
+                // bound read-only, so the session can't plant one. A closed file can't be held
+                // this way without making it, and the app checks those after the turn.
+                let closed = profile
+                    .closed
+                    .iter()
+                    .any(|closed| closed == &rule.path || closed == path);
+                if found == Entry::Missing
+                    && !write
+                    && closed
+                    && !has_extension(path)
+                    && parent_exists(path, disk)
+                    && under_writable(&rules, path)
+                {
+                    view.steps.push(Step::Create {
+                        path: path.to_path_buf(),
+                        dir: true,
+                    });
+                    found = Entry::Dir;
+                    created.push((path.to_path_buf(), found));
+                }
                 if covers.hides(path) {
                     show(&rules, path, found, write, &mut covers, &mut view, disk);
                 }
@@ -352,6 +373,8 @@ mod tests {
             deny_read: paths(deny),
             network: false,
             proxy_port: None,
+            ask_port: None,
+            closed: Vec::new(),
         }
     }
 
@@ -365,6 +388,79 @@ mod tests {
 
     fn at(path: &str) -> String {
         format!("{HOME}{path}")
+    }
+
+    /// The Linux view of a direct turn, as the seatbelt test
+    /// `a_direct_turn_writes_your_checkout_but_not_what_configures_agents` checks macOS: your
+    /// checkout is writable, and what configures agents stays read-only whether or not it
+    /// exists. A protected folder that isn't there is made empty and bound read-only; a protected
+    /// file that isn't there is the app's to check after the turn.
+    #[test]
+    fn a_direct_turn_writes_your_checkout_but_not_what_configures_agents() {
+        let repo = at("/repo");
+        let disk = FakeDisk::new(&[
+            &at("/repo/src/money.py"),
+            &at("/repo/.claude/settings.json"),
+            &at("/repo/.git/hooks/"),
+            &at("/repo/.git/config"),
+        ]);
+        let closed: Vec<String> = [
+            "/.claude",
+            "/.codex",
+            "/.agents",
+            "/.argonauts",
+            "/.opencode",
+            "/.husky",
+            "/.mcp.json",
+            "/opencode.json",
+        ]
+        .iter()
+        .map(|path| at(&format!("/repo{path}")))
+        .collect();
+        let mut readable = vec![
+            repo.clone(),
+            at("/repo/.git/hooks"),
+            at("/repo/.git/config"),
+        ];
+        readable.extend(closed.iter().cloned());
+        let readable: Vec<&str> = readable.iter().map(String::as_str).collect();
+        let mut profile = profile(&[&repo], &readable, &[]);
+        profile.closed = closed.iter().map(PathBuf::from).collect();
+        let view = plan(&profile, &disk);
+        assert_eq!(view.writable, [p(&repo)]);
+        for folder in [
+            "/.codex",
+            "/.agents",
+            "/.argonauts",
+            "/.opencode",
+            "/.husky",
+        ] {
+            let path = p(&at(&format!("/repo{folder}")));
+            let made = Step::Create {
+                path: path.clone(),
+                dir: true,
+            };
+            assert!(view.steps.contains(&made), "{folder}: {:?}", view.steps);
+            assert!(
+                view.steps.contains(&Step::ReadOnly { path }),
+                "{folder}: {:?}",
+                view.steps
+            );
+        }
+        for kept in ["/.claude", "/.git/hooks", "/.git/config"] {
+            let path = p(&at(&format!("/repo{kept}")));
+            assert!(view.steps.contains(&Step::ReadOnly { path }), "{kept}");
+        }
+        for file in ["/.mcp.json", "/opencode.json"] {
+            let path = p(&at(&format!("/repo{file}")));
+            assert!(
+                !view.steps.iter().any(|step| match step {
+                    Step::Create { path: made, .. } => made == &path,
+                    _ => false,
+                }),
+                "{file} is never made"
+            );
+        }
     }
 
     #[test]

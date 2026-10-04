@@ -289,3 +289,73 @@ fn every_state_has_its_own_glyph() {
         assert_eq!(glyphs.len(), states.len(), "{glyphs:?}");
     }
 }
+
+#[test]
+fn c_carries_a_finished_agent_on_and_leaves_a_working_one_to_take_over() {
+    let state = AppState::default();
+    let panel = CrewPanel {
+        repo: "~/app".into(),
+        rows: Vec::new(),
+    };
+    let agent = |state: CrewState| CrewRow {
+        target: CrewTarget::Agent {
+            run: RunId::new("run-01").unwrap(),
+            session: SessionKey::numbered(1),
+        },
+        ..row("Fix the parser", state, "Fixed both functions.")
+    };
+    // This screen hasn't loaded run-01, so the app says whether its run ended.
+    match carry_on(&state, &panel, &agent(CrewState::Done)) {
+        ViewOutcome::SendToChat(UiCommand::Slash {
+            command:
+                SlashCommand::Resume {
+                    target: Some(ResumeTarget::Agent(agent)),
+                },
+        }) => assert_eq!(agent.to_string(), "run-01/s-001"),
+        other => panic!("{other:?}"),
+    }
+    match carry_on(&state, &panel, &agent(CrewState::Working)) {
+        ViewOutcome::Notice(text) => {
+            assert_eq!(
+                text,
+                "s-001 is still working. t in its agent view takes it over"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let conversation = row("hi", CrewState::Ready, "");
+    assert!(matches!(
+        carry_on(&state, &panel, &conversation),
+        ViewOutcome::Notice(_)
+    ));
+
+    // A run on screen that hasn't ended still owns its finished agents' sessions.
+    let mut going = AppState::default();
+    let run = RunId::new("run-01").unwrap();
+    going
+        .runs
+        .insert(run.clone(), crate::state::RunState::new(run));
+    match carry_on(&going, &panel, &agent(CrewState::Done)) {
+        ViewOutcome::Notice(text) => assert_eq!(
+            text,
+            "run-01 hasn't ended, so it still owns s-001. t takes it over, or it carries on \
+             once the run ends"
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    // Another repo's run carries on from an app open there, never by this repo's run-01.
+    let elsewhere = CrewRow {
+        repo: "~/web".into(),
+        ..agent(CrewState::Done)
+    };
+    match carry_on(&state, &panel, &elsewhere) {
+        ViewOutcome::Notice(text) => {
+            assert_eq!(
+                text,
+                "run-01 runs in ~/web. Open argonauts there to carry it on"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}

@@ -9,6 +9,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
+use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::app::ChatEvent;
 use argonauts_core::names::{ChatId, WorkerRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
@@ -26,10 +27,27 @@ pub(crate) struct ChatSession {
     pub vendor_session: String,
 }
 
+/// `chat/<chat>.place.json`: a conversation that carries on an agent's session from a run works
+/// where that session ran, with that session's agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ChatPlace {
+    pub agent: AgentSessionRef,
+    pub worker: WorkerRef,
+    pub folder: PathBuf,
+    /// The branch of the run's copy, when it ran in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The run's copy was gone, so Argonauts made it again for this conversation, and removes it
+    /// once you're done with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub made_again: bool,
+}
+
 pub(crate) struct ChatStore {
     dir: PathBuf,
     journal: PathBuf,
     session: PathBuf,
+    place: PathBuf,
     title: PathBuf,
 }
 
@@ -39,6 +57,7 @@ impl ChatStore {
             dir: chat_dir.to_owned(),
             journal: chat_dir.join(format!("{chat}.jsonl")),
             session: chat_dir.join(format!("{chat}.json")),
+            place: chat_dir.join(format!("{chat}.place.json")),
             title: chat_dir.join(format!("{chat}.title")),
         }
     }
@@ -127,13 +146,27 @@ impl ChatStore {
 
     pub(crate) fn save_session(&self, session: &ChatSession) -> anyhow::Result<()> {
         let text = serde_json::to_vec_pretty(session).context("encoding the chat session")?;
+        self.replace(&self.session, &text)
+    }
+
+    /// `None` for a conversation that works in your checkout.
+    pub(crate) fn place(&self) -> Option<ChatPlace> {
+        let text = fs::read_to_string(&self.place).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    pub(crate) fn save_place(&self, place: &ChatPlace) -> anyhow::Result<()> {
+        let text = serde_json::to_vec_pretty(place).context("encoding where the chat works")?;
+        self.replace(&self.place, &text)
+    }
+
+    /// Written aside and renamed, so a crash never leaves half a file.
+    fn replace(&self, path: &Path, text: &[u8]) -> anyhow::Result<()> {
         self.make_dir()?;
-        // Written aside and renamed, so a crash never leaves half a file.
-        let partial = self.session.with_extension("json.partial");
-        write_private_file(&partial, &text)
+        let partial = path.with_extension("json.partial");
+        write_private_file(&partial, text)
             .with_context(|| format!("writing {}", partial.display()))?;
-        fs::rename(&partial, &self.session)
-            .with_context(|| format!("writing {}", self.session.display()))
+        fs::rename(&partial, path).with_context(|| format!("writing {}", path.display()))
     }
 
     fn make_dir(&self) -> anyhow::Result<()> {
@@ -154,8 +187,9 @@ impl ChatStore {
             .with_context(|| format!("writing {}", self.title.display()))
     }
 
-    /// Starts `to` with this conversation's journal, for `/branch` and `/fork`. The vendor
-    /// session stays with this one, since two conversations must never share it.
+    /// Starts `to` with this conversation's journal and where it works, for `/branch` and
+    /// `/fork`. The vendor session stays with this one, since two conversations must never
+    /// share it.
     pub(crate) fn copy_to(&self, to: &ChatStore) -> anyhow::Result<()> {
         to.make_dir()?;
         let journal = match fs::read(&self.journal) {
@@ -166,7 +200,28 @@ impl ChatStore {
             }
         };
         write_private_file(&to.journal, &journal)
-            .with_context(|| format!("writing {}", to.journal.display()))
+            .with_context(|| format!("writing {}", to.journal.display()))?;
+        match self.place() {
+            Some(place) => to.save_place(&place),
+            None => Ok(()),
+        }
+    }
+
+    /// Every conversation in `chat_dir` that works where an agent's session ran, by its id.
+    pub(crate) fn places(chat_dir: &Path) -> Vec<(ChatId, ChatPlace)> {
+        let mut places: Vec<(ChatId, ChatPlace)> = fs::read_dir(chat_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let id = ChatId::parse(name.to_str()?.strip_suffix(".place.json")?)?;
+                let place = ChatStore::open(chat_dir, &id).place()?;
+                Some((id, place))
+            })
+            .collect();
+        places.sort_by(|a, b| a.0.cmp(&b.0));
+        places
     }
 
     /// The next turn starts a fresh session.

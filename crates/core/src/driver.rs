@@ -52,6 +52,10 @@ pub struct DriverStart {
     pub json_schema: Option<Value>,
     /// Where the report tool writes the last valid report, `<session_dir>/report.json`.
     pub report_file: Option<PathBuf>,
+    /// A direct turn that asks you: what the agent asks about, and the policy allows, goes to
+    /// the app as a card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asking: Option<crate::asking::AskTarget>,
 }
 
 #[derive(Debug)]

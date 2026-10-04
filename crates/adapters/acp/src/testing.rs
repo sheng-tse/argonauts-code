@@ -44,6 +44,7 @@ pub(crate) fn start(cwd: impl AsRef<Path>) -> DriverStart {
         scope: Default::default(),
         json_schema: None,
         report_file: None,
+        asking: None,
     }
 }
 

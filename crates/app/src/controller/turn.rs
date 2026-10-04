@@ -1,5 +1,6 @@
 //! One chat turn's session: which worker reads it, what the request's record holds, and the
-//! read-only session the step runs in, on its own task.
+//! session the step runs in, on its own task: read-only, or for a direct turn, your checkout as
+//! its CLI works in it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::registry::{ModelRegistry, effort_to_run, known_efforts};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
+use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::handoff::HandoffSettings;
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::steps::intake::{ChatAnswer, TriageEstimate};
@@ -20,13 +22,15 @@ use argonauts_core::steps::{
     StepError, StepName, StepObserver, StepOutcome, StepRequest, output_schema,
 };
 use argonauts_core::worker::{
-    Access, SandboxMode, SandboxProfile, SessionControl, SessionLimits, SessionSpec, Worker,
-    WorkerError, WorkerEvent, WorkerKind,
+    Access, Asking, SandboxMode, SandboxProfile, SessionControl, SessionLimits, SessionSpec,
+    Worker, WorkerError, WorkerEvent, WorkerKind,
 };
+use argonauts_core::{DEFAULT_SOFT_RATIO, sha256_hex};
 use tokio_util::sync::CancellationToken;
 
 use super::chat::TurnUpdate;
 use super::{Ctx, Internal};
+use crate::controller::instructions::Command;
 use crate::git;
 use crate::repo_files;
 
@@ -188,19 +192,57 @@ pub(crate) fn describe(err: &StepError) -> String {
 }
 
 /// What the turn asks.
+/// What your checked words change about a direct turn: the main agent's model and effort, a
+/// lower budget for the message, no network, and asking you first. A direct turn has no roles,
+/// so words that give one make the solo checked instead.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct DirectWords {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub budget_usd: Option<f64>,
+    pub no_network: bool,
+    pub supervised: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum TurnStep {
     /// A new request: answer, change, or unclear.
-    Triage { uncommitted_note: Option<String> },
+    Triage {
+        uncommitted_note: Option<String>,
+        /// `triage.read_instructions`: the estimate lists how the request says to run it.
+        read_instructions: bool,
+        /// `/solo` or `/crew` with a task: the estimate reads your words, and the command's
+        /// mode stands whatever they or the rules say.
+        command: Option<Command>,
+    },
     /// `/ask`: an answer only.
     Ask { run_status: Option<String> },
     /// One of the main agent CLI's own commands. `prompt` is the whole input, so the CLI
     /// reads it as the command, and its reply is plain text with no schema.
-    Vendor { prompt: String },
+    Vendor {
+        prompt: String,
+        /// In a direct conversation the command works in your checkout, so Claude Code's
+        /// `/init` writes `CLAUDE.md` as it does in Claude Code. The turn's listener, as for
+        /// [`TurnStep::Direct`].
+        direct: Option<Option<Asking>>,
+    },
     /// `/btw`: an answer from a session of its own, kept out of the conversation.
     Side,
     /// `/rename` with no name: the lead names the conversation, out of its history too.
     Title,
+    /// Direct solo: your message to the main session, which works in your checkout as its CLI
+    /// does and ends with its own answer. `asking` is the turn's listener for what it asks you,
+    /// and for `argonauts_start_run`; `None` asks nothing. `go_ahead` is what the session reads
+    /// in place of your message when it has it already, as after its estimate or its plan.
+    Direct {
+        asking: Option<Asking>,
+        go_ahead: Option<String>,
+        words: DirectWords,
+    },
+    /// Plan first in direct solo: your message to the main session, which reads and plans
+    /// without changing anything and ends with its plan. "Go ahead with this plan?" then resumes
+    /// it as a [`TurnStep::Direct`], as Claude Code's plan mode does.
+    Plan { words: DirectWords },
     /// `/compact`: a summary the next session starts from.
     Compact { instructions: Option<String> },
     /// `/review` and `/security-review`, by whoever [`crate::controller::chat`] picked.
@@ -217,8 +259,11 @@ impl TurnStep {
     fn name(&self) -> StepName {
         match self {
             Self::Triage { .. } => StepName::TriageEstimate,
+            Self::Direct { .. } => StepName::Direct,
+            // Read-only, with the tools an answer gets.
+            Self::Plan { .. } => StepName::ChatAnswer,
+            Self::Vendor { .. } => StepName::VendorCommand,
             Self::Ask { .. }
-            | Self::Vendor { .. }
             | Self::Side
             | Self::Title
             | Self::Compact { .. }
@@ -228,7 +273,61 @@ impl TurnStep {
 
     /// Steps whose text is your own words, so the files they mention go along.
     fn takes_mentions(&self) -> bool {
-        matches!(self, Self::Triage { .. } | Self::Ask { .. } | Self::Side)
+        matches!(
+            self,
+            Self::Triage { .. }
+                | Self::Ask { .. }
+                | Self::Side
+                | Self::Direct { .. }
+                | Self::Plan { .. }
+        ) && !self.continues()
+    }
+
+    /// A turn that goes on from the one before with the same session, which already has your
+    /// message, the files it mentions, and the `!` commands you ran.
+    pub(crate) fn continues(&self) -> bool {
+        matches!(
+            self,
+            Self::Direct {
+                go_ahead: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// A turn that may change your files.
+    pub(crate) fn writes(&self) -> bool {
+        self.direct_asking().is_some()
+    }
+
+    /// Direct solo's turns, a plan first included, whose own answer is the end.
+    pub(crate) fn in_your_checkout(&self) -> bool {
+        self.writes() || matches!(self, Self::Plan { .. })
+    }
+
+    /// What your words changed about a direct turn.
+    fn direct_words(&self) -> Option<&DirectWords> {
+        match self {
+            Self::Direct { words, .. } | Self::Plan { words } => Some(words),
+            _ => None,
+        }
+    }
+
+    /// A direct turn's listener, or `None` for a turn that only reads.
+    fn direct_asking(&self) -> Option<&Option<Asking>> {
+        match self {
+            Self::Direct { asking, .. } => Some(asking),
+            Self::Vendor { direct, .. } => direct.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Steps whose reply is the CLI's own text, with no schema to read.
+    pub(crate) fn plain_reply(&self) -> bool {
+        matches!(
+            self,
+            Self::Vendor { .. } | Self::Direct { .. } | Self::Plan { .. }
+        )
     }
 
     /// Only the main agent knows its own commands, so no fallback takes one.
@@ -240,7 +339,10 @@ impl TurnStep {
     /// vendor command must be the whole prompt, and a side question, a title, a summary, and a
     /// review stand apart from the conversation.
     pub(crate) fn hears_shell(&self) -> bool {
-        matches!(self, Self::Triage { .. } | Self::Ask { .. })
+        matches!(
+            self,
+            Self::Triage { .. } | Self::Ask { .. } | Self::Direct { .. } | Self::Plan { .. }
+        ) && !self.continues()
     }
 
     /// Answered in a session of its own and left out of the journal and the history, so the
@@ -257,12 +359,19 @@ impl TurnStep {
 
     fn prompt(&self, text: &str) -> InputPart {
         let (label, prompt) = match self {
-            Self::Triage { uncommitted_note } => (
+            Self::Triage {
+                uncommitted_note,
+                read_instructions,
+                ..
+            } => (
                 "triage estimate",
-                crate::prompts::triage_estimate(&argonauts_core::steps::intake::IntakeInput {
-                    request: text.to_owned(),
-                    uncommitted_note: uncommitted_note.clone(),
-                }),
+                crate::prompts::triage_estimate(
+                    &argonauts_core::steps::intake::IntakeInput {
+                        request: text.to_owned(),
+                        uncommitted_note: uncommitted_note.clone(),
+                    },
+                    *read_instructions,
+                ),
             ),
             Self::Ask { run_status } => (
                 "chat answer",
@@ -271,7 +380,17 @@ impl TurnStep {
                     run_status: run_status.clone(),
                 }),
             ),
-            Self::Vendor { prompt } => ("vendor command", prompt.clone()),
+            Self::Vendor { prompt, .. } => ("vendor command", prompt.clone()),
+            Self::Direct {
+                go_ahead: Some(words),
+                ..
+            } => return part(InputPartKind::Message, "go ahead", words.clone()),
+            // Your words as you typed them, with nothing of Argonauts' own.
+            Self::Direct { .. } => {
+                return part(InputPartKind::Message, "your message", text.to_owned());
+            }
+            // Your words, and that plan first is on, as Claude Code's plan mode tells its model.
+            Self::Plan { .. } => ("plan first", format!("{}\n\n{PLAN_FIRST}", text.trim())),
             Self::Side => (
                 "side question",
                 crate::prompts::chat_answer(&argonauts_core::steps::intake::ChatAnswerInput {
@@ -304,11 +423,15 @@ impl TurnStep {
     fn schema(&self) -> Option<serde_json::Value> {
         match self {
             Self::Triage { .. } => Some(output_schema::<TriageEstimate>()),
-            Self::Vendor { .. } => None,
+            Self::Vendor { .. } | Self::Direct { .. } | Self::Plan { .. } => None,
             _ => Some(output_schema::<ChatAnswer>()),
         }
     }
 }
+
+/// What a plan-first turn reads after your message.
+const PLAN_FIRST: &str = "Plan first is on: read what you need and change nothing yet. End with \
+your plan. You'll be told when to go ahead.";
 
 pub(crate) fn part(kind: InputPartKind, label: &str, text: String) -> InputPart {
     InputPart {
@@ -338,6 +461,8 @@ pub(crate) struct Launch<'a> {
     pub shell: Option<InputPart>,
     /// `/fast`: the lowest effort the model takes, over the one set.
     pub fast: bool,
+    /// Your checkout, or the folder of an agent's session the chat carries on.
+    pub workdir: PathBuf,
 }
 
 /// Starts the step on its own task. Its events and its end come back as `Internal::Chat`.
@@ -502,7 +627,16 @@ pub(crate) fn session_spec(
 ) -> SessionSpec {
     let settings = ctx.settings();
     let role = settings.roles.get(&RoleName::Default);
-    let (mut worker, effort) = chat_agent(settings, &launch.worker);
+    let (mut worker, mut effort) = chat_agent(settings, &launch.worker);
+    let words = launch.step.direct_words();
+    if let Some(words) = words {
+        if let Some(model) = &words.model {
+            worker.model = Some(model.clone());
+        }
+        if let Some(asked) = &words.effort {
+            effort = Some(asked.clone());
+        }
+    }
     let mut effort = effort_to_run(ctx.services.registry.as_ref(), &worker, effort);
     if launch.fast
         && let Some((fast, level)) = fast_choice(ctx, &worker)
@@ -516,18 +650,28 @@ pub(crate) fn session_spec(
     prompt.extend(launch.shell.iter().cloned());
     prompt.push(launch.step.prompt(launch.text));
     if launch.step.takes_mentions() {
-        let root = &ctx.env.repo_root;
+        let root = &launch.workdir;
         let mentioned = repo_files::mentioned(root, launch.text);
         prompt.extend(repo_files::parts(root, &mentioned, !endpoint));
     }
     prompt.extend(launch.notes.iter().cloned());
     let (access, workdir, mode) = if endpoint {
         (Access::NoTools, session_dir.clone(), SandboxMode::None)
+    } else if launch.step.writes() {
+        let mode = direct_sandbox(settings.sandbox.mode);
+        (Access::Direct, launch.workdir.clone(), mode)
     } else {
         let keeps_read_only = ctx.services.workers.enforces_read_only(&worker);
         let mode = chat_sandbox(settings.sandbox.mode, keeps_read_only);
-        (Access::ReadOnly, ctx.env.repo_root.clone(), mode)
+        (Access::ReadOnly, launch.workdir.clone(), mode)
     };
+    let direct = access == Access::Direct;
+    let asking = launch
+        .step
+        .direct_asking()
+        .filter(|_| direct)
+        .cloned()
+        .flatten();
     let state_root = ctx
         .env
         .state_dir
@@ -549,15 +693,23 @@ pub(crate) fn session_spec(
         resume: launch.resume.clone(),
         lifetime: SessionLifetime::Run,
         keep_input_open: false,
-        limits: SessionLimits::default(),
-        goal_sha256: None,
+        limits: if direct {
+            message_limits(settings, words)
+        } else {
+            SessionLimits::default()
+        },
+        // Sending your message is the approval, as `solo.restate_first = false` already treats
+        // your prompt.
+        goal_sha256: direct.then(|| sha256_hex(launch.text.as_bytes())),
         sandbox: SandboxProfile {
             mode,
             writable: Vec::new(),
             readable: Vec::new(),
             deny_read: vec![state_root],
-            network: settings.sandbox.network,
+            network: settings.sandbox.network && !words.is_some_and(|words| words.no_network),
             proxy_port: None,
+            ask_port: None,
+            closed: Vec::new(),
         },
         compaction: role
             .and_then(|role| role.compaction)
@@ -568,6 +720,47 @@ pub(crate) fn session_spec(
         isolated: false,
         status_file: None,
         env: Vec::new(),
+        asking,
+    }
+}
+
+/// A direct turn is your checkout as the CLI works in it. Ours wraps it unless you turned it
+/// off, and then the CLI's own sandbox and approvals hold, exactly as when you start it.
+fn direct_sandbox(choice: SandboxChoice) -> SandboxMode {
+    match choice {
+        SandboxChoice::Os => SandboxMode::Os,
+        SandboxChoice::Container => SandboxMode::Container,
+        SandboxChoice::Tool | SandboxChoice::None => SandboxMode::None,
+    }
+}
+
+/// Each message is held to the run budget, as a run is: the CLI's own cap sits just above it,
+/// and the meter acts for the rest.
+fn message_limits(settings: &Settings, words: Option<&DirectWords>) -> SessionLimits {
+    let budget = &settings.budget;
+    // Your words only ever lower it, so theirs stands in for the setting's.
+    let asked = words.and_then(|words| words.budget_usd);
+    let amount = asked
+        .or(budget.run_usd)
+        .map(|amount| BudgetAmount {
+            unit: BudgetUnit::Usd,
+            amount,
+        })
+        .or_else(|| {
+            budget.run_tokens.map(|tokens| BudgetAmount {
+                unit: BudgetUnit::Tokens,
+                amount: tokens as f64,
+            })
+        });
+    SessionLimits {
+        budget: amount.filter(|_| budget.enabled),
+        soft_stop: if budget.soft_stop > 0.0 && budget.soft_stop < 1.0 {
+            budget.soft_stop
+        } else {
+            DEFAULT_SOFT_RATIO
+        },
+        max_minutes: budget.run_minutes.filter(|_| budget.enabled),
+        ..SessionLimits::default()
     }
 }
 
@@ -753,6 +946,7 @@ mod tests {
             notes: Vec::new(),
             shell: None,
             fast: false,
+            workdir: ctx.env.repo_root.clone(),
         };
         let key = SessionKey::numbered(1);
         let dir = ctx.env.state_dir.join("chat-test");

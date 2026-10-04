@@ -7,15 +7,19 @@ mod view;
 mod vim;
 
 use std::cell::Cell;
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
+use argonauts_core::keywords::Keyword;
 use argonauts_core::sanitize::sanitize_for_terminal;
 
 use super::VimMode;
-use crate::render::RenderCtx;
+use crate::keywords;
+use crate::render::{Clock, RenderCtx};
 use crate::text::sanitize_line;
+use crate::theme::Theme;
 
 use edit::{Clip, Draft};
 use paste_burst::PasteBurst;
@@ -43,6 +47,8 @@ pub struct Composer {
     /// Built from recent commit subjects, never with a model. Without one,
     /// [`BUILT_IN_EXAMPLE`] shows.
     pub example: Option<String>,
+    /// The main agent CLI's keywords, drawn as that CLI draws them.
+    pub keywords: Vec<Keyword>,
     /// Set by the first prompt. An example is a way to start a fresh session, so it goes then.
     started: bool,
     history: Vec<String>,
@@ -186,6 +192,12 @@ impl Composer {
 
     pub fn is_empty(&self) -> bool {
         self.draft.text.is_empty()
+    }
+
+    /// A paste typed out as keys is held back until the keys stop, so the draft can look
+    /// empty while it comes in.
+    pub fn holds_paste(&self) -> bool {
+        self.burst.holds()
     }
 
     /// In shell mode, Enter runs the text as a command rather than sending it.
@@ -369,6 +381,15 @@ impl Composer {
             self.draft.insert(&text);
         }
         self.edited();
+    }
+
+    /// When a keyword's shimmer next moves. Shell mode sends nothing to the agent, so it draws
+    /// no keywords.
+    pub fn next_change(&self, clock: &Clock, theme: &Theme) -> Option<Instant> {
+        if self.shell {
+            return None;
+        }
+        keywords::next_change(&self.draft.text, &self.keywords, theme, clock)
     }
 
     pub fn render(&self, ctx: &RenderCtx<'_>, focused: bool, busy: bool) -> ComposerView {

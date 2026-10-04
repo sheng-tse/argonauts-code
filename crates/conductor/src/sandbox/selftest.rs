@@ -184,6 +184,8 @@ impl Probe {
             deny_read: vec![self.denied.clone()],
             network: true,
             proxy_port: None,
+            ask_port: None,
+            closed: Vec::new(),
         }
     }
 

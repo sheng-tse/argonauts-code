@@ -39,6 +39,9 @@ pub struct ToolCall {
     pub stamp: Option<String>,
     /// Rides after the header's stats, such as `· retrying in 12s (attempt 2)`.
     pub note: Option<HeaderNote>,
+    /// The body wraps at this many columns however wide the screen is, as the Triage item's
+    /// lines wrap at 100.
+    pub wrap_at: Option<u16>,
 }
 
 /// Worked out at each frame, so a countdown counts and a quiet spell grows.
@@ -233,7 +236,13 @@ impl ToolCall {
             full: None,
             stamp: None,
             note: None,
+            wrap_at: None,
         }
+    }
+
+    pub fn with_wrap_at(mut self, columns: u16) -> Self {
+        self.wrap_at = Some(columns);
+        self
     }
 
     pub fn with_stamp(mut self, stamp: impl Into<String>) -> Self {
@@ -375,6 +384,7 @@ impl ToolCall {
             full: Some(Box::new(self.clone())),
             stamp: self.stamp.clone(),
             note: None,
+            wrap_at: self.wrap_at,
         }
     }
 

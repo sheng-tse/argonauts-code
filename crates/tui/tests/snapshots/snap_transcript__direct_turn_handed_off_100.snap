@@ -1,0 +1,21 @@
+---
+source: crates/tui/tests/snap_transcript.rs
+expression: printed
+---
+❯ Fix invoice/money.py
+
+● Update(invoice/money.py)
+  ⎿  Added 1 line, removed 1 line
+        -sign = 1
+        +negative = True
+     ok
+
+↷ Claude Code hit its usage limit · Codex continues with GPT 5.6 Luna
+  ⎿  Told: your request, the transcript so far, and that invoice/money.py changed
+
+● Bash(python -m pytest -q)
+  ⎿  6 passed in 0.04s
+
+● All 6 tests pass.
+
+✻ Sailed for 32s · done 10:42 AM

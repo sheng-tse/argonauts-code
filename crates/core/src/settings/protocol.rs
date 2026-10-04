@@ -33,6 +33,12 @@ pub struct TriageSettings {
     pub crew_min_files: u32,
     pub crew_labels: Vec<String>,
     pub otherwise: TriageMiddle,
+    /// Solo that these rules pick, rather than you: checked, so it can still grow into a crew
+    /// run, direct, or as `solo.style` says.
+    pub solo_style: TriageSoloStyle,
+    /// The estimate lists how the request says to run it, and code follows what passes its
+    /// checks.
+    pub read_instructions: bool,
 }
 
 impl TriageSettings {
@@ -55,8 +61,21 @@ impl Default for TriageSettings {
                 "security".to_owned(),
             ],
             otherwise: TriageMiddle::SoloThenCrew,
+            solo_style: TriageSoloStyle::Checked,
+            read_instructions: true,
         }
     }
+}
+
+/// Which solo the triage rules pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageSoloStyle {
+    #[default]
+    Checked,
+    Direct,
+    /// Whatever `solo.style` says.
+    AsSolo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -79,22 +98,63 @@ pub enum TriageMiddle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SoloSettings {
-    /// The default agent restates the goal and waits for approval before building.
+    /// Solo you choose: the main session in your checkout, like its CLI, or a checked copy.
+    pub style: SoloStyle,
+    /// What a direct turn asks you in supervised mode.
+    pub asks: crate::session::Asks,
+    /// A snapshot before each direct turn, for `/rewind`.
+    pub rewind: bool,
+    /// Untracked files bigger than this can't be restored by `/rewind`.
+    pub rewind_max_mb: u64,
+    /// The main session may start a run when you ask it for one (`argonauts_start_run`).
+    pub start_run_tool: bool,
+    /// The default agent restates the goal and waits for approval before building. Makes solo
+    /// checked.
     pub restate_first: bool,
-    /// Review by another model family (`solo-reviewed`).
+    /// Review by another model family (`solo-reviewed`). Makes solo checked.
     pub review: bool,
-    /// Independent attempts, keeping one that passes the visible tests (`best-of-n`).
+    /// Independent attempts, keeping one that passes the visible tests (`best-of-n`). Above 1
+    /// makes solo checked.
     pub attempts: u32,
+}
+
+impl SoloSettings {
+    /// Whether solo you choose runs as a direct turn. Each of review, attempts, and restating
+    /// first needs the copy, so any of them makes solo checked without touching `style`.
+    pub fn direct(&self) -> bool {
+        self.style == SoloStyle::Direct && !self.needs_a_copy()
+    }
+
+    /// Review, restating first, or more than one attempt each need a copy to work in.
+    pub fn needs_a_copy(&self) -> bool {
+        self.review || self.restate_first || self.attempts > 1
+    }
 }
 
 impl Default for SoloSettings {
     fn default() -> Self {
         Self {
+            style: SoloStyle::Direct,
+            asks: crate::session::Asks::LikeCli,
+            rewind: true,
+            rewind_max_mb: 50,
+            start_run_tool: true,
             restate_first: false,
             review: false,
             attempts: 1,
         }
     }
+}
+
+/// Which solo runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SoloStyle {
+    /// A turn of the main session in your checkout, as its CLI works.
+    #[default]
+    Direct,
+    /// A worktree copy, one card, gates, and a merge into your branch.
+    Checked,
 }
 
 /// `[understand]`: models from several companies read your request before anything runs, and

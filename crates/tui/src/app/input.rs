@@ -257,8 +257,10 @@ impl<W: Write> Ui<W> {
         if bottom.composer.is_shell() {
             return false;
         }
+        // A `?` inside a paste typed out as keys is part of the paste.
         if self.keymap.is(Action::Shortcuts, &key)
             && bottom.composer.is_empty()
+            && !bottom.composer.holds_paste()
             && !bottom.menus.shortcuts.is_empty()
         {
             bottom.menus.shortcuts_open = true;

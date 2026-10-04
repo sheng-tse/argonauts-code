@@ -66,6 +66,7 @@ mod tests {
             lookup: &load,
             depth: 0,
             budget_left_usd: None,
+            as_you_asked: &[],
         };
         for (name, _) in BUILTIN {
             let workflow = load(name).unwrap_or_else(|err| panic!("{err}"));

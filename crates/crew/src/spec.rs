@@ -96,6 +96,7 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         isolated: input.blind,
         status_file: input.status_file,
         env: Vec::new(),
+        asking: None,
     })
 }
 
@@ -168,6 +169,8 @@ pub fn sandbox(
         deny_read: Vec::new(),
         network: settings.sandbox.network && !matches!(access, Access::NoTools),
         proxy_port: None,
+        ask_port: None,
+        closed: Vec::new(),
     })
 }
 

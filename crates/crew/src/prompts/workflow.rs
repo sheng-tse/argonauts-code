@@ -24,9 +24,10 @@ mod tests {
             current: Some(String::new()),
             progress: vec![String::new()],
             style: Some(argonauts_core::settings::workflows::RunStyle::Goal),
+            as_you_asked: vec![String::new()],
         })
         .unwrap();
-        for field in ["current", "progress", "errors", "style"] {
+        for field in ["current", "progress", "errors", "style", "as_you_asked"] {
             assert!(input.get(field).is_some(), "{field} left DesignInput");
             assert!(
                 DESIGN_WORKFLOW.contains(&format!("`{field}`")),

@@ -17,6 +17,21 @@ pub enum SessionRole {
     #[default]
     ReadOnly,
     Build,
+    /// Direct solo: the CLI's default tools in your checkout, asking as [`Asks`] says.
+    Direct,
+}
+
+/// What a direct session asks you about before it acts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Asks {
+    /// Nothing: auto mode, where the sandbox and the hard limits hold.
+    #[default]
+    Never,
+    /// What the CLI itself asks about when you run it.
+    LikeCli,
+    /// Every edit and command, whatever the CLI would ask.
+    EveryChange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
@@ -83,6 +98,13 @@ pub struct SessionRequest {
     /// "none"` asked for no protection at all.
     #[serde(default)]
     pub tool_sandbox_off: bool,
+    /// A direct session's asking. For Claude Code anything but `Never` needs the approval tool
+    /// in `mcp_config`.
+    #[serde(default)]
+    pub asks: Asks,
+    /// One of the CLI's own commands, which must reach it as a command (agy's slash commands).
+    #[serde(default)]
+    pub vendor_command: bool,
 }
 
 /// A file the conductor writes before spawning the command.

@@ -475,6 +475,10 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     assert_eq!(row(&rows, "sandbox.agents_see_other_copies").value, "false");
     assert_eq!(row(&rows, "sandbox.agents_commit").value, "true");
     assert_eq!(row(&rows, "limits.usd_per_day").default_scope, Global);
+    // What a direct turn asks you, and where solo works, are here too.
+    assert_eq!(row(&rows, "solo.asks").value, "\"like_cli\"");
+    assert!(row(&rows, "solo.asks").safety);
+    assert_eq!(row(&rows, "solo.style").value, "\"direct\"");
     // A role's own key is unset until you set it, and takes the same values.
     let own = row(&rows, "roles.reviewer.sandbox.mode");
     assert_eq!((own.value.as_str(), own.default_scope), ("", Project));

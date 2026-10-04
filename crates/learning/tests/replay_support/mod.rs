@@ -186,6 +186,7 @@ impl Fixture {
             harness_versions: BTreeMap::new(),
             version: "0.0.1".to_owned(),
             front_end: None,
+            instructions: Vec::new(),
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),

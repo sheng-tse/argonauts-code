@@ -1,0 +1,10 @@
+---
+source: crates/tui/tests/snap_composer.rs
+expression: "format!(\"{}\\n\\n{}\", styled(&input), styled(&echo))"
+---
+[fg=darkgray]────────────────────────────────────────────────────────────────────────────────────────────────────[/]
+❯ please [fg=red]u[/][fg=yellow]l[/][fg=lightyellow]t[/][fg=lightgreen]r[/][fg=cyan]a[/][fg=blue]t[/][fg=magenta]h[/][fg=red]i[/][fg=lightred]n[/][fg=yellow]k[/] about this[r] [/]
+[fg=darkgray]────────────────────────────────────────────────────────────────────────────────────────────────────[/]
+  [fg=darkgray]ǁ supervised mode on[/] [fg=darkgray](shift+tab to cycle)[/][fg=darkgray] · [/][fg=darkgray]? for shortcuts[/]
+
+[fg=darkgray]❯[/] [fg=gray]please [/][fg=red]u[/][fg=lightred]l[/][fg=yellow]t[/][fg=green]r[/][fg=cyan]a[/][fg=blue]t[/][fg=magenta]h[/][fg=red]i[/][fg=lightred]n[/][fg=yellow]k[/][fg=gray] about this[/]

@@ -283,7 +283,10 @@ pub(crate) fn review(
         );
         return Ok(Vec::new());
     }
-    let Some(changes) = review_changes(&ctx.env.repo_root, target.as_deref())? else {
+    // The changes where the conversation works, which is the run's copy for an agent's
+    // session carried on.
+    let folder = chat.folder(ctx).to_path_buf();
+    let Some(changes) = review_changes(&folder, target.as_deref())? else {
         ctx.notice(
             NoteLevel::Info,
             "Nothing to review: the working tree has no changes. Name a branch, a commit range, \

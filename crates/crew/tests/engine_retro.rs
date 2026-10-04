@@ -291,6 +291,7 @@ fn history(run: &RunId, context: &RepoContext, base: &str) -> anyhow::Result<Vec
         harness_versions: Default::default(),
         version: "0.0.1".to_owned(),
         front_end: None,
+        instructions: Vec::new(),
     };
     let kinds = vec![
         (

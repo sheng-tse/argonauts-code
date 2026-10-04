@@ -199,6 +199,7 @@ impl Bench {
             },
             json_schema: None,
             report_file: None,
+            asking: None,
         }
     }
 

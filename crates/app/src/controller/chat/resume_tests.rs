@@ -217,6 +217,7 @@ async fn another_agent_starts_fresh_with_the_conversation_so_far() {
         commit: "abc".to_owned(),
         uncommitted: Vec::new(),
         settings_sha256: None,
+        continues: false,
     })
     .unwrap();
     old.append(&ChatEvent::TurnFinished {
@@ -310,6 +311,7 @@ async fn continue_opens_the_newest_conversation() {
                         commit: "abc".to_owned(),
                         uncommitted: Vec::new(),
                         settings_sha256: None,
+                        continues: false,
                     })
                     .unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(20));

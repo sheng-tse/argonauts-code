@@ -5,10 +5,11 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use argonauts_core::asking::{Ask, AskTarget};
 use argonauts_core::driver::{DriverStart, PermissionScope};
 use argonauts_core::worker::Access;
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// Keys of a tool's `rawInput` that name files or folders.
 const PATH_KEYS: &[&str] = &[
@@ -121,6 +122,12 @@ impl Policy {
         }
     }
 
+    /// Whether you may be asked about reaching `folder`, outside the project: never where the
+    /// sandbox denies reading, which stays denied whatever you answer.
+    pub(crate) fn may_ask_outside(&self, folder: &Path) -> bool {
+        !inside_any(folder, &self.scope.deny)
+    }
+
     fn judge_read(&self, paths: &[PathBuf]) -> Verdict {
         for path in paths {
             if let Some(reason) = self.unreadable(path) {
@@ -131,7 +138,7 @@ impl Policy {
     }
 
     fn judge_write(&self, paths: &[PathBuf]) -> Verdict {
-        if !matches!(self.access, Access::Build | Access::Spike) {
+        if !self.access.writes() {
             return Verdict::Reject("an edit, and this session is read-only".into());
         }
         if paths.is_empty() {
@@ -306,6 +313,63 @@ pub(crate) fn is_bypass_mode(mode: &str) -> bool {
     ]
     .iter()
     .any(|word| squashed.contains(word))
+}
+
+/// The folder outside the project a call asks to reach, as OpenCode's `external_directory`
+/// names it (kind `other`, `rawInput.parentDir`, 1.18.34). The policy can't classify the kind,
+/// so it's only ever yours to allow, on a card.
+pub(crate) fn outside_folder(call: &Value) -> Option<PathBuf> {
+    call.get("rawInput")?
+        .get("parentDir")?
+        .as_str()
+        .map(PathBuf::from)
+}
+
+/// Asks you about one call, named the way the app's cards name Claude Code's tools: an edit as
+/// `Edit` with its diff, a command as `Bash`, anything else by its title. No answer is a no.
+pub(crate) async fn ask_you(target: &AskTarget, call: &Value) -> Verdict {
+    let raw = call.get("rawInput").cloned().unwrap_or(Value::Null);
+    let kind = call.get("kind").and_then(Value::as_str).unwrap_or("other");
+    let path = call
+        .get("locations")
+        .and_then(Value::as_array)
+        .and_then(|locations| locations.first())
+        .and_then(|location| location.get("path"))
+        .or_else(|| raw.get("filepath"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    // OpenCode asks to reach a folder outside the project as kind `other`, naming it in
+    // `parentDir` (1.18.34). It gets a card of its own, never covered by an earlier yes.
+    let (tool_name, input) = if let Some(folder) = raw.get("parentDir") {
+        ("ExternalDirectory".to_owned(), json!({ "path": folder }))
+    } else if matches!(kind, "edit" | "delete" | "move") || has_diff(call) {
+        let diff = raw.get("diff").cloned().unwrap_or(Value::Null);
+        (
+            "Edit".to_owned(),
+            json!({ "file_path": path, "diff": diff }),
+        )
+    } else if kind == "execute" {
+        let command = raw.get("command").cloned().unwrap_or(Value::Null);
+        ("Bash".to_owned(), json!({ "command": command }))
+    } else {
+        let title = call.get("title").and_then(Value::as_str).unwrap_or(kind);
+        (title.to_owned(), raw)
+    };
+    let ask = Ask::Permission {
+        tool_name,
+        input,
+        tool_use_id: call
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    };
+    match target.ask(ask).await {
+        Ok(reply) => match reply.denial() {
+            None => Verdict::Allow,
+            Some(why) => Verdict::Reject(why),
+        },
+        Err(err) => Verdict::Reject(format!("the user couldn't be asked: {err}")),
+    }
 }
 
 fn has_diff(call: &Value) -> bool {

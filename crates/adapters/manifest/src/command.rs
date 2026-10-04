@@ -33,7 +33,8 @@ pub(crate) fn build(
 
     let role_args = match req.role {
         SessionRole::ReadOnly => &manifest.read_only_args,
-        SessionRole::Build => &manifest.build_args,
+        // A manifest names no direct flags, so a direct turn builds as a run's session does.
+        SessionRole::Build | SessionRole::Direct => &manifest.build_args,
     };
     let uses = |name: &str| {
         role_args

@@ -512,6 +512,7 @@ async fn a_session_driver_runs_over_the_childs_pipes() {
         scope: PermissionScope::default(),
         json_schema: None,
         report_file: None,
+        asking: None,
     };
     let end = driver.run(io, start).await;
     assert_eq!(end.stop, DriverStop::EndTurn);

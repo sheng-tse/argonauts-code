@@ -451,6 +451,11 @@ async fn plan_alone_has_every_run_from_the_conversation_plan_first() {
     harness
         .until(|event| matches!(event, AppEvent::Attached { .. }))
         .await;
+    let started = starts(&harness, 1).await;
+    assert!(started.iter().all(planned), "{started:?}");
+    // Solo you choose works in your checkout, where plan first plans in the session itself and
+    // waits for your go-ahead, so no run starts.
+    harness.agent.push(FakeSession::completed("1. Rename it."));
     slash(
         &harness,
         SlashCommand::Solo {
@@ -458,8 +463,12 @@ async fn plan_alone_has_every_run_from_the_conversation_plan_first() {
         },
     )
     .await;
-    let started = starts(&harness, 2).await;
-    assert!(started.iter().all(planned), "{started:?}");
+    harness
+        .until(|event| {
+            matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::GoAhead)
+        })
+        .await;
+    assert_eq!(harness.conductor.starts().len(), 1);
     slash(&harness, SlashCommand::Plan { task: None }).await;
     notice(&mut harness, "Plan first is off").await;
     harness.exit().await;

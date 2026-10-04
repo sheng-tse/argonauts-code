@@ -242,10 +242,13 @@ fn record_vendor(vendor: &str, live: &Path) {
     let scrub = Scrubber::new(live);
 
     let triage = request(
-        crate::prompts::triage_estimate(&IntakeInput {
-            request: REQUEST.to_owned(),
-            uncommitted_note: None,
-        }),
+        crate::prompts::triage_estimate(
+            &IntakeInput {
+                request: REQUEST.to_owned(),
+                uncommitted_note: None,
+            },
+            true,
+        ),
         output_schema::<TriageEstimate>(),
         None,
     );

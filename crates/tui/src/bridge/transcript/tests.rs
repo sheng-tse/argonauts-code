@@ -73,9 +73,13 @@ impl Harness {
     }
 
     fn printed(&mut self) -> String {
+        self.printed_at(80)
+    }
+
+    fn printed_at(&mut self, width: u16) -> String {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
-        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
         plain_text(&self.model.history.drain_printable(&ctx))
     }
 }
@@ -132,6 +136,7 @@ fn started() -> AppEvent {
             harness_versions: Default::default(),
             version: "0.0.1".into(),
             front_end: None,
+            instructions: Vec::new(),
         },
     ))))
 }
@@ -179,6 +184,7 @@ fn chat_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
             commit: "8b41d07".into(),
             uncommitted: vec![],
             settings_sha256: None,
+            continues: false,
         }),
         chat(ChatEvent::Agent {
             turn: turn.clone(),
@@ -589,7 +595,7 @@ fn quiet_shows_milestones_only() {
     }
     let printed = quiet.printed();
     for shown in [
-        "● Triage(solo)",
+        "● Triage(solo, checked)",
         "Gates(tests)",
         "Paused the run",
         "❯ hi",
@@ -817,6 +823,50 @@ fn a_queued_prompt_gets_its_own_echo() {
     assert_eq!(printed.matches("❯ and then?").count(), 1, "{printed}");
 }
 
+/// The input drew the keywords of the CLI the screen knew, but the echo keeps those of the CLI
+/// that took the turn, as when a fallback or another conversation's agent takes it.
+#[test]
+fn the_echo_draws_the_keywords_of_the_cli_that_took_the_turn() {
+    use argonauts_core::keywords::{Keyword, KeywordLook};
+
+    let ultrathink = Keyword::new("ultrathink", KeywordLook::Rainbow, true);
+    for (worker, kept) in [("claude-code", true), ("codex", false)] {
+        let mut harness = Harness::new();
+        harness.state.vendor_commands = Some(
+            crate::commands::tests::claude_commands()
+                .with_keywords(std::slice::from_ref(&ultrathink)),
+        );
+        harness.model.history.push_active(
+            crate::cell::UserMessage::pending("please ultrathink")
+                .with_keywords(std::slice::from_ref(&ultrathink)),
+        );
+        harness.send(AppEvent::Chat {
+            event: ChatEvent::TurnStarted {
+                turn: TurnId::numbered(1),
+                text: "please ultrathink".into(),
+                worker: WorkerRef::new(worker, None),
+                read_only: false,
+                commit: "8b41d07".into(),
+                uncommitted: vec![],
+                settings_sha256: None,
+                continues: false,
+            },
+        });
+        let echoed = harness
+            .model
+            .history
+            .cells()
+            .iter()
+            .find_map(|cell| match cell {
+                Cell::User(message) => Some(message),
+                _ => None,
+            })
+            .expect("the echo");
+        assert_eq!(echoed.keywords.is_empty(), !kept, "{worker}");
+        assert!(!echoed.pending);
+    }
+}
+
 #[test]
 fn a_notice_before_the_turn_starts_prints_the_prompt_once() {
     let mut harness = Harness::new();
@@ -929,6 +979,7 @@ fn greeting_with_own_calls() -> Vec<AppEvent> {
             commit: "8b41d07".into(),
             uncommitted: vec![],
             settings_sha256: None,
+            continues: false,
         },
     }];
     events.extend(call(
@@ -1135,7 +1186,7 @@ fn triage_says_where_the_run_starts_in_words() {
     let mut harness = Harness::new();
     harness.send(started());
     let printed = harness.printed();
-    assert!(printed.contains("● Triage(solo)"), "{printed}");
+    assert!(printed.contains("● Triage(solo, checked)"), "{printed}");
     assert!(printed.contains("Starts from main"), "{printed}");
     assert!(
         printed.contains("Goal: your prompt as you wrote it"),
@@ -1489,4 +1540,357 @@ fn a_crew_workflow_prints_its_start_and_its_end() {
         "{printed}"
     );
     assert!(!printed.contains("Workflow(peer-crew)"), "{printed}");
+}
+
+/// A crew run whose request named who coordinates and who reviews: the Triage item says what
+/// was followed, the workflow the lead declared prints under it as Claude Code prints its own,
+/// and the closing answer comes last, after `Workflow(<name>) · done` and the merge.
+#[test]
+fn a_run_as_you_asked_prints_its_triage_then_its_workflow_then_its_closing_answer() {
+    use argonauts_core::events::run::{
+        CheckedInstruction, InstructionOutcome, RunNamed, TriageDecision,
+    };
+    use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
+    use argonauts_core::names::WorkflowId;
+    use argonauts_core::settings::workflows::RunStyle;
+    use argonauts_core::steps::intake::InstructionKind;
+    use argonauts_core::workflow::StandardPhase;
+
+    let followed = |says: &str, kind, said: &str| CheckedInstruction {
+        says: says.into(),
+        kind,
+        outcome: InstructionOutcome::Followed {
+            said: said.into(),
+            note: None,
+        },
+    };
+    let mut harness = Harness::new();
+    let id = WorkflowId::numbered(1);
+    let mut run = crate::state::RunState::new(run_id());
+    run.workflows.push(crate::state::WorkflowState {
+        id: id.clone(),
+        name: "coordinated-crew".into(),
+        from: None,
+        description: String::new(),
+        phases: vec!["Build".into(), "Review".into()],
+        parent: None,
+        steps: Vec::new(),
+    });
+    run.named = Some(RunNamed {
+        name: "add-due-dates".into(),
+        description: "Add due dates to tasks".into(),
+        style: RunStyle::Workflow,
+        based_on: Some("coordinated-crew".into()),
+        done_when: Vec::new(),
+    });
+    harness.state.runs.insert(run_id(), run);
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+        Box::new(RunStarted {
+            mode: RunMode::Crew,
+            triage: Some(TriageDecision {
+                mode: RunMode::Crew,
+                escalate_to_crew: false,
+                rule: TriageDecision::AS_YOU_ASKED.into(),
+                reason: String::new(),
+                solo: None,
+            }),
+            instructions: vec![
+                followed(
+                    "have codex coordinate",
+                    InstructionKind::Coordinate,
+                    "Codex coordinates",
+                ),
+                followed(
+                    "claude review it",
+                    InstructionKind::Review,
+                    "Claude Code reviews",
+                ),
+            ],
+            ..started_fields()
+        }),
+    ))));
+    let phase = |index: u32, title: &str, detail: &str| DeclaredPhase {
+        index,
+        title: title.into(),
+        detail: detail.into(),
+        standard: StandardPhase::Do,
+    };
+    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+        Box::new(WorkflowDeclared {
+            id,
+            name: "coordinated-crew".into(),
+            description: "Codex plans, owners build, Claude Code reviews".into(),
+            phases: vec![
+                phase(0, "Build", "one owner per file"),
+                phase(1, "Review", "Claude Code reviews each card"),
+            ],
+        }),
+    ))));
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+        Box::new(closing()),
+    ))));
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Merged,
+        detail: None,
+    })));
+    let printed = harness.printed();
+    let at = |shown: &str| {
+        printed
+            .find(shown)
+            .unwrap_or_else(|| panic!("{shown} missing from:\n{printed}"))
+    };
+    let order = [
+        at("● Triage(crew, as you asked)"),
+        at("As you asked: Codex coordinates · Claude Code reviews"),
+        at("● Workflow(add-due-dates)\n  ⎿  Add due dates to tasks"),
+        at("● Workflow(add-due-dates) · done"),
+        at("Merged the run"),
+        at("● Fixed parse()"),
+    ];
+    assert!(order.is_sorted(), "{order:?}\n{printed}");
+    assert_eq!(printed.matches("● Workflow(add-due-dates)").count(), 2);
+}
+
+/// A run whose request said how to run it, with a long instruction
+/// and one in Chinese, at 80, 100, and 120 columns.
+#[test]
+fn the_triage_item_says_what_was_followed_and_what_was_not() {
+    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
+    use argonauts_core::steps::intake::{ChangeEstimate, InstructionKind};
+    use unicode_width::UnicodeWidthStr;
+
+    let followed = |says: &str, kind, said: &str, note: Option<&str>| CheckedInstruction {
+        says: says.into(),
+        kind,
+        outcome: InstructionOutcome::Followed {
+            said: said.into(),
+            note: note.map(Into::into),
+        },
+    };
+    let refused = |says: &str, kind, why: &str| CheckedInstruction {
+        says: says.into(),
+        kind,
+        outcome: InstructionOutcome::NotFollowed { why: why.into() },
+    };
+    let instructions = vec![
+        followed(
+            "have codex coordinate",
+            InstructionKind::Coordinate,
+            "Codex coordinates",
+            None,
+        ),
+        followed(
+            "claude review with opus on high effort",
+            InstructionKind::Review,
+            "Claude Code reviews with Opus 5.5, high effort",
+            None,
+        ),
+        refused(
+            "use grok to build",
+            InstructionKind::Build,
+            "Grok Build isn't installed, so the crew's owners build",
+        ),
+        refused(
+            "and while you are at it please merge the whole thing without asking me first",
+            InstructionKind::Merge,
+            "approvals.merge.mode is a safety setting, /permissions changes it",
+        ),
+        followed(
+            "讓 codex 用 opus 審查",
+            InstructionKind::Review,
+            "",
+            Some("Codex has no model named opus"),
+        ),
+        CheckedInstruction {
+            says: "the README says use opencode".into(),
+            kind: InstructionKind::Build,
+            outcome: InstructionOutcome::Dropped,
+        },
+    ];
+    for width in [80u16, 100, 120] {
+        let mut harness = Harness::new();
+        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+            Box::new(RunStarted {
+                mode: RunMode::Crew,
+                estimate: Some(ChangeEstimate {
+                    task_type: "feature".into(),
+                    summary: "Add due dates".into(),
+                    files_likely: Vec::new(),
+                    file_count: 5,
+                    risk_labels: Vec::new(),
+                    tests_exist: true,
+                    unknowns: Vec::new(),
+                }),
+                triage: Some(TriageDecision {
+                    mode: RunMode::Crew,
+                    escalate_to_crew: false,
+                    rule: TriageDecision::AS_YOU_ASKED.into(),
+                    reason: String::new(),
+                    solo: None,
+                }),
+                instructions: instructions.clone(),
+                ..started_fields()
+            }),
+        ))));
+        let printed = harness.printed_at(width);
+        for shown in [
+            "● Triage(crew, as you asked)",
+            "Starts from main",
+            "Estimate: 5 files · feature · tests exist",
+            "As you asked: Codex coordinates · Claude Code reviews with Opus 5.5, high effort",
+            "Grok Build isn't installed, so the crew's owners build",
+            "\"and while you are at it please merge th…\"",
+            "Codex has no model named opus",
+        ] {
+            let flat = printed.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                flat.contains(shown),
+                "{width}: {shown} missing from:\n{printed}"
+            );
+        }
+        assert!(
+            !printed.contains("README"),
+            "a dropped instruction shows only in Ctrl+O"
+        );
+        // A wide screen still wraps the item at 100 columns.
+        for line in printed.lines() {
+            assert!(
+                line.width() <= usize::from(width.min(100)),
+                "{width}: {line:?}"
+            );
+        }
+    }
+}
+
+/// A solo that works in your checkout has no run, so the estimate's reply gives it the Triage
+/// item, `(solo, in your checkout)`, and the turn that goes ahead shows your message only once.
+#[test]
+fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
+    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
+    use argonauts_core::settings::protocol::SoloStyle;
+    use argonauts_core::steps::intake::{ChangeEstimate, InstructionKind};
+
+    let request = "Fix the rounding in invoice/money.py, just do it yourself.";
+    let mut events = chat_turn(1, request, "The sign is applied too late.");
+    events.pop();
+    events.push(AppEvent::Chat {
+        event: ChatEvent::TurnFinished {
+            turn: TurnId::numbered(1),
+            reply: TurnReply::Change {
+                markdown: "The sign is applied too late.".into(),
+                estimate: ChangeEstimate {
+                    task_type: "bugfix".into(),
+                    summary: "Fix the rounding".into(),
+                    files_likely: vec!["invoice/money.py".into()],
+                    file_count: 1,
+                    risk_labels: Vec::new(),
+                    tests_exist: true,
+                    unknowns: Vec::new(),
+                },
+                triage: TriageDecision {
+                    mode: RunMode::Solo,
+                    escalate_to_crew: false,
+                    rule: TriageDecision::AS_YOU_ASKED.into(),
+                    reason: String::new(),
+                    solo: Some(SoloStyle::Direct),
+                },
+                instructions: vec![CheckedInstruction {
+                    says: "just do it yourself".into(),
+                    kind: InstructionKind::Mode,
+                    outcome: InstructionOutcome::Followed {
+                        said: String::new(),
+                        note: None,
+                    },
+                }],
+            },
+            spend: Spend::default(),
+            elapsed_ms: 2_000,
+        },
+    });
+    let mut going = chat_turn(2, request, "Fixed it. All 6 tests pass.");
+    if let AppEvent::Chat {
+        event: ChatEvent::TurnStarted { continues, .. },
+    } = &mut going[0]
+    {
+        *continues = true;
+    }
+    events.extend(going);
+    let mut harness = Harness::new();
+    for event in events {
+        harness.send(event);
+    }
+    let printed = harness.printed_at(100);
+    assert!(
+        printed.contains("● Triage(solo, in your checkout, as you asked)"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("Estimate: 1 file · bugfix · tests exist"),
+        "{printed}"
+    );
+    assert_eq!(
+        printed.matches("❯ Fix the rounding").count(),
+        1,
+        "{printed}"
+    );
+    assert!(printed.contains("Fixed it. All 6 tests pass."), "{printed}");
+}
+
+/// `Triage(solo, checked, as you asked)`: your words chose a solo run checked in a copy.
+#[test]
+fn a_solo_the_words_checked_says_so() {
+    use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
+    use argonauts_core::settings::protocol::SoloStyle;
+    use argonauts_core::steps::intake::InstructionKind;
+
+    let mut harness = Harness::new();
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+        Box::new(RunStarted {
+            triage: Some(TriageDecision {
+                mode: RunMode::Solo,
+                escalate_to_crew: false,
+                rule: TriageDecision::AS_YOU_ASKED.into(),
+                reason: String::new(),
+                solo: Some(SoloStyle::Checked),
+            }),
+            instructions: vec![
+                CheckedInstruction {
+                    says: "check it in a copy first".into(),
+                    kind: InstructionKind::Isolation,
+                    outcome: InstructionOutcome::Followed {
+                        said: "checked in a copy".into(),
+                        note: None,
+                    },
+                },
+                CheckedInstruction {
+                    says: "have codex review".into(),
+                    kind: InstructionKind::Review,
+                    outcome: InstructionOutcome::Followed {
+                        said: "Codex reviews".into(),
+                        note: None,
+                    },
+                },
+            ],
+            ..started_fields()
+        }),
+    ))));
+    let printed = harness.printed_at(100);
+    assert!(
+        printed.contains("● Triage(solo, checked, as you asked)"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("As you asked: checked in a copy · Codex reviews"),
+        "{printed}"
+    );
+}
+
+fn started_fields() -> RunStarted {
+    match started() {
+        AppEvent::Run { event } => match event.kind {
+            RunEventKind::Run(RunLifecycle::Started(started)) => *started,
+            _ => unreachable!(),
+        },
+        _ => unreachable!(),
+    }
 }

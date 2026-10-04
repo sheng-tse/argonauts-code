@@ -180,6 +180,8 @@ pub(crate) fn start_run(request: &str) -> StartRun {
         default_agent: None,
         approval_mode: None,
         front_end: None,
+        instructions: Vec::new(),
+        request_settings: Vec::new(),
     }
 }
 

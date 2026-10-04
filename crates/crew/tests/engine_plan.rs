@@ -1281,6 +1281,108 @@ async fn coordinated_crew_structured_delegation() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// "Codex coordinates and Gemini reviews": the settings the request layer sets for it (the
+/// app's tests resolve the same keys from those words). Codex alone coordinates, Antigravity
+/// CLI alone reviews, and a plan that gives the review to anyone else goes back to Codex.
+#[tokio::test]
+async fn codex_coordinates_and_gemini_reviews_with_exactly_those_roles() -> anyhow::Result<()> {
+    use argonauts_core::settings::protocol::{JudgingMethod, PlanningBy, ReviewAssignment};
+    use argonauts_core::workflow::WorkflowRef;
+
+    let output = |reviewer: &str| {
+        json!({
+            "plan": plan_json("CODEX", "Redis"),
+            "cards": [
+                { "key": "store", "title": "Counter store", "task": "Build the store.",
+                  "kind": "build", "owned_paths": ["src/store/"], "read_only_paths": [],
+                  "depends_on": [], "criteria": ["G1"] },
+                { "key": "api", "title": "Middleware", "task": "Add the middleware.",
+                  "kind": "build", "owned_paths": ["src/api.rs"], "read_only_paths": [],
+                  "depends_on": ["store"], "criteria": ["G1"] }
+            ],
+            "assignments": [
+                { "card": "store", "owner": CLAUDE, "reviewers": [reviewer] },
+                { "card": "api", "owner": CODEX, "reviewers": [AGY] }
+            ]
+        })
+    };
+    let answers = std::sync::Mutex::new(vec![output(CODEX), output(AGY)].into_iter());
+    let coordinator = FakeWorker::harness(CODEX, "gpt").respond_with(move |_| {
+        let value = answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next()
+            .unwrap_or_else(|| json!({}));
+        FakeSession::structured(value).with_vendor_session("codex-coordinator")
+    });
+    let bench = Bench::new(
+        vec![
+            FakeWorker::harness(CLAUDE, "claude"),
+            coordinator,
+            FakeWorker::harness(AGY, "gemini"),
+        ],
+        |settings| {
+            let worker = |text: &str| text.parse::<WorkerRef>().unwrap();
+            settings.default_agent = worker(CODEX);
+            settings.workflow = WorkflowRef::new("coordinated-crew");
+            settings.drafting.by = PlanningBy::Coordinator;
+            settings.judging.method = JudgingMethod::Coordinator;
+            settings.routing.algorithm = RoutingAlgorithm::Coordinator;
+            settings.review.assign = ReviewAssignment::Coordinator;
+            settings.review.per_card = 1;
+            settings.divide.contracts_first = false;
+            settings.divide.predictions = false;
+            let roles = &mut settings.roles;
+            roles.entry(RoleName::Coordinator).or_default().workers = vec![worker(CODEX)];
+            roles.entry(RoleName::Reviewer).or_default().workers = vec![worker(AGY)];
+            roles.entry(RoleName::Owner).or_default().workers = vec![worker(CLAUDE), worker(CODEX)];
+        },
+        Vec::new(),
+    )?;
+    bench.step("draft", "coordinator", json!({})).await?;
+
+    assert_eq!(bench.specs_of(CODEX, StepName::Coordinate).len(), 2);
+    for other in [CLAUDE, AGY] {
+        assert!(
+            bench.specs_of(other, StepName::Coordinate).is_empty(),
+            "{other}"
+        );
+    }
+    let rejections: Vec<Option<String>> = bench
+        .plan_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            PlanEvent::Coordinated { rejection, .. } => Some(rejection),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        rejections[0]
+            .as_deref()
+            .unwrap_or_default()
+            .contains(&format!("{CODEX} may not review card store")),
+        "{rejections:?}"
+    );
+    assert_eq!(rejections[1], None);
+
+    let (step, opened) = bench.plan_checkpoint().await?;
+    let graph = &plan_packet(&opened)?.graph;
+    assert_eq!(graph.cards.len(), 2);
+    for card in &graph.cards {
+        let reviewers: Vec<String> = card.reviewers.iter().map(ToString::to_string).collect();
+        assert_eq!(reviewers, [AGY], "{}", card.id);
+        let owner = card
+            .owner
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!([CLAUDE, CODEX].contains(&owner.as_str()), "{owner}");
+    }
+    bench.answer(&opened, AnswerAction::Abandon, None)?;
+    step.await??;
+    Ok(())
+}
+
 #[tokio::test]
 async fn coordinator_output_rejected_and_retried() -> anyhow::Result<()> {
     // First answer: a gpt reviewer on a gpt owner's card. Second answer keeps the rules.

@@ -71,7 +71,7 @@ pub async fn serve_user_with(
 /// The one tool agent sessions get: a read-only `argonauts_status` that rereads `status_file`
 /// on each call.
 pub async fn serve_status(status_file: &Path) -> anyhow::Result<()> {
-    serve_session(Some(status_file), None).await
+    serve_session(Some(status_file), None, None).await
 }
 
 /// The `argonauts_report` tool, for a step with an output schema.
@@ -89,7 +89,22 @@ pub struct ReportTool {
 pub async fn serve_session(
     status_file: Option<&Path>,
     report: Option<ReportTool>,
+    asking: Option<AskTool>,
 ) -> anyhow::Result<()> {
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    session::serve_on(status_file.map(Path::to_owned), report, stdin, stdout).await
+    let server =
+        session::SessionServer::new(status_file.map(Path::to_owned), report).with_asking(asking);
+    session::serve(server, stdin, stdout).await
+}
+
+/// A direct turn's questions: Claude Code's permission prompts, and `argonauts_start_run` when
+/// it's offered, each sent to the app listening at `endpoint`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskTool {
+    /// `127.0.0.1:<port>`.
+    pub endpoint: String,
+    pub token: String,
+    /// Offer `approve`, Claude Code's permission prompt tool.
+    pub approve: bool,
+    pub start_run: bool,
 }

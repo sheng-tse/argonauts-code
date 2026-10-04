@@ -68,7 +68,7 @@ pub(crate) fn header_agent(ctx: &Ctx) -> (WorkerRef, Option<String>) {
 
 /// One mode for the settings: the checkpoints' own when they agree, else the least autonomous
 /// of them, since that one still waits for you.
-fn settings_mode(approvals: &ApprovalSettings) -> ApprovalMode {
+pub(crate) fn settings_mode(approvals: &ApprovalSettings) -> ApprovalMode {
     [
         approvals.goal.mode,
         approvals.plan.mode,

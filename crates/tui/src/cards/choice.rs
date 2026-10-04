@@ -21,7 +21,13 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
     // it takes the keys like a run's card that needs you, and Esc sets it aside. You may answer
     // the reply by typing, so once you do it leaves the keys with you. You set off the rest, so
     // they open with the keys and Esc closes them.
-    if choice.kind == ChoiceKind::StartWork {
+    if matches!(
+        choice.kind,
+        ChoiceKind::StartWork
+            | ChoiceKind::RefusedCommands
+            | ChoiceKind::GoAhead
+            | ChoiceKind::HandOff
+    ) {
         card.needs_you = true;
         card.yields_to_typing = true;
     } else {
@@ -41,12 +47,18 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
         | ChoiceKind::TrustProject
         | ChoiceKind::DetectedGates
         | ChoiceKind::ConfirmRevert
-        | ChoiceKind::ConfirmConnect => card.body = rows,
+        | ChoiceKind::ConfirmConnect
+        | ChoiceKind::Permission => card.body = rows,
         ChoiceKind::StartWork
+        | ChoiceKind::RefusedCommands
+        | ChoiceKind::GoAhead
+        | ChoiceKind::HandOff
+        | ChoiceKind::RewindTurn
         | ChoiceKind::ConfirmTakeOver
         | ChoiceKind::TermsNote
         | ChoiceKind::Init
-        | ChoiceKind::SettingScope => card.detail = rows,
+        | ChoiceKind::SettingScope
+        | ChoiceKind::KeepInstructions => card.detail = rows,
     }
     card
 }
@@ -54,11 +66,16 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
 /// What the controller does when you press Esc, by kind.
 pub fn esc_hint(kind: ChoiceKind) -> &'static str {
     match kind {
-        ChoiceKind::StartWork => "Esc to set aside",
+        ChoiceKind::StartWork | ChoiceKind::KeepInstructions | ChoiceKind::RefusedCommands => {
+            "Esc to set aside"
+        }
+        ChoiceKind::Permission | ChoiceKind::GoAhead => "Esc for No",
+        ChoiceKind::HandOff => "Esc to stop",
         ChoiceKind::ConfirmTakeOver
         | ChoiceKind::SettingScope
         | ChoiceKind::ConfirmSafetySetting
-        | ChoiceKind::ConfirmRevert => "Esc to cancel",
+        | ChoiceKind::ConfirmRevert
+        | ChoiceKind::RewindTurn => "Esc to cancel",
         ChoiceKind::TrustProject | ChoiceKind::DetectedGates | ChoiceKind::ConfirmConnect => {
             "Esc for not now"
         }

@@ -16,6 +16,7 @@ mod doctor;
 mod files;
 #[cfg(test)]
 mod fixture_replay;
+pub(crate) mod instructions;
 mod journal_history;
 pub(crate) mod names;
 mod narrator_host;
@@ -35,10 +36,11 @@ mod vendor_commands;
 mod workspace;
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argonauts_core::NoteLevel;
-use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewRequest};
+use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::events::checkpoint::AnswerAction;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::input::{AgentsAction, PresetAction, ResumeTarget, SlashCommand};
@@ -72,10 +74,10 @@ fn area_command(area: LearningArea) -> SlashCommand {
     }
 }
 
-/// The `@` list's files. Without them the list still offers the run's agents, so a failure
-/// is only logged.
-fn send_repo_files(ctx: &Ctx) {
-    match repo_files::list(&ctx.env.repo_root) {
+/// The `@` list's files, those of the folder the conversation works in. Without them the list
+/// still offers the run's agents, so a failure is only logged.
+fn send_repo_files(ctx: &Ctx, folder: &Path) {
+    match repo_files::list(folder) {
         Ok(paths) => ctx.send(AppEvent::RepoFiles { paths }),
         Err(err) => tracing::warn!("listing the repo's files: {err:#}"),
     }
@@ -96,8 +98,10 @@ pub(crate) struct Controller {
     settings: settings::SettingsState,
     connect: connect::ConnectState,
     shell: shell::ShellState,
-    /// The main agent CLI's own commands.
+    /// The conversation's CLI's own commands.
     vendor: vendor_commands::VendorCommands,
+    /// The folder the screen's `@` list holds the files of.
+    files_folder: Option<PathBuf>,
     setup: Option<Setup>,
     /// What to open once the setup is done; taken on the first start only.
     first: Option<FirstView>,
@@ -120,6 +124,7 @@ impl Controller {
             connect: connect::ConnectState::default(),
             shell: shell::ShellState::default(),
             vendor: vendor_commands::VendorCommands::default(),
+            files_folder: None,
             setup: None,
             first: None,
             internal,
@@ -136,6 +141,7 @@ impl Controller {
         if self.apply_all(effects).await {
             return self.close().await;
         }
+        self.follow_chat();
         let mut wake = tokio::time::interval(WAKE_EVERY);
         wake.set_missed_tick_behavior(MissedTickBehavior::Delay);
         // The first tick fires at once, and opening already checked.
@@ -166,6 +172,7 @@ impl Controller {
             if runs::attaches(&self.runs) != attaches {
                 chat::run_attached(&mut self.chat);
             }
+            self.follow_chat();
             if exit {
                 break;
             }
@@ -176,8 +183,9 @@ impl Controller {
     /// Cancels the chat's turn, lets the screen close, and waits a little for the turn's step
     /// to end, so its vendor process doesn't outlive the app.
     async fn close(mut self) -> anyhow::Result<()> {
-        chat::close(&mut self.ctx, &mut self.chat);
+        // A command in the conversation's folder stops before that folder may go.
         shell::close(&mut self.shell);
+        chat::close(&mut self.ctx, &mut self.chat);
         self.ctx.send(AppEvent::Exit);
         let deadline = tokio::time::Instant::now() + STOP_GRACE;
         while !chat::settled(&self.chat) {
@@ -196,6 +204,18 @@ impl Controller {
         Ok(())
     }
 
+    /// The `/` menu, its keywords, and the `@` list follow the conversation: its CLI, and the
+    /// folder it works in. Both change when it carries on an agent's session from a run.
+    fn follow_chat(&mut self) {
+        vendor_commands::follow(&self.ctx, &mut self.vendor, &self.chat);
+        let folder = self.chat.folder(&self.ctx);
+        if self.files_folder.as_deref() != Some(folder) {
+            let folder = folder.to_path_buf();
+            send_repo_files(&self.ctx, &folder);
+            self.files_folder = Some(folder);
+        }
+    }
+
     /// Every error a handler returns reaches you as a notice, and the app goes on.
     fn settle(&self, result: anyhow::Result<Vec<Effect>>) -> Vec<Effect> {
         result.unwrap_or_else(|err| {
@@ -209,8 +229,7 @@ impl Controller {
         // The app sent them before its header; a controller started on its own sends them now.
         names::send(&mut self.ctx);
         settings::refresh_models(&self.ctx, &mut self.settings);
-        vendor_commands::refresh(&self.ctx, &mut self.vendor);
-        send_repo_files(&self.ctx);
+        self.follow_chat();
         let result = if opening.guided_setup {
             // The setup asks about the folder's settings itself.
             self.open_setup().await
@@ -233,15 +252,19 @@ impl Controller {
         if let Some(first) = self.first.take() {
             let ctx = &mut self.ctx;
             let opened = match &first {
-                FirstView::Conversation(id) => chat::resume(ctx, &mut self.chat, id),
+                FirstView::Conversation(id) => chat::resume(ctx, &mut self.chat, id).await,
                 FirstView::VendorSession(session) => {
                     chat::resume_vendor(ctx, &mut self.chat, session).await
                 }
-                FirstView::Continue => chat::continue_newest(ctx, &mut self.chat),
+                FirstView::Agent(agent) => chat::resume_agent(ctx, &mut self.chat, agent).await,
+                FirstView::Continue => chat::continue_newest(ctx, &mut self.chat).await,
                 _ => Ok(Vec::new()),
             };
             // A conversation that isn't there still leaves the app open on a new one.
             effects.extend(self.settle(opened));
+            // Copies made again for earlier conversations go, now that the one on screen is
+            // known.
+            chat::tidy_copies(&self.ctx, &self.chat);
             effects.extend(runs::open(&mut self.ctx, &mut self.runs, first).await?);
         }
         Ok(effects)
@@ -255,9 +278,11 @@ impl Controller {
                 Effect::Exit => return true,
                 Effect::StartRun(request) => self.start_run(*request).await,
                 Effect::FreshChat => {
-                    // A new main agent brings its own commands.
-                    vendor_commands::refresh(&self.ctx, &mut self.vendor);
-                    chat::fresh_session(&mut self.ctx, &mut self.chat)
+                    // A new main agent brings its own commands, unless the conversation goes to
+                    // the agent whose session it carries on.
+                    let fresh = chat::fresh_session(&mut self.ctx, &mut self.chat);
+                    vendor_commands::refresh(&self.ctx, &mut self.vendor, &self.chat);
+                    fresh
                 }
                 Effect::SettingsApplied { keys } => {
                     names::send(&mut self.ctx);
@@ -269,6 +294,9 @@ impl Controller {
                 }
                 Effect::AskScope(request) => {
                     settings::ask_scope(&mut self.ctx, &mut self.settings, *request).await
+                }
+                Effect::SaveSettings { pairs, scope } => {
+                    settings::save(&mut self.ctx, &mut self.settings, pairs, scope)
                 }
                 Effect::Status => {
                     self.send_status();
@@ -315,6 +343,11 @@ impl Controller {
     }
 
     async fn command(&mut self, command: UiCommand) -> anyhow::Result<Vec<Effect>> {
+        // A direct turn asks by the mode on screen when it starts.
+        let shown = runs::status_parts(&self.runs)
+            .approval_mode
+            .unwrap_or_else(|| status_line::settings_mode(&self.ctx.settings().approvals));
+        chat::set_approval(&mut self.chat, shown);
         let ctx = &mut self.ctx;
         let runs = &mut self.runs;
         match command {
@@ -410,7 +443,8 @@ impl Controller {
                 settings::reset(ctx, &mut self.settings, key, scope).await
             }
             UiCommand::Shell { command } => {
-                shell::run(ctx, &mut self.shell, command);
+                let folder = self.chat.folder(ctx).to_path_buf();
+                shell::run(ctx, &mut self.shell, command, &folder);
                 Ok(Vec::new())
             }
             UiCommand::StopShell => {
@@ -426,9 +460,9 @@ impl Controller {
 
     /// Plain text and mentions mean what the app mode says.
     async fn route(&mut self, command: UiCommand) -> anyhow::Result<Vec<Effect>> {
+        let root = self.chat.folder(&self.ctx).to_path_buf();
         let ctx = &mut self.ctx;
         let runs = &mut self.runs;
-        let root = ctx.env.repo_root.clone();
         let leads_with_file = |text: &str| repo_files::leads_with_file(&root, text);
         match route::route(&ctx.mode, command, self.vendor.set(), leads_with_file) {
             Route::NewRequest { text } => chat::new_request(ctx, &mut self.chat, text).await,
@@ -473,10 +507,13 @@ impl Controller {
             } => run_commands::resume(ctx, runs, Some(run)).await,
             SlashCommand::Resume {
                 target: Some(ResumeTarget::Conversation(id)),
-            } => chat::resume(ctx, chat, &id),
+            } => chat::resume(ctx, chat, &id).await,
             SlashCommand::Resume {
                 target: Some(ResumeTarget::VendorSession(session)),
             } => chat::resume_vendor(ctx, chat, &session).await,
+            SlashCommand::Resume {
+                target: Some(ResumeTarget::Agent(agent)),
+            } => chat::resume_agent(ctx, chat, &agent).await,
             SlashCommand::Exit => Ok(vec![Effect::Exit]),
             SlashCommand::Ask { question } => {
                 if runs::narrator_answers(runs, ctx) {
@@ -512,6 +549,8 @@ impl Controller {
                 let row = chat::context_row(chat);
                 run_commands::context(ctx, runs, row).await
             }
+            // In a direct conversation, the turns that changed files; in a run, its checkpoints.
+            SlashCommand::Rewind { card: None } if chat::rewind(ctx, chat) => Ok(Vec::new()),
             SlashCommand::Rewind { card } => run_commands::checkpoints(ctx, runs, card).await,
             SlashCommand::Reassign { card, from, to } => {
                 run_commands::slash_reassign(ctx, runs, card, from, to).await
@@ -633,7 +672,14 @@ impl Controller {
             }
             ViewRequest::Crew => crew_panel::show(ctx, &self.chat).await,
             ViewRequest::RepoFiles => {
-                send_repo_files(ctx);
+                send_repo_files(ctx, self.chat.folder(ctx));
+                Ok(Vec::new())
+            }
+            ViewRequest::AgentSessions { run } => {
+                let agents = chat::run_agent_sessions(ctx, &run).await?;
+                ctx.send(AppEvent::View {
+                    data: Box::new(ViewData::AgentSessions { run, agents }),
+                });
                 Ok(Vec::new())
             }
             ViewRequest::Learning { area } => {

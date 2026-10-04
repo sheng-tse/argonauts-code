@@ -274,6 +274,24 @@ fn a_paste_typed_out_as_keys_goes_in_whole_and_never_sends() {
     );
 }
 
+/// A `?` in a paste typed out as keys is part of the text, not the key that opens the shortcuts,
+/// though the draft looks empty while the paste is held back.
+#[test]
+fn a_question_mark_in_a_paste_typed_out_as_keys_stays_in_it() {
+    let (mut ui, t0) = ui();
+    ui.time_keys(true);
+    assert!(type_at(&mut ui, "what did you change?", t0, 1).is_empty());
+    assert!(!ui.model().bottom.menus.shortcuts_open);
+    ui.frame(t0 + Duration::from_millis(60)).unwrap();
+    assert_eq!(ui.model().bottom.composer.text(), "what did you change?");
+
+    // On an empty prompt at a person's pace, `?` still opens them.
+    let mut ui = ui_at(100).0;
+    ui.time_keys(true);
+    assert!(type_at(&mut ui, "?", t0, 0).is_empty());
+    assert!(ui.model().bottom.menus.shortcuts_open);
+}
+
 #[test]
 fn a_paste_typed_out_as_keys_never_picks_a_prompt_in_the_search() {
     let (mut ui, t0) = ui();

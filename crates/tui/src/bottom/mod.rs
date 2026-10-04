@@ -408,6 +408,7 @@ impl BottomState {
                 .as_ref()
                 .and_then(|working| working.next_change(clock, ctx.theme)),
             self.agents.next_change(clock, ctx.theme),
+            self.composer.next_change(clock, ctx.theme),
             hint,
             notice,
         ]

@@ -1,16 +1,29 @@
 //! Reading a chat turn's reply. The triage estimate is an answer, a change, or unclear, and one
 //! that fails the schema counts as unclear. `/ask` wants only an answer. A recipe whose `match`
-//! fits the change decides solo or crew under `triage.use_recipes`.
+//! fits the change decides solo or crew under `triage.use_recipes`, unless the request's own
+//! words chose, once code checked them.
 
 use argonauts_core::events::run::{RunMode, TriageDecision};
 use argonauts_core::settings::Settings;
 use argonauts_core::steps::intake::{
-    ChangeEstimate, ChatAnswer, IntakeReply, ReplyKind, TriageEstimate,
+    ChangeEstimate, ChatAnswer, Instruction, IntakeReply, ReplyKind, TriageEstimate,
 };
 use argonauts_core::steps::{StepError, StepOutcome, decode, last_json_object};
 use argonauts_learning::Store;
 
+use crate::controller::instructions::Applied;
 use crate::learning::recipe;
+
+/// What the request said about how to run it, and what code made of it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Requested {
+    /// As the estimate listed them, for a card's answer to check again.
+    pub how_to_run: Vec<Instruction>,
+    pub applied: Applied,
+}
+
+/// Checks the instructions a reply lists against your message and the agents here.
+pub(crate) type CheckWords<'a> = &'a dyn Fn(&[Instruction]) -> Applied;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Reading {
@@ -36,43 +49,70 @@ pub(crate) fn read_reply(
     outcome: &Result<StepOutcome, StepError>,
     settings: &Settings,
 ) -> Result<Reading, StepError> {
-    read_reply_with(outcome, settings, None)
+    read_reply_with(outcome, settings, None, &|_| Applied::default()).map(|(reading, _)| reading)
 }
 
-/// [`read_reply`] with the repo's recipes, from `store`'s main checkout.
+/// [`read_reply`] with the repo's recipes, from `store`'s main checkout, and the request's own
+/// words on how to run it, checked by `check`.
 pub(crate) fn read_reply_with(
     outcome: &Result<StepOutcome, StepError>,
     settings: &Settings,
     store: Option<&Store>,
-) -> Result<Reading, StepError> {
+    check: CheckWords<'_>,
+) -> Result<(Reading, Requested), StepError> {
     let reply = match outcome {
         Ok(outcome) => decode::<TriageEstimate>(outcome),
         Err(err) => Err(err.clone()),
     };
     match reply {
-        Ok(reply) => Ok(reading(reply, settings, store)),
+        Ok(reply) => Ok(reading(reply, settings, store, check)),
         Err(StepError::SchemaMismatch { raw, errors }) => match answer_text(raw.as_deref()) {
             // Nothing came back at all, so there is no answer to show and nothing to offer.
             markdown if markdown.is_empty() => Err(StepError::SchemaMismatch { raw, errors }),
-            markdown => Ok(Reading::Unclear {
-                markdown,
-                estimate: None,
-                would_pick: None,
-            }),
+            markdown => Ok((
+                Reading::Unclear {
+                    markdown,
+                    estimate: None,
+                    would_pick: None,
+                },
+                Requested::default(),
+            )),
         },
         Err(err) => Err(err),
     }
 }
 
-fn reading(reply: IntakeReply, settings: &Settings, store: Option<&Store>) -> Reading {
+fn reading(
+    reply: IntakeReply,
+    settings: &Settings,
+    store: Option<&Store>,
+    check: CheckWords<'_>,
+) -> (Reading, Requested) {
     let markdown = reply.answer_markdown;
+    // With `triage.read_instructions` off, the request runs as if it said nothing of how.
+    let how_to_run = if settings.triage.read_instructions {
+        reply.how_to_run
+    } else {
+        Vec::new()
+    };
+    let applied = if how_to_run.is_empty() {
+        Applied::default()
+    } else {
+        check(&how_to_run)
+    };
+    let asked = applied.asked;
     let decide = |estimate: &ChangeEstimate| {
         let matched = store.and_then(|store| {
             recipe::matched(store, settings, &estimate.task_type, &estimate.risk_labels)
         });
-        argonauts_crew::triage::decide_with(estimate, settings, matched.as_ref().map(|r| &r.loaded))
+        argonauts_crew::triage::decide_with(
+            estimate,
+            settings,
+            matched.as_ref().map(|r| &r.loaded),
+            asked,
+        )
     };
-    match (reply.kind, reply.estimate) {
+    let reading = match (reply.kind, reply.estimate) {
         (ReplyKind::Answer, _) => Reading::Answer { markdown },
         (ReplyKind::Change, Some(estimate)) => {
             let triage = decide(&estimate);
@@ -91,7 +131,12 @@ fn reading(reply: IntakeReply, settings: &Settings, store: Option<&Store>) -> Re
                 would_pick,
             }
         }
-    }
+    };
+    let requested = Requested {
+        how_to_run,
+        applied,
+    };
+    (reading, requested)
 }
 
 /// `/ask`'s `ChatAnswer`, read the same way.

@@ -1,5 +1,6 @@
-//! The `report` step's MCP client: starts the stdio server the ACP client named, as an agent
-//! would, and calls its `argonauts_report` tool once.
+//! The fake's MCP client: starts a stdio server the session was given, as an agent would, and
+//! calls one of its tools once. The `report` step calls `argonauts_report` on the server an ACP
+//! client named, and `call_tool` any tool of the server in Claude Code's `--mcp-config`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -16,6 +17,30 @@ const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// `server` is an ACP stdio MCP server: `name`, `command`, `args`, and `env` as name and value
 /// pairs. Returns the tool's result, or `{"error": ...}` when the call gets a JSON-RPC error.
 pub fn call(server: &Value, report: &Value) -> anyhow::Result<Value> {
+    call_tool(server, REPORT_TOOL, report)
+}
+
+/// The first server of Claude Code's `--mcp-config` file (`{"mcpServers": {name: {command,
+/// args, env}}}`), in the shape [`call_tool`] takes, with its env as name and value pairs.
+pub fn config_server(config: &Value) -> Option<Value> {
+    let (name, server) = config.get("mcpServers")?.as_object()?.iter().next()?;
+    let env: Vec<Value> = server
+        .get("env")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(name, value)| json!({ "name": name, "value": value }))
+        .collect();
+    Some(json!({
+        "name": name,
+        "command": server.get("command")?,
+        "args": server.get("args").cloned().unwrap_or_else(|| json!([])),
+        "env": env,
+    }))
+}
+
+/// Calls `tool` with `arguments` on `server`, in the shape [`call`] takes.
+pub fn call_tool(server: &Value, tool: &str, arguments: &Value) -> anyhow::Result<Value> {
     let command = server["command"]
         .as_str()
         .context("the MCP server has no command")?;
@@ -37,13 +62,13 @@ pub fn call(server: &Value, report: &Value) -> anyhow::Result<Value> {
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("starting the MCP server {command}"))?;
-    let reply = call_report_tool(&mut child, report);
+    let reply = call_one(&mut child, tool, arguments);
     finish(child);
     reply
 }
 
 /// Closes the server's stdin on return, which tells it to exit.
-fn call_report_tool(child: &mut Child, report: &Value) -> anyhow::Result<Value> {
+fn call_one(child: &mut Child, tool: &str, arguments: &Value) -> anyhow::Result<Value> {
     let mut stdin = child.stdin.take().context("no stdin for the MCP server")?;
     let mut stdout = BufReader::new(
         child
@@ -74,7 +99,7 @@ fn call_report_tool(child: &mut Child, report: &Value) -> anyhow::Result<Value> 
         &mut stdout,
         1,
         "tools/call",
-        json!({ "name": REPORT_TOOL, "arguments": report }),
+        json!({ "name": tool, "arguments": arguments }),
     )?;
     Ok(match reply.get("error") {
         Some(error) => json!({ "error": error }),

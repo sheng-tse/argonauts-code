@@ -31,11 +31,12 @@ pub enum Command {
     /// Start a run for scripts and CI, then watch it in the app, or as plain lines without a
     /// terminal.
     Run(RunArgs),
-    /// Open the app on an earlier conversation, a run, or the main agent CLI's own session to
-    /// carry it on, or on the list of them to pick one.
+    /// Open the app on an earlier conversation, a run, an agent's session in a run, or the main
+    /// agent CLI's own session to carry it on, or on the list of them to pick one.
     Resume {
-        /// A conversation such as `chat-002`, a run such as `run-03`, or the main agent CLI's
-        /// own session such as `codex:019a2f`. With none, you pick from the list.
+        /// A conversation such as `chat-002`, a run such as `run-03`, an agent's session in a
+        /// run such as `run-03/s-002`, or the main agent CLI's own session such as
+        /// `codex:019a2f`. With none, you pick from the list, which lists each run's agents.
         id: Option<String>,
     },
     /// Runs going across your repos, and this repo's runs that haven't ended.
@@ -302,6 +303,16 @@ pub enum McpCommand {
         /// Where the last valid report goes.
         #[arg(long, value_name = "PATH", requires = "report_schema")]
         report_file: Option<PathBuf>,
+        /// A direct turn's questions go to the app listening here, with the token in
+        /// `ARGONAUTS_APPROVE_TOKEN`.
+        #[arg(long, value_name = "HOST:PORT")]
+        ask: Option<String>,
+        /// Offer `approve`, Claude Code's permission prompt tool.
+        #[arg(long, requires = "ask")]
+        approve_tool: bool,
+        /// Offer `argonauts_start_run`.
+        #[arg(long, requires = "ask")]
+        start_run: bool,
     },
     /// Write the delegation package other agents install: an MCP entry that runs this binary,
     /// the delegate-to-argonauts skill, and the plugin layouts.
@@ -645,6 +656,25 @@ mod tests {
                 status_file: Some(_),
                 report_schema: Some(_),
                 report_file: Some(_),
+                ..
+            }))
+        ));
+        // A direct turn's server, which asks the app and may start a run.
+        assert!(matches!(
+            parse(&[
+                "mcp",
+                "session",
+                "--ask",
+                "127.0.0.1:9",
+                "--approve-tool",
+                "--start-run"
+            ])
+            .command,
+            Some(Command::Mcp(McpCommand::Session {
+                ask: Some(_),
+                approve_tool: true,
+                start_run: true,
+                ..
             }))
         ));
         assert!(matches!(
@@ -653,6 +683,7 @@ mod tests {
                 status_file: Some(_),
                 report_schema: None,
                 report_file: None,
+                ..
             }))
         ));
         assert!(matches!(
@@ -669,6 +700,7 @@ mod tests {
                 status_file: None,
                 report_schema: Some(_),
                 report_file: Some(_),
+                ..
             }))
         ));
     }

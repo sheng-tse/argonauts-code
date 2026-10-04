@@ -368,7 +368,7 @@ fn recorded_roles_match_their_sandbox() {
         let at = args.iter().position(|a| a == "--sandbox").unwrap();
         let expected = match role {
             SessionRole::ReadOnly => "read-only",
-            SessionRole::Build => "workspace-write",
+            SessionRole::Build | SessionRole::Direct => "workspace-write",
         };
         assert_eq!(args[at + 1], expected, "{name}");
     }

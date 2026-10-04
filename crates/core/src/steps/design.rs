@@ -44,6 +44,10 @@ pub struct DesignInput {
     /// it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<crate::settings::workflows::RunStyle>,
+    /// What the request asked of how to run it, each a must: "Codex coordinates", or words for
+    /// the lead such as "no drafting phase".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub as_you_asked: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

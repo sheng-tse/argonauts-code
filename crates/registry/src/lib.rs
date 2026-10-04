@@ -23,6 +23,7 @@ pub use models::{family_from_model_id, family_problems, registry};
 pub use presets::{builtin_preset, presets, presets_in, upgrade_presets, write_preset};
 pub use resolve::resolve;
 pub use settings::plain::gate_commands;
+pub use settings::tighten::tightens;
 pub use terms::TERMS_NOTE;
 pub use workflows::{WorkflowError, WorkflowInfo, find_workflow, workflows_in};
 pub use write::{remove_setting, safety_keys_in, write_setting};
@@ -49,6 +50,9 @@ pub struct SettingsSources {
     pub project_local_trusted: bool,
     /// The recipe triage matched for this run, applied in the preset layer.
     pub recipe: Option<RecipeOverlay>,
+    /// `key=value` settings a request asked for, above every other layer, for one run. A
+    /// safety key among them must only tighten what the other layers say.
+    pub request: Vec<String>,
 }
 
 /// A recipe version's protocol settings, as learning's `recipes::settings_overlay` gives them.

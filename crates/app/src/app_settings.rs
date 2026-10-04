@@ -298,5 +298,6 @@ pub(crate) fn sources(
         overrides,
         interactive,
         recipe: None,
+        request: Vec::new(),
     }
 }

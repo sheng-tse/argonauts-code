@@ -728,6 +728,8 @@ mod tests {
                     default_agent: None,
                     approval_mode: None,
                     front_end: None,
+                    instructions: Vec::new(),
+                    request_settings: Vec::new(),
                 },
                 overrides: Vec::new(),
                 interactive: true,

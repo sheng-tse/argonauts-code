@@ -959,6 +959,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         harness_versions: Default::default(),
         version: "0.0.1".to_owned(),
         front_end: None,
+        instructions: Vec::new(),
     })))
 }
 

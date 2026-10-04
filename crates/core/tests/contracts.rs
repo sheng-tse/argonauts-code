@@ -1049,7 +1049,10 @@ fn every_app_event_round_trips() {
                    {"name": "ship", "args": "[branch]", "help": "Ship it", "kind": "vendor",
                     "source": "custom", "scope": "project", "path": "/repo/.claude/commands/ship.md"},
                    {"name": "voice", "help": "Talk to it", "kind": "screen_only",
-                    "source": "built_in"}]}}),
+                    "source": "built_in"}],
+               "keywords": [{"word": "ultrathink", "look": "rainbow", "echoed": true}]}}),
+        json!({"type": "vendor_commands", "set": {"vendor": "codex", "title": "Codex",
+               "commands": []}}),
         json!({"type": "view", "data": {"data": "all_repos", "repos": [
                {"repo": "~/src/api", "runs": [run_summary()]},
                {"repo": "~/src/web", "runs": []}]}}),
@@ -1784,7 +1787,9 @@ fn sample_step_outputs_pass_their_strict_schemas_and_decode() {
     check_step_output::<intake::TriageEstimate>(json!({"kind": "change",
         "answer_markdown": "I'd add a middleware.",
         "estimate": {"task_type": "api-feature", "summary": "s", "files_likely": ["a"],
-                     "file_count": 3, "risk_labels": [], "tests_exist": true, "unknowns": []}}));
+                     "file_count": 3, "risk_labels": [], "tests_exist": true, "unknowns": []},
+        "how_to_run": [{"says": "have codex coordinate", "kind": "coordinate", "who": "codex",
+                        "model": "", "effort": "", "value": "", "scope": "this_request"}]}));
     check_step_output::<intake::ChatAnswer>(json!({"answer_markdown": "Hello!"}));
     check_step_output::<goal::Restate>(json!({"summary": "s", "success_criteria": ["c"],
         "in_scope": [], "out_of_scope": [], "assumptions": [], "open_questions": []}));

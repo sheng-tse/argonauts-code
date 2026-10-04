@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
+use argonauts_core::keywords::Keyword;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
 
 use super::*;
 use crate::bottom::VimMode;
@@ -863,4 +865,70 @@ fn shell_mode_draws_its_marker_rules_and_placeholder_in_its_color() {
     let view = render(&c, 50);
     assert_eq!(plain_text(&view.lines[1..2]), "! git status");
     assert_eq!(view.cursor, (12, 1));
+}
+
+const ULTRATHINK: Keyword = Keyword::new(
+    "ultrathink",
+    argonauts_core::keywords::KeywordLook::Rainbow,
+    true,
+);
+
+fn keyword_composer(text: &str) -> Composer {
+    let mut c = Composer::new();
+    c.keywords = vec![ULTRATHINK];
+    type_text(&mut c, text);
+    c
+}
+
+#[test]
+fn the_main_agents_keyword_takes_its_rainbow_letter_by_letter() {
+    let c = keyword_composer("please ultrathink about this");
+    assert_eq!(c.text(), "please ultrathink about this");
+    let theme = theme();
+    let row = &render(&c, 40).lines[1].spans;
+    assert_eq!(row[1], Span::raw("please "));
+    for (index, letter) in "ultrathink".chars().enumerate() {
+        assert_eq!(
+            row[2 + index],
+            Span::styled(letter.to_string(), theme.rainbow(index, false))
+        );
+    }
+    assert_eq!(row[12], Span::raw(" about this"));
+    assert_eq!(
+        row[13],
+        Span::styled(" ", Style::new().add_modifier(Modifier::REVERSED))
+    );
+}
+
+#[test]
+fn the_cursor_block_keeps_the_letters_color() {
+    let mut c = keyword_composer("ultrathink");
+    c.handle_key(key(KeyCode::Home));
+    let theme = theme();
+    let row = &render(&c, 40).lines[1].spans;
+    let block = Style::new().add_modifier(Modifier::REVERSED);
+    assert_eq!(
+        row[1],
+        Span::styled("u", theme.rainbow(0, false).patch(block))
+    );
+    assert_eq!(row[2], Span::styled("l", theme.rainbow(1, false)));
+}
+
+#[test]
+fn the_shimmer_animates_until_shell_mode_or_the_word_goes() {
+    let theme = theme();
+    let clock = Clock::still(Instant::now());
+    let mut c = keyword_composer("ultrathink");
+    assert!(c.next_change(&clock, &theme).is_some());
+    for _ in 0.."think".len() {
+        c.handle_key(key(KeyCode::Backspace));
+    }
+    assert_eq!(c.next_change(&clock, &theme), None);
+
+    let shell = keyword_composer("!ultrathink");
+    assert!(shell.shell);
+    assert_eq!(shell.next_change(&clock, &theme), None);
+    // Past the shell's `!`, the text is plain.
+    let row = &render(&shell, 40).lines[1].spans;
+    assert!(row[1..].iter().all(|span| span.style.fg.is_none()));
 }

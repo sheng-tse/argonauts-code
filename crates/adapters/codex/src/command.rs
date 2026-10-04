@@ -88,7 +88,9 @@ pub fn sandbox_mode(req: &SessionRequest) -> &'static str {
     match req.role {
         _ if req.tool_sandbox_off => "danger-full-access",
         SessionRole::ReadOnly => "read-only",
-        SessionRole::Build => "workspace-write",
+        // A direct turn runs as a build session in your checkout: Codex asks only to leave its
+        // sandbox, and inside ours there's nothing to leave to.
+        SessionRole::Build | SessionRole::Direct => "workspace-write",
     }
 }
 

@@ -212,6 +212,7 @@ mod tests {
                         commit: "abc".to_owned(),
                         uncommitted: Vec::new(),
                         settings_sha256: None,
+                        continues: false,
                     },
                     ChatEvent::TurnFinished {
                         turn: TurnId::numbered(1),

@@ -71,6 +71,7 @@ pub fn fabricate_parked_run(scenario: &Scenario, days_parked: i64) -> anyhow::Re
         harness_versions: BTreeMap::new(),
         version: "0.1.0".to_owned(),
         front_end: None,
+        instructions: Vec::new(),
     };
     let opened = CheckpointOpened {
         id: checkpoint.clone(),

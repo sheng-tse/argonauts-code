@@ -258,6 +258,15 @@ pub fn check(
         .map(|worker| (worker.clone(), roles::family(host, worker)))
         .collect();
     let lookup = |name: &str| lookup(host, name).map_err(|err| err.to_string());
+    let as_you_asked = host.read(|state| {
+        let instructions = state
+            .run
+            .started
+            .as_ref()
+            .map(|started| started.instructions.as_slice())
+            .unwrap_or_default();
+        validate::roles_as_you_asked(instructions, settings)
+    });
     validate::validate(
         workflow,
         &Context {
@@ -267,6 +276,7 @@ pub fn check(
             lookup: &lookup,
             depth,
             budget_left_usd,
+            as_you_asked: &as_you_asked,
         },
     )
 }

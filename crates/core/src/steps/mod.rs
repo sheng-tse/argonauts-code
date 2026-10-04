@@ -61,6 +61,10 @@ pub enum StepName {
     PlanAttempt,
     /// A check from another company judges a goal's criteria.
     CheckGoal,
+    /// One of the main agent CLI's own commands, such as `/init`.
+    VendorCommand,
+    /// A direct solo turn: your message to the main session, as its CLI takes it.
+    Direct,
 }
 
 pub trait Step {
@@ -731,8 +735,8 @@ mod tests {
         assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
 
         let schema = output_schema::<intake::TriageEstimate>();
-        let reply =
-            json!({"kind": "unclear", "answer_markdown": "Could be either.", "estimate": null});
+        let reply = json!({"kind": "unclear", "answer_markdown": "Could be either.",
+            "estimate": null, "how_to_run": []});
         assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&reply));
         let wrong =
             json!({"kind": "unclear", "answer_markdown": "x", "estimate": null, "extra": 1});

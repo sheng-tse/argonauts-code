@@ -18,9 +18,10 @@ use argonauts_core::registry::{ModelAccess, ModelRegistry, RegistryKind, effort_
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::UserHooks;
 use argonauts_core::settings::sessions::Compaction;
-use argonauts_core::worker::{Access, SessionSpec, SteerSupport, WorkerError};
+use argonauts_core::steps::StepName;
+use argonauts_core::worker::{Access, Asking, SessionSpec, SteerSupport, WorkerError};
 use argonauts_core::{
-    Adapter, CommandSpec, PARENT_SESSION_ENV_VARS, SessionRequest, SessionRole,
+    Adapter, Asks, CommandSpec, PARENT_SESSION_ENV_VARS, SessionRequest, SessionRole,
     VENDOR_KEY_ENV_VARS, create_private_dir_all, write_private_file,
 };
 use serde_json::{Map, Value, json};
@@ -40,14 +41,19 @@ const CREDENTIAL_VARS: &[&str] = &["SSH_AUTH_SOCK", "DATABASE_URL"];
 /// The folder in a card's own folder that holds the homes its ACP sessions keep for the card.
 const CARD_HOMES: &str = "homes";
 
+/// Where the session's MCP server finds the token it sends with each question.
+pub const APPROVE_TOKEN_ENV: &str = "ARGONAUTS_APPROVE_TOKEN";
+
 /// The name the status server has in every MCP config, which Claude Code lists in
 /// `mcp_server_errors` when it fails to start.
 pub const STATUS_SERVER: &str = "argonauts_status";
 
-/// Only build and spike sessions may change files; everything else gets the read-only flags.
+/// Only build, spike, and direct sessions may change files; everything else gets the read-only
+/// flags.
 pub fn session_role(access: Access) -> SessionRole {
     match access {
         Access::Build | Access::Spike => SessionRole::Build,
+        Access::Direct => SessionRole::Direct,
         Access::NoTools | Access::ReadOnly => SessionRole::ReadOnly,
     }
 }
@@ -66,8 +72,13 @@ pub fn session_request(
         let io_error = |err: io::Error| WorkerError::Io(format!("the status tool's config: {err}"));
         let argonauts = std::env::current_exe().map_err(io_error)?;
         Some(
-            write_session_mcp_config(&spec.session_dir, spec.status_file.as_deref(), &argonauts)
-                .map_err(io_error)?,
+            write_session_mcp_config(
+                &spec.session_dir,
+                spec.status_file.as_deref(),
+                spec.asking.as_ref(),
+                &argonauts,
+            )
+            .map_err(io_error)?,
         )
     } else {
         None
@@ -131,6 +142,12 @@ pub fn session_request(
         isolated: spec.isolated,
         // The launch knows which sandbox wraps the session, and sets this.
         tool_sandbox_off: false,
+        asks: spec
+            .asking
+            .as_ref()
+            .map(|asking| asking.asks)
+            .unwrap_or_default(),
+        vendor_command: spec.step == Some(StepName::VendorCommand),
     })
 }
 
@@ -222,7 +239,7 @@ pub fn write_mcp_config(
     status_file: &Path,
     argonauts: &Path,
 ) -> io::Result<PathBuf> {
-    write_session_mcp_config(session_dir, Some(status_file), argonauts)
+    write_session_mcp_config(session_dir, Some(status_file), None, argonauts)
 }
 
 /// Like [`write_mcp_config`], with no servers at all when there is no status file, so a strict
@@ -230,18 +247,20 @@ pub fn write_mcp_config(
 pub fn write_session_mcp_config(
     session_dir: &Path,
     status_file: Option<&Path>,
+    asking: Option<&Asking>,
     argonauts: &Path,
 ) -> io::Result<PathBuf> {
     let mut servers = Map::new();
-    if let Some(server) = session_server(argonauts, status_file, None) {
-        servers.insert(
-            server.name,
-            json!({
-                "type": "stdio",
-                "command": server.command,
-                "args": server.args,
-            }),
-        );
+    if let Some(server) = session_server(argonauts, status_file, None, asking) {
+        let mut entry = json!({
+            "type": "stdio",
+            "command": server.command,
+            "args": server.args,
+        });
+        if let Some(asking) = asking {
+            entry["env"] = json!({ APPROVE_TOKEN_ENV: asking.token });
+        }
+        servers.insert(server.name, entry);
     }
     let config = json!({ "mcpServers": Value::Object(servers) });
     create_private_dir_all(session_dir)?;
@@ -264,8 +283,9 @@ pub fn session_server(
     argonauts: &Path,
     status_file: Option<&Path>,
     report: Option<ReportFiles<'_>>,
+    asking: Option<&Asking>,
 ) -> Option<McpServerSpec> {
-    if status_file.is_none() && report.is_none() {
+    if status_file.is_none() && report.is_none() && asking.is_none() {
         return None;
     }
     let mut args = vec!["mcp".to_owned(), "session".to_owned()];
@@ -282,6 +302,16 @@ pub fn session_server(
             "--report-file".to_owned(),
             report.report.display().to_string(),
         ]);
+    }
+    if let Some(asking) = asking {
+        // The token goes in the environment, so it isn't in the process list.
+        args.extend(["--ask".to_owned(), asking.endpoint.clone()]);
+        if asking.asks != Asks::Never {
+            args.push("--approve-tool".to_owned());
+        }
+        if asking.start_run {
+            args.push("--start-run".to_owned());
+        }
     }
     Some(McpServerSpec {
         name: STATUS_SERVER.to_owned(),
@@ -842,9 +872,14 @@ mod tests {
             report: Path::new("/s/report.json"),
         };
         let argonauts = Path::new("/bin/argonauts");
-        assert!(session_server(argonauts, None, None).is_none());
-        let server =
-            session_server(argonauts, Some(Path::new("/s/status.json")), Some(report)).unwrap();
+        assert!(session_server(argonauts, None, None, None).is_none());
+        let server = session_server(
+            argonauts,
+            Some(Path::new("/s/status.json")),
+            Some(report),
+            None,
+        )
+        .unwrap();
         assert_eq!(server.name, STATUS_SERVER);
         assert_eq!(
             server.args,

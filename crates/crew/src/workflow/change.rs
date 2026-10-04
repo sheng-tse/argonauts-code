@@ -15,7 +15,9 @@ use argonauts_core::events::checkpoint::{
     CheckpointPacket, FreeText,
 };
 use argonauts_core::events::goal::Criterion;
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunNamed};
+use argonauts_core::events::run::{
+    CheckedInstruction, InstructionOutcome, Party, RunLifecycle, RunMode, RunNamed,
+};
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::events::workflow::{
     DeclaredPhase, RunNote, WorkflowChanged, WorkflowDeclared, WorkflowEvent,
@@ -25,6 +27,7 @@ use argonauts_core::names::{CheckpointId, RoleName, WorkflowId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::design::{DesignInput, DesignOutput, DesignWorkflow, WorkflowExample};
+use argonauts_core::steps::intake::InstructionKind;
 use argonauts_core::text::sentence_case;
 use argonauts_core::workflow::{
     StandardPhase, StepKind, StepRef, Workflow, WorkflowParams, WorkflowRef,
@@ -713,12 +716,13 @@ pub(crate) fn lead(host: &Host) -> argonauts_core::names::WorkerRef {
 }
 
 fn design_input(host: &Host, current: Option<String>, progress: Vec<String>) -> DesignInput {
-    let (request, goal) = host.read(|state| {
-        let request = state
-            .run
-            .started
-            .as_ref()
+    let (request, as_you_asked, goal) = host.read(|state| {
+        let started = state.run.started.as_ref();
+        let request = started
             .map(|started| started.request.clone())
+            .unwrap_or_default();
+        let as_you_asked = started
+            .map(|started| musts(&started.instructions))
             .unwrap_or_default();
         let goal = state
             .goal
@@ -727,7 +731,7 @@ fn design_input(host: &Host, current: Option<String>, progress: Vec<String>) -> 
             .and_then(|goal| serde_json::to_value(goal).ok())
             .map(goal_lines)
             .unwrap_or_default();
-        (request, goal)
+        (request, as_you_asked, goal)
     });
     DesignInput {
         request,
@@ -743,7 +747,27 @@ fn design_input(host: &Host, current: Option<String>, progress: Vec<String>) -> 
         current,
         progress,
         style: Some(shape::run_style(host)).filter(|style| *style == RunStyle::Goal),
+        as_you_asked,
     }
+}
+
+/// What the lead must keep from the request: each followed instruction as the Triage line
+/// said it, and words meant for the lead as the request put them.
+fn musts(instructions: &[CheckedInstruction]) -> Vec<String> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match &instruction.outcome {
+            InstructionOutcome::Followed { .. }
+                if instruction.kind == InstructionKind::ForTheLead =>
+            {
+                Some(instruction.says.clone())
+            }
+            InstructionOutcome::Followed { said, .. } if !said.trim().is_empty() => {
+                Some(said.clone())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The examples for the lead, best first: one `### name` section each, with what it's for,

@@ -1,11 +1,14 @@
 mod common;
 
+use argonauts_core::keywords::{Keyword, KeywordLook};
+use argonauts_tui::HistoryCell;
 use argonauts_tui::bottom::HistorySearch;
 use argonauts_tui::commands::command_items;
-use argonauts_tui::model::{BottomState, MenuItem, VimMode};
+use argonauts_tui::model::{BottomState, MenuItem, UserMessage, VimMode};
 use argonauts_tui::prompt_history::PromptEntry;
 use argonauts_tui::stability::{self, samples};
-use common::{assert_fits, ctx, text, theme};
+use argonauts_tui::theme::{ColorLevel, Glyphs, Theme};
+use common::{assert_fits, ctx, still, styled, text, theme};
 use crossterm::event::{KeyCode, KeyEvent};
 
 const WIDTHS: [u16; 4] = [80, 100, 120, 200];
@@ -344,4 +347,36 @@ fn history_search_on_a_short_screen_keeps_its_filter() {
     assert!(shown.contains("Search prompts"), "{shown}");
     assert!(shown.contains("❯ 1m ago   /usage"), "{shown}");
     assert!(shown.contains("Filter history"), "{shown}");
+}
+
+/// Claude Code 2.1.289's keyword, as its adapter's table has it.
+const ULTRATHINK: Keyword = Keyword::new("ultrathink", KeywordLook::Rainbow, true);
+const KEYWORD_PROMPT: &str = "please ultrathink about this";
+
+/// The input as the shimmer passes over the word, then the echo of the sent message, held still.
+#[test]
+fn keyword_rainbow_in_the_input_and_the_echo() {
+    let themes = [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("ansi16", Theme::dark().with_level(ColorLevel::Ansi16)),
+    ];
+    for (name, mut theme) in themes {
+        theme.glyphs = Glyphs::UNICODE;
+        let mut bottom = BottomState::new();
+        bottom.composer.keywords = vec![ULTRATHINK];
+        bottom.composer.set_text(KEYWORD_PROMPT);
+        // 640 ms in, the band's middle is on the word's third letter.
+        let input = bottom.render(&ctx(&theme, 100, 0.64)).lines;
+        let echo = UserMessage::new(KEYWORD_PROMPT)
+            .with_keywords(&[ULTRATHINK])
+            .lines(&still(&theme, 100));
+        assert_fits(&input, 100);
+        assert_fits(&echo, 100);
+        assert_eq!(text(&echo), format!("❯ {KEYWORD_PROMPT}"));
+        insta::assert_snapshot!(
+            format!("keyword_rainbow_{name}_100"),
+            format!("{}\n\n{}", styled(&input), styled(&echo))
+        );
+    }
 }

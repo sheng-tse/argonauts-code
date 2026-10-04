@@ -245,6 +245,11 @@ impl FakeWorker {
         self
     }
 
+    /// Like [`FakeWorker::respond_with`], for a worker already in a directory.
+    pub fn respond(&self, respond: impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static) {
+        *lock(&self.script) = Script::Respond(Box::new(respond));
+    }
+
     /// Stops refusing sessions that break the worker rules.
     pub fn lenient(mut self) -> Self {
         self.enforce_rules = false;
@@ -263,9 +268,8 @@ impl FakeWorker {
         if !self.enforce_rules {
             return None;
         }
-        let builds = matches!(spec.access, Access::Build | Access::Spike);
-        if builds && spec.goal_sha256.is_none() {
-            return Some("a build or spike session needs the approved goal's hash".to_owned());
+        if spec.access.writes() && spec.goal_sha256.is_none() {
+            return Some("a session that changes files needs the approved goal's hash".to_owned());
         }
         if self.kind == WorkerKind::Endpoint && spec.access != Access::NoTools {
             return Some("an endpoint takes only no-tools sessions".to_owned());
@@ -466,6 +470,8 @@ fn message_part(message: &QueuedMessage) -> InputPart {
 pub struct FakeDirectory {
     workers: Mutex<Vec<Arc<dyn Worker>>>,
     fakes: Mutex<Vec<Arc<FakeWorker>>>,
+    /// Worker ids whose CLI is gone from this machine.
+    uninstalled: Mutex<Vec<String>>,
 }
 
 impl FakeDirectory {
@@ -483,6 +489,12 @@ impl FakeDirectory {
 
     pub fn add_worker(&self, worker: Arc<dyn Worker>) {
         lock(&self.workers).push(worker);
+    }
+
+    /// `worker`'s CLI is gone: `get` still builds it, as the real directory does for any
+    /// built-in adapter, but `available` no longer lists it.
+    pub fn uninstall(&self, worker: &str) {
+        lock(&self.uninstalled).push(worker.to_owned());
     }
 
     pub fn fake(&self, worker: &str) -> Option<Arc<FakeWorker>> {
@@ -513,9 +525,11 @@ impl WorkerDirectory for FakeDirectory {
     }
 
     fn available(&self) -> Vec<WorkerRef> {
+        let uninstalled = lock(&self.uninstalled);
         lock(&self.workers)
             .iter()
             .map(|w| w.worker_ref().clone())
+            .filter(|worker| !uninstalled.contains(&worker.worker))
             .collect()
     }
 }
@@ -551,6 +565,7 @@ pub fn session_spec(worker: &str, access: Access, workdir: &Path) -> SessionSpec
         isolated: false,
         status_file: None,
         env: Vec::new(),
+        asking: None,
     }
 }
 

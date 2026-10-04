@@ -174,7 +174,7 @@ fn driver_start(ctx: &Context, launch: &Launch) -> Result<DriverStart, String> {
     let mcp_servers = if ctx.capabilities.status_tool {
         let argonauts = std::env::current_exe()
             .map_err(|err| format!("could not find the argonauts binary: {err}"))?;
-        session_server(&argonauts, spec.status_file.as_deref(), report)
+        session_server(&argonauts, spec.status_file.as_deref(), report, None)
             .into_iter()
             .collect()
     } else {
@@ -197,6 +197,14 @@ fn driver_start(ctx: &Context, launch: &Launch) -> Result<DriverStart, String> {
         scope: permission_scope(&launch.profile, &spec.workdir, spec.access, &forbidden),
         json_schema: spec.json_schema.clone(),
         report_file: spec.json_schema.as_ref().map(|_| report_file.clone()),
+        asking: spec
+            .asking
+            .as_ref()
+            .filter(|asking| asking.asks != argonauts_core::Asks::Never)
+            .map(|asking| argonauts_core::asking::AskTarget {
+                endpoint: asking.endpoint.clone(),
+                token: asking.token.clone(),
+            }),
     })
 }
 

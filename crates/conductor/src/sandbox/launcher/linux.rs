@@ -74,6 +74,8 @@ pub(super) fn launch(
         network: plan.network,
         // The view needs only the paths. The plan's proxies are the session's way out.
         proxy_port: None,
+        ask_port: None,
+        closed: plan.closed,
     };
     let view = view::plan(&profile, &RealDisk);
     create(&view)?;

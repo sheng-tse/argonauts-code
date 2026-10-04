@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::driver::SessionDriver;
 use crate::event::AgentEvent;
+use crate::keywords::Keyword;
 use crate::limits::QuotaReading;
 use crate::session::{CommandSpec, SessionRequest};
 use crate::settings::sessions::{Compaction, NativeFanout};
@@ -173,6 +174,11 @@ pub trait Adapter: Send + Sync {
 
     /// The CLI's built-in slash commands, each with what it maps to.
     fn builtin_commands(&self) -> &'static [BuiltinCommand] {
+        &[]
+    }
+
+    /// Words the CLI treats specially in a prompt, which the input draws as the CLI does.
+    fn keywords(&self) -> &'static [Keyword] {
         &[]
     }
 
@@ -366,7 +372,7 @@ mod tests {
             let spec = CommandSpec::new(self.binary(), &req.workdir).arg(&req.prompt);
             Ok(match req.role {
                 SessionRole::ReadOnly => spec.arg("--read-only"),
-                SessionRole::Build => spec,
+                SessionRole::Build | SessionRole::Direct => spec,
             })
         }
         fn parser(&self) -> Box<dyn StreamParser> {
@@ -451,6 +457,8 @@ mod tests {
         let set = VendorCommandSet::of(adapter.as_ref(), &scan).unwrap();
         assert_eq!(set.vendor, VendorId("fake".into()));
         assert!(set.commands.is_empty());
+        assert!(adapter.keywords().is_empty());
+        assert!(set.keywords.is_empty());
 
         let session = VendorSession {
             vendor: VendorId("fake".into()),

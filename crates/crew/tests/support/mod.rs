@@ -204,6 +204,7 @@ impl Crew {
             harness_versions: BTreeMap::new(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             front_end: None,
+            instructions: Vec::new(),
         };
         Ok(RunEvent {
             seq: 0,

@@ -87,7 +87,7 @@ fn run(argv0: &str, args: &[String]) -> anyhow::Result<i32> {
         );
         return Ok(NO_RULE_EXIT);
     };
-    let code = play(&rule.steps, &base, &mut stdin)?;
+    let code = play(&rule.steps, &base, args, &mut stdin)?;
     log(&LogLine::Exit {
         pid: std::process::id(),
         code,
@@ -115,7 +115,12 @@ fn matches(rule: &FakeRule, argv0: &str, args: &[String], stdin: &mut Stdin) -> 
         .is_some_and(|text| text.contains(want.as_str()))
 }
 
-fn play(steps: &[FakeStep], base: &Path, stdin: &mut Stdin) -> anyhow::Result<i32> {
+fn play(
+    steps: &[FakeStep],
+    base: &Path,
+    args: &[String],
+    stdin: &mut Stdin,
+) -> anyhow::Result<i32> {
     let mut out = io::stdout().lock();
     for step in steps {
         match step {
@@ -157,6 +162,16 @@ fn play(steps: &[FakeStep], base: &Path, stdin: &mut Stdin) -> anyhow::Result<i3
                 }
             },
             FakeStep::Stderr(line) => eprintln!("{line}"),
+            FakeStep::CallTool { name, arguments } => {
+                let reply = call_config_tool(args, name, arguments)
+                    .unwrap_or_else(|err| serde_json::json!({ "error": format!("{err:#}") }));
+                log(&LogLine::ToolCall {
+                    pid: std::process::id(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                    reply,
+                });
+            }
             FakeStep::Exit(code) => return Ok(*code),
             FakeStep::Hang(_) => loop {
                 thread::sleep(Duration::from_secs(60));
@@ -164,6 +179,23 @@ fn play(steps: &[FakeStep], base: &Path, stdin: &mut Stdin) -> anyhow::Result<i3
         }
     }
     Ok(0)
+}
+
+/// Calls `name` on the server Claude Code's `--mcp-config` names, as Claude Code would.
+fn call_config_tool(
+    args: &[String],
+    name: &str,
+    arguments: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let path = args
+        .iter()
+        .position(|arg| arg == "--mcp-config")
+        .and_then(|at| args.get(at + 1))
+        .ok_or_else(|| anyhow::anyhow!("no --mcp-config to call {name} through"))?;
+    let config: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
+    let server = report::config_server(&config)
+        .ok_or_else(|| anyhow::anyhow!("{path} names no MCP server"))?;
+    report::call_tool(&server, name, arguments)
 }
 
 /// Writes a file the way an agent would, but never outside the working directory.

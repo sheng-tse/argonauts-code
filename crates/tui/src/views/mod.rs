@@ -32,7 +32,10 @@ pub mod workflow;
 use std::fmt;
 use std::time::Instant;
 
+use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
+use argonauts_core::input::{ResumeTarget, SlashCommand};
+use argonauts_core::names::SessionKey;
 use argonauts_core::{CardId, RunId};
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
@@ -107,13 +110,52 @@ pub enum ViewOutcome {
     SendToChat(UiCommand),
 }
 
-/// `p` in a run's view. A pause acts on the run on screen, so another run's view says so.
 /// Whether `run` can still be paused or have agents stopped: not finished and not parked, as far
 /// as the screen knows it.
 pub(crate) fn run_going(state: &AppState, run: &RunId) -> bool {
     state.runs.get(run).is_none_or(|run| run.is_active())
 }
 
+/// The run has finished, as far as this screen knows, so its sessions are free of it.
+pub(crate) fn run_ended(state: &AppState, run: &RunId) -> bool {
+    state
+        .runs
+        .get(run)
+        .is_some_and(|run| run.finished.is_some())
+}
+
+/// `c` on a finished agent: its session carries on in the chat as a direct conversation,
+/// through its CLI's own resume, once its run ended. Until then the run owns the session, and a
+/// running agent is taken over instead.
+pub(crate) fn carry_on(
+    state: &AppState,
+    run: &RunId,
+    session: &SessionKey,
+    running: bool,
+) -> ViewOutcome {
+    if running {
+        return ViewOutcome::Notice(format!(
+            "{session} is still working. t in its agent view takes it over"
+        ));
+    }
+    // The app tells of a run this screen hasn't loaded.
+    if state.runs.contains_key(run) && !run_ended(state, run) {
+        return ViewOutcome::Notice(format!(
+            "{run} hasn't ended, so it still owns {session}. t takes it over, or it carries on \
+             once the run ends"
+        ));
+    }
+    ViewOutcome::SendToChat(UiCommand::Slash {
+        command: SlashCommand::Resume {
+            target: Some(ResumeTarget::Agent(AgentSessionRef {
+                run: run.clone(),
+                session: session.clone(),
+            })),
+        },
+    })
+}
+
+/// `p` in a run's view. A pause acts on the run on screen, so another run's view says so.
 pub(crate) fn pause(run: &RunId, ctx: &ViewCtx<'_>) -> ViewOutcome {
     if ctx.state.attached.as_ref() == Some(run) {
         ViewOutcome::Send(UiCommand::Pause { now: false })
@@ -143,11 +185,14 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             runs,
             chats,
             sessions,
-        } => cx.out.open(resume::ResumePicker::listing(
-            runs.clone(),
-            chats.clone(),
-            sessions.clone(),
-        )),
+            agents,
+            agents_read,
+        } => cx.out.open(
+            resume::ResumePicker::listing(runs.clone(), chats.clone(), sessions.clone())
+                .with_agents(agents.clone(), agents_read.clone()),
+        ),
+        // For a picker that closed before they came.
+        ViewData::AgentSessions { .. } => {}
         ViewData::Diff { diff } => cx.out.open(pager::Pager::diff(diff.clone())),
         ViewData::Goal { view } => cx.out.open(goal::GoalView::new((**view).clone())),
         ViewData::Raw { raw } => cx.out.open(pager::Pager::raw(raw.clone())),

@@ -67,7 +67,17 @@ pub fn paths(scenario: &Scenario) -> Paths {
 /// `~/.argonauts/config.toml`, the layer the app calls "everywhere". It needs no trust, so
 /// safety keys such as `endpoints.*.base_url` and `agents.*.binary` go here.
 pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()> {
-    write_file(&paths(scenario).global_config(), text)
+    write_file(&paths(scenario).global_config(), &checked_solo(text))
+}
+
+/// These scenarios follow solo runs, so `/solo` runs in a checked copy unless the settings say
+/// how solo runs.
+fn checked_solo(text: &str) -> String {
+    if text.contains("[solo]") {
+        text.to_owned()
+    } else {
+        format!("{text}\n[solo]\nstyle = \"checked\"\n")
+    }
 }
 
 /// `~/.argonauts/models.toml`, where `[[model]]` and `[[harness]]` entries need no trust.

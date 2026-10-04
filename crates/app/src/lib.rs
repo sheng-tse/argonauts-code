@@ -30,6 +30,7 @@ mod wire;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::api::ConductorApi;
 use argonauts_core::names::ChatId;
 use argonauts_core::vendor_sessions::VendorSessionRef;
@@ -72,6 +73,8 @@ pub enum FirstView {
     Conversation(ChatId),
     /// Carries on the main agent CLI's own session, as `argonauts resume codex:<id>` does.
     VendorSession(VendorSessionRef),
+    /// Carries on an agent's session from a run, as `argonauts resume run-<n>/s-<n>` does.
+    Agent(AgentSessionRef),
     /// Carries on the newest conversation in this repo, as `argonauts -c` does.
     Continue,
 }

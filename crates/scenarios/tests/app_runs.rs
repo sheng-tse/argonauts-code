@@ -104,11 +104,13 @@ fn app_example_small_fix_solo() -> anyhow::Result<()> {
     assert_eq!(keys[..3], ['y', 'p', 'b'], "{keys:?}");
     assert!(keys.contains(&'x') && keys.last() == Some(&'d'), "{keys:?}");
 
-    // One gate passing reads `Passed`; several read `All 3 passed`.
-    let screen = pty.wait_for(r"Gates\(tests\)\n.*Passed", WAIT)?;
+    // One gate passing reads `Passed`; several read `All 3 passed`. The card draws a moment
+    // after its checkpoint opens, so the screen is read once both are on it.
+    pty.wait_for(r"Gates\(tests\)\n.*Passed", WAIT)?;
+    let screen = pty.wait_for(r"Show the diff", WAIT)?;
     let text = screen.text();
     let order = [
-        "Triage(solo)",
+        "Triage(solo, checked)",
         "2 uncommitted files left out",
         "build:",
         "Gates(",
@@ -200,7 +202,7 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
 fn app_all_hands_sends_a_small_task_to_the_crew() -> anyhow::Result<()> {
     for (on, mode, triage) in [
         (true, RunMode::Crew, "crew"),
-        (false, RunMode::Solo, "solo"),
+        (false, RunMode::Solo, "solo, checked"),
     ] {
         let config = if on {
             format!("{GLOBAL_CONFIG}\n[triage]\nall_hands = true\n")

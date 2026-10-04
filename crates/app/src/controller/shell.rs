@@ -1,6 +1,7 @@
-//! `!` commands. Each runs as you in the repo folder, with your shell and outside the sandbox,
-//! since you typed it. Its output shows as it prints, and the command and its output wait for
-//! the lead's next turn; running one never starts a turn by itself. One runs at a time.
+//! `!` commands. Each runs as you where the conversation works, with your shell and outside the
+//! sandbox, since you typed it: the repo folder, or the run's copy of an agent's session the
+//! conversation carries on. Its output shows as it prints, and the command and its output wait
+//! for the lead's next turn; running one never starts a turn by itself. One runs at a time.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -41,6 +42,8 @@ pub(crate) struct ShellState {
 struct Running {
     id: u32,
     command: String,
+    /// Where it runs, when that isn't the repo folder.
+    folder: Option<PathBuf>,
     output: Kept,
     /// The shell leads its own session and process group, so a stop reaches everything it
     /// started.
@@ -61,12 +64,15 @@ pub(crate) struct ShellRan {
     /// Commands run one at a time and are numbered as they start, so a higher id ended later.
     pub id: u32,
     pub command: String,
+    /// Where it ran, when that wasn't the repo folder.
+    pub folder: Option<PathBuf>,
     pub output: String,
     pub exit_code: Option<i32>,
     pub stopped: bool,
 }
 
-pub(crate) fn run(ctx: &mut Ctx, shell: &mut ShellState, command: String) {
+/// Runs `command` in `folder`, where the conversation works.
+pub(crate) fn run(ctx: &mut Ctx, shell: &mut ShellState, command: String, folder: &Path) {
     let command = command.trim_end().to_owned();
     if command.trim().is_empty() {
         return;
@@ -84,7 +90,7 @@ pub(crate) fn run(ctx: &mut Ctx, shell: &mut ShellState, command: String) {
         },
     });
     let program = user_shell();
-    let mut child = match spawn(&program, &command, &ctx.env.repo_root) {
+    let mut child = match spawn(&program, &command, folder) {
         Ok(child) => child,
         Err(err) => {
             let text = format!("Couldn't start {}: {err}\n", program.display());
@@ -119,6 +125,7 @@ pub(crate) fn run(ctx: &mut Ctx, shell: &mut ShellState, command: String) {
     shell.running = Some(Running {
         id,
         command,
+        folder: (folder != ctx.env.repo_root).then(|| folder.to_owned()),
         output: Kept::default(),
         group,
         stopped: false,
@@ -176,6 +183,7 @@ pub(crate) fn on_update(
             Some(ShellRan {
                 id,
                 command: running.command,
+                folder: running.folder,
                 output: running.output.text(),
                 exit_code,
                 stopped: running.stopped,
@@ -204,22 +212,33 @@ pub(crate) fn context_part(ran: &[ShellRan]) -> Option<InputPart> {
     ))
 }
 
-/// The commands and their output in words, for a message to the lead or to a run. Output is
-/// cleaned of terminal escapes, which mean nothing to a model and could reach a terminal that
-/// shows the prompt.
+/// The commands and their output in words, for a message to the lead or to a run, saying
+/// where they ran. Output is cleaned of terminal escapes, which mean nothing to a model and
+/// could reach a terminal that shows the prompt.
 pub(crate) fn context_text(ran: &[ShellRan]) -> Option<String> {
-    if ran.is_empty() {
-        return None;
-    }
-    let mut text = String::from(
-        "Before this message I ran these commands myself, in the repo folder. Their output is \
-         here as context.\n",
+    let first = ran.first()?;
+    let one_folder = ran.iter().all(|command| command.folder == first.folder);
+    let place = match (&first.folder, one_folder) {
+        (_, false) => "each in the folder named after it".to_owned(),
+        (None, true) => "in the repo folder".to_owned(),
+        (Some(folder), true) => format!("in {}", sanitize_for_terminal(&folder.to_string_lossy())),
+    };
+    let mut text = format!(
+        "Before this message I ran these commands myself, {place}. Their output is here as \
+         context.\n"
     );
     for command in ran {
         text.push_str(&format!(
             "\n$ {}\n",
             sanitize_for_terminal(&command.command)
         ));
+        if !one_folder {
+            let folder = command.folder.as_ref().map_or_else(
+                || "the repo folder".to_owned(),
+                |folder| sanitize_for_terminal(&folder.to_string_lossy()),
+            );
+            text.push_str(&format!("(in {folder})\n"));
+        }
         let output = sanitize_for_terminal(&settled(&command.output));
         if !output.is_empty() {
             text.push_str(&output);

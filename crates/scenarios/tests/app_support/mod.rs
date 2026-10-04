@@ -43,6 +43,10 @@ keys = \"default\"
 
 [supervisor]
 park_grace = \"1s\"
+
+# These scenarios follow solo runs in a checked copy.
+[solo]
+style = \"checked\"
 ";
 
 /// One gate that always passes, for scenarios that reach the merge card.

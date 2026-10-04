@@ -237,6 +237,18 @@ pub(crate) async fn set(
     begin(ctx, settings, Change::Set(vec![(key, value)]), scope)
 }
 
+/// A safety key you set by answering a card that said what it saves, such as a direct turn's
+/// "don't ask again": the answer was the confirm, so it's saved at once.
+pub(crate) fn save_answered(
+    ctx: &mut Ctx,
+    key: &str,
+    value: String,
+    scope: SettingScope,
+) -> Handled {
+    let change = save::Change::Set(vec![(key.to_owned(), value)]);
+    save::apply(ctx, &change, scope, save::TrustAfter::Carry)
+}
+
 pub(crate) async fn reset(
     ctx: &mut Ctx,
     settings: &mut SettingsState,
@@ -257,6 +269,25 @@ pub(crate) async fn ask_scope(
     let value = args::check_known(ctx, &request.key, &request.value)?;
     let recommended = rows::default_scope(&request.command, &request.key);
     ask_where(ctx, settings, vec![(request.key, value)], recommended)
+}
+
+/// Settings worked out elsewhere, saved at a scope you already picked, such as what a request
+/// said to keep "from now on". A safety key among them still asks you to confirm.
+pub(crate) fn save(
+    ctx: &mut Ctx,
+    settings: &mut SettingsState,
+    pairs: Vec<(String, String)>,
+    scope: SettingScope,
+) -> Handled {
+    settings.hold = None;
+    let pairs = pairs
+        .into_iter()
+        .map(|(key, value)| {
+            let value = args::check_known(ctx, &key, &value)?;
+            Ok((key, value))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    begin(ctx, settings, Change::Set(pairs), scope)
 }
 
 /// `SettingScope`, `ConfirmSafetySetting`, `TrustProject`, and `DetectedGates`.

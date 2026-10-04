@@ -106,6 +106,8 @@ impl SupervisedReplays {
             default_agent: request.workers.first().cloned(),
             approval_mode: None,
             front_end: Some("evolution".to_owned()),
+            instructions: Vec::new(),
+            request_settings: Vec::new(),
         };
         let recipe = ForRun {
             loaded: request.recipe.clone(),
@@ -1314,6 +1316,7 @@ mod tests {
             harness_versions: Default::default(),
             version: "0.0.1".to_owned(),
             front_end: None,
+            instructions: Vec::new(),
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),

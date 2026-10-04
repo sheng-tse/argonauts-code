@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::CardId;
 use crate::RunId;
 use crate::Verbosity;
+use crate::agent_sessions::AgentSessionRef;
 use crate::names::{ChatId, RoleName, VendorId, WorkerRef};
 use crate::settings::ui::NarratorMode;
 use crate::vendor_sessions::VendorSessionRef;
@@ -300,6 +301,9 @@ pub enum ResumeTarget {
     /// One of the main agent CLI's own sessions, `<adapter>:<session id>`, carried on through
     /// the CLI's own resume.
     VendorSession(VendorSessionRef),
+    /// One agent's session in a run, `<run>/<session>`, carried on through its CLI's own resume
+    /// in the folder it ran in.
+    Agent(AgentSessionRef),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -500,6 +504,10 @@ pub const PERMISSION_KEYS: &[&str] = &[
     "limits.protected_paths",
     "limits.dependency_allowlist",
     "limits.usd_per_day",
+    // Where solo works and what a direct turn asks you, which a request can't loosen.
+    "solo.style",
+    "solo.asks",
+    "triage.solo_style",
 ];
 
 /// Whether `/permissions <key> <value>` sets `key`: one of [`PERMISSION_KEYS`], or any other
@@ -671,11 +679,16 @@ fn optional_word<'a>(
     }
 }
 
-/// `chat-<n>` is a conversation, `<adapter>:<id>` a CLI's own session, and any other word a
-/// run.
+/// `chat-<n>` is a conversation, `<adapter>:<id>` a CLI's own session, `<run>/<session>` an
+/// agent's session in a run, and any other word a run.
 fn parse_resume(name: &str, args: &str) -> Result<SlashCommand, InputError> {
     let target = match optional_word(name, args, "/resume [conversation, session, or run]")? {
         None => None,
+        Some(word) if word.contains('/') => {
+            let agent = AgentSessionRef::parse(word)
+                .ok_or_else(|| bad(name, format!("{word:?} isn't an agent's session")))?;
+            Some(ResumeTarget::Agent(agent))
+        }
         Some(word) if word.starts_with("chat-") => {
             let chat = ChatId::parse(word)
                 .ok_or_else(|| bad(name, format!("{word:?} isn't a conversation")))?;
@@ -1197,6 +1210,7 @@ mod tests {
             ("/model claude-code/opus xhigh", slash(SlashCommand::Model { role: None, worker: Some(worker("claude-code/opus")), effort: Some("xhigh".into()) })),
             ("/model reviewer codex low", slash(SlashCommand::Model { role: Some(RoleName::Reviewer), worker: Some(worker("codex")), effort: Some("low".into()) })),
             ("/resume codex:019a2f-4c", slash(SlashCommand::Resume { target: Some(ResumeTarget::VendorSession(VendorSessionRef { vendor: VendorId("codex".into()), id: "019a2f-4c".into() })) })),
+            ("/resume run-03/s-002", slash(SlashCommand::Resume { target: Some(ResumeTarget::Agent(AgentSessionRef::parse("run-03/s-002").unwrap())) })),
             ("/model boss codex", bad_args("model")),
             ("/model -x", bad_args("model")),
             ("/model owner codex extra", bad_args("model")),

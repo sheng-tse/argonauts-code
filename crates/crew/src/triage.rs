@@ -1,20 +1,84 @@
 //! Triage rules: solo or crew, computed by code from the default agent's estimate. The agent
-//! supplies facts only and never picks the mode.
+//! supplies facts only and never picks the mode, though your own words may, once code has
+//! checked them.
 
 use argonauts_core::events::run::{RunMode, TriageDecision};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::protocol::{ForcedMode, TriageMiddle, TriageSettings};
+use argonauts_core::settings::protocol::{
+    ForcedMode, SoloStyle, TriageMiddle, TriageSettings, TriageSoloStyle,
+};
 use argonauts_core::steps::intake::ChangeEstimate;
 use argonauts_learning::recipes::{LoadedRecipe, RecipeMode};
 
+/// What your request's words chose, after code checked them: the mode, and where solo works.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Asked {
+    pub mode: Option<RunMode>,
+    /// `Checked` when the words ask for a copy or a lone review, `Direct` when they ask for
+    /// your checkout and `solo.style` allows it.
+    pub solo: Option<SoloStyle>,
+}
+
 /// Triage without a recipe: the file and label rules.
 pub fn decide(estimate: &ChangeEstimate, settings: &Settings) -> TriageDecision {
-    decide_with(estimate, settings, None)
+    decide_with(estimate, settings, None, Asked::default())
 }
 
 /// Triage with the recipe whose `match` fits the task, as the app found it in the main
-/// checkout. With `triage.use_recipes`, a recipe that names a mode decides solo or crew.
+/// checkout. With `triage.use_recipes`, a recipe that names a mode decides solo or crew. Your
+/// words beat every setting: All hands, a forced mode, and a recipe.
 pub fn decide_with(
+    estimate: &ChangeEstimate,
+    settings: &Settings,
+    recipe: Option<&LoadedRecipe>,
+    asked: Asked,
+) -> TriageDecision {
+    let mut decision = match asked.mode {
+        Some(mode) => decision(mode, false, TriageDecision::AS_YOU_ASKED, String::new()),
+        None => by_the_rules(estimate, settings, recipe),
+    };
+    decision.solo = solo_style(&decision, settings, asked.solo);
+    // Only a checked card can escalate, so solo first then crew run direct is plain solo.
+    if decision.solo == Some(SoloStyle::Direct) && decision.escalate_to_crew {
+        decision.escalate_to_crew = false;
+        decision.reason = decision.reason.replace(SOLO_THEN_CREW, DIRECT_INSTEAD);
+    }
+    decision
+}
+
+const SOLO_THEN_CREW: &str = "solo first, then crew if the card escalates";
+const DIRECT_INSTEAD: &str = "solo in your checkout, so it won't become a crew run";
+
+/// Where a solo run works. Your words asking for a copy and solo settings that need a copy
+/// make it checked. Solo you chose follows `solo.style`, and solo the rules picked follows
+/// `triage.solo_style`.
+fn solo_style(
+    decision: &TriageDecision,
+    settings: &Settings,
+    asked: Option<SoloStyle>,
+) -> Option<SoloStyle> {
+    if decision.mode != RunMode::Solo {
+        return None;
+    }
+    if asked == Some(SoloStyle::Checked) || settings.solo.needs_a_copy() {
+        return Some(SoloStyle::Checked);
+    }
+    if asked == Some(SoloStyle::Direct) {
+        return Some(settings.solo.style);
+    }
+    let chosen = decision.as_you_asked() || decision.rule == FORCE;
+    Some(match settings.triage.solo_style {
+        _ if chosen => settings.solo.style,
+        TriageSoloStyle::Checked => SoloStyle::Checked,
+        TriageSoloStyle::Direct => SoloStyle::Direct,
+        TriageSoloStyle::AsSolo => settings.solo.style,
+    })
+}
+
+/// The rule a preset's forced mode fires, which counts as solo you chose.
+const FORCE: &str = "force";
+
+fn by_the_rules(
     estimate: &ChangeEstimate,
     settings: &Settings,
     recipe: Option<&LoadedRecipe>,
@@ -31,7 +95,7 @@ pub fn decide_with(
         return decision(
             mode,
             false,
-            "force",
+            FORCE,
             format!("triage.force is {}", name(mode)),
         );
     }
@@ -131,6 +195,7 @@ fn decision(mode: RunMode, escalate_to_crew: bool, rule: &str, reason: String) -
         escalate_to_crew,
         rule: rule.to_owned(),
         reason,
+        solo: None,
     }
 }
 
@@ -355,6 +420,93 @@ mod tests {
                 "{row}"
             );
         }
+    }
+
+    /// Your words beat every setting that picks a mode: All hands, a forced mode, a recipe.
+    #[test]
+    fn words_beat_all_hands_a_forced_mode_and_a_recipe() {
+        let mut all_hands = Settings::default();
+        all_hands.triage.all_hands = true;
+        let mut forced_crew = Settings::default();
+        forced_crew.triage.force = Some(ForcedMode::Crew);
+        let text = "recipe: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
+                    match: { task_types: [bugfix] }\n";
+        let path = std::path::Path::new("v1.yaml");
+        let recipe = LoadedRecipe {
+            recipe: argonauts_learning::recipes::parse(path, text).unwrap(),
+            path: path.to_owned(),
+            text: text.to_owned(),
+            sha256: String::new(),
+        };
+        let solo = Asked {
+            mode: Some(RunMode::Solo),
+            solo: None,
+        };
+        let defaults = Settings::default();
+        let small = estimate(1, true, &[]);
+        for (settings, recipe) in [
+            (&all_hands, None),
+            (&forced_crew, None),
+            (&defaults, Some(&recipe)),
+        ] {
+            assert_eq!(
+                decide_with(&small, settings, recipe, Asked::default()).mode,
+                RunMode::Crew
+            );
+            let asked = decide_with(&small, settings, recipe, solo);
+            assert_eq!(asked.mode, RunMode::Solo);
+            assert!(asked.as_you_asked(), "{asked:?}");
+            assert_eq!(asked.reason, "");
+        }
+    }
+
+    /// Solo you chose works where `solo.style` says, solo the rules picked where
+    /// `triage.solo_style` says, and anything that needs a copy is checked.
+    #[test]
+    fn where_solo_works() {
+        use SoloStyle::{Checked, Direct};
+        let defaults = Settings::default();
+        let mut solo_checked = Settings::default();
+        solo_checked.solo.style = Checked;
+        let mut rules_direct = Settings::default();
+        rules_direct.triage.solo_style = TriageSoloStyle::Direct;
+        let mut as_solo = Settings::default();
+        as_solo.triage.solo_style = TriageSoloStyle::AsSolo;
+        let mut reviewed = Settings::default();
+        reviewed.solo.review = true;
+        let mut forced_solo = Settings::default();
+        forced_solo.triage.force = Some(ForcedMode::Solo);
+        let words = |solo| Asked {
+            mode: Some(RunMode::Solo),
+            solo,
+        };
+        let rules = |solo| Asked { mode: None, solo };
+        let small = estimate(1, true, &[]);
+        let untested = estimate(1, false, &[]);
+        let large = estimate(20, true, &[]);
+        let table: Vec<(&Settings, &ChangeEstimate, Asked, Option<SoloStyle>)> = vec![
+            (&defaults, &small, words(None), Some(Direct)),
+            (&solo_checked, &small, words(None), Some(Checked)),
+            (&defaults, &small, words(Some(Checked)), Some(Checked)),
+            (&solo_checked, &small, words(Some(Direct)), Some(Checked)),
+            (&defaults, &small, rules(None), Some(Checked)),
+            (&rules_direct, &small, rules(None), Some(Direct)),
+            (&as_solo, &small, rules(None), Some(Direct)),
+            (&rules_direct, &small, rules(Some(Checked)), Some(Checked)),
+            // Solo first then crew is checked by default, and plain solo when picks run direct.
+            (&defaults, &untested, rules(None), Some(Checked)),
+            (&rules_direct, &untested, rules(None), Some(Direct)),
+            (&reviewed, &small, words(None), Some(Checked)),
+            (&forced_solo, &small, rules(None), Some(Direct)),
+            (&defaults, &large, rules(None), None),
+        ];
+        for (settings, estimate, asked, solo) in table {
+            let got = decide_with(estimate, settings, None, asked);
+            assert_eq!(got.solo, solo, "{asked:?} {got:?}");
+        }
+        let plain = decide_with(&untested, &rules_direct, None, rules(None));
+        assert!(!plain.escalate_to_crew, "{plain:?}");
+        assert!(plain.reason.ends_with(DIRECT_INSTEAD), "{}", plain.reason);
     }
 
     #[test]

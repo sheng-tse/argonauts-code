@@ -77,9 +77,15 @@ impl Limits {
         Paths::new(self.repo.home())
     }
 
-    /// Replaces your global config, for settings that name files the scenario made.
+    /// Replaces your global config, for settings that name files the scenario made. These
+    /// scenarios follow solo runs, so solo is checked unless the settings say how it runs.
     pub fn write_settings(&self, settings: &str) -> anyhow::Result<()> {
-        write_file(&self.paths().global_config(), settings)
+        let settings = if settings.contains("[solo]") {
+            settings.to_owned()
+        } else {
+            format!("{settings}\n[solo]\nstyle = \"checked\"\n")
+        };
+        write_file(&self.paths().global_config(), &settings)
     }
 
     /// The interactive app, once its prompt is idle.

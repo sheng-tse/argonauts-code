@@ -290,6 +290,8 @@ pub(super) async fn run_tests(
         deny_read: vec![replay_dir.to_path_buf()],
         network,
         proxy_port: None,
+        ask_port: None,
+        closed: Vec::new(),
     };
     let request = |name: &str, command: &[String], setup: bool| GateRequest {
         run: entry.run.clone(),

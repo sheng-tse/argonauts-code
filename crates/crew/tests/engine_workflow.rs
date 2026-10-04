@@ -73,6 +73,7 @@ fn rules(
         lookup: &find,
         depth,
         budget_left_usd: budget,
+        as_you_asked: &[],
     };
     match validate(workflow, &context) {
         Ok(()) => BTreeSet::new(),

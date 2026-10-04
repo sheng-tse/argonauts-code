@@ -730,7 +730,7 @@ async fn recipe_applies_at_triage_and_run_start() -> anyhow::Result<()> {
         triage::decide(&estimate, &crew.settings).mode,
         RunMode::Solo
     );
-    let decided = triage::decide_with(&estimate, &crew.settings, Some(matched));
+    let decided = triage::decide_with(&estimate, &crew.settings, Some(matched), Default::default());
     assert_eq!(decided.mode, RunMode::Crew);
     assert_eq!(decided.rule, "recipe:cli-flag");
     let overlay = recipes::settings_overlay(matched)?;
@@ -787,7 +787,7 @@ fn a_recipe_decides_the_mode_at_triage() {
         sha256: "ef".repeat(32),
     };
     assert_eq!(triage::decide(&estimate, &settings).mode, RunMode::Solo);
-    let decided = triage::decide_with(&estimate, &settings, Some(&loaded));
+    let decided = triage::decide_with(&estimate, &settings, Some(&loaded), Default::default());
     assert_eq!(decided.mode, RunMode::Crew);
     assert_eq!(decided.rule, "recipe:cli-flag");
     assert!(decided.reason.contains("cli-flag v2"), "{}", decided.reason);
@@ -795,14 +795,14 @@ fn a_recipe_decides_the_mode_at_triage() {
     let mut off = settings.clone();
     off.triage.use_recipes = false;
     assert_eq!(
-        triage::decide_with(&estimate, &off, Some(&loaded)).mode,
+        triage::decide_with(&estimate, &off, Some(&loaded), Default::default()).mode,
         RunMode::Solo
     );
     // A recipe without a mode doesn't decide one.
     let mut modeless = loaded.clone();
     modeless.recipe.mode = None;
     assert_eq!(
-        triage::decide_with(&estimate, &settings, Some(&modeless)).mode,
+        triage::decide_with(&estimate, &settings, Some(&modeless), Default::default()).mode,
         RunMode::Solo
     );
 }

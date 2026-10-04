@@ -110,6 +110,12 @@ pub fn render_profile(profile: &SandboxProfile) -> String {
             )),
             None => sbpl.push_str(LOOPBACK),
         }
+        // A direct turn's questions go to the app, which may be asked before an edit.
+        if let Some(port) = profile.ask_port.filter(|_| profile.proxy_port.is_some()) {
+            sbpl.push_str(&format!(
+                "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
+            ));
+        }
     }
     sbpl
 }
@@ -268,6 +274,8 @@ mod tests {
             deny_read,
             network: false,
             proxy_port: None,
+            ask_port: None,
+            closed: Vec::new(),
         }
     }
 
@@ -340,6 +348,67 @@ mod tests {
         assert_eq!(run(&profile, &root, TRY_WRITE, &[&status]), "blocked\n");
         let listing = r#"if ls "$1" >/dev/null 2>&1; then echo read; else echo blocked; fi"#;
         assert_eq!(run(&profile, &root, listing, &[&run_dir]), "blocked\n");
+    }
+
+    /// A direct turn writes your checkout, but never the files every later session and your
+    /// own CLI load, and git's own files only as far as a commit needs when agents commit.
+    #[test]
+    fn a_direct_turn_writes_your_checkout_but_not_what_configures_agents() {
+        let (_temp, root) = scratch();
+        let home = root.join("home");
+        let argonauts = home.join(".argonauts");
+        let session = argonauts.join("state/repo/chats/chat-1/turn-1");
+        let checkout = root.join("checkout");
+        std::fs::create_dir_all(&session).unwrap();
+        for dir in [
+            ".claude",
+            ".agents",
+            ".codex",
+            ".argonauts",
+            ".git/hooks",
+            "src",
+        ] {
+            std::fs::create_dir_all(checkout.join(dir)).unwrap();
+        }
+        std::fs::write(checkout.join(".git/config"), "").unwrap();
+        for commits in [true, false] {
+            let input = ProfileInput {
+                access: Access::Direct,
+                vendor: "claude-code",
+                workdir: &checkout,
+                session_dir: &session,
+                argonauts_home: &argonauts,
+                user_home: &home,
+                base_worktree: None,
+                status_file: None,
+                extra_writable: &[],
+                sees_other_copies: false,
+                commits,
+            };
+            let profile = SandboxProfile {
+                mode: SandboxMode::Os,
+                deny_read: vec![argonauts.clone()],
+                ..session_profile(&SandboxProfile::default(), &input)
+            };
+            let write = |path: &str| run(&profile, &checkout, TRY_WRITE, &[&checkout.join(path)]);
+            assert_eq!(write("src/money.py"), "wrote\n");
+            assert_eq!(write("new.txt"), "wrote\n");
+            for protected in [
+                ".claude/settings.json",
+                ".agents/hook.sh",
+                ".codex/config.toml",
+                ".argonauts/config.toml",
+                ".mcp.json",
+                ".git/hooks/pre-commit",
+                ".git/config",
+            ] {
+                assert_eq!(write(protected), "blocked\n", "{protected}");
+            }
+            let index = if commits { "wrote\n" } else { "blocked\n" };
+            assert_eq!(write(".git/index"), index, "agents_commit = {commits}");
+            let state = session.join("x");
+            assert_eq!(run(&profile, &checkout, TRY_READ, &[&state]), "blocked\n");
+        }
     }
 
     #[test]
@@ -495,6 +564,97 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             (refusals[0].host.as_str(), refusals[0].why),
             ("evil.example.test", Why::NotListed)
         );
+    }
+
+    /// With the network off, a supervised direct turn's session still reaches the app's port
+    /// for its questions, as it reaches the proxy, and no other loopback port.
+    #[test]
+    fn a_supervised_direct_turn_with_the_network_off_reaches_the_app_to_ask() {
+        let app = ok_server();
+        let other = ok_server();
+        let script = format!(
+            r#"
+            /usr/bin/curl -s --noproxy '*' --max-time 3 "http://127.0.0.1:$1/" || printf no-ask; echo
+            /usr/bin/curl -s --noproxy '*' --max-time 3 "http://127.0.0.1:{other}/" || printf no-direct; echo
+        "#
+        );
+        // The proxy's port; nothing needs to answer there for this.
+        let proxied = |ask_port| SandboxProfile {
+            proxy_port: Some(9),
+            ask_port,
+            ..strict(super::super::profile::temp_dirs(), Vec::new())
+        };
+        assert_eq!(
+            run_with_env(&proxied(Some(app)), &script, app, &[]),
+            "ok\nno-direct\n"
+        );
+        assert_eq!(
+            run_with_env(&proxied(None), &script, app, &[]),
+            "no-ask\nno-direct\n",
+            "without its port the session couldn't ask"
+        );
+    }
+
+    /// OpenCode's project config and a hooks folder `core.hooksPath` moves into your checkout
+    /// are closed too, whether or not they exist yet.
+    #[test]
+    fn a_direct_turn_cant_plant_opencode_config_or_a_hook() {
+        let (_temp, root) = scratch();
+        let home = root.join("home");
+        let argonauts = home.join(".argonauts");
+        let session = argonauts.join("state/repo/chats/chat-1/turn-1");
+        let checkout = root.join("checkout");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::create_dir_all(checkout.join("src")).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "core.hooksPath", ".husky"]);
+        let input = ProfileInput {
+            access: Access::Direct,
+            vendor: "opencode",
+            workdir: &checkout,
+            session_dir: &session,
+            argonauts_home: &argonauts,
+            user_home: &home,
+            base_worktree: None,
+            status_file: None,
+            extra_writable: &[],
+            sees_other_copies: false,
+            commits: true,
+        };
+        let profile = SandboxProfile {
+            mode: SandboxMode::Os,
+            deny_read: vec![argonauts.clone()],
+            ..session_profile(&SandboxProfile::default(), &input)
+        };
+        assert!(
+            profile.closed.contains(&checkout.join(".husky")),
+            "{:?}",
+            profile.closed
+        );
+        let write = |path: &str| run(&profile, &checkout, TRY_WRITE, &[&checkout.join(path)]);
+        assert_eq!(write("src/app.ts"), "wrote\n");
+        assert_eq!(write("new.txt"), "wrote\n");
+        let make = |path: &str| {
+            let script = r#"if (mkdir -p "$(dirname "$1")" && printf x > "$1") 2>/dev/null; then echo wrote; else echo blocked; fi"#;
+            run(&profile, &checkout, script, &[&checkout.join(path)])
+        };
+        for protected in [
+            "opencode.json",
+            "opencode.jsonc",
+            ".opencode/plugin/run.js",
+            ".husky/pre-commit",
+        ] {
+            assert_eq!(make(protected), "blocked\n", "{protected}");
+        }
     }
 
     #[test]

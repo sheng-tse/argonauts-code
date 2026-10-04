@@ -9,8 +9,9 @@ use time::OffsetDateTime;
 
 use crate::names::{CheckpointId, SessionKey, TurnId, VendorId, WorkerRef};
 use crate::settings::approvals::ApprovalMode;
+use crate::settings::protocol::SoloStyle;
 use crate::settings::workflows::RunStyle;
-use crate::steps::intake::ChangeEstimate;
+use crate::steps::intake::{ChangeEstimate, InstructionKind};
 use crate::{CardId, PhaseStatus, RunId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,6 +129,41 @@ pub struct RunStarted {
     /// The MCP client that asked for the run, by the name it reported for itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub front_end: Option<String>,
+    /// What the request said about how to run it, and what came of each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<CheckedInstruction>,
+}
+
+/// One instruction from a request, after code checked it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckedInstruction {
+    /// The request's own words for it.
+    pub says: String,
+    pub kind: InstructionKind,
+    #[serde(flatten)]
+    pub outcome: InstructionOutcome,
+}
+
+impl CheckedInstruction {
+    pub fn followed(&self) -> bool {
+        matches!(self.outcome, InstructionOutcome::Followed { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum InstructionOutcome {
+    /// Applied, as the Triage line says it: "Codex coordinates". `note` says what of it couldn't
+    /// be, such as "Codex has no model named opus".
+    Followed {
+        said: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// Not followed, and why, as the Triage line says it.
+    NotFollowed { why: String },
+    /// Its words aren't in your message, so the model wrote it, not you. Only Ctrl+O lists it.
+    Dropped,
 }
 
 /// A run's last word to you, in the main agent's voice.
@@ -198,8 +234,22 @@ pub struct TriageDecision {
     pub escalate_to_crew: bool,
     /// The rule that fired, such as `solo_max_files` or `recipe:api-feature`.
     pub rule: String,
-    /// One line for you, such as "at most 3 files, and tests exist".
+    /// One line for you, such as "at most 3 files, and tests exist". Empty when your words
+    /// chose the mode.
     pub reason: String,
+    /// Where a solo run works: in your checkout, or checked in a copy. `None` for the crew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solo: Option<SoloStyle>,
+}
+
+impl TriageDecision {
+    /// The rule that fires when your words chose the mode.
+    pub const AS_YOU_ASKED: &'static str = "request";
+
+    /// Your words chose the mode, not the rules.
+    pub fn as_you_asked(&self) -> bool {
+        self.rule == Self::AS_YOU_ASKED
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -8,12 +8,13 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::agent_sessions::AgentSession;
 use crate::api::{DiffScope, DiffView, RawView, RunSummary, StatusSummary, TakeOverTicket};
 use crate::crew_panel::CrewPanel;
 use crate::display_names::DisplayNames;
 use crate::events::RunEvent;
 use crate::events::checkpoint::{AnswerAction, AnswerOption, FreeText};
-use crate::events::run::{ParkReason, Party, RunMode, TriageDecision};
+use crate::events::run::{CheckedInstruction, ParkReason, Party, RunMode, TriageDecision};
 use crate::input::{MentionTarget, SlashCommand, WorkflowAction};
 use crate::limits::CostEstimate;
 use crate::limits::{HealthState, QuotaReading};
@@ -278,6 +279,11 @@ pub enum ViewRequest {
     Learning {
         area: LearningArea,
     },
+    /// The agents' sessions of one run the `/resume` picker listed without them. Answered with
+    /// `AgentSessions`.
+    AgentSessions {
+        run: RunId,
+    },
 }
 
 /// The outcome of a choice closed with nothing changed. The transcript marks it as neutral
@@ -394,9 +400,11 @@ pub enum AppEvent {
     VendorCommands {
         set: VendorCommandSet,
     },
-    /// The repo's files for the `@` list: those git tracks and those it would (untracked and
-    /// not ignored), relative to the repo with `/` between folders. Sent at start and in
-    /// answer to `Request { RepoFiles }`.
+    /// The files for the `@` list: those git tracks and those it would (untracked and not
+    /// ignored) where the conversation works, relative to that folder with `/` between
+    /// folders. That's the repo, or the run's copy of an agent's session the conversation
+    /// carries on. Sent at start, when that folder changes, and in answer to
+    /// `Request { RepoFiles }`.
     RepoFiles {
         paths: Vec<String>,
     },
@@ -561,13 +569,17 @@ pub enum ChatEvent {
         turn: TurnId,
         text: String,
         worker: WorkerRef,
-        /// Always true.
+        /// False only for a direct turn, which may change your files.
         read_only: bool,
         commit: String,
         /// Uncommitted paths left out.
         uncommitted: Vec<String>,
         #[serde(default)]
         settings_sha256: Option<String>,
+        /// The turn goes on from the one before, as a direct turn does after its estimate, so
+        /// your message isn't shown again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        continues: bool,
     },
     Agent {
         turn: TurnId,
@@ -587,6 +599,17 @@ pub enum ChatEvent {
     TurnCancelled {
         turn: TurnId,
     },
+    /// A direct turn's agent ran out, and `to` carries on the same request in the same folder.
+    HandedOff {
+        turn: TurnId,
+        from: WorkerRef,
+        to: WorkerRef,
+        /// Such as "hit its usage limit".
+        why: String,
+        /// What `to` was told, such as "your request, the transcript so far, and that
+        /// invoice/money.py changed".
+        told: String,
+    },
 }
 
 /// What a chat turn turned out to be.
@@ -596,12 +619,17 @@ pub enum TurnReply {
     Answer {
         markdown: String,
     },
-    /// Triage picked a mode and the run starts.
+    /// Triage picked a mode and the run starts, or for direct solo the session goes ahead in
+    /// your checkout.
     Change {
         /// The agent's short plan of attack.
         markdown: String,
         estimate: ChangeEstimate,
         triage: TriageDecision,
+        /// What the request said about how to run it, checked, for the Triage line of a solo
+        /// that works in your checkout. A run's own Triage line has them from its start.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        instructions: Vec<CheckedInstruction>,
     },
     /// Could be either; a choice card follows.
     Unclear {
@@ -654,6 +682,26 @@ pub enum ChoiceKind {
     /// `/connect`: Write it `y`, which keeps a backup of the front end's config first, or Not
     /// now `n`. The body shows the file and the entry. Esc means not now.
     ConfirmConnect,
+    /// A request said "from now on": This project, just me `m`, This project, shared `p`,
+    /// Everywhere `e`, or Just this request `r`. The body says what it would keep. Esc keeps
+    /// it for this request only.
+    KeepInstructions,
+    /// A direct turn's CLI asks before an edit, a command, or another tool: Yes, Yes and don't
+    /// ask again, or No, which tells it to stop. The body shows the edit or the command. Esc
+    /// means No, as in Claude Code.
+    Permission,
+    /// agy was refused commands it would have asked about: Yes, and continue `y`, which
+    /// resumes it for one turn that runs commands without asking, or No `n`. Esc sets it aside.
+    RefusedCommands,
+    /// `/rewind` in a direct conversation: one option per message whose turn changed files,
+    /// newest first. Esc cancels.
+    RewindTurn,
+    /// Plan first in direct solo: Yes, go ahead `y` resumes the session that planned as a turn
+    /// that works in your checkout, or No `n`, and nothing changes. Esc means No.
+    GoAhead,
+    /// A direct turn's agent ran out: one option per agent that may carry it on in your checkout,
+    /// `1` to `9`, then Stop here `s`. Esc stops.
+    HandOff,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -671,6 +719,18 @@ pub enum ViewData {
         /// rest under a Kind column.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sessions: Vec<VendorSession>,
+        /// The sessions of the listed runs' agents, each listed under its run.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agents: Vec<AgentSession>,
+        /// The runs whose agents `agents` holds, the newest few. An older run's are read when
+        /// you open it in the picker.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agents_read: Vec<RunId>,
+    },
+    /// One run's agents' sessions, for the `/resume` picker.
+    AgentSessions {
+        run: RunId,
+        agents: Vec<AgentSession>,
     },
     /// A goal-style run's goal.
     Goal {

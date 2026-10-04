@@ -145,7 +145,7 @@ impl Adapter for AcpAdapter {
             home: home.as_ref().map(|(_, home, _)| home.as_path()),
         };
         let template = match req.role {
-            SessionRole::Build => &self.manifest.build_args,
+            SessionRole::Build | SessionRole::Direct => &self.manifest.build_args,
             SessionRole::ReadOnly => &self.manifest.read_only_args,
         };
         let args = template

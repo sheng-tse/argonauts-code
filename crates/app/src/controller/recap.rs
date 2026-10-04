@@ -378,6 +378,7 @@ mod tests {
             escalate_to_crew: false,
             rule: "recipe:api-feature".to_owned(),
             reason: "the recipe for api-feature says crew".to_owned(),
+            solo: None,
         };
         let reply = TurnReply::Change {
             markdown: String::new(),
@@ -387,6 +388,7 @@ mod tests {
             }))
             .unwrap(),
             triage,
+            instructions: Vec::new(),
         };
         assert_eq!(
             recap_from_turn("add rate limiting", &reply),

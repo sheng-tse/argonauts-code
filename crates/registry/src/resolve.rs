@@ -32,6 +32,7 @@ const PROJECT: &str = "project";
 const PROJECT_LOCAL: &str = "project-local";
 const PRESET: &str = "preset";
 const FLAG: &str = "flag";
+const REQUEST: &str = "request";
 
 /// Set in every agent session; safety keys never change from inside one.
 pub(crate) const SESSION_ENV: &str = "ARGONAUTS_SESSION";
@@ -117,6 +118,12 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
         warnings.extend(moved_keys(&mut table, &source));
         set_by.record(&table, FLAG, &source);
         budget_units.note(FLAG, &source, &table)?;
+        merge(&mut merged, table);
+    }
+    for entry in &sources.request {
+        let table = read_request(entry, &merged)?;
+        set_by.record(&table, REQUEST, "your request");
+        budget_units.note(REQUEST, "your request", &table)?;
         merge(&mut merged, table);
     }
     // A flag that sets the key after the preset leaves nothing hidden to warn about.
@@ -377,6 +384,31 @@ fn read_flag(flag: &str, interactive: bool) -> Result<(String, Table), SettingsE
         refuse_unless_person(key, interactive)?;
     }
     Ok((format!("--set {flag}"), table))
+}
+
+/// One setting a request asked for. A safety key passes only when it tightens what `merged`
+/// says, by the fixed rules of [`tightens`](crate::tightens).
+fn read_request(entry: &str, merged: &Table) -> Result<Table, SettingsError> {
+    let table = parse_flag(entry)?;
+    check_plain_keys(&table, &format!("your request: {entry}"))?;
+    for (key, value) in leaves(&table) {
+        if is_safety_key(&key) && !crate::tightens(&key, &value, value_at(merged, &key)) {
+            return Err(SettingsError::Refused(format!(
+                "{key} is a safety setting, and a request may only make it stricter"
+            )));
+        }
+    }
+    Ok(table)
+}
+
+/// The value at a dotted key, if every table on the way is there.
+fn value_at<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
+    let mut segments = key.split('.');
+    let mut value = table.get(segments.next()?)?;
+    for segment in segments {
+        value = value.as_table()?.get(segment)?;
+    }
+    Some(value)
 }
 
 const WORKFLOW: &str = "workflow";
@@ -1442,6 +1474,67 @@ mod tests {
         assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
         assert!(resolved.warnings[0].contains("default_agent"));
         assert_eq!(resolved.settings.default_agent.worker, "claude-code");
+    }
+
+    #[test]
+    fn a_request_wins_over_every_layer_for_its_run_and_only_tightens_safety_keys() {
+        let request = |entries: &[&str]| SettingsSources {
+            overrides: vec![
+                "roles.reviewer.workers=[\"claude-code\"]".into(),
+                "approvals.merge.mode=\"supervised\"".into(),
+            ],
+            interactive: true,
+            request: entries.iter().map(|entry| (*entry).to_owned()).collect(),
+            ..SettingsSources::default()
+        };
+        let resolved = resolve(&request(&[
+            "roles.reviewer.workers=[\"codex\"]",
+            "approvals.merge.mode=\"supervised\"",
+            "budget.run_usd=1",
+            "sandbox.network=false",
+            "solo.style=\"checked\"",
+        ]))
+        .unwrap();
+        let settings = &resolved.settings;
+        assert_eq!(
+            settings.roles[&RoleName::Reviewer].workers[0].worker,
+            "codex"
+        );
+        assert_eq!(settings.budget.run_usd, Some(1.0));
+        assert!(!settings.sandbox.network);
+        let from = |key: &str| {
+            resolved
+                .overrides
+                .iter()
+                .find(|record| record.key == key)
+                .map(|record| record.from.clone())
+        };
+        for key in [
+            "roles.reviewer.workers",
+            "approvals.merge.mode",
+            "budget.run_usd",
+            "sandbox.network",
+            "solo.style",
+        ] {
+            assert_eq!(from(key).as_deref(), Some("request"), "{key}");
+        }
+        for loosening in [
+            "approvals.merge.mode=\"auto\"",
+            "budget.run_usd=50",
+            "sandbox.network=true",
+            "gates.run=[]",
+            "solo.style=\"direct\"",
+        ] {
+            let refused = resolve(&request(&[loosening])).unwrap_err();
+            assert!(
+                matches!(&refused, SettingsError::Refused(message) if message.contains("only make it stricter")),
+                "{loosening}: {refused:?}"
+            );
+        }
+        // The next run's sources carry no request, so nothing of it stays.
+        let next = resolve(&request(&[])).unwrap();
+        assert_eq!(next.settings.budget.run_usd, Some(20.0));
+        assert!(next.overrides.iter().all(|record| record.from != "request"));
     }
 
     #[test]

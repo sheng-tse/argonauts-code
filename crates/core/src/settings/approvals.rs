@@ -35,6 +35,9 @@ pub struct ApprovalSettings {
     /// Variables that mark another agent's shell. A caller with one in its ancestry is refused
     /// every approval, like one with `ARGONAUTS_SESSION`.
     pub refuse_ancestor_env: Vec<String>,
+    /// Commands a direct turn runs without asking, saved from its cards' "don't ask again". A
+    /// pattern ending in `*` covers every command it starts.
+    pub allow_commands: Vec<String>,
 }
 
 impl Default for ApprovalSettings {
@@ -58,6 +61,7 @@ impl Default for ApprovalSettings {
             approver: ApproverSettings::default(),
             presence: Presence::Warn,
             refuse_ancestor_env: vec!["OPENCLAW_SHELL".to_owned(), "HERMES_SESSION_ID".to_owned()],
+            allow_commands: Vec::new(),
         }
     }
 }

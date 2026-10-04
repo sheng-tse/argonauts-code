@@ -100,6 +100,8 @@ pub fn no_tools_spec(session: NoToolsSession<'_>) -> io::Result<SessionSpec> {
             deny_read: Vec::new(),
             network: false,
             proxy_port: None,
+            ask_port: None,
+            closed: Vec::new(),
         },
     };
 
@@ -128,6 +130,7 @@ pub fn no_tools_spec(session: NoToolsSession<'_>) -> io::Result<SessionSpec> {
         isolated: true,
         status_file: None,
         env: Vec::new(),
+        asking: None,
     })
 }
 

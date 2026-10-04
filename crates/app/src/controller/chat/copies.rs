@@ -21,7 +21,8 @@ const FORK_EXCHANGES: usize = 4;
 const FORK_CHARS: usize = 600;
 
 /// `/branch`: a copy of the conversation that you carry on, while the original stays as it
-/// was for `/resume`. The copy starts a fresh vendor session primed with the conversation.
+/// was for `/resume`. The copy starts a fresh vendor session primed with the conversation, with
+/// the same agent in the same folder when the original carries on an agent's session.
 pub(crate) fn branch(
     ctx: &mut Ctx,
     chat: &mut ChatState,
@@ -43,11 +44,13 @@ pub(crate) fn branch(
     ctx.notice(
         NoteLevel::Info,
         format!(
-            "Branched into {}, \"{}\". /resume {original} goes back to the original.",
-            copy.id, copy.title
+            "Branched into {}, \"{}\".{} /resume {original} goes back to the original.",
+            copy.id,
+            copy.title,
+            works_in(ctx, &copy)
         ),
     );
-    chat.succeed(copy);
+    chat.succeed(ctx, copy);
     Ok(vec![Effect::Status])
 }
 
@@ -73,8 +76,10 @@ pub(crate) fn fork(
         ctx.notice(
             NoteLevel::Info,
             format!(
-                "Forked this conversation to {}. /resume {} picks the copy up.",
-                copy.id, copy.id
+                "Forked this conversation to {}.{} /resume {} picks the copy up.",
+                copy.id,
+                works_in(ctx, &copy),
+                copy.id
             ),
         );
     }
@@ -112,7 +117,30 @@ fn forked_request(prompt: &str, history: &[Exchange]) -> String {
     text
 }
 
+/// Where a copy of a conversation that carries on an agent's session works, said after its
+/// name, with the agent it goes to. Nothing for one that works in your checkout.
+fn works_in(ctx: &Ctx, copy: &ChatState) -> String {
+    let Some(place) = &copy.place else {
+        return String::new();
+    };
+    let agent = ctx.names.worker(&place.worker);
+    if place.folder == ctx.env.repo_root {
+        return format!(" It works with {agent} in your checkout, on a session of its own.");
+    }
+    let folder = ctx.env.display(&place.folder);
+    let on_branch = place
+        .branch
+        .as_deref()
+        .map_or_else(String::new, |branch| format!(" on {branch}"));
+    format!(
+        " It works with {agent} in the run's copy in {folder}{on_branch}, not your checkout, on a \
+         session of its own."
+    )
+}
+
 /// A new conversation holding this one's journal and history, named `name` or after this one.
+/// One that carries on an agent's session keeps working where it does, with that agent, but
+/// on a fresh session of the agent's CLI, since two conversations never share one.
 fn copy_of(
     ctx: &Ctx,
     chat: &ChatState,
@@ -135,6 +163,7 @@ fn copy_of(
     copy.store.save_title(&copy.title)?;
     copy.turns = chat.turns;
     copy.history = chat.history.clone();
+    copy.place = chat.place.clone();
     Ok(copy)
 }
 

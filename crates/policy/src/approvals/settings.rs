@@ -78,6 +78,13 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
         approver: approver(&a.approver, &b.approver),
         presence: presence(a.presence, b.presence),
         refuse_ancestor_env: union(&a.refuse_ancestor_env, &b.refuse_ancestor_env),
+        // A command runs without asking only while both allow it.
+        allow_commands: a
+            .allow_commands
+            .iter()
+            .filter(|pattern| b.allow_commands.contains(pattern))
+            .cloned()
+            .collect(),
     }
 }
 

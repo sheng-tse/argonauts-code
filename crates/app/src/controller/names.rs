@@ -31,6 +31,14 @@ impl NamesSent {
             None => DisplayNames::default().harness(id),
         }
     }
+
+    /// `Opus 5.5` for `opus` on `claude-code`.
+    pub(crate) fn model(&self, harness: &str, model: &str) -> Option<String> {
+        match &self.0 {
+            Some(names) => names.model(harness, Some(model)),
+            None => DisplayNames::default().model(harness, Some(model)),
+        }
+    }
 }
 
 pub(crate) fn send(ctx: &mut Ctx) {

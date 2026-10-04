@@ -15,6 +15,7 @@ use std::process::ExitCode;
 
 use argonauts_app::{FirstView, InteractiveOptions};
 use argonauts_core::RunId;
+use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::names::ChatId;
 use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::vendor_sessions::VendorSessionRef;
@@ -99,9 +100,17 @@ async fn dispatch(cli: Cli) -> ExitCode {
             ref status_file,
             ref report_schema,
             ref report_file,
+            ref ask,
+            approve_tool,
+            start_run,
         })) => mcp::session(
             status_file.as_deref(),
             report_schema.as_deref().zip(report_file.as_deref()),
+            ask.as_deref().map(|endpoint| mcp::Asking {
+                endpoint,
+                approve: approve_tool,
+                start_run,
+            }),
         )
         .await
         .map(|()| ExitCode::SUCCESS),
@@ -146,8 +155,8 @@ async fn dispatch(cli: Cli) -> ExitCode {
     })
 }
 
-/// `argonauts resume`: a conversation, a run, or the main agent CLI's own session by id, or the
-/// list to pick from.
+/// `argonauts resume`: a conversation, a run, a run's agent's session, or the main agent CLI's
+/// own session by id, or the list to pick from.
 async fn resume(options: InteractiveOptions, id: Option<&str>) -> anyhow::Result<ExitCode> {
     argonauts_app::refuse_inside_agent()?;
     let first = resume_view(id)?;
@@ -155,9 +164,16 @@ async fn resume(options: InteractiveOptions, id: Option<&str>) -> anyhow::Result
     Ok(ExitCode::SUCCESS)
 }
 
-/// `chat-002`, `run-03`, or `claude-code:0a1b2c3d`.
+/// `chat-002`, `run-03`, `run-03/s-002`, or `claude-code:0a1b2c3d`.
 fn resume_view(id: Option<&str>) -> anyhow::Result<FirstView> {
     Ok(match id {
+        Some(id) if id.contains('/') => {
+            FirstView::Agent(AgentSessionRef::parse(id).ok_or_else(|| {
+                usage(anyhow::anyhow!(
+                    "{id:?} isn't an agent's session such as run-03/s-002"
+                ))
+            })?)
+        }
         Some(id) if id.starts_with("chat-") => FirstView::Conversation(
             ChatId::parse(id)
                 .ok_or_else(|| usage(anyhow::anyhow!("{id:?} isn't a conversation id")))?,
@@ -216,7 +232,16 @@ mod tests {
                 id: "019a2f".into(),
             })
         );
+        assert_eq!(
+            resume_view(Some("run-03/s-002")).unwrap(),
+            FirstView::Agent(AgentSessionRef::parse("run-03/s-002").unwrap())
+        );
         assert_eq!(resume_view(None).unwrap(), FirstView::ResumePicker);
+        let bad = resume_view(Some("run-03/-p")).unwrap_err();
+        assert!(
+            bad.to_string().contains("isn't an agent's session"),
+            "{bad}"
+        );
         let bad = resume_view(Some("codex:-p")).unwrap_err();
         assert!(bad.to_string().contains("isn't a session"), "{bad}");
     }

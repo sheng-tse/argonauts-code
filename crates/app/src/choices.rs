@@ -24,16 +24,23 @@ pub(crate) enum OnSetAside {
     Recommended,
     /// Closes and nothing changes. The TUI builds these, so the controller never sees one.
     Cancel,
+    /// Closes with "Just this request.": what the request asked holds for its run alone.
+    JustThisRequest,
+    /// Answers No.
+    No,
 }
 
 pub(crate) fn on_set_aside(kind: ChoiceKind) -> OnSetAside {
     match kind {
-        ChoiceKind::StartWork => OnSetAside::SetAside,
+        ChoiceKind::StartWork | ChoiceKind::RefusedCommands => OnSetAside::SetAside,
+        ChoiceKind::Permission | ChoiceKind::GoAhead | ChoiceKind::HandOff => OnSetAside::No,
+        ChoiceKind::RewindTurn => OnSetAside::NotChanged,
         ChoiceKind::ConfirmTakeOver | ChoiceKind::ConfirmRevert => OnSetAside::Cancel,
         ChoiceKind::SettingScope | ChoiceKind::ConfirmSafetySetting => OnSetAside::NotChanged,
         ChoiceKind::TrustProject | ChoiceKind::ConfirmConnect => OnSetAside::NotNow,
         ChoiceKind::DetectedGates => OnSetAside::NextRun,
         ChoiceKind::TermsNote | ChoiceKind::Init => OnSetAside::Recommended,
+        ChoiceKind::KeepInstructions => OnSetAside::JustThisRequest,
     }
 }
 
@@ -71,9 +78,51 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
             option('y', "Write it", AnswerAction::Approve, false),
             option('n', "Not now", AnswerAction::Cancel, false),
         ],
-        ChoiceKind::Init => Vec::new(),
+        ChoiceKind::KeepInstructions => keep_options(),
+        ChoiceKind::RefusedCommands => vec![
+            option('y', "Yes, and continue", choose("continue"), true),
+            option('n', "No", choose("no"), false),
+        ],
+        ChoiceKind::GoAhead => vec![
+            option('y', "Yes, go ahead", choose("yes"), true),
+            option('n', "No, keep planning", choose("no"), false),
+        ],
+        // Built for each question: they name the CLI, the command, and the turns.
+        ChoiceKind::Init
+        | ChoiceKind::Permission
+        | ChoiceKind::RewindTurn
+        | ChoiceKind::HandOff => Vec::new(),
     }
 }
+
+/// Where a request's "from now on" is kept, yours first, and the request alone last.
+pub(crate) fn keep_options() -> Vec<AnswerOption> {
+    let mut options: Vec<AnswerOption> = [
+        ('m', SettingScope::ProjectLocal),
+        ('p', SettingScope::Project),
+        ('e', SettingScope::Global),
+    ]
+    .into_iter()
+    .map(|(key, scope)| {
+        option(
+            key,
+            scope_label(scope),
+            choose(scope_value(scope)),
+            scope == SettingScope::ProjectLocal,
+        )
+    })
+    .collect();
+    options.push(option(
+        'r',
+        "Just this request",
+        choose(JUST_THIS_REQUEST),
+        false,
+    ));
+    options
+}
+
+/// The `Choose` value that keeps nothing past the request.
+pub(crate) const JUST_THIS_REQUEST: &str = "request";
 
 /// Just this session `s`, This project, just me `m`, This project, shared `p`, Everywhere `e`.
 pub(crate) fn scope_options(recommended: SettingScope) -> Vec<AnswerOption> {
@@ -288,6 +337,35 @@ mod tests {
                 OnSetAside::NotNow,
             ),
             (ChoiceKind::Init, Vec::new(), OnSetAside::Recommended),
+            (
+                ChoiceKind::KeepInstructions,
+                vec![
+                    ('m', "This project, just me", choose("project_local")),
+                    ('p', "This project, shared", choose("project")),
+                    ('e', "Everywhere", choose("global")),
+                    ('r', "Just this request", choose("request")),
+                ],
+                OnSetAside::JustThisRequest,
+            ),
+            (ChoiceKind::Permission, Vec::new(), OnSetAside::No),
+            (
+                ChoiceKind::RefusedCommands,
+                vec![
+                    ('y', "Yes, and continue", choose("continue")),
+                    ('n', "No", choose("no")),
+                ],
+                OnSetAside::SetAside,
+            ),
+            (ChoiceKind::RewindTurn, Vec::new(), OnSetAside::NotChanged),
+            (
+                ChoiceKind::GoAhead,
+                vec![
+                    ('y', "Yes, go ahead", choose("yes")),
+                    ('n', "No, keep planning", choose("no")),
+                ],
+                OnSetAside::No,
+            ),
+            (ChoiceKind::HandOff, Vec::new(), OnSetAside::No),
         ];
         for (kind, expected, esc) in &table {
             assert_eq!(shape(&options(*kind)), *expected, "{kind:?}");
@@ -320,7 +398,13 @@ mod tests {
                 | ChoiceKind::DetectedGates
                 | ChoiceKind::TrustProject
                 | ChoiceKind::ConfirmRevert
-                | ChoiceKind::ConfirmConnect => {}
+                | ChoiceKind::ConfirmConnect
+                | ChoiceKind::KeepInstructions
+                | ChoiceKind::Permission
+                | ChoiceKind::RefusedCommands
+                | ChoiceKind::RewindTurn
+                | ChoiceKind::GoAhead
+                | ChoiceKind::HandOff => {}
             }
         }
 

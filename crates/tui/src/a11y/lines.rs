@@ -3,6 +3,7 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::checkpoint::CheckpointEvent;
 use argonauts_core::events::run::Party;
+use argonauts_core::settings::protocol::SoloStyle;
 use argonauts_core::{AgentEvent, NoteLevel};
 
 use crate::bridge::tools::is_own;
@@ -233,16 +234,20 @@ fn chat_lines(event: &ChatEvent, state: &AppState) -> Vec<String> {
                 markdown, triage, ..
             } => {
                 let mut lines = answer_lines(vendor, markdown);
-                lines.push(format!(
-                    "{vendor}: this takes a {} run, {}",
-                    word(&triage.mode),
-                    triage.reason.trim()
-                ));
+                let how = if triage.solo == Some(SoloStyle::Direct) {
+                    "this works solo in your checkout".to_owned()
+                } else {
+                    format!("this takes a {} run", word(&triage.mode))
+                };
+                lines.push(format!("{vendor}: {how}, {}", triage.reason.trim()));
                 lines
             }
         },
         ChatEvent::TurnFailed { error, .. } => labeled(&format!("{vendor} error"), error),
         ChatEvent::TurnCancelled { .. } => vec![format!("{vendor}: stopped")],
+        ChatEvent::HandedOff { from, to, why, .. } => {
+            vec![format!("{} {why}, so {} continues", from.worker, to.worker)]
+        }
     }
 }
 

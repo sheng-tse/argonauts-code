@@ -167,7 +167,10 @@ pub(crate) async fn open(
     match first {
         FirstView::Chat => reattach_newest(ctx, runs).await?,
         // The controller opened the conversation; a run would take the screen from it.
-        FirstView::Conversation(_) | FirstView::VendorSession(_) | FirstView::Continue => {}
+        FirstView::Conversation(_)
+        | FirstView::VendorSession(_)
+        | FirstView::Agent(_)
+        | FirstView::Continue => {}
         FirstView::ResumePicker => show_runs(ctx).await?,
         FirstView::Resume(run) => resume_and_attach(ctx, runs, &run).await?,
         FirstView::Attach(run) => {
@@ -215,17 +218,20 @@ fn going_or_waiting(run: &RunSummary) -> bool {
         || (run.state == RunState::Parked && !run.waiting.is_empty())
 }
 
-/// The `/resume` picker: this repo's runs, earlier conversations, and the main agent CLI's own
-/// sessions.
+/// The `/resume` picker: this repo's runs with their agents' sessions, earlier conversations,
+/// and the main agent CLI's own sessions.
 pub(super) async fn show_runs(ctx: &mut Ctx) -> anyhow::Result<()> {
     let runs = ctx.services.conductor.list().await?;
     let chats = super::chat::list(ctx);
     let sessions = super::chat::vendor_sessions(ctx).await;
+    let (agents, agents_read) = super::chat::agent_sessions(ctx, &runs).await;
     ctx.send(AppEvent::View {
         data: Box::new(argonauts_core::app::ViewData::Runs {
             runs,
             chats,
             sessions,
+            agents,
+            agents_read,
         }),
     });
     Ok(())
@@ -278,6 +284,9 @@ pub(crate) async fn start(
     runs: &mut RunsState,
     mut request: StartRun,
 ) -> anyhow::Result<Vec<Effect>> {
+    // A request whose own words asked approvals to wait for you stays supervised, whatever
+    // Shift+Tab says.
+    let asked_supervised = request.approval_mode == Some(ApprovalMode::Supervised);
     // `start` takes at most supervised; anything more autonomous goes through Approvals after.
     if runs.approval_mode == Some(ApprovalMode::Supervised) {
         request.approval_mode = Some(ApprovalMode::Supervised);
@@ -292,7 +301,29 @@ pub(crate) async fn start(
         .start(request)
         .await
         .context("starting the run")?;
+    if asked_supervised {
+        return started_as_asked(ctx, runs, handle.run, title, mode).await;
+    }
     started(ctx, runs, handle.run, title, mode).await
+}
+
+/// A run that stays supervised, as its request asked: attached without raising its mode.
+async fn started_as_asked(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    run: RunId,
+    title: String,
+    mode: RunMode,
+) -> anyhow::Result<Vec<Effect>> {
+    let summary = match find_summary(ctx, &run).await {
+        Some(summary) => summary,
+        None => new_summary(ctx, &run, title, mode),
+    };
+    attach::attach(ctx, runs, summary, Opening::New).await?;
+    if let Some(attached) = runs.attached.as_mut() {
+        attached.approval_mode = Some(ApprovalMode::Supervised);
+    }
+    Ok(vec![Effect::Status])
 }
 
 /// After `start` or `continue_run`: raise the approval mode as Shift+Tab chose, and attach.

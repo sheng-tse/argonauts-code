@@ -61,9 +61,14 @@ impl ChatState {
             {
                 self.end_turn();
             }
+            ChatEvent::HandedOff { turn, to, .. } if self.turn.as_ref() == Some(turn) => {
+                self.worker = Some(to.clone());
+                self.stalled = false;
+            }
             ChatEvent::TurnFinished { .. }
             | ChatEvent::TurnFailed { .. }
-            | ChatEvent::TurnCancelled { .. } => {}
+            | ChatEvent::TurnCancelled { .. }
+            | ChatEvent::HandedOff { .. } => {}
         }
     }
 

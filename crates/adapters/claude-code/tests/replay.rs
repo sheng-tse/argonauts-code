@@ -23,6 +23,9 @@ const STEERED: &str = "2.1.285";
 /// out of `every_fixture`.
 const WORKFLOWS: &str = "2.1.289";
 const WORKFLOW_CALL: &str = "toolu_01T9VznHYcM7UjRKWHQ4QH2c";
+/// Direct solo: calls asked through the permission prompt tool, and a read-only estimate
+/// resumed with every tool.
+const DIRECT: &str = "2.1.289";
 
 const STATUS_TOOL: &str = "mcp__argonauts_status__argonauts_status";
 const SUBAGENT_CALL: &str = "toolu_01V464aQnAvS82ukoevdYdMW";
@@ -79,6 +82,9 @@ fn every_fixture() -> Vec<(&'static str, &'static str)> {
         (STEERED, "stream-input"),
         (STEERED, "resume"),
         (STEERED, "status-tool-error"),
+        (DIRECT, "permission_prompt_tool"),
+        (DIRECT, "readonly_estimate"),
+        (DIRECT, "direct_resume"),
     ]
 }
 
@@ -689,6 +695,9 @@ fn budget_meter_counts_each_recording_once() {
         (ORIGINAL, "shell"),
         (STEERED, "stream-input"),
         (STEERED, "status-tool-error"),
+        (DIRECT, "permission_prompt_tool"),
+        (DIRECT, "readonly_estimate"),
+        (DIRECT, "direct_resume"),
     ];
     for (version, name) in one_session {
         let events = replay_version(version, name);

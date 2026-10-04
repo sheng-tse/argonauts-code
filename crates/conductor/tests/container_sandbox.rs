@@ -78,6 +78,8 @@ fn a_container_session_sees_its_worktree_and_nothing_else() {
         deny_read: vec![state.clone(), secrets.clone()],
         network: false,
         proxy_port: None,
+        ask_port: None,
+        closed: Vec::new(),
     };
     let stdout = run(
         &container,
@@ -191,6 +193,8 @@ fn a_container_session_without_network_reaches_only_the_proxy() {
         deny_read: Vec::new(),
         network: false,
         proxy_port: None,
+        ask_port: None,
+        closed: Vec::new(),
     };
     let wrapped = container.wrap(command, &profile).unwrap();
     let mut process = Command::new(&wrapped.program);

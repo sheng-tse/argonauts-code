@@ -13,10 +13,18 @@ use argonauts_core::{Paths, RepoId, project_config_path, project_local_config_pa
 use argonauts_mcp::{FrontEndOptions, FrontEndReloader, FrontEndSettings};
 use serde::Deserialize;
 
+/// A direct turn's questions: where the app listens, and which tools ask it.
+pub struct Asking<'a> {
+    pub endpoint: &'a str,
+    pub approve: bool,
+    pub start_run: bool,
+}
+
 /// One agent session's tools. `report` is the step's schema file and where valid reports go.
 pub async fn session(
     status_file: Option<&Path>,
     report: Option<(&Path, &Path)>,
+    asking: Option<Asking<'_>>,
 ) -> anyhow::Result<()> {
     let report = match report {
         Some((schema, report_file)) => {
@@ -31,8 +39,17 @@ pub async fn session(
         }
         None => None,
     };
-    argonauts_mcp::serve_session(status_file, report).await
+    let asking = asking.map(|asking| argonauts_mcp::AskTool {
+        endpoint: asking.endpoint.to_owned(),
+        token: std::env::var(APPROVE_TOKEN_ENV).unwrap_or_default(),
+        approve: asking.approve,
+        start_run: asking.start_run,
+    });
+    argonauts_mcp::serve_session(status_file, report, asking).await
 }
+
+/// Set by the session's MCP config, so the token stays out of the process list.
+const APPROVE_TOKEN_ENV: &str = "ARGONAUTS_APPROVE_TOKEN";
 
 pub async fn serve(repo: Option<&Path>, set: &[String]) -> anyhow::Result<ExitCode> {
     let root = argonauts_app::repo_root(repo)?;

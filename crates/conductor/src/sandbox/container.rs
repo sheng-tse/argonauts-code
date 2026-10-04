@@ -104,7 +104,14 @@ impl SandboxWrap for Container {
             ));
         }
         check_profile(profile)?;
-        let proxies = reachable_proxies(profile, &command);
+        let mut proxies = reachable_proxies(profile, &command);
+        // Without a bridge the app's port for questions stays out of reach, and the session
+        // starts anyway: what it would ask is refused, with the reason.
+        if !cfg!(target_os = "linux")
+            && let Some(port) = profile.ask_port
+        {
+            proxies.retain(|proxy| proxy.port() != port);
+        }
         let launcher = if proxies.is_empty() {
             None
         } else if cfg!(target_os = "linux") {
@@ -301,16 +308,29 @@ fn plan_mounts(profile: &SandboxProfile, disk: &dyn Disk) -> Mounts {
             Some((_, false)) => Entry::Other,
             None => disk.entry(path),
         };
+        let has_parent = || {
+            path.parent()
+                .is_some_and(|parent| disk.entry(parent) == Entry::Dir)
+        };
         if entry == Entry::Missing && write && !is_git_lock(path) {
-            let has_parent = path
-                .parent()
-                .is_some_and(|parent| disk.entry(parent) == Entry::Dir);
-            if !has_parent {
+            if !has_parent() {
                 continue;
             }
             let dir = path.extension().is_none_or(|ext| ext.is_empty());
             mounts.create.push((path.to_path_buf(), dir));
             entry = if dir { Entry::Dir } else { Entry::Other };
+        }
+        // A closed folder that isn't there yet, inside the writable checkout, is made empty and
+        // bound read-only, so the session can't plant one. A closed file can't be held this way
+        // without making it, and the app checks those after the turn.
+        let closed = profile
+            .closed
+            .iter()
+            .any(|closed| closed == &rule.path || closed == path);
+        let folder_named = path.extension().is_none_or(|ext| ext.is_empty());
+        if entry == Entry::Missing && !write && closed && folder_named && has_parent() {
+            mounts.create.push((path.to_path_buf(), true));
+            entry = Entry::Dir;
         }
         let folder = match entry {
             Entry::Dir => None,
@@ -544,6 +564,8 @@ mod tests {
             deny_read: deny.to_vec(),
             network: false,
             proxy_port: None,
+            ask_port: None,
+            closed: Vec::new(),
         }
     }
 
@@ -594,6 +616,60 @@ mod tests {
             ]
         );
         assert_eq!(mounts.create, vec![(session.join("report.json"), false)]);
+    }
+
+    /// A direct turn's container, as the seatbelt test
+    /// `a_direct_turn_writes_your_checkout_but_not_what_configures_agents` checks macOS: the
+    /// checkout is bound read-write, and what configures agents read-only whether or not it
+    /// exists. A protected folder that isn't there is made and bound read-only; a protected file
+    /// that isn't there is never made, and the app checks it after the turn.
+    #[test]
+    fn a_direct_turn_writes_your_checkout_but_not_what_configures_agents() {
+        let repo = at("/repo");
+        let disk = FakeDisk::new(&[
+            &format!("{HOME}/repo/src/money.py"),
+            &format!("{HOME}/repo/.claude/settings.json"),
+            &format!("{HOME}/repo/.git/hooks/"),
+            &format!("{HOME}/repo/.git/config"),
+        ]);
+        let closed: Vec<PathBuf> = [
+            ".claude",
+            ".codex",
+            ".agents",
+            ".opencode",
+            ".husky",
+            ".mcp.json",
+            "opencode.json",
+        ]
+        .iter()
+        .map(|path| repo.join(path))
+        .collect();
+        let mut readable = vec![
+            repo.clone(),
+            repo.join(".git/hooks"),
+            repo.join(".git/config"),
+        ];
+        readable.extend(closed.iter().cloned());
+        let mut profile = profile(std::slice::from_ref(&repo), &readable, &[]);
+        profile.closed = closed;
+        let mounts = plan_mounts(&profile, &disk);
+        assert!(mounts.list.contains(&Mount::bind(&repo, false)));
+        for folder in [".codex", ".agents", ".opencode", ".husky"] {
+            let path = repo.join(folder);
+            assert!(mounts.create.contains(&(path.clone(), true)), "{folder}");
+            assert!(mounts.list.contains(&Mount::bind(&path, true)), "{folder}");
+        }
+        for kept in [".claude", ".git/hooks", ".git/config"] {
+            let path = repo.join(kept);
+            assert!(mounts.list.contains(&Mount::bind(&path, true)), "{kept}");
+        }
+        for file in [".mcp.json", "opencode.json"] {
+            let path = repo.join(file);
+            assert!(
+                !mounts.create.iter().any(|(made, _)| made == &path),
+                "{file} is never made"
+            );
+        }
     }
 
     #[test]

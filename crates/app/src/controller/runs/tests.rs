@@ -117,6 +117,38 @@ async fn a_reopened_stopped_run_goes_on_in_place() {
     assert_eq!(after, ["event 1", "event 2"]);
 }
 
+/// `/resume` right after a run merged opens the picker, where its agents' sessions carry on: a
+/// merged run can't go on, so nothing tries to resume it.
+#[tokio::test]
+async fn resume_after_a_merged_run_opens_the_picker() {
+    let mut rig = Rig::new();
+    let run = rig.start("Add --json to export").await;
+    rig.until(is_mode(AppMode::Working { run: run.clone() }))
+        .await;
+    assert!(
+        rig.conductor
+            .push(&run, finished(&run, 1, RunOutcome::Merged))
+            .await
+    );
+    rig.until(is_mode(AppMode::Idle)).await;
+    rig.conductor.end(&run, false);
+    rig.settle().await;
+    assert!(rig.runs.attached.as_ref().is_some_and(|a| a.ended));
+
+    run_commands::resume(&mut rig.ctx, &mut rig.runs, None)
+        .await
+        .expect("the picker opens");
+    let calls = rig.conductor.calls();
+    assert!(!calls.contains(&Call::Resume(run.clone())), "{calls:?}");
+    rig.until(|event| {
+        matches!(
+            event,
+            AppEvent::View { data } if matches!(**data, argonauts_core::app::ViewData::Runs { .. })
+        )
+    })
+    .await;
+}
+
 /// A chat command that appends its text to `log`, so a test sees what was sent.
 fn record_chat_to(log: &std::path::Path) -> impl FnOnce(&std::path::Path) {
     let script = format!("printf '%s\\n' \"$0\" >> '{}'", log.display());

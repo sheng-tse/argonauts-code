@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use argonauts_core::keywords::Keyword;
 use argonauts_core::limits::QuotaReading;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::vendor_commands::{BuiltinCommand, VendorCommand};
@@ -26,6 +27,10 @@ pub const CHEAPEST_EFFORT: &str = "low";
 pub const OUTPUT_SCHEMA_FILE: &str = "codex-output-schema.json";
 
 pub const TESTED_VERSIONS: &[&str] = &["0.158.0"];
+
+/// Words Codex treats specially in a prompt: none in 0.160.0. Its `ultra` is a reasoning level
+/// picked in the model menu, not a word you type.
+pub const KEYWORDS: &[Keyword] = &[];
 
 pub const API_KEY_ENV_VARS: &[&str] = &["CODEX_API_KEY", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"];
 
@@ -165,6 +170,10 @@ impl Adapter for CodexAdapter {
         BUILTIN_COMMANDS
     }
 
+    fn keywords(&self) -> &'static [Keyword] {
+        KEYWORDS
+    }
+
     fn discover_commands(&self, scan: &VendorScan) -> anyhow::Result<Vec<VendorCommand>> {
         Ok(commands::discover(scan))
     }
@@ -248,12 +257,17 @@ mod tests {
 
     #[test]
     fn codex_passes_your_model_and_always_its_sandbox() {
-        for role in [SessionRole::ReadOnly, SessionRole::Build] {
+        for role in [
+            SessionRole::ReadOnly,
+            SessionRole::Build,
+            SessionRole::Direct,
+        ] {
             let spec = command(&request(role));
             assert_eq!(value_after(&spec.args, "--model"), CHEAPEST_MODEL);
+            assert!(!spec.args.iter().any(|arg| arg == "--output-schema"));
             let expected = match role {
                 SessionRole::ReadOnly => "read-only",
-                SessionRole::Build => "workspace-write",
+                SessionRole::Build | SessionRole::Direct => "workspace-write",
             };
             assert_eq!(value_after(&spec.args, "--sandbox"), expected);
         }

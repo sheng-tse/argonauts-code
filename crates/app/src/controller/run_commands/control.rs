@@ -5,6 +5,7 @@ use anyhow::Context;
 use argonauts_core::api::{ApiError, RunState, StartRun};
 use argonauts_core::app::{AppEvent, AppMode};
 use argonauts_core::card::title_from_task;
+use argonauts_core::events::run::RunOutcome;
 use argonauts_core::input::MentionTarget;
 use argonauts_core::names::{MessageId, SessionKey};
 use argonauts_core::settings::approvals::ApprovalMode;
@@ -149,16 +150,17 @@ pub(crate) async fn cancel_pause(ctx: &mut Ctx, runs: &mut RunsState) -> Handled
     Ok(Vec::new())
 }
 
-/// The run on screen when `run` is `None`, else the `/resume` picker.
+/// The run on screen when `run` is `None` and that run can go on, else the `/resume` picker. A
+/// merged run can't, so the picker opens, where its agents' sessions carry on.
 pub(crate) async fn resume(ctx: &mut Ctx, runs: &mut RunsState, run: Option<RunId>) -> Handled {
     if let Some(run) = run {
         runs::resume_and_attach(ctx, runs, &run).await?;
         return Ok(vec![Effect::Status]);
     }
-    let waiting = runs
-        .attached
-        .as_ref()
-        .filter(|attached| attached.crashed || attached.stage == Stage::Parked || attached.ended);
+    let waiting = runs.attached.as_ref().filter(|attached| {
+        attached.stage != Stage::Finished(RunOutcome::Merged)
+            && (attached.crashed || attached.stage == Stage::Parked || attached.ended)
+    });
     match waiting.map(|attached| attached.run.clone()) {
         Some(run) => {
             runs::resume_and_attach(ctx, runs, &run).await?;
@@ -319,6 +321,8 @@ pub(crate) async fn continue_run(
         approval_mode: (runs.approval_mode == Some(ApprovalMode::Supervised))
             .then_some(ApprovalMode::Supervised),
         front_end: None,
+        instructions: Vec::new(),
+        request_settings: Vec::new(),
     };
     let handle = ctx
         .services

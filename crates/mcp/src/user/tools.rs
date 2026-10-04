@@ -409,6 +409,8 @@ async fn start_run(
         default_agent: None,
         approval_mode: None,
         front_end: Some(client.to_owned()),
+        instructions: Vec::new(),
+        request_settings: Vec::new(),
     };
     let handle = match server.api().start(start).await {
         Ok(handle) => handle,

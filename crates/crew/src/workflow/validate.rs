@@ -6,8 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::run::CheckedInstruction;
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
+use argonauts_core::steps::intake::InstructionKind;
 use argonauts_core::workflow::{Count, Step, StepKind, StepWorkers, Workflow, WorkflowParams};
 
 use argonauts_core::labels;
@@ -31,6 +33,36 @@ pub struct Context<'a> {
     pub depth: u32,
     /// What's left of the run budget, when there is one.
     pub budget_left_usd: Option<f64>,
+    /// The roles your request gave to agents, each with its agents. A step of one of these
+    /// roles may name only them.
+    pub as_you_asked: &'a [(RoleName, Vec<WorkerRef>)],
+}
+
+/// The roles a followed instruction gave to agents, with the agents the request layer set
+/// for each.
+pub fn roles_as_you_asked(
+    instructions: &[CheckedInstruction],
+    settings: &Settings,
+) -> Vec<(RoleName, Vec<WorkerRef>)> {
+    let mut roles: Vec<(RoleName, Vec<WorkerRef>)> = Vec::new();
+    for instruction in instructions.iter().filter(|i| i.followed()) {
+        let role = match instruction.kind {
+            InstructionKind::Build => RoleName::Owner,
+            InstructionKind::Review => RoleName::Reviewer,
+            InstructionKind::Plan => RoleName::Drafter,
+            InstructionKind::Coordinate => RoleName::Coordinator,
+            _ => continue,
+        };
+        let workers = settings
+            .roles
+            .get(&role)
+            .map(|settings| settings.workers.clone())
+            .unwrap_or_default();
+        if !workers.is_empty() && !roles.iter().any(|(known, _)| *known == role) {
+            roles.push((role, workers));
+        }
+    }
+    roles
 }
 
 /// Each rule a workflow can break, so tests and the lead's retry can name it.
@@ -42,6 +74,8 @@ pub enum Rule {
     LoopWithoutMax,
     OverBudget,
     WorkerNotAllowed,
+    /// A step gives a role your request gave to some agents to another agent.
+    NotAsYouAsked,
     MissingCheckpoint,
     TooDeep,
     UnknownCondition,
@@ -278,6 +312,42 @@ impl Check<'_, '_> {
         }
     }
 
+    /// A step of a role your request gave to some agents names only them.
+    fn as_you_asked(&mut self, step: &Step, at: &str) {
+        let StepWorkers::Named(workers) = &step.workers else {
+            return;
+        };
+        let default_role = match step.kind {
+            StepKind::Review => Some(RoleName::Reviewer),
+            StepKind::Build => Some(RoleName::Owner),
+            StepKind::Draft => Some(RoleName::Drafter),
+            _ => None,
+        };
+        let roles: Vec<RoleName> = match (step.role, step.roles.is_empty()) {
+            (Some(role), _) => vec![role],
+            (None, false) => step.roles.clone(),
+            (None, true) => default_role.into_iter().collect(),
+        };
+        for role in roles {
+            let Some((_, asked)) = self.context.as_you_asked.iter().find(|(r, _)| *r == role)
+            else {
+                continue;
+            };
+            for worker in workers.iter().filter(|worker| !asked.contains(worker)) {
+                let names: Vec<String> = asked.iter().map(ToString::to_string).collect();
+                self.error(
+                    Rule::NotAsYouAsked,
+                    at,
+                    format!(
+                        "the request gives the {} role to {}, so {worker} can't take it",
+                        role.as_str(),
+                        names.join(" and ")
+                    ),
+                );
+            }
+        }
+    }
+
     fn step(&mut self, step: &Step, at: String, runs: u32, conditional: bool) {
         self.fields(step, &at);
         self.placeholders(step, &at);
@@ -304,6 +374,7 @@ impl Check<'_, '_> {
                 }
             }
         }
+        self.as_you_asked(step, &at);
         let doing_owner_work =
             step.role == Some(RoleName::Owner) || step.roles.contains(&RoleName::Owner);
         if doing_owner_work && step.kind != StepKind::Build {
@@ -1009,11 +1080,78 @@ mod tests {
             lookup: &lookup,
             depth: 0,
             budget_left_usd: None,
+            as_you_asked: &[],
         };
         match validate(&workflow, &context) {
             Ok(()) => Vec::new(),
             Err(errors) => errors.into_iter().map(|error| error.rule).collect(),
         }
+    }
+
+    /// A role your request gave to some agents goes to them, so a workflow naming another
+    /// agent for it goes back to the lead with the error.
+    #[test]
+    fn a_step_must_give_an_instructed_role_to_its_agents() {
+        use argonauts_core::events::run::InstructionOutcome;
+
+        let mut settings = Settings::default();
+        let agy = WorkerRef::new("antigravity-cli", None);
+        settings
+            .roles
+            .entry(RoleName::Reviewer)
+            .or_default()
+            .workers = vec![agy.clone()];
+        let review = CheckedInstruction {
+            says: "gemini reviews".to_owned(),
+            kind: InstructionKind::Review,
+            outcome: InstructionOutcome::Followed {
+                said: "Antigravity CLI reviews".to_owned(),
+                note: None,
+            },
+        };
+        let mut refused = review.clone();
+        refused.outcome = InstructionOutcome::NotFollowed {
+            why: "no".to_owned(),
+        };
+        assert_eq!(
+            roles_as_you_asked(std::slice::from_ref(&review), &settings),
+            [(RoleName::Reviewer, vec![agy.clone()])]
+        );
+        assert!(roles_as_you_asked(&[refused], &settings).is_empty());
+
+        let as_you_asked = roles_as_you_asked(&[review], &settings);
+        let check = |workers: &str| {
+            let text = format!(
+                "name: checked\nphases:\n  - name: Look\n    standard: do\n    steps:\n      \
+                 - kind: review\n        input: goal\n        workers: [{workers}]\n"
+            );
+            let workflow = yaml::parse(&text).unwrap_or_else(|err| panic!("{err}\n{text}"));
+            let families = BTreeMap::new();
+            let lookup = |name: &str| builtin::load(name);
+            let allowed = [WorkerRef::new("codex", None), agy.clone()];
+            let context = Context {
+                settings: &settings,
+                allowed: &allowed,
+                families: &families,
+                lookup: &lookup,
+                depth: 1,
+                budget_left_usd: None,
+                as_you_asked: &as_you_asked,
+            };
+            match validate(&workflow, &context) {
+                Ok(()) => Vec::new(),
+                Err(errors) => errors
+                    .into_iter()
+                    .filter(|error| error.rule == Rule::NotAsYouAsked)
+                    .map(|error| error.message)
+                    .collect(),
+            }
+        };
+        assert_eq!(check("antigravity-cli"), Vec::<String>::new());
+        assert_eq!(
+            check("codex"),
+            ["the request gives the reviewer role to antigravity-cli, so codex can't take it"]
+        );
     }
 
     #[test]
@@ -1053,6 +1191,7 @@ mod tests {
             lookup: &lookup,
             depth: 0,
             budget_left_usd: None,
+            as_you_asked: &[],
         };
         match validate(&workflow, &context) {
             Ok(()) => Vec::new(),
@@ -1146,6 +1285,7 @@ mod tests {
             lookup: &lookup,
             depth: 0,
             budget_left_usd: None,
+            as_you_asked: &[],
         };
         for (name, _) in builtin::BUILTIN {
             let workflow = builtin::load(name).unwrap_or_else(|err| panic!("{err}"));

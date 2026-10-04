@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use argonauts_core::app::{ChatEvent, TurnReply};
 use argonauts_core::names::{TurnId, WorkerRef};
+use argonauts_core::settings::protocol::SoloStyle;
 use argonauts_core::settings::ui::VerbTheme;
 use argonauts_core::{AgentEvent, Verbosity};
 
@@ -19,7 +20,7 @@ use crate::cell::{
 use crate::format::WallClock;
 use crate::history::CellId;
 
-use super::{Cx, emit, quiet};
+use super::{Cx, emit, quiet, steps};
 
 const INTERRUPTED: &str = "Interrupted · What should Argonauts do instead?";
 
@@ -76,8 +77,12 @@ impl ChatTurns {
     pub fn on_chat(&mut self, event: &ChatEvent, clock: &WallClock, cx: &mut Cx<'_>) {
         match event {
             ChatEvent::TurnStarted {
-                turn, text, worker, ..
-            } => self.start(turn, text, worker, cx),
+                turn,
+                text,
+                worker,
+                continues,
+                ..
+            } => self.start(turn, text, worker, *continues, cx),
             ChatEvent::Agent { turn, event } => {
                 if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
                     agent_event(open, self.kinds, event, clock, cx);
@@ -100,6 +105,17 @@ impl ChatTurns {
                         cx,
                         Cell::Custom(Box::new(ResultLine::new(Tone::Dim, INTERRUPTED))),
                     );
+                }
+            }
+            ChatEvent::HandedOff {
+                turn,
+                from,
+                to,
+                why,
+                told,
+            } => {
+                if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
+                    handed_off(open, from, to, why, told, cx);
                 }
             }
             ChatEvent::TurnFailed { turn, error } => {
@@ -125,16 +141,27 @@ impl ChatTurns {
         }
     }
 
-    fn start(&mut self, turn: &TurnId, text: &str, worker: &WorkerRef, cx: &mut Cx<'_>) {
+    /// `continues`: the turn goes on from the one before, which showed your message already.
+    fn start(
+        &mut self,
+        turn: &TurnId,
+        text: &str,
+        worker: &WorkerRef,
+        continues: bool,
+        cx: &mut Cx<'_>,
+    ) {
         // A turn that never heard its end leaves what it had in scrollback.
         if let Some(mut stale) = self.open.take() {
             end_parts(&mut stale, ToolState::Stopped, cx);
         }
+        let message = UserMessage::new(text).with_keywords(cx.keywords_of(worker));
         let replaying = cx.replaying();
-        if replaying {
-            cx.model.history.keep(UserMessage::new(text));
-        } else {
-            echo(text, cx);
+        if !continues {
+            if replaying {
+                cx.model.history.keep(message);
+            } else {
+                echo(message, cx);
+            }
         }
         self.open = Some(OpenTurn {
             turn: turn.clone(),
@@ -176,7 +203,18 @@ impl ChatTurns {
             cx.model.history.push(message);
         }
         keep_own(&mut open, Some(ToolState::Stopped), cx);
-        // A change goes on as a run, whose own end gets the line.
+        // Solo in your checkout has no run to give it a Triage line, so the reply does.
+        if let TurnReply::Change {
+            estimate,
+            triage,
+            instructions,
+            ..
+        } = reply
+            && triage.solo == Some(SoloStyle::Direct)
+        {
+            steps::direct_triage(estimate, triage, instructions, cx);
+        }
+        // A change goes on as a run, or a turn in your checkout, whose own end gets the line.
         let changes = matches!(reply, TurnReply::Change { .. });
         if cx.settings.turn_duration && !changes {
             let style = match cx.settings.verbs {
@@ -191,17 +229,19 @@ impl ChatTurns {
 }
 
 /// The `❯` line for the turn's prompt. The composer echoes what you send while idle, grey
-/// until the request starts, so that one turns bright; a prompt that waited in the queue, or
-/// came from elsewhere, gets its line here.
-fn echo(text: &str, cx: &mut Cx<'_>) {
+/// until the request starts, so that one turns bright, drawing the keywords of the CLI that took
+/// the turn, which may not be the one the input drew; a prompt that waited in the queue, or came
+/// from elsewhere, gets its line here.
+fn echo(message: UserMessage, cx: &mut Cx<'_>) {
     let history = &mut cx.model.history;
     let pending = history
         .active_cells()
         .find(|(_, cell)| matches!(cell, Cell::User(message) if message.pending))
         .map(|(id, _)| id);
     if let Some(id) = pending {
-        if let Some(message) = history.active_mut(id).and_then(Cell::as_user_mut) {
-            message.start();
+        if let Some(echoed) = history.active_mut(id).and_then(Cell::as_user_mut) {
+            echoed.keywords = message.keywords;
+            echoed.start();
         }
         history.finish_active(id);
         return;
@@ -211,7 +251,7 @@ fn echo(text: &str, cx: &mut Cx<'_>) {
         .last()
         .or_else(|| history.cells().last());
     if !matches!(last, Some(Cell::User(_))) {
-        history.push(UserMessage::new(text));
+        history.push(message);
     }
 }
 
@@ -440,6 +480,41 @@ fn after_parts<'a>(reply: &'a str, parts: &[String]) -> &'a str {
         }
     }
     rest.trim_start()
+}
+
+/// `↷ Claude Code hit its usage limit · Codex continues with GPT-5.6 Luna`, with what the
+/// next agent was told under it. What the first agent did stays above, and the next one's
+/// work streams below as the same turn.
+fn handed_off(
+    open: &mut OpenTurn,
+    from: &WorkerRef,
+    to: &WorkerRef,
+    why: &str,
+    told: &str,
+    cx: &mut Cx<'_>,
+) {
+    end_parts(open, ToolState::Stopped, cx);
+    open.parts.clear();
+    open.text.clear();
+    open.from_deltas = false;
+    open.worker = to.clone();
+    if open.replaying {
+        return;
+    }
+    let names = &cx.state.names;
+    let next = names.harness(&to.worker);
+    let text = match names.model(&to.worker, to.model.as_deref()) {
+        Some(model) => format!(
+            "{} {why} · {next} continues with {model}",
+            names.harness(&from.worker)
+        ),
+        None => format!("{} {why} · {next} continues", names.harness(&from.worker)),
+    };
+    let mut notice = Notice::new(Tone::Normal, text).with_glyph("↷");
+    if !told.trim().is_empty() {
+        notice = notice.with_detail(format!("Told: {told}"));
+    }
+    emit(cx, notice);
 }
 
 /// What a stopped or failed turn leaves: its calls and the answer as far as it got.

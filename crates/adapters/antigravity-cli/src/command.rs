@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use argonauts_core::{AuthMode, CommandSpec, SessionRequest, SessionRole, env_remove_except};
+use argonauts_core::{Asks, AuthMode, CommandSpec, SessionRequest, SessionRole, env_remove_except};
 use serde_json::json;
 
 use crate::agents_file::{AgentProfile, agent_launch};
@@ -26,11 +26,16 @@ pub fn user_message_line(content: &str) -> String {
 /// that need approval. Inside ours its sandbox can't start (macOS won't nest one in another), so
 /// commands run without asking, held by ours, and a read-only session's agent file still has no
 /// tool that writes. `sandbox.mode = "none"` asks for the same, with nothing holding them.
-fn own_sandbox(req: &SessionRequest) -> &'static str {
-    if req.tool_sandbox_off {
-        "--dangerously-skip-permissions"
+///
+/// A direct turn that asks like agy gets neither: its own `request-review` applies, so edits go
+/// through and the commands it would ask about are refused and listed after the turn.
+fn own_sandbox(req: &SessionRequest) -> Option<&'static str> {
+    if req.role == SessionRole::Direct && req.asks != Asks::Never {
+        None
+    } else if req.tool_sandbox_off {
+        Some("--dangerously-skip-permissions")
     } else {
-        "--sandbox"
+        Some("--sandbox")
     }
 }
 
@@ -43,9 +48,12 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
     let mut spec = CommandSpec::new(program, &req.workdir)
         .args(["--input-format", "stream-json"])
         .args(["--output-format", "stream-json"])
-        .arg(own_sandbox(req))
-        .arg("--disable-slash-commands");
-    if req.role == SessionRole::Build {
+        .args(own_sandbox(req));
+    // A vendor command turn reads its prompt as the command, as `-p "/skill …"` needs.
+    if !req.vendor_command {
+        spec = spec.arg("--disable-slash-commands");
+    }
+    if matches!(req.role, SessionRole::Build | SessionRole::Direct) {
         spec = spec.args(["--mode", "accept-edits"]);
     }
     if let Some(profile) = agent_profile(req) {
@@ -114,7 +122,7 @@ fn agent_profile(req: &SessionRequest) -> Option<AgentProfile> {
     match req.role {
         SessionRole::ReadOnly => Some(AgentProfile::ReadOnly),
         SessionRole::Build if fanout_off(req.native_fanout) => Some(AgentProfile::NoSubagents),
-        SessionRole::Build => None,
+        SessionRole::Build | SessionRole::Direct => None,
     }
 }
 
@@ -166,6 +174,41 @@ mod tests {
 
     fn has_arg(spec: &CommandSpec, arg: &str) -> bool {
         spec.args.iter().any(|a| a == arg)
+    }
+
+    /// A direct turn accepts edits. Asking like agy, it gets neither sandbox flag, so agy's own
+    /// review applies and the commands it would ask about are refused (checked live); in auto
+    /// mode it skips permissions inside our sandbox, as a run's session does.
+    #[test]
+    fn a_direct_turn_asks_like_agy_or_skips_permissions_in_ours() {
+        let asks = build(&SessionRequest {
+            asks: Asks::LikeCli,
+            tool_sandbox_off: true,
+            ..request(SessionRole::Direct)
+        });
+        assert_eq!(value_after(&asks, "--mode"), Some("accept-edits"));
+        assert!(!has_arg(&asks, "--sandbox"));
+        assert!(!has_arg(&asks, "--dangerously-skip-permissions"));
+        assert!(!has_arg(&asks, "--json-schema"));
+        assert!(
+            !has_arg(&asks, "--agent"),
+            "a direct turn has agy's own tools"
+        );
+
+        let auto = build(&SessionRequest {
+            tool_sandbox_off: true,
+            ..request(SessionRole::Direct)
+        });
+        assert!(has_arg(&auto, "--dangerously-skip-permissions"));
+        assert_eq!(value_after(&auto, "--mode"), Some("accept-edits"));
+
+        // A vendor command must reach agy as one.
+        assert!(has_arg(&auto, "--disable-slash-commands"));
+        let command = build(&SessionRequest {
+            vendor_command: true,
+            ..request(SessionRole::Direct)
+        });
+        assert!(!has_arg(&command, "--disable-slash-commands"));
     }
 
     fn stdin_message(spec: &CommandSpec) -> Value {

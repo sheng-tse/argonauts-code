@@ -11,6 +11,7 @@ pub mod bottom;
 pub mod cell;
 pub mod format;
 pub mod history;
+pub mod keywords;
 pub mod markdown;
 pub mod model;
 pub mod render;

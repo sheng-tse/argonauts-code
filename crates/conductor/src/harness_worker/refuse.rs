@@ -5,7 +5,7 @@
 
 use argonauts_core::limits::VendorHealth;
 use argonauts_core::settings::approvals::SandboxSettings;
-use argonauts_core::worker::{Access, SandboxMode, SessionSpec, WorkerError};
+use argonauts_core::worker::{SandboxMode, SessionSpec, WorkerError};
 
 use crate::health::{DisableScope, disable_scope};
 use crate::sandbox::SelfTest;
@@ -36,14 +36,16 @@ pub fn check(
             }
         }
     }
-    let changes_files = matches!(spec.access, Access::Build | Access::Spike);
+    let changes_files = spec.access.writes();
     let has_goal = spec
         .goal_sha256
         .as_deref()
         .is_some_and(|hash| !hash.trim().is_empty());
     if changes_files && !has_goal {
         return Err(WorkerError::Refused(
-            "a build or spike session needs the approved goal's hash".to_owned(),
+            "a session that changes files needs the approved goal's hash, or for a direct turn \
+             your message's"
+                .to_owned(),
         ));
     }
     if let Some(reason) = &health.disabled
@@ -63,6 +65,7 @@ mod tests {
     use crate::harness_worker::testing::{healthy, spec_in};
     use argonauts_core::names::VendorId;
     use argonauts_core::settings::approvals::SandboxChoice;
+    use argonauts_core::worker::Access;
 
     fn passed() -> SelfTest {
         SelfTest {
@@ -122,10 +125,10 @@ mod tests {
     }
 
     #[test]
-    fn build_without_goal_hash_is_refused() {
+    fn a_session_that_writes_without_goal_hash_is_refused() {
         let health = healthy(&VendorId("fake".into()));
         let settings = settings(SandboxChoice::Os);
-        for access in [Access::Build, Access::Spike] {
+        for access in [Access::Build, Access::Spike, Access::Direct] {
             let mut spec = spec_in("/w".as_ref(), "/s".as_ref(), "hi");
             spec.access = access;
             spec.goal_sha256 = None;

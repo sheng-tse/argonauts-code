@@ -4,10 +4,10 @@ use std::path::Path;
 
 use anyhow::{bail, ensure};
 use argonauts_core::{
-    AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile, env_remove_except,
+    Asks, AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile, env_remove_except,
 };
 
-use crate::settings::{CommandSandbox, session_settings};
+use crate::settings::{Allowed, CommandSandbox, STATUS_SERVER, session_settings};
 use crate::tweaks::{self, Fanout, SUBAGENT_TOOL};
 
 /// Written into the session's scratch directory, outside the worktree.
@@ -18,6 +18,13 @@ const BUILD_TOOLS: &[&str] = &["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
 /// Newer models only get these with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, and `--tools` must name
 /// them too. They are how an owner's to-do list reaches the agent panel.
 const TODO_TOOLS: &[&str] = &["TaskCreate", "TaskGet", "TaskUpdate", "TaskList"];
+
+/// The tool on Argonauts' session server that Claude Code sends each permission prompt to.
+pub const APPROVE_TOOL: &str = "approve";
+
+/// How long Claude Code waits on one MCP call, in milliseconds. A card waits as long as you
+/// take, so a question gets a day.
+const ASKING_TIMEOUT_MS: &str = "86400000";
 
 /// Messaging between Claude Code sessions on one machine (2.1.224 and later) would let blind
 /// sessions reach each other outside the blackboard.
@@ -70,14 +77,7 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
         .args(["--output-format", "stream-json", "--verbose"])
         .arg("--include-partial-messages");
     spec = with_session_flag(spec, req)?;
-    spec = spec
-        // A project's settings can set another default mode, and a resume forgets the flag,
-        // so it goes on every launch.
-        .args(["--permission-mode", permission_mode(role)])
-        .args(["--permission-prompts", "none"])
-        .args(["--tools".to_owned(), tool_list(role, fanout)])
-        .arg("--disallowedTools")
-        .args(disallowed_tools(fanout));
+    spec = with_permission_flags(spec, req, role, fanout);
     if let Some(config) = &req.mcp_config {
         spec = spec.args(["--mcp-config".to_owned(), path_arg(config)?]);
     }
@@ -115,7 +115,12 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
     } else {
         CommandSandbox::Own
     };
-    let settings = session_settings(req.mcp_config.is_some(), commands)?;
+    let allowed = match (effective_role(req), req.asks) {
+        (SessionRole::Direct, Asks::Never) => Allowed::Everything,
+        (SessionRole::Direct, Asks::LikeCli | Asks::EveryChange) => Allowed::AsTheCliAsks,
+        (SessionRole::ReadOnly | SessionRole::Build, _) => Allowed::Listed,
+    };
+    let settings = session_settings(req.mcp_config.is_some(), commands, allowed)?;
     let Some(dir) = &req.scratch_dir else {
         return Ok(spec.args(["--settings".to_owned(), settings]));
     };
@@ -141,8 +146,47 @@ pub fn effective_role(req: &SessionRequest) -> SessionRole {
         .is_some_and(|h| !h.trim().is_empty());
     match req.role {
         SessionRole::Build if approved => SessionRole::Build,
+        SessionRole::Direct if approved => SessionRole::Direct,
         _ => SessionRole::ReadOnly,
     }
+}
+
+/// A run's session gets a fixed tool list and asks nothing. A direct turn gets Claude Code's
+/// default tools, and asks as you run it: your own default mode and rules decide what asks
+/// (`LikeCli`), or every edit and command does (`EveryChange`), each question going to the
+/// approval tool. With no tool to ask through, anything that would ask is refused.
+fn with_permission_flags(
+    spec: CommandSpec,
+    req: &SessionRequest,
+    role: SessionRole,
+    fanout: Fanout,
+) -> CommandSpec {
+    // A project's settings can set another default mode, and a resume forgets the flag, so it
+    // goes on every launch.
+    let spec = match role {
+        SessionRole::ReadOnly | SessionRole::Build => spec
+            .args(["--permission-mode", permission_mode(role)])
+            .args(["--permission-prompts", "none"])
+            .args(["--tools".to_owned(), tool_list(role, fanout)]),
+        SessionRole::Direct => {
+            let asking = req.mcp_config.is_some() && req.asks != Asks::Never;
+            let spec = match req.asks {
+                Asks::Never => spec.args(["--permission-mode", "acceptEdits"]),
+                Asks::LikeCli => spec,
+                // 2.1.289 names the mode that asks about edits and commands `manual`.
+                Asks::EveryChange => spec.args(["--permission-mode", "manual"]),
+            };
+            if asking {
+                spec.args([
+                    "--permission-prompt-tool".to_owned(),
+                    format!("mcp__{STATUS_SERVER}__{APPROVE_TOOL}"),
+                ])
+            } else {
+                spec.args(["--permission-prompts", "none"])
+            }
+        }
+    };
+    spec.arg("--disallowedTools").args(disallowed_tools(fanout))
 }
 
 /// One stream-json user message, the way `--input-format stream-json` reads them.
@@ -158,14 +202,14 @@ fn permission_mode(role: SessionRole) -> &'static str {
     match role {
         // Denies anything that would prompt, and the tool list has no way to write.
         SessionRole::ReadOnly => "dontAsk",
-        SessionRole::Build => "acceptEdits",
+        SessionRole::Build | SessionRole::Direct => "acceptEdits",
     }
 }
 
 fn tool_list(role: SessionRole, fanout: Fanout) -> String {
     let mut tools: Vec<&str> = match role {
         SessionRole::ReadOnly => READ_ONLY_TOOLS.to_vec(),
-        SessionRole::Build => [BUILD_TOOLS, TODO_TOOLS].concat(),
+        SessionRole::Build | SessionRole::Direct => [BUILD_TOOLS, TODO_TOOLS].concat(),
     };
     if role == SessionRole::Build && fanout.offers_subagents() {
         tools.push(SUBAGENT_TOOL);
@@ -238,10 +282,18 @@ fn env_vars(
     role: SessionRole,
     fanout: Fanout,
 ) -> anyhow::Result<Vec<(String, String)>> {
+    let mut vars = Vec::new();
     // Auto memory is shared by every worktree of a repository, so it would leak between cards.
-    let mut vars = vec![("CLAUDE_CODE_DISABLE_AUTO_MEMORY".to_owned(), "1".to_owned())];
+    // A direct turn is Claude Code in your checkout, memory and all.
+    if role != SessionRole::Direct {
+        vars.push(("CLAUDE_CODE_DISABLE_AUTO_MEMORY".to_owned(), "1".to_owned()));
+    }
     if role == SessionRole::Build {
         vars.push(("CLAUDE_CODE_ENABLE_TODO_TOOLS".to_owned(), "1".to_owned()));
+    }
+    if role == SessionRole::Direct && req.asks != Asks::Never && req.mcp_config.is_some() {
+        // Yours would cut a card short.
+        vars.push(("MCP_TOOL_TIMEOUT".to_owned(), ASKING_TIMEOUT_MS.to_owned()));
     }
     if let Some(compaction) = req.compaction {
         vars.extend(tweaks::compaction(compaction).env_set);

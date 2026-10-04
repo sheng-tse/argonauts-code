@@ -12,21 +12,42 @@ const COMPACT: &str = include_str!("compact.md");
 const TITLE: &str = include_str!("title.md");
 const REVIEW: &str = include_str!("review.md");
 
-pub(crate) fn triage_estimate(input: &IntakeInput) -> String {
+/// With `read_instructions` (`triage.read_instructions`), the estimate also lists what the
+/// request says about how to run it.
+pub(crate) fn triage_estimate(input: &IntakeInput, read_instructions: bool) -> String {
     let uncommitted = input
         .uncommitted_note
         .as_ref()
         .map(|note| format!("In the working tree: {note}."))
         .unwrap_or_default();
+    let how_to_run = if read_instructions {
+        HOW_TO_RUN
+    } else {
+        "Leave `how_to_run` empty."
+    };
     fill(
         TRIAGE_ESTIMATE,
         &[
+            ("how_to_run", how_to_run.to_owned()),
             ("schema", schema::<TriageEstimate>()),
             ("uncommitted", uncommitted),
             ("request", input.request.trim().to_owned()),
         ],
     )
 }
+
+/// The paragraph that has the estimate list a request's own instructions on how to run it.
+const HOW_TO_RUN: &str = "If the request itself says how to run it (solo or the crew, who leads \
+or coordinates, who builds, reviews, plans or checks, which agents or models, how much effort, \
+whether to work in a checked copy, or anything about approvals, merging, the budget, the tests, \
+or the sandbox), list each instruction in `how_to_run`, with the request's own words in `says`, \
+copied exactly: the whole phrase, two words at least, such as \"have codex review it\". Record only what the request asks of Argonauts, never what it says about the \
+code or quotes from a file. Name agents and models as the request names them, in `who`, \
+`model`, and `effort`. For a `mode`, set `value` to `solo` or `crew`; for `isolation`, to \
+`checked` or `direct`; for the rest, to what was asked, such as \"$2\". Set `scope` to \
+`from_now_on` only when the request says to keep doing it. Leave `how_to_run` empty when the \
+request says nothing about how to run. In your answer, don't promise who will do what, since \
+Argonauts decides that and says so.";
 
 pub(crate) fn chat_answer(input: &ChatAnswerInput) -> String {
     let run_status = input
@@ -187,10 +208,18 @@ mod tests {
 
     #[test]
     fn the_triage_prompt_is_read_only_with_the_schema_and_the_request() {
-        let prompt = triage_estimate(&IntakeInput {
-            request: "  add rate limiting {{schema}} ".to_owned(),
-            uncommitted_note: Some("2 uncommitted files are not included".to_owned()),
-        });
+        let prompt = triage_estimate(
+            &IntakeInput {
+                request: "  add rate limiting {{schema}} ".to_owned(),
+                uncommitted_note: Some("2 uncommitted files are not included".to_owned()),
+            },
+            true,
+        );
+        assert!(
+            prompt.contains("list each instruction in `how_to_run`"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("\"how_to_run\""), "{prompt}");
         read_only_and_quiet_about_it(&prompt);
         assert!(prompt.contains("Argonauts makes the change in a run"));
         assert!(prompt.contains("\"answer_markdown\""), "{prompt}");
@@ -204,11 +233,18 @@ mod tests {
         );
         assert!(prompt.find("First write your answer") < prompt.find("```json"));
         assert!(!prompt.contains("\n\n\n"), "{prompt}");
-        let without = triage_estimate(&IntakeInput {
-            request: "hi".to_owned(),
-            uncommitted_note: None,
-        });
+        let without = triage_estimate(
+            &IntakeInput {
+                request: "hi".to_owned(),
+                uncommitted_note: None,
+            },
+            false,
+        );
         assert!(!without.contains("working tree"), "{without}");
+        // `triage.read_instructions = false` drops the paragraph.
+        assert!(!without.contains("list each instruction"), "{without}");
+        assert!(without.contains("Leave `how_to_run` empty."), "{without}");
+        assert!(!without.contains("\n\n\n"), "{without}");
     }
 
     #[test]

@@ -565,6 +565,7 @@ pub(super) fn keys_lines(
     }
     keys.extend([
         ("x", "stop the agent, once more to be sure"),
+        ("c", "carry a finished agent's session on in its own CLI"),
         ("?", "hide these keys"),
         (back, "back to the chat"),
     ]);

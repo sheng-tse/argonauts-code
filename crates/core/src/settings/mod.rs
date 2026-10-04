@@ -197,6 +197,9 @@ pub const SAFETY_KEYS: &[&str] = &[
     "budget.run_quota",
     "budget.run_minutes",
     "budget.enabled",
+    "solo.style",
+    "solo.asks",
+    "triage.solo_style",
     "agents.*.auth",
     "agents.*.binary",
     "agents.*.extra_args",
@@ -211,6 +214,8 @@ pub const SAFETY_KEYS: &[&str] = &[
     "merge.*",
     "gates.*",
     "notifications.chat.*",
+    "solo.style",
+    "triage.solo_style",
 ];
 
 /// Keys only your global config may set. A project file that sets one is refused, trusted or
@@ -218,7 +223,8 @@ pub const SAFETY_KEYS: &[&str] = &[
 pub const GLOBAL_ONLY_KEYS: &[&str] = &["notifications.chat.*"];
 
 /// Lowest first; a later layer wins key by key. `session` is the app's own overrides, which
-/// come after the `--set` flags.
+/// come after the `--set` flags. `request` holds what a request said about how to run it, for
+/// that run only.
 pub const LAYERS: &[&str] = &[
     "built-in",
     "global",
@@ -227,6 +233,7 @@ pub const LAYERS: &[&str] = &[
     "preset",
     "flag",
     "session",
+    "request",
 ];
 
 /// The layers that are settings files, lowest first. A preset picked in one sits just below it:

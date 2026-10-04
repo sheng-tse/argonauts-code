@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, watch};
 use crate::events::RunEvent;
 use crate::events::card::CardState;
 use crate::events::checkpoint::AnswerAction;
-use crate::events::run::{RunMode, TriageDecision};
+use crate::events::run::{CheckedInstruction, RunMode, TriageDecision};
 use crate::events::session::QueuedMessage;
 use crate::events::vendor::RunBudget;
 use crate::future::BoxFuture;
@@ -47,6 +47,14 @@ pub struct StartRun {
     /// `mcp.run_budget` and counts against `mcp.runs_per_day`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub front_end: Option<String>,
+    /// What the request said about how to run it: the ones followed and the ones not, each
+    /// with its reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<CheckedInstruction>,
+    /// `key=value` settings at the request layer, for this run only. A safety key among them
+    /// applies only when it tightens what the other layers say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub request_settings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,6 +102,22 @@ pub enum RunState {
     Stopped,
     Failed,
     Abandoned,
+}
+
+impl RunState {
+    /// It finished, one way or another, so none of its sessions runs again unless you resume
+    /// it. A parked or crashed run hasn't: resuming it starts its sessions where they were.
+    pub fn ended(self) -> bool {
+        matches!(
+            self,
+            Self::Merged
+                | Self::PullRequest
+                | Self::BranchLeft
+                | Self::Stopped
+                | Self::Failed
+                | Self::Abandoned
+        )
+    }
 }
 
 /// The log from `from_seq`, then live events. Closes after the run's last event once it has
@@ -377,4 +401,31 @@ pub trait Approvals: Send + Sync {
     ) -> BoxFuture<'_, Result<TakeOverTicket, ApiError>>;
     /// Commits your changes and opens the return card.
     fn take_over_ended(&self, run: &RunId, card: &CardId) -> BoxFuture<'_, Result<(), ApiError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunState;
+
+    /// A run that can still start its sessions again hasn't ended: parked and crashed runs
+    /// resume them where they were.
+    #[test]
+    fn only_a_finished_run_has_ended() {
+        let going = [
+            RunState::Running,
+            RunState::Pausing,
+            RunState::Parked,
+            RunState::Crashed,
+        ];
+        assert!(going.iter().all(|state| !state.ended()));
+        let finished = [
+            RunState::Merged,
+            RunState::PullRequest,
+            RunState::BranchLeft,
+            RunState::Stopped,
+            RunState::Failed,
+            RunState::Abandoned,
+        ];
+        assert!(finished.iter().all(|state| state.ended()));
+    }
 }

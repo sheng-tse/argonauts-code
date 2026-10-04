@@ -94,6 +94,8 @@ mod tests {
                 default_agent: None,
                 approval_mode: None,
                 front_end: None,
+                instructions: Vec::new(),
+                request_settings: Vec::new(),
             },
             overrides: overrides.iter().map(|text| (*text).to_owned()).collect(),
             interactive,

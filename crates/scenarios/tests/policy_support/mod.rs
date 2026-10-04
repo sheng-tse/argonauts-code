@@ -70,6 +70,13 @@ pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
+    // These scenarios follow solo runs, so `/solo` runs in a checked copy unless the settings
+    // say how solo runs.
+    let text = if text.contains("[solo]") {
+        text.to_owned()
+    } else {
+        format!("{text}\n[solo]\nstyle = \"checked\"\n")
+    };
     fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
 }
 

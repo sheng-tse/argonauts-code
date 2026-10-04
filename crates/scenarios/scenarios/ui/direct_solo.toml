@@ -1,0 +1,44 @@
+# Direct solo: in the solo preset your message goes to Claude Code in your
+# checkout. The turn plays the live recording of a direct turn on 2.1.289: an edit, a shell
+# command, and Claude Code's own last message, with no Argonauts schema.
+
+[version]
+claude = "2.1.289 (Claude Code)"
+codex = "codex-cli 0.158.0"
+agy = "1.2.13"
+
+# Auto mode: accept edits, nothing asks. Claude Code reads its prompt as one stream-json line.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = "notes.txt"
+stdin_prompt = "line"
+[[rule.step]]
+write = { path = "notes.txt", content = "This is a final.\n" }
+[[rule.step]]
+write = { path = "shell.txt", content = "hi\n" }
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.289/direct_resume.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+[[rule.step]]
+emit_file = "../../../adapters/claude-code/fixtures/2.1.284/read-only.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+[[rule.step]]
+emit_file = "../../../adapters/codex/fixtures/0.158.0/read_only_ok.stdout.jsonl"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "agy"
+[[rule.step]]
+emit_file = "../../../adapters/antigravity-cli/fixtures/1.2.13/readonly_ok.stdout.jsonl"
+[[rule.step]]
+exit = 0

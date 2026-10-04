@@ -69,8 +69,15 @@ crew_labels = [
     "security",
 ]
 otherwise = "solo_then_crew"
+solo_style = "checked"
+read_instructions = true
 
 [solo]
+style = "direct"
+asks = "like_cli"
+rewind = true
+rewind_max_mb = 50
+start_run_tool = true
 restate_first = false
 review = false
 attempts = 1
@@ -215,6 +222,7 @@ refuse_ancestor_env = [
     "OPENCLAW_SHELL",
     "HERMES_SESSION_ID",
 ]
+allow_commands = []
 
 [approvals.goal]
 mode = "auto"

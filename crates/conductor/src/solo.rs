@@ -24,18 +24,19 @@ use crate::supervisor::{SessionOutcome, Supervisor, WrapUpDelivery};
 /// Largest diff handed to the merge card, in bytes. The full diff is always saved to a file.
 pub const MAX_DIFF_BYTES: usize = 1024 * 1024;
 
-/// Paths agents must not change. These are Argonauts' own config and the files that configure
-/// agent CLIs, since a later session in the same worktree could load them.
-const PROTECTED_PATHS: &[&str] = &[
-    ".argonauts/",
-    ".claude/",
-    ".mcp.json",
-    ".agents/",
-    ".codex/",
-];
+/// Paths agents must not change, since a later session in the same worktree could load them.
+use crate::sandbox::profile::PROTECTED_PATHS;
 
 /// Files that configure the agent CLIs. A session isn't resumed after the agent changed them.
-const AGENT_CONFIG_PATHS: &[&str] = &[".claude", ".mcp.json", ".agents", ".codex"];
+const AGENT_CONFIG_PATHS: &[&str] = &[
+    ".claude",
+    ".mcp.json",
+    ".agents",
+    ".codex",
+    ".opencode",
+    "opencode.json",
+    "opencode.jsonc",
+];
 
 /// A CLI's native spend cap sits this much above the meter's limit, so the meter acts first.
 const NATIVE_CAP_MARGIN: f64 = 1.1;

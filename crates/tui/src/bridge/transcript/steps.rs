@@ -5,13 +5,17 @@ use std::collections::BTreeSet;
 use argonauts_core::PhaseStatus;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::goal::{GoalChangeResolution, GoalFile, GoalSource};
-use argonauts_core::events::run::{Party, RunMode, RunPhase, RunStarted};
+use argonauts_core::events::run::{
+    CheckedInstruction, InstructionOutcome, Party, RunMode, RunPhase, RunStarted, TriageDecision,
+};
 use argonauts_core::log::RETRO_FAILED;
+use argonauts_core::steps::intake::ChangeEstimate;
 
 use crate::cell::{Notice, Tone, ToolCall, ToolItem, ToolKind, ToolState};
 
 use super::milestones::RunStory;
 use super::{Cx, emit, quiet};
+use crate::views::layout::cut;
 
 /// `● Name(args)` with its details under one `⎿`.
 pub(super) fn step(name: &str, args: &str, state: ToolState, details: &[String]) -> ToolCall {
@@ -45,17 +49,22 @@ pub(super) fn party_words(party: &Party, names: &DisplayNames) -> Option<String>
 pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
-/// `● Triage(solo)` and what the run starts from.
+/// `● Triage(solo, checked)` and what the run starts from, with `as you asked` when a command
+/// or your words chose the mode. A solo run works in a copy, so it's always the checked solo.
 pub(super) fn triage(started: &RunStarted, cx: &mut Cx<'_>) {
-    let mode = match started.mode {
-        RunMode::Solo => "solo",
+    let mut args = match started.mode {
+        RunMode::Solo => "solo, checked",
         RunMode::Crew => "crew",
-    };
-    let args = if started.forced {
-        format!("{mode}, as you asked")
-    } else {
-        mode.to_owned()
-    };
+    }
+    .to_owned();
+    let asked = started.forced
+        || started
+            .triage
+            .as_ref()
+            .is_some_and(|triage| triage.as_you_asked());
+    if asked {
+        args.push_str(", as you asked");
+    }
     let mut details = Vec::new();
     let branch = started
         .base_branch
@@ -84,20 +93,7 @@ pub(super) fn triage(started: &RunStarted, cx: &mut Cx<'_>) {
     }
     details.push(recorded);
     if let Some(estimate) = &started.estimate {
-        let files = usize::try_from(estimate.file_count).unwrap_or(usize::MAX);
-        let mut line = format!("Estimate: {}", plural(files, "file", "files"));
-        if !estimate.task_type.trim().is_empty() {
-            line.push_str(&format!(" · {}", estimate.task_type.trim()));
-        }
-        line.push_str(if estimate.tests_exist {
-            " · tests exist"
-        } else {
-            " · no tests yet"
-        });
-        if !estimate.risk_labels.is_empty() {
-            line.push_str(&format!(" · touches {}", estimate.risk_labels.join(", ")));
-        }
-        details.push(line);
+        details.push(estimate_line(estimate));
     }
     if let Some(triage) = &started.triage {
         details.push(triage.reason.clone());
@@ -105,6 +101,7 @@ pub(super) fn triage(started: &RunStarted, cx: &mut Cx<'_>) {
             details.push("Solo first, and a crew if it grows".to_owned());
         }
     }
+    details.extend(as_you_asked(&started.instructions));
     let restate_first = started
         .settings
         .pointer("/solo/restate_first")
@@ -119,8 +116,87 @@ pub(super) fn triage(started: &RunStarted, cx: &mut Cx<'_>) {
     if let Some(earlier) = &started.continues {
         details.push(format!("Continues {earlier}"));
     }
-    emit(cx, step("Triage", &args, ToolState::Done, &details));
+    emit(cx, triage_step(&args, &details));
 }
+
+/// `● Triage(solo, in your checkout)` for a solo that works in your checkout, which has no run
+/// to say it: the estimate, the rule that picked it, and what your words asked.
+pub(super) fn direct_triage(
+    estimate: &ChangeEstimate,
+    triage: &TriageDecision,
+    instructions: &[CheckedInstruction],
+    cx: &mut Cx<'_>,
+) {
+    let mut args = "solo, in your checkout".to_owned();
+    if triage.as_you_asked() {
+        args.push_str(", as you asked");
+    }
+    let mut details = vec![estimate_line(estimate), triage.reason.clone()];
+    details.extend(as_you_asked(instructions));
+    emit(cx, triage_step(&args, &details));
+}
+
+/// The Triage item, whose lines wrap at 100 columns however wide the screen is.
+fn triage_step(args: &str, details: &[String]) -> ToolCall {
+    step("Triage", args, ToolState::Done, details).with_wrap_at(TRIAGE_COLUMNS)
+}
+
+const TRIAGE_COLUMNS: u16 = 100;
+
+/// `Estimate: 2 files · bugfix · tests exist`.
+fn estimate_line(estimate: &ChangeEstimate) -> String {
+    let files = usize::try_from(estimate.file_count).unwrap_or(usize::MAX);
+    let mut line = format!("Estimate: {}", plural(files, "file", "files"));
+    if !estimate.task_type.trim().is_empty() {
+        line.push_str(&format!(" · {}", estimate.task_type.trim()));
+    }
+    line.push_str(if estimate.tests_exist {
+        " · tests exist"
+    } else {
+        " · no tests yet"
+    });
+    if !estimate.risk_labels.is_empty() {
+        line.push_str(&format!(" · touches {}", estimate.risk_labels.join(", ")));
+    }
+    line
+}
+
+/// `As you asked: Codex coordinates · Claude Code reviews`, then a `Not followed:` line for
+/// each instruction that wasn't, or was only in part, with its words and why. Instructions
+/// whose words you didn't write show only in Ctrl+O.
+pub(super) fn as_you_asked(instructions: &[CheckedInstruction]) -> Vec<String> {
+    let followed: Vec<&str> = instructions
+        .iter()
+        .filter_map(|instruction| match &instruction.outcome {
+            InstructionOutcome::Followed { said, .. } => Some(said.trim()),
+            _ => None,
+        })
+        .filter(|said| !said.is_empty())
+        .collect();
+    let mut lines = Vec::new();
+    if !followed.is_empty() {
+        lines.push(format!("As you asked: {}", followed.join(" · ")));
+    }
+    for instruction in instructions {
+        let why = match &instruction.outcome {
+            InstructionOutcome::NotFollowed { why } => why,
+            InstructionOutcome::Followed {
+                note: Some(note), ..
+            } => note,
+            _ => continue,
+        };
+        lines.push(format!(
+            "Not followed: \"{}\" · {}",
+            cut(instruction.says.trim(), SAYS_CELLS),
+            why.trim()
+        ));
+    }
+    lines
+}
+
+/// The longest an instruction's own words show on the Triage line, in cells.
+const SAYS_CELLS: usize = 40;
+
 /// A failed phase, and the contracts step, whose events no other line sums up.
 pub(super) fn phase(phase: RunPhase, status: PhaseStatus, summary: Option<&str>, cx: &mut Cx<'_>) {
     let summary = summary.map(str::trim).filter(|summary| !summary.is_empty());

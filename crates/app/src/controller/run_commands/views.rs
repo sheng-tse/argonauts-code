@@ -108,6 +108,9 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         }
         ViewRequest::WorkflowLibrary => anyhow::bail!("the workflow files aren't a run's"),
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
+        ViewRequest::AgentSessions { .. } => {
+            anyhow::bail!("a run's agents' sessions are the chat's to list")
+        }
         ViewRequest::Learning { .. } => anyhow::bail!("the Learning pickers aren't run views"),
     }
     Ok(Vec::new())

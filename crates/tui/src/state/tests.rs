@@ -144,6 +144,7 @@ fn started(title: &str, mode: RunMode) -> RunEventKind {
         harness_versions: Default::default(),
         version: "0.1.0".into(),
         front_end: Some("slack".into()),
+        instructions: Vec::new(),
     })))
 }
 
@@ -1056,6 +1057,7 @@ fn state_folds_chat() {
         commit: "abc".into(),
         uncommitted: Vec::new(),
         settings_sha256: None,
+        continues: false,
     }));
     let agent = |event| ChatEvent::Agent {
         turn: turn.clone(),
@@ -1122,6 +1124,7 @@ fn chat_queue_clears_at_turn_start() {
             commit: "abc".into(),
             uncommitted: Vec::new(),
             settings_sha256: None,
+            continues: false,
         },
     });
     assert_eq!(state.chat.queued, vec!["second".to_owned()]);

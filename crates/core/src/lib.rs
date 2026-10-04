@@ -2,9 +2,11 @@
 //! nothing uses them; newer ones are reached by path.
 
 pub mod adapter;
+pub mod agent_sessions;
 pub mod agents;
 pub mod api;
 pub mod app;
+pub mod asking;
 pub mod budget;
 pub mod build_output;
 pub mod card;
@@ -23,6 +25,7 @@ pub mod hash;
 pub mod ids;
 pub mod input;
 pub mod journal;
+pub mod keywords;
 pub mod labels;
 pub mod layout;
 pub mod limits;
@@ -78,6 +81,6 @@ pub use paths::{
 pub use pricing::builtin_price;
 pub use prompt::{WRAP_UP_MESSAGE, render_solo_prompt};
 pub use session::{
-    AuthMode, CommandSpec, PARENT_SESSION_ENV_VARS, SessionRequest, SessionRole, SpecFile,
+    Asks, AuthMode, CommandSpec, PARENT_SESSION_ENV_VARS, SessionRequest, SessionRole, SpecFile,
     VENDOR_KEY_ENV_VARS, env_remove_except,
 };

@@ -1,21 +1,30 @@
 //! The chat with the default agent: a new request's triage estimate, `/ask`, `/solo` and
-//! `/crew`, and the `StartWork` choice. Every turn runs read-only in the repo root and resumes
-//! the chat's vendor session.
+//! `/crew`, and the `StartWork` choice. Every turn resumes the chat's vendor session in the
+//! repo root, read-only but for a direct turn: solo you choose, which `direct` runs in your
+//! checkout as the CLI itself would.
 //!
 //! Text typed while a turn runs waits in a queue and is sent once the turn ends. `lifecycle`
 //! runs a turn from start to finish, `offer` asks whether to start work, and `excerpt` primes a
 //! session that can't resume the chat. `/clear` starts a new conversation, and `past` reads
 //! earlier ones back so `/resume` can carry them on. `vendor` does the same for the main agent
-//! CLI's own sessions.
+//! CLI's own sessions, and `agent` for the sessions of a run's agents, which carry on as direct
+//! conversations in the folder each ran in.
 //!
 //! The commands every agent CLI has in some form work on the conversation whatever CLI the
 //! main agent is: `side` asks and names off the record, compacts, recaps, and reviews; `copies`
 //! branches, forks, exports, and copies; `prefs` holds `/fast`, `/output-style`, `/plan`, and
 //! `/goal`.
 
+mod agent;
+#[cfg(test)]
+mod agent_tests;
 mod copies;
 mod crew;
+mod direct;
+#[cfg(test)]
+mod direct_tests;
 mod excerpt;
+mod keep;
 mod lifecycle;
 #[cfg(test)]
 mod mention_tests;
@@ -23,7 +32,10 @@ mod offer;
 mod past;
 mod prefs;
 #[cfg(test)]
+mod request_tests;
+#[cfg(test)]
 mod resume_tests;
+mod run_copy;
 #[cfg(test)]
 mod shared_tests;
 mod side;
@@ -35,15 +47,22 @@ mod vendor_tests;
 
 pub(crate) use crew::{rows as crew_rows, vendor_sessions as crew_vendor_sessions};
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::time::Instant;
 
+use anyhow::Context as _;
+
 use argonauts_core::NoteLevel;
-use argonauts_core::api::StartRun;
-use argonauts_core::app::{AppEvent, AppMode, ChatEvent, ChatSummary, UiCommand};
+use argonauts_core::RunId;
+use argonauts_core::agent_sessions::{AgentSession, AgentSessionRef, Resume};
+use argonauts_core::api::{RunSummary, StartRun};
+use argonauts_core::app::{
+    AppEvent, AppMode, ChatEvent, ChatSummary, ReplayTurn, UiCommand, ViewData,
+};
 use argonauts_core::event::AgentEvent;
-use argonauts_core::events::run::RunMode;
+use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::names::{ChatId, ChoiceId, TurnId, WorkerRef};
+use argonauts_core::names::{ChatId, ChoiceId, SessionKey, TurnId, WorkerRef};
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::ChangeEstimate;
 use argonauts_core::steps::{StepError, StepOutcome};
@@ -53,20 +72,26 @@ use argonauts_core::views::ContextRow;
 use argonauts_core::worker::WorkerEvent;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) use self::agent::SessionCache;
 pub(crate) use self::copies::{branch, copy, export, fork};
+pub(crate) use self::direct::{rewind, set_approval};
 use self::excerpt::Exchange;
 use self::lifecycle::{begin, on_done, on_event};
 use self::offer::Offer;
-pub(crate) use self::offer::{answer_choice, owns_choice, set_aside};
 use self::past::PastChat;
 use self::prefs::{Goal, Prefs};
 pub(crate) use self::prefs::{fast, goal, goal_run_started, output_style, plan};
+pub(crate) use self::run_copy::tidy_copies;
 pub(crate) use self::side::{btw, compact, recap, rename, review};
+#[cfg(test)]
+pub(crate) use self::tests::checked_solo;
+use super::instructions::{self, Command, Roster};
 use super::recap::{mode_name, title_from_request};
 use super::shell::ShellRan;
-use super::turn::TurnStep;
+use super::turn::{DirectWords, TurnStep};
 use super::{Ctx, Effect};
-use crate::chat_store::{ChatSession, ChatStore};
+use crate::chat_store::{ChatPlace, ChatSession, ChatStore};
+use argonauts_core::events::checkpoint::AnswerAction;
 
 pub(crate) struct ChatState {
     id: ChatId,
@@ -83,6 +108,8 @@ pub(crate) struct ChatState {
     queued: VecDeque<(Queued, u32)>,
     /// Open `StartWork` questions.
     offers: HashMap<ChoiceId, Offer>,
+    /// Open "Keep this for later requests?" questions, each with what it would keep.
+    keeps: HashMap<ChoiceId, keep::Kept>,
     /// `!` commands run since the lead's last turn, oldest first. Your next message takes
     /// them: to the lead, or to the run going.
     ran: Vec<ShellRan>,
@@ -97,6 +124,9 @@ pub(crate) struct ChatState {
     /// The model of a CLI session this chat carries on, kept while the chat resumes it unless
     /// you set one.
     carried_model: Option<String>,
+    /// Set when the chat carries on an agent's session from a run: its turns are direct, with
+    /// that agent, in the folder it ran in.
+    place: Option<ChatPlace>,
     context: Option<ContextRow>,
     /// Said once, so a broken journal doesn't flood the transcript.
     journal_warned: bool,
@@ -105,6 +135,7 @@ pub(crate) struct ChatState {
     /// Choices for this app session, kept across `/clear` and `/resume`.
     prefs: Prefs,
     goal: Option<Goal>,
+    direct: direct::DirectState,
 }
 
 struct Turn {
@@ -122,6 +153,8 @@ struct Turn {
     plan_first: bool,
     /// The `!` commands this turn took, back for a fallback's try.
     ran: Vec<ShellRan>,
+    /// A direct turn's listener, snapshot, and what it ran.
+    direct: Option<direct::Running>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +168,12 @@ enum Queued {
     },
     Side(String),
     Plan(String),
+    /// `/solo <task>`.
+    Solo(String),
+    /// `/crew <task>`, whose words are read before the run starts.
+    Crew(String),
+    /// `/workflow <task>`, read the same way.
+    Workflow(String),
 }
 
 /// From a turn's task to the loop.
@@ -147,6 +186,8 @@ pub(crate) enum TurnUpdate {
         turn: TurnId,
         outcome: Result<StepOutcome, StepError>,
     },
+    /// A direct turn's CLI asks you something, and waits for the answer.
+    Asked { turn: TurnId, asked: direct::Asked },
 }
 
 impl ChatState {
@@ -163,17 +204,20 @@ impl ChatState {
             stopping: Vec::new(),
             queued: VecDeque::new(),
             offers: HashMap::new(),
+            keeps: HashMap::new(),
             ran: Vec::new(),
             last_shell: 0,
             shell_cutoff: None,
             history: Vec::new(),
             session: None,
             carried_model: None,
+            place: None,
             context: None,
             journal_warned: false,
             sides: 0,
             prefs: Prefs::default(),
             goal: None,
+            direct: direct::DirectState::default(),
         })
     }
 
@@ -184,6 +228,7 @@ impl ChatState {
         let id = past.summary.chat.clone();
         let store = ChatStore::open(&ctx.env.chat_dir(), &id);
         let session = store.session();
+        let place = store.place();
         let history = past
             .since_compacted()
             .iter()
@@ -198,17 +243,20 @@ impl ChatState {
             stopping: Vec::new(),
             queued: VecDeque::new(),
             offers: HashMap::new(),
+            keeps: HashMap::new(),
             ran: Vec::new(),
             last_shell: 0,
             shell_cutoff: None,
             history,
             session,
             carried_model: None,
+            place,
             context: None,
             journal_warned: false,
             sides: 0,
             prefs: Prefs::default(),
             goal: None,
+            direct: direct::DirectState::default(),
         }
     }
 
@@ -229,12 +277,69 @@ impl ChatState {
         Ok(chat)
     }
 
+    /// A new conversation that carries on an agent's session from a run, through its CLI's own
+    /// resume, with that agent, in `place.folder`.
+    fn continuing(ctx: &Ctx, found: &agent::Found, place: ChatPlace) -> anyhow::Result<Self> {
+        let mut chat = Self::new(ctx)?;
+        let vendor_session = found
+            .vendor_session
+            .clone()
+            .context("the session left no id to resume")?;
+        let session = ChatSession {
+            worker: place.worker.clone(),
+            vendor_session,
+        };
+        // Saved now, so `/resume chat-<n>` carries it on in the same folder after a restart.
+        chat.store.save_session(&session)?;
+        chat.store.save_place(&place)?;
+        chat.session = Some(session);
+        chat.title = found
+            .card_title
+            .clone()
+            .unwrap_or_else(|| format!("{} {}", found.role.as_str(), found.run));
+        chat.carried_model = found.worker.model.clone();
+        chat.place = Some(place);
+        Ok(chat)
+    }
+
     /// The conversation after this one keeps this app session's choices and open questions.
-    fn succeed(&mut self, mut next: ChatState) {
+    /// What `/rewind` can put back stays only while both work in the same folder, and a copy
+    /// made again for this one goes once the next one works elsewhere.
+    fn succeed(&mut self, ctx: &Ctx, mut next: ChatState) {
         next.offers = std::mem::take(&mut self.offers);
         next.prefs = self.prefs.clone();
+        next.direct = self.direct.carry();
+        let same_folder = next.place.as_ref().map(|place| &place.folder)
+            == self.place.as_ref().map(|place| &place.folder);
+        if !same_folder {
+            next.direct.forget_turns();
+        }
         next.last_shell = self.last_shell;
+        let left = self
+            .place
+            .take()
+            .filter(|place| place.made_again && !same_folder);
         *self = next;
+        if let Some(place) = left {
+            run_copy::leave(ctx, &place);
+        }
+    }
+
+    /// Where its turns work: the folder of the agent's session it carries on, or your checkout.
+    pub(super) fn folder<'a>(&'a self, ctx: &'a Ctx) -> &'a Path {
+        self.place
+            .as_ref()
+            .map_or(ctx.env.repo_root.as_path(), |place| place.folder.as_path())
+    }
+
+    /// The CLI its turns go to, such as `claude-code`: the agent's whose session it carries on,
+    /// or the main agent's.
+    pub(super) fn cli<'a>(&'a self, ctx: &'a Ctx) -> &'a str {
+        self.place
+            .as_ref()
+            .map_or(ctx.settings().default_agent.worker.as_str(), |place| {
+                place.worker.worker.as_str()
+            })
     }
 
     /// Typed while a turn runs, to go out once it ends. A message typed again as it goes out
@@ -248,6 +353,23 @@ impl ChatState {
 /// The main agent CLI's own sessions for this repo, newest first, for `/resume`.
 pub(crate) async fn vendor_sessions(ctx: &Ctx) -> Vec<VendorSession> {
     vendor::list(ctx).await
+}
+
+/// The sessions of the newest runs' agents, for `/resume` to list under each run, and which
+/// runs those are.
+pub(crate) async fn agent_sessions(
+    ctx: &Ctx,
+    runs: &[RunSummary],
+) -> (Vec<AgentSession>, Vec<RunId>) {
+    agent::list(ctx, runs).await
+}
+
+/// One run's agents' sessions, for a run `/resume` listed without them.
+pub(crate) async fn run_agent_sessions(
+    ctx: &Ctx,
+    run: &RunId,
+) -> anyhow::Result<Vec<AgentSession>> {
+    agent::list_run(ctx, run).await
 }
 
 /// Earlier conversations in this repo, newest first, for `/resume`.
@@ -267,7 +389,7 @@ pub(crate) fn clear(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<E
     }
     let old = chat.id.clone();
     let had_turns = chat.turns > 0;
-    chat.succeed(ChatState::new(ctx)?);
+    chat.succeed(ctx, ChatState::new(ctx)?);
     let text = if had_turns {
         format!("Started a new conversation. /resume {old} picks the last one up again.")
     } else {
@@ -279,8 +401,9 @@ pub(crate) fn clear(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<E
 
 /// `/resume chat-<n>`, or Enter on a conversation in the picker: reprints it condensed and
 /// carries it on. The next turn resumes its vendor session when the same agent takes it and
-/// can resume, or starts a fresh one primed with the conversation so far.
-pub(crate) fn resume(
+/// can resume, or starts a fresh one primed with the conversation so far. One that carries on
+/// an agent's session from a run is checked again first, since its run may be going again.
+pub(crate) async fn resume(
     ctx: &mut Ctx,
     chat: &mut ChatState,
     id: &ChatId,
@@ -304,7 +427,27 @@ pub(crate) fn resume(
     let Some(past) = past else {
         anyhow::bail!("There's no conversation {id} in this repo. /resume lists them.");
     };
-    chat.succeed(ChatState::resumed(ctx, &past));
+    let mut resumed = ChatState::resumed(ctx, &past);
+    // It carries on an agent's session, whose run may be going again since, and whose copy may
+    // be gone again.
+    let mut made_again = false;
+    if let Some(place) = resumed.place.as_mut() {
+        if let Some(why) = agent::place_cannot(ctx, place).await {
+            anyhow::bail!("{id} can't carry on: {why}.");
+        }
+        made_again =
+            run_copy::ensure_copy(&ctx.env.repo_root, &place.folder, place.branch.as_deref())
+                .with_context(|| format!("{id} can't carry on"))?;
+        if made_again && !place.made_again {
+            place.made_again = true;
+            resumed.store.save_place(place)?;
+        }
+    }
+    let where_it_works = resumed
+        .place
+        .as_ref()
+        .map(|place| where_it_works(ctx, place, made_again));
+    chat.succeed(ctx, resumed);
     let mut replay = past.replay();
     let shown = replay.split_off(replay.len().saturating_sub(past::SHOWN_TURNS));
     ctx.send(AppEvent::ChatResumed {
@@ -314,6 +457,9 @@ pub(crate) fn resume(
         earlier: replay,
         turns: shown,
     });
+    if let Some(text) = where_it_works {
+        ctx.notice(NoteLevel::Info, text);
+    }
     note_run_on_screen(ctx);
     Ok(vec![Effect::Status])
 }
@@ -365,7 +511,7 @@ pub(crate) async fn resume_vendor(
     }
     let default = ctx.settings().default_agent.clone();
     let worker = picked.worker(&default);
-    chat.succeed(ChatState::carrying(ctx, &picked, worker.clone())?);
+    chat.succeed(ctx, ChatState::carrying(ctx, &picked, worker.clone())?);
     let mut replay = picked.replay(&worker);
     let shown = replay.split_off(replay.len().saturating_sub(past::SHOWN_TURNS));
     ctx.send(AppEvent::ChatResumed {
@@ -395,12 +541,146 @@ pub(crate) async fn resume_vendor(
     Ok(vec![Effect::Status])
 }
 
+/// `/resume run-<n>/s-<n>`, or `c` on a finished agent: carries the agent's session on in a new
+/// conversation whose turns are direct, through its CLI's own resume, in the folder it ran in.
+/// That's the run's copy, made again from its branch when the run merged and the copy is gone.
+/// Only a run that ended lets go of its sessions: a session still running is taken over
+/// instead, one whose run may still start it again waits for the run, and one that can't
+/// resume shows its transcript.
+pub(crate) async fn resume_agent(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    reference: &AgentSessionRef,
+) -> anyhow::Result<Vec<Effect>> {
+    if !settled(chat) {
+        ctx.notice(
+            NoteLevel::Info,
+            "A turn is still running. Esc stops it, then /resume carries the other one on.",
+        );
+        return Ok(Vec::new());
+    }
+    let (found, resume) = agent::pick(ctx, reference).await?;
+    let who = found.who();
+    match resume {
+        Resume::Ready => {}
+        Resume::Working => {
+            ctx.notice(
+                NoteLevel::Info,
+                format!(
+                    "{reference} is still working. t in its agent view takes it over, and once \
+                     its run ends, its session carries on here."
+                ),
+            );
+            return Ok(Vec::new());
+        }
+        Resume::RunOwns => {
+            ctx.notice(NoteLevel::Info, format!("{}.", agent::owned_by(reference)));
+            return Ok(Vec::new());
+        }
+        Resume::Cannot { why } => {
+            ctx.notice(
+                NoteLevel::Info,
+                format!("{reference} can't carry on, since {why}. Here is its transcript."),
+            );
+            let raw = ctx
+                .services
+                .conductor
+                .raw(&reference.run, &reference.session)
+                .await
+                .with_context(|| format!("the transcript of {reference}"))?;
+            ctx.send(AppEvent::View {
+                data: Box::new(ViewData::Raw { raw }),
+            });
+            return Ok(Vec::new());
+        }
+    }
+    // A branch of it works in the same place on a session of its own.
+    let on_screen = chat
+        .place
+        .as_ref()
+        .is_some_and(|place| &place.agent == reference)
+        && chat.session.as_ref().map(|session| &session.vendor_session)
+            == found.vendor_session.as_ref();
+    if on_screen {
+        ctx.notice(
+            NoteLevel::Info,
+            format!("{reference} is the conversation on screen."),
+        );
+        return Ok(Vec::new());
+    }
+    let repo = ctx.env.repo_root.clone();
+    let (folder, made_again) = {
+        let found = found.clone();
+        tokio::task::spawn_blocking(move || agent::place(&repo, &found))
+            .await
+            .context("making the run's copy again")?
+            .with_context(|| format!("{reference} can't carry on"))?
+    };
+    let place = ChatPlace {
+        agent: reference.clone(),
+        worker: found.worker.clone(),
+        folder,
+        branch: found.branch.clone(),
+        made_again,
+    };
+    chat.succeed(ctx, ChatState::continuing(ctx, &found, place.clone())?);
+    let worker = place.worker.clone();
+    let turns = found
+        .last_message
+        .iter()
+        .map(|text| ReplayTurn {
+            from: Party::Agent {
+                session: SessionKey::numbered(0),
+                worker: worker.clone(),
+            },
+            text: text.clone(),
+        })
+        .collect();
+    ctx.send(AppEvent::ChatResumed {
+        chat: chat.id.clone(),
+        title: chat.title.clone(),
+        worker: Some(worker.clone()),
+        earlier: Vec::new(),
+        turns,
+    });
+    let agent = ctx.names.worker(&worker);
+    let binary = agent::binary(ctx, &worker.worker);
+    let mut text = format!(
+        "Carrying on {who}, {agent}. Your messages go to it through {binary}'s own resume, and \
+         it can change files. "
+    );
+    text.push_str(&where_it_works(ctx, &place, made_again));
+    ctx.notice(NoteLevel::Info, text);
+    note_run_on_screen(ctx);
+    Ok(vec![Effect::Status])
+}
+
+/// Which files a carried-on agent works on, said plainly: the run's copy, not your checkout.
+fn where_it_works(ctx: &Ctx, place: &ChatPlace, made_again: bool) -> String {
+    let folder = ctx.env.display(&place.folder);
+    if place.folder == ctx.env.repo_root {
+        return "It works in your checkout.".to_owned();
+    }
+    let on_branch = place
+        .branch
+        .as_deref()
+        .map_or_else(String::new, |branch| format!(" on {branch}"));
+    let mut text = format!("It works on the run's copy in {folder}{on_branch}, not your checkout.");
+    if made_again {
+        text.push_str(" That copy was gone, so it was made again from the branch.");
+    }
+    text
+}
+
 /// `argonauts -c`: the newest conversation in this repo, or a new one when there's none.
-pub(crate) fn continue_newest(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<Effect>> {
+pub(crate) async fn continue_newest(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+) -> anyhow::Result<Vec<Effect>> {
     match list(ctx).first() {
         Some(newest) => {
             let id = newest.chat.clone();
-            resume(ctx, chat, &id)
+            resume(ctx, chat, &id).await
         }
         None => {
             ctx.notice(
@@ -497,8 +777,23 @@ fn request(ctx: &mut Ctx, chat: &mut ChatState, text: String) -> anyhow::Result<
         return Ok(Vec::new());
     }
     let effects = name_the_chat(chat, &text);
+    // The solo preset, or an agent's session carried on: your message goes to the session as
+    // its CLI takes it, with no estimate first. With plan first on, the session plans before it
+    // changes anything.
+    if direct::preset_is_direct(ctx.settings()) || chat.place.is_some() {
+        let mut effects = effects;
+        if chat.prefs.plan_first {
+            effects.extend(direct::plan(ctx, chat, text, DirectWords::default())?);
+        } else {
+            effects.extend(direct::begin(ctx, chat, text, None)?);
+        }
+        return Ok(effects);
+    }
+    let read_instructions = ctx.settings().triage.read_instructions;
     begin(ctx, chat, text, |record| TurnStep::Triage {
         uncommitted_note: record.uncommitted_note(),
+        read_instructions,
+        command: None,
     })?;
     Ok(effects)
 }
@@ -512,6 +807,17 @@ fn request_planned(
     if chat.turn.is_some() {
         chat.queue(Queued::Plan(text));
         return Ok(Vec::new());
+    }
+    // Direct solo, and an agent's session carried on, plan in the session that then goes ahead,
+    // and change nothing until you say.
+    if direct::preset_is_direct(ctx.settings()) || chat.place.is_some() {
+        let text = text.trim().to_owned();
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut effects = name_the_chat(chat, &text);
+        effects.extend(direct::plan(ctx, chat, text, DirectWords::default())?);
+        return Ok(effects);
     }
     let effects = request(ctx, chat, text)?;
     if let Some(turn) = chat.turn.as_mut() {
@@ -558,9 +864,48 @@ pub(crate) fn vendor_command(
         return Ok(Vec::new());
     }
     let shown = command.invocation(args);
-    let effects = name_the_chat(chat, &shown);
-    begin(ctx, chat, shown, |_| TurnStep::Vendor { prompt })?;
+    let mut effects = name_the_chat(chat, &shown);
+    // The solo preset, or an agent's session carried on: the command works where the
+    // conversation does, as in the CLI itself.
+    if direct::preset_is_direct(ctx.settings()) || chat.place.is_some() {
+        effects.extend(direct::begin_vendor(ctx, chat, shown, prompt)?);
+        return Ok(effects);
+    }
+    begin(ctx, chat, shown, |_| TurnStep::Vendor {
+        prompt,
+        direct: None,
+    })?;
     Ok(effects)
+}
+
+pub(crate) fn owns_choice(chat: &ChatState, id: &ChoiceId) -> bool {
+    offer::owns_choice(chat, id) || keep::owns(chat, id)
+}
+
+/// The `StartWork` choice, or where to keep what a request said "from now on".
+pub(crate) async fn answer_choice(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    id: ChoiceId,
+    action: AnswerAction,
+    text: Option<String>,
+) -> anyhow::Result<Vec<Effect>> {
+    if keep::owns(chat, &id) {
+        return keep::answer(ctx, chat, id, action);
+    }
+    offer::answer_choice(ctx, chat, id, action, text).await
+}
+
+pub(crate) fn set_aside(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    id: ChoiceId,
+) -> anyhow::Result<Vec<Effect>> {
+    if keep::owns(chat, &id) {
+        keep::set_aside(ctx, chat, id);
+        return Ok(Vec::new());
+    }
+    offer::set_aside(ctx, chat, id)
 }
 
 /// `/solo` and `/crew`: a run with no estimate.
@@ -579,7 +924,44 @@ pub(crate) async fn start_forced(
         );
         return Ok(Vec::new());
     }
+    let direct = mode == RunMode::Solo && direct::solo_is_direct(ctx.settings());
+    // Your words are read first when they may say how to run, as a request's are: the command
+    // keeps its mode, and the rest of what they say is checked and followed. Words that can't
+    // say how leave the command as quick as it always was.
+    let reads = ctx.settings().triage.read_instructions
+        && !(direct && chat.prefs.plan_first)
+        && instructions::might_say_how(&task, &Roster::new(ctx));
+    if (direct || reads) && chat.turn.is_some() {
+        chat.queue(match mode {
+            RunMode::Solo => Queued::Solo(task),
+            RunMode::Crew => Queued::Crew(task),
+        });
+        return Ok(Vec::new());
+    }
     let mut effects = name_the_chat(chat, &task);
+    if reads {
+        let command = Command {
+            mode,
+            said: format!("you typed /{}", mode_name(mode)),
+            style: None,
+        };
+        begin(ctx, chat, task, |record| TurnStep::Triage {
+            uncommitted_note: record.uncommitted_note(),
+            read_instructions: true,
+            command: Some(command),
+        })?;
+        return Ok(effects);
+    }
+    // Solo you choose is a direct turn, unless something asks for the checked copy. With plan
+    // first on, it plans before it changes anything.
+    if direct {
+        if chat.prefs.plan_first {
+            effects.extend(direct::plan(ctx, chat, task, DirectWords::default())?);
+        } else {
+            effects.extend(direct::begin(ctx, chat, task, None)?);
+        }
+        return Ok(effects);
+    }
     let mut request = run_request(ctx, task, mode, None, None);
     if chat.prefs.plan_first {
         request = planned(request);
@@ -605,6 +987,9 @@ pub(crate) fn cancel_turn(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result
             Queued::Vendor { name, args } => format!("/{name} {args}"),
             Queued::Side(question) => format!("/btw {question}"),
             Queued::Plan(task) => format!("/plan {task}"),
+            Queued::Solo(task) => format!("/solo {task}"),
+            Queued::Crew(task) => format!("/crew {task}"),
+            Queued::Workflow(task) => format!("/workflow {task}"),
         })
         .collect();
     if !texts.is_empty() {
@@ -624,13 +1009,27 @@ pub(crate) async fn on_update(
             Ok(Vec::new())
         }
         TurnUpdate::Done { turn, outcome } => on_done(ctx, chat, &turn, outcome),
+        TurnUpdate::Asked { turn, asked } => direct::on_asked(ctx, chat, &turn, asked),
     }
 }
 
 /// A new default agent: another vendor can't resume the old session, so the next turn starts
-/// a fresh one primed with an excerpt of the chat so far.
+/// a fresh one primed with an excerpt of the chat so far. A conversation that carries on an
+/// agent's session from a run stays with that agent and its session.
 pub(crate) fn fresh_session(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<Effect>> {
-    let _ = ctx;
+    if let Some(place) = &chat.place {
+        let agent = ctx.names.worker(&place.worker);
+        let main = ctx.names.worker(&ctx.settings().default_agent);
+        ctx.notice(
+            NoteLevel::Info,
+            format!(
+                "This conversation carries on {} with {agent}, so it stays with that agent. \
+                 /clear starts one with {main}.",
+                place.agent
+            ),
+        );
+        return Ok(Vec::new());
+    }
     chat.session = None;
     chat.carried_model = None;
     chat.store.forget_session()?;
@@ -638,14 +1037,23 @@ pub(crate) fn fresh_session(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Resu
 }
 
 /// The screen is closing: a turn in flight is cancelled. The loop then waits a little for
-/// every stopping step to end.
+/// every stopping step to end. A copy made again for the conversation goes too, unless its
+/// agent may still be writing it; the next start removes it then.
 pub(crate) fn close(ctx: &mut Ctx, chat: &mut ChatState) {
-    stop_turn(ctx, chat);
+    let in_flight = stop_turn(ctx, chat).is_some() || !chat.stopping.is_empty();
+    if let Some(place) = chat
+        .place
+        .as_ref()
+        .filter(|place| place.made_again && !in_flight)
+    {
+        run_copy::leave(ctx, place);
+    }
 }
 
 fn stop_turn(ctx: &mut Ctx, chat: &mut ChatState) -> Option<TurnId> {
-    let turn = chat.turn.take()?;
+    let mut turn = chat.turn.take()?;
     turn.cancel.cancel();
+    direct::cancelled(ctx, chat, &mut turn);
     chat.stopping.push(turn.id.clone());
     emit(
         ctx,
@@ -688,6 +1096,8 @@ fn run_request(
         default_agent: Some(settings.default_agent.clone()),
         approval_mode: None,
         front_end: None,
+        instructions: Vec::new(),
+        request_settings: Vec::new(),
     }
 }
 
@@ -716,14 +1126,35 @@ pub(super) fn styled(mut request: StartRun, style: RunStyle) -> StartRun {
 
 const STYLE_KEY: &str = "workflows.style";
 
-/// `/workflow <task>`: a crew run that's a workflow.
+/// `/workflow <task>`: a crew run that's a workflow. Words that may say how to run it are read
+/// first, as `/crew` reads them: the command keeps its mode and style, and the rest is checked
+/// and followed.
 pub(crate) async fn start_workflow(
     ctx: &mut Ctx,
     chat: &mut ChatState,
     task: String,
 ) -> anyhow::Result<Vec<Effect>> {
     let task = task.trim().to_owned();
+    let reads = ctx.settings().triage.read_instructions
+        && instructions::might_say_how(&task, &Roster::new(ctx));
+    if reads && chat.turn.is_some() {
+        chat.queue(Queued::Workflow(task));
+        return Ok(Vec::new());
+    }
     let mut effects = name_the_chat(chat, &task);
+    if reads {
+        let command = Command {
+            mode: RunMode::Crew,
+            said: "you typed /workflow".to_owned(),
+            style: Some(RunStyle::Workflow),
+        };
+        begin(ctx, chat, task, |record| TurnStep::Triage {
+            uncommitted_note: record.uncommitted_note(),
+            read_instructions: true,
+            command: Some(command),
+        })?;
+        return Ok(effects);
+    }
     let mut request = styled(
         run_request(ctx, task, RunMode::Crew, None, None),
         RunStyle::Workflow,
@@ -781,6 +1212,15 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
                 Queued::Plan(task) => UiCommand::Slash {
                     command: SlashCommand::Plan { task: Some(task) },
                 },
+                Queued::Solo(task) => UiCommand::Slash {
+                    command: SlashCommand::Solo { task },
+                },
+                Queued::Crew(task) => UiCommand::Slash {
+                    command: SlashCommand::Crew { task },
+                },
+                Queued::Workflow(task) => UiCommand::Slash {
+                    command: SlashCommand::Workflow { task: Some(task) },
+                },
             };
             Effect::Queued {
                 command: Box::new(command),
@@ -823,6 +1263,7 @@ fn event_turn(event: &ChatEvent) -> &TurnId {
         | ChatEvent::Agent { turn, .. }
         | ChatEvent::TurnFinished { turn, .. }
         | ChatEvent::TurnFailed { turn, .. }
-        | ChatEvent::TurnCancelled { turn } => turn,
+        | ChatEvent::TurnCancelled { turn }
+        | ChatEvent::HandedOff { turn, .. } => turn,
     }
 }

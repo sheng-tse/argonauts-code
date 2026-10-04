@@ -147,6 +147,11 @@ fn fold(events: Vec<ChatEvent>) -> Vec<PastTurn> {
                     past.reply = Some(reply);
                 }
             }
+            ChatEvent::HandedOff { turn, to, .. } => {
+                if let Some(past) = turns.iter_mut().find(|past| past.id == turn) {
+                    past.worker = to;
+                }
+            }
             ChatEvent::Agent { .. }
             | ChatEvent::TurnFailed { .. }
             | ChatEvent::TurnCancelled { .. } => {}
@@ -181,6 +186,7 @@ mod tests {
             commit: "abc".to_owned(),
             uncommitted: Vec::new(),
             settings_sha256: None,
+            continues: false,
         }
     }
 

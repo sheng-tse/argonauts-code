@@ -126,6 +126,7 @@ mod tests {
                 commit: "abc".to_owned(),
                 uncommitted: Vec::new(),
                 settings_sha256: None,
+                continues: false,
             })
             .unwrap();
         if let Some(answer) = answer {

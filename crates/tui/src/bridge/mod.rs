@@ -19,6 +19,8 @@ use argonauts_core::RunId;
 use argonauts_core::Verbosity;
 use argonauts_core::api::TakeOverTicket;
 use argonauts_core::app::{AppEvent, AppMode, UiCommand, ViewData};
+use argonauts_core::keywords::Keyword;
+use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::ui::{TakeoverWhere, UiSettings};
 
 use crate::UiOptions;
@@ -52,6 +54,27 @@ impl Cx<'_> {
 
     pub fn replaying(&self) -> bool {
         self.state.replaying()
+    }
+}
+
+impl<'a> Cx<'a> {
+    /// The main agent CLI's keywords.
+    pub fn keywords(&self) -> &'a [Keyword] {
+        let state: &'a AppState = self.state;
+        state
+            .vendor_commands
+            .as_ref()
+            .map_or(&[], |set| set.keywords.as_slice())
+    }
+
+    /// `worker`'s keywords when it runs the main agent's CLI, the one whose table the screen
+    /// has; none otherwise.
+    pub fn keywords_of(&self, worker: &WorkerRef) -> &'a [Keyword] {
+        let state: &'a AppState = self.state;
+        match &state.vendor_commands {
+            Some(set) if set.vendor.0 == worker.worker => &set.keywords,
+            _ => &[],
+        }
     }
 }
 

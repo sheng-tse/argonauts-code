@@ -360,6 +360,11 @@ impl Reader {
                         _ => None,
                     },
                     ChatEvent::TurnFinished { .. } => Some(Close::Whole { key, ends: true }),
+                    ChatEvent::HandedOff { .. } => Some(Close::Tail {
+                        key,
+                        who,
+                        ends: false,
+                    }),
                     ChatEvent::TurnFailed { .. } | ChatEvent::TurnCancelled { .. } => {
                         Some(Close::Tail {
                             key,

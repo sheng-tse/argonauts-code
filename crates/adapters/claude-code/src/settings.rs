@@ -8,9 +8,23 @@ use serde_json::Value;
 /// The server name the worker gives the status tool in `mcp.json`.
 pub const STATUS_SERVER: &str = "argonauts_status";
 
-/// The one tool rule the adapter writes: every shell command, for a session with its own sandbox
-/// off.
+/// Every shell command, for a session with its own sandbox off.
 const BASH: &str = "Bash";
+
+/// The tool rules the adapter may write: Bash, and the fetches a direct turn in auto mode makes
+/// without asking.
+const TOOL_RULES: &[&str] = &[BASH, "WebFetch", "WebSearch"];
+
+/// What a session's tools may do without asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Allowed {
+    /// A run's session: its tool list is the boundary.
+    Listed,
+    /// A direct turn in auto mode: every command and fetch, our sandbox holding them.
+    Everything,
+    /// A direct turn that asks: only what the CLI and your own rules allow.
+    AsTheCliAsks,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,7 +77,11 @@ struct Permissions {
 /// `status_tool` adds an allow rule for the status server, since `dontAsk` denies an MCP call
 /// no rule allows and `--permission-prompts none` denies one that would prompt. `commands` says
 /// which sandbox runs the agent's shell commands.
-pub fn session_settings(status_tool: bool, commands: CommandSandbox) -> anyhow::Result<String> {
+pub fn session_settings(
+    status_tool: bool,
+    commands: CommandSandbox,
+    allowed: Allowed,
+) -> anyhow::Result<String> {
     let sandbox = match commands {
         CommandSandbox::Own => Sandbox {
             enabled: true,
@@ -77,8 +95,10 @@ pub fn session_settings(status_tool: bool, commands: CommandSandbox) -> anyhow::
         },
     };
     let mut allow = Vec::new();
-    if commands == CommandSandbox::Off {
-        allow.push(BASH.to_owned());
+    match allowed {
+        Allowed::Listed if commands == CommandSandbox::Off => allow.push(BASH.to_owned()),
+        Allowed::Everything => allow.extend(TOOL_RULES.iter().map(|rule| (*rule).to_owned())),
+        Allowed::Listed | Allowed::AsTheCliAsks => {}
     }
     if status_tool {
         allow.push(format!("mcp__{STATUS_SERVER}"));
@@ -159,8 +179,9 @@ fn check_permissions(value: &Value) -> anyhow::Result<()> {
                 bail!("permissions.allow holds a rule that isn't a string: {rule}");
             };
             ensure!(
-                rule == BASH || is_mcp_server_rule(rule),
-                "permissions.allow only takes MCP server rules and Bash, not {rule}"
+                TOOL_RULES.contains(&rule) || is_mcp_server_rule(rule),
+                "permissions.allow only takes MCP server rules, Bash, WebFetch, and WebSearch, \
+                 not {rule}"
             );
         }
     }
@@ -184,7 +205,35 @@ mod tests {
     use serde_json::json;
 
     fn generated(status_tool: bool, commands: CommandSandbox) -> Value {
-        serde_json::from_str(&session_settings(status_tool, commands).unwrap()).unwrap()
+        direct(status_tool, commands, Allowed::Listed)
+    }
+
+    fn direct(status_tool: bool, commands: CommandSandbox, allowed: Allowed) -> Value {
+        serde_json::from_str(&session_settings(status_tool, commands, allowed).unwrap()).unwrap()
+    }
+
+    /// Auto mode asks nothing, so commands and fetches are allowed. A direct turn that asks
+    /// lets Claude Code ask about each, as it does when you run it.
+    #[test]
+    fn a_direct_turn_allows_by_how_it_asks() {
+        for commands in [CommandSandbox::Own, CommandSandbox::Off] {
+            let auto = direct(true, commands, Allowed::Everything);
+            assert_eq!(
+                auto["permissions"],
+                json!({"allow": ["Bash", "WebFetch", "WebSearch", "mcp__argonauts_status"]})
+            );
+            validate(&auto).unwrap();
+            let asks = direct(true, commands, Allowed::AsTheCliAsks);
+            assert_eq!(
+                asks["permissions"],
+                json!({"allow": ["mcp__argonauts_status"]})
+            );
+        }
+        assert!(
+            direct(false, CommandSandbox::Off, Allowed::AsTheCliAsks)
+                .get("permissions")
+                .is_none()
+        );
     }
 
     #[test]

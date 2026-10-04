@@ -233,6 +233,7 @@ pub(crate) mod tests {
             harness_versions: BTreeMap::new(),
             version: "0.0.1".to_owned(),
             front_end: None,
+            instructions: Vec::new(),
         }
     }
 

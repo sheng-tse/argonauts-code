@@ -245,9 +245,17 @@ impl AgentView {
         dock::draw_footer(buf, &frame, footer, theme);
     }
 
+    fn running(&self) -> bool {
+        matches!(
+            self.data.row.status,
+            RowStatus::Running | RowStatus::NeedsYou | RowStatus::Waiting
+        )
+    }
+
     /// The keys that act here and now, as Claude Code's: `↑↓ agent · j/k scroll · ⏎expand ·
     /// p pause · esc back · s save`. Ours join them only when they act: steering and stopping
-    /// a running agent, and taking over a card. Lower numbers give way first.
+    /// a running agent, taking over a card, and carrying the session on once its run ended.
+    /// Lower numbers give way first.
     fn footer(&self, width: usize, ctx: &ViewCtx<'_>) -> Footer {
         if let Some(text) = &self.steer {
             return Footer::Line(steer_line(text, width, ctx.theme));
@@ -264,10 +272,7 @@ impl AgentView {
             Some(_) => Some("⏎ expand"),
             None => None,
         };
-        let running = matches!(
-            self.data.row.status,
-            RowStatus::Running | RowStatus::NeedsYou | RowStatus::Waiting
-        );
+        let running = self.running();
         let run_going = super::run_going(ctx.state, &self.data.run);
         let has_card = ctx
             .state
@@ -283,6 +288,8 @@ impl AgentView {
         }
         if running {
             hints.push(("x stop", 4));
+        } else if super::run_ended(ctx.state, &self.data.run) {
+            hints.push(("c continue", 3));
         }
         if run_going {
             hints.push(("p pause", 3));
@@ -1136,6 +1143,12 @@ impl View for AgentView {
                     None => ViewOutcome::Notice("This agent has no card to take over".to_owned()),
                 }
             }
+            KeyCode::Char('c') if plain && self.loaded() => super::carry_on(
+                ctx.state,
+                &self.data.run,
+                &self.data.row.session,
+                self.running(),
+            ),
             KeyCode::Char('d') if plain && self.loaded() => self.open_diff(ctx),
             KeyCode::Char('x') if plain && self.loaded() => {
                 self.confirm_stop = true;
@@ -1358,6 +1371,56 @@ mod tests {
         let text = draw_in(&mut view, 120, &finished);
         assert!(footer(&text).contains("⏎ collapse"), "{text}");
         assert!(footer(&text).contains("j/k scroll"), "{text}");
+    }
+
+    /// A finished agent's session carries on in the chat once its run ended. Until then the run
+    /// owns it, and a running one is taken over.
+    #[test]
+    fn c_carries_a_finished_agents_session_on_once_its_run_ended() {
+        let mut done = data("Done.");
+        done.row.status = RowStatus::Done;
+        let row = done.row.clone();
+        let mut view = AgentView::in_phase(done, &phase(vec![WorkflowRow::Agent(row)]));
+        // Its run still goes, and its next round on the card resumes the same session.
+        let going = live_state();
+        let text = draw_in(&mut view, 120, &going);
+        assert!(!footer(&text).contains("c continue"), "{text}");
+        match key_in(&mut view, KeyCode::Char('c'), KeyModifiers::NONE, &going) {
+            ViewOutcome::Notice(text) => {
+                assert!(
+                    text.starts_with("run-01 hasn't ended, so it still owns"),
+                    "{text}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let mut ended = live_state();
+        for run in ended.runs.values_mut() {
+            run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+        }
+        let text = draw_in(&mut view, 120, &ended);
+        assert!(footer(&text).contains("c continue"), "{text}");
+        match key_in(&mut view, KeyCode::Char('c'), KeyModifiers::NONE, &ended) {
+            ViewOutcome::SendToChat(UiCommand::Slash {
+                command:
+                    argonauts_core::input::SlashCommand::Resume {
+                        target: Some(argonauts_core::input::ResumeTarget::Agent(agent)),
+                    },
+            }) => {
+                assert_eq!(agent.run, view.data.run);
+                assert_eq!(agent.session, view.data.row.session);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let mut running = in_phase("Working.");
+        let text = draw_in(&mut running, 120, &ended);
+        assert!(!footer(&text).contains("c continue"), "{text}");
+        assert!(matches!(
+            key_in(&mut running, KeyCode::Char('c'), KeyModifiers::NONE, &ended),
+            ViewOutcome::Notice(_)
+        ));
     }
 
     /// `j` and `k` scroll with vim keys or without, so the footer names them as Claude Code's

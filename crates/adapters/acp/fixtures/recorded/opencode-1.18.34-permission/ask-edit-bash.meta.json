@@ -1,0 +1,42 @@
+{
+  "synthetic": false,
+  "agent": "opencode",
+  "recorded": {
+    "agent": "OpenCode",
+    "version": "1.18.34",
+    "date": "2026-10-04T02:24:03.540782Z",
+    "how": "opencode acp over stdio, on ollama/llama3.2 from a local Ollama"
+  },
+  "env_set": {
+    "OPENCODE_PERMISSION": "{\"edit\":\"ask\",\"bash\":\"ask\"}",
+    "OPENCODE_DISABLE_AUTOUPDATE": "1",
+    "OPENCODE_CONFIG_CONTENT": {
+      "$schema": "https://opencode.ai/config.json",
+      "model": "ollama/llama3.2",
+      "small_model": "ollama/llama3.2",
+      "enabled_providers": [
+        "ollama"
+      ],
+      "share": "disabled",
+      "autoupdate": false,
+      "provider": {
+        "ollama": {
+          "npm": "@ai-sdk/openai-compatible",
+          "name": "Ollama",
+          "options": {
+            "baseURL": "http://localhost:11434/v1"
+          },
+          "models": {
+            "llama3.2": {
+              "name": "llama3.2"
+            }
+          }
+        }
+      }
+    },
+    "HOME": "a fresh temp folder, with the XDG folders inside it"
+  },
+  "probe": "answers allow_once for paths inside {cwd} and the commands 'echo hi' and 'ls', reject_once otherwise (ask-edit-bash); the first try allowed everything",
+  "sanitized": "absolute paths of the throwaway repo replaced with {cwd}, the check folder with <live>",
+  "note": "OPENCODE_PERMISSION {edit: ask, bash: ask}. OpenCode sent session/request_permission for bash (kind execute, title and rawInput.command 'echo hi') and for the write (kind edit, locations and rawInput.filepath the file, rawInput.diff a unified diff), each with allow_once, allow_always and reject_once. Both were allowed; hello.txt holds hi. OpenCode then sent fs/write_text_file although the client offered no fs capability, logged the -32601 answer to stderr, and had already written the file itself."
+}

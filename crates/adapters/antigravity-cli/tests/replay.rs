@@ -18,7 +18,11 @@ struct Replay {
 }
 
 fn replay(name: &str) -> Replay {
-    let dir = fixtures_dir().join(VERSION);
+    replay_at(VERSION, name)
+}
+
+fn replay_at(version: &str, name: &str) -> Replay {
+    let dir = fixtures_dir().join(version);
     let read = |ext: &str| fs::read_to_string(dir.join(format!("{name}.{ext}"))).unwrap();
     let meta: Value = serde_json::from_str(&read("meta.json")).unwrap();
     let exit_code = meta["exit_code"].as_i64().map(|c| c as i32);
@@ -280,6 +284,36 @@ fn build_with_schema_writes_a_file_and_reports() {
 
     // Step usage adds up to the result's session total, so the meter doesn't double count.
     assert_eq!(billable_tokens(&events), 45_520);
+}
+
+/// Checked live on 1.2.16: with neither sandbox flag, agy refuses a command it would
+/// ask about. The refused command comes only from its tool step, since the result's
+/// `denied_actions` names the kind of action alone, and the turn may give no answer at all.
+/// Direct solo offers the command after the turn from these two events.
+#[test]
+fn a_refused_command_is_named_by_its_tool_step() {
+    let Replay { events, .. } = replay_at("1.2.16", "denied_command");
+    let started = events.iter().find_map(|event| match event {
+        AgentEvent::ToolStarted { id, input, .. } => Some((id.clone(), input.clone())),
+        _ => None,
+    });
+    let (id, input) = started.expect("the command's tool step");
+    assert_eq!(input, json!({"CommandLine": "echo hi > shell.txt"}));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ToolFinished { id: done, ok: false, output: Some(out), .. }
+            if done == &id && out.starts_with("permission check failed")
+    )));
+    let answer: String = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::TextDelta { text, .. } | AgentEvent::Message { text, .. } => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(answer.trim().is_empty(), "{answer:?}");
 }
 
 #[test]

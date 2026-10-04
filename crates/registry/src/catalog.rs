@@ -437,6 +437,11 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "How long an agent session lasts: a card, a run, or the project. A role can override it",
     ),
     (
+        "solo.style",
+        "Solo you choose: direct works in your checkout like its CLI, checked works in a copy \
+         with gates and a merge",
+    ),
+    (
         "spikes.enabled",
         "Small experiments settle what the plans disagree on",
     ),
@@ -465,6 +470,15 @@ const OWN_WORDS: &[(&str, &str)] = &[
     (
         "triage.crew_labels",
         "Labels that always get the crew, such as security",
+    ),
+    (
+        "triage.solo_style",
+        "Solo the triage rules pick: checked, so it can grow into a crew run, direct, or as \
+         solo.style says",
+    ),
+    (
+        "triage.read_instructions",
+        "Follow what a request says about how to run it, such as who coordinates or reviews",
     ),
     ("ui.bell", "Let the app ring the terminal bell"),
     (

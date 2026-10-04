@@ -132,6 +132,8 @@ fn start_request(command: &RunCommand, settings: &Settings) -> StartRun {
         default_agent: None,
         approval_mode: None,
         front_end: None,
+        instructions: Vec::new(),
+        request_settings: Vec::new(),
     }
 }
 
@@ -151,6 +153,7 @@ fn triage_without_estimate(triage: &TriageSettings) -> TriageDecision {
             escalate_to_crew: false,
             rule: "force".to_owned(),
             reason: "triage.force picks the mode".to_owned(),
+            solo: None,
         };
     }
     let (mode, escalate_to_crew) = match triage.otherwise {
@@ -163,6 +166,7 @@ fn triage_without_estimate(triage: &TriageSettings) -> TriageDecision {
         escalate_to_crew,
         rule: "otherwise".to_owned(),
         reason: "no estimate from the command line".to_owned(),
+        solo: None,
     }
 }
 
