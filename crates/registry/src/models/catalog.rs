@@ -38,11 +38,13 @@ pub fn shipped_catalog() -> &'static ModelCatalog {
     CATALOG.get_or_init(|| parse_catalog(SHIPPED).unwrap_or_default())
 }
 
-/// Every layer over the shipped catalog: the fetched one, then what the CLIs listed in
-/// `discovered`, then your files in the order they count.
+/// Every layer over the shipped catalog: the fetched one, then what discovery found in
+/// `discovered`, then the lists the CLIs `reported` themselves, then your files in the order
+/// they count.
 pub fn layered(
     fetched: Option<&ModelCatalog>,
     discovered: &[ModelEntry],
+    reported: &[ModelCatalog],
     yours: &[ModelsFile],
 ) -> ModelCatalog {
     let mut catalog = shipped_catalog().clone();
@@ -50,10 +52,34 @@ pub fn layered(
         catalog.merge(fetched.clone());
     }
     catalog.merge(cli_layer(discovered));
+    for layer in reported {
+        catalog.merge(keeping_aliases(&catalog, layer.clone()));
+    }
     for file in yours {
         catalog.merge(file_layer(file));
     }
     catalog
+}
+
+/// `layer` with each model's short names added to those the catalog already knows, so a CLI's
+/// list doesn't drop one such as `claude-haiku-4-5`.
+fn keeping_aliases(catalog: &ModelCatalog, mut layer: ModelCatalog) -> ModelCatalog {
+    for entry in &mut layer.models {
+        let Some(aliases) = entry.aliases.as_mut() else {
+            continue;
+        };
+        let known = catalog
+            .models
+            .iter()
+            .find(|known| known.id == entry.id)
+            .and_then(|known| known.aliases.as_ref());
+        for alias in known.into_iter().flatten() {
+            if !aliases.contains(alias) {
+                aliases.push(alias.clone());
+            }
+        }
+    }
+    layer
 }
 
 /// A catalog file's text, checked.

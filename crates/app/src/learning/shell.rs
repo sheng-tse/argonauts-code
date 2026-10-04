@@ -328,6 +328,7 @@ pub async fn learning(
                     "edited": report.edited,
                     "warnings": report.warnings,
                     "skill_drift": report.skill_drift.iter().map(|drift| &drift.name).collect::<Vec<_>>(),
+                    "readers": report.readers,
                 }),
                 text,
             })

@@ -181,6 +181,12 @@ pub fn is_workflow_agent(step: Option<StepName>, workflow_step: Option<&StepRef>
 
 /// The id the views give a workflow an agent's own CLI runs, kept apart from Argonauts' own
 /// `wf-NNN` so a request for it can't name one of ours.
+/// The run the views name your conversation by, for a workflow its own CLI runs in a chat turn.
+/// No run is ever named so: every run's id starts with `run-`.
+pub fn conversation_run() -> RunId {
+    RunId::new("chat").unwrap_or_else(|_| RunId::generate())
+}
+
 pub fn vendor_workflow_id(vendor_id: &str) -> WorkflowId {
     let safe: String = vendor_id
         .chars()

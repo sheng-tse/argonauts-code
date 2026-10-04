@@ -7,11 +7,13 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use argonauts_core::AgentEvent;
 use argonauts_core::RunId;
-use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
+use argonauts_core::app::{AppEvent, ChatEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::names::{SessionKey, WorkflowId};
+use argonauts_core::views::conversation_run;
 
 /// Events that stream in, such as agent output, ask again at most this often.
 const EVERY: Duration = Duration::from_secs(1);
@@ -141,6 +143,18 @@ impl Refresh {
         {
             self.owed = true;
             settles = settles_rows(&event.kind);
+        }
+        // The conversation's own CLI reports its workflow as it goes.
+        if let AppEvent::Chat {
+            event:
+                ChatEvent::Agent {
+                    event: AgentEvent::Workflow { .. },
+                    ..
+                },
+        } = event
+            && *shown.run() == conversation_run()
+        {
+            self.owed = true;
         }
         self.due(shown, settles, now)
     }

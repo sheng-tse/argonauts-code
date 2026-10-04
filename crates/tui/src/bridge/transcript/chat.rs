@@ -6,19 +6,21 @@
 use std::time::Duration;
 
 use argonauts_core::app::{ChatEvent, TurnReply};
+use argonauts_core::events::session::VendorWorkflow;
 use argonauts_core::names::{TurnId, WorkerRef};
 use argonauts_core::settings::protocol::SoloStyle;
 use argonauts_core::settings::ui::VerbTheme;
 use argonauts_core::{AgentEvent, Verbosity};
 
 use crate::bottom::verbs::VerbStyle;
-use crate::bridge::tools;
+use crate::bridge::{mods, tools};
 use crate::cell::{
-    AssistantMessage, Cell, CollapsedGroup, Notice, ResultLine, Tone, ToolCall, ToolKind,
+    AssistantMessage, Cell, CollapsedGroup, Notice, ResultLine, Tone, ToolCall, ToolItem, ToolKind,
     ToolState, TurnEnd, UserMessage,
 };
 use crate::format::WallClock;
 use crate::history::CellId;
+use crate::text::sanitize_line;
 
 use super::{Cx, emit, quiet, steps};
 
@@ -63,6 +65,8 @@ struct OpenTurn {
     calls: Vec<CellId>,
     /// Argonauts' own calls, held until they end and then kept for Ctrl+O only.
     own: Vec<ToolCall>,
+    /// The workflows the CLI runs itself that already have their row.
+    workflows: std::collections::BTreeSet<String>,
 }
 
 impl ChatTurns {
@@ -116,6 +120,11 @@ impl ChatTurns {
             } => {
                 if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
                     handed_off(open, from, to, why, told, cx);
+                }
+            }
+            ChatEvent::Joined { turn, text } => {
+                if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
+                    joined(open, text, cx);
                 }
             }
             ChatEvent::TurnFailed { turn, error } => {
@@ -173,6 +182,7 @@ impl ChatTurns {
             parts: Vec::new(),
             calls: Vec::new(),
             own: Vec::new(),
+            workflows: std::collections::BTreeSet::new(),
         });
     }
 
@@ -255,6 +265,19 @@ fn echo(message: UserMessage, cx: &mut Cx<'_>) {
     }
 }
 
+/// Your message the model read mid-turn shows where it read it, after what ran before, as
+/// Claude Code's send now shows it.
+fn joined(open: &mut OpenTurn, text: &str, cx: &mut Cx<'_>) {
+    end_stream(open, cx);
+    print_done(open, cx);
+    let message = UserMessage::new(text).with_keywords(cx.keywords_of(&open.worker));
+    if open.replaying {
+        cx.model.history.keep(message);
+    } else {
+        cx.model.history.push(message);
+    }
+}
+
 fn agent_event(
     open: &mut OpenTurn,
     kinds: ToolKinds,
@@ -286,8 +309,9 @@ fn agent_event(
                 return;
             }
             let vendor = open.worker.worker.clone();
-            // It doesn't end the answer streaming, so the answer stays one block.
-            if tools::is_own(name) {
+            // It doesn't end the answer streaming, so the answer stays one block. Claude
+            // Code's own workflow shows as the workflow it reports, not as the script it ran.
+            if tools::is_own(name) || is_vendor_workflow(&vendor, name) {
                 let call = tools::start_call(&vendor, name, input).with_key(id.clone());
                 open.own.push(call);
                 return;
@@ -326,8 +350,56 @@ fn agent_event(
             }
             print_done(open, cx);
         }
+        AgentEvent::ModOutput {
+            kind,
+            plugin,
+            text,
+            timeout_ms,
+        } => {
+            let line = mods::show(*kind, plugin.as_deref(), text.as_deref(), *timeout_ms, cx);
+            if let Some(line) = line {
+                if !open.replaying {
+                    end_stream(open, cx);
+                    print_done(open, cx);
+                }
+                emit(cx, Cell::Custom(Box::new(line)));
+            }
+        }
+        AgentEvent::Workflow { workflow } => {
+            if open.replaying || !open.workflows.insert(workflow.id.clone()) {
+                return;
+            }
+            end_stream(open, cx);
+            print_done(open, cx);
+            emit(cx, workflow_row(workflow));
+        }
         _ => {}
     }
+}
+
+/// Claude Code's Workflow tool, which runs a script the views mirror from its reports.
+fn is_vendor_workflow(vendor: &str, name: &str) -> bool {
+    vendor == "claude-code" && name == "Workflow"
+}
+
+/// `Workflow(release-check)` with how to watch it, as a crew run's workflow starts.
+fn workflow_row(workflow: &VendorWorkflow) -> ToolCall {
+    let name = Some(workflow.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("workflow");
+    let mut call = ToolCall::call(
+        ToolKind::Other,
+        "Workflow",
+        sanitize_line(name).into_owned(),
+    )
+    .with_state(ToolState::Done);
+    let mut details = Vec::new();
+    if !workflow.description.trim().is_empty() {
+        details.push(sanitize_line(workflow.description.trim()).into_owned());
+    }
+    details.push("ctrl+t to watch".to_owned());
+    call.push(ToolItem::text(details.join("\n")));
+    call
 }
 
 /// Streams answer text, below any calls made so far.

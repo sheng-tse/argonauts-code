@@ -35,6 +35,9 @@ impl StreamParser for OpenCodeParser {
                 session_id: Some(session.to_owned()),
                 model: None,
                 tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             });
         }
         let part = &event["part"];

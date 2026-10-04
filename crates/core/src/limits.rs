@@ -36,6 +36,10 @@ pub struct QuotaReading {
     pub observed_at: OffsetDateTime,
     /// The vendor's payload, for the raw view.
     pub detail: Option<Value>,
+    /// Out of quota, but the running session finishes on a small allowance, as Claude Code
+    /// does at a five-hour limit. Nothing hands its work off, and new work goes elsewhere.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wrap_up: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

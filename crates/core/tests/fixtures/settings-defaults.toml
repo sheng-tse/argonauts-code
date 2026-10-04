@@ -43,6 +43,7 @@ ask_timeout = "none"
 allow_api_billing = false
 return_to_original = false
 broken_work = "continue"
+wrap_up = "let_finish"
 strategy = "first"
 race_count = 2
 on_return = "ask"
@@ -325,6 +326,7 @@ proxy_allow = []
 untrusted_repos = "container"
 container_image = ""
 user_hooks = "inherit"
+isolated_leak = "stop"
 
 [budget]
 enabled = true
@@ -459,6 +461,9 @@ recap_after = "2m"
 theme = "auto"
 glyphs = "unicode"
 ambiguous_width = 1
+newer_cli_notice = true
+mod_output = "show"
+heads_up = "when_enabled"
 
 [ui.keymap]
 

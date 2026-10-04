@@ -1318,6 +1318,40 @@ fn the_merge_table_names_owners_as_the_run_knows_them() {
     );
 }
 
+/// The merge table above the card names each card by its label, as the chat does, and a card
+/// with none yet by its id.
+#[test]
+fn the_merge_table_names_cards_by_label() {
+    let opened = merge();
+    let mut run = crate::state::RunState::new(argonauts_core::RunId::new("run-01").unwrap());
+    let mut session = crate::state::SessionState::new(
+        argonauts_core::names::SessionKey::numbered(1),
+        worker("codex/gpt-5.6"),
+        "codex",
+        argonauts_core::names::RoleName::Owner,
+        datetime!(2026-09-30 10:00 UTC),
+    );
+    session.card = Some(card_id(2));
+    session.step = Some(argonauts_core::steps::StepName::Build);
+    session.label = Some("build:writer".into());
+    run.session_order.push(session.key.clone());
+    run.sessions.insert(session.key.clone(), session);
+    let table = |run: Option<&crate::state::RunState>| {
+        about_item(&opened, run, UtcOffset::UTC, &DisplayNames::default())
+            .map(|item| item.plain(100).join("\n"))
+            .unwrap_or_default()
+    };
+    let labeled = table(Some(&run));
+    assert!(
+        labeled.contains("build:writer  Add the JSON writer"),
+        "{labeled}"
+    );
+    assert!(!labeled.contains("card-002"), "{labeled}");
+    assert!(labeled.contains("card-003"), "{labeled}");
+    // Without the run, as the screen reader reads it to type ids, the ids stay.
+    assert!(table(None).contains("card-002"));
+}
+
 /// With no command gates set nothing ran on the latest main, and the card says so rather than
 /// calling the suite failed.
 #[test]
@@ -1343,7 +1377,7 @@ fn a_merge_without_a_suite_says_none_ran() {
             }];
         }
         let card = checkpoint_card(1, &opened, None).detail.join("\n");
-        let item = about_item(&opened, UtcOffset::UTC, &DisplayNames::default())
+        let item = about_item(&opened, None, UtcOffset::UTC, &DisplayNames::default())
             .map(|item| item.plain(100).join("\n"))
             .unwrap_or_default();
         (card, item)

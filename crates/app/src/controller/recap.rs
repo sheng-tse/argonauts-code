@@ -230,22 +230,25 @@ fn in_progress(summary: &StatusSummary, cards: &Cards) -> String {
     if cards.working > 0 {
         parts.push(format!("{} working", cards.working));
     }
-    let mut text = if parts.is_empty() {
-        "It's under way.".to_owned()
+    let mut text = if !parts.is_empty() {
+        format!("{}. ", parts.join(", "))
+    } else if summary.waiting.is_empty() {
+        "It's under way. ".to_owned()
     } else {
-        format!("{}.", parts.join(", "))
+        // A run that waits on you isn't under way, so the wait says it alone.
+        String::new()
     };
     if !summary.waiting.is_empty() {
         // A card's title can end a sentence of its own, and one stop is enough.
         let waiting = summary.waiting.join(", ");
         text.push_str(&format!(
-            " Waiting on {}.",
+            "Waiting on {}.",
             waiting.trim().trim_end_matches('.')
         ));
     } else if let Some(last) = summary.recent.last() {
-        text.push_str(&format!(" Last: {}.", last.trim().trim_end_matches('.')));
+        text.push_str(&format!("Last: {}.", last.trim().trim_end_matches('.')));
     }
-    text
+    text.trim_end().to_owned()
 }
 
 fn capitalized(text: &str) -> String {
@@ -312,6 +315,19 @@ mod tests {
             recap_from_summary(&escalated, None, None),
             "Export now takes --json. The card isn't merged. Waiting on card-001 escalated · Fix \
              add so it returns a + b."
+        );
+        // Before any card, a run that waits on you says only that, never that it's under way.
+        let mut asking = summary(Vec::new());
+        asking.waiting = vec!["Question from build:greet".to_owned()];
+        assert_eq!(
+            recap_from_summary(&asking, None, None),
+            "Export now takes --json. Waiting on Question from build:greet."
+        );
+        let mut working = summary(Vec::new());
+        working.recent = vec!["Goal approved".to_owned()];
+        assert_eq!(
+            recap_from_summary(&working, None, None),
+            "Export now takes --json. It's under way. Last: Goal approved."
         );
         let empty = StatusSummary::default();
         assert_eq!(

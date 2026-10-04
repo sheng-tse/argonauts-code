@@ -1,18 +1,25 @@
 //! Claude Code adapter for Argonauts.
 
 mod adapter;
+mod background;
 mod command;
 mod commands;
 mod context;
+mod control;
 mod errors;
+mod instructions;
+mod isolation;
 mod json;
 mod keywords;
+mod models;
+mod mods;
 mod parser;
 mod quota;
 mod script_meta;
 mod sessions;
 mod settings;
 mod subagents;
+mod surface;
 mod todo;
 mod tweaks;
 mod usage;

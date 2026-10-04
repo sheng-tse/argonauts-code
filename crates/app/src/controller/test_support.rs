@@ -253,6 +253,7 @@ impl ConductorApi for FakeConductor {
         run: &RunId,
         session: &SessionKey,
         text: String,
+        _now: bool,
     ) -> BoxFuture<'_, Result<SteerAck, ApiError>> {
         self.record(Call::Steer {
             run: run.clone(),

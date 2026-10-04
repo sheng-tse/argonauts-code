@@ -26,7 +26,12 @@ pub struct SyncReport {
     /// Files edited by hand since the last sync.
     pub edited: Vec<PathBuf>,
     pub skill_drift: Vec<Drift>,
+    /// Which CLI reads which file, once the files are in place.
+    pub readers: Option<String>,
 }
+
+/// The CLIs that read `AGENTS.md` by itself.
+const AGENTS_READERS: &str = "Codex and Antigravity CLI";
 
 /// Codex reads `AGENTS.md` files up to this many bytes combined and drops the rest.
 pub const CODEX_CAP: usize = 32 * 1024;
@@ -158,8 +163,27 @@ pub fn sync(store: &Store, mode: SyncMode) -> Result<SyncReport> {
         Some(conventions) => {
             let (agents, claude) = render(&conventions);
             report.warnings.extend(size_warnings(&agents));
-            for (name, wanted) in [(AGENTS_FILE, agents), (CLAUDE_FILE, claude)] {
+            let claude_path = store.repo_root.join(CLAUDE_FILE);
+            for (name, wanted) in [(AGENTS_FILE, agents), (CLAUDE_FILE, claude.clone())] {
                 place(&store.repo_root.join(name), &wanted, mode, &mut report)?;
+            }
+            // A CLAUDE.md sync left alone is the one Claude Code reads.
+            let claude = if report.edited.contains(&claude_path) {
+                read_optional(&claude_path)?.unwrap_or_default()
+            } else {
+                claude
+            };
+            if imports_agents(&claude) {
+                report.readers = Some(format!(
+                    "Claude Code reads {CLAUDE_FILE}, which imports {AGENTS_FILE}. {AGENTS_READERS} \
+                     read {AGENTS_FILE}."
+                ));
+            } else {
+                report.warnings.push(format!(
+                    "{CLAUDE_FILE} doesn't import {AGENTS_FILE}, so Claude Code won't read the \
+                     conventions. Add @{AGENTS_FILE} as its first line."
+                ));
+                report.readers = Some(format!("{AGENTS_READERS} read {AGENTS_FILE}."));
             }
         }
         None => report.warnings.push(
@@ -205,6 +229,17 @@ fn place(path: &Path, wanted: &str, mode: SyncMode, report: &mut SyncReport) -> 
     }
     report.written.push(path.to_path_buf());
     Ok(())
+}
+
+/// Claude Code reads a CLAUDE.md line such as `@AGENTS.md` as an import. Without one it never
+/// reads AGENTS.md where CLAUDE.md exists, unless you chose both in `/config`.
+fn imports_agents(claude: &str) -> bool {
+    claude.lines().any(|line| {
+        line.trim()
+            .strip_prefix('@')
+            .map(|target| target.trim_start_matches("./"))
+            == Some(AGENTS_FILE)
+    })
 }
 
 fn size_warnings(agents: &str) -> Vec<String> {

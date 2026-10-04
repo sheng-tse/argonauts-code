@@ -1,7 +1,7 @@
 //! Per-launch settings that Claude Code takes as flags or environment variables.
 
+use argonauts_core::LaunchTweak;
 use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout};
-use argonauts_core::{LaunchTweak, TweakEffect};
 
 /// Outranks `--autocompact`, so an explicit `auto` removes it from the child's environment,
 /// along with the switches that would turn compaction off.
@@ -90,15 +90,9 @@ pub fn native_fanout(setting: NativeFanout) -> LaunchTweak {
     }
 }
 
-/// No flag skips only your hooks: `--safe-mode` also drops CLAUDE.md, skills, and workflows,
-/// and `--bare` never reads your login.
+/// The session's settings say `disableAllHooks`, which also stops installed plugins' mods. No
+/// flag does it: `--safe-mode` also drops CLAUDE.md, skills, and workflows, and `--bare` never
+/// reads your login.
 pub fn user_hooks_off() -> LaunchTweak {
-    LaunchTweak {
-        effect: TweakEffect::NotPossible {
-            note: "Claude Code has no flag that turns off only your hooks; the ones that do \
-                   also drop CLAUDE.md (--safe-mode) or your login (--bare)"
-                .to_owned(),
-        },
-        ..LaunchTweak::default()
-    }
+    LaunchTweak::default()
 }

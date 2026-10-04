@@ -1,6 +1,6 @@
 //! One line on why a session stopped, for the handoff card and the packet.
 
-use argonauts_core::events::session::{EndReason, Watchdog};
+use argonauts_core::events::session::{EndReason, Watchdog, loaded_words};
 use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::{BudgetDimension, ErrorCategory};
 use time::OffsetDateTime;
@@ -46,6 +46,10 @@ pub fn stop_line(reason: &EndReason) -> String {
         EndReason::AdapterBroken { detail } => {
             format!("its CLI's output changed: {}", message(detail))
         }
+        EndReason::IsolationBroken { plugins, skills } => format!(
+            "it loaded {}, which a blind role mustn't see",
+            message(&loaded_words(plugins, skills))
+        ),
         EndReason::StartFailed { message: text } => {
             format!("it failed to start: {}", message(text))
         }

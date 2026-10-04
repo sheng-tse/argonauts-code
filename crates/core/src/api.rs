@@ -249,12 +249,14 @@ pub trait ConductorApi: Send + Sync {
     fn reattach(&self, run: &RunId) -> BoxFuture<'_, Result<EventStream, ApiError>> {
         self.subscribe(run, 0)
     }
-    /// Delivers after the current tool call.
+    /// Delivers after the current tool call, or with `now` at once where the CLI can hand it to
+    /// the model mid-call (Claude Code's send now).
     fn steer(
         &self,
         run: &RunId,
         session: &SessionKey,
         text: String,
+        now: bool,
     ) -> BoxFuture<'_, Result<SteerAck, ApiError>>;
     /// Queued for the target's next turn.
     fn mention(

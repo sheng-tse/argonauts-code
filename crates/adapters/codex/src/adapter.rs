@@ -124,6 +124,16 @@ impl Adapter for CodexAdapter {
         tweaks::user_hooks_off()
     }
 
+    /// Codex reads the project's AGENTS.md into every session, `exec` too.
+    fn instruction_files(&self, workdir: &Path, _isolated: bool) -> Vec<String> {
+        let name = "AGENTS.md";
+        if workdir.join(name).is_file() {
+            vec![name.to_owned()]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Opens exec sessions too, by id. Names would match only interactive sessions.
     fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
         let id = flag_value("session id", session_id.trim()).ok()?;
@@ -524,6 +534,18 @@ mod tests {
         assert_eq!(
             overrides(&command(&req).args),
             ["agents.max_concurrent_threads_per_session=3"]
+        );
+    }
+
+    #[test]
+    fn codex_loads_agents_md_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(CodexAdapter.instruction_files(dir.path(), false).is_empty());
+        std::fs::write(dir.path().join("AGENTS.md"), "x").unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "x").unwrap();
+        assert_eq!(
+            CodexAdapter.instruction_files(dir.path(), true),
+            ["AGENTS.md"]
         );
     }
 

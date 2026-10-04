@@ -698,6 +698,8 @@ impl AgentView {
                         run: self.data.run.clone(),
                         session: self.data.row.session.clone(),
                         text,
+                        // Ctrl+Enter sends it now, as Claude Code's own key does.
+                        now: key.modifiers.contains(KeyModifiers::CONTROL),
                     });
                 }
             }

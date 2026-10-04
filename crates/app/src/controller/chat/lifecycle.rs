@@ -11,6 +11,7 @@ use argonauts_core::event::{AgentEvent, ErrorCategory};
 use argonauts_core::events::run::{RunMode, TriageDecision};
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::names::{SessionKey, TurnId, WorkerRef};
+use argonauts_core::screen::{Drawn, ScreenChange};
 use argonauts_core::steps::intake::{ChangeEstimate, Instruction};
 use argonauts_core::steps::{StepError, StepOutcome};
 use argonauts_core::views::ContextRow;
@@ -18,10 +19,12 @@ use argonauts_core::worker::WorkerEvent;
 use argonauts_crew::triage::Asked;
 
 use super::excerpt::{Exchange, excerpt};
+use super::live::{self, Heard};
+use super::mirror;
 use super::offer::offer_to_start;
 use super::{
-    ChatState, Turn, agent, direct, emit, keep, planned, run_copy, run_request, send_queued,
-    settle_mode, side, styled,
+    ChatState, Queued, Turn, agent, direct, emit, keep, planned, run_copy, run_request,
+    send_queued, settle_mode, side, styled,
 };
 use crate::chat_store::ChatSession;
 use crate::controller::instructions::{self, Command, Roster};
@@ -250,7 +253,11 @@ fn attempt(
             workdir: chat.folder(ctx).to_path_buf(),
         },
     );
-    let (key, cancel) = match launched {
+    let turn::Launched {
+        key,
+        cancel,
+        control,
+    } = match launched {
         Ok(launched) => launched,
         Err(err) => {
             chat.ran.splice(0..0, ran);
@@ -268,10 +275,12 @@ fn attempt(
     };
     if !step.own_session() {
         track_context(chat, key, &worker);
+        chat.workflows.clear();
     }
     if ctx.mode == AppMode::Idle {
         ctx.set_mode(AppMode::Answering { turn: id.clone() });
     }
+    let plain_reply = step.plain_reply();
     chat.turn = Some(Turn {
         id,
         step,
@@ -284,6 +293,7 @@ fn attempt(
         plan_first: false,
         ran,
         direct: None,
+        live: live::Live::new(control, plain_reply),
     });
     Ok(())
 }
@@ -326,6 +336,18 @@ pub(super) fn on_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: 
             if let Some(running) = turn.direct.as_mut() {
                 direct::on_agent(running, &event);
             }
+            // The CLI's own model list, so `/model` mirrors it.
+            if let AgentEvent::ModelsReported { models } = &event {
+                ctx.services
+                    .registry
+                    .models_reported(&turn.worker.worker, models);
+            }
+            if !turn.step.own_session() && !live_event(ctx, chat, id, &event) {
+                return;
+            }
+            let Some(turn) = chat.turn.as_mut().filter(|turn| &turn.id == id) else {
+                return;
+            };
             // Another session's context isn't the conversation's.
             let own = turn.step.own_session();
             if let Some(row) = chat.context.as_mut().filter(|_| !own) {
@@ -338,6 +360,7 @@ pub(super) fn on_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: 
                     _ => {}
                 }
             }
+            let event = turn.live.shown(event);
             emit(
                 ctx,
                 chat,
@@ -359,6 +382,80 @@ pub(super) fn on_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: 
         }
         WorkerEvent::Session(_) | WorkerEvent::Vendor(_) => {}
     }
+}
+
+/// What the session says about your messages and the screen, as the turn's own `Live` reads
+/// it. False for an event that's done with here and goes no further.
+fn live_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: &AgentEvent) -> bool {
+    let heads_up = ctx.settings().ui.heads_up;
+    let Some(turn) = chat.turn.as_mut().filter(|turn| &turn.id == id) else {
+        return false;
+    };
+    let heard = match event {
+        AgentEvent::Init {
+            capabilities,
+            plugins,
+            ..
+        } => {
+            if !turn.live.on_init(capabilities, plugins, heads_up) {
+                // The mod is off, the CLI is another, or you turned heads-ups off here.
+                let nothing = AgentEvent::ScreenChanged {
+                    change: ScreenChange::Drawn {
+                        drawn: Drawn::default(),
+                    },
+                };
+                emit(
+                    ctx,
+                    chat,
+                    ChatEvent::Agent {
+                        turn: id.clone(),
+                        event: nothing,
+                    },
+                );
+            }
+            return true;
+        }
+        AgentEvent::MessageState { uuid, state } => turn.live.on_message(uuid, *state),
+        AgentEvent::Workflow { workflow } => {
+            mirror::seen(&mut chat.workflows, workflow);
+            None
+        }
+        // The controller keeps the list for the `/` menu; the screen and the journal don't.
+        AgentEvent::CommandsChanged { .. } => return false,
+        AgentEvent::ScreenChanged { change } => {
+            if turn.live.on_screen(change) && !std::mem::replace(&mut chat.heads_up_warned, true) {
+                ctx.notice(
+                    NoteLevel::Info,
+                    "Claude Code's heads-ups can't be shown here with this version. They still \
+                     show in Claude Code.",
+                );
+            }
+            None
+        }
+        _ => None,
+    };
+    match heard {
+        Some(Heard::Read(text)) => {
+            if let Some(turn) = chat.turn.as_mut() {
+                turn.text = format!("{}\n\n{text}", turn.text);
+            }
+            emit(
+                ctx,
+                chat,
+                ChatEvent::Joined {
+                    turn: id.clone(),
+                    text,
+                },
+            );
+        }
+        Some(Heard::TakenBack(text)) => ctx.send(AppEvent::TakenBack { texts: vec![text] }),
+        Some(Heard::AlreadyRead) => {
+            ctx.notice(NoteLevel::Info, "Claude already read that message.");
+        }
+        Some(Heard::NotSent(text)) => chat.queue(Queued::Request(text)),
+        None => {}
+    }
+    true
 }
 
 pub(super) fn on_done(
@@ -384,9 +481,14 @@ pub(super) fn on_done(
         direct::stopped(ctx, chat, id);
         return Ok(Vec::new());
     }
-    let Some(turn) = chat.turn.take_if(|turn| &turn.id == id) else {
+    let Some(mut turn) = chat.turn.take_if(|turn| &turn.id == id) else {
         return Ok(Vec::new());
     };
+    // What the model never read goes first in line for the next turn.
+    for text in turn.live.unread().into_iter().rev() {
+        chat.queued
+            .push_front((Queued::Request(text), chat.last_shell));
+    }
     if let Some(vendor) = end
         .and_then(|end| end.vendor_session.as_ref())
         .filter(|_| !turn.step.own_session())

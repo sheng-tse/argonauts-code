@@ -94,6 +94,7 @@ impl Adapter for OpenCodeAdapter {
             resume_totals_include_earlier: false,
             enforces_read_only: false,
             input_joins_running_turn: false,
+            ..Capabilities::default()
         }
     }
 

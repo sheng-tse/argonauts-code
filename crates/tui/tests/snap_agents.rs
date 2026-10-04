@@ -21,7 +21,8 @@ use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{Access, WorkerKind};
 use argonauts_core::{
-    AgentEvent, CardId, ErrorCategory, RetryReason, RunId, Spend, TodoItem, TodoStatus, Verbosity,
+    AgentEvent, CardId, ErrorCategory, ModOutputKind, RetryReason, RunId, Spend, TodoItem,
+    TodoStatus, Verbosity,
 };
 use argonauts_tui::HistoryCell;
 use argonauts_tui::bridge::agents::AgentBlocks;
@@ -55,6 +56,8 @@ struct Crew {
     run: RunId,
     seq: u64,
     now: f64,
+    /// Anything rang the bell.
+    rang: bool,
 }
 
 impl Crew {
@@ -74,6 +77,7 @@ impl Crew {
             run,
             seq: 0,
             now: 0.0,
+            rang: false,
         }
     }
 
@@ -135,6 +139,7 @@ impl Crew {
             out: &mut out,
         };
         self.blocks.on_event(event, &mut cx);
+        self.rang |= out.bell;
     }
 
     /// The app's state gets the session first, as `AppState::apply` does before the parts run.
@@ -784,6 +789,34 @@ fn verbosity_full_normal_quiet() {
     assert!(one_session(Verbosity::Quiet).printed(100).is_empty());
 }
 
+/// Every Claude Code session in the crew loads your mods, so what they push stays in each
+/// agent's block, dim but for a warning, never on the notice line or with the bell. A mod that
+/// says the same again shows it once.
+#[test]
+fn a_crew_sessions_mod_pushes_stay_in_its_block() {
+    let push = |kind, plugin: &str, text: &str| AgentEvent::ModOutput {
+        kind,
+        plugin: Some(plugin.to_owned()),
+        text: Some(text.to_owned()),
+        timeout_ms: None,
+    };
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.start("s-001", "claude-code/opus", Some(3));
+    for _ in 0..3 {
+        crew.at(5.0)
+            .agent("s-001", push(ModOutputKind::Toast, "jokes", "Knock knock"));
+    }
+    crew.agent("s-001", push(ModOutputKind::Urgent, "pager", "Build broke"));
+    crew.agent("s-001", push(ModOutputKind::Status, "pager", "2 open"));
+    assert!(crew.model.bottom.mode.notice.is_none());
+    assert!(!crew.rang);
+    let shown = text(&crew.live(100));
+    assert_eq!(shown.matches("jokes: Knock knock").count(), 1, "{shown}");
+    assert!(shown.contains("pager: Build broke"), "{shown}");
+    assert!(!shown.contains("2 open"), "{shown}");
+}
+
 #[test]
 fn agents_started_rows() {
     let mut crew = Crew::new(Verbosity::Full);
@@ -950,6 +983,9 @@ fn an_agent_keeps_one_name_from_its_start() {
             session_id: Some("claude-1".into()),
             model: Some("claude-haiku-4-5".into()),
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         },
     );
     let live = text(&crew.live(100));

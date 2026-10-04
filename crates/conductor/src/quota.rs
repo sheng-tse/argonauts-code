@@ -686,6 +686,7 @@ mod tests {
             source: QuotaSource::UsageProbe,
             observed_at,
             detail: None,
+            wrap_up: false,
         }
     }
 

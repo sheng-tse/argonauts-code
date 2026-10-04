@@ -11,6 +11,7 @@ use crate::driver::SessionDriver;
 use crate::event::AgentEvent;
 use crate::keywords::Keyword;
 use crate::limits::QuotaReading;
+use crate::screen::ScreenRequest;
 use crate::session::{CommandSpec, SessionRequest};
 use crate::settings::sessions::{Compaction, NativeFanout};
 use crate::vendor_commands::{BuiltinCommand, CommandKind, VendorCommand};
@@ -36,6 +37,12 @@ pub trait Adapter: Send + Sync {
     /// Pure, so it can be unit tested.
     fn command(&self, req: &SessionRequest) -> anyhow::Result<CommandSpec>;
     fn parser(&self) -> Box<dyn StreamParser>;
+    /// The parser for one session. An isolated session's also reports what the CLI loaded that
+    /// isolation keeps out.
+    fn session_parser(&self, req: &SessionRequest) -> Box<dyn StreamParser> {
+        let _ = req;
+        self.parser()
+    }
     fn version_args(&self) -> &'static [&'static str];
     fn parse_version(&self, output: &str) -> Option<String>;
     /// CLI versions whose recorded output the tests replay.
@@ -64,6 +71,31 @@ pub trait Adapter: Send + Sync {
     /// interrupt and resume.
     fn input_line(&self, message: &str) -> Option<String> {
         let _ = message;
+        None
+    }
+
+    /// Like `input_line`, with the id the CLI reports the message's progress by. A CLI that
+    /// takes no id gets the plain line.
+    fn message_line(&self, message: &str, uuid: &str) -> Option<String> {
+        let _ = uuid;
+        self.input_line(message)
+    }
+
+    /// The line that hands what waits to the model now. `None` where the CLI can't.
+    fn send_now_line(&self, uuid: &str) -> Option<String> {
+        let _ = uuid;
+        None
+    }
+
+    /// The line that takes back a message the model hasn't read. `None` where the CLI can't.
+    fn cancel_line(&self, uuid: &str) -> Option<String> {
+        let _ = uuid;
+        None
+    }
+
+    /// The line for a screen's request. `None` where no screen can join.
+    fn screen_line(&self, request: &ScreenRequest) -> Option<String> {
+        let _ = request;
         None
     }
 
@@ -194,6 +226,13 @@ pub trait Adapter: Send + Sync {
     fn command_prompt(&self, command: &VendorCommand, args: &str) -> Option<String> {
         matches!(command.kind, CommandKind::Vendor).then(|| command.invocation(args))
     }
+
+    /// The project's instruction files, such as `AGENTS.md`, that the CLI loads by itself in
+    /// `workdir`, so a prompt needn't name them. None by default, so a prompt names them all.
+    fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
+        let _ = (workdir, isolated);
+        Vec::new()
+    }
 }
 
 /// How the harness worker talks to the agent's process.
@@ -253,6 +292,18 @@ pub struct Capabilities {
     /// A message written to open input while a turn runs joins that turn, so it brings no
     /// result of its own. Otherwise it queues as the next turn.
     pub input_joins_running_turn: bool,
+    /// A message written mid-turn carries an id, by which it can go to the model at once and
+    /// be taken back until the model reads it (Claude Code's send now).
+    #[serde(default)]
+    pub send_now: bool,
+    /// A screen can join the session and draw what the CLI's mods draw (Claude Code's
+    /// `ui_attach`).
+    #[serde(default)]
+    pub screen: bool,
+    /// An isolated session keeps out your MCP servers, plugins, hooks, and synced extras, and
+    /// its parser reports any that load anyway. A blind role may go only to such a CLI.
+    #[serde(default)]
+    pub isolates: bool,
 }
 
 impl Default for Capabilities {
@@ -264,6 +315,9 @@ impl Default for Capabilities {
             resume_totals_include_earlier: true,
             enforces_read_only: true,
             input_joins_running_turn: false,
+            send_now: false,
+            screen: false,
+            isolates: false,
         }
     }
 }
@@ -408,6 +462,8 @@ mod tests {
         let spec = adapter.command(&req).unwrap();
         assert_eq!(spec.args, ["hi", "--read-only"]);
         let mut parser = adapter.parser();
+        assert_eq!(parser.parse_stdout_line("x").len(), 1);
+        let mut parser = adapter.session_parser(&req);
         assert_eq!(parser.parse_stdout_line("x").len(), 1);
     }
 

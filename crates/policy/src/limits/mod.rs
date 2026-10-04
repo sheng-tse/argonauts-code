@@ -13,6 +13,7 @@ pub mod tamper;
 #[cfg(test)]
 mod tests;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use argonauts_core::events::card::CardSpec;
@@ -44,6 +45,30 @@ impl HardLimits for BuiltinLimits {
     }
 
     fn check_card_diff(&self, card: &CardSpec, unified_diff: &str) -> Vec<Violation> {
+        self.card_diff(card, unified_diff, None)
+    }
+
+    fn check_card_tree_diff(
+        &self,
+        card: &CardSpec,
+        unified_diff: &str,
+        tree: &Path,
+    ) -> Vec<Violation> {
+        self.card_diff(card, unified_diff, Some(tree))
+    }
+
+    fn check_session(&self, spec: &SessionSpec) -> Vec<Violation> {
+        session::check(spec, &self.source.current(), self.workers.as_ref())
+    }
+}
+
+impl BuiltinLimits {
+    fn card_diff(
+        &self,
+        card: &CardSpec,
+        unified_diff: &str,
+        tree: Option<&Path>,
+    ) -> Vec<Violation> {
         let settings = self.source.current();
         let changes = match diff::parse(unified_diff) {
             Ok(changes) => changes,
@@ -55,15 +80,11 @@ impl HardLimits for BuiltinLimits {
                 )];
             }
         };
-        let mut violations = paths::check(card, &changes, &settings);
+        let mut violations = paths::check(card, &changes, &settings, tree);
         violations.extend(secrets::check(&changes));
         violations.extend(tamper::check(&changes));
         violations.extend(deps::check(&changes, &settings));
         violations
-    }
-
-    fn check_session(&self, spec: &SessionSpec) -> Vec<Violation> {
-        session::check(spec, &self.source.current(), self.workers.as_ref())
     }
 }
 

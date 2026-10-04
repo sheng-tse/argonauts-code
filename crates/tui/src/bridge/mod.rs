@@ -6,6 +6,7 @@
 pub mod agents;
 pub mod input;
 pub mod keys;
+pub mod mods;
 pub mod panel;
 pub mod settings;
 pub mod status;

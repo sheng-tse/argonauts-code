@@ -341,7 +341,7 @@ impl ResumePicker {
             Column::new(
                 if mixed { "Details" } else { "Stopped at" },
                 cells(&|row| match row {
-                    Row::Run(i) => clean(&self.runs[i].stopped_at),
+                    Row::Run(i) => run_details(&self.runs[i]),
                     Row::Chat(i) => chat_details(&self.chats[i], names),
                     Row::Session(i) => session_details(&self.sessions[i]),
                     Row::Agent(a) => sanitize_line(&names.worker(&self.agents[a].worker))
@@ -917,6 +917,17 @@ pub(crate) fn raw_request(state: &AppState, run: &RunId) -> Result<ViewRequest, 
     }
 }
 
+/// Where the run stopped, unless that only repeats its state, as `merged` does for a merged
+/// run.
+fn run_details(run: &RunSummary) -> String {
+    let details = clean(&run.stopped_at);
+    if details.eq_ignore_ascii_case(state_word(run.state)) {
+        String::new()
+    } else {
+        details
+    }
+}
+
 fn clean(text: &str) -> String {
     sanitize_line(text).trim().to_owned()
 }
@@ -1280,6 +1291,20 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    /// A merged run says so once, under State, and Details stays empty rather than saying it
+    /// again; a parked one still says where it stopped.
+    #[test]
+    fn a_finished_run_says_its_state_once() {
+        let mut merged = run("run-02", 1);
+        merged.state = RunPhase::Merged;
+        merged.stopped_at = "merged".into();
+        let view = ResumePicker::with_chats(vec![merged, run("run-01", 5)], vec![chat(1, "hi", 0)]);
+        let text = rows(&view, 120);
+        let row = |id: &str| text.iter().find(|row| row.contains(id)).unwrap().clone();
+        assert_eq!(row("run-02").matches("merged").count(), 1, "{text:#?}");
+        assert!(row("run-01").contains("merge checkpoint"), "{text:#?}");
     }
 
     #[test]

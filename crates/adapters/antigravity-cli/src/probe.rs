@@ -70,6 +70,7 @@ pub fn parse_usage(vendor: &str, stdout: &str) -> Option<QuotaReading> {
         source: QuotaSource::UsageProbe,
         observed_at: OffsetDateTime::now_utc(),
         detail: Some(data.cloned().unwrap_or(payload)),
+        wrap_up: false,
     })
 }
 

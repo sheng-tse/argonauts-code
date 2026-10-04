@@ -279,6 +279,13 @@ pub enum EndReason {
     AdapterBroken {
         detail: String,
     },
+    /// An isolated session loaded your plugins or synced skills, which its role mustn't see.
+    IsolationBroken {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugins: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skills: Vec<String>,
+    },
     StartFailed {
         message: String,
     },
@@ -287,6 +294,26 @@ pub enum EndReason {
         /// Why, from the last error or stderr.
         message: String,
     },
+}
+
+/// What an isolated session loaded, in words: `your plugins memory-keeper and lint-helper, and
+/// 4 synced skills`. Skills are counted, since a synced set is often long.
+pub fn loaded_words(plugins: &[String], skills: &[String]) -> String {
+    let plugins = match plugins {
+        [] => None,
+        [one] => Some(format!("your plugin {one}")),
+        [rest @ .., last] => Some(format!("your plugins {} and {last}", rest.join(", "))),
+    };
+    let skills = match skills.len() {
+        0 => None,
+        1 => Some(format!("your synced skill {}", skills[0])),
+        n => Some(format!("{n} synced skills")),
+    };
+    match (plugins, skills) {
+        (Some(plugins), Some(skills)) => format!("{plugins}, and {skills}"),
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => "your plugins".to_owned(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -493,3 +520,44 @@ impl VendorWorkflow {
 
 /// A normalized quota reading, added to `AgentEvent` as `Quota { reading }`.
 pub type AgentQuota = QuotaReading;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn what_an_isolated_session_loaded_reads_as_a_list() {
+        assert_eq!(
+            loaded_words(&names(&["memory-keeper", "lint-helper"]), &[]),
+            "your plugins memory-keeper and lint-helper"
+        );
+        assert_eq!(
+            loaded_words(
+                &names(&["a", "b", "c"]),
+                &names(&["anthropic-skills:example-a"])
+            ),
+            "your plugins a, b and c, and your synced skill anthropic-skills:example-a"
+        );
+        assert_eq!(
+            loaded_words(
+                &[],
+                &names(&["anthropic-skills:example-a", "anthropic-skills:example-b"])
+            ),
+            "2 synced skills"
+        );
+        let broken = EndReason::IsolationBroken {
+            plugins: names(&["memory-keeper"]),
+            skills: Vec::new(),
+        };
+        let json = serde_json::to_value(&broken).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"why": "isolation_broken", "plugins": ["memory-keeper"]})
+        );
+        assert_eq!(serde_json::from_value::<EndReason>(json).unwrap(), broken);
+    }
+}

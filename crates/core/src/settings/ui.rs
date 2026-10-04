@@ -48,6 +48,33 @@ pub struct UiSettings {
     pub glyphs: Glyphs,
     /// Cells for East Asian ambiguous-width characters, 1 or 2, like vim's `ambiwidth`.
     pub ambiguous_width: u8,
+    /// Say once when an installed agent CLI is newer than the one Argonauts was checked with.
+    pub newer_cli_notice: bool,
+    /// What Claude Code's mods push: a toast, a status line, a log line.
+    pub mod_output: ModOutput,
+    /// Claude Code's You should know above the input.
+    pub heads_up: HeadsUp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModOutput {
+    /// Where Claude Code shows it: a toast on the notice line, a status line under the input,
+    /// a log line in the transcript.
+    #[default]
+    Show,
+    /// Each as a dim line in the transcript.
+    Transcript,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadsUp {
+    /// Shown when you've turned it on in Claude Code, which its session then lists.
+    #[default]
+    WhenEnabled,
+    Off,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -135,6 +162,9 @@ impl Default for UiSettings {
             workflow: WorkflowViewSettings::default(),
             glyphs: Glyphs::Unicode,
             ambiguous_width: 1,
+            newer_cli_notice: true,
+            mod_output: ModOutput::Show,
+            heads_up: HeadsUp::WhenEnabled,
         }
     }
 }

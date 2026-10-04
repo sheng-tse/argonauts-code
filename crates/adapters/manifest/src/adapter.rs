@@ -212,6 +212,7 @@ mod tests {
                 resume_totals_include_earlier: false,
                 enforces_read_only: true,
                 input_joins_running_turn: false,
+                ..Capabilities::default()
             }
         }
     }

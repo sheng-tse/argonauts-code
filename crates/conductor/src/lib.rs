@@ -1,6 +1,7 @@
 //! Supervises agent sessions, worktrees, gates, and merges. The conductor is code, not a model.
 
 pub mod agents;
+pub mod cli_versions;
 pub mod control;
 pub mod cpu;
 pub mod decision;

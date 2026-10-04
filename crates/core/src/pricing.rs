@@ -4,10 +4,13 @@
 use crate::budget::TokenPrice;
 
 /// Dollars per million tokens for input, output, and cached input, from OpenRouter list prices
-/// on 2026-09-29.
+/// on 2026-09-29, and Claude Code's changelog for the 5.5 models. Claude Code reports its own
+/// cost, so its prices only shape estimates.
 const PRICES: &[(&str, f64, f64, f64)] = &[
     ("haiku", 1.00, 5.00, 0.10),
     ("claude-haiku-4-5", 1.00, 5.00, 0.10),
+    ("claude-opus-5-5", 4.00, 20.00, 0.20),
+    ("claude-sonnet-5-5", 2.00, 10.00, 0.20),
     ("gpt-5.6-luna", 0.20, 1.20, 0.02),
     ("gpt-5.6-terra", 2.00, 12.00, 0.20),
     ("gpt-5.6-sol", 2.00, 10.00, 0.20),
@@ -71,6 +74,17 @@ mod tests {
         assert!(builtin_price("gpt-6-luna-pro").is_none());
         assert!(builtin_price("gpt-6").is_none());
         assert!(builtin_price("").is_none());
+    }
+
+    #[test]
+    fn claude_code_defaults_have_prices() {
+        let opus = builtin_price("claude-opus-5-5").unwrap();
+        assert_eq!((opus.input_per_mtok, opus.output_per_mtok), (4.0, 20.0));
+        assert_eq!(opus.cached_input_per_mtok, Some(0.20));
+        let sonnet = builtin_price("claude-sonnet-5-5").unwrap();
+        assert_eq!((sonnet.input_per_mtok, sonnet.output_per_mtok), (2.0, 10.0));
+        assert_eq!(sonnet.cached_input_per_mtok, Some(0.20));
+        assert!(builtin_price("claude-opus-5").is_none());
     }
 
     #[test]

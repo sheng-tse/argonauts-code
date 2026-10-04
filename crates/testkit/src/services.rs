@@ -430,7 +430,8 @@ impl TableLimits {
             | EndReason::Auth { .. }
             | EndReason::Billing { .. }
             | EndReason::ModelUnavailable { .. }
-            | EndReason::AdapterBroken { .. } => ask(),
+            | EndReason::AdapterBroken { .. }
+            | EndReason::IsolationBroken { .. } => ask(),
         }
     }
 }

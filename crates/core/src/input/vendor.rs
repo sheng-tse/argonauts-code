@@ -6,20 +6,37 @@ use crate::vendor_commands::{CommandKind, VendorCommandSet};
 /// [`parse_input`] with the main agent's commands added, Argonauts' own names first. A CLI's
 /// name for an Argonauts command parses as that command, one that runs inside the CLI becomes
 /// [`SlashCommand::Vendor`], and one only the CLI's own screen runs is
-/// [`InputError::VendorScreenOnly`].
+/// [`InputError::VendorScreenOnly`]. An Argonauts command given arguments it doesn't take goes
+/// to the CLI's command of that name, when the CLI has one that does, such as `/doctor
+/// prompt-audit` to Claude Code's `/checkup`.
 pub fn parse_input_with(
     text: &str,
     commands: Option<&VendorCommandSet>,
 ) -> Result<ParsedInput, InputError> {
     let parsed = parse_input(text);
-    let (Err(InputError::UnknownCommand(typed)), Some(set)) = (&parsed, commands) else {
-        return parsed;
-    };
-    let Some(found) = set.find(typed) else {
+    let Some(set) = commands else {
         return parsed;
     };
     let rest = text.trim().strip_prefix('/').unwrap_or_default();
     let (_, args) = split_word(rest);
+    let typed = match &parsed {
+        Err(InputError::UnknownCommand(typed)) => typed,
+        Err(InputError::BadArguments { command, .. }) => {
+            return match set.runs_inside_as(command) {
+                Some(found) => Ok(ParsedInput::Slash {
+                    command: SlashCommand::Vendor {
+                        name: found.name.clone(),
+                        args: args.to_owned(),
+                    },
+                }),
+                None => parsed,
+            };
+        }
+        _ => return parsed,
+    };
+    let Some(found) = set.find(typed) else {
+        return parsed;
+    };
     let command = match &found.kind {
         CommandKind::Argonauts { command } => {
             parse_slash(command, args).map_err(|err| match err {

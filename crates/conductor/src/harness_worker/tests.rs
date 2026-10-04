@@ -13,14 +13,14 @@ use argonauts_core::layout::session_files;
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::approvals::SandboxChoice;
+use argonauts_core::settings::approvals::{IsolatedLeak, SandboxChoice};
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::sessions::RotateAt;
 use argonauts_core::worker::{
     Access, SandboxMode, SessionControl, SessionHandle, SessionSpec, Worker, WorkerError,
     WorkerEvent,
 };
-use argonauts_core::{Adapter, AgentEvent, BudgetDimension, WRAP_UP_MESSAGE};
+use argonauts_core::{Adapter, AgentEvent, BudgetDimension, MessageStage, WRAP_UP_MESSAGE};
 use argonauts_testkit::services::StaticRegistry;
 use nix::errno::Errno;
 use nix::sys::signal::kill;
@@ -188,6 +188,9 @@ fn init(session: &str) -> String {
         session_id: Some(session.into()),
         model: None,
         tools: Vec::new(),
+        plugins: Vec::new(),
+        capabilities: Vec::new(),
+        version: None,
     })
 }
 
@@ -633,6 +636,325 @@ async fn a_steer_that_joins_the_running_turn_brings_no_result_of_its_own() {
 }
 
 #[tokio::test]
+async fn a_message_with_its_uuid_goes_in_at_once_while_a_tool_runs() {
+    // Like Claude Code 2.1.289: the CLI holds the message until the model can read it, so it's
+    // written at once, and the turn's one result ends the session once the model read it.
+    let dirs = Dirs::new();
+    let started = event_line(&AgentEvent::MessageState {
+        uuid: "u-1".into(),
+        state: MessageStage::Started,
+    });
+    let script = format!(
+        "IFS= read -r first; {}; IFS= read -r joined; printf '%s\\n' \"$joined\" >> got-input; \
+         {}; {}; {}; while IFS= read -r line; do :; done; : > input-closed",
+        echo(&tool("t1", true)),
+        echo(&tool("t1", false)),
+        echo(&started),
+        echo(&result("done")),
+    );
+    let h = Harness::new(TestAdapter::new(&script).with_input_joining_the_turn());
+    let mut spec = dirs.spec("start");
+    spec.limits.inactivity_min = Some(0.1);
+    let mut handle = h.worker.start(spec).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::ToolStarted { .. }))
+    })
+    .await;
+    handle
+        .control
+        .send(SessionControl::Send {
+            text: "also check the changelog".into(),
+            uuid: "u-1".into(),
+        })
+        .await
+        .unwrap();
+    let (events, end) = finish(seen, handle).await;
+
+    assert_eq!(end.reason, EndReason::Completed);
+    assert!(dirs.read("got-input").contains("also check the changelog"));
+    assert!(dirs.work.join("input-closed").exists());
+    let order = names(&events);
+    let finished_at = order.iter().position(|n| n == "agent:tool_finished");
+    assert!(finished_at.is_some(), "{order:?}");
+}
+
+#[tokio::test]
+async fn send_now_from_the_agent_view_hands_over_steering_held_for_the_tool_call() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; IFS= read -r steer; printf '%s\\n' \"$steer\" >> got-input; \
+         IFS= read -r now; printf '%s\\n' \"$now\" >> got-input; {}; \
+         uuid=$(printf '%s' \"$steer\" | sed 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/'); \
+         printf '{{\"type\":\"message_state\",\"uuid\":\"%s\",\"state\":\"started\"}}\\n' \"$uuid\"; \
+         {}; while IFS= read -r line; do :; done",
+        echo(&tool("t1", true)),
+        echo(&tool("t1", false)),
+        echo(&result("done")),
+    );
+    let h = Harness::new(TestAdapter::new(&script).with_send_now());
+    let mut spec = dirs.spec("start");
+    spec.limits.inactivity_min = Some(0.1);
+    let mut handle = h.worker.start(spec).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::ToolStarted { .. }))
+    })
+    .await;
+    let steer = queued(1, "use the cache", Delivery::Steer);
+    handle
+        .control
+        .send(SessionControl::Deliver(steer))
+        .await
+        .unwrap();
+    handle
+        .control
+        .send(SessionControl::SendNow {
+            uuid: String::new(),
+        })
+        .await
+        .unwrap();
+    // The tool never finishes on its own here: only send now lets the agent read on.
+    let (_, end) = finish(seen, handle).await;
+    let got = dirs.read("got-input");
+    let lines: Vec<serde_json::Value> = got
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines[0]["text"], "use the cache", "{got}");
+    assert_eq!(lines[1]["send_now"], lines[0]["uuid"], "{got}");
+    assert_eq!(end.reason, EndReason::Completed);
+}
+
+#[tokio::test]
+async fn a_message_the_input_cant_take_says_it_never_went() {
+    let dirs = Dirs::new();
+    let script = format!("IFS= read -r first; {}; sleep 1", echo(&result("done")));
+    let h = Harness::new(TestAdapter::new(&script));
+    let mut handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let mut seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::Result { .. }))
+    })
+    .await;
+    // Without input lines, nothing can go in.
+    handle
+        .control
+        .send(SessionControl::Send {
+            text: "too late".into(),
+            uuid: "u-2".into(),
+        })
+        .await
+        .unwrap();
+    seen.extend(
+        read_until(&mut handle.events, |e| {
+            matches!(e, WorkerEvent::Agent(AgentEvent::MessageState { .. }))
+        })
+        .await,
+    );
+    let (events, _) = finish(seen, handle).await;
+    assert!(agent_events(&events).iter().any(|e| matches!(
+        e,
+        AgentEvent::MessageState {
+            state: MessageStage::NotSent,
+            ..
+        }
+    )));
+}
+
+/// A recorded Claude Code stream, quoted for a script.
+fn recorded(version: &str, name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../adapters/claude-code/fixtures")
+        .join(version)
+        .join(format!("{name}.stdout.jsonl"))
+        .canonicalize()
+        .unwrap();
+    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+}
+
+/// Reads the prompt, then marks `input-closed` once the input closes, while the script goes on.
+const WATCH_INPUT: &str = "IFS= read -r first; exec 3<&0; \
+    (while IFS= read -r line; do printf '%s\\n' \"$line\" >> got-input; done; \
+    : > input-closed) <&3 &";
+
+#[tokio::test]
+async fn a_turn_that_left_a_command_in_the_background_keeps_the_input_open_for_it() {
+    // Checked live with the input left open: send now moved ./slow-test.sh to the background,
+    // the turn ended on PONG, and when the command ended Claude Code told the model in a turn
+    // of its own. Closing the input at PONG would have killed the command.
+    let stream = recorded("2.1.289", "send_now_resume_open");
+    let script = format!(
+        "{WATCH_INPUT} sed -n '1,49p' {stream}; {}; sed -n '50,$p' {stream}; wait",
+        wait_for_go(),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = Harness::new(adapter);
+    let dirs = Dirs::new();
+    let mut spec = dirs.spec("Run ./slow-test.sh");
+    spec.limits.inactivity_min = Some(0.1);
+    let mut handle = h.worker.start(spec).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::Result { .. }))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !dirs.work.join("input-closed").exists(),
+        "the input closed with the command still in the background"
+    );
+    std::fs::write(dirs.work.join("go"), "").unwrap();
+    let (events, end) = finish(seen, handle).await;
+
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(
+        end.result_text.as_deref(),
+        Some("The script printed that 12 tests passed.")
+    );
+    assert!(dirs.work.join("input-closed").exists());
+    let results = agent_events(&events)
+        .into_iter()
+        .filter(|e| matches!(e, AgentEvent::Result { .. }))
+        .count();
+    assert_eq!(results, 2);
+}
+
+#[tokio::test]
+async fn a_resume_waits_past_the_empty_result_the_last_process_left() {
+    // The next resume closed out the command the last process killed, with an empty result
+    // before your message even started. Counting it would close the input then.
+    let stream = recorded("2.1.289", "send_now_resume_stale_task");
+    let script = format!(
+        "{WATCH_INPUT} sed -n '1,6p' {stream}; {}; sed -n '7,$p' {stream}; wait",
+        wait_for_go(),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_send_now()
+        .with_parser(|| ClaudeCodeAdapter.parser());
+    let h = Harness::new(adapter);
+    let dirs = Dirs::new();
+    let mut spec = dirs.spec("Run ./slow-test.sh");
+    spec.limits.inactivity_min = Some(0.1);
+    let mut handle = h.worker.start(spec).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(
+            e,
+            WorkerEvent::Agent(AgentEvent::MessageState {
+                state: MessageStage::Started,
+                ..
+            })
+        )
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !dirs.work.join("input-closed").exists(),
+        "the left-over result closed the input"
+    );
+    std::fs::write(dirs.work.join("go"), "").unwrap();
+    let (events, end) = finish(seen, handle).await;
+
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(
+        end.result_text.as_deref(),
+        Some("The script printed that 12 tests passed.")
+    );
+    assert!(dirs.work.join("input-closed").exists());
+    let results: Vec<_> = agent_events(&events)
+        .into_iter()
+        .filter(|e| matches!(e, AgentEvent::Result { .. }))
+        .collect();
+    assert_eq!(results.len(), 1, "{results:?}");
+}
+
+fn background(running: &[&str], ended: bool) -> String {
+    event_line(&AgentEvent::BackgroundTasks {
+        running: running.iter().map(|task| (*task).to_owned()).collect(),
+        ended,
+    })
+}
+
+#[tokio::test]
+async fn a_message_sent_while_the_background_runs_goes_in() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; {}; IFS= read -r joined; \
+         printf '%s\\n' \"$joined\" >> got-input; {}; {}; {}; {}; \
+         while IFS= read -r line; do :; done; : > input-closed",
+        echo(&background(&["b1"], false)),
+        echo(&result("PONG")),
+        echo(&result("noted")),
+        wait_for_go(),
+        echo(&background(&[], true)),
+        echo(&result("12 passed")),
+    );
+    let h = Harness::new(TestAdapter::new(&script).with_send_now());
+    let mut spec = dirs.spec("start");
+    spec.limits.inactivity_min = Some(0.1);
+    let mut handle = h.worker.start(spec).await.unwrap();
+    let mut seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::Result { .. }))
+    })
+    .await;
+    handle
+        .control
+        .send(SessionControl::Send {
+            text: "and the docs?".into(),
+            uuid: "u-1".into(),
+        })
+        .await
+        .unwrap();
+    seen.extend(
+        read_until(&mut handle.events, |e| {
+            matches!(e, WorkerEvent::Agent(AgentEvent::Result { text: Some(text), .. }) if text == "noted")
+        })
+        .await,
+    );
+    std::fs::write(dirs.work.join("go"), "").unwrap();
+    let (events, end) = finish(seen, handle).await;
+
+    assert!(dirs.read("got-input").contains("and the docs?"));
+    assert!(!agent_events(&events).iter().any(|e| matches!(
+        e,
+        AgentEvent::MessageState {
+            state: MessageStage::NotSent,
+            ..
+        }
+    )));
+    // The turn the CLI started when the task ended was waited for too.
+    assert_eq!(end.result_text.as_deref(), Some("12 passed"));
+    assert!(dirs.work.join("input-closed").exists());
+}
+
+#[tokio::test]
+async fn the_wait_on_the_background_ends_with_the_sessions_wall_clock() {
+    // Closing the input is how Claude Code learns to stop, and its task's end follows.
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; {}; while IFS= read -r line; do :; done; \
+         : > input-closed; {}",
+        echo(&background(&["b1"], false)),
+        echo(&result("PONG")),
+        echo(&background(&[], true)),
+    );
+    let h = Harness::new(TestAdapter::new(&script).with_send_now());
+    let mut spec = dirs.spec("start");
+    spec.limits.inactivity_min = Some(0.1);
+    spec.limits.max_minutes = Some(0.02);
+    let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+
+    assert!(dirs.work.join("input-closed").exists());
+    assert_eq!(end.result_text.as_deref(), Some("PONG"));
+    assert!(
+        agent_events(&events).iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("when the wait for it ran out")
+        )),
+        "{:?}",
+        names(&events)
+    );
+}
+
+#[tokio::test]
 async fn a_steer_on_open_input_waits_for_the_running_tool_call() {
     let dirs = Dirs::new();
     let script = format!(
@@ -965,6 +1287,7 @@ async fn quota_goes_to_the_board_and_out() {
         source: argonauts_core::limits::QuotaSource::RateLimitEvent,
         observed_at: time::OffsetDateTime::UNIX_EPOCH,
         detail: None,
+        wrap_up: false,
     };
     let script = format!(
         "{}; exit 1",
@@ -980,6 +1303,118 @@ async fn quota_goes_to_the_board_and_out() {
         argonauts_core::events::VendorEvent::Quota(reading)
     )));
     assert_eq!(end.reason, EndReason::UsageLimit { resets_at: None });
+}
+
+fn wrap_up_reading(wrap_up: bool) -> argonauts_core::limits::QuotaReading {
+    argonauts_core::limits::QuotaReading {
+        vendor: argonauts_core::names::VendorId("fake".into()),
+        status: argonauts_core::limits::QuotaStatus::Rejected,
+        used: Some(1.0),
+        resets_at: None,
+        window: Some("five_hour".into()),
+        source: argonauts_core::limits::QuotaSource::RateLimitEvent,
+        observed_at: time::OffsetDateTime::UNIX_EPOCH,
+        detail: None,
+        wrap_up,
+    }
+}
+
+/// On the wrap-up allowance the agent finishes: the worker acts on the session's end, not on
+/// the reading, so a clean end completes while the vendor stays out for new work.
+#[tokio::test]
+async fn a_session_on_its_wrap_up_allowance_finishes() {
+    let dirs = Dirs::new();
+    let script = [
+        echo(&event_line(&AgentEvent::Quota {
+            reading: wrap_up_reading(false),
+        })),
+        echo(&event_line(&AgentEvent::Quota {
+            reading: wrap_up_reading(true),
+        })),
+        echo(&message("Done with this step. Left: format_cents.")),
+        echo(&event_line(&AgentEvent::Quota {
+            reading: wrap_up_reading(false),
+        })),
+        echo(&result("done")),
+    ]
+    .join("; ");
+    let h = Harness::new(TestAdapter::new(&script));
+    let (_, end) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    use argonauts_core::limits::QuotaBoard;
+    let out = h.quota.get(&argonauts_core::names::VendorId("fake".into()));
+    assert_eq!(out, Some(wrap_up_reading(false)));
+}
+
+/// `handoff.wrap_up = "hand_off"` saves the allowance: the first sign ends the session on the
+/// limit, so its card moves on at once.
+#[tokio::test]
+async fn hand_off_on_wrap_up_stops_at_the_first_sign() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "{}; {}",
+        echo(&event_line(&AgentEvent::Quota {
+            reading: wrap_up_reading(true),
+        })),
+        "sleep 20"
+    );
+    let mut settings = Settings::default();
+    settings.handoff.wrap_up = argonauts_core::settings::handoff::WrapUp::HandOff;
+    let h = Harness::with_settings(TestAdapter::new(&script), settings);
+    let (_, end) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
+    assert_eq!(end.reason, EndReason::UsageLimit { resets_at: None });
+}
+
+/// A CLI newer than its adapter's recordings says so once per version, and what it sent that
+/// the adapter didn't read is kept by kind for `/doctor`.
+#[tokio::test]
+async fn a_newer_cli_is_noticed_once_and_its_unread_kinds_kept() {
+    let dirs = Dirs::new();
+    let started = event_line(&AgentEvent::Init {
+        session_id: Some("s1".into()),
+        model: None,
+        tools: Vec::new(),
+        plugins: Vec::new(),
+        capabilities: Vec::new(),
+        version: Some("1.0.3".into()),
+    });
+    let odd = event_line(&AgentEvent::Unknown {
+        raw: serde_json::json!({"type": "system", "subtype": "turn_summary", "text": "secret"}),
+    });
+    let script = [
+        echo(&started),
+        echo(&odd),
+        echo(&message("hi")),
+        echo(&result("ok")),
+    ]
+    .join("; ");
+    let h = Harness::new(TestAdapter::new(&script));
+    let (events, _) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
+    let said: Vec<&str> = notices(&events)
+        .into_iter()
+        .filter(|notice| notice.contains("is newer than"))
+        .collect();
+    assert_eq!(said.len(), 1, "{:?}", notices(&events));
+    assert!(
+        said[0].starts_with("Fake Agent 1.0.3 is newer than 1.0.0"),
+        "{said:?}"
+    );
+
+    let path = argonauts_core::Paths::new(h.home.path()).cli_versions();
+    let kept = crate::cli_versions::CliVersions::load(&path);
+    assert_eq!(
+        kept.unread("fake", "1.0.3"),
+        [("system/turn_summary".to_owned(), 1)]
+    );
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("secret"));
+
+    // The next session on the same version says nothing.
+    let (events, _) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
+    assert!(
+        !notices(&events).iter().any(|n| n.contains("is newer than")),
+        "{:?}",
+        notices(&events)
+    );
 }
 
 #[tokio::test]
@@ -1352,4 +1787,143 @@ fn quota_prober_names_the_model_sessions_use() {
     super::register_quota_prober(&adapter, &worker, &settings);
     let prober = registered_prober(&worker.vendor()).unwrap();
     assert_eq!(prober.model.as_deref(), Some("picked"));
+}
+
+fn leak_line() -> String {
+    event_line(&AgentEvent::IsolationLeak {
+        plugins: vec!["memory-keeper".into(), "lint-helper".into()],
+        skills: Vec::new(),
+        builtins: Vec::new(),
+    })
+}
+
+/// A blind role's session that loaded your plugins is stopped at once, before any tool call,
+/// and ends saying what it loaded so the role can go to another agent.
+#[tokio::test]
+async fn an_isolated_session_that_loads_your_plugins_is_stopped() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "{}; {}; exec sleep 30",
+        echo(&init("s1")),
+        echo(&leak_line())
+    );
+    let h = Harness::new(TestAdapter::new(&script).isolating());
+    let mut spec = dirs.spec("review");
+    spec.isolated = true;
+    let started = std::time::Instant::now();
+    let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+    assert_eq!(
+        end.reason,
+        EndReason::IsolationBroken {
+            plugins: vec!["memory-keeper".into(), "lint-helper".into()],
+            skills: Vec::new(),
+        }
+    );
+    assert!(started.elapsed() < Duration::from_secs(20));
+    let tools = agent_events(&events)
+        .into_iter()
+        .filter(|event| matches!(event, AgentEvent::ToolStarted { .. }))
+        .count();
+    assert_eq!(tools, 0);
+}
+
+/// A later version's built-in that no list here names is the CLI's own, not yours: the blind
+/// session runs on, says so once, and every later isolated session turns it off.
+#[tokio::test]
+async fn a_builtin_argonauts_doesnt_know_is_learned_and_turned_off_next_time() {
+    let learned = event_line(&AgentEvent::IsolationLeak {
+        plugins: Vec::new(),
+        skills: Vec::new(),
+        builtins: vec!["cc-plugin-new-thing".into()],
+    });
+    let script = format!(
+        "printf '%s' \"$FAKE_BUILTINS_OFF\" > builtins-off; {}; {}; {}",
+        echo(&init("s1")),
+        echo(&learned),
+        echo(&result("reviewed"))
+    );
+    let h = Harness::new(TestAdapter::new(&script).isolating());
+    let dirs = Dirs::new();
+    let mut spec = dirs.spec("review");
+    spec.isolated = true;
+    let (events, end) = collect(h.worker.start(spec.clone()).await.unwrap()).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(dirs.read("builtins-off"), "");
+    let said: Vec<&str> = notices(&events)
+        .into_iter()
+        .filter(|notice| notice.contains("doesn't know yet"))
+        .collect();
+    assert_eq!(said.len(), 1, "{:?}", notices(&events));
+    assert!(said[0].contains("cc-plugin-new-thing"), "{said:?}");
+    let path = argonauts_core::Paths::new(h.home.path()).cli_versions();
+    let kept = crate::cli_versions::CliVersions::load(&path);
+    assert_eq!(kept.builtins("fake"), ["cc-plugin-new-thing"]);
+
+    let (events, _) = collect(h.worker.start(spec).await.unwrap()).await;
+    assert_eq!(dirs.read("builtins-off"), "cc-plugin-new-thing");
+    assert!(
+        !notices(&events)
+            .iter()
+            .any(|notice| notice.contains("doesn't know yet")),
+        "said once"
+    );
+}
+
+/// A CLI that can't keep your MCP servers and plugins out says nothing of what it loaded, so a
+/// blind session on it says so itself, the first one only, since the rest would say the same.
+/// One that isolates needs no such word.
+#[tokio::test]
+async fn a_blind_session_on_a_cli_that_cant_isolate_says_so() {
+    let script = format!("{}; {}", echo(&init("s1")), echo(&result("reviewed")));
+    for (adapter, says) in [
+        (TestAdapter::new(&script), [true, false]),
+        (TestAdapter::new(&script).isolating(), [false, false]),
+    ] {
+        let h = Harness::new(adapter);
+        for says in says {
+            let dirs = Dirs::new();
+            let mut spec = dirs.spec("review");
+            spec.isolated = true;
+            let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+            assert_eq!(end.reason, EndReason::Completed);
+            let said = notices(&events)
+                .into_iter()
+                .any(|notice| notice.contains("can't keep its own MCP servers"));
+            assert_eq!(said, says, "{:?}", notices(&events));
+        }
+    }
+}
+
+/// With `sandbox.isolated_leak = "warn"` it runs on, and a notice says what it loaded. A
+/// session that isn't isolated is just running with your setup.
+#[tokio::test]
+async fn a_leak_only_warns_when_set_to_and_means_nothing_outside_isolation() {
+    let script = format!(
+        "{}; {}; {}",
+        echo(&init("s1")),
+        echo(&leak_line()),
+        echo(&result("reviewed"))
+    );
+    let mut settings = Settings::default();
+    settings.sandbox.isolated_leak = IsolatedLeak::Warn;
+    let h = Harness::with_settings(TestAdapter::new(&script).isolating(), settings);
+    let dirs = Dirs::new();
+    let mut spec = dirs.spec("review");
+    spec.isolated = true;
+    let (events, end) = collect(h.worker.start(spec).await.unwrap()).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    let warned = notices(&events)
+        .into_iter()
+        .any(|notice| notice.contains("memory-keeper and lint-helper") && notice.contains("warn"));
+    assert!(warned, "{:?}", notices(&events));
+
+    let h = Harness::new(TestAdapter::new(&script));
+    let dirs = Dirs::new();
+    let (events, end) = collect(h.worker.start(dirs.spec("review")).await.unwrap()).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert!(
+        !notices(&events)
+            .into_iter()
+            .any(|notice| notice.contains("memory-keeper"))
+    );
 }

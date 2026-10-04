@@ -4,13 +4,15 @@
 //! [`Action`]s, since steering differs between line sessions and driven ones. The boards and the
 //! diffs work on tasks of their own, so nothing here waits on a file lock or on git.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use argonauts_core::events::VendorEvent;
-use argonauts_core::events::session::{LimitEvent, SessionEvent};
+use argonauts_core::events::session::{LimitEvent, SessionEvent, loaded_words};
 use argonauts_core::limits::{HealthSignal, QuotaStatus};
+use argonauts_core::settings::approvals::IsolatedLeak;
+use argonauts_core::settings::handoff::WrapUp;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
 use argonauts_core::{
     AgentEvent, BudgetDimension, BudgetStatus, ErrorCategory, Spend, TweakEffect,
@@ -24,6 +26,7 @@ use super::diffs::Diffs;
 use super::end::{EndFacts, SeenError};
 use super::outbox::Outbox;
 use super::stop::StopCause;
+use crate::cli_versions::{CliVersions, event_kind};
 use crate::doctor::{self, versions::in_tested_range};
 use crate::filediff::{FileDiffer, changed_paths};
 use crate::meter::{self, MeterSetup, MeterVerdict, SessionMeter};
@@ -106,6 +109,11 @@ pub struct Observer {
     /// when a stream ends badly.
     understood: u32,
     broken_reported: bool,
+    /// The CLI's version, when its first line says it.
+    cli_version: Option<String>,
+    /// Kinds of events the adapter didn't read, with counts, kept per version for `/doctor`.
+    unread: BTreeMap<String, u64>,
+    wrap_up_stopped: bool,
 }
 
 impl Observer {
@@ -166,6 +174,9 @@ impl Observer {
             unknown: 0,
             understood: 0,
             broken_reported: false,
+            cli_version: None,
+            unread: BTreeMap::new(),
+            wrap_up_stopped: false,
         }
     }
 
@@ -238,7 +249,8 @@ impl Observer {
         for path in changed_paths(&event) {
             self.diffs.changed(path);
         }
-        let mut actions = Vec::new();
+        let mut actions: Vec<Action> = self.isolation(&event).into_iter().collect();
+        actions.extend(self.wrap_up_stop(&event));
         let verdict = self.meter.observe(&event);
         actions.extend(meter_action(verdict));
         if matches!(event, AgentEvent::Usage { .. }) {
@@ -270,6 +282,7 @@ impl Observer {
     /// reading, before the end.
     pub async fn finish(&mut self) {
         self.check_untested_adapter().await;
+        self.keep_unread().await;
         self.diffs.flush(&self.out).await;
         if !self.boards.settle().await {
             self.out
@@ -301,13 +314,22 @@ impl Observer {
     fn note(&mut self, event: &AgentEvent) {
         match event {
             AgentEvent::Init {
-                session_id, model, ..
+                session_id,
+                model,
+                version,
+                ..
             } => {
                 if let Some(id) = session_id {
                     self.vendor_session(id.clone());
                 }
                 if self.facts.model.is_none() {
                     self.facts.model.clone_from(model);
+                }
+                if let Some(version) = version
+                    && self.cli_version.is_none()
+                {
+                    self.cli_version = Some(version.clone());
+                    self.newer_cli_notice(version);
                 }
             }
             AgentEvent::Message { text, parent: None } => {
@@ -373,12 +395,70 @@ impl Observer {
                     });
                 }
             }
-            AgentEvent::Unknown { .. } => {
+            AgentEvent::Unknown { raw } => {
                 self.unknown += 1;
+                if let Some(kind) = event_kind(raw) {
+                    *self.unread.entry(kind).or_default() += 1;
+                }
                 self.check_adapter();
             }
             _ => {}
         }
+    }
+
+    /// An isolated session that loaded your plugins or synced skills is stopped before its first
+    /// tool call, unless `sandbox.isolated_leak` lets it run on with a notice. A built-in of a
+    /// later version is the CLI's own, not yours: it's learned, so later sessions turn it off.
+    fn isolation(&mut self, event: &AgentEvent) -> Option<Action> {
+        let AgentEvent::IsolationLeak {
+            plugins,
+            skills,
+            builtins,
+        } = event
+        else {
+            return None;
+        };
+        if !self.ctx.spec.isolated {
+            return None;
+        }
+        if !builtins.is_empty() {
+            self.learn_builtins(builtins);
+        }
+        if plugins.is_empty() && skills.is_empty() {
+            return None;
+        }
+        match self.ctx.rules.isolated_leak {
+            IsolatedLeak::Stop => Some(Action::Stop(StopCause::IsolationBroken {
+                plugins: plugins.clone(),
+                skills: skills.clone(),
+            })),
+            IsolatedLeak::Warn => {
+                self.out.notice(format!(
+                    "{} loaded {}, which a blind role mustn't see. It runs on, since \
+                     sandbox.isolated_leak is \"warn\".",
+                    self.ctx.adapter.display_name(),
+                    loaded_words(plugins, skills)
+                ));
+                None
+            }
+        }
+    }
+
+    fn learn_builtins(&mut self, names: &[String]) {
+        let path = self.ctx.home.cli_versions();
+        let mut file = CliVersions::load(&path);
+        if !file.learn_builtins(self.ctx.adapter.id(), names) {
+            return;
+        }
+        if let Err(err) = file.save(&path) {
+            tracing::debug!("couldn't keep the built-ins learned: {err}");
+        }
+        self.out.notice(format!(
+            "{} loaded built-in plugins Argonauts doesn't know yet ({}). This blind session keeps \
+             them, and later ones turn them off.",
+            self.ctx.adapter.display_name(),
+            names.join(", ")
+        ));
     }
 
     /// Tells the health board, which sends on any change of the vendor's state it causes.
@@ -415,6 +495,80 @@ impl Observer {
         if !in_tested_range(&version, adapter.tested_versions()) {
             self.report_broken(Some(&version));
         }
+    }
+
+    /// Once per version, a CLI newer than the newest one its adapter was recorded with. An
+    /// update that lands mid-day is caught by the next session.
+    fn newer_cli_notice(&self, version: &str) {
+        if !self.ctx.settings.ui.newer_cli_notice {
+            return;
+        }
+        let path = self.ctx.home.cli_versions();
+        if let Some(notice) = CliVersions::notice_once(&path, self.ctx.adapter.as_ref(), version) {
+            self.out.notice(notice);
+        }
+    }
+
+    /// The kinds of events this session's CLI sent that the adapter didn't read, added to what
+    /// `/doctor` lists for its version. Only kinds and counts, never content.
+    async fn keep_unread(&mut self) {
+        if self.unread.is_empty() {
+            return;
+        }
+        let version = match self.cli_version.clone() {
+            Some(version) => version,
+            None => {
+                let adapter = self.ctx.adapter.clone();
+                let binary = self
+                    .ctx
+                    .settings
+                    .agents
+                    .get(adapter.id())
+                    .and_then(|agent| agent.binary.clone());
+                let Some(version) =
+                    doctor::installed_version(adapter.as_ref(), binary.as_deref()).await
+                else {
+                    return;
+                };
+                version
+            }
+        };
+        let path = self.ctx.home.cli_versions();
+        let mut file = CliVersions::load(&path);
+        file.add_unread(
+            self.ctx.adapter.id(),
+            &version,
+            &std::mem::take(&mut self.unread),
+        );
+        if let Err(err) = file.save(&path) {
+            tracing::debug!("couldn't keep the unread event kinds: {err}");
+        }
+    }
+
+    /// With `handoff.wrap_up = "hand_off"`, the first sign of the wrap-up allowance ends the
+    /// turn, so the allowance is saved and the work moves on at once.
+    fn wrap_up_stop(&mut self, event: &AgentEvent) -> Option<Action> {
+        let AgentEvent::Quota { reading } = event else {
+            return None;
+        };
+        // A role's own table has the top-level value unless it sets one.
+        let wanted = self
+            .ctx
+            .settings
+            .roles
+            .get(&self.ctx.spec.role)
+            .map_or(self.ctx.settings.handoff.wrap_up, |role| {
+                role.handoff.wrap_up
+            });
+        if !reading.wrap_up
+            || wanted != WrapUp::HandOff
+            || std::mem::replace(&mut self.wrap_up_stopped, true)
+        {
+            return None;
+        }
+        Some(Action::Stop(StopCause::WrapUp {
+            resets_at: reading.resets_at,
+        }))
     }
 
     fn report_broken(&mut self, version: Option<&str>) {
@@ -732,6 +886,9 @@ mod tests {
             session_id: Some("vendor-7".into()),
             model: None,
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         });
         let print = |line: &str| format!("printf '%s\\n' '{line}'");
         // The resumed run's totals include the first run's $0.60.

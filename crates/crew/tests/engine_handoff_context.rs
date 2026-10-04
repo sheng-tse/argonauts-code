@@ -579,6 +579,7 @@ async fn a_summarizer_out_of_quota_is_never_started() -> anyhow::Result<()> {
         source: QuotaSource::RateLimitEvent,
         observed_at: bench.host.now(),
         detail: None,
+        wrap_up: false,
     });
     bench.hand_to_codex().await?;
 

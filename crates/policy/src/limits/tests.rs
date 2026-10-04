@@ -485,6 +485,102 @@ fn test_config_and_weakened_tests_are_caught() {
     assert_eq!(check(moved), Vec::new());
 }
 
+/// A plugin or hook an agent writes into your repo would run in your own Claude Code, outside
+/// any sandbox, once merged.
+#[test]
+fn claude_code_config_in_a_diff_blocks_auto_merge() {
+    let limits = limits(sandboxed());
+    let paths = [
+        ".claude/settings.json",
+        ".claude/hooks/x.sh",
+        "tools/p/.claude-plugin/plugin.json",
+        ".mcp.json",
+        // 2.1.289 loads these as instructions, and runs what a skill or a plugin holds.
+        "CLAUDE.local.md",
+        ".claude/rules/always.md",
+        ".claude/agents/x.md",
+        ".claude/commands/x.md",
+        ".claude/skills/r/scripts/publish.sh",
+        // The plugin's hooks module and its mod, beside its `.claude-plugin/`.
+        "tools/p/hooks/hooks.json",
+        "tools/p/register.js",
+    ];
+    let diff: String = paths
+        .iter()
+        .map(|path| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n\
+                 @@ -0,0 +1 @@\n+x\n"
+            )
+        })
+        .collect();
+    let found = limits.check_card_diff(&card(&[]), &diff);
+    assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
+    let mut expected = paths.map(str::to_owned).to_vec();
+    expected.sort();
+    assert_eq!(found[0].paths, expected);
+    for path in paths {
+        assert!(found[0].detail.contains(path), "{}", found[0].detail);
+    }
+    let unrelated = "diff --git a/src/claude/settings.json b/src/claude/settings.json\nnew file mode 100644\n--- /dev/null\n+++ b/src/claude/settings.json\n@@ -0,0 +1 @@\n+x\n";
+    assert!(limits.check_card_diff(&card(&[]), unrelated).is_empty());
+}
+
+fn new_files(paths: &[&str]) -> String {
+    paths
+        .iter()
+        .map(|path| {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n\
+                 @@ -0,0 +1 @@\n+x\n"
+            )
+        })
+        .collect()
+}
+
+/// A plugin already in the repository shows by its `.claude-plugin/` folder in the card's tree,
+/// so a change to its hooks module or its MCP server code alone waits for you too. What Claude
+/// Code keeps under `.claude/` for itself doesn't.
+#[test]
+fn a_change_inside_a_plugin_the_tree_holds_blocks_auto_merge() {
+    let limits = limits(sandboxed());
+    let tree = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tree.path().join("tools/q/.claude-plugin")).unwrap();
+    let diff = new_files(&[
+        "tools/q/hooks/register.js",
+        "tools/q/server/index.js",
+        "tools/other/index.js",
+        ".claude/worktrees/w/notes.txt",
+    ]);
+    let found = limits.check_card_tree_diff(&card(&[]), &diff, tree.path());
+    assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
+    assert_eq!(
+        found[0].paths,
+        vec!["tools/q/hooks/register.js", "tools/q/server/index.js"]
+    );
+    // Without the tree, nothing shows the plugin.
+    assert!(limits.check_card_diff(&card(&[]), &diff).is_empty());
+
+    // At the merge, the agents' own paths show the root.
+    let mut facts = good_merge();
+    facts.agent_paths.extend([
+        "tools/p/.claude-plugin/plugin.json".to_owned(),
+        "tools/p/hooks/register.js".to_owned(),
+    ]);
+    let found = limits.check_point(
+        &point(CheckpointKind::Merge),
+        &evidence(CheckpointKind::Merge, facts),
+    );
+    assert_eq!(kinds(&found), vec![HardLimit::InstructionFile]);
+    assert_eq!(
+        found[0].paths,
+        vec![
+            "tools/p/.claude-plugin/plugin.json",
+            "tools/p/hooks/register.js"
+        ]
+    );
+}
+
 #[test]
 fn instruction_files_in_diff_block_auto_merge() {
     let limits = limits(sandboxed());

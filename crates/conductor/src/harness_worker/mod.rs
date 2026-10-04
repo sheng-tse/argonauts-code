@@ -28,6 +28,7 @@ mod tests;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{HealthBoard, QuotaBoard};
@@ -60,6 +61,8 @@ pub struct HarnessWorker {
     /// `None` uses the process's own, started when a session first needs it.
     proxy: Option<Proxy>,
     home: Option<Paths>,
+    /// A blind session said this CLI can't keep your MCP servers and plugins out. Once is enough.
+    said_it_cant_isolate: Arc<AtomicBool>,
 }
 
 impl HarnessWorker {
@@ -84,6 +87,7 @@ impl HarnessWorker {
             sandbox,
             proxy: None,
             home: None,
+            said_it_cant_isolate: Arc::default(),
         }
     }
 
@@ -218,6 +222,10 @@ impl Worker for HarnessWorker {
     fn cheapest_model(&self) -> Option<String> {
         Some(self.adapter.cheapest_model().0.to_owned())
     }
+
+    fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
+        self.adapter.instruction_files(workdir, isolated)
+    }
 }
 
 #[cfg(test)]
@@ -258,6 +266,9 @@ mod quota_probe_tests {
         fn parser(&self) -> Box<dyn StreamParser> {
             self.agent.parser()
         }
+        fn session_parser(&self, req: &SessionRequest) -> Box<dyn StreamParser> {
+            self.agent.session_parser(req)
+        }
         fn version_args(&self) -> &'static [&'static str] {
             self.agent.version_args()
         }
@@ -288,6 +299,7 @@ mod quota_probe_tests {
                 source: QuotaSource::UsageProbe,
                 observed_at: OffsetDateTime::now_utc(),
                 detail: None,
+                wrap_up: false,
             })
         }
     }

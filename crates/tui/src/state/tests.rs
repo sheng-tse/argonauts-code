@@ -233,6 +233,7 @@ fn reading(vendor: &str, window: &str, used: f64, status: QuotaStatus) -> QuotaR
         source: QuotaSource::RateLimitEvent,
         observed_at: T0,
         detail: None,
+        wrap_up: false,
     }
 }
 
@@ -1113,6 +1114,58 @@ fn state_folds_chat() {
     assert_eq!(state.chat.doing, Doing::Nothing);
 }
 
+/// What Claude Code drew above the input stays across turns, since each turn's session draws
+/// it again, until a session says nothing is there or `/clear` starts a new conversation.
+#[test]
+fn the_heads_up_goes_when_nothing_is_drawn_or_the_chat_is_cleared() {
+    use argonauts_core::screen::{Drawn, DrawnLook, DrawnRow, DrawnSpan, ScreenChange};
+
+    let mut state = AppState::default();
+    let turn = |n| TurnId::numbered(n);
+    let start = |n| AppEvent::Chat {
+        event: ChatEvent::TurnStarted {
+            turn: turn(n),
+            text: "check release.md".into(),
+            worker: worker("claude-code", "opus"),
+            read_only: true,
+            commit: "abc".into(),
+            uncommitted: Vec::new(),
+            settings_sha256: None,
+            continues: false,
+        },
+    };
+    let drawn = |n, rows: Vec<DrawnRow>| AppEvent::Chat {
+        event: ChatEvent::Agent {
+            turn: turn(n),
+            event: AgentEvent::ScreenChanged {
+                change: ScreenChange::Drawn {
+                    drawn: Drawn {
+                        rows,
+                        ..Drawn::default()
+                    },
+                },
+            },
+        },
+    };
+    let heads_up = vec![DrawnRow {
+        spans: vec![DrawnSpan {
+            text: "Heads up · Dana is away until Monday.".into(),
+            look: DrawnLook::Plain,
+        }],
+    }];
+    state.apply(&start(1));
+    state.apply(&drawn(1, heads_up.clone()));
+    state.apply(&start(2));
+    assert!(state.chat.heads_up.is_some(), "kept for the next turn");
+    state.apply(&drawn(2, Vec::new()));
+    assert!(state.chat.heads_up.is_none());
+
+    state.apply(&drawn(2, heads_up));
+    assert!(state.chat.heads_up.is_some());
+    state.apply(&AppEvent::ChatCleared);
+    assert!(state.chat.heads_up.is_none());
+}
+
 #[test]
 fn chat_queue_clears_at_turn_start() {
     let mut state = AppState::default();
@@ -1409,6 +1462,15 @@ fn quota_chip_words() {
     assert_eq!(
         words(&chip("agy", Some(out.clone()), healthy), &facts),
         ("agy out until 3:45 PM".into(), Tone::Warning)
+    );
+    // On the wrap-up allowance the agent finishes, so the chip says so rather than out.
+    let wrapping_up = QuotaReading {
+        wrap_up: true,
+        ..out.clone()
+    };
+    assert_eq!(
+        words(&chip("Claude", Some(wrapping_up), healthy), &facts),
+        ("Claude wrapping up".into(), Tone::Warning)
     );
     let tomorrow = QuotaReading {
         resets_at: Some(datetime!(2026-10-01 09:00 UTC)),
@@ -1723,6 +1785,9 @@ fn a_session_is_named_by_the_model_it_runs() {
         session_id: None,
         model: Some(model.to_owned()),
         tools: Vec::new(),
+        plugins: Vec::new(),
+        capabilities: Vec::new(),
+        version: None,
     };
     state.apply(&log.agent(1, init("gpt-5.6")));
     state.apply(&log.agent(2, init("claude-haiku-4-5")));
@@ -1753,6 +1818,9 @@ fn a_session_is_named_by_its_clis_default_until_it_reports() {
         session_id: None,
         model: Some(model.to_owned()),
         tools: Vec::new(),
+        plugins: Vec::new(),
+        capabilities: Vec::new(),
+        version: None,
     };
     state.apply(&log.agent(1, init("claude-opus-5-5")));
     state.apply(&log.agent(2, init("claude-haiku-4-5")));

@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::events::session::{SubagentUpdate, VendorWorkflow};
 use crate::limits::QuotaReading;
+use crate::screen::ScreenChange;
 
 /// `parent` is the id of the tool call that spawned a subagent, when the event came from one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -16,6 +17,16 @@ pub enum AgentEvent {
         session_id: Option<String>,
         model: Option<String>,
         tools: Vec<String>,
+        /// The plugins and mods the CLI loaded, by name.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugins: Vec<String>,
+        /// What the CLI says this session can do, such as Claude Code's `interrupt_send_now_v1`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
+        /// The CLI's version, where its first line says it, so an update that lands mid-day is
+        /// noticed by the next session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
     },
     TextDelta {
         text: String,
@@ -94,6 +105,61 @@ pub enum AgentEvent {
     Quota {
         reading: QuotaReading,
     },
+    /// Something a plugin's mod pushed for the screen, or a notice the CLI shows outside the
+    /// conversation. Never sent to the model.
+    ModOutput {
+        kind: ModOutputKind,
+        /// The plugin that pushed it, when one did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plugin: Option<String>,
+        /// `None` clears a plugin's status line.
+        text: Option<String>,
+        /// How long a toast or notice stays, when the CLI says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    /// The models the CLI offers, as it lists them itself, so the picker can mirror it.
+    ModelsReported {
+        models: Vec<ReportedModel>,
+    },
+    /// An isolated session loaded what it must not see: your plugins and their mods, or the
+    /// skills synced from your account. Only an isolated session's parser reports it.
+    IsolationLeak {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plugins: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skills: Vec<String>,
+        /// Built-in plugins the adapter doesn't know, which a later version of the CLI loads
+        /// by default. Not yours, so no leak, but learned, and turned off from then on.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        builtins: Vec<String>,
+    },
+    /// The CLI's own commands as it lists them now, which replace the list before. Claude Code
+    /// sends them in its `initialize` reply, and again when a mod registers one.
+    CommandsChanged {
+        commands: Vec<ReportedCommand>,
+    },
+    /// Where a message of yours stands that went into a running session, by the id it went
+    /// with.
+    MessageState {
+        uuid: String,
+        state: MessageStage,
+    },
+    /// What the CLI draws for a screen that joined its session, such as You should know above
+    /// the input.
+    ScreenChanged {
+        change: ScreenChange,
+    },
+    /// The tasks the CLI runs in the background now, by id, such as a command send now moved
+    /// there. They outlive the turn, and the CLI stops them once its input closes. A task
+    /// leaves the list when the CLI tells the model it ended.
+    BackgroundTasks {
+        running: Vec<String>,
+        /// A task just ended. Between turns, telling the model is a turn of the CLI's own,
+        /// whose result follows.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ended: bool,
+    },
     Error {
         category: ErrorCategory,
         message: String,
@@ -131,6 +197,13 @@ impl AgentEvent {
             Self::Subagent { .. } => "subagent",
             Self::Workflow { .. } => "workflow",
             Self::Quota { .. } => "quota",
+            Self::ModOutput { .. } => "mod_output",
+            Self::ModelsReported { .. } => "models_reported",
+            Self::IsolationLeak { .. } => "isolation_leak",
+            Self::CommandsChanged { .. } => "commands_changed",
+            Self::MessageState { .. } => "message_state",
+            Self::ScreenChanged { .. } => "screen_changed",
+            Self::BackgroundTasks { .. } => "background_tasks",
             Self::Error { .. } => "error",
             Self::Result { .. } => "result",
             Self::Unknown { .. } => "unknown",
@@ -141,6 +214,90 @@ impl AgentEvent {
         let raw = serde_json::from_str(line).unwrap_or_else(|_| Value::String(line.to_owned()));
         Self::Unknown { raw }
     }
+}
+
+/// Where Claude Code draws what a mod pushes, which is where Argonauts draws it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModOutputKind {
+    /// The notification bar under the input, for a few seconds.
+    Toast,
+    /// A line pinned under the input, one per plugin.
+    Status,
+    /// A dim line in the transcript under the plugin's name.
+    Log,
+    /// The notification bar.
+    Notice,
+    /// A notice worth the bell, such as a `high` or `immediate` notification.
+    Urgent,
+    /// A dim transcript line.
+    Info,
+    /// A transcript line in the warning color.
+    Warning,
+}
+
+/// One model as the CLI lists it, such as Claude Code's `initialize` reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportedModel {
+    /// What to pass the CLI, such as `opus` or `claude-sonnet-4-6`.
+    pub value: String,
+    /// The model it runs today, such as `claude-opus-5-5` for `default`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<String>,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Empty when the model takes no effort setting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+}
+
+/// One of the CLI's own commands as it lists them, such as one a plugin's mod registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportedCommand {
+    /// Without the slash.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Such as `[base]`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub argument_hint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// One of the CLI's own, not a plugin's or a mod's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub builtin: bool,
+}
+
+impl ReportedCommand {
+    /// The plugin it comes from, where its name or an alias says, as `pr-tools:review` does.
+    pub fn plugin(&self) -> Option<&str> {
+        std::iter::once(&self.name)
+            .chain(&self.aliases)
+            .find_map(|name| name.split_once(':').map(|(plugin, _)| plugin))
+            .filter(|plugin| !plugin.is_empty())
+    }
+}
+
+/// How far a message of yours got once it went into a running session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageStage {
+    /// The CLI holds it until the model can read it.
+    Queued,
+    /// The model read it.
+    Started,
+    Completed,
+    /// Send now worked: what waited goes to the model at once.
+    SendingNow,
+    /// Send now found nothing waiting, since the model already had it.
+    NothingWaiting,
+    /// Taken back before the model read it.
+    TakenBack,
+    /// Too late to take back: the model read it.
+    AlreadyRead,
+    /// The session's input had closed, so it never went.
+    NotSent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +372,9 @@ mod tests {
                 session_id: Some("s1".into()),
                 model: Some("haiku".into()),
                 tools: vec!["Read".into()],
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             },
             AgentEvent::TextDelta {
                 text: "hi".into(),
@@ -284,6 +444,7 @@ mod tests {
                     source: QuotaSource::RateLimitEvent,
                     observed_at: datetime!(2026-09-29 12:00 UTC),
                     detail: None,
+                    wrap_up: false,
                 },
             },
             AgentEvent::Error {

@@ -119,6 +119,44 @@ fn sync_never_overwrites_hand_edits() {
     let report = sync::sync(&store, SyncMode::Write).unwrap();
     assert_eq!(report.edited, [store.repo_root.join("CLAUDE.md")]);
     assert_eq!(read(&store.repo_root.join("CLAUDE.md")), yours);
+    // Without the import Claude Code never reads AGENTS.md here, so you're told how to fix it.
+    let missing = "CLAUDE.md doesn't import AGENTS.md, so Claude Code won't read the \
+                   conventions. Add @AGENTS.md as its first line.";
+    assert!(
+        report.warnings.iter().any(|w| w == missing),
+        "{:?}",
+        report.warnings
+    );
+    assert_eq!(
+        report.readers.as_deref(),
+        Some("Codex and Antigravity CLI read AGENTS.md.")
+    );
+}
+
+/// Each CLI reads the conventions once: Claude Code through CLAUDE.md's import, the others
+/// from AGENTS.md itself.
+#[test]
+fn sync_says_who_reads_what() {
+    let (_dir, store) = new_store();
+    conventions(&store, CONVENTIONS);
+    let report = sync::sync(&store, SyncMode::Check).unwrap();
+    assert_eq!(
+        report.readers.as_deref(),
+        Some(
+            "Claude Code reads CLAUDE.md, which imports AGENTS.md. Codex and Antigravity CLI \
+             read AGENTS.md."
+        )
+    );
+    // A CLAUDE.md you wrote that imports AGENTS.md is fine as it is.
+    fs::write(store.repo_root.join("CLAUDE.md"), "# Notes\n\n@AGENTS.md\n").unwrap();
+    let report = sync::sync(&store, SyncMode::Write).unwrap();
+    assert!(
+        report
+            .readers
+            .unwrap()
+            .starts_with("Claude Code reads CLAUDE.md")
+    );
+    assert!(!report.warnings.iter().any(|w| w.contains("doesn't import")));
 }
 
 #[test]

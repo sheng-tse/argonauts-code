@@ -2,6 +2,7 @@
 //! modes, checkpoints, and parking.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::events::card::{AttemptCause, CardEvent, CardState};
@@ -27,6 +28,7 @@ use argonauts_core::settings::handoff::{
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::worker::{Access, WorkerKind};
 use argonauts_core::{AgentEvent, BudgetDimension, CardId, ErrorCategory, Spend};
+use argonauts_testkit::FakeDirectory;
 use tempfile::TempDir;
 use time::OffsetDateTime;
 
@@ -193,6 +195,42 @@ async fn handoff_modes_ask_auto_wait() {
             until: Some(resets),
         }
     );
+}
+
+/// Every isolated session on Claude Code would load the same plugins, so a blind role that saw
+/// them goes to another vendor, but only to one that keeps your plugins out. Codex and agy load
+/// their own MCP servers and extensions whatever they're asked, so with only them you decide.
+#[tokio::test]
+async fn a_blind_role_that_loaded_your_plugins_moves_only_to_an_agent_that_isolates() {
+    let mut fixture = Fixture::with_models();
+    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    let leaked = EndReason::IsolationBroken {
+        plugins: vec!["memory-keeper".to_owned(), "lint-helper".to_owned()],
+        skills: Vec::new(),
+    };
+    let why =
+        "it loaded your plugins memory-keeper and lint-helper, which a blind role mustn't see";
+    let none_isolate = Arc::new(FakeDirectory::new());
+    let limits = fixture.limits().with_workers(none_isolate);
+    let plan = asked(&decide(&limits, "claude-code/opus", leaked.clone(), &[]).await).clone();
+    assert_eq!(
+        plan.reason,
+        format!("{why} · no other agent keeps your plugins out of a blind role")
+    );
+    assert!(plan.candidates.is_empty());
+
+    let workers = Arc::new(FakeDirectory::new());
+    workers.isolating("antigravity-cli");
+    let limits = fixture.limits().with_workers(workers.clone());
+    let action = decide(&limits, "claude-code/opus", leaked.clone(), &[]).await;
+    assert_eq!(handed_to(&action).0, "antigravity-cli/gemini-3");
+
+    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    let limits = fixture.limits().with_workers(workers);
+    let action = decide(&limits, "claude-code/opus", leaked, &[]).await;
+    let plan = asked(&action);
+    assert_eq!(plan.reason, why);
+    assert_eq!(names(&plan.candidates), ["antigravity-cli/gemini-3"]);
 }
 
 #[tokio::test]
@@ -675,6 +713,9 @@ fn init(seq: u64, model_id: &str) -> RunEvent {
                 session_id: Some("v-1".to_owned()),
                 model: Some(model_id.to_owned()),
                 tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             }),
         )
     }

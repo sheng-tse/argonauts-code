@@ -106,6 +106,8 @@ pub enum EngineCommand {
     Steer {
         session: SessionKey,
         text: String,
+        /// Hand it to the model now, where the session's CLI can.
+        now: bool,
         reply: oneshot::Sender<Result<SteerAck, String>>,
     },
     Mention {

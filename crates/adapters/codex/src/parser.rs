@@ -70,6 +70,9 @@ impl CodexParser {
             session_id: Some(session_id),
             model: None,
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         }])
     }
 
@@ -709,6 +712,9 @@ mod tests {
                 session_id: Some("0199a213-81c0-7800-8aa1-bbab2a035a53".into()),
                 model: None,
                 tools: vec![],
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             }
         );
         assert_eq!(

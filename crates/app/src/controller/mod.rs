@@ -39,13 +39,14 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use argonauts_core::NoteLevel;
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
 use argonauts_core::events::checkpoint::AnswerAction;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::input::{AgentsAction, PresetAction, ResumeTarget, SlashCommand};
 use argonauts_core::names::{ChoiceId, RoleName};
-use argonauts_core::views::{LearningArea, LearningCommand};
+use argonauts_core::views::{LearningArea, LearningCommand, conversation_run};
+use argonauts_core::worker::WorkerEvent;
+use argonauts_core::{AgentEvent, NoteLevel};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
@@ -387,9 +388,12 @@ impl Controller {
             UiCommand::SetAside {
                 to: AnswerTarget::Checkpoint { .. },
             } => Ok(Vec::new()),
-            UiCommand::Steer { run, session, text } => {
-                run_commands::steer(ctx, runs, run, session, text).await
-            }
+            UiCommand::Steer {
+                run,
+                session,
+                text,
+                now,
+            } => run_commands::steer(ctx, runs, run, session, text, now).await,
             UiCommand::TakeOver { run, card } => {
                 run_commands::take_over(ctx, runs, run, card).await
             }
@@ -451,6 +455,18 @@ impl Controller {
             }
             UiCommand::StopShell => {
                 shell::stop(&mut self.shell);
+                Ok(Vec::new())
+            }
+            UiCommand::SendNow => {
+                chat::send_now(&mut self.chat);
+                Ok(Vec::new())
+            }
+            UiCommand::TakeBackChat => {
+                chat::take_back(ctx, &mut self.chat);
+                Ok(Vec::new())
+            }
+            UiCommand::PressHeadsUp { plugin, handle } => {
+                chat::press_heads_up(ctx, &mut self.chat, &plugin, handle);
                 Ok(Vec::new())
             }
             UiCommand::Exit => Ok(vec![Effect::Exit]),
@@ -673,6 +689,11 @@ impl Controller {
                 Ok(Vec::new())
             }
             ViewRequest::Crew => crew_panel::show(ctx, &self.chat).await,
+            // A workflow the conversation's own CLI runs, mirrored as a run's.
+            ViewRequest::Workflow { run, workflow } if run == conversation_run() => {
+                chat::workflow_view(ctx, &self.chat, workflow.as_ref());
+                Ok(Vec::new())
+            }
             ViewRequest::RepoFiles => {
                 send_repo_files(ctx, self.chat.folder(ctx));
                 Ok(Vec::new())
@@ -744,7 +765,18 @@ impl Controller {
 
     async fn internal_message(&mut self, message: Internal) -> anyhow::Result<Vec<Effect>> {
         match message {
-            Internal::Chat(update) => chat::on_update(&mut self.ctx, &mut self.chat, update).await,
+            Internal::Chat(update) => {
+                // The CLI's own command list, which the `/` menu mirrors.
+                if let chat::TurnUpdate::Event {
+                    turn,
+                    event: WorkerEvent::Agent(AgentEvent::CommandsChanged { commands }),
+                } = &update
+                    && self.chat.speaks_for_the_conversation(&self.ctx, turn)
+                {
+                    vendor_commands::reported(&self.ctx, &mut self.vendor, &self.chat, commands);
+                }
+                chat::on_update(&mut self.ctx, &mut self.chat, update).await
+            }
             Internal::Run(update) => runs::on_update(&mut self.ctx, &mut self.runs, update).await,
             Internal::Setup(update) => match self.setup.as_mut() {
                 Some(setup) => setup.on_update(&mut self.ctx, update).await,

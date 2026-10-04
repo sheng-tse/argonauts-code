@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use argonauts_core::NoteLevel;
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
+use argonauts_core::events::session::{EndReason, InputPart, InputPartKind, loaded_words};
 use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::names::{ChatId, RoleName, SessionKey, TurnId, WorkerRef};
@@ -26,6 +26,7 @@ use argonauts_core::worker::{
     Worker, WorkerError, WorkerEvent, WorkerKind,
 };
 use argonauts_core::{DEFAULT_SOFT_RATIO, sha256_hex};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::chat::TurnUpdate;
@@ -180,6 +181,9 @@ pub(crate) fn describe(err: &StepError) -> String {
             | EndReason::Crashed { message } => message.clone(),
             EndReason::ModelUnavailable { model, .. } => format!("{model} isn't available"),
             EndReason::AdapterBroken { detail } => detail.clone(),
+            EndReason::IsolationBroken { plugins, skills } => {
+                format!("it loaded {}", loaded_words(plugins, skills))
+            }
             EndReason::ContextFull => "its context window is full".to_owned(),
             EndReason::Stopped | EndReason::Paused => "it was stopped".to_owned(),
             other => format!("it ended early ({other:?})"),
@@ -465,11 +469,16 @@ pub(crate) struct Launch<'a> {
     pub workdir: PathBuf,
 }
 
+/// A turn's session once it started: its key, the token that stops it, and the way in for
+/// what you send it while it works.
+pub(crate) struct Launched {
+    pub key: SessionKey,
+    pub cancel: CancellationToken,
+    pub control: mpsc::Sender<SessionControl>,
+}
+
 /// Starts the step on its own task. Its events and its end come back as `Internal::Chat`.
-pub(crate) fn launch(
-    ctx: &Ctx,
-    launch: Launch<'_>,
-) -> anyhow::Result<(SessionKey, CancellationToken)> {
+pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> {
     let key_text = format!("{}-{}", launch.chat, launch.turn);
     let key = SessionKey::parse(&key_text)
         .ok_or_else(|| anyhow::anyhow!("{key_text:?} can't name a session"))?;
@@ -484,6 +493,8 @@ pub(crate) fn launch(
     let mut request = StepRequest::new(launch.handle, spec);
     let cancel = CancellationToken::new();
     request.cancel = cancel.clone();
+    let (control, steering) = mpsc::channel(16);
+    request.control = Some(steering);
 
     let steps = Arc::clone(&ctx.services.steps);
     let events = ctx.internal.clone();
@@ -506,7 +517,11 @@ pub(crate) fn launch(
         // After Exit nobody listens, and the outcome has nowhere to go.
         let _ = done.send(Internal::Chat(TurnUpdate::Done { turn, outcome }));
     });
-    Ok((key, cancel))
+    Ok(Launched {
+        key,
+        cancel,
+        control,
+    })
 }
 
 /// A session whose reply is the CLI's own text, such as a vendor command's, so there is no
@@ -516,6 +531,7 @@ async fn run_plain(
     mut observer: StepObserver,
 ) -> Result<StepOutcome, StepError> {
     let mut handle = request.worker.start(request.spec).await?;
+    let mut steering = request.control;
     let mut stop_sent = false;
     loop {
         tokio::select! {
@@ -528,6 +544,12 @@ async fn run_plain(
                 // A full or closed channel means the session is already on its way out.
                 let _ = handle.control.try_send(SessionControl::Stop);
             }
+            command = next_command(&mut steering), if !stop_sent => match command {
+                Some(command) => {
+                    let _ = handle.control.send(command).await;
+                }
+                None => steering = None,
+            },
         }
     }
     let end = handle
@@ -542,6 +564,16 @@ async fn run_plain(
         end,
         attempts: 1,
     })
+}
+
+/// What you send the running session, until nobody can send more.
+async fn next_command(
+    steering: &mut Option<mpsc::Receiver<SessionControl>>,
+) -> Option<SessionControl> {
+    match steering {
+        Some(steering) => steering.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The worker and effort a chat turn runs with: the model and effort you set for the agent

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
+use argonauts_conductor::cli_versions::CliVersions;
 use argonauts_conductor::{AgentCheck, AgentStatus, DoctorReport, doctor};
 use argonauts_core::NoteLevel;
 use argonauts_core::api::ConductorApi;
@@ -208,11 +209,34 @@ fn services(env: &Arc<AppEnv>, settings: &AppSettings) -> anyhow::Result<AppServ
 async fn greet(ctx: &mut Ctx) {
     crate::controller::names::send(ctx);
     let runs = run_counts(ctx.services.conductor.as_ref()).await;
-    let hello = welcome(ctx, runs).await;
+    let report = doctor(&builtin_adapters(), ctx.settings()).await;
+    let hello = welcome_from(ctx, &report, runs);
     ctx.send(hello);
     for (level, text) in start_notices(ctx) {
         ctx.notice(level, text);
     }
+    for text in newer_cli_notices(ctx, &report) {
+        ctx.notice(NoteLevel::Info, text);
+    }
+}
+
+/// Once per new version, each installed CLI newer than the newest one its adapter was checked
+/// with. Sessions say the same when their CLI updates itself mid-day.
+fn newer_cli_notices(ctx: &Ctx, report: &DoctorReport) -> Vec<String> {
+    if !ctx.settings().ui.newer_cli_notice {
+        return Vec::new();
+    }
+    let path = ctx.env.paths.cli_versions();
+    let adapters = builtin_adapters();
+    report
+        .agents
+        .iter()
+        .filter(|check| check.status == AgentStatus::Newer)
+        .filter_map(|check| {
+            let adapter = adapters.iter().find(|adapter| adapter.id() == check.id)?;
+            CliVersions::notice_once(&path, adapter.as_ref(), check.version.as_deref()?)
+        })
+        .collect()
 }
 
 /// This repo's runs the header names: those that go on without you, and those that wait on you.
@@ -242,11 +266,6 @@ pub(crate) async fn run_counts(conductor: &dyn ConductorApi) -> RunCounts {
 
 /// The startup header: version, repo, preset, each harness's readiness, and the runs going or
 /// waiting on you.
-pub(crate) async fn welcome(ctx: &Ctx, runs: RunCounts) -> AppEvent {
-    let report = doctor(&builtin_adapters(), ctx.settings()).await;
-    welcome_from(ctx, &report, runs)
-}
-
 pub(crate) fn welcome_from(ctx: &Ctx, report: &DoctorReport, runs: RunCounts) -> AppEvent {
     let settings = ctx.settings();
     let (default_agent, effort) = header_agent(ctx);
@@ -301,7 +320,8 @@ fn agent_ready(check: &AgentCheck, settings: &Settings) -> AgentReady {
     } else {
         match check.status {
             AgentStatus::NotInstalled => (false, Some("not installed".to_owned())),
-            AgentStatus::Tested => (true, None),
+            // A later patch should work, and the notice says so once, not every start.
+            AgentStatus::Tested | AgentStatus::Newer => (true, None),
             AgentStatus::Untested => (true, Some("untested version".to_owned())),
             AgentStatus::UnknownVersion => (
                 true,

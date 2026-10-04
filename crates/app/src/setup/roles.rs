@@ -260,6 +260,9 @@ mod tests {
             enabled: true,
             hints: SetupHints::default(),
             login: LoginState::Unknown,
+            newest_tested: None,
+            unread: Vec::new(),
+            builtins: Vec::new(),
         };
         let mut view = SetupView {
             agents: vec![codex],

@@ -50,6 +50,9 @@ pub enum ControlRequest {
     Steer {
         session: SessionKey,
         text: String,
+        /// Hand it to the model now, where the session's CLI can.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        now: bool,
     },
     Mention {
         target: MentionTarget,

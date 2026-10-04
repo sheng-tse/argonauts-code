@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use argonauts_core::create_private_dir_all;
@@ -172,6 +173,18 @@ pub(super) fn announce_start(ctx: &Context, out: &Outbox, obs: &mut Observer, la
         .or_else(|| ctx.spec.resume.clone());
     if let Some(id) = known {
         obs.vendor_session(id);
+    }
+    // Only a CLI that isolates keeps your MCP servers and plugins out of a blind role, and the
+    // others don't say what they loaded. Every blind session would say the same, so the first
+    // does.
+    if ctx.spec.isolated
+        && !ctx.adapter.capabilities().isolates
+        && !ctx.said_it_cant_isolate.swap(true, Ordering::Relaxed)
+    {
+        out.notice(format!(
+            "{} can't keep its own MCP servers, plugins, and skills out of blind sessions",
+            ctx.adapter.display_name()
+        ));
     }
 }
 

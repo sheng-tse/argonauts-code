@@ -472,6 +472,8 @@ pub struct FakeDirectory {
     fakes: Mutex<Vec<Arc<FakeWorker>>>,
     /// Worker ids whose CLI is gone from this machine.
     uninstalled: Mutex<Vec<String>>,
+    /// Worker ids whose CLI keeps your plugins out of an isolated session.
+    isolating: Mutex<Vec<String>>,
 }
 
 impl FakeDirectory {
@@ -495,6 +497,11 @@ impl FakeDirectory {
     /// built-in adapter, but `available` no longer lists it.
     pub fn uninstall(&self, worker: &str) {
         lock(&self.uninstalled).push(worker.to_owned());
+    }
+
+    /// `worker`'s CLI keeps your plugins out of an isolated session, as Claude Code's does.
+    pub fn isolating(&self, worker: &str) {
+        lock(&self.isolating).push(worker.to_owned());
     }
 
     pub fn fake(&self, worker: &str) -> Option<Arc<FakeWorker>> {
@@ -531,6 +538,10 @@ impl WorkerDirectory for FakeDirectory {
             .map(|w| w.worker_ref().clone())
             .filter(|worker| !uninstalled.contains(&worker.worker))
             .collect()
+    }
+
+    fn isolates(&self, worker: &WorkerRef) -> bool {
+        lock(&self.isolating).contains(&worker.worker)
     }
 }
 

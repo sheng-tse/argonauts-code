@@ -152,6 +152,12 @@ fn fold(events: Vec<ChatEvent>) -> Vec<PastTurn> {
                     past.worker = to;
                 }
             }
+            // What you sent while it worked is part of what the turn answered.
+            ChatEvent::Joined { turn, text } => {
+                if let Some(past) = turns.iter_mut().find(|past| past.id == turn) {
+                    past.request = format!("{}\n\n{text}", past.request);
+                }
+            }
             ChatEvent::Agent { .. }
             | ChatEvent::TurnFailed { .. }
             | ChatEvent::TurnCancelled { .. } => {}

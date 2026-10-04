@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use argonauts_core::events::session::{EndReason, Watchdog};
 use argonauts_core::{BudgetDimension, ErrorCategory, StopPlan, StopSignal, StopStep};
+use time::OffsetDateTime;
 use tokio::time::Instant;
 
 use crate::process::AgentProcess;
@@ -33,6 +34,16 @@ pub enum StopCause {
     },
     /// The group couldn't be recorded, registered, or guarded, so it must not run.
     Unsafe(String),
+    /// The CLI is finishing on its wrap-up allowance, and `handoff.wrap_up = "hand_off"` saves
+    /// it for later: the turn ends here and the card moves on at once.
+    WrapUp {
+        resets_at: Option<OffsetDateTime>,
+    },
+    /// An isolated session loaded what its role mustn't see.
+    IsolationBroken {
+        plugins: Vec<String>,
+        skills: Vec<String>,
+    },
 }
 
 impl StopCause {
@@ -55,6 +66,13 @@ impl StopCause {
             },
             Self::Unsafe(message) => EndReason::StartFailed {
                 message: message.clone(),
+            },
+            Self::WrapUp { resets_at } => EndReason::UsageLimit {
+                resets_at: *resets_at,
+            },
+            Self::IsolationBroken { plugins, skills } => EndReason::IsolationBroken {
+                plugins: plugins.clone(),
+                skills: skills.clone(),
             },
         }
     }
@@ -166,5 +184,16 @@ mod tests {
             StopCause::Unsafe("no guard".into()).reason(),
             EndReason::StartFailed { .. }
         ));
+        let leak = StopCause::IsolationBroken {
+            plugins: vec!["memory-keeper".into()],
+            skills: Vec::new(),
+        };
+        assert_eq!(
+            leak.reason(),
+            EndReason::IsolationBroken {
+                plugins: vec!["memory-keeper".into()],
+                skills: Vec::new()
+            }
+        );
     }
 }

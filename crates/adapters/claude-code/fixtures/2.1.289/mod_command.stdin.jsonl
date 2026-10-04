@@ -1,0 +1,7 @@
+{"_t": 0.0, "type": "control_request", "request_id": "init-1", "request": {"subtype": "initialize"}}
+{"_t": 2.49, "type": "user", "message": {"role": "user", "content": "/probe-cmd"}, "parent_tool_use_id": null, "session_id": "", "uuid": "c30283d7-e7e7-4edb-a528-cef487dca000", "origin": {"kind": "human"}}
+{"_t": 5.52, "type": "user", "message": {"role": "user", "content": "Find every phrase of the form \"Probe code word: X\" anywhere in your context or in this message, where X is one word, a dash, and two digits. Reply in one line with only the X values, comma-separated, or NONE if there are none. Use no tools."}, "parent_tool_use_id": null, "session_id": "", "uuid": "9eb17409-7a10-4837-a225-7d48206f09c0", "origin": {"kind": "human"}}
+{"_t": 17.27, "type": "control_request", "request_id": "attach-1", "request": {"subtype": "ui_attach", "surface": "desktop", "client_id": "argoprobe"}}
+{"_t": 17.27, "type": "user", "message": {"role": "user", "content": "/probe-cmd"}, "parent_tool_use_id": null, "session_id": "", "uuid": "b51be9d2-3211-493d-926a-586525aae662", "origin": {"kind": "human"}}
+{"_t": 19.28, "type": "user", "message": {"role": "user", "content": "/probe-late"}, "parent_tool_use_id": null, "session_id": "", "uuid": "84c889d3-6fa7-43d3-a5ac-2902f68d4b86", "origin": {"kind": "human"}}
+{"_t": 22.3, "_stdin": "closed"}

@@ -7,9 +7,10 @@ use argonauts_core::events::session::{
     SubagentKind, SubagentStatus, SubagentUpdate, VendorAgentState, VendorWorkflow,
 };
 use argonauts_core::limits::{QuotaSource, QuotaStatus};
+use argonauts_core::screen::ScreenChange;
 use argonauts_core::{
-    Adapter, AgentEvent, BudgetAction, BudgetLimit, BudgetMeter, ErrorCategory, Report,
-    ReportStatus,
+    Adapter, AgentEvent, BudgetAction, BudgetLimit, BudgetMeter, ErrorCategory, MessageStage,
+    Report, ReportStatus, ReportedCommand, SessionRequest, SessionRole,
 };
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -26,6 +27,17 @@ const WORKFLOW_CALL: &str = "toolu_01T9VznHYcM7UjRKWHQ4QH2c";
 /// Direct solo: calls asked through the permission prompt tool, and a read-only estimate
 /// resumed with every tool.
 const DIRECT: &str = "2.1.289";
+
+/// Live calls with stream-json both ways and `initialize` first, recorded without partial
+/// messages, so they stay out of `every_fixture` too.
+const TWO_WAY: &str = "2.1.289";
+const TWO_WAY_CALLS: &[&str] = &[
+    "agents_md",
+    "sync_off",
+    "setting_sources_user",
+    "you_should_know",
+    "checkup",
+];
 
 const STATUS_TOOL: &str = "mcp__argonauts_status__argonauts_status";
 const SUBAGENT_CALL: &str = "toolu_01V464aQnAvS82ukoevdYdMW";
@@ -979,4 +991,414 @@ fn a_report_before_its_start_still_shows_the_workflow() {
     assert!(!named.agents.is_empty());
     let last = seen.last().unwrap_or_else(|| panic!("no workflow showed"));
     assert_eq!(last.status, SubagentStatus::Done);
+}
+
+/// 2.1.289's new lines (`command_lifecycle`, `control_response`, task events, `ui_invalidate`,
+/// `tool_progress`) are all read, and `init` and `initialize` say what the CLI is.
+#[test]
+fn two_way_calls_parse_with_nothing_unknown() {
+    for name in TWO_WAY_CALLS {
+        assert_eq!(meta(TWO_WAY, name)["cli_version"], TWO_WAY, "{name}");
+        let events = replay_version(TWO_WAY, name);
+        let unknown: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Unknown { .. }))
+            .collect();
+        assert!(unknown.is_empty(), "{name}: {unknown:?}");
+
+        // initialize's reply comes first: the commands, then the models.
+        assert!(
+            matches!(events.first(), Some(AgentEvent::CommandsChanged { .. })),
+            "{name}: initialize's reply should come first"
+        );
+        let Some(AgentEvent::ModelsReported { models }) = events.get(1) else {
+            panic!("{name}: initialize's models should follow its commands");
+        };
+        let runs = |value: &str| {
+            models
+                .iter()
+                .find(|m| m.value == value)
+                .and_then(|m| m.resolved.as_deref())
+        };
+        assert_eq!(runs("default"), Some("claude-opus-5-5"), "{name}");
+        assert_eq!(runs("sonnet"), Some("claude-sonnet-5-5"), "{name}");
+
+        let Some(AgentEvent::Init {
+            version,
+            capabilities,
+            plugins,
+            ..
+        }) = events.iter().find(|e| matches!(e, AgentEvent::Init { .. }))
+        else {
+            panic!("{name}: no init");
+        };
+        assert_eq!(version.as_deref(), Some(TWO_WAY), "{name}");
+        assert!(
+            capabilities.iter().any(|c| c == "interrupt_send_now_v1"),
+            "{name}: {capabilities:?}"
+        );
+        assert!(
+            plugins.iter().any(|p| p == "cc-plugin-agents-md"),
+            "{name}: {plugins:?}"
+        );
+        // Each turn's reading allowed, so nothing waits for the end.
+        assert!(
+            events.iter().all(|e| match e {
+                AgentEvent::Quota { reading } => !reading.wrap_up,
+                _ => true,
+            }),
+            "{name}"
+        );
+    }
+
+    // The audit ran out of its budget before its report.
+    let checkup = replay_version(TWO_WAY, "checkup");
+    assert!(
+        checkup.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error {
+                category: ErrorCategory::Budget,
+                ..
+            }
+        )),
+        "{checkup:?}"
+    );
+    // Two turns in one process, each with its own result.
+    assert_eq!(
+        results(&replay_version(TWO_WAY, "setting_sources_user")).len(),
+        2
+    );
+}
+
+/// The live check of the isolation keys, with a test plugin loaded by `--plugin-dir`.
+const ISOLATION: &str = "2.1.289";
+
+/// Replayed as an isolated session's, whose parser checks what the session loaded.
+fn replay_isolated(version: &str, name: &str) -> Vec<AgentEvent> {
+    let request = SessionRequest {
+        isolated: true,
+        ..SessionRequest::default()
+    };
+    let mut parser = ClaudeCodeAdapter.session_parser(&request);
+    read_fixture(version, name, "stdout.jsonl")
+        .lines()
+        .flat_map(|line| parser.parse_stdout_line(line))
+        .collect()
+}
+
+fn leaks(events: &[AgentEvent]) -> Vec<(Vec<String>, Vec<String>)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::IsolationLeak {
+                plugins, skills, ..
+            } => Some((plugins.clone(), skills.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `--setting-sources user` alone, as isolated sessions ran before: your marketplace plugins
+/// and the synced skills load, and the check names them.
+#[test]
+fn an_isolated_session_without_the_keys_reports_your_plugins_and_synced_skills() {
+    for (version, name) in [
+        (TWO_WAY, "setting_sources_user"),
+        (DIRECT, "readonly_estimate"),
+    ] {
+        let found = leaks(&replay_isolated(version, name));
+        let [(plugins, skills)] = found.as_slice() else {
+            panic!("{name}: expected one leak, got {found:?}");
+        };
+        assert!(
+            plugins.contains(&"example-plugin-a".to_owned()),
+            "{name}: {plugins:?}"
+        );
+        assert!(
+            !plugins
+                .iter()
+                .any(|plugin| plugin.starts_with("cc-plugin-")),
+            "{name}: the kept built-ins aren't a leak: {plugins:?}"
+        );
+        assert_eq!(skills.len(), 9, "{name}: {skills:?}");
+        assert!(
+            skills
+                .iter()
+                .all(|skill| skill.starts_with("anthropic-skills:"))
+        );
+        // The same stream in a session that isn't isolated is just your setup.
+        assert!(leaks(&replay_version(version, name)).is_empty(), "{name}");
+    }
+}
+
+/// With the keys, Claude Code loaded only the kept built-ins and the plugin the check passed
+/// with `--plugin-dir`, which Argonauts never does. Its mod never ran: no pushes, and the model
+/// saw neither code word.
+#[test]
+fn the_isolation_keys_keep_your_plugins_mods_and_synced_skills_out() {
+    let events = replay_isolated(ISOLATION, "isolation_keys");
+    assert_eq!(
+        leaks(&events),
+        [(vec!["argo-probe".to_owned()], Vec::new())]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ModOutput { .. })),
+        "the probe's mod pushed something"
+    );
+    // The message's lifecycle closes after the result, so it isn't the last event.
+    let (text, is_error) = results(&events).pop().expect("a result");
+    let text = text.unwrap_or_default();
+    assert!(!is_error);
+    assert!(
+        !text.contains("KESTREL") && !text.contains("HERON"),
+        "{text}"
+    );
+}
+
+/// The settings the adapter writes for an isolated read-only session hold every key the live
+/// check ran with, given the same plugins enabled in your settings.
+#[test]
+fn the_adapter_writes_the_settings_the_isolation_check_ran_with() {
+    let recorded = &meta(ISOLATION, "isolation_keys")["files"][0]["contents"];
+    let recorded: Value = serde_json::from_str(recorded.as_str().unwrap()).unwrap();
+    let yours = tempfile::tempdir().unwrap();
+    let enabled: serde_json::Map<String, Value> = recorded["enabledPlugins"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|id| !id.ends_with("@builtin"))
+        .map(|id| (id.clone(), Value::Bool(true)))
+        .collect();
+    let settings = serde_json::json!({ "enabledPlugins": enabled });
+    fs::write(yours.path().join("settings.json"), settings.to_string()).unwrap();
+    let request = SessionRequest {
+        workdir: PathBuf::from("/tmp/worktree"),
+        prompt: "Review the change".into(),
+        role: SessionRole::ReadOnly,
+        isolated: true,
+        tool_sandbox_off: true,
+        env_set: vec![(
+            "CLAUDE_CONFIG_DIR".into(),
+            yours.path().to_string_lossy().into_owned(),
+        )],
+        ..SessionRequest::default()
+    };
+    let spec = ClaudeCodeAdapter.command(&request).unwrap();
+    let flag = spec
+        .args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .unwrap();
+    let written: Value = serde_json::from_str(&spec.args[flag + 1]).unwrap();
+    for key in [
+        "crossSessionInbound",
+        "attribution",
+        "sandbox",
+        "disableAllHooks",
+        "syncClaudeAiSkills",
+        "syncClaudeAiPlugins",
+    ] {
+        assert_eq!(written[key], recorded[key], "{key}");
+    }
+    for (id, on) in recorded["enabledPlugins"].as_object().unwrap() {
+        assert_eq!(&written["enabledPlugins"][id], on, "{id}");
+    }
+    for flag in ["--strict-mcp-config", "--setting-sources"] {
+        assert!(spec.args.iter().any(|arg| arg == flag), "{flag}");
+    }
+}
+
+/// 2.1.289 doesn't flag an rm whose empty variable can't reach a top-level folder, so the
+/// check's command ran under both a Bash allow rule and a hook that allowed it. Neither turned
+/// into an error or a denial.
+#[test]
+fn an_rm_claude_code_doesnt_flag_runs_with_no_denial() {
+    for name in ["flagged_rm_allow_rule", "flagged_rm_hook"] {
+        let events = replay_version(ISOLATION, name);
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                AgentEvent::Error {
+                    category: ErrorCategory::Permission,
+                    ..
+                }
+            )),
+            "{name}"
+        );
+        let finished = events.iter().find_map(|event| match event {
+            AgentEvent::ToolFinished { ok, output, .. } => Some((*ok, output.clone())),
+            _ => None,
+        });
+        let (ok, output) = finished.unwrap_or_else(|| panic!("{name}: no tool finished"));
+        assert!(ok, "{name}: {output:?}");
+        assert!(
+            !output.unwrap_or_default().contains("turned this down"),
+            "{name}"
+        );
+    }
+}
+
+/// Two recorded sessions read into what the screen needs: each message's way through the
+/// queue, the mod's command in the CLI's own list, and You should know as one line and three
+/// buttons with the handles a press sends back.
+#[test]
+fn messages_commands_and_the_notice_read() {
+    let events = replay_version(TWO_WAY, "you_should_know");
+    let states: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::MessageState { uuid, state } => {
+                Some((uuid.get(..8).unwrap_or(uuid), *state))
+            }
+            _ => None,
+        })
+        .collect();
+    // The recording's send now went with an id of its own, not the message's.
+    assert!(
+        states.contains(&("1", MessageStage::SendingNow)),
+        "{states:?}"
+    );
+    assert!(
+        states.contains(&("bdeb6d64", MessageStage::Started)),
+        "{states:?}"
+    );
+    let drawn: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ScreenChanged {
+                change: ScreenChange::Drawn { drawn },
+            } if !drawn.is_empty() => Some(drawn),
+            _ => None,
+        })
+        .collect();
+    let first = drawn.first().expect("a heads-up drew");
+    assert!(
+        first.rows[0].text().contains("Heads up · Release 1.4.0"),
+        "{first:?}"
+    );
+    let labels: Vec<_> = first.buttons.iter().map(|b| b.label.as_str()).collect();
+    assert_eq!(labels, ["Learn more", "Knew this already", "Dismiss"]);
+    assert!(
+        first
+            .buttons
+            .iter()
+            .all(|b| b.plugin == "cc-plugin-you-should-know")
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::ScreenChanged {
+            change: ScreenChange::Stale
+        }
+    )));
+
+    let events = replay_version(TWO_WAY, "mod_command");
+    let lists: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::CommandsChanged { commands } => Some(commands),
+            _ => None,
+        })
+        .collect();
+    let has = |list: &Vec<ReportedCommand>, name: &str| {
+        list.iter()
+            .any(|command| command.name == name && !command.builtin)
+    };
+    assert!(
+        has(lists[0], "probe-cmd"),
+        "the initialize reply lists the mod's command"
+    );
+    assert!(
+        lists.iter().skip(1).any(|list| has(list, "probe-late")),
+        "a command registered mid-session comes with commands_changed"
+    );
+}
+
+/// Checked live: send now moving a command to the background, across resumes of one session.
+const SEND_NOW: &str = "2.1.289";
+
+fn background_lists(events: &[AgentEvent]) -> Vec<(Vec<String>, bool)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::BackgroundTasks { running, ended } => Some((running.clone(), *ended)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn position(events: &[AgentEvent], wanted: impl Fn(&AgentEvent) -> bool) -> usize {
+    events.iter().position(wanted).expect("the event")
+}
+
+/// The command send now moved stays listed past the turn's result, until Claude Code says it
+/// ended. Here that came only after the input closed, which killed it.
+#[test]
+fn a_command_moved_to_the_background_stays_listed_past_the_result() {
+    let events = replay_version(SEND_NOW, "send_now_resume");
+    assert_eq!(
+        background_lists(&events),
+        [(vec!["bmvwwjv0b".to_owned()], false), (Vec::new(), true)]
+    );
+    let result_at = position(&events, |e| matches!(e, AgentEvent::Result { .. }));
+    let ended_at = position(&events, |e| {
+        matches!(e, AgentEvent::BackgroundTasks { ended: true, .. })
+    });
+    assert!(result_at < ended_at);
+    assert_eq!(results(&events), [(Some("PONG".to_owned()), false)]);
+}
+
+/// With the input left open, the command ran to its end, and Claude Code told the model in a
+/// turn of its own, with no message of yours, whose result came second.
+#[test]
+fn a_background_command_that_ends_between_turns_brings_a_turn_of_its_own() {
+    let events = replay_version(SEND_NOW, "send_now_resume_open");
+    assert_eq!(
+        background_lists(&events),
+        [(vec!["bxzv2d82a".to_owned()], false), (Vec::new(), true)]
+    );
+    let ended_at = position(&events, |e| {
+        matches!(e, AgentEvent::BackgroundTasks { ended: true, .. })
+    });
+    let first_result = position(&events, |e| matches!(e, AgentEvent::Result { .. }));
+    assert!(first_result < ended_at);
+    assert_eq!(
+        results(&events),
+        [
+            (Some("PONG".to_owned()), false),
+            (
+                Some("The script printed that 12 tests passed.".to_owned()),
+                false
+            ),
+        ]
+    );
+}
+
+/// The next resume first closed out the task the last process killed: a notification for a
+/// task this process never ran, then an empty result with no model call. That result answers
+/// nothing you sent, so only the turn's own comes through.
+#[test]
+fn a_resume_drops_the_empty_result_left_over_from_the_last_process() {
+    let events = replay_version(SEND_NOW, "send_now_resume_stale_task");
+    assert_eq!(
+        results(&events),
+        [(
+            Some("The script printed that 12 tests passed.".to_owned()),
+            false
+        )]
+    );
+    // That task isn't this process's, and the test ran in the foreground.
+    assert!(background_lists(&events).is_empty());
+    let started_at = position(&events, |e| {
+        matches!(
+            e,
+            AgentEvent::MessageState {
+                state: MessageStage::Started,
+                ..
+            }
+        )
+    });
+    let result_at = position(&events, |e| matches!(e, AgentEvent::Result { .. }));
+    assert!(started_at < result_at);
 }

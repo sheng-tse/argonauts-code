@@ -1,0 +1,5 @@
+{"_t": 0.0, "type": "control_request", "request_id": "init-1", "request": {"subtype": "initialize"}}
+{"_t": 0.48, "type": "user", "message": {"role": "user", "content": "Run ./slow-test.sh with the Bash tool, in the foreground. It takes about 45 seconds, so wait for it. Then say in one sentence what it printed."}, "parent_tool_use_id": null, "session_id": "", "uuid": "335dbd96-00d6-4ca3-9ff9-bc9cf9f813af", "origin": {"kind": "human"}}
+{"_t": 6.41, "type": "user", "message": {"role": "user", "content": "Reply with only the word PONG."}, "parent_tool_use_id": null, "session_id": "", "uuid": "b0e1e5bd-1ce2-48bd-95cb-9712cadb3e8d", "origin": {"kind": "human"}}
+{"_t": 8.42, "type": "control_request", "request_id": "send-now-1", "request": {"subtype": "interrupt", "send_now": true, "message_uuid": "b0e1e5bd-1ce2-48bd-95cb-9712cadb3e8d"}}
+{"_t": 53.5, "_stdin": "closed"}

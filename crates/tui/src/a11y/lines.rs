@@ -52,7 +52,8 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         AppEvent::VendorCommands { .. }
         | AppEvent::Names { .. }
         | AppEvent::RepoFiles { .. }
-        | AppEvent::BackgroundRuns { .. } => Vec::new(),
+        | AppEvent::BackgroundRuns { .. }
+        | AppEvent::ChatCleared => Vec::new(),
         AppEvent::SettingChanged {
             key,
             value,
@@ -206,7 +207,9 @@ fn chat_lines(event: &ChatEvent, state: &AppState) -> Vec<String> {
         .as_ref()
         .map_or("agent", |worker| worker.worker.as_str());
     match event {
-        ChatEvent::TurnStarted { text, .. } => labeled("you", text),
+        ChatEvent::TurnStarted { text, .. } | ChatEvent::Joined { text, .. } => {
+            labeled("you", text)
+        }
         // The answer comes whole with the turn's end.
         ChatEvent::Agent {
             event: AgentEvent::Result { is_error, .. },

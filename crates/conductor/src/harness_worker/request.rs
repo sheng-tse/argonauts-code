@@ -140,6 +140,8 @@ pub fn session_request(
         launch,
         user_hooks_off: settings.sandbox.user_hooks == UserHooks::Disable,
         isolated: spec.isolated,
+        // The launch reads what earlier isolated sessions learned, and sets this.
+        builtins_off: Vec::new(),
         // The launch knows which sandbox wraps the session, and sets this.
         tool_sandbox_off: false,
         asks: spec
@@ -148,7 +150,24 @@ pub fn session_request(
             .map(|asking| asking.asks)
             .unwrap_or_default(),
         vendor_command: spec.step == Some(StepName::VendorCommand),
+        main_session: is_main_session(spec),
     })
+}
+
+/// A turn of your conversation: no run or card owns it, and the chat's steps run it.
+fn is_main_session(spec: &SessionSpec) -> bool {
+    spec.run.is_none()
+        && spec.card.is_none()
+        && !spec.isolated
+        && matches!(
+            spec.step,
+            Some(
+                StepName::TriageEstimate
+                    | StepName::Direct
+                    | StepName::ChatAnswer
+                    | StepName::VendorCommand
+            )
+        )
 }
 
 /// OpenCode, over its CLI or ACP, runs OpenCode Zen's hosted `opencode/big-pickle` when it's

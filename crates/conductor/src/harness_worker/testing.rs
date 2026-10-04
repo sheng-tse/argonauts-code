@@ -48,6 +48,8 @@ pub(crate) struct TestAdapter {
     script: String,
     input_lines: bool,
     input_joins_turn: bool,
+    /// Messages carry a uuid, and send now is a line of its own, as Claude Code 2.1.289's.
+    send_now: bool,
     parser: Option<fn() -> Box<dyn StreamParser>>,
     resume: bool,
     takeover: bool,
@@ -57,6 +59,7 @@ pub(crate) struct TestAdapter {
     removed_env: Vec<String>,
     card_home: bool,
     heartbeat: Option<Duration>,
+    isolates: bool,
 }
 
 impl TestAdapter {
@@ -67,6 +70,7 @@ impl TestAdapter {
             script: script.to_owned(),
             input_lines: false,
             input_joins_turn: false,
+            send_now: false,
             parser: None,
             resume: true,
             takeover: false,
@@ -76,7 +80,15 @@ impl TestAdapter {
             removed_env: Vec::new(),
             card_home: false,
             heartbeat: None,
+            isolates: false,
         }
+    }
+
+    /// Keeps your plugins out of an isolated session and reports any that load, as Claude
+    /// Code's does.
+    pub(crate) fn isolating(mut self) -> Self {
+        self.isolates = true;
+        self
     }
 
     /// Claims a heartbeat during tool calls, as Claude Code's.
@@ -119,6 +131,13 @@ impl TestAdapter {
     pub(crate) fn with_input_joining_the_turn(mut self) -> Self {
         self.input_lines = true;
         self.input_joins_turn = true;
+        self
+    }
+
+    /// Joining input where a message carries a uuid and send now is a line of its own.
+    pub(crate) fn with_send_now(mut self) -> Self {
+        self = self.with_input_joining_the_turn();
+        self.send_now = true;
         self
     }
 
@@ -203,6 +222,8 @@ impl Adapter for TestAdapter {
             SessionRole::Direct => "direct",
         };
         spec.env_set.push(("FAKE_ROLE".to_owned(), role.to_owned()));
+        spec.env_set
+            .push(("FAKE_BUILTINS_OFF".to_owned(), req.builtins_off.join(",")));
         if let Some(home) = req.project.as_ref().filter(|_| self.card_home) {
             spec.env_set.push(("FAKE_HOME".to_owned(), home.clone()));
         }
@@ -236,11 +257,21 @@ impl Adapter for TestAdapter {
         Capabilities {
             reports_cost: true,
             input_joins_running_turn: self.input_joins_turn,
+            send_now: self.send_now,
+            isolates: self.isolates,
             ..Capabilities::default()
         }
     }
     fn input_line(&self, message: &str) -> Option<String> {
         self.input_lines.then(|| input_line(message))
+    }
+    fn message_line(&self, message: &str, uuid: &str) -> Option<String> {
+        self.input_lines
+            .then(|| format!("{}\n", json!({ "text": message, "uuid": uuid })))
+    }
+    fn send_now_line(&self, uuid: &str) -> Option<String> {
+        self.send_now
+            .then(|| format!("{}\n", json!({ "send_now": uuid })))
     }
     fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
         self.takeover

@@ -51,6 +51,9 @@ impl FinalJson {
                 session_id,
                 model,
                 tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             });
         }
 

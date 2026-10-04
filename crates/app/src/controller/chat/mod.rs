@@ -26,8 +26,12 @@ mod direct_tests;
 mod excerpt;
 mod keep;
 mod lifecycle;
+mod live;
+#[cfg(test)]
+mod live_tests;
 #[cfg(test)]
 mod mention_tests;
+mod mirror;
 mod offer;
 mod past;
 mod prefs;
@@ -59,10 +63,10 @@ use argonauts_core::api::{RunSummary, StartRun};
 use argonauts_core::app::{
     AppEvent, AppMode, ChatEvent, ChatSummary, ReplayTurn, UiCommand, ViewData,
 };
-use argonauts_core::event::AgentEvent;
 use argonauts_core::events::run::{Party, RunMode};
+use argonauts_core::events::session::VendorWorkflow;
 use argonauts_core::input::SlashCommand;
-use argonauts_core::names::{ChatId, ChoiceId, SessionKey, TurnId, WorkerRef};
+use argonauts_core::names::{ChatId, ChoiceId, SessionKey, TurnId, WorkerRef, WorkflowId};
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::ChangeEstimate;
 use argonauts_core::steps::{StepError, StepOutcome};
@@ -130,6 +134,10 @@ pub(crate) struct ChatState {
     context: Option<ContextRow>,
     /// Said once, so a broken journal doesn't flood the transcript.
     journal_warned: bool,
+    /// Said once: Claude Code's heads-ups stopped reading in this version.
+    heads_up_warned: bool,
+    /// The workflows the last turn's CLI ran itself, as it reported them.
+    workflows: Vec<VendorWorkflow>,
     /// Side questions asked so far, which number their turns apart from the conversation's.
     sides: u32,
     /// Choices for this app session, kept across `/clear` and `/resume`.
@@ -155,6 +163,8 @@ struct Turn {
     ran: Vec<ShellRan>,
     /// A direct turn's listener, snapshot, and what it ran.
     direct: Option<direct::Running>,
+    /// What the session takes while it works: your messages, send now, and the screen.
+    live: live::Live,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,6 +184,8 @@ enum Queued {
     Crew(String),
     /// `/workflow <task>`, read the same way.
     Workflow(String),
+    /// `/goal <objective>`, read the same way.
+    Goal(String),
 }
 
 /// From a turn's task to the loop.
@@ -214,6 +226,8 @@ impl ChatState {
             place: None,
             context: None,
             journal_warned: false,
+            heads_up_warned: false,
+            workflows: Vec::new(),
             sides: 0,
             prefs: Prefs::default(),
             goal: None,
@@ -253,6 +267,8 @@ impl ChatState {
             place,
             context: None,
             journal_warned: false,
+            heads_up_warned: false,
+            workflows: Vec::new(),
             sides: 0,
             prefs: Prefs::default(),
             goal: None,
@@ -332,6 +348,18 @@ impl ChatState {
             .map_or(ctx.env.repo_root.as_path(), |place| place.folder.as_path())
     }
 
+    /// Whether `turn` runs in the conversation's own session, on its CLI, so what that session
+    /// reports of itself, such as its command list, is the conversation's. A review, a side
+    /// question, or another agent answering in its place reports its own.
+    pub(crate) fn speaks_for_the_conversation(&self, ctx: &Ctx, turn: &TurnId) -> bool {
+        self.turn
+            .as_ref()
+            .filter(|running| &running.id == turn)
+            .is_some_and(|running| {
+                !running.step.own_session() && running.worker.worker == self.cli(ctx)
+            })
+    }
+
     /// The CLI its turns go to, such as `claude-code`: the agent's whose session it carries on,
     /// or the main agent's.
     pub(super) fn cli<'a>(&'a self, ctx: &'a Ctx) -> &'a str {
@@ -390,6 +418,7 @@ pub(crate) fn clear(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<E
     let old = chat.id.clone();
     let had_turns = chat.turns > 0;
     chat.succeed(ctx, ChatState::new(ctx)?);
+    ctx.send(AppEvent::ChatCleared);
     let text = if had_turns {
         format!("Started a new conversation. /resume {old} picks the last one up again.")
     } else {
@@ -757,13 +786,71 @@ pub(crate) async fn new_request(
     request(ctx, chat, text)
 }
 
-/// Plain text while a turn runs: sent as the next turn.
+/// Plain text while a turn runs: into the running session at once where its CLI takes it
+/// there, as Claude Code does, and otherwise sent as the next turn.
 pub(crate) fn queue_turn(
     ctx: &mut Ctx,
     chat: &mut ChatState,
     text: String,
 ) -> anyhow::Result<Vec<Effect>> {
+    let joined = chat.turn.as_mut().is_some_and(|turn| {
+        let trimmed = text.trim();
+        !turn.step.own_session()
+            && !trimmed.is_empty()
+            && turn.live.takes_messages()
+            && turn.live.send(trimmed.to_owned())
+    });
+    if joined {
+        return Ok(Vec::new());
+    }
     request(ctx, chat, text)
+}
+
+/// Ctrl+Enter: what you sent the running turn goes to the model now.
+pub(crate) fn send_now(chat: &mut ChatState) {
+    if let Some(turn) = chat.turn.as_mut() {
+        turn.live.send_now();
+    }
+}
+
+/// ↑ on your waiting messages: the ones not sent yet come back at once, and the session is
+/// asked for the ones the model hasn't read, which come back as it lets them go.
+pub(crate) fn take_back(ctx: &mut Ctx, chat: &mut ChatState) {
+    let texts: Vec<String> = chat
+        .queued
+        .iter()
+        .filter_map(|(queued, _)| match queued {
+            Queued::Request(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    chat.queued
+        .retain(|(queued, _)| !matches!(queued, Queued::Request(_)));
+    if let Some(turn) = chat.turn.as_mut() {
+        turn.live.take_back();
+    }
+    if !texts.is_empty() {
+        ctx.send(AppEvent::TakenBack { texts });
+    }
+}
+
+/// The workflow view of one the conversation's CLI runs itself.
+pub(crate) fn workflow_view(ctx: &Ctx, chat: &ChatState, workflow: Option<&WorkflowId>) {
+    mirror::show(ctx, chat, workflow);
+}
+
+/// A button above the input, pressed. A press for a session that has ended does nothing.
+pub(crate) fn press_heads_up(ctx: &Ctx, chat: &mut ChatState, plugin: &str, handle: u64) {
+    let pressed = chat
+        .turn
+        .as_mut()
+        .is_some_and(|turn| turn.live.press(plugin, handle));
+    if !pressed {
+        ctx.notice(
+            NoteLevel::Info,
+            "Claude Code takes that while it's working on your message.",
+        );
+    }
 }
 
 /// A turn at a time: text that arrives while one runs waits for it to end.
@@ -990,6 +1077,7 @@ pub(crate) fn cancel_turn(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result
             Queued::Solo(task) => format!("/solo {task}"),
             Queued::Crew(task) => format!("/crew {task}"),
             Queued::Workflow(task) => format!("/workflow {task}"),
+            Queued::Goal(objective) => format!("/goal {objective}"),
         })
         .collect();
     if !texts.is_empty() {
@@ -1221,6 +1309,11 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
                 Queued::Workflow(task) => UiCommand::Slash {
                     command: SlashCommand::Workflow { task: Some(task) },
                 },
+                Queued::Goal(objective) => UiCommand::Slash {
+                    command: SlashCommand::Goal {
+                        text: Some(objective),
+                    },
+                },
             };
             Effect::Queued {
                 command: Box::new(command),
@@ -1233,14 +1326,8 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
 /// Sends the event and records it, except the streamed text, which the finished turn holds,
 /// and side questions, which stay out of the conversation.
 fn emit(ctx: &Ctx, chat: &mut ChatState, event: ChatEvent) {
-    let streamed = matches!(
-        event,
-        ChatEvent::Agent {
-            event: AgentEvent::TextDelta { .. },
-            ..
-        }
-    );
-    if !streamed
+    let passing = matches!(&event, ChatEvent::Agent { event, .. } if live::is_passing(event));
+    if !passing
         && !side::is_side_turn(event_turn(&event))
         && let Err(err) = chat.store.append(&event)
         && !chat.journal_warned
@@ -1264,6 +1351,7 @@ fn event_turn(event: &ChatEvent) -> &TurnId {
         | ChatEvent::TurnFinished { turn, .. }
         | ChatEvent::TurnFailed { turn, .. }
         | ChatEvent::TurnCancelled { turn }
-        | ChatEvent::HandedOff { turn, .. } => turn,
+        | ChatEvent::HandedOff { turn, .. }
+        | ChatEvent::Joined { turn, .. } => turn,
     }
 }

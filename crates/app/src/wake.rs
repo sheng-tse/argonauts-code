@@ -695,6 +695,7 @@ mod tests {
                 source: QuotaSource::RateLimitEvent,
                 observed_at: now - time::Duration::hours(2),
                 detail: None,
+                wrap_up: false,
             };
             Some(event_at(
                 1,

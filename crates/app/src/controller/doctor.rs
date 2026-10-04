@@ -1,9 +1,10 @@
 //! `/doctor` in the app: each agent CLI with its version and login, then git. The same checks
 //! as `argonauts doctor` and the setup, run off the loop so a slow CLI never holds the screen.
-//! It never calls a model.
+//! It never calls a model. Claude Code's own checkup is `/checkup`, which runs inside it.
 
 use std::sync::Arc;
 
+use argonauts_conductor::cli_versions::{CliVersions, builtins_line, unread_line};
 use argonauts_conductor::{AgentStatus, GitCheck};
 use argonauts_core::Adapter;
 use argonauts_core::app::AppEvent;
@@ -16,8 +17,16 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
     let adapters = crate::commands::adapters_here(Some(&ctx.env), ctx.settings.resolved())?;
     let settings = ctx.settings.shared();
     let out = ctx.out.clone();
+    let versions = ctx.env.paths.cli_versions();
     tokio::spawn(async move {
-        let (agents, git) = check(&adapters, &settings).await;
+        let (mut agents, git) = check(&adapters, &settings).await;
+        let seen = CliVersions::load(&versions);
+        for agent in &mut agents {
+            if let Some(version) = &agent.version {
+                agent.unread = seen.unread(&agent.id, version);
+            }
+            agent.builtins = seen.builtins(&agent.id);
+        }
         out.send(AppEvent::Report {
             title: "Doctor".to_owned(),
             lines: report(&agents, &git),
@@ -41,16 +50,28 @@ pub(super) async fn check(
     (agents, report.git)
 }
 
-/// One line per agent CLI, then git and the verdict:
-/// `claude-code 2.1.300 · tested · logged in`.
+/// One line per agent CLI, with the events its version sent that Argonauts doesn't read yet
+/// under it, then git and the verdict: `claude-code 2.1.300 · tested · logged in`. Claude Code's
+/// own checkup comes last, when it's installed.
 pub(super) fn report(agents: &[FoundAgent], git: &GitCheck) -> Vec<String> {
-    let mut lines: Vec<String> = agents.iter().map(agent_line).collect();
+    let mut lines = Vec::new();
+    for agent in agents {
+        lines.push(agent_line(agent));
+        lines.extend(unread_line(&agent.unread).map(|line| format!("  {line}")));
+        lines.extend(builtins_line(&agent.builtins).map(|line| format!("  {line}")));
+    }
     lines.push(match (&git.version, &git.problem) {
         (Some(version), _) => format!("git {version}"),
         (None, Some(problem)) => format!("git · {problem}"),
         (None, None) => "git · not found".to_owned(),
     });
     lines.push(verdict(agents, git));
+    if agents
+        .iter()
+        .any(|agent| agent.id == "claude-code" && agent.installed())
+    {
+        lines.push("Claude Code's own checkup: /checkup".to_owned());
+    }
     lines
 }
 
@@ -66,15 +87,16 @@ pub(super) fn agent_line(agent: &FoundAgent) -> String {
         }
         return parts.join(" · ");
     }
-    parts.push(
-        match agent.status {
-            AgentStatus::Tested => "tested",
-            AgentStatus::Untested => "untested version, may still work",
-            AgentStatus::UnknownVersion => "unknown version",
-            AgentStatus::NotInstalled => "not installed",
+    parts.push(match (agent.status, &agent.newest_tested) {
+        (AgentStatus::Newer, Some(newest)) => {
+            format!("newer than tested ({newest}), should work")
         }
-        .to_owned(),
-    );
+        (AgentStatus::Newer, None) => "newer than tested, should work".to_owned(),
+        (AgentStatus::Tested, _) => "tested".to_owned(),
+        (AgentStatus::Untested, _) => "untested version, may still work".to_owned(),
+        (AgentStatus::UnknownVersion, _) => "unknown version".to_owned(),
+        (AgentStatus::NotInstalled, _) => "not installed".to_owned(),
+    });
     match agent.login {
         LoginState::LoggedIn => parts.push("logged in".to_owned()),
         LoginState::LoggedOut => parts.push(match &agent.hints.login {
@@ -122,6 +144,9 @@ mod tests {
                 login_check: None,
             },
             login,
+            newest_tested: None,
+            unread: Vec::new(),
+            builtins: Vec::new(),
         }
     }
 
@@ -155,7 +180,40 @@ mod tests {
                  it on",
                 "git 2.50.1",
                 "Ready with 1 of 4 agent CLIs.",
+                "Claude Code's own checkup: /checkup",
             ]
+        );
+    }
+
+    #[test]
+    fn a_newer_cli_says_so_and_lists_what_argonauts_doesnt_read() {
+        let mut claude = agent("claude-code", AgentStatus::Newer, LoginState::LoggedIn);
+        claude.version = Some("2.1.291".to_owned());
+        claude.newest_tested = Some("2.1.289".to_owned());
+        claude.unread = vec![
+            ("system/turn_summary".to_owned(), 3),
+            ("cost_update".to_owned(), 1),
+        ];
+        claude.builtins = vec!["cc-plugin-new-thing".to_owned()];
+        let lines = report(&[claude], &git());
+        assert_eq!(
+            lines[..3],
+            [
+                "claude-code 2.1.291 · newer than tested (2.1.289), should work · logged in",
+                "  sent 2 kinds of events Argonauts doesn't read yet: system/turn_summary, \
+                 cost_update",
+                "  loaded built-in plugins Argonauts doesn't know yet: cc-plugin-new-thing, \
+                 which blind roles turn off",
+            ]
+        );
+        // Without Claude Code installed, nothing points at its checkup.
+        let codex = report(
+            &[agent("codex", AgentStatus::Tested, LoginState::LoggedIn)],
+            &git(),
+        );
+        assert!(
+            !codex.iter().any(|line| line.contains("/checkup")),
+            "{codex:?}"
         );
     }
 

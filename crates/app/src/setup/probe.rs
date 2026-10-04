@@ -6,6 +6,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use argonauts_conductor::doctor::versions::newest_tested;
 use argonauts_conductor::{AgentStatus, DoctorReport};
 use argonauts_core::Adapter;
 use argonauts_core::adapter::SetupHints;
@@ -65,6 +66,12 @@ pub(crate) struct FoundAgent {
     pub enabled: bool,
     pub hints: SetupHints,
     pub login: LoginState,
+    /// The newest version its adapter was recorded with.
+    pub newest_tested: Option<String>,
+    /// The kinds of events this version sent that Argonauts doesn't read yet, with counts.
+    pub unread: Vec<(String, u64)>,
+    /// Built-in plugins a later version loaded that Argonauts doesn't know yet.
+    pub builtins: Vec<String>,
 }
 
 impl FoundAgent {
@@ -116,6 +123,9 @@ pub(crate) fn found_agents(
                     .is_none_or(|agent| agent.enabled),
                 hints: adapter.setup_hints(),
                 login: LoginState::Unknown,
+                newest_tested: newest_tested(adapter.tested_versions()).map(str::to_owned),
+                unread: Vec::new(),
+                builtins: Vec::new(),
             }
         })
         .collect()
@@ -257,6 +267,9 @@ mod tests {
                 login_check: check,
             },
             login: LoginState::Unknown,
+            newest_tested: None,
+            unread: Vec::new(),
+            builtins: Vec::new(),
         };
         let agents = vec![
             agent("codex", Some(vec!["login".to_owned(), "status".to_owned()])),

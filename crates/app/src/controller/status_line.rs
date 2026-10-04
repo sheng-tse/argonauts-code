@@ -120,6 +120,7 @@ mod tests {
             source: QuotaSource::RateLimitEvent,
             observed_at: OffsetDateTime::UNIX_EPOCH,
             detail: None,
+            wrap_up: false,
         }
     }
 

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use argonauts_core::events::session::LaunchRecord;
 use argonauts_core::limits::{HealthBoard, QuotaBoard};
@@ -16,6 +17,7 @@ use argonauts_core::worker::{SandboxMode, SandboxProfile, SessionSpec, WorkerCap
 use argonauts_core::{Adapter, CommandSpec, Paths, SessionRequest, create_private_dir_all};
 
 use super::{HarnessWorker, capabilities, launch, request};
+use crate::cli_versions::CliVersions;
 use crate::doctor::resolve_binary;
 use crate::sandbox::profile::{build_cache_env, build_cache_root, launch_paths, rewritten_files};
 use crate::sandbox::proxy::{self, Allowlist, Proxy};
@@ -35,6 +37,8 @@ pub struct Context {
     pub home: Paths,
     pub vendor: VendorId,
     pub capabilities: WorkerCapabilities,
+    /// Shared by the worker's sessions, so a CLI that can't isolate says so once.
+    pub said_it_cant_isolate: Arc<AtomicBool>,
 }
 
 /// One process launch.
@@ -63,6 +67,7 @@ impl Context {
             home,
             vendor: worker.worker.vendor(),
             capabilities: capabilities::capabilities_for(worker.adapter.as_ref()),
+            said_it_cant_isolate: worker.said_it_cant_isolate.clone(),
         }
     }
 
@@ -77,6 +82,10 @@ impl Context {
         .map_err(|err| err.to_string())?;
         request.tool_sandbox_off =
             self.contained(spec.sandbox.mode) || self.rules.mode == SandboxChoice::None;
+        if spec.isolated {
+            request.builtins_off =
+                CliVersions::load(&self.home.cli_versions()).builtins(self.adapter.id());
+        }
         let mut command = self.adapter.command(&request).map_err(|err| {
             format!(
                 "{} could not build its command: {err:#}",

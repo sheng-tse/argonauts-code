@@ -10,7 +10,7 @@ use argonauts_core::policy::{DecisionPoint, EvidencePacket, HardLimit, Violation
 use argonauts_core::settings::Settings;
 
 use super::deps::{allowed_at_point, is_lockfile};
-use super::paths::{PathRules, instruction_flag, is_instruction_file, sample_path};
+use super::paths::{PathRules, held_paths, instruction_flag, sample_path};
 use super::violation;
 
 /// `settings` are the ones in force now, and `run_start` the ones the run started with.
@@ -134,7 +134,8 @@ pub fn check(
         ));
     }
     if merge {
-        let instructions = agent_paths_where(evidence, is_instruction_file);
+        let paths = evidence.facts.agent_paths.iter().map(String::as_str);
+        let instructions = held_paths(paths, None);
         if !instructions.is_empty() {
             violations.push(instruction_flag(instructions));
         }

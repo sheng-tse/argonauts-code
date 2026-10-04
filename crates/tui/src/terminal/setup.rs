@@ -18,6 +18,12 @@ use ratatui::layout::{Position, Size};
 
 /// Whether keyboard flags were pushed, so the panic hook knows to pop them.
 static KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
+/// Whether the terminal tells Ctrl+Enter from Ctrl+J, through the keyboard protocol asked for at
+/// start. Without it Ctrl+Enter arrives as a new line, as in Claude Code.
+pub fn keyboard_protocol() -> bool {
+    KEYBOARD_PUSHED.load(Ordering::Relaxed)
+}
+
 /// Whether the app or an overlay has the alternate screen, so the panic hook and
 /// [`TerminalModes::restore`] know to leave it.
 static ALTERNATE_SCREEN: AtomicBool = AtomicBool::new(false);

@@ -222,6 +222,8 @@ impl SessionView {
                     run: self.run.clone(),
                     session: self.session.clone(),
                     text,
+                    // Ctrl+Enter sends it now, as Claude Code's own key does.
+                    now: key.modifiers.contains(KeyModifiers::CONTROL),
                 });
             }
             KeyCode::Backspace => {

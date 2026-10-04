@@ -23,7 +23,7 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::budget::{BudgetAmount, BudgetSettings, BudgetUnit};
 use argonauts_core::settings::handoff::{AppliedHandoff, HandoffMode, HandoffStrategy, OnReturn};
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::worker::SessionLimits;
+use argonauts_core::worker::{SessionLimits, WorkerDirectory};
 use argonauts_core::{AgentEvent, CardId, DEFAULT_SOFT_RATIO, ErrorCategory, RunId};
 use time::OffsetDateTime;
 
@@ -39,6 +39,9 @@ const NATIVE_CAP_MARGIN: f64 = 1.1;
 /// Successors followed before a retired model gives up and asks you.
 const MAX_SUCCESSOR_HOPS: usize = 5;
 
+/// Why a blind role that loaded your plugins has nowhere to go.
+const NO_AGENT_ISOLATES: &str = "no other agent keeps your plugins out of a blind role";
+
 const RESUME_MESSAGE: &str =
     "The run was paused and is resuming. Continue the card from where you stopped.";
 
@@ -51,6 +54,8 @@ pub struct Limits {
     health: Arc<dyn HealthBoard>,
     handoff: Arc<dyn HandoffPlanner>,
     registry: Option<Arc<dyn ModelRegistry>>,
+    /// Which agents keep your plugins out of a blind role's session. Without it, none do.
+    workers: Option<Arc<dyn WorkerDirectory>>,
     /// Each run's `spread` picks the log may not show yet, since a vendor's cards stop at once.
     picks: Mutex<HashMap<RunId, Picks>>,
 }
@@ -68,8 +73,16 @@ impl Limits {
             health,
             handoff,
             registry: None,
+            workers: None,
             picks: Mutex::default(),
         }
+    }
+
+    /// Lets a blind role whose session loaded your plugins go to an agent that keeps them out.
+    /// Without it, you're asked.
+    pub fn with_workers(mut self, workers: Arc<dyn WorkerDirectory>) -> Self {
+        self.workers = Some(workers);
+        self
     }
 
     /// Lets a retired model hand off to its successor and the retry ladder tell families apart.
@@ -210,6 +223,7 @@ impl Limits {
             },
             EndReason::ModelUnavailable { .. } => self.successor(stop),
             EndReason::AdapterBroken { .. } => self.adapter_broken(stop),
+            EndReason::IsolationBroken { .. } => self.isolation_broken(stop),
             EndReason::Stuck { .. } | EndReason::StartFailed { .. } | EndReason::Crashed { .. } => {
                 self.ladder(stop)
             }
@@ -352,6 +366,34 @@ impl Limits {
             HandoffMode::Auto => self.hand_off(stop, reason, None, self.others(stop)),
             HandoffMode::Ask | HandoffMode::Wait => self.ask(stop, reason, None, self.others(stop)),
         }
+    }
+
+    /// Every isolated session on this CLI would load the same, so another vendor takes the role,
+    /// as for a broken adapter, but only one whose CLI keeps your plugins out. Handing it to one
+    /// that loads everything would undo the stop.
+    fn isolation_broken(&self, stop: &Stop<'_>) -> RecoveryAction {
+        if stop.handed_off >= stop.rules.max_handoffs {
+            return too_many_handoffs(stop);
+        }
+        let mut shortlist = self.others(stop);
+        let before = shortlist.candidates.len();
+        shortlist
+            .candidates
+            .retain(|candidate| self.isolates(&candidate.worker));
+        let mut reason = stop.reason();
+        if shortlist.candidates.is_empty() && before > 0 {
+            reason = format!("{reason} · {NO_AGENT_ISOLATES}");
+        }
+        match stop.mode() {
+            HandoffMode::Auto => self.hand_off(stop, reason, None, shortlist),
+            HandoffMode::Ask | HandoffMode::Wait => self.ask(stop, reason, None, shortlist),
+        }
+    }
+
+    fn isolates(&self, worker: &WorkerRef) -> bool {
+        self.workers
+            .as_ref()
+            .is_some_and(|workers| workers.isolates(worker))
     }
 
     /// Stuck, crashed, or failed to start: one fresh session on another family, then you.
@@ -523,7 +565,8 @@ impl Limits {
                 also_moving = placements.on_vendor(&stop.vendor(), &context.card.id);
             }
         }
-        let reason = if shortlist.candidates.is_empty() {
+        // Unless the reason already says why no one is left.
+        let reason = if shortlist.candidates.is_empty() && !reason.ends_with(NO_AGENT_ISOLATES) {
             format!("{reason} · no valid replacement")
         } else {
             reason

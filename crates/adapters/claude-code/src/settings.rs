@@ -1,6 +1,8 @@
 //! The `--settings` JSON every session gets. Under `-p` Claude Code silently ignores a settings
 //! file that fails validation (2.1.284), so what is generated here is checked before it is used.
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, ensure};
 use serde::Serialize;
 use serde_json::Value;
@@ -37,6 +39,26 @@ struct SessionSettings {
     sandbox: Sandbox,
     #[serde(skip_serializing_if = "Option::is_none")]
     permissions: Option<Permissions>,
+    /// The hooks in every settings file, and the mods of every installed plugin.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    disable_all_hooks: bool,
+    /// What your claude.ai account syncs, hidden for this session only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_claude_ai_skills: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_claude_ai_plugins: Option<bool>,
+    /// Settings passed with `--settings` outrank your own, so a `false` here wins.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    enabled_plugins: BTreeMap<String, bool>,
+}
+
+/// What a session leaves out of your own Claude Code setup.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LeftOut {
+    /// Your hooks, and with them every installed plugin's mod.
+    pub hooks: bool,
+    /// Everything synced from your claude.ai account, and these plugins by name.
+    pub plugins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +103,7 @@ pub fn session_settings(
     status_tool: bool,
     commands: CommandSandbox,
     allowed: Allowed,
+    left_out: &LeftOut,
 ) -> anyhow::Result<String> {
     let sandbox = match commands {
         CommandSandbox::Own => Sandbox {
@@ -108,6 +131,15 @@ pub fn session_settings(
         attribution: Attribution { commit: "", pr: "" },
         sandbox,
         permissions: (!allow.is_empty()).then_some(Permissions { allow }),
+        disable_all_hooks: left_out.hooks,
+        sync_claude_ai_skills: left_out.plugins.as_ref().map(|_| false),
+        sync_claude_ai_plugins: left_out.plugins.as_ref().map(|_| false),
+        enabled_plugins: left_out
+            .plugins
+            .iter()
+            .flatten()
+            .map(|plugin| (plugin.clone(), false))
+            .collect(),
     };
     validate(&serde_json::to_value(&settings)?)?;
     // Written from the struct, so the keys keep their order whatever serde_json's map is.
@@ -137,6 +169,16 @@ pub fn validate(settings: &Value) -> anyhow::Result<()> {
                 Value::is_boolean,
             )?,
             "permissions" => check_permissions(value)?,
+            // Only ever turned off: the adapter never adds your hooks or synced extras back.
+            "disableAllHooks" => ensure!(
+                value == &Value::Bool(true),
+                "disableAllHooks is only ever true here, not {value}"
+            ),
+            "syncClaudeAiSkills" | "syncClaudeAiPlugins" => ensure!(
+                value == &Value::Bool(false),
+                "{key} is only ever false here, not {value}"
+            ),
+            "enabledPlugins" => check_plugins(value)?,
             other => bail!("the adapter doesn't generate the Claude Code setting {other}"),
         }
     }
@@ -188,6 +230,24 @@ fn check_permissions(value: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Plugin ids, such as `lint-helper@claude-plugins-official`, each turned on or off.
+fn check_plugins(value: &Value) -> anyhow::Result<()> {
+    let Some(plugins) = value.as_object() else {
+        bail!("enabledPlugins must be a JSON object");
+    };
+    for (id, on) in plugins {
+        ensure!(
+            !id.trim().is_empty(),
+            "enabledPlugins holds a plugin with no name"
+        );
+        ensure!(
+            on.is_boolean(),
+            "enabledPlugins.{id} must be true or false, not {on}"
+        );
+    }
+    Ok(())
+}
+
 /// `mcp__<server>`. Claude Code skips an allow glob without a literal server name, such as
 /// `mcp__*`, so wildcards are refused here.
 fn is_mcp_server_rule(rule: &str) -> bool {
@@ -209,7 +269,56 @@ mod tests {
     }
 
     fn direct(status_tool: bool, commands: CommandSandbox, allowed: Allowed) -> Value {
-        serde_json::from_str(&session_settings(status_tool, commands, allowed).unwrap()).unwrap()
+        left_out(status_tool, commands, allowed, &LeftOut::default())
+    }
+
+    fn left_out(
+        status_tool: bool,
+        commands: CommandSandbox,
+        allowed: Allowed,
+        left_out: &LeftOut,
+    ) -> Value {
+        let settings = session_settings(status_tool, commands, allowed, left_out).unwrap();
+        serde_json::from_str(&settings).unwrap()
+    }
+
+    #[test]
+    fn an_isolated_session_turns_off_your_hooks_synced_extras_and_plugins() {
+        let isolated = LeftOut {
+            hooks: true,
+            plugins: Some(vec![
+                "lint-helper@claude-plugins-official".into(),
+                "cc-plugin-you-should-know@builtin".into(),
+            ]),
+        };
+        let settings = left_out(false, CommandSandbox::Off, Allowed::Listed, &isolated);
+        assert_eq!(settings["disableAllHooks"], json!(true));
+        assert_eq!(settings["syncClaudeAiSkills"], json!(false));
+        assert_eq!(settings["syncClaudeAiPlugins"], json!(false));
+        assert_eq!(
+            settings["enabledPlugins"],
+            json!({
+                "cc-plugin-you-should-know@builtin": false,
+                "lint-helper@claude-plugins-official": false
+            })
+        );
+        validate(&settings).unwrap();
+
+        let hooks_only = LeftOut {
+            hooks: true,
+            plugins: None,
+        };
+        let settings = left_out(false, CommandSandbox::Own, Allowed::Listed, &hooks_only);
+        assert_eq!(settings["disableAllHooks"], json!(true));
+        for key in [
+            "syncClaudeAiSkills",
+            "syncClaudeAiPlugins",
+            "enabledPlugins",
+        ] {
+            assert!(settings.get(key).is_none(), "{key}");
+        }
+        let nothing = generated(false, CommandSandbox::Own);
+        assert!(nothing.get("disableAllHooks").is_none());
     }
 
     /// Auto mode asks nothing, so commands and fetches are allowed. A direct turn that asks
@@ -290,13 +399,22 @@ mod tests {
             json!({"permissions": {"deny": []}}),
             json!({"permissions": {"allow": "mcp__x"}}),
             json!({"hooks": {}}),
+            json!({"disableAllHooks": false}),
+            json!({"syncClaudeAiSkills": true}),
+            json!({"syncClaudeAiPlugins": "no"}),
+            json!({"enabledPlugins": {"x@y": "off"}}),
+            json!({"enabledPlugins": ["x@y"]}),
         ];
         for settings in bad {
             assert!(validate(&settings).is_err(), "{settings}");
         }
         let good = json!({
             "crossSessionInbound": "hold",
-            "permissions": {"allow": ["mcp__argonauts-status_2"]}
+            "permissions": {"allow": ["mcp__argonauts-status_2"]},
+            "disableAllHooks": true,
+            "syncClaudeAiSkills": false,
+            "syncClaudeAiPlugins": false,
+            "enabledPlugins": {"memory-keeper@market": false, "x@y": true}
         });
         validate(&good).unwrap();
     }

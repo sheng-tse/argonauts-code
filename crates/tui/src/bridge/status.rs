@@ -12,15 +12,21 @@ use argonauts_core::input::MentionTarget;
 use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::settings::approvals::ApprovalMode as CoreApproval;
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
-use argonauts_core::settings::ui::{NarratorMode, VerbTheme};
+use argonauts_core::settings::ui::{
+    HeadsUp as HeadsUpSetting, ModOutput, NarratorMode, UiSettings, VerbTheme,
+};
 use argonauts_core::{KeyScheme, Spend};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::bottom::verbs::VerbStyle;
-use crate::bottom::{Activity, ApprovalMode, ModeLine, StatusPart, VimMode, WorkingLine};
+use crate::bottom::{
+    Activity, ApprovalMode, BottomState, HeadsUp, ModeLine, StatusPart, VimMode, WorkingLine,
+};
 use crate::cell::Tone;
 use crate::format::{self, ClockTime};
+use crate::keymap::{Action, Keymap};
 use crate::state::{AppState, ChatState, Doing, RunState, binding_reading};
+use crate::text::sanitize_line;
 
 use super::Cx;
 
@@ -72,12 +78,58 @@ pub fn sync(cx: &mut Cx<'_>) {
     bottom.mode.needs_you =
         state.needs_you().len().saturating_sub(on_screen) + state.background_waiting();
 
+    bottom.send_now = state.chat.send_now && state.chat.turn.is_some();
+    bottom.send_now_hint = send_now_hint(state, cx.settings);
+    sync_heads_up(state, cx.settings, bottom);
+
     let wall = OffsetDateTime::now_utc();
     bottom.status_line = status_parts(state, wall);
+    if cx.settings.mod_output == ModOutput::Show {
+        // A mod's status line is dim after the chips, and gives way first.
+        bottom
+            .status_line
+            .extend(state.chat.mod_status.iter().map(|(_, text)| StatusPart {
+                text: sanitize_line(text).into_owned(),
+                tone: Tone::Dim,
+                rank: 0,
+            }));
+    }
     bottom.enter_sends = enter_sends(state);
     bottom.run_takes_text = run_takes_text(state);
     bottom.shell_running = state.shell.is_some();
     bottom.exit_note = exit_note(state);
+}
+
+/// `ctrl+enter to send now` under your messages while the session takes them now, or the
+/// chord where the terminal can't tell Ctrl+Enter from a new line.
+fn send_now_hint(state: &AppState, settings: &UiSettings) -> Option<String> {
+    let waiting = state.chat.send_now && state.chat.turn.is_some() && !state.chat.queued.is_empty();
+    if !waiting {
+        return None;
+    }
+    let keymap = Keymap::with_overrides(&settings.keymap).0;
+    let keys = keymap.keys(Action::SendNow);
+    let protocol = crate::terminal::setup::keyboard_protocol();
+    let key = keys
+        .iter()
+        .find(|key| protocol || key.contains(' ') || !key.ends_with("enter"))
+        .or_else(|| keys.first())?;
+    Some(format!("{key} to send now"))
+}
+
+/// What Claude Code draws above the input, kept while the drawing is the same so your keys
+/// stay on their button.
+fn sync_heads_up(state: &AppState, settings: &UiSettings, bottom: &mut BottomState) {
+    let drawn = state
+        .chat
+        .heads_up
+        .as_ref()
+        .filter(|_| settings.heads_up == HeadsUpSetting::WhenEnabled);
+    match drawn {
+        Some(drawn) if bottom.heads_up.drawn != *drawn => bottom.heads_up.redraw(drawn.clone()),
+        Some(_) => {}
+        None => bottom.heads_up = HeadsUp::default(),
+    }
 }
 
 /// Vim keys show `-- INSERT --` or `-- NORMAL --` always, and the screen switches between
@@ -527,7 +579,8 @@ pub struct ChipFacts {
     pub spend_usd: Option<f64>,
 }
 
-/// `Claude 5h 71% used`, `Codex down`, `agy out until 3:45 PM`, `OpenRouter $0.06`, or `Local`,
+/// `Claude 5h 71% used`, `Codex down`, `agy out until 3:45 PM`, `Claude wrapping up`,
+/// `OpenRouter $0.06`, or `Local`,
 /// with the tone for 90% used and a stale reading. A quota not read yet, or not readable, shows
 /// nothing, since a chip like `Codex ?` only takes room.
 pub fn quota_part(chip: &QuotaChip, facts: &ChipFacts) -> Option<StatusPart> {
@@ -548,6 +601,13 @@ pub fn quota_part(chip: &QuotaChip, facts: &ChipFacts) -> Option<StatusPart> {
         });
     };
     match reading.status {
+        // Out for new work, while the running turn finishes on the CLI's allowance.
+        QuotaStatus::Rejected if reading.wrap_up => {
+            return Some(StatusPart::new(
+                format!("{label} wrapping up"),
+                Tone::Warning,
+            ));
+        }
         QuotaStatus::Rejected => {
             let text = match reading.resets_at {
                 Some(at) => format!("{label} out until {}", clock_time(at, facts)),
@@ -1042,6 +1102,7 @@ mod tests {
             source: QuotaSource::RateLimitEvent,
             observed_at: wall,
             detail: None,
+            wrap_up: false,
         };
         state.apply(&AppEvent::Chat {
             event: ChatEvent::Agent {

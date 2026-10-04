@@ -19,7 +19,7 @@ use argonauts_core::events::session::{
 use argonauts_core::future::BoxFuture;
 use argonauts_core::layout::session_files;
 use argonauts_core::worker::{SessionControl, SteerSupport};
-use argonauts_core::{AgentEvent, BudgetDimension, StopSignal, write_private_file};
+use argonauts_core::{AgentEvent, BudgetDimension, MessageStage, StopSignal, write_private_file};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use tokio::sync::oneshot::error::RecvError;
@@ -477,6 +477,16 @@ impl Driven {
                 }
             }
             Some(SessionControl::Stop) => self.cancel(StopCause::Stopped),
+            // Only a CLI that says it can take these gets them, and none driven here does.
+            Some(SessionControl::Send { uuid, .. }) => self.out.agent(AgentEvent::MessageState {
+                uuid,
+                state: MessageStage::NotSent,
+            }),
+            Some(
+                SessionControl::SendNow { .. }
+                | SessionControl::TakeBack { .. }
+                | SessionControl::Screen(_),
+            ) => {}
             None => {
                 self.control_open = false;
                 self.cancel(StopCause::Stopped);

@@ -7,7 +7,7 @@ use argonauts_core::events::session::{Delivery, QueuedMessage};
 use argonauts_core::events::shared::{BlackboardKind, Recipient};
 use argonauts_core::input::MentionTarget;
 use argonauts_core::names::{MessageId, RoleName, SessionKey};
-use argonauts_core::worker::SteerSupport;
+use argonauts_core::worker::{SessionControl, SteerSupport};
 use argonauts_core::{Note, NoteLevel};
 
 use crate::blackboard::{Post, delivery, post};
@@ -16,7 +16,14 @@ use crate::engine::host::Host;
 use crate::state::blackboard::TAKEN_BACK;
 
 /// `SessionControl::Deliver` with `Delivery::Steer`; the reply says how the worker takes it.
-pub async fn steer(host: &Host, session: &SessionKey, text: String) -> Result<SteerAck, String> {
+/// `now`: where the session's CLI can, the model reads it at once, the running tool moving to the
+/// background, as Claude Code's send now does.
+pub async fn steer(
+    host: &Host,
+    session: &SessionKey,
+    text: String,
+    now: bool,
+) -> Result<SteerAck, String> {
     if host.shared().live.get(session).is_none() {
         return Err(format!("{session} isn't running"));
     }
@@ -56,6 +63,15 @@ pub async fn steer(host: &Host, session: &SessionKey, text: String) -> Result<St
         },
     };
     delivery::hand_over(host, &who, queued).map_err(|error| error.to_string())?;
+    if now {
+        // An empty uuid names whatever the session holds for the running tool call.
+        let _ = host.control(
+            session,
+            SessionControl::SendNow {
+                uuid: String::new(),
+            },
+        );
+    }
     Ok(SteerAck {
         session: session.clone(),
         how,

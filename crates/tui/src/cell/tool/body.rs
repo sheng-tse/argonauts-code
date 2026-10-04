@@ -58,6 +58,7 @@ pub(in crate::cell) fn item_rows(
 ) -> Vec<Line<'static>> {
     match item {
         ToolItem::Text { text, tone } => text_rows(text, *tone, ctx, vec![indent(col)], col),
+        ToolItem::Hanging { lead, text } => hanging_rows(lead, text, ctx, col),
         ToolItem::Command {
             command,
             output: lines,
@@ -176,6 +177,15 @@ pub(in crate::cell) fn text_rows(
         theme.style(Role::Code),
     );
     wrap_spans(&spans, usize::from(ctx.width), &first, &[indent(col)])
+}
+
+fn hanging_rows(lead: &str, text: &str, ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'static>> {
+    let dim = ctx.theme.style(Role::Dim);
+    let lead = sanitize_line(lead).into_owned();
+    let under = col + str_width(&lead);
+    let first = [indent(col), Span::styled(lead, dim)];
+    let spans = [Span::styled(sanitize_line(text).into_owned(), dim)];
+    wrap_spans(&spans, usize::from(ctx.width), &first, &[indent(under)])
 }
 
 fn command_rows(

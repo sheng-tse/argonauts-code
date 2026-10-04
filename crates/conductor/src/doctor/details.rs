@@ -20,7 +20,7 @@ use serde::Serialize;
 use super::always_on::{AlwaysOnAgent, always_on_agents};
 use super::command::ask;
 use super::roles::{RoleCheck, role_checks};
-use super::versions::{FlagProbe, in_tested_range, probe_flags, tested_range_label};
+use super::versions::{FlagProbe, VersionFit, probe_flags, tested_range_label, version_fit};
 use super::{VERSION_TIMEOUT, read_version, resolve_binary};
 use crate::harness_worker::capabilities::ANTIGRAVITY;
 use crate::quota::{PROBE_TIMEOUT, Prober, run_probe};
@@ -54,6 +54,9 @@ pub struct HarnessDetails {
     pub version: Option<String>,
     /// Whether the installed version is inside the tested range.
     pub in_tested_range: Option<bool>,
+    /// A later patch of the newest version recorded, which should work.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub newer: bool,
     /// Such as `2.1.284 up to 2.2`.
     pub tested_range: Option<String>,
     /// Flags the adapter needs, found or missing in `--help`.
@@ -152,6 +155,7 @@ async fn harness_details(
         problem: None,
         version: None,
         in_tested_range: None,
+        newer: false,
         tested_range: tested_range_label(adapter.tested_versions()),
         flags: FlagProbe::default(),
         logged_in: None,
@@ -190,7 +194,9 @@ async fn harness_details(
     );
     match version.map(|output| adapter.parse_version(&output)) {
         Ok(Some(version)) => {
-            details.in_tested_range = Some(in_tested_range(&version, adapter.tested_versions()));
+            let fit = version_fit(&version, adapter.tested_versions());
+            details.in_tested_range = Some(fit != VersionFit::Untested);
+            details.newer = fit == VersionFit::Newer;
             if let Some(pin) = agent.and_then(|a| a.version_pin.as_deref())
                 && pin != version
             {
@@ -318,8 +324,9 @@ impl fmt::Display for HarnessDetails {
         }
         if let Some(version) = &self.version {
             let range = self.tested_range.as_deref().unwrap_or("none recorded");
-            let judged = match self.in_tested_range {
-                Some(true) => "in the tested range",
+            let judged = match (self.in_tested_range, self.newer) {
+                (Some(true), true) => "newer than tested, should work",
+                (Some(true), false) => "in the tested range",
                 _ => "outside the tested range",
             };
             writeln!(f, "  version      {version}, {judged} ({range})")?;

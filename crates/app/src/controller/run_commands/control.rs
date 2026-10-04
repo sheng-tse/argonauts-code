@@ -83,9 +83,15 @@ pub(crate) async fn steer(
     run: RunId,
     session: SessionKey,
     text: String,
+    now: bool,
 ) -> Handled {
     let _ = runs;
-    match ctx.services.conductor.steer(&run, &session, text).await {
+    match ctx
+        .services
+        .conductor
+        .steer(&run, &session, text, now)
+        .await
+    {
         Ok(ack) => {
             let when = match ack.how {
                 SteerSupport::Input => "reads it after its current tool call",

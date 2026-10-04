@@ -83,6 +83,10 @@ struct VendorHome {
     /// agy's `agentapi` shim in the `bin` it puts first on the agent's `PATH`. Only these names
     /// can be written there, so a session can't plant a command beside them.
     rewritten: &'static [&'static str],
+    /// Code the CLI writes and loads only after asking you, such as the mods Claude writes for
+    /// Claude Code. A direct turn has you there to answer; any other session could plant one
+    /// that a later session of yours loads.
+    asked_first: &'static [&'static str],
 }
 
 const CLAUDE_CODE: VendorHome = VendorHome {
@@ -114,6 +118,7 @@ const CLAUDE_CODE: VendorHome = VendorHome {
         ".claude/debug",
     ],
     rewritten: &[],
+    asked_first: &[".claude/dev-mods"],
 };
 
 const CODEX: VendorHome = VendorHome {
@@ -140,6 +145,7 @@ const CODEX: VendorHome = VendorHome {
         ".codex/shell_snapshots",
     ],
     rewritten: &[],
+    asked_first: &[],
 };
 
 const ANTIGRAVITY_CLI: VendorHome = VendorHome {
@@ -164,6 +170,7 @@ const ANTIGRAVITY_CLI: VendorHome = VendorHome {
     ],
     private: &[".gemini/antigravity-cli/history.jsonl"],
     rewritten: &[".gemini/antigravity-cli/bin/agentapi"],
+    asked_first: &[],
 };
 
 const OPENCODE: VendorHome = VendorHome {
@@ -176,6 +183,7 @@ const OPENCODE: VendorHome = VendorHome {
     config: &[".config/opencode"],
     private: &[],
     rewritten: &[],
+    asked_first: &[],
 };
 
 const NO_HOME: VendorHome = VendorHome {
@@ -183,6 +191,7 @@ const NO_HOME: VendorHome = VendorHome {
     config: &[],
     private: &[],
     rewritten: &[],
+    asked_first: &[],
 };
 
 /// The harness whose files in your home `vendor` uses. OpenCode over ACP runs the same
@@ -280,7 +289,10 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     let own = vendor_home(input.vendor);
     let in_home =
         |paths: &[&str]| -> Vec<PathBuf> { paths.iter().map(|path| home.join(path)).collect() };
-    let config = in_home(own.config);
+    let mut config = in_home(own.config);
+    if input.access != Access::Direct {
+        config.extend(in_home(own.asked_first));
+    }
     let own_transcripts = own_transcript_dir(input.vendor, home, input.workdir);
 
     let mut hard_deny = vec![input.argonauts_home.to_path_buf()];
@@ -1068,6 +1080,21 @@ mod tests {
         }
     }
 
+    /// A mod Claude writes loads after Claude Code asks, which only a direct turn has you there
+    /// for. Every other session finds the folder read-only.
+    #[test]
+    fn only_a_direct_turn_writes_claude_codes_mods() {
+        let l = layout();
+        let mod_file = l.home.join(".claude/dev-mods/s-1/register.js");
+        let direct = profile_for(&l, Access::Direct, "claude-code", &[]);
+        assert!(can_write(&direct, &mod_file));
+        for access in [Access::Build, Access::Spike, Access::ReadOnly] {
+            let profile = profile_for(&l, access, "claude-code", &[]);
+            assert!(can_read(&profile, &mod_file), "{access:?}");
+            assert!(!can_write(&profile, &mod_file), "{access:?}");
+        }
+    }
+
     #[test]
     fn vendor_config_stays_read_only() {
         let l = layout();
@@ -1079,6 +1106,7 @@ mod tests {
             ("claude-code", ".claude/agents/a.md"),
             ("claude-code", ".claude/plugins/p/hooks/hooks.json"),
             ("claude-code", ".claude/CLAUDE.md"),
+            ("claude-code", ".claude/dev-mods/s-1/register.js"),
             ("codex", ".codex/config.toml"),
             ("codex", ".codex/rules/default.rules"),
             ("codex", ".codex/AGENTS.md"),

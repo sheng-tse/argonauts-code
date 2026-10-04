@@ -222,6 +222,9 @@ mod tests {
             session_id: Some(testing::SESSION.into()),
             model: Some("qwen3-coder".into()),
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         }));
 
         // It accepts, then reports another model: the session fails before any prompt.

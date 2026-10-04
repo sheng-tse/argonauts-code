@@ -892,6 +892,7 @@ mod tests {
             ControlRequest::Steer {
                 session: SessionKey::numbered(2),
                 text: "look again".to_owned(),
+                now: false,
             },
             ControlRequest::Status,
             ControlRequest::Diff {

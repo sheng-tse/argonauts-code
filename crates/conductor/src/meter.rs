@@ -658,6 +658,7 @@ mod tests {
                 source: QuotaSource::RateLimitEvent,
                 observed_at: OffsetDateTime::UNIX_EPOCH,
                 detail: None,
+                wrap_up: false,
             },
         }
     }
@@ -870,6 +871,9 @@ mod tests {
             session_id: None,
             model: Some("claude-haiku-4-5-20251001".into()),
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         });
         default_model.observe(&usage(1_000_000, 0, None, false));
         assert!((default_model.spend().cost_usd - 1.0).abs() < 1e-9);

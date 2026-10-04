@@ -120,6 +120,12 @@ pub enum ToolItem {
         text: String,
         tone: Tone,
     },
+    /// One line whose text wraps under itself, after `lead`, as a numbered phase's detail
+    /// lines up under the detail column.
+    Hanging {
+        lead: String,
+        text: String,
+    },
     /// `hidden` counts output lines left out, shown as `… +N lines`.
     Command {
         command: String,

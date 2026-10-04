@@ -64,10 +64,19 @@ impl Question {
                 body.push(description);
             }
             let first = command.lines().next().unwrap_or_default().trim();
+            let mut body = capped(body);
+            // Claude Code asks about these every time, so nothing can be allowed for good.
+            let grant = match super::rm::always_asked(&command) {
+                Some(why) => {
+                    body.push(format!("Claude Code always asks about this one: {why}."));
+                    Grant::Never
+                }
+                None => Grant::Commands(command_prefix(&command)),
+            };
             return Self {
                 title: "Run this command?".to_owned(),
-                body: capped(body),
-                grant: Grant::Commands(command_prefix(&command)),
+                body,
+                grant,
                 about: crate::controller::recap::title_from_request(first),
             };
         }
@@ -303,6 +312,27 @@ mod tests {
         let bash = Question::of("Bash", &json!({"command": "python -m pytest -q"}));
         assert_eq!(bash.title("Claude Code", "Bash"), "Run this command?");
         assert_eq!(bash.grant, Grant::Commands("python -m pytest".into()));
+
+        // A flagged rm says why it's asked, and offers no "don't ask again".
+        let rm = Question::of("Bash", &json!({"command": r#"rm -rf "$BUILD_DIR/tmp""#}));
+        assert_eq!(rm.grant, Grant::Never);
+        assert_eq!(
+            rm.body,
+            [
+                r#"rm -rf "$BUILD_DIR/tmp""#,
+                "Claude Code always asks about this one: if BUILD_DIR were empty, it would \
+                 remove /tmp."
+            ]
+        );
+        let labels: Vec<_> = rm
+            .options("Claude Code")
+            .into_iter()
+            .map(|option| option.label)
+            .collect();
+        assert_eq!(
+            labels,
+            ["Yes", "No, and tell Claude Code what to do instead (esc)"]
+        );
 
         let fetch = Question::of("WebFetch", &json!({"url": "https://example.com"}));
         assert_eq!(

@@ -16,7 +16,9 @@ use argonauts_core::names::{SessionKey, VendorId, WorkerRef};
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::agents::EndpointApi;
 use argonauts_core::worker::{SessionControl, WorkerEvent};
-use argonauts_core::{AgentEvent, BudgetDimension, ErrorCategory, RetryReason, Spend};
+use argonauts_core::{
+    AgentEvent, BudgetDimension, ErrorCategory, MessageStage, RetryReason, Spend,
+};
 use futures::StreamExt;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, RETRY_AFTER};
 use serde_json::Value;
@@ -244,6 +246,19 @@ impl Session {
                     Some(SessionControl::Deliver(message)) => {
                         self.emit(WorkerEvent::Session(SessionEvent::Queued(message))).await;
                     }
+                    // An endpoint's reply is one request, which nothing can join.
+                    Some(SessionControl::Send { uuid, .. }) => {
+                        self.emit_agent(AgentEvent::MessageState {
+                            uuid,
+                            state: MessageStage::NotSent,
+                        })
+                        .await;
+                    }
+                    Some(
+                        SessionControl::SendNow { .. }
+                        | SessionControl::TakeBack { .. }
+                        | SessionControl::Screen(_),
+                    ) => {}
                 },
                 output = &mut future => return Waited::Done(output),
             }
@@ -417,6 +432,9 @@ impl Session {
                 session_id: None,
                 model: Some(model),
                 tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             })
             .await;
         }
@@ -458,6 +476,7 @@ impl Session {
             source: QuotaSource::Http,
             observed_at: now,
             detail: Some(detail),
+            wrap_up: false,
         });
     }
 
@@ -853,6 +872,9 @@ mod tests {
                 session_id: None,
                 model: Some("vendor/routed".to_owned()),
                 tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             }
         );
         let inits = events

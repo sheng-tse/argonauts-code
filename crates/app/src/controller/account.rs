@@ -302,6 +302,7 @@ mod tests {
                 source: QuotaSource::AppServer,
                 observed_at: now,
                 detail: None,
+                wrap_up: false,
             }),
             health: HealthState::Healthy,
         }

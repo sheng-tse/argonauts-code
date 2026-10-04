@@ -10,9 +10,15 @@ use super::roles::{self, Workers};
 use super::validate::Problem;
 
 /// The keys with no per-vendor form. Each role table takes them from the top level.
-const COPIED: [&str; 4] = ["mode", "ask_timeout", "allow_api_billing", "broken_work"];
+const COPIED: [&str; 5] = [
+    "mode",
+    "ask_timeout",
+    "allow_api_billing",
+    "broken_work",
+    "wrap_up",
+];
 
-/// Copies `mode`, `ask_timeout`, `allow_api_billing`, and `broken_work` from the top-level
+/// Copies `mode`, `ask_timeout`, `allow_api_billing`, `broken_work`, and `wrap_up` from the top-level
 /// `[handoff]` into each role's handoff table that doesn't set them. It works on the merged
 /// TOML, where an unset key can still be told apart from a default, and copies nothing else:
 /// the other keys stay unset for `HandoffSettings::applied` to walk. Returns each copy as

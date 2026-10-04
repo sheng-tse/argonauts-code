@@ -275,7 +275,9 @@ fn state_of(tally: &Tally, live: bool) -> (RunState, String) {
                 .clone()
                 .unwrap_or_else(|| outcome_words(*outcome).to_owned()),
         ),
-        Some((_, RunLifecycle::Parked { reason, waiting_on })) if !live => {
+        // Parked until the log says it resumed, even while a supervisor holds it, so the run
+        // never reads as running above its own `Parked` milestone.
+        Some((_, RunLifecycle::Parked { reason, waiting_on })) => {
             (RunState::Parked, parked_words(tally, reason, waiting_on))
         }
         Some((_, RunLifecycle::PauseRequested { .. })) if live => (
@@ -444,6 +446,8 @@ mod tests {
         let words = "waiting to merge, 2 files of yours in the way".to_owned();
         let tally = Tally::of(&[waiting.clone(), parked]);
         assert_eq!(state_of(&tally, false), (RunState::Parked, words.clone()));
+        // A supervisor that holds it before it resumes doesn't make it running.
+        assert_eq!(state_of(&tally, true), (RunState::Parked, words.clone()));
         let tally = Tally::of(std::slice::from_ref(&waiting));
         assert_eq!(state_of(&tally, true), (RunState::Running, words));
 

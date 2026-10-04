@@ -77,6 +77,7 @@ fn reading(vendor: &str, window: &str, used: f64, age_minutes: i64) -> QuotaRead
         source: QuotaSource::RateLimitEvent,
         observed_at: OffsetDateTime::now_utc() - Duration::minutes(age_minutes),
         detail: None,
+        wrap_up: false,
     }
 }
 

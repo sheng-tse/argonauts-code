@@ -1318,6 +1318,7 @@ async fn a_stopped_card_goes_to_the_other_installed_clis() -> anyhow::Result<()>
             source: QuotaSource::UsageProbe,
             observed_at: services.clock.now(),
             detail: None,
+            wrap_up: false,
         });
     }
 

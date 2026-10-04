@@ -7,8 +7,9 @@ use argonauts_core::{
     Asks, AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile, env_remove_except,
 };
 
-use crate::settings::{Allowed, CommandSandbox, STATUS_SERVER, session_settings};
+use crate::settings::{Allowed, CommandSandbox, LeftOut, STATUS_SERVER, session_settings};
 use crate::tweaks::{self, Fanout, SUBAGENT_TOOL};
+use crate::{control, isolation};
 
 /// Written into the session's scratch directory, outside the worktree.
 pub const SETTINGS_FILE: &str = "claude-settings.json";
@@ -98,7 +99,14 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
     spec.env_remove = removed_env_vars(req);
     spec.env_set = env_vars(req, role, fanout)?;
     if req.keep_input_open {
-        spec.stdin = Some(user_message_line(&req.prompt));
+        // Your conversation's session opens with `initialize`, whose reply lists the commands
+        // and models, as Claude Code's own screen does.
+        let opening = if req.main_session {
+            control::initialize_line()
+        } else {
+            String::new()
+        };
+        spec.stdin = Some(opening + &user_message_line(&req.prompt));
         spec.keep_stdin_open = true;
     } else {
         // On stdin, so a prompt never looks like a flag or shows in the process list.
@@ -120,7 +128,7 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
         (SessionRole::Direct, Asks::LikeCli | Asks::EveryChange) => Allowed::AsTheCliAsks,
         (SessionRole::ReadOnly | SessionRole::Build, _) => Allowed::Listed,
     };
-    let settings = session_settings(req.mcp_config.is_some(), commands, allowed)?;
+    let settings = session_settings(req.mcp_config.is_some(), commands, allowed, &left_out(req))?;
     let Some(dir) = &req.scratch_dir else {
         return Ok(spec.args(["--settings".to_owned(), settings]));
     };
@@ -135,6 +143,18 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
         Some(name) => spec.args(["--name".to_owned(), name]),
         None => spec,
     })
+}
+
+/// An isolated session gets none of your plugins, mods, hooks, or synced extras. Your hooks
+/// alone go when `sandbox.user_hooks` says so.
+fn left_out(req: &SessionRequest) -> LeftOut {
+    LeftOut {
+        hooks: req.isolated || req.user_hooks_off,
+        plugins: req.isolated.then(|| {
+            let dir = isolation::config_dir(req);
+            isolation::plugins_to_turn_off(dir.as_deref(), &req.builtins_off)
+        }),
+    }
 }
 
 /// A build session needs the approved goal. Without one it gets the read-only flags, so nothing
@@ -194,6 +214,16 @@ pub fn user_message_line(text: &str) -> String {
     let message = serde_json::json!({
         "type": "user",
         "message": {"role": "user", "content": text},
+    });
+    format!("{message}\n")
+}
+
+/// A user line with the uuid Claude Code's `command_lifecycle` lines name it by.
+pub fn user_message_line_with_uuid(text: &str, uuid: &str) -> String {
+    let message = serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "uuid": uuid,
     });
     format!("{message}\n")
 }
@@ -294,6 +324,12 @@ fn env_vars(
     if role == SessionRole::Direct && req.asks != Asks::Never && req.mcp_config.is_some() {
         // Yours would cut a card short.
         vars.push(("MCP_TOOL_TIMEOUT".to_owned(), ASKING_TIMEOUT_MS.to_owned()));
+        // Since 2.1.281 a flagged rm is denied after two minutes in auto or bypass mode, which
+        // your own default mode may be. Its card waits as long as you take, as every card does.
+        vars.push((
+            "CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT".to_owned(),
+            "1".to_owned(),
+        ));
     }
     if let Some(compaction) = req.compaction {
         vars.extend(tweaks::compaction(compaction).env_set);

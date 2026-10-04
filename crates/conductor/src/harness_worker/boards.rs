@@ -155,6 +155,7 @@ mod tests {
             source: QuotaSource::RateLimitEvent,
             observed_at: OffsetDateTime::from_unix_timestamp(at).unwrap(),
             detail: None,
+            wrap_up: false,
         }
     }
 

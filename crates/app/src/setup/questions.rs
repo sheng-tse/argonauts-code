@@ -658,6 +658,9 @@ mod tests {
                 login_check: None,
             },
             login: LoginState::Unknown,
+            newest_tested: None,
+            unread: Vec::new(),
+            builtins: Vec::new(),
         }
     }
 

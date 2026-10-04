@@ -18,19 +18,29 @@ pub fn reading(info: &Value, observed_at: OffsetDateTime) -> Option<QuotaReading
         _ => QuotaStatus::Unknown,
     };
     // 2.1.284 sends utilization per window under `unifiedWindows` rather than at the top, and
-    // `rateLimitType` names the window that changed, which isn't always the fullest.
-    let (window, used, resets_at) = fullest_window(info).unwrap_or_else(|| {
-        let window = string_at(info, "rateLimitType");
-        let named = window
-            .as_deref()
-            .and_then(|w| info.get("unifiedWindows")?.get(w));
-        let resets_at = info
-            .get("resetsAt")
-            .and_then(Value::as_i64)
-            .or_else(|| named?.get("resetsAt")?.as_i64());
-        let used = info.get("utilization").and_then(Value::as_f64);
-        (window, used, resets_at)
-    });
+    // `rateLimitType` names the window that changed, which isn't always the fullest. A model's
+    // own bucket says how full the account is only when it's what turned a request down.
+    let named = string_at(info, "rateLimitType");
+    let own_bucket = named
+        .as_deref()
+        .is_some_and(|w| !ACCOUNT_WINDOWS.contains(&w));
+    let (window, used, resets_at) = match fullest_window(info) {
+        Some(fullest) if status != QuotaStatus::Rejected || !own_bucket => fullest,
+        _ => {
+            let in_windows = named
+                .as_deref()
+                .and_then(|w| info.get("unifiedWindows")?.get(w));
+            let resets_at = info
+                .get("resetsAt")
+                .and_then(Value::as_i64)
+                .or_else(|| in_windows?.get("resetsAt")?.as_i64());
+            let used = info
+                .get("utilization")
+                .and_then(Value::as_f64)
+                .or_else(|| in_windows?.get("utilization")?.as_f64());
+            (named, used, resets_at)
+        }
+    };
     let used = used.map(|u| u.clamp(0.0, 1.0));
     let resets_at = resets_at.and_then(|secs| OffsetDateTime::from_unix_timestamp(secs).ok());
     Some(QuotaReading {
@@ -42,15 +52,22 @@ pub fn reading(info: &Value, observed_at: OffsetDateTime) -> Option<QuotaReading
         source: QuotaSource::RateLimitEvent,
         observed_at,
         detail: Some(info.clone()),
+        wrap_up: false,
     })
 }
 
-/// The `unifiedWindows` entry with the highest utilization, the later reset on a tie, as its
-/// name, utilization, and reset in Unix seconds.
+/// The account's own limits. The other windows are a model's own weekly bucket, such as
+/// `seven_day_overage_included` (the "Fable limit"), which may pass 100% while the account
+/// still allows.
+const ACCOUNT_WINDOWS: &[&str] = &["five_hour", "seven_day"];
+
+/// The account's `unifiedWindows` entry with the highest utilization, the later reset on a tie,
+/// as its name, utilization, and reset in Unix seconds.
 fn fullest_window(info: &Value) -> Option<(Option<String>, Option<f64>, Option<i64>)> {
     let windows = info.get("unifiedWindows")?.as_object()?;
     let (name, used, resets_at) = windows
         .iter()
+        .filter(|(name, _)| ACCOUNT_WINDOWS.contains(&name.as_str()))
         .filter_map(|(name, window)| {
             let used = window.get("utilization")?.as_f64()?;
             let resets_at = window.get("resetsAt").and_then(Value::as_i64);
@@ -58,6 +75,137 @@ fn fullest_window(info: &Value) -> Option<(Option<String>, Option<f64>, Option<i
         })
         .max_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)))?;
     Some((Some(name.clone()), Some(used), resets_at))
+}
+
+/// The window Claude Code names as the limit is one of the account's, and it's used up.
+fn limiting_window_full(info: &Value) -> bool {
+    let Some(window) = str_at(info, "rateLimitType").filter(|w| ACCOUNT_WINDOWS.contains(w)) else {
+        return false;
+    };
+    let used = info.get("utilization").and_then(Value::as_f64).or_else(|| {
+        info.get("unifiedWindows")?
+            .get(window)?
+            .get("utilization")?
+            .as_f64()
+    });
+    used.is_some_and(|used| used >= 1.0)
+}
+
+/// The start of the notice Claude Code shows while it finishes on its allowance.
+pub const WRAP_UP_NOTICE: &str = "Usage limit reached · wrapping up";
+
+/// Claude Code's wrap-up allowance. At a limit mid-task it tells Claude to
+/// finish the current step and keeps going on a small allowance, so a `rejected` reading no
+/// longer ends the turn by itself. Any of three signals means wrapping up: a `rejected` reading
+/// followed by more of the same turn, a window at 100% while the status still allows, or Claude
+/// Code's own notice. The usage-limit error waits for the turn's end, and comes only if the turn
+/// fails or nothing followed the reading.
+#[derive(Debug, Default)]
+pub struct LimitTracker {
+    pending: Option<Pending>,
+}
+
+#[derive(Debug)]
+struct Pending {
+    reading: QuotaReading,
+    wrapping_up: bool,
+}
+
+impl LimitTracker {
+    /// `reading` as it should be reported: a full window that still allows becomes a wrap-up,
+    /// out for new work while this turn finishes.
+    pub fn observe(&mut self, mut reading: QuotaReading) -> QuotaReading {
+        let overage = reading
+            .detail
+            .as_ref()
+            .is_some_and(|detail| bool_at(detail, "isUsingOverage"));
+        let full = reading.detail.as_ref().is_some_and(limiting_window_full);
+        let wrapping_up = self.pending.as_ref().is_some_and(|p| p.wrapping_up);
+        match reading.status {
+            _ if overage => self.pending = None,
+            QuotaStatus::Rejected => {
+                reading.wrap_up = wrapping_up;
+                self.hold(&reading, wrapping_up);
+            }
+            QuotaStatus::Allowed | QuotaStatus::Warning if full => {
+                reading.status = QuotaStatus::Rejected;
+                reading.wrap_up = true;
+                self.hold(&reading, true);
+            }
+            QuotaStatus::Allowed | QuotaStatus::Warning => self.pending = None,
+            QuotaStatus::Unknown => {}
+        }
+        reading
+    }
+
+    /// More of the turn came: a limit read before it was a wrap-up. Reported once.
+    pub fn went_on(&mut self, now: OffsetDateTime) -> Option<QuotaReading> {
+        let pending = self.pending.as_mut().filter(|p| !p.wrapping_up)?;
+        pending.wrapping_up = true;
+        pending.reading.wrap_up = true;
+        pending.reading.observed_at = now;
+        Some(pending.reading.clone())
+    }
+
+    /// Claude Code said it's wrapping up, with or without a reading before. `line` is the
+    /// notice, kept as the reading's detail.
+    pub fn notice(&mut self, line: &Value, now: OffsetDateTime) -> Option<QuotaReading> {
+        if self.pending.is_some() {
+            return self.went_on(now);
+        }
+        let reading = QuotaReading {
+            vendor: VendorId("claude-code".to_owned()),
+            status: QuotaStatus::Rejected,
+            used: Some(1.0),
+            resets_at: None,
+            window: None,
+            source: QuotaSource::RateLimitEvent,
+            observed_at: now,
+            detail: Some(line.clone()),
+            wrap_up: true,
+        };
+        self.hold(&reading, true);
+        Some(reading)
+    }
+
+    /// The turn ended. A wrap-up's reading comes back as plain `rejected`, out until the reset,
+    /// and the usage-limit message comes when the turn stopped on the limit instead.
+    pub fn turn_ended(
+        &mut self,
+        failed: bool,
+        now: OffsetDateTime,
+    ) -> (Option<QuotaReading>, Option<String>) {
+        let Some(Pending {
+            mut reading,
+            wrapping_up,
+        }) = self.pending.take()
+        else {
+            return (None, None);
+        };
+        let message = if failed || !wrapping_up {
+            usage_limit_message(&reading)
+        } else {
+            None
+        };
+        let out = wrapping_up.then(|| {
+            reading.wrap_up = false;
+            reading.observed_at = now;
+            reading
+        });
+        (out, message)
+    }
+
+    /// The usage-limit message, when a limit is waiting at a stream that ended without a result.
+    pub fn unfinished(&self) -> Option<String> {
+        usage_limit_message(&self.pending.as_ref()?.reading)
+    }
+
+    fn hold(&mut self, reading: &QuotaReading, wrapping_up: bool) {
+        self.pending = Some(Pending {
+            reading: reading.clone(),
+            wrapping_up,
+        });
+    }
 }
 
 /// The usage-limit message for a rejected reading, unless paid overage is carrying the session.
@@ -137,6 +285,53 @@ mod tests {
         assert_eq!(top.window.as_deref(), Some("five_hour"));
         assert_eq!(top.used, Some(0.3));
         assert_eq!(top.resets_at.unwrap().unix_timestamp(), 1790751000);
+    }
+
+    /// 2.1.289 also lists a model's own weekly bucket, such as the "Fable limit", which may
+    /// pass 100% while the account allows. It isn't how full Claude Code is, and it's no
+    /// wrap-up.
+    #[test]
+    fn a_models_own_bucket_past_full_is_no_limit_of_the_account() {
+        for named in [None, Some("five_hour"), Some("seven_day_overage_included")] {
+            let mut info = json!({"status": "allowed",
+                "unifiedWindows": {"five_hour": {"utilization": 0.3, "resetsAt": 1790751000},
+                                   "seven_day": {"utilization": 0.4, "resetsAt": 1790820000},
+                                   "seven_day_overage_included": {"utilization": 1.2,
+                                                                  "resetsAt": 1791000000}}});
+            if let Some(named) = named {
+                info["rateLimitType"] = json!(named);
+            }
+            let read = reading(&info, NOW).unwrap();
+            assert_eq!(read.window.as_deref(), Some("seven_day"), "{named:?}");
+            assert_eq!(read.used, Some(0.4), "{named:?}");
+            let seen = LimitTracker::default().observe(read);
+            assert_eq!(seen.status, QuotaStatus::Allowed, "{named:?}");
+            assert!(!seen.wrap_up, "{named:?}");
+        }
+        // When that bucket is what turned a request down, its reset is the one that counts.
+        let fable_out = json!({"status": "rejected", "rateLimitType": "seven_day_overage_included",
+            "resetsAt": 1791000000,
+            "unifiedWindows": {"five_hour": {"utilization": 0.3, "resetsAt": 1790751000},
+                               "seven_day_overage_included": {"utilization": 1.0,
+                                                              "resetsAt": 1791000000}}});
+        let out = reading(&fable_out, NOW).unwrap();
+        assert_eq!(out.window.as_deref(), Some("seven_day_overage_included"));
+        assert_eq!(out.resets_at.unwrap().unix_timestamp(), 1791000000);
+    }
+
+    /// The account's window Claude Code names, full while it still allows: a wrap-up, read at
+    /// the top level or in its window.
+    #[test]
+    fn the_named_account_window_full_while_allowed_is_a_wrap_up() {
+        for info in [
+            json!({"status": "allowed", "rateLimitType": "seven_day", "utilization": 1.0}),
+            json!({"status": "allowed_warning", "rateLimitType": "five_hour",
+                   "unifiedWindows": {"five_hour": {"utilization": 1.04, "resetsAt": 1790751000}}}),
+        ] {
+            let seen = LimitTracker::default().observe(reading(&info, NOW).unwrap());
+            assert_eq!(seen.status, QuotaStatus::Rejected, "{info}");
+            assert!(seen.wrap_up, "{info}");
+        }
     }
 
     #[test]

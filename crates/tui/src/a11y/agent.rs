@@ -170,6 +170,7 @@ fn tool_result(
 fn item_lines(item: &ToolItem) -> Vec<String> {
     match item {
         ToolItem::Text { text, .. } | ToolItem::Markdown(text) => output_lines(text),
+        ToolItem::Hanging { lead, text } => output_lines(&format!("{lead}{text}")),
         ToolItem::Command { output, hidden, .. } => {
             let mut lines = output_lines(&output.join("\n"));
             if *hidden > 0 && !lines.is_empty() {

@@ -10,11 +10,14 @@ pub mod discovery;
 mod estimate;
 mod family;
 mod files;
+pub mod reported;
 mod trust;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 
+use argonauts_core::ReportedModel;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::CostEstimate;
 use argonauts_core::model_catalog::ModelCatalog;
@@ -68,6 +71,9 @@ pub fn registry_with_trust(
     Arc::new(registry)
 }
 
+/// The CLIs that list their own models to a session: Claude Code in its `initialize` reply.
+const REPORTING_HARNESSES: &[&str] = &["claude-code"];
+
 /// `<repo>/.argonauts/models.toml`.
 pub fn project_models_path(repo_root: &Path) -> PathBuf {
     repo_root.join(".argonauts").join("models.toml")
@@ -92,6 +98,10 @@ pub struct FileRegistry {
     /// The catalog fetched last, as the cache keeps it and as it reads.
     fetched: RwLock<Option<(FetchedCatalog, ModelCatalog)>>,
     yours: Vec<ModelsFile>,
+    /// What each CLI that lists its own models listed last, by harness id.
+    reported: RwLock<BTreeMap<String, Vec<ReportedModel>>>,
+    /// Where those lists are kept between runs; `None` keeps them in memory.
+    home: Option<Paths>,
     /// (harness id, `family`) for the built-in profiles and every manifest in the files read,
     /// later winning by id.
     harness_families: Vec<(String, String)>,
@@ -104,7 +114,10 @@ impl FileRegistry {
     pub fn load(settings: &Settings, repo_root: Option<&Path>, trusted_hashes: &[String]) -> Self {
         let mut registry = Self::empty(settings);
         match Paths::from_env() {
-            Ok(paths) => registry.add_global(&paths.global_models()),
+            Ok(paths) => {
+                registry.add_global(&paths.global_models());
+                registry.read_reported(paths);
+            }
             Err(e) => registry
                 .warnings
                 .push(format!("{e}. Your own models.toml is left out.")),
@@ -153,6 +166,8 @@ impl FileRegistry {
             catalog_source: None,
             fetched: RwLock::new(None),
             yours: Vec::new(),
+            reported: RwLock::new(BTreeMap::new()),
+            home: None,
             harness_families,
             warnings: Vec::new(),
         }
@@ -239,6 +254,21 @@ impl FileRegistry {
             .then_some(source)
     }
 
+    /// The lists the CLIs reported last, kept in `home`'s state folder, where new ones go too.
+    fn read_reported(&mut self, home: Paths) {
+        let reported = self
+            .reported
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        for harness in REPORTING_HARNESSES {
+            let models = reported::read(&home.reported_models(harness));
+            if !models.is_empty() {
+                reported.insert((*harness).to_owned(), models);
+            }
+        }
+        self.home = Some(home);
+    }
+
     fn add_global(&mut self, path: &Path) {
         match read_registry_file(path) {
             Ok(file) => self.add_file(file),
@@ -311,6 +341,11 @@ impl FileRegistry {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         merge(&mut all, discovered);
+        let reported = self.reported.read().unwrap_or_else(PoisonError::into_inner);
+        for (harness, models) in reported.iter() {
+            let added = reported::new_entries(&self.settings, harness, models, &all);
+            all.extend(added);
+        }
         for file in &self.yours {
             merge(&mut all, file.models.clone());
             for rating in &file.tiers {
@@ -558,11 +593,37 @@ impl ModelRegistry for FileRegistry {
             .read()
             .unwrap_or_else(PoisonError::into_inner);
         let fetched = self.fetched.read().unwrap_or_else(PoisonError::into_inner);
+        let reported: Vec<ModelCatalog> = self
+            .reported
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(harness, models)| reported::layer(harness, models))
+            .collect();
         catalog::layered(
             fetched.as_ref().map(|(_, catalog)| catalog),
             &discovered,
+            &reported,
             &self.yours,
         )
+    }
+
+    fn models_reported(&self, harness: &str, models: &[ReportedModel]) {
+        if models.is_empty() {
+            return;
+        }
+        let mut reported = self
+            .reported
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if reported.get(harness).is_some_and(|known| known == models) {
+            return;
+        }
+        reported.insert(harness.to_owned(), models.to_vec());
+        // A list that can't be kept is only missing until the CLI's next reply.
+        if let Some(home) = &self.home {
+            let _ = reported::write(&home.reported_models(harness), models);
+        }
     }
 }
 
@@ -573,6 +634,74 @@ mod tests {
     use argonauts_core::{TokenPrice, sha256_hex};
 
     use super::*;
+
+    /// What Claude Code lists itself counts over the catalogs, a model it adds
+    /// can be picked at once, and the list comes back after a restart.
+    #[test]
+    fn the_models_claude_code_lists_are_mirrored_and_kept() {
+        use argonauts_core::ReportedModel;
+
+        let listed = vec![
+            ReportedModel {
+                value: "default".into(),
+                resolved: Some("claude-opus-5-5".into()),
+                display_name: "Default (recommended)".into(),
+                description: "Opus 5.5 · Best for everyday, complex tasks".into(),
+                efforts: vec!["low".into(), "xhigh".into()],
+            },
+            ReportedModel {
+                value: "sonnet".into(),
+                resolved: Some("claude-sonnet-5-5".into()),
+                display_name: "Sonnet 5.5".into(),
+                description: "Lighter work, quickly".into(),
+                efforts: vec!["low".into(), "high".into()],
+            },
+            ReportedModel {
+                value: "claude-opus-6".into(),
+                resolved: Some("claude-opus-6".into()),
+                display_name: "Opus 6".into(),
+                description: "The newest".into(),
+                efforts: vec!["low".into(), "max".into()],
+            },
+        ];
+        let home = tempfile::tempdir().unwrap();
+        let mut registry = FileRegistry::from_files(&Settings::default(), None, None);
+        registry.read_reported(Paths::new(home.path()));
+        registry.models_reported("claude-code", &listed);
+
+        let worker = |w: &str| -> WorkerRef { w.parse().unwrap() };
+        let newest = registry.get(&worker("claude-code/claude-opus-6")).unwrap();
+        assert_eq!(newest.efforts, ["low", "max"]);
+        let catalog = registry.catalog();
+        let sonnet = catalog.label(&worker("claude-code/claude-sonnet-5-5"));
+        assert_eq!(sonnet.name, "Sonnet 5.5");
+        assert_eq!(sonnet.description.as_deref(), Some("Lighter work, quickly"));
+        assert_eq!(
+            catalog
+                .entry(&worker("claude-code"))
+                .and_then(|e| e.runs.clone())
+                .as_deref(),
+            Some("claude-opus-5-5")
+        );
+        // The shipped short name for Haiku survives a list that names it otherwise.
+        assert!(
+            catalog
+                .entry(&worker("claude-code/claude-haiku-4-5"))
+                .is_some()
+        );
+
+        let mut again = FileRegistry::from_files(&Settings::default(), None, None);
+        again.read_reported(Paths::new(home.path()));
+        assert!(again.get(&worker("claude-code/claude-opus-6")).is_some());
+        assert_eq!(
+            again
+                .catalog()
+                .label(&worker("claude-code/claude-sonnet-5-5"))
+                .description
+                .as_deref(),
+            Some("Lighter work, quickly")
+        );
+    }
 
     #[test]
     fn built_ins_answer_before_any_file() {

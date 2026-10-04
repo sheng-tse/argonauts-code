@@ -2,6 +2,8 @@
 //! `limits.protected_paths`, and the card's `forbidden_paths`), and instruction files anywhere in
 //! a diff, which block auto-merge.
 
+use std::path::Path;
+
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 use argonauts_core::events::card::CardSpec;
@@ -22,16 +24,91 @@ pub const INSTRUCTION_FILES: &[&str] = &[
     "AGENTS.md",
     "AGENTS.override.md",
     "CLAUDE.md",
+    "CLAUDE.local.md",
     "GEMINI.md",
     "HERMES.md",
     ".hermes.md",
 ];
 
+/// Folders Claude Code writes under `.claude/` for itself and never reads back as config.
+/// Everything else there, settings, hooks, rules, skills, agents, commands, and workflows among
+/// it, is config. Your own Claude Code runs it outside any sandbox, so a change waits for you
+/// as an instruction file's does.
+const CLAUDE_CODE_STATE: &[&str] = &["worktrees/", "debug/", "todos/", "shell-snapshots/"];
+
+/// The folder that makes its parent a Claude Code plugin's root.
+const PLUGIN_MANIFEST: &str = ".claude-plugin/";
+
+/// An instruction file, or Claude Code config, at any depth.
 pub fn is_instruction_file(path: &str) -> bool {
     let name = file_name(path);
     INSTRUCTION_FILES
         .iter()
         .any(|known| name.eq_ignore_ascii_case(known))
+        || is_claude_code_config(path)
+}
+
+fn is_claude_code_config(path: &str) -> bool {
+    let path = format!("/{}", path.to_ascii_lowercase());
+    if path.ends_with("/.mcp.json") || path.contains(&format!("/{PLUGIN_MANIFEST}")) {
+        return true;
+    }
+    path.find("/.claude/").is_some_and(|at| {
+        let inside = &path[at + "/.claude/".len()..];
+        !CLAUDE_CODE_STATE
+            .iter()
+            .any(|state| inside.starts_with(state))
+    })
+}
+
+/// The changed paths that change what a later session or your own Claude Code does: instruction
+/// files, Claude Code's config, and anything in a plugin's root, whose hooks module, commands,
+/// and MCP server code Claude Code runs. A root shows by a `.claude-plugin/` folder, among the
+/// changes or, given the checked-out `tree`, on disk.
+pub fn held_paths<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+    tree: Option<&Path>,
+) -> Vec<String> {
+    let paths: Vec<&str> = paths.into_iter().collect();
+    let roots = plugin_roots(&paths);
+    let mut held: Vec<String> = paths
+        .iter()
+        .filter(|path| {
+            is_instruction_file(path)
+                || roots.iter().any(|root| path.starts_with(root.as_str()))
+                || tree.is_some_and(|tree| in_plugin_on_disk(tree, path))
+        })
+        .map(|path| (*path).to_owned())
+        .collect();
+    held.sort();
+    held.dedup();
+    held
+}
+
+/// The plugin roots the changes themselves show, each as a prefix ending in `/`, or empty for
+/// the repository's own root.
+fn plugin_roots(paths: &[&str]) -> Vec<String> {
+    let mut roots: Vec<String> = paths
+        .iter()
+        .filter_map(|path| {
+            // With a slash in front, so a manifest at the top is found the same way. The slash
+            // found stands where the root's own ends in `path`.
+            let lower = format!("/{}", path.to_ascii_lowercase());
+            let at = lower.find(&format!("/{PLUGIN_MANIFEST}"))?;
+            Some(path[..at].to_owned())
+        })
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// One of the folders holding `path` in `tree` has a `.claude-plugin/` folder.
+fn in_plugin_on_disk(tree: &Path, path: &str) -> bool {
+    Path::new(path)
+        .ancestors()
+        .skip(1)
+        .any(|folder| tree.join(folder).join(PLUGIN_MANIFEST).is_dir())
 }
 
 /// Glob patterns read the way `.gitignore` reads them: `*` stays inside one directory, a
@@ -139,7 +216,12 @@ pub fn sample_path(glob: &str) -> String {
     out
 }
 
-pub fn check(card: &CardSpec, changes: &[FileChange], settings: &Settings) -> Vec<Violation> {
+pub fn check(
+    card: &CardSpec,
+    changes: &[FileChange],
+    settings: &Settings,
+    tree: Option<&Path>,
+) -> Vec<Violation> {
     let protected = PathRules::protected(settings);
     let forbidden = PathRules::new(card.forbidden_paths.iter().map(String::as_str));
     let touched = |rules: &PathRules| -> Vec<String> {
@@ -187,14 +269,7 @@ pub fn check(card: &CardSpec, changes: &[FileChange], settings: &Settings) -> Ve
             forbidden_touched,
         ));
     }
-    let mut instructions: Vec<String> = changes
-        .iter()
-        .flat_map(FileChange::paths)
-        .filter(|path| is_instruction_file(path))
-        .map(str::to_owned)
-        .collect();
-    instructions.sort();
-    instructions.dedup();
+    let instructions = held_paths(changes.iter().flat_map(FileChange::paths), tree);
     if !instructions.is_empty() {
         violations.push(instruction_flag(instructions));
     }
@@ -206,7 +281,8 @@ pub fn instruction_flag(paths: Vec<String>) -> Violation {
     violation(
         HardLimit::InstructionFile,
         format!(
-            "changes instruction files other agents read ({}), so the merge waits for you",
+            "changes instruction files or config other agents load ({}), so the merge waits \
+             for you",
             paths.join(", ")
         ),
         paths,

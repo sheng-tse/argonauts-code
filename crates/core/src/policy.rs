@@ -303,6 +303,17 @@ pub trait HardLimits: Send + Sync {
     /// The built-in gates on one card's diff: protected paths, secrets, test tampering,
     /// dependencies, lockfiles.
     fn check_card_diff(&self, card: &CardSpec, unified_diff: &str) -> Vec<Violation>;
+    /// As [`Self::check_card_diff`], with the card's checked-out tree, where a changed file's
+    /// folders show whether it's part of a Claude Code plugin.
+    fn check_card_tree_diff(
+        &self,
+        card: &CardSpec,
+        unified_diff: &str,
+        tree: &std::path::Path,
+    ) -> Vec<Violation> {
+        let _ = tree;
+        self.check_card_diff(card, unified_diff)
+    }
     /// Refuses a build session without a sandbox or goal hash.
     fn check_session(&self, spec: &SessionSpec) -> Vec<Violation>;
 }

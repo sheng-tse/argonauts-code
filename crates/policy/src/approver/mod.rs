@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use argonauts_core::events::session::{EndReason, InputPartKind};
+use argonauts_core::events::session::{EndReason, InputPartKind, loaded_words};
 use argonauts_core::future::BoxFuture;
 use argonauts_core::layout::{repo_state, run_files};
 use argonauts_core::names::{RoleName, WorkerRef};
@@ -337,13 +337,17 @@ fn reason_line(text: &str) -> String {
 }
 
 /// A session that ended early is named by its kind only. Its last words and the vendor's
-/// message can quote the evidence or a secret, and they stay in the raw log.
+/// message can quote the evidence or a secret, and they stay in the raw log. What an isolated
+/// session loaded comes from the CLI's own list, so it's named.
 fn session_failure(err: &StepError) -> String {
     match err {
-        StepError::Session(end) => format!(
-            "the approver's session ended early: {}",
-            end_kind(&end.reason)
-        ),
+        StepError::Session(end) => match &end.reason {
+            EndReason::IsolationBroken { plugins, skills } => format!(
+                "the approver's session ended early: it loaded {}, which a blind role mustn't see",
+                loaded_words(plugins, skills)
+            ),
+            other => format!("the approver's session ended early: {}", end_kind(other)),
+        },
         StepError::SchemaMismatch { .. } => {
             "the approver's verdict didn't match the schema".to_owned()
         }
@@ -706,6 +710,31 @@ mod tests {
         ] {
             assert!(!shown.contains(leak), "{shown}");
         }
+    }
+
+    /// The approver is a blind role. One whose session loaded your plugins says which, since
+    /// the names come from the CLI's own list and quote nothing of the evidence.
+    #[tokio::test]
+    async fn a_blind_approver_that_loaded_your_plugins_says_which() {
+        let ended = FakeSession::ended(EndReason::IsolationBroken {
+            plugins: vec!["memory-keeper".into(), "lint-helper".into()],
+            skills: Vec::new(),
+        });
+        let setup = Setup::new();
+        setup.add(FakeWorker::harness("claude-code", "claude").then(ended));
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Escalate);
+        assert_eq!(
+            verdict.reasons,
+            vec![
+                "the approver's session ended early: it loaded your plugins memory-keeper and \
+                 lint-helper, which a blind role mustn't see"
+                    .to_owned()
+            ]
+        );
     }
 
     #[test]

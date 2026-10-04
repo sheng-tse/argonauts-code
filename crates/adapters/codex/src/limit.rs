@@ -35,6 +35,7 @@ pub fn usage_limit_reading(message: &str, now: OffsetDateTime, zone: &LocalZone)
         source: QuotaSource::ErrorMessage,
         observed_at: now,
         detail: Some(json!({ "message": message })),
+        wrap_up: false,
     }
 }
 

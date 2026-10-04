@@ -228,6 +228,7 @@ fn claude(model: Option<&str>, note: Option<&str>, older: bool) -> ModelChoice {
         source: QuotaSource::RateLimitEvent,
         observed_at: OffsetDateTime::UNIX_EPOCH,
         detail: None,
+        wrap_up: false,
     });
     choice
 }

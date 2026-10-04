@@ -22,6 +22,7 @@ pub fn label(key: &str) -> Option<&'static str> {
             "untrusted_repos" => "Repos you haven't trusted",
             "container_image" => "Container image",
             "user_hooks" => "Your own hooks in agents' sessions",
+            "isolated_leak" => "A blind role's session that loads your plugins",
             _ => return None,
         });
     }
@@ -72,6 +73,10 @@ pub fn value_note(leaf: &str, value: &str) -> &'static str {
         }
         ("fail_closed", "true") => "A session that can't be sandboxed doesn't start",
         ("fail_closed", "false") => "It starts anyway, unguarded",
+        ("isolated_leak", "stop") => {
+            "Stopped before it acts, and an agent that keeps your plugins out takes the role"
+        }
+        ("isolated_leak", "warn") => "It runs on, and a notice says what it loaded",
         _ => "",
     }
 }

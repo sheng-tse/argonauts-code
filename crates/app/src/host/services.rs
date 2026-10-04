@@ -271,6 +271,19 @@ impl WorkerDirectory for Directory {
             .find(|adapter| adapter.id() == worker.worker)
             .is_some_and(|adapter| adapter.capabilities().enforces_read_only)
     }
+
+    fn isolates(&self, worker: &WorkerRef) -> bool {
+        let built = self.current();
+        match built
+            .adapters
+            .iter()
+            .find(|adapter| adapter.id() == worker.worker)
+        {
+            Some(adapter) => adapter.capabilities().isolates,
+            // An endpoint answers with no tools, so nothing of yours reaches it.
+            None => endpoint_settings(&built.settings, &worker.worker).is_some(),
+        }
+    }
 }
 
 /// The model registry for the settings in effect, built again when they change, since the
@@ -350,6 +363,10 @@ impl ModelRegistry for LiveRegistry {
 
     fn catalog(&self) -> ModelCatalog {
         self.registry().catalog()
+    }
+
+    fn models_reported(&self, harness: &str, models: &[argonauts_core::ReportedModel]) {
+        self.registry().models_reported(harness, models);
     }
 }
 
@@ -452,6 +469,7 @@ pub(crate) fn services(
     let limits = limits_service(
         settings.clone(),
         registry.clone(),
+        workers.clone(),
         quota.clone(),
         health.clone(),
         handoff.clone(),
@@ -543,6 +561,26 @@ build_args = []
             quota,
             health,
         )
+    }
+
+    /// Only Claude Code keeps your plugins out of a blind role's session among the CLIs, and an
+    /// endpoint loads nothing of yours. The rest load their own MCP servers and extensions.
+    #[test]
+    fn only_claude_code_and_endpoints_take_a_blind_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Paths::new(dir.path().join("home"));
+        std::fs::create_dir_all(home.home()).unwrap();
+        let mut settings = Settings::default();
+        settings
+            .endpoints
+            .insert("local".to_owned(), EndpointSettings::default());
+        let workers = directory_for(settings, &home, None);
+        let isolates = |id: &str| workers.isolates(&WorkerRef::new(id, None));
+        assert!(isolates("claude-code"));
+        assert!(isolates("local"));
+        for id in ["codex", "antigravity-cli", "opencode", "unknown-agent"] {
+            assert!(!isolates(id), "{id}");
+        }
     }
 
     #[test]

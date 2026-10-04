@@ -128,8 +128,11 @@ impl HistoryCell for Notice {
             } else {
                 vec![indent(BODY_COL)]
             };
+            // A detail set in under the one before, as /doctor's notes under an agent are, hangs
+            // under its own words when it wraps.
+            let set_in = detail.len() - detail.trim_start_matches(' ').len();
             // The same formatter as a tool's results, so `/resume` takes the code color here too.
-            lines.extend(text_rows(detail, Tone::Dim, ctx, first, BODY_COL));
+            lines.extend(text_rows(detail, Tone::Dim, ctx, first, BODY_COL + set_in));
         }
         fit_lines(&mut lines, width);
         lines
@@ -303,6 +306,15 @@ mod tests {
         assert_eq!(
             lines[0].spans[0].style,
             marks::decoration(theme.style(Role::Warning))
+        );
+        // A detail set in under the one before hangs under its own words.
+        let doctor = Notice::new(Tone::Normal, "Doctor")
+            .with_detail("claude-code 2.1.291 · newer than tested")
+            .with_detail("  loaded built-ins it doesn't know yet")
+            .lines(&ctx);
+        assert_eq!(
+            plain_text(&doctor),
+            "● Doctor\n  ⎿  claude-code 2.1.291 · newer than\n     tested\n       loaded built-ins it doesn't know\n       yet"
         );
         let plain = Notice::new(Tone::Error, "failed\x1b[31m hard").lines(&ctx);
         assert_eq!(plain_text(&plain), "● failed hard");

@@ -527,6 +527,9 @@ mod tests {
             session_id: None,
             model: Some(model.to_owned()),
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         };
         let events = vec![
             started,

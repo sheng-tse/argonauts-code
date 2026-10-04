@@ -615,3 +615,59 @@ async fn workflow_reads_the_words_and_stays_a_workflow() {
     assert_eq!(settings.default_agent.worker, "codex");
     harness.exit().await;
 }
+
+/// `/goal` reads your words as `/workflow` does, and its run stays a goal toward your words:
+/// who coordinates is followed, words for solo lose to the command, and the goal knows its run.
+#[tokio::test]
+async fn goal_reads_the_words_and_stays_a_goal() {
+    use argonauts_core::input::SlashCommand;
+
+    let objective = "Fix the rounding. Have codex coordinate, just do it solo.";
+    let mut harness = crew_harness(HarnessOptions::default()).await;
+    harness.agent.push(reply(
+        "change",
+        1,
+        vec![
+            this("coordinate", "Have codex coordinate", "codex"),
+            instruction("mode", "just do it solo", "", "solo", "this_request"),
+        ],
+    ));
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Goal {
+                text: Some(objective.into()),
+            },
+        })
+        .await;
+    let start = first_start(&harness).await;
+    assert_eq!((start.mode, start.forced), (RunMode::Crew, true));
+    assert_eq!(start.request, objective);
+    assert!(
+        start
+            .overrides
+            .contains(&"workflows.style=\"goal\"".to_owned()),
+        "{:?}",
+        start.overrides
+    );
+    assert_eq!(said(&start, "Have codex coordinate"), "Codex coordinates");
+    assert_eq!(why(&start, "just do it solo"), "you typed /goal");
+    let settings = run_settings(&start);
+    assert_eq!(
+        workers(&settings, RoleName::Coordinator),
+        ["codex".to_owned()]
+    );
+    harness
+        .until(|event| matches!(event, AppEvent::Attached { .. }))
+        .await;
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Goal { text: None },
+        })
+        .await;
+    harness
+        .until(|event| {
+            matches!(event, AppEvent::Notice { text, .. } if text.contains("run-001 works toward it"))
+        })
+        .await;
+    harness.exit().await;
+}

@@ -7,6 +7,7 @@ mod bar;
 mod card;
 mod composer;
 mod files;
+mod heads_up;
 mod history_search;
 mod menu;
 mod mode_line;
@@ -37,6 +38,7 @@ pub use composer::{
     BUILT_IN_EXAMPLE, Composer, ComposerEvent, ComposerState, ComposerView, MAX_INPUT_ROWS,
     SHELL_PLACEHOLDER, SHELL_PROMPT,
 };
+pub use heads_up::{HEADS_UP_KEYS, HeadsUp, HeadsUpEvent};
 pub use history_search::{HistorySearch, SearchEvent, SearchScope};
 pub use menu::{MenuEvent, MenuItem, MenuKind, Menus};
 pub use mode_line::{ApprovalMode, ModeLine, ModeNotice, ModeState, VimMode, status_line};
@@ -58,6 +60,13 @@ pub struct BottomState {
     /// Where each queued message goes when it's for one agent, drawn after it, such as
     /// `to agy, at its next turn`. Kept apart so taking the texts back gets them as typed.
     pub queued_where: Vec<Option<String>>,
+    /// Under the queued messages where the session takes them now, such as `ctrl+enter to
+    /// send now`.
+    pub send_now_hint: Option<String>,
+    /// The running turn's session takes send now, so the key works.
+    pub send_now: bool,
+    /// Claude Code's You should know, right above the input.
+    pub heads_up: HeadsUp,
     pub card: Option<CardPrompt>,
     /// Where the card was, while no card shows: the last handoff pick, offered as a rule.
     pub answered_pick: Option<AnsweredPick>,
@@ -226,7 +235,10 @@ impl BottomState {
 
     /// A card that waits without focus leaves the keys with the composer.
     pub fn composer_has_focus(&self) -> bool {
-        self.focused_card().is_none() && !self.agents.has_focus() && !self.pick_selected()
+        self.focused_card().is_none()
+            && !self.agents.has_focus()
+            && !self.pick_selected()
+            && !self.heads_up.has_focus()
     }
 
     /// The card on screen takes the keys if it claims them, and one that needs you only from
@@ -341,9 +353,8 @@ impl BottomState {
         self.render_within(ctx, usize::MAX)
     }
 
-    /// Parts give way in this order: the agent panel, queued messages, the working line, then
-    /// the card's details. If what's left still doesn't fit, the top rows
-    /// are cut.
+    /// Parts give way in this order: the agent panel, queued messages, the heads-up, the working
+    /// line, then the card's details. If what's left still doesn't fit, the top rows are cut.
     pub fn render_within(&self, ctx: &RenderCtx<'_>, max_rows: usize) -> BottomView {
         self.render_live(ctx, max_rows, false)
     }
@@ -453,6 +464,21 @@ impl BottomState {
                 truncate_line(&Line::from(spans), width).style(band)
             })
             .collect();
+        let mut queued: Vec<Line<'static>> = queued;
+        if let Some(hint) = self
+            .send_now_hint
+            .as_ref()
+            .filter(|_| !self.queued.is_empty())
+        {
+            let line = Line::from(vec![Span::raw("  "), Span::styled(hint.clone(), dim)]);
+            queued.extend([truncate_line(&line, width), Line::default()]);
+        }
+        // A card with the keys hides it until it's answered or set aside.
+        let heads_up = if self.focused_card().is_some() {
+            Vec::new()
+        } else {
+            self.heads_up.lines(ctx)
+        };
         let card_ctx = ctx.with_vim(self.mode.vim.is_some());
         let mut card = self
             .card
@@ -518,10 +544,11 @@ impl BottomState {
             .filter(|card| card.pinned)
             .map_or(0, |_| 1);
         let typing = !self.composer.is_empty();
+        let heads_up_keys = self.heads_up.has_focus().then_some(HEADS_UP_KEYS);
         let mode = self.mode.line(
             ctx,
             ModeState {
-                hint: self.active_hint(ctx.clock.now),
+                hint: heads_up_keys.or_else(|| self.active_hint(ctx.clock.now)),
                 working: busy,
                 typing,
                 pinned_cards,
@@ -541,6 +568,7 @@ impl BottomState {
         Parts {
             working,
             queued,
+            heads_up,
             card_gap: card_rows > 0,
             card_tail: card.tail,
             card_extra: card.extra,
@@ -564,6 +592,7 @@ impl BottomState {
 struct Parts {
     working: Vec<Line<'static>>,
     queued: Vec<Line<'static>>,
+    heads_up: Vec<Line<'static>>,
     card: Vec<Line<'static>>,
     card_gap: bool,
     /// Rows at the card's bottom (blank row, key hints, footer) that go when rows are short.
@@ -590,6 +619,7 @@ impl Parts {
                 + self.card.len()
                 + usize::from(self.card_gap)
                 + self.queued.len()
+                + self.heads_up.len()
                 + self.composer.len()
                 + self.menu.len();
         }
@@ -601,6 +631,7 @@ impl Parts {
             + self.card.len()
             + usize::from(self.card_gap)
             + self.queued.len()
+            + self.heads_up.len()
             + self.composer.len()
             + usize::from(self.mode.is_some())
             + agents
@@ -617,6 +648,10 @@ impl Parts {
         }
         if self.rows() > max_rows {
             self.queued.clear();
+        }
+        // The heads-up gives way after the panel and before the working line.
+        if self.rows() > max_rows {
+            self.heads_up.clear();
         }
         if self.rows() > max_rows {
             self.working.clear();
@@ -654,6 +689,7 @@ impl Parts {
             lines.push(Line::default());
         }
         lines.extend(self.queued);
+        lines.extend(self.heads_up);
         let composer_top = lines.len();
         lines.extend(self.composer);
         if !self.menu.is_empty() {

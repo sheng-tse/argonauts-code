@@ -557,6 +557,8 @@ pub struct SandboxSettings {
     pub container_image: String,
     /// Whether your own harness hooks run in Argonauts sessions, where the harness allows a choice.
     pub user_hooks: UserHooks,
+    /// What happens to an isolated session that loaded your plugins or synced skills anyway.
+    pub isolated_leak: IsolatedLeak,
 }
 
 impl Default for SandboxSettings {
@@ -574,6 +576,7 @@ impl Default for SandboxSettings {
             untrusted_repos: UntrustedRepos::Container,
             container_image: String::new(),
             user_hooks: UserHooks::Inherit,
+            isolated_leak: IsolatedLeak::Stop,
         }
     }
 }
@@ -657,6 +660,18 @@ impl SandboxChoice {
 pub enum UntrustedRepos {
     Container,
     Refuse,
+}
+
+/// An isolated session, such as a blind reviewer's, must not see your plugins or what other
+/// sessions did through them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IsolatedLeak {
+    /// Stopped before its first tool call, and its role handed to the next agent whose CLI
+    /// keeps your plugins out, or to you when none does.
+    Stop,
+    /// It runs on, and a notice says what it loaded.
+    Warn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]

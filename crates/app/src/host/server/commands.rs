@@ -80,11 +80,12 @@ pub(crate) fn command(request: ControlRequest) -> Result<(EngineCommand, EngineR
         ControlRequest::Hello { .. } | ControlRequest::Subscribe { .. } => {
             return Err("hello and subscribe belong to a connection".to_owned());
         }
-        ControlRequest::Steer { session, text } => {
+        ControlRequest::Steer { session, text, now } => {
             let (reply, wait) = oneshot::channel();
             let command = EngineCommand::Steer {
                 session,
                 text,
+                now,
                 reply,
             };
             (command, EngineReply::Steered(wait))

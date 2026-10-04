@@ -290,12 +290,16 @@ pub(crate) fn sync_line(report: &SyncReport, store: &Store) -> String {
         parts.push(format!("the {} skill was edited by hand", drift.name));
     }
     parts.extend(report.warnings.iter().cloned());
-    if parts.is_empty() {
+    let line = if parts.is_empty() {
         "Nothing to sync.".to_owned()
     } else {
         let mut line = parts.join("; ");
         line.push('.');
         sentence_case(&line)
+    };
+    match &report.readers {
+        Some(readers) => format!("{line} {readers}"),
+        None => line,
     }
 }
 

@@ -456,6 +456,51 @@ fn notes_and_own_answers_follow_a_colon() {
     );
 }
 
+/// A free-text question reads as the answer to type, as the card shows its field open: no
+/// list of one, and `1:` with the answer, or `1` and the answer on the next line, sends it.
+#[test]
+fn a_free_text_question_reads_as_an_answer_to_type() {
+    let asked = CardList::choice(&AppChoice {
+        id: ChoiceId::numbered(1),
+        kind: ChoiceKind::StartWork,
+        title: "Question from build:greet".to_owned(),
+        body: vec!["Should greet.py say hello or hi?".to_owned()],
+        options: vec![AnswerOption {
+            key: 'a',
+            label: "Type my own answer".to_owned(),
+            action: AnswerAction::Answer,
+            recommended: false,
+            detail: None,
+        }],
+        free_text: FreeText::Answer,
+        bell: true,
+    });
+    assert!(asked.is_answer_field());
+    let lines = asked.lines();
+    assert_eq!(
+        lines,
+        [
+            "needs you: Question from build:greet",
+            "  Should greet.py say hello or hi?",
+            "answer: type 1: and then your answer, or 1 alone to type it on the next line.",
+        ]
+    );
+    assert_eq!(
+        asked.parse("1: hello"),
+        Typed::Pick(Pick::OwnAnswer {
+            text: Some("hello".to_owned())
+        })
+    );
+    assert_eq!(
+        asked.parse("1"),
+        Typed::Pick(Pick::OwnAnswer { text: None })
+    );
+    // Chat still goes on as chat.
+    assert_eq!(asked.parse("hello"), Typed::Message);
+    // A question with choices still lists them with your own answer after.
+    assert!(!choice(FreeText::Answer).is_answer_field());
+}
+
 #[test]
 fn an_answer_goes_to_its_card() {
     let card = choice(FreeText::None);

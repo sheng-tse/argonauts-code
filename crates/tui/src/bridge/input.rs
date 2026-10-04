@@ -359,18 +359,24 @@ fn open_help(cx: &mut Cx<'_>) {
 /// ↑ takes back every message of yours the attached run hasn't delivered yet. The texts come
 /// back with `AppEvent::TakenBack` once the controller has pulled them.
 fn take_back(cx: &mut Cx<'_>) {
-    let Some(run) = cx.state.attached_run() else {
-        return;
-    };
-    let messages: Vec<_> = run
-        .queued
-        .iter()
+    let messages: Vec<_> = cx
+        .state
+        .attached_run()
+        .into_iter()
+        .flat_map(|run| &run.queued)
         .filter(|message| message.from == Party::User)
         .map(|message| message.id.clone())
         .collect();
+    // Chat text waiting for its turn, or in a session that hasn't read it yet.
     if messages.is_empty() {
+        if !cx.state.chat.queued.is_empty() {
+            cx.out.send(UiCommand::TakeBackChat);
+        }
         return;
     }
+    let Some(run) = cx.state.attached_run() else {
+        return;
+    };
     cx.out.send(UiCommand::TakeBack {
         run: run.id.clone(),
         messages,

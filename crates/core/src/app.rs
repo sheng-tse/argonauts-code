@@ -81,6 +81,10 @@ pub enum UiCommand {
         run: RunId,
         session: SessionKey,
         text: String,
+        /// Ctrl+Enter: the model reads it now, as Claude Code's send now, where the session's
+        /// CLI can. Otherwise after the running tool call.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        now: bool,
     },
     /// Sent once the take-over is confirmed.
     TakeOver {
@@ -204,6 +208,17 @@ pub enum UiCommand {
     },
     /// Ctrl+C while a `!` command runs.
     StopShell,
+    /// Ctrl+Enter or Ctrl+X Ctrl+S: what you sent the main session while it works goes to the
+    /// model now.
+    SendNow,
+    /// ↑ on your chat messages still waiting: back into the input, the ones the model hasn't
+    /// read too.
+    TakeBackChat,
+    /// A button of what Claude Code draws above the input, by what its press sends back.
+    PressHeadsUp {
+        plugin: String,
+        handle: u64,
+    },
     /// Closes the screen. Runs keep going.
     Exit,
     /// Saves the pick recorded for an answered handoff card as a replacement rule for the
@@ -404,6 +419,9 @@ pub enum AppEvent {
         /// Oldest first.
         texts: Vec<String>,
     },
+    /// `/clear` started a new conversation, so what the last one's session drew above the
+    /// input goes with it.
+    ChatCleared,
     /// The main agent's own commands, for the `/` menu, `/help`, and the parser. Sent at start
     /// and whenever the main agent changes.
     VendorCommands {
@@ -618,6 +636,12 @@ pub enum ChatEvent {
         /// What `to` was told, such as "your request, the transcript so far, and that
         /// invoice/money.py changed".
         told: String,
+    },
+    /// A message of yours that went into the running turn, once the model read it, as Claude
+    /// Code's send now shows it.
+    Joined {
+        turn: TurnId,
+        text: String,
     },
 }
 

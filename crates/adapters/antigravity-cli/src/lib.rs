@@ -133,6 +133,16 @@ impl Adapter for AntigravityCli {
         command::interactive_resume_command(self.binary(), session_id, workdir)
     }
 
+    /// agy reads the project's AGENTS.md as its rules.
+    fn instruction_files(&self, workdir: &Path, _isolated: bool) -> Vec<String> {
+        let name = "AGENTS.md";
+        if workdir.join(name).is_file() {
+            vec![name.to_owned()]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// agy also runs Claude and GPT-OSS models. The registry maps those model ids to their
     /// own family.
     fn default_family(&self) -> &'static str {
@@ -290,6 +300,21 @@ mod tests {
             .unwrap();
         assert!(!capped.args.iter().any(|a| a == "--agent"));
         assert!(capped.files.is_empty());
+    }
+
+    #[test]
+    fn agy_loads_agents_md_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            AntigravityCli
+                .instruction_files(dir.path(), false)
+                .is_empty()
+        );
+        std::fs::write(dir.path().join("AGENTS.md"), "x").unwrap();
+        assert_eq!(
+            AntigravityCli.instruction_files(dir.path(), false),
+            ["AGENTS.md"]
+        );
     }
 
     #[test]

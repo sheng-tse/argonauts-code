@@ -17,7 +17,7 @@ The keys in effect, and every command by category                    58 commands
 │ shift+tab                     next approval mode                             │
 │ ctrl+o                        detailed transcript                            │
 │ ctrl+t                        workflow view                                  │
-│ ctrl+g                        edit the prompt in $EDITOR                     │
+│ ctrl+g / ctrl+x ctrl+e        edit the prompt in $EDITOR                     │
 │ left                          crew view, on an empty prompt                  │
 │ down                          agent panel, on an empty prompt                │
 │ ctrl+r                        search prompt history                          │
@@ -25,4 +25,4 @@ The keys in effect, and every command by category                    58 commands
 │ up                            take queued messages back                      │
 │ tab / up                      answer a waiting card                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                               1-18 of 126 ↓
+↑↓ scroll · esc back                                               1-18 of 129 ↓

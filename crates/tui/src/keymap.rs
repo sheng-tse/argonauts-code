@@ -1,11 +1,19 @@
 //! Every key is rebindable under `ui.keymap`, by action name. Layers are checked in order:
 //! overlay, card, popup, composer, then global. A key no bound action takes goes to the
 //! focused part's own keys, such as a card's option letters or the composer's editing keys.
+//! A binding may be two keys in a row, written with a space, such as `ctrl+x ctrl+s`: after
+//! the first, the next key within [`CHORD_WAIT`] completes it.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+use std::time::Duration;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// How long the first key of a two-key binding waits for the second, as Claude Code waits after
+/// Ctrl+X. Past it, the first key does what it does alone.
+pub const CHORD_WAIT: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Layer {
@@ -45,10 +53,16 @@ pub enum Action {
     TakeBack,
     /// Gives a waiting card the keys, on an empty prompt.
     FocusCard,
+    /// What you sent Claude Code while it works goes to the model now.
+    SendNow,
+    /// Gives the heads-up above the input the keys.
+    HeadsUpFocus,
+    /// Hides or shows the heads-up above the input.
+    HeadsUpToggle,
 }
 
 impl Action {
-    pub const ALL: [Action; 15] = [
+    pub const ALL: [Action; 18] = [
         Action::Submit,
         Action::Newline,
         Action::Interrupt,
@@ -64,6 +78,9 @@ impl Action {
         Action::Shortcuts,
         Action::TakeBack,
         Action::FocusCard,
+        Action::SendNow,
+        Action::HeadsUpFocus,
+        Action::HeadsUpToggle,
     ];
 
     /// The key under `ui.keymap`.
@@ -84,6 +101,9 @@ impl Action {
             Action::Shortcuts => "shortcuts",
             Action::TakeBack => "take_back",
             Action::FocusCard => "focus_card",
+            Action::SendNow => "send_now",
+            Action::HeadsUpFocus => "heads_up_focus",
+            Action::HeadsUpToggle => "heads_up_toggle",
         }
     }
 
@@ -110,6 +130,9 @@ impl Action {
             Action::Shortcuts => "shortcuts, on an empty prompt",
             Action::TakeBack => "take queued messages back",
             Action::FocusCard => "answer a waiting card",
+            Action::SendNow => "send waiting messages to Claude Code now",
+            Action::HeadsUpFocus => "move to the heads-up above the input",
+            Action::HeadsUpToggle => "hide or show the heads-up",
         }
     }
 
@@ -131,6 +154,8 @@ impl Action {
             Action::HistorySearch => Some("for history"),
             Action::TakeBack => Some("to edit queued"),
             Action::FocusCard => Some("to answer a card"),
+            // Shown where they work, under your queued messages and on the heads-up.
+            Action::SendNow | Action::HeadsUpFocus | Action::HeadsUpToggle => None,
         }
     }
 
@@ -154,13 +179,16 @@ impl Action {
             Action::CycleApprovalMode => &["shift+tab"],
             Action::Transcript => &["ctrl+o"],
             Action::WorkflowView => &["ctrl+t"],
-            Action::Editor => &["ctrl+g"],
+            Action::Editor => &["ctrl+g", "ctrl+x ctrl+e"],
             Action::CrewView => &["left"],
             Action::AgentPanel => &["down"],
             Action::HistorySearch => &["ctrl+r"],
             Action::Shortcuts => &["?"],
             Action::TakeBack => &["up"],
             Action::FocusCard => &["tab", "up"],
+            Action::SendNow => &["ctrl+enter", "ctrl+x ctrl+s"],
+            Action::HeadsUpFocus => &["ctrl+x tab"],
+            Action::HeadsUpToggle => &["ctrl+x ctrl+a"],
         }
     }
 }
@@ -220,7 +248,7 @@ impl Keymap {
                 continue;
             };
             match parse_keys(keys) {
-                Ok(keys) => keymap.rebind(action, keys),
+                Ok(keys) => keymap.rebind_written(action, keys),
                 Err(error) => errors.push(error),
             }
         }
@@ -229,7 +257,12 @@ impl Keymap {
 
     /// `action` takes these keys in its layers, and no other action there keeps them.
     pub fn rebind(&mut self, action: Action, keys: Vec<KeySpec>) {
-        let written: Vec<String> = keys.iter().map(ToString::to_string).collect();
+        self.rebind_written(action, keys.iter().map(ToString::to_string).collect());
+    }
+
+    /// As [`Self::rebind`], with keys as written, where two keys in a row are joined by a
+    /// space.
+    fn rebind_written(&mut self, action: Action, written: Vec<String>) {
         for &layer in action.layers() {
             for ((other_layer, other), bound) in &mut self.bindings {
                 if *other_layer == layer && *other != action {
@@ -252,6 +285,25 @@ impl Keymap {
         self.bindings
             .iter()
             .filter(|((bound_layer, _), keys)| *bound_layer == layer && keys.contains(&pressed))
+            .map(|((_, action), _)| *action)
+            .collect()
+    }
+
+    /// Whether `key` begins a two-key binding in `layer`, such as Ctrl+X.
+    pub fn starts_chord(&self, layer: Layer, key: &KeyEvent) -> bool {
+        let first = format!("{} ", KeySpec::from_event(key));
+        self.bindings
+            .iter()
+            .any(|((bound, _), keys)| *bound == layer && keys.iter().any(|k| k.starts_with(&first)))
+    }
+
+    /// The actions bound to `first` then `key` in `layer`. `first` is written as a binding
+    /// writes it, such as `ctrl+x`.
+    pub fn chord_actions(&self, layer: Layer, first: &str, key: &KeyEvent) -> Vec<Action> {
+        let pressed = format!("{first} {}", KeySpec::from_event(key));
+        self.bindings
+            .iter()
+            .filter(|((bound, _), keys)| *bound == layer && keys.contains(&pressed))
             .map(|((_, action), _)| *action)
             .collect()
     }
@@ -455,12 +507,22 @@ fn spaced(key: &str) -> String {
     parts.join(" + ")
 }
 
-/// One key, or several separated by commas, such as `ctrl+c, ctrl+q`.
-fn parse_keys(text: &str) -> Result<Vec<KeySpec>, KeymapError> {
+/// One key, or several separated by commas, such as `ctrl+c, ctrl+q`. Two keys pressed in a
+/// row are written with a space, such as `ctrl+x ctrl+s`.
+fn parse_keys(text: &str) -> Result<Vec<String>, KeymapError> {
     let keys = text
         .split(',')
         .filter(|part| !part.trim().is_empty())
-        .map(KeySpec::parse)
+        .map(|part| {
+            let presses = part
+                .split_whitespace()
+                .map(|key| KeySpec::parse(key).map(|key| key.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            if presses.len() > 2 {
+                return Err(KeymapError::BadKey(part.trim().to_owned()));
+            }
+            Ok(presses.join(" "))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if keys.is_empty() {
         return Err(KeymapError::BadKey(text.to_owned()));
@@ -474,6 +536,42 @@ mod tests {
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn two_keys_in_a_row_bind_and_rebind() {
+        let ctrl = |c| key(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let keymap = Keymap::default();
+        assert!(keymap.starts_chord(Layer::Global, &ctrl('x')));
+        assert_eq!(
+            keymap.chord_actions(Layer::Global, "ctrl+x", &ctrl('s')),
+            [Action::SendNow]
+        );
+        assert_eq!(
+            keymap.chord_actions(Layer::Global, "ctrl+x", &ctrl('e')),
+            [Action::Editor]
+        );
+        assert_eq!(
+            keymap.chord_actions(
+                Layer::Global,
+                "ctrl+x",
+                &key(KeyCode::Tab, KeyModifiers::NONE)
+            ),
+            [Action::HeadsUpFocus]
+        );
+        let overrides = BTreeMap::from([("send_now".to_owned(), "ctrl+k ctrl+k".to_owned())]);
+        let keymap = Keymap::from_settings(&overrides).unwrap();
+        assert_eq!(
+            keymap.chord_actions(Layer::Global, "ctrl+k", &ctrl('k')),
+            [Action::SendNow]
+        );
+        assert!(
+            keymap
+                .chord_actions(Layer::Global, "ctrl+x", &ctrl('s'))
+                .is_empty()
+        );
+        let three = BTreeMap::from([("send_now".to_owned(), "a b c".to_owned())]);
+        assert!(Keymap::from_settings(&three).is_err());
     }
 
     #[test]
@@ -621,9 +719,12 @@ mod tests {
         for action in Action::ALL {
             assert_eq!(Action::from_name(action.name()), Some(action));
             assert!(!keymap.keys(action).is_empty(), "{action}");
-            for key in keymap.keys(action) {
-                let spec = KeySpec::parse(&key).unwrap();
-                assert_eq!(spec.to_string(), key);
+            // Each key of a binding reads back as written, two keys in a row too.
+            for binding in keymap.keys(action) {
+                for key in binding.split(' ') {
+                    let spec = KeySpec::parse(key).unwrap();
+                    assert_eq!(spec.to_string(), key);
+                }
             }
         }
     }

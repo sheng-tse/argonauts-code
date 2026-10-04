@@ -410,6 +410,9 @@ pub(crate) mod tests {
                 session_id: Some("v-1".to_owned()),
                 model: None,
                 tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             }),
         ));
         state.apply(&envelope(
@@ -507,6 +510,7 @@ pub(crate) mod tests {
                 source: QuotaSource::RateLimitEvent,
                 observed_at: at(0),
                 detail: None,
+                wrap_up: false,
             }))
         };
         let mut state = RunState::default();

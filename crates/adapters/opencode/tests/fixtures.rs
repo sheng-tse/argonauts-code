@@ -77,6 +77,9 @@ fn opencode_events_parse() {
             session_id: Some(SESSION.to_owned()),
             model: None,
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         }
     );
     let inits = events

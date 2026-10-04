@@ -303,7 +303,7 @@ pub(crate) async fn builtin_checks(
         .services()
         .policy
         .hard_limits()
-        .check_card_diff(&spec, &diff);
+        .check_card_tree_diff(&spec, &diff, &tree.path);
     let builtin = builtin_outcomes(&violations);
     for outcome in &builtin {
         host.record(Some(card), None, RunEventKind::Gate(outcome.clone()))?;

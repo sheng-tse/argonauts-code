@@ -1329,6 +1329,7 @@ async fn original_back_after_its_quota_reset_leaves_a_notice() -> anyhow::Result
         source: QuotaSource::RateLimitEvent,
         observed_at: bench.host.now(),
         detail: None,
+        wrap_up: false,
     };
     let notes = || -> Vec<String> {
         bench

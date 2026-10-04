@@ -162,6 +162,7 @@ fn read_only_reply_streams_text_then_succeeds() {
             session_id,
             model,
             tools,
+            ..
         } => {
             assert_eq!(
                 session_id.as_deref(),

@@ -218,6 +218,9 @@ impl Session {
             session_id: self.session_id.clone(),
             model: self.model.clone(),
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         });
 
         let mut text = self.start.prompt.clone();

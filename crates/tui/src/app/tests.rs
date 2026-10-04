@@ -2185,3 +2185,108 @@ fn a_views_notice_shows_over_its_footer_while_it_lasts() {
     let rows = screen(&ui);
     assert!(rows[rows.len() - 1].contains("esc back"), "{rows:#?}");
 }
+
+use argonauts_core::app::UiCommand as Command;
+
+fn heads_up() -> crate::bottom::HeadsUp {
+    use argonauts_core::screen::{Drawn, DrawnButton, DrawnLook, DrawnRow, DrawnSpan};
+    let button = |label: &str, handle| DrawnButton {
+        label: label.to_owned(),
+        plugin: "cc-plugin-you-should-know".to_owned(),
+        handle,
+    };
+    crate::bottom::HeadsUp::new(Drawn {
+        rows: vec![DrawnRow {
+            spans: vec![DrawnSpan {
+                text: "✦ Heads up · Dana is away until Monday.".to_owned(),
+                look: DrawnLook::Plain,
+            }],
+        }],
+        buttons: vec![
+            button("Learn more", 11),
+            button("Knew this already", 12),
+            button("Dismiss", 13),
+        ],
+        left_out: Vec::new(),
+    })
+}
+
+#[test]
+fn ctrl_x_chords_send_now_and_reach_the_heads_up() {
+    let (mut ui, t0) = ui();
+    ui.model_mut().bottom.send_now = true;
+    ui.model_mut().bottom.queued = vec!["also check the changelog".into()];
+    // Ctrl+X waits for the second key, which completes the chord.
+    assert!(chord(&mut ui, 'x', t0).is_empty());
+    assert_eq!(
+        chord(&mut ui, 's', t0 + Duration::from_millis(400)),
+        [UiAction::Command(Command::SendNow)]
+    );
+    // Ctrl+Enter, where the terminal tells it apart.
+    let ctrl_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert_eq!(
+        ui.handle_event(Event::Key(ctrl_enter), t0),
+        [UiAction::Command(Command::SendNow)]
+    );
+    // Ctrl+X then nothing for 1.5 s does nothing, and the next key acts alone.
+    assert!(chord(&mut ui, 'x', t0).is_empty());
+    let late = t0 + Duration::from_millis(1600);
+    assert!(chord(&mut ui, 's', late).is_empty());
+    press(&mut ui, KeyCode::Char('a'), late);
+    assert_eq!(ui.model().bottom.composer.text(), "a");
+
+    // Ctrl+X Tab gives the heads-up the keys; a number presses its button.
+    ui.model_mut().bottom.heads_up = heads_up();
+    chord(&mut ui, 'x', t0);
+    press(&mut ui, KeyCode::Tab, t0);
+    assert!(ui.model().bottom.heads_up.has_focus());
+    assert_eq!(
+        press(&mut ui, KeyCode::Char('0'), t0),
+        [UiAction::Command(Command::PressHeadsUp {
+            plugin: "cc-plugin-you-should-know".into(),
+            handle: 13,
+        })]
+    );
+    press(&mut ui, KeyCode::Right, t0);
+    assert_eq!(
+        press(&mut ui, KeyCode::Enter, t0),
+        [UiAction::Command(Command::PressHeadsUp {
+            plugin: "cc-plugin-you-should-know".into(),
+            handle: 12,
+        })]
+    );
+    // Typing never reaches the input while it has the keys; Esc gives them back.
+    press(&mut ui, KeyCode::Char('b'), t0);
+    assert_eq!(ui.model().bottom.composer.text(), "a");
+    press(&mut ui, KeyCode::Esc, t0);
+    assert!(!ui.model().bottom.heads_up.has_focus());
+    // Ctrl+X Ctrl+A hides it and shows it again.
+    chord(&mut ui, 'x', t0);
+    chord(&mut ui, 'a', t0);
+    assert!(!ui.model().bottom.heads_up.shows());
+    chord(&mut ui, 'x', t0);
+    chord(&mut ui, 'a', t0);
+    assert!(ui.model().bottom.heads_up.shows());
+}
+
+#[test]
+fn send_now_with_text_and_nothing_queued_sends_the_text_first() {
+    let (mut ui, t0) = ui();
+    ui.model_mut().bottom.send_now = true;
+    type_text(&mut ui, "also this", t0);
+    let ctrl_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert_eq!(
+        ui.handle_event(Event::Key(ctrl_enter), t0),
+        [
+            UiAction::submit("also this"),
+            UiAction::Command(Command::SendNow)
+        ]
+    );
+    // Where the session can't take it, the key does nothing of the kind.
+    ui.model_mut().bottom.send_now = false;
+    type_text(&mut ui, "later", t0);
+    assert!(
+        !ui.handle_event(Event::Key(ctrl_enter), t0)
+            .contains(&UiAction::Command(Command::SendNow))
+    );
+}

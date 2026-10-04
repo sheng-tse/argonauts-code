@@ -1100,6 +1100,7 @@ mod tests {
                     source: QuotaSource::AppServer,
                     observed_at: t0(),
                     detail: None,
+                    wrap_up: false,
                 })
             })
             .unwrap();

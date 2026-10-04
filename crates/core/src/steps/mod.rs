@@ -19,7 +19,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::events::session::{EndReason, SessionEnd};
+use crate::events::session::{EndReason, SessionEnd, loaded_words};
 use crate::future::BoxFuture;
 use crate::worker::{SessionControl, SessionSpec, Worker, WorkerError, WorkerEvent};
 use std::sync::Arc;
@@ -138,6 +138,9 @@ fn ended_early(end: &SessionEnd) -> String {
         | EndReason::StartFailed { message }
         | EndReason::Crashed { message } => first_line(message),
         EndReason::AdapterBroken { detail } => first_line(detail),
+        EndReason::IsolationBroken { plugins, skills } => {
+            format!("it loaded {}", loaded_words(plugins, skills))
+        }
         EndReason::ModelUnavailable { model } => format!("{model} isn't available"),
         other => serde_json::to_value(other)
             .ok()

@@ -11,6 +11,7 @@ use crate::events::VendorEvent;
 use crate::events::session::{InputPart, QueuedMessage, SessionEnd, SessionEvent};
 use crate::future::BoxFuture;
 use crate::names::{RoleName, SessionKey, VendorId, WorkerRef};
+use crate::screen::ScreenRequest;
 use crate::settings::budget::BudgetAmount;
 use crate::settings::sessions::{Compaction, NativeFanout, SessionLifetime};
 use crate::steps::StepName;
@@ -84,7 +85,11 @@ pub struct SessionSpec {
     /// Cap on the harness's own subagents.
     pub native_fanout: NativeFanout,
     /// The CLI loads none of its own MCP servers, plugins, or project settings, as for a blind
-    /// reviewer or the approver. Every other session gets what the CLI loads when run directly.
+    /// reviewer or the approver, where it can keep them out ([`Capabilities::isolates`]). A
+    /// session on one that can't says so. Every other session gets what the CLI loads when run
+    /// directly.
+    ///
+    /// [`Capabilities::isolates`]: crate::Capabilities::isolates
     pub isolated: bool,
     /// Read by the agent's `argonauts_status` MCP tool, pre-filtered for the role. `None` turns
     /// the tool off.
@@ -211,6 +216,15 @@ pub enum SessionControl {
     StopAfterTool,
     /// Interrupt the turn, then kill the process tree.
     Stop,
+    /// A message of yours, written to the open input at once with `uuid`, for a CLI that holds
+    /// it until the model can read it. `MessageState` events say how far it got.
+    Send { text: String, uuid: String },
+    /// What waits goes to the model now, and a running tool moves to the background.
+    SendNow { uuid: String },
+    /// Takes back a message the model hasn't read.
+    TakeBack { uuid: String },
+    /// A request of a screen that joins the session.
+    Screen(ScreenRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -275,6 +289,13 @@ pub trait Worker: Send + Sync {
     fn cheapest_model(&self) -> Option<String> {
         None
     }
+
+    /// The instruction files its harness loads by itself in `workdir`, as
+    /// [`Adapter::instruction_files`](crate::Adapter::instruction_files) says.
+    fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
+        let _ = (workdir, isolated);
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -301,6 +322,13 @@ pub trait WorkerDirectory: Send + Sync {
     /// The CLI behind `worker` keeps a read-only session from changing files with its own
     /// flags and sandbox. False when that isn't known, so callers keep their own sandbox.
     fn enforces_read_only(&self, worker: &WorkerRef) -> bool {
+        let _ = worker;
+        false
+    }
+    /// The CLI behind `worker` keeps your MCP servers, plugins, and hooks out of an isolated
+    /// session and says when it couldn't, or `worker` is an endpoint, which loads nothing.
+    /// False when that isn't known, so a blind role never goes there.
+    fn isolates(&self, worker: &WorkerRef) -> bool {
         let _ = worker;
         false
     }

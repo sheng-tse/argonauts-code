@@ -10,12 +10,12 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{ParkReason, RunMode, RunOutcome};
 use argonauts_core::events::session::{VendorAgentState, VendorWorkflow};
 use argonauts_core::settings::budget::BudgetUnit;
-use argonauts_core::views::vendor_workflow_id;
+use argonauts_core::views::{conversation_run, vendor_workflow_id};
 use argonauts_core::{Spend, TodoStatus};
 use time::OffsetDateTime;
 
 use crate::bottom::{AgentRow, AgentState, WorkflowRow, WorkflowRowState};
-use crate::state::{AppState, RunState, SessionState, SessionStatus};
+use crate::state::{AppState, RunState, SessionState, SessionStatus, binding_reading};
 use crate::views::panes;
 
 use super::Cx;
@@ -62,55 +62,70 @@ pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<Wor
         std::iter::once(run_row(run, state.status.as_ref(), wall, now))
             .chain(vendor_rows(run, wall, now))
     });
+    // A workflow the conversation's own CLI runs gets a row as a run's does.
+    let conversation = conversation_run();
+    let chat = state
+        .chat
+        .workflows
+        .iter()
+        .filter(|workflow| !workflow.ended())
+        .map(|workflow| vendor_row(&conversation, workflow, wall, now));
     background
         .into_iter()
         .map(background_row)
         .chain(held)
+        .chain(chat)
         .collect()
 }
 
 /// The key of a panel row for a workflow an agent's own CLI runs: its run, `#`, and the id the
 /// views give it.
-pub(crate) fn vendor_key(run: &RunState, workflow: &VendorWorkflow) -> String {
-    format!("{}#{}", run.id, vendor_workflow_id(&workflow.id))
+pub(crate) fn vendor_key(run: &RunId, workflow: &VendorWorkflow) -> String {
+    format!("{run}#{}", vendor_workflow_id(&workflow.id))
 }
 
 /// A row for each workflow an agent's own CLI is running, as Claude Code's panel lists its own.
 /// Its time counts from its start, so a report of its totals never sets it back.
 fn vendor_rows(run: &RunState, wall: OffsetDateTime, now: Instant) -> Vec<WorkflowRow> {
-    let wall_ms = u64::try_from((wall - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).ok();
     run.sessions_in_order()
         .flat_map(|session| &session.workflows)
         .filter(|workflow| !workflow.ended())
-        .map(|workflow| {
-            let name = Some(workflow.name.trim())
-                .filter(|name| !name.is_empty())
-                .unwrap_or("workflow");
-            let mut row =
-                WorkflowRow::new(vendor_key(run, workflow), name, WorkflowRowState::Running);
-            row.agents_total = u32::try_from(workflow.agents.len()).unwrap_or(u32::MAX);
-            row.agents_done = u32::try_from(
-                workflow
-                    .agents
-                    .iter()
-                    .filter(|agent| agent.state == VendorAgentState::Done)
-                    .count(),
-            )
-            .unwrap_or(u32::MAX);
-            row.elapsed_ms = workflow.elapsed_ms(wall_ms);
-            row.measured_at = Some(now);
-            row.tokens = workflow.tokens;
-            row.phase = workflow
-                .agents
-                .iter()
-                .rev()
-                .find(|agent| agent.state == VendorAgentState::Running)
-                .and_then(|agent| agent.phase)
-                .and_then(|index| workflow.phases.iter().find(|p| p.index == index))
-                .map(|phase| phase.title.clone());
-            row
-        })
+        .map(|workflow| vendor_row(&run.id, workflow, wall, now))
         .collect()
+}
+
+fn vendor_row(
+    run: &RunId,
+    workflow: &VendorWorkflow,
+    wall: OffsetDateTime,
+    now: Instant,
+) -> WorkflowRow {
+    let wall_ms = u64::try_from((wall - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).ok();
+    let name = Some(workflow.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("workflow");
+    let mut row = WorkflowRow::new(vendor_key(run, workflow), name, WorkflowRowState::Running);
+    row.agents_total = u32::try_from(workflow.agents.len()).unwrap_or(u32::MAX);
+    row.agents_done = u32::try_from(
+        workflow
+            .agents
+            .iter()
+            .filter(|agent| agent.state == VendorAgentState::Done)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    row.elapsed_ms = workflow.elapsed_ms(wall_ms);
+    row.measured_at = Some(now);
+    row.tokens = workflow.tokens;
+    row.phase = workflow
+        .agents
+        .iter()
+        .rev()
+        .find(|agent| agent.state == VendorAgentState::Running)
+        .and_then(|agent| agent.phase)
+        .and_then(|index| workflow.phases.iter().find(|p| p.index == index))
+        .map(|phase| phase.title.clone());
+    row
 }
 
 /// The run's own name, `fix-slugify-median`, or before it has one, its workflow and title,
@@ -275,7 +290,15 @@ pub fn agent_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<A
         .flat_map(|run| {
             run.sessions_in_order()
                 .filter(|session| session.is_running())
-                .map(move |session| agent_row(run, session, &state.names, wall, now))
+                .map(move |session| {
+                    let mut row = agent_row(run, session, &state.names, wall, now);
+                    row.markers.wrapping_up = state
+                        .quotas
+                        .get(&session.worker.worker)
+                        .and_then(|readings| binding_reading(readings))
+                        .is_some_and(|reading| reading.wrap_up);
+                    row
+                })
         })
         .collect()
 }

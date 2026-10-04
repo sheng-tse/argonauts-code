@@ -16,7 +16,7 @@ use argonauts_core::events::session::{
     WrapUpVia,
 };
 use argonauts_core::worker::{SessionControl, SteerSupport};
-use argonauts_core::{BudgetDimension, StopSignal, StreamParser};
+use argonauts_core::{AgentEvent, BudgetDimension, MessageStage, StopSignal, StreamParser};
 use tokio::sync::mpsc;
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
@@ -35,6 +35,9 @@ use crate::rawlog::RawLog;
 /// How long output may keep coming after the agent exits, from something it started.
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 const AFTER_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long a finished turn's input stays open for what the CLI runs in the background, which
+/// closing it would stop.
+const BACKGROUND_WAIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 pub async fn run(running: Running, launch: Launch) -> SessionEnd {
     let Running {
@@ -77,6 +80,7 @@ pub async fn run(running: Running, launch: Launch) -> SessionEnd {
     announce_start(&ctx, &out, &mut obs, &launch);
     let live = Live::new(&ctx, process, group, &launch);
     let mut session = Lines {
+        started,
         steer: ctx.capabilities.steer,
         ctx,
         out,
@@ -93,6 +97,7 @@ pub async fn run(running: Running, launch: Launch) -> SessionEnd {
         wrap_up_refused: false,
         next_turn: Vec::new(),
         steer_after_tool: Vec::new(),
+        joining: Vec::new(),
         resume_with: Vec::new(),
         failure: None,
         exit: (None, None),
@@ -117,13 +122,17 @@ struct Live {
     exit: Option<ExitStatus>,
     drain_until: Option<TokioInstant>,
     leftovers_killed: bool,
+    /// Tasks the CLI reports running in the background, which end when the input closes.
+    background: usize,
+    /// When a finished turn stops waiting on them.
+    background_until: Option<TokioInstant>,
 }
 
 impl Live {
     fn new(ctx: &Context, process: AgentProcess, group: Group, launch: &Launch) -> Self {
         Self {
             process,
-            parser: ctx.adapter.parser(),
+            parser: ctx.adapter.session_parser(&launch.request),
             group: Some(group),
             launch: launch.record.clone(),
             input_open: launch.command.keep_stdin_open,
@@ -132,11 +141,14 @@ impl Live {
             exit: None,
             drain_until: None,
             leftovers_killed: false,
+            background: 0,
+            background_until: None,
         }
     }
 }
 
 struct Lines {
+    started: Instant,
     ctx: Arc<Context>,
     out: Outbox,
     obs: Observer,
@@ -157,6 +169,9 @@ struct Lines {
     next_turn: Vec<QueuedMessage>,
     /// Steering that waits for the running tool call to finish.
     steer_after_tool: Vec<QueuedMessage>,
+    /// Your messages written mid-turn that the model hasn't read yet, by uuid. One still
+    /// waiting at the turn's end starts the next turn in the same process.
+    joining: Vec<String>,
     /// What waits for an interrupt and a resume.
     resume_with: Vec<Pending>,
     /// A resume that couldn't start.
@@ -172,6 +187,7 @@ impl Lines {
             // The plan goes on after the leader exits, for what's left of its group.
             let stop_at = self.stopping.as_ref().and_then(Stopping::next_at);
             let drain_at = self.live.drain_until;
+            let background_at = self.live.background_until;
             tokio::select! {
                 event = self.live.process.next_event() => match event {
                     Some(ProcessEvent::Line(line)) => self.line(line),
@@ -187,8 +203,15 @@ impl Lines {
                 () = sleep_until(or_far(drain_at)), if drain_at.is_some() => {
                     self.drain_timeout().await;
                 }
+                () = sleep_until(or_far(background_at)), if background_at.is_some() => {
+                    self.background_wait_over();
+                }
                 () = sleep_until(next_tick) => {
                     next_tick = TokioInstant::now() + every;
+                    // A quiet wait on the background isn't the CLI going quiet mid-turn.
+                    if self.live.background_until.is_some() {
+                        self.obs.output();
+                    }
                     let cpu = self.live.group.as_ref().and_then(Group::last_busy);
                     let actions = self.obs.tick(cpu);
                     self.after_events(actions);
@@ -265,6 +288,14 @@ impl Lines {
         };
         let mut actions = Vec::new();
         for event in events {
+            if let AgentEvent::MessageState { uuid, state } = &event
+                && matches!(state, MessageStage::Started | MessageStage::TakenBack)
+            {
+                self.joining.retain(|waiting| waiting != uuid);
+            }
+            if let AgentEvent::BackgroundTasks { running, ended } = &event {
+                self.background_changed(running.len(), *ended);
+            }
             actions.extend(self.obs.event(event));
         }
         self.after_events(actions);
@@ -419,6 +450,28 @@ impl Lines {
                 self.stop_after_tool_if_idle();
             }
             Some(SessionControl::Stop) => self.begin_stop(StopCause::Stopped),
+            Some(SessionControl::Send { text, uuid }) => self.send_message(&text, uuid),
+            // From the agent view, which names no message: what waits for the tool call.
+            Some(SessionControl::SendNow { uuid }) if uuid.is_empty() => self.steer_held_now(),
+            Some(SessionControl::SendNow { uuid }) => {
+                let line = self.ctx.adapter.send_now_line(&uuid);
+                self.write_control(line);
+            }
+            Some(SessionControl::TakeBack { uuid }) => {
+                let line = self.ctx.adapter.cancel_line(&uuid);
+                if !self.write_control(line) {
+                    // Nothing can read it now, so it's as good as taken back.
+                    self.joining.retain(|waiting| *waiting != uuid);
+                    self.out.agent(AgentEvent::MessageState {
+                        uuid,
+                        state: MessageStage::TakenBack,
+                    });
+                }
+            }
+            Some(SessionControl::Screen(request)) => {
+                let line = self.ctx.adapter.screen_line(&request);
+                self.write_control(line);
+            }
             None => {
                 // Every sender is gone: nobody can stop it later, so stop it now.
                 self.control_open = false;
@@ -464,6 +517,27 @@ impl Lines {
         }
     }
 
+    /// Steering held for the running tool call goes in now with a uuid, and the CLI hands it to
+    /// the model at once, the tool moving to the background (Claude Code's send now).
+    fn steer_held_now(&mut self) {
+        if self.steer_after_tool.is_empty() || !self.ctx.adapter.capabilities().send_now {
+            return;
+        }
+        let held = std::mem::take(&mut self.steer_after_tool);
+        let items = held
+            .iter()
+            .map(|message| Pending::message(message, Delivery::Steer))
+            .collect();
+        let uuid = uuid::Uuid::new_v4().to_string();
+        if !self.write_input_as(items, Some(&uuid)) {
+            self.steer_after_tool = held;
+            return;
+        }
+        self.joining.push(uuid.clone());
+        let line = self.ctx.adapter.send_now_line(&uuid);
+        self.write_control(line);
+    }
+
     fn queue_next_turn(&mut self, message: QueuedMessage) {
         self.out.session(SessionEvent::Queued(message.clone()));
         self.next_turn.push(message);
@@ -479,6 +553,51 @@ impl Lines {
             .collect()
     }
 
+    /// A task that ends between turns starts a turn of the CLI's own, to tell the model, and
+    /// that turn's result follows like any other's.
+    fn background_changed(&mut self, running: usize, ended: bool) {
+        if ended && self.turn_done() && self.live.input_open && self.stop_cause.is_none() {
+            self.live.turns_sent += 1;
+        }
+        self.live.background = running;
+        if running == 0 {
+            self.live.background_until = None;
+        }
+    }
+
+    /// An hour from now, or the session's wall-clock limit when that comes first, since the
+    /// session's time covers what it runs in the background too.
+    fn background_deadline(&self) -> TokioInstant {
+        let wait = TokioInstant::now() + BACKGROUND_WAIT;
+        let wall = self
+            .ctx
+            .spec
+            .limits
+            .max_minutes
+            .and_then(|minutes| std::time::Duration::try_from_secs_f64(minutes * 60.0).ok())
+            .map(|limit| TokioInstant::from_std(self.started + limit));
+        wall.map_or(wait, |wall| wall.min(wait))
+    }
+
+    /// The turn ended long ago and the background still runs: closing the input stops it.
+    fn background_wait_over(&mut self) {
+        self.live.background_until = None;
+        if self.live.background == 0 || !self.live.input_open || !self.turn_done() {
+            return;
+        }
+        let tasks = match self.live.background {
+            1 => "a task".to_owned(),
+            n => format!("{n} tasks"),
+        };
+        self.out.notice(format!(
+            "{} still ran {tasks} in the background when the wait for it ran out, so its input \
+             closed, and that stops them",
+            self.ctx.adapter.display_name()
+        ));
+        self.live.process.close_input();
+        self.live.input_open = false;
+    }
+
     /// Every turn sent so far has its result.
     fn turn_done(&self) -> bool {
         self.obs.facts.results >= self.live.turns_sent
@@ -487,11 +606,21 @@ impl Lines {
     /// Sends `items` through the open input: a turn of their own, or a part of the running turn
     /// where the adapter says mid-turn input joins it.
     fn write_input(&mut self, items: Vec<Pending>) -> bool {
+        self.write_input_as(items, None)
+    }
+
+    /// As [`Self::write_input`], with the uuid the CLI reports the message's progress by.
+    fn write_input_as(&mut self, items: Vec<Pending>, uuid: Option<&str>) -> bool {
         if !self.live.input_open || self.stop_cause.is_some() {
             return false;
         }
         let parts = joined_parts(&items);
-        let Some(mut line) = self.ctx.adapter.input_line(&prompt_text(&parts)) else {
+        let text = prompt_text(&parts);
+        let line = match uuid {
+            Some(uuid) => self.ctx.adapter.message_line(&text, uuid),
+            None => self.ctx.adapter.input_line(&text),
+        };
+        let Some(mut line) = line else {
             return false;
         };
         if !line.ends_with('\n') {
@@ -511,6 +640,45 @@ impl Lines {
             ..self.live.launch.clone()
         };
         announce(&self.out, &items, parts, launch, self.queued());
+        true
+    }
+
+    /// Your message, written at once for a CLI that holds it until the model can read it.
+    /// Between turns it starts the next one; mid-turn it joins the running one. One that
+    /// can't go out says so, and goes as the conversation's next turn instead.
+    fn send_message(&mut self, text: &str, uuid: String) {
+        let line = self.ctx.adapter.message_line(text, &uuid);
+        let between_turns = self.turn_done();
+        if !self.write_control(line) {
+            self.out.agent(AgentEvent::MessageState {
+                uuid,
+                state: MessageStage::NotSent,
+            });
+            return;
+        }
+        if between_turns {
+            self.live.turns_sent += 1;
+        } else {
+            self.joining.push(uuid);
+        }
+    }
+
+    /// A line the adapter made for the open input, such as a control request. False when it
+    /// didn't go out.
+    fn write_control(&mut self, line: Option<String>) -> bool {
+        let Some(mut line) = line else {
+            return false;
+        };
+        if !self.live.input_open || self.stop_cause.is_some() {
+            return false;
+        }
+        if !line.ends_with('\n') {
+            line.push('\n');
+        }
+        if !self.live.process.send_input(line) {
+            self.live.input_open = false;
+            return false;
+        }
         true
     }
 
@@ -639,9 +807,20 @@ impl Lines {
         }
         let input_turn_over =
             self.steer == SteerSupport::Input && self.turn_done() && self.stop_cause.is_none();
+        // What the model hadn't read when the turn ended is the next turn, in this process.
+        if input_turn_over && !self.joining.is_empty() {
+            self.joining.clear();
+            self.live.turns_sent += 1;
+            return;
+        }
         if input_turn_over {
             if !self.next_turn.is_empty() {
                 self.flush_next_turn();
+            } else if self.live.background > 0 {
+                // Closing the input would stop what runs in the background, so it waits.
+                if self.live.input_open && self.live.background_until.is_none() {
+                    self.live.background_until = Some(self.background_deadline());
+                }
             } else if self.live.input_open {
                 self.live.process.close_input();
                 self.live.input_open = false;

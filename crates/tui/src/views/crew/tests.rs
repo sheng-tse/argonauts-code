@@ -244,6 +244,14 @@ fn quotas_read_as_one_short_part_each() {
         part(QuotaStatus::Rejected, Some(1.0)),
         ("Codex out".to_owned(), Role::Error)
     );
+    let finishing = QuotaReading {
+        wrap_up: true,
+        ..reading(QuotaStatus::Rejected, Some(1.0))
+    };
+    assert_eq!(
+        draw::quota_part("Claude", &finishing),
+        ("Claude wrapping up".to_owned(), Role::Warning)
+    );
     assert_eq!(
         part(QuotaStatus::Unknown, None),
         ("Codex ?".to_owned(), Role::Dim)

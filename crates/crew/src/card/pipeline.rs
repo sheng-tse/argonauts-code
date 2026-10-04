@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use argonauts_core::CardId;
 use argonauts_core::events::card::{AttemptCause, CardEvent, CardKind, CardState};
-use argonauts_core::events::session::{EndReason, SessionEnd};
+use argonauts_core::events::session::{EndReason, SessionEnd, loaded_words};
 use argonauts_core::limits::{HandoffPacket, RecoveryAction};
 use argonauts_core::names::WorkerRef;
 use argonauts_core::steps::card::ReportStatus;
@@ -897,6 +897,9 @@ fn end_text(reason: &EndReason) -> String {
         EndReason::ContextFull => "context full".to_owned(),
         EndReason::ModelUnavailable { model } => format!("{model} is unavailable"),
         EndReason::AdapterBroken { detail } => format!("adapter broken: {detail}"),
+        EndReason::IsolationBroken { plugins, skills } => {
+            format!("isolation broken: loaded {}", loaded_words(plugins, skills))
+        }
         EndReason::StartFailed { message } => format!("didn't start: {message}"),
         EndReason::Crashed { message } => format!("crashed: {message}"),
     }

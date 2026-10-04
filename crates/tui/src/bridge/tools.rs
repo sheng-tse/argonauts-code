@@ -210,6 +210,15 @@ fn json_block(value: &Value) -> ToolItem {
 /// Adds what the call did under it and marks it done or failed.
 pub fn finish_call(call: &mut ToolCall, ok: bool, output: Option<&str>) {
     let output = output.filter(|text| !text.trim().is_empty());
+    // Send now moved a running command to the background: say so as Claude Code's screen does.
+    if ok && output.is_some_and(|text| text.starts_with(MOVED_TO_BACKGROUND)) {
+        call.push(ToolItem::Text {
+            text: MOVED_NOTE.to_owned(),
+            tone: Tone::Dim,
+        });
+        call.finish(ok);
+        return;
+    }
     let (label, target) = match &call.title {
         ToolTitle::Call { name, args } => (name.clone(), args.clone()),
         other => (other.plain(), String::new()),
@@ -231,6 +240,11 @@ pub fn finish_call(call: &mut ToolCall, ok: bool, output: Option<&str>) {
     }
     call.finish(ok);
 }
+
+/// How Claude Code 2.1.289 starts a command's result when send now moved it to the background.
+const MOVED_TO_BACKGROUND: &str = "Command was moved to the background";
+const MOVED_NOTE: &str =
+    "Moved to the background so your message could reach Claude. It's still running.";
 
 /// Argonauts' own tools: the report, however the vendor sends it, and `argonauts_status`.
 /// They're how a session talks to Argonauts rather than work it does, so the transcript leaves
@@ -1370,6 +1384,16 @@ mod tests {
         let mut zero = start_call("claude-code", "Bash", &json!({"command": "x"}));
         finish_call(&mut zero, true, Some("Exit code 0\nfine"));
         assert_eq!(rows(&zero, 80), "● Bash(x)\n  ⎿  fine");
+        // Send now moved it to the background (Claude Code 2.1.289's words, cut).
+        let mut moved = start_call("claude-code", "Bash", &json!({"command": "./slow-test.sh"}));
+        let output = "Command was moved to the background (ID: bmvwwjv0b) so that a message \
+                      that arrived while it was running can reach you; it was not interrupted.";
+        finish_call(&mut moved, true, Some(output));
+        assert_eq!(
+            rows(&moved, 100),
+            "● Bash(./slow-test.sh)\n  ⎿  Moved to the background so your message could reach \
+             Claude. It's still running."
+        );
     }
 
     #[test]

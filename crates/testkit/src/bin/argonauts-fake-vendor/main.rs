@@ -128,6 +128,11 @@ fn play(
                 writeln!(out, "{line}")?;
                 out.flush()?;
             }
+            FakeStep::EmitWithUuid(line) => {
+                let uuid = stdin.last_uuid.as_deref().unwrap_or_default();
+                writeln!(out, "{}", line.replace("{uuid}", uuid))?;
+                out.flush()?;
+            }
             FakeStep::EmitFile(path) => {
                 let path = base.join(path);
                 let text = fs::read_to_string(&path)
@@ -252,6 +257,8 @@ fn log(line: &LogLine) {
 struct Stdin {
     reader: io::BufReader<io::Stdin>,
     prompt: Option<String>,
+    /// The uuid of the last message read that carried one.
+    last_uuid: Option<String>,
 }
 
 impl Stdin {
@@ -259,6 +266,7 @@ impl Stdin {
         Self {
             reader: io::BufReader::new(io::stdin()),
             prompt: None,
+            last_uuid: None,
         }
     }
 
@@ -268,7 +276,7 @@ impl Stdin {
         }
         self.prompt = match how {
             StdinPrompt::None => None,
-            StdinPrompt::Line => self.line(),
+            StdinPrompt::Line => self.prompt_line(),
             StdinPrompt::All => {
                 let mut text = String::new();
                 self.reader.read_to_string(&mut text).ok().map(|_| text)
@@ -276,11 +284,35 @@ impl Stdin {
         };
     }
 
+    /// The first line that isn't a control request, as Claude Code's `initialize` ahead of a
+    /// conversation's message is. Those go to the log.
+    fn prompt_line(&mut self) -> Option<String> {
+        loop {
+            let line = self.line()?;
+            if !line.contains(r#""type":"control_request""#) {
+                return Some(line);
+            }
+            log(&LogLine::StdinLine {
+                pid: std::process::id(),
+                line,
+            });
+        }
+    }
+
     fn line(&mut self) -> Option<String> {
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
             Ok(0) | Err(_) => None,
-            Ok(_) => Some(line.trim_end_matches(['\n', '\r']).to_owned()),
+            Ok(_) => {
+                let line = line.trim_end_matches(['\n', '\r']).to_owned();
+                let uuid = serde_json::from_str::<serde_json::Value>(&line)
+                    .ok()
+                    .and_then(|value| value.get("uuid")?.as_str().map(str::to_owned));
+                if uuid.is_some() {
+                    self.last_uuid = uuid;
+                }
+                Some(line)
+            }
         }
     }
 }

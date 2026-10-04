@@ -199,6 +199,17 @@ impl CardList {
         Some(self.own_answer_option().unwrap_or(after) + 1)
     }
 
+    /// A free-text question: its only answer is yours, so it reads as an answer to type, as
+    /// the card shows its answer field open, rather than a list of one.
+    pub fn is_answer_field(&self) -> bool {
+        let own = match self.options.as_slice() {
+            [] => self.free_text == FreeText::Answer,
+            [only] => only.action == AnswerAction::Answer,
+            _ => false,
+        };
+        own && self.remember.is_none()
+    }
+
     pub(super) fn own_answer_option(&self) -> Option<usize> {
         self.options
             .iter()
@@ -227,6 +238,10 @@ impl CardList {
         };
         let mut lines = vec![format!("{label}: {}", spoken(&self.title))];
         lines.extend(self.body.iter().map(|line| format!("  {line}")));
+        if self.is_answer_field() {
+            lines.push(self.how_to_answer());
+            return lines;
+        }
         for (n, option) in self.options.iter().enumerate() {
             let mut text = format!("  {}. {}", n + 1, spoken(&option.label));
             if option.recommended {
@@ -252,6 +267,11 @@ impl CardList {
     }
 
     pub fn how_to_answer(&self) -> String {
+        if self.is_answer_field() {
+            return "answer: type 1: and then your answer, or 1 alone to type it on the next \
+                    line."
+                .to_owned();
+        }
         let mut text = String::from("answer: type a number.");
         if self.takes_note() {
             text.push_str(" To add a note, type it after a colon, as in 1: the note.");

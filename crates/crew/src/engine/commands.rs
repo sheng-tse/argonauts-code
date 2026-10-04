@@ -28,9 +28,10 @@ pub async fn handle(host: &Host, command: EngineCommand) -> EngineResult<()> {
         EngineCommand::Steer {
             session,
             text,
+            now,
             reply,
         } => {
-            let _ = reply.send(blackboard::commands::steer(host, &session, text).await);
+            let _ = reply.send(blackboard::commands::steer(host, &session, text, now).await);
         }
         EngineCommand::Mention {
             target,

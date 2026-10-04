@@ -117,6 +117,9 @@ impl Script {
             session_id: None,
             model: Some(self.model.clone()),
             tools: Vec::new(),
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         }))
     }
 }

@@ -22,7 +22,7 @@ pub mod versions;
 
 pub use details::{DoctorDetails, doctor_details};
 
-use versions::{in_tested_range, probe_flags_within};
+use versions::{VersionFit, probe_flags_within, version_fit};
 
 pub const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -30,6 +30,8 @@ pub const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Tested,
+    /// A later patch of the newest version recorded, which should work.
+    Newer,
     /// Installed, at a version nobody has recorded yet. It may still work.
     Untested,
     UnknownVersion,
@@ -40,6 +42,7 @@ impl AgentStatus {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Tested => "tested",
+            Self::Newer => "newer than tested",
             Self::Untested => "untested",
             Self::UnknownVersion => "unknown version",
             Self::NotInstalled => "not installed",
@@ -176,11 +179,11 @@ pub async fn check_agent_at(
     }
     if let Some(version) = &check.version {
         let flags = probe_flags_within(&path, adapter.id(), timeout).await;
-        let in_range = in_tested_range(version, adapter.tested_versions());
-        check.status = if in_range && flags.complete() {
-            AgentStatus::Tested
-        } else {
-            AgentStatus::Untested
+        check.status = match version_fit(version, adapter.tested_versions()) {
+            _ if !flags.complete() => AgentStatus::Untested,
+            VersionFit::Tested => AgentStatus::Tested,
+            VersionFit::Newer => AgentStatus::Newer,
+            VersionFit::Untested => AgentStatus::Untested,
         };
         if !flags.missing.is_empty() {
             check.problem = Some(format!(
@@ -451,7 +454,7 @@ pub(crate) mod tests {
         let newer_patch = codex_like(dir.path(), "0.158.9", &all_flags);
         let check = check_agent(&newer_patch, VERSION_TIMEOUT).await;
         assert_eq!(check.version.as_deref(), Some("0.158.9"));
-        assert_eq!(check.status, AgentStatus::Tested, "{check:?}");
+        assert_eq!(check.status, AgentStatus::Newer, "{check:?}");
         assert_eq!(check.problem, None);
 
         let dir = tempfile::tempdir().unwrap();

@@ -136,18 +136,43 @@ fn mentions(help: &str, flag: &str) -> bool {
     })
 }
 
-/// Whether `version` falls in the range the tested versions span: from the oldest tested one up
-/// to, not including, the next minor version after the newest.
-pub fn in_tested_range(version: &str, tested: &[&str]) -> bool {
+/// How an installed CLI's version stands against the versions its adapter was recorded with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionFit {
+    /// From the oldest recorded version to the newest.
+    Tested,
+    /// A later patch of the newest recorded minor, which should work.
+    Newer,
+    /// Older than any recording, a later minor, or no version at all.
+    Untested,
+}
+
+pub fn version_fit(version: &str, tested: &[&str]) -> VersionFit {
     let Some(version) = numbers(version) else {
-        return false;
+        return VersionFit::Untested;
     };
     let tested: Vec<_> = tested.iter().filter_map(|v| numbers(v)).collect();
     let (Some(oldest), Some(newest)) = (tested.iter().min(), tested.iter().max()) else {
-        return false;
+        return VersionFit::Untested;
     };
-    let ceiling = (newest.0, newest.1 + 1, 0);
-    *oldest <= version && version < ceiling
+    if *oldest <= version && version <= *newest {
+        VersionFit::Tested
+    } else if version > *newest && (version.0, version.1) == (newest.0, newest.1) {
+        VersionFit::Newer
+    } else {
+        VersionFit::Untested
+    }
+}
+
+/// Whether `version` is tested or a newer patch: from the oldest tested one up to, not
+/// including, the next minor version after the newest.
+pub fn in_tested_range(version: &str, tested: &[&str]) -> bool {
+    version_fit(version, tested) != VersionFit::Untested
+}
+
+/// The newest of `tested`, as written there.
+pub fn newest_tested<'a>(tested: &[&'a str]) -> Option<&'a str> {
+    tested.iter().copied().max_by_key(|v| numbers(v))
 }
 
 /// The range [`in_tested_range`] accepts, such as `2.1.284 up to 2.2`.
@@ -198,6 +223,21 @@ mod tests {
             tested_range_label(&tested).as_deref(),
             Some("2.1.284 up to 2.2")
         );
+    }
+
+    #[test]
+    fn a_later_patch_is_newer_and_a_later_minor_untested() {
+        let tested = ["2.1.284", "2.1.285", "2.1.289"];
+        assert_eq!(version_fit("2.1.289", &tested), VersionFit::Tested);
+        assert_eq!(version_fit("2.1.286", &tested), VersionFit::Tested);
+        assert_eq!(version_fit("2.1.291", &tested), VersionFit::Newer);
+        assert_eq!(version_fit("v2.1.300-beta.1", &tested), VersionFit::Newer);
+        assert_eq!(version_fit("2.2.0", &tested), VersionFit::Untested);
+        assert_eq!(version_fit("2.1.283", &tested), VersionFit::Untested);
+        assert_eq!(version_fit("banana", &tested), VersionFit::Untested);
+        assert_eq!(version_fit("2.1.289", &[]), VersionFit::Untested);
+        assert_eq!(newest_tested(&tested), Some("2.1.289"));
+        assert_eq!(newest_tested(&["0.9.0", "0.10.1"]), Some("0.10.1"));
     }
 
     #[test]

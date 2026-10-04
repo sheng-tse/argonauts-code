@@ -2,19 +2,28 @@
 //! sending one to the chat. They're the main agent's, or those of the agent whose session the
 //! conversation carries on, and they're looked up again whenever that CLI or its folder changes.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use argonauts_core::Adapter;
 use argonauts_core::NoteLevel;
+use argonauts_core::ReportedCommand;
 use argonauts_core::app::{AppEvent, UiCommand};
 use argonauts_core::input::{InputError, ParsedInput, parse_input};
 use argonauts_core::names::VendorId;
-use argonauts_core::vendor_commands::{CommandKind, VendorCommandSet};
+use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::vendor_commands::{
+    CommandKind, CommandSource, VendorCommand, VendorCommandSet,
+};
 use argonauts_core::vendor_sessions::VendorScan;
 
 use super::chat::{self, ChatState};
 use super::{Ctx, Effect};
+
+/// What each CLI reported last, by folder, so the `/` menu has a mod's commands before the
+/// next app session's first turn: `~/.argonauts/state/<cli>-commands.json`.
+const REPORTED_FILE: &str = "commands.json";
 
 #[derive(Default)]
 pub(crate) struct VendorCommands {
@@ -72,9 +81,114 @@ pub(crate) fn follow(ctx: &Ctx, state: &mut VendorCommands, chat: &ChatState) {
     }
 }
 
+/// The list the conversation's own session just reported, such as Claude Code's `initialize`
+/// reply or `commands_changed`. A plugin's or a mod's commands join the menu, kept for this
+/// folder; the CLI's own are in its table already.
+pub(crate) fn reported(
+    ctx: &Ctx,
+    state: &mut VendorCommands,
+    chat: &ChatState,
+    commands: &[ReportedCommand],
+) {
+    let cli = chat.cli(ctx).to_owned();
+    let folder = chat.folder(ctx).to_path_buf();
+    let theirs: Vec<ReportedCommand> = commands
+        .iter()
+        .filter(|command| !command.builtin)
+        .cloned()
+        .collect();
+    let mut kept = load_reported(ctx, &cli);
+    let key = folder.to_string_lossy().into_owned();
+    if kept.get(&key) == Some(&theirs) {
+        return;
+    }
+    kept.insert(key, theirs);
+    if let Err(err) = save_reported(ctx, &cli, &kept) {
+        ctx.notice(
+            NoteLevel::Warn,
+            format!(
+                "Couldn't keep {}'s command list: {err:#}",
+                ctx.names.harness(&cli)
+            ),
+        );
+    }
+    refresh(ctx, state, chat);
+}
+
+fn reported_path(ctx: &Ctx, cli: &str) -> PathBuf {
+    let state = &ctx.env.state_dir;
+    state
+        .parent()
+        .unwrap_or(state)
+        .join(format!("{cli}-{REPORTED_FILE}"))
+}
+
+fn load_reported(ctx: &Ctx, cli: &str) -> BTreeMap<String, Vec<ReportedCommand>> {
+    std::fs::read(reported_path(ctx, cli))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_reported(
+    ctx: &Ctx,
+    cli: &str,
+    kept: &BTreeMap<String, Vec<ReportedCommand>>,
+) -> anyhow::Result<()> {
+    let path = reported_path(ctx, cli);
+    if let Some(dir) = path.parent() {
+        create_private_dir_all(dir)?;
+    }
+    write_private_file(&path, &serde_json::to_vec_pretty(kept)?)?;
+    Ok(())
+}
+
+/// A reported command as the menu lists it: sent to the session as itself, marked with its
+/// plugin where its name says.
+fn as_vendor_command(command: &ReportedCommand) -> VendorCommand {
+    VendorCommand {
+        name: command.name.clone(),
+        aliases: command.aliases.clone(),
+        args: command.argument_hint.clone(),
+        help: command
+            .description
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+        kind: CommandKind::Vendor,
+        source: CommandSource::Plugin {
+            plugin: command.plugin().unwrap_or_default().to_owned(),
+        },
+    }
+}
+
+/// The CLI's tables, then what it loads from the project and your home, then what it reported
+/// last for `folder` that neither knows, such as a mod's commands, a name listed once. A
+/// discovery that fails still leaves the rest.
+fn command_set(ctx: &Ctx, adapter: &dyn Adapter, folder: &Path) -> VendorCommandSet {
+    let reported: Vec<VendorCommand> = load_reported(ctx, adapter.id())
+        .get(folder.to_string_lossy().as_ref())
+        .map(|commands| commands.iter().map(as_vendor_command).collect())
+        .unwrap_or_default();
+    with_reported(base_set(ctx, adapter, folder), reported)
+}
+
+/// `set` with the reported commands it doesn't know after it. Discovery knows where a command
+/// of yours or the project's comes from, which the report doesn't say.
+fn with_reported(set: VendorCommandSet, reported: Vec<VendorCommand>) -> VendorCommandSet {
+    let mut commands = set.commands;
+    for command in reported {
+        if !commands.iter().any(|known| known.name == command.name) {
+            commands.push(command);
+        }
+    }
+    VendorCommandSet { commands, ..set }
+}
+
 /// The CLI's tables and what it loads for `folder` from the project and your home. A discovery
 /// that fails still leaves the tables.
-fn command_set(ctx: &Ctx, adapter: &dyn Adapter, folder: &Path) -> VendorCommandSet {
+fn base_set(ctx: &Ctx, adapter: &dyn Adapter, folder: &Path) -> VendorCommandSet {
     let builtins = || {
         VendorCommandSet::new(
             VendorId(adapter.id().to_owned()),
@@ -148,11 +262,12 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use argonauts_core::AgentEvent;
     use argonauts_core::app::{ChatEvent, TurnReply};
     use argonauts_core::input::SlashCommand;
-    use argonauts_core::vendor_commands::{CommandScope, CommandSource};
-    use argonauts_core::worker::Access;
-    use argonauts_testkit::{FakeSession, TempRepo};
+    use argonauts_core::vendor_commands::CommandScope;
+    use argonauts_core::worker::{Access, WorkerEvent};
+    use argonauts_testkit::{FakeSession, FakeWorker, TempRepo};
 
     use super::*;
     use crate::controller::test_support::{Harness, HarnessOptions};
@@ -261,6 +376,119 @@ mod tests {
         assert_eq!(spec.access, Access::ReadOnly);
         assert!(!spec.isolated, "the CLI loads its own commands and skills");
         harness.exit().await;
+    }
+
+    fn reported(name: &str, description: &str, builtin: bool) -> ReportedCommand {
+        ReportedCommand {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            argument_hint: String::new(),
+            aliases: Vec::new(),
+            builtin,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mods_commands_join_the_menu_from_the_clis_own_list_and_stay() {
+        let (mut harness, _) = start().await;
+        let list = vec![
+            reported("compact", "Compact", true),
+            reported("probe-cmd", "Argonauts probe", false),
+            reported(
+                "pr-tools:review-checklist",
+                "The team's review checklist",
+                false,
+            ),
+            reported("ship", "Ship it, as the plugin does", false),
+        ];
+        let init = WorkerEvent::Agent(AgentEvent::CommandsChanged { commands: list });
+        harness
+            .agent
+            .push(FakeSession::completed("Hello.").with_event(init));
+        harness.submit("hi").await;
+        let event = harness
+            .until(|event| {
+                matches!(event, AppEvent::VendorCommands { set } if set.find("probe-cmd").is_some())
+            })
+            .await;
+        let AppEvent::VendorCommands { set } = event else {
+            unreachable!()
+        };
+        let checklist = set.find("pr-tools:review-checklist").unwrap();
+        assert_eq!(checklist.kind, CommandKind::Vendor);
+        assert_eq!(
+            checklist.source,
+            CommandSource::Plugin {
+                plugin: "pr-tools".into()
+            }
+        );
+        // A file of yours keeps where it comes from, which the report doesn't say, and the
+        // CLI's own stay its table's.
+        let ship = set.find("ship").unwrap();
+        assert_eq!(ship.help, "Ship the branch");
+        assert!(matches!(ship.source, CommandSource::Custom { .. }));
+        assert_eq!(set.find("compact").unwrap().source, CommandSource::BuiltIn);
+        let names: Vec<&str> = set.commands.iter().map(|c| c.name.as_str()).collect();
+        let first_reported = names.iter().position(|n| *n == "probe-cmd").unwrap();
+        let notes = names.iter().position(|n| *n == "notes").unwrap();
+        assert!(
+            notes < first_reported,
+            "after what discovery found: {names:?}"
+        );
+        // Kept per folder, so the next app session's menu has them before its first turn.
+        let kept = harness
+            .env
+            .state_dir
+            .parent()
+            .unwrap()
+            .join("claude-code-commands.json");
+        let text = fs::read_to_string(kept).unwrap();
+        assert!(
+            text.contains("probe-cmd") && !text.contains("\"compact\""),
+            "{text}"
+        );
+        harness.exit().await;
+    }
+
+    /// A review runs in a session of its own, maybe on another company's CLI, so the list it
+    /// reports isn't the conversation's. Filed under the conversation's CLI, Claude Code's
+    /// skills would be offered to Codex and sent to it.
+    #[tokio::test]
+    async fn a_review_sessions_command_list_stays_out_of_the_menu() {
+        let list = vec![reported("anthropic-skills:example-a", "Make a PDF", false)];
+        let reviewed = |text: &str| {
+            FakeSession::structured(serde_json::json!({ "answer_markdown": text })).with_event(
+                WorkerEvent::Agent(AgentEvent::CommandsChanged {
+                    commands: list.clone(),
+                }),
+            )
+        };
+        // Another company's agent reviews, and with none in the crew, the main agent does,
+        // in a session of its own all the same.
+        for other_company in [true, false] {
+            let (mut harness, _) = start().await;
+            harness.repo.write("a.txt", "a\n").unwrap();
+            if other_company {
+                let codex = harness.directory.add(FakeWorker::harness("codex", "gpt"));
+                codex.push(reviewed("One bug."));
+            } else {
+                harness.agent.push(reviewed("Looks fine."));
+            }
+            harness
+                .send(UiCommand::Slash {
+                    command: SlashCommand::Review { target: None },
+                })
+                .await;
+            harness
+                .until(|event| matches!(chat(event), Some(ChatEvent::TurnFinished { .. })))
+                .await;
+            let state = harness.env.state_dir.parent().unwrap().to_path_buf();
+            for cli in ["claude-code", "codex"] {
+                let kept = state.join(format!("{cli}-commands.json"));
+                assert!(!kept.exists(), "{other_company}: {}", kept.display());
+            }
+            harness.exit().await;
+        }
     }
 
     #[tokio::test]

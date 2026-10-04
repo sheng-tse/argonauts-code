@@ -136,6 +136,9 @@ pub enum StdinPrompt {
 pub enum FakeStep {
     /// Prints one line on stdout.
     Emit(String),
+    /// Prints one line with `{uuid}` replaced by the uuid of the last message read from stdin,
+    /// as Claude Code's `command_lifecycle` names the message it moves along.
+    EmitWithUuid(String),
     /// Prints every line of a recorded file on stdout. Relative paths start at the scenario
     /// file's folder.
     EmitFile(String),

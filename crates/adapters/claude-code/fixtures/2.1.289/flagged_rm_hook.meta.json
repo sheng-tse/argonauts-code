@@ -1,0 +1,83 @@
+{
+  "adapter": "claude-code",
+  "program": "claude",
+  "name": "flagged_rm_hook",
+  "args": [
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--model",
+    "haiku",
+    "--effort",
+    "low",
+    "--max-budget-usd",
+    "0.08",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--tools",
+    "Read,Glob,Grep,Edit,Write,Bash,TaskCreate,TaskGet,TaskUpdate,TaskList",
+    "--disallowedTools",
+    "SendMessage",
+    "ListAgents",
+    "Agent",
+    "--settings",
+    "<live>/claude-settings.json",
+    "--no-session-persistence",
+    "--debug-file",
+    "<live>/debug.log"
+  ],
+  "date": "2026-10-04T13:26:28Z",
+  "duration_ms": 7770,
+  "exit_code": 0,
+  "sanitized": "absolute paths replaced with <workdir> (the throwaway repo), <live> (its check folder), <probe> (the folder holding the test plugin and hook), <scratch> (the scratch folder), Claude Code's folder slug with <workdir-slug>, its per-user temp folder with /tmp/claude-uid, the home directory with ~, and email addresses with <email>",
+  "cli_version": "2.1.289",
+  "model": "haiku",
+  "effort": "low",
+  "env_removed": [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "EMPTY_VAR"
+  ],
+  "keep_input_open": true,
+  "role": "direct",
+  "stdin_file": "flagged_rm_hook.stdin.jsonl",
+  "stdin_note": "each line as written, with _t seconds since the start; _stdin: closed marks where the input closed",
+  "session_id": "b4b6c5b9-690c-4cdf-bc23-5860100218a5",
+  "result_total_cost_usd": [
+    0.0152885
+  ],
+  "files": [
+    {
+      "path": "<live>/claude-settings.json",
+      "contents": "{\"crossSessionInbound\": \"refuse\", \"attribution\": {\"commit\": \"\", \"pr\": \"\"}, \"sandbox\": {\"enabled\": false}, \"hooks\": {\"PreToolUse\": [{\"matcher\": \"Bash\", \"hooks\": [{\"type\": \"command\", \"command\": \"python3 <probe>/allow-probe-rm.py\"}]}]}}\n"
+    },
+    {
+      "path": "<probe>/allow-probe-rm.py",
+      "contents": "#!/usr/bin/env python3\n\"\"\"Argonauts live check: a PreToolUse hook that allows exactly one command.\n\nIt allows only the harmless probe `rm -rf \"$EMPTY_VAR/argonauts-probe-missing\"`, which removes\nnothing even if it runs, and gives no answer for anything else, so every other call goes\nthrough Claude Code's own checks. Each call it sees is noted in $ARGO_PROBE_HOOK_LOG.\n\"\"\"\nimport json\nimport os\nimport sys\n\nPROBE = 'rm -rf \"$EMPTY_VAR/argonauts-probe-missing\"'\n\nevent = json.load(sys.stdin)\ncommand = (event.get(\"tool_input\") or {}).get(\"command\", \"\")\nallowed = event.get(\"tool_name\") == \"Bash\" and command.strip() == PROBE\n\nlog = os.environ.get(\"ARGO_PROBE_HOOK_LOG\")\nif log:\n    with open(log, \"a\") as f:\n        f.write(json.dumps({\"command\": command, \"allowed\": allowed}) + \"\\n\")\n\nif allowed:\n    print(json.dumps({\n        \"hookSpecificOutput\": {\n            \"hookEventName\": \"PreToolUse\",\n            \"permissionDecision\": \"allow\",\n            \"permissionDecisionReason\": \"the Argonauts probe hook allows this one command\",\n        }\n    }))\n"
+    }
+  ],
+  "files_after": [
+    "README.md"
+  ],
+  "note": "dontAsk with no allow rule and a PreToolUse hook that allows only the probe command. The hook saw the call and allowed it; Claude Code's debug log said 'Hook approved tool use for Bash, bypassing permission prompt', and the command ran. As in flagged_rm_allow_rule, 2.1.289 doesn't flag this command, so this shows a hook's allow working under dontAsk, not what happens to a flagged rm after a hook allows it.",
+  "env_added": {
+    "ARGO_PROBE_HOOK_LOG": "<live>/hook.log"
+  },
+  "hook_log": "{\"command\": \"rm -rf \\\"$EMPTY_VAR/argonauts-probe-missing\\\"\", \"allowed\": true}\n"
+}

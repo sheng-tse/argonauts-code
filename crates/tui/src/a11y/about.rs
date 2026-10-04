@@ -16,7 +16,8 @@ pub fn about_lines(
     offset: UtcOffset,
     names: &DisplayNames,
 ) -> Vec<String> {
-    about_item(opened, offset, names).map_or_else(Vec::new, |item| item_lines(&item))
+    // By card id, which is what Request changes takes typed here.
+    about_item(opened, None, offset, names).map_or_else(Vec::new, |item| item_lines(&item))
 }
 
 /// Everything the card is about, as Show the details reads it.

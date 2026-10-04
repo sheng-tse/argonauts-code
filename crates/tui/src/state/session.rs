@@ -254,6 +254,13 @@ impl SessionState {
                 | AgentEvent::ContextFill { .. }
                 | AgentEvent::QuotaSignal { .. }
                 | AgentEvent::Quota { .. }
+                | AgentEvent::ModOutput { .. }
+                | AgentEvent::ModelsReported { .. }
+                | AgentEvent::IsolationLeak { .. }
+                | AgentEvent::CommandsChanged { .. }
+                | AgentEvent::MessageState { .. }
+                | AgentEvent::ScreenChanged { .. }
+                | AgentEvent::BackgroundTasks { .. }
         ) {
             self.retry = None;
         }
@@ -348,7 +355,15 @@ impl SessionState {
                     since: at,
                 });
             }
-            AgentEvent::QuotaSignal { .. } | AgentEvent::Quota { .. } => {}
+            AgentEvent::QuotaSignal { .. }
+            | AgentEvent::Quota { .. }
+            | AgentEvent::ModOutput { .. }
+            | AgentEvent::ModelsReported { .. }
+            | AgentEvent::IsolationLeak { .. }
+            | AgentEvent::CommandsChanged { .. }
+            | AgentEvent::MessageState { .. }
+            | AgentEvent::ScreenChanged { .. }
+            | AgentEvent::BackgroundTasks { .. } => {}
             AgentEvent::Subagent { update } => {
                 match self.subagents.iter_mut().find(|sub| sub.id == update.id) {
                     Some(known) => *known = update.clone(),

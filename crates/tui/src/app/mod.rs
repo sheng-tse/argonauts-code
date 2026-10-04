@@ -154,6 +154,8 @@ pub struct Ui<W: Write> {
     quit: Option<QuitArm>,
     /// Until when a second Esc clears the input.
     clear_armed: Option<Instant>,
+    /// The first key of a two-key binding, such as Ctrl+X, as written, and when it came.
+    chord: Option<(String, Instant)>,
     /// Only set on a real terminal, for handing it to child programs.
     modes: Option<TerminalModes>,
     next_animation: Option<Instant>,
@@ -192,6 +194,7 @@ impl<W: Write> Ui<W> {
             scrollback: None,
             quit: None,
             clear_armed: None,
+            chord: None,
             modes: None,
             next_animation: None,
             keymap,

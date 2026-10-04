@@ -8,8 +8,8 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
     Answerer, ApprovalMode, ApprovalSettings, ApproverSettings, AtHardLimit, BudgetRules,
     CheckpointSettings, DecideWith, EscalationRules, GoalChanges, GoalRules, HardLimitSettings,
-    MergeRules, NoRules, Otherwise, PlanRules, Presence, PromotionRules, SandboxChoice,
-    SandboxSettings, UntrustedRepos, UserHooks,
+    IsolatedLeak, MergeRules, NoRules, Otherwise, PlanRules, Presence, PromotionRules,
+    SandboxChoice, SandboxSettings, UntrustedRepos, UserHooks,
 };
 
 use crate::SettingsReloader;
@@ -259,6 +259,11 @@ fn sandbox(a: &SandboxSettings, b: &SandboxSettings) -> SandboxSettings {
             a.user_hooks
         } else {
             b.user_hooks
+        },
+        isolated_leak: if a.isolated_leak == IsolatedLeak::Stop {
+            a.isolated_leak
+        } else {
+            b.isolated_leak
         },
     }
 }

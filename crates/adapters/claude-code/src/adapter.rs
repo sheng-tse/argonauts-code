@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use argonauts_core::keywords::Keyword;
+use argonauts_core::screen::ScreenRequest;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::vendor_commands::{BuiltinCommand, VendorCommand};
 use argonauts_core::vendor_sessions::{VendorScan, VendorSession, VendorTurn};
@@ -14,7 +15,7 @@ use crate::command::{PARENT_SESSION_STATE, build_command, user_message_line};
 use crate::commands::{self, BUILTIN_COMMANDS};
 use crate::keywords::KEYWORDS;
 use crate::parser::ClaudeStreamParser;
-use crate::{sessions, tweaks};
+use crate::{command, control, instructions, isolation, sessions, tweaks};
 
 /// The first version is the original recordings, the second the steering and resume ones, the
 /// third a workflow Claude Code runs itself, the permission prompt tool, and a read-only session
@@ -51,6 +52,19 @@ impl Adapter for ClaudeCodeAdapter {
         Box::new(ClaudeStreamParser::new())
     }
 
+    fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
+        let config = isolation::your_config_dir();
+        instructions::loaded(workdir, config.as_deref(), isolated)
+    }
+
+    fn session_parser(&self, req: &SessionRequest) -> Box<dyn StreamParser> {
+        if req.isolated {
+            Box::new(ClaudeStreamParser::isolated())
+        } else {
+            self.parser()
+        }
+    }
+
     fn version_args(&self) -> &'static [&'static str] {
         &["--version"]
     }
@@ -82,9 +96,16 @@ impl Adapter for ClaudeCodeAdapter {
         // The result carries total_cost_usd, and after --resume it covers the whole conversation.
         // 2.1.285 hands a message sent mid-turn to the model with the next tool result, inside
         // the running turn, so it gets no result of its own.
+        // 2.1.289 also takes each message with a uuid it reports progress by, hands waiting
+        // messages over at once on send now, and lets a screen join the session. An isolated
+        // session's settings turn your plugins, hooks, and synced extras off, and its init is
+        // checked for any that loaded anyway.
         Capabilities {
             reports_cost: true,
             input_joins_running_turn: true,
+            send_now: true,
+            screen: true,
+            isolates: true,
             ..Capabilities::default()
         }
     }
@@ -94,6 +115,22 @@ impl Adapter for ClaudeCodeAdapter {
     /// as injected text (2.1.285).
     fn input_line(&self, message: &str) -> Option<String> {
         Some(user_message_line(message))
+    }
+
+    fn message_line(&self, message: &str, uuid: &str) -> Option<String> {
+        Some(command::user_message_line_with_uuid(message, uuid))
+    }
+
+    fn send_now_line(&self, uuid: &str) -> Option<String> {
+        Some(control::send_now_line(uuid))
+    }
+
+    fn cancel_line(&self, uuid: &str) -> Option<String> {
+        Some(control::cancel_line(uuid))
+    }
+
+    fn screen_line(&self, request: &ScreenRequest) -> Option<String> {
+        Some(control::screen_line(request))
     }
 
     fn compaction(&self, setting: Compaction) -> LaunchTweak {
@@ -244,6 +281,32 @@ mod tests {
             .map(|(_, value)| value.as_str())
     }
 
+    /// A Claude Code folder whose settings enable one plugin and turn another off, with one more
+    /// installed.
+    fn your_claude_settings() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"enabledPlugins": {"lint-helper@claude-plugins-official": true,
+                                   "off-already@market": false}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("plugins")).unwrap();
+        std::fs::write(
+            dir.path().join("plugins/installed_plugins.json"),
+            r#"{"version": 2, "plugins": {"memory-keeper@market": []}}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    fn claude_config_dir(dir: &Path) -> Vec<(String, String)> {
+        vec![(
+            "CLAUDE_CONFIG_DIR".into(),
+            dir.to_string_lossy().into_owned(),
+        )]
+    }
+
     fn settings_file(spec: &CommandSpec) -> Value {
         let path = value_after(spec, "--settings").unwrap();
         let file = spec
@@ -353,6 +416,7 @@ mod tests {
             assert!(env(&spec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY").is_none());
             assert!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS").is_none());
             assert!(env(&spec, "MCP_TOOL_TIMEOUT").is_none());
+            assert!(env(&spec, "CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT").is_none());
             // Not isolated: your agents, skills, plugins, and MCP servers load.
             assert!(!has(&spec, "--strict-mcp-config"));
             assert!(!has(&spec, "--setting-sources"));
@@ -377,6 +441,21 @@ mod tests {
             json!({"allow": ["mcp__argonauts_status"]})
         );
         assert_eq!(env(&spec, "MCP_TOOL_TIMEOUT"), Some("86400000"));
+        // A flagged rm's card waits too, whatever default mode is yours.
+        assert_eq!(
+            env(&spec, "CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT"),
+            Some("1")
+        );
+        // A direct turn is like its CLI, so none of the isolation keys.
+        let settings = settings_file(&spec);
+        for key in [
+            "disableAllHooks",
+            "syncClaudeAiSkills",
+            "syncClaudeAiPlugins",
+            "enabledPlugins",
+        ] {
+            assert!(settings.get(key).is_none(), "{key}");
+        }
 
         let every = direct(Asks::EveryChange, true);
         assert_eq!(value_after(&every, "--permission-mode"), Some("manual"));
@@ -437,11 +516,13 @@ mod tests {
 
     #[test]
     fn claude_strict_mcp_and_no_cross_session_when_isolated() {
+        let config = your_claude_settings();
         for role in [SessionRole::ReadOnly, SessionRole::Build] {
             let spec = command(&SessionRequest {
                 mcp_config: Some("/tmp/state/s-001/mcp.json".into()),
                 scratch_dir: Some("/tmp/state/s-001".into()),
                 isolated: true,
+                env_set: claude_config_dir(config.path()),
                 ..request(role)
             });
             assert_eq!(
@@ -465,11 +546,22 @@ mod tests {
             assert_eq!(settings["sandbox"]["enabled"], true);
             assert_eq!(settings["sandbox"]["failIfUnavailable"], true);
             assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
+            // None of your hooks, plugins and their mods, or synced extras.
+            assert_eq!(settings["disableAllHooks"], true);
+            assert_eq!(settings["syncClaudeAiSkills"], false);
+            assert_eq!(settings["syncClaudeAiPlugins"], false);
+            let plugins = &settings["enabledPlugins"];
+            assert_eq!(plugins["lint-helper@claude-plugins-official"], false);
+            assert_eq!(plugins["memory-keeper@market"], false);
+            assert_eq!(plugins["cc-plugin-you-should-know@builtin"], false);
+            assert!(plugins.get("cc-plugin-agents-md@builtin").is_none());
+            assert!(plugins.get("off-already@market").is_none());
             crate::settings::validate(&settings).unwrap();
         }
         // Without a status server no MCP server loads at all, and none is allowed.
         let spec = command(&SessionRequest {
             isolated: true,
+            env_set: claude_config_dir(config.path()),
             ..request(SessionRole::ReadOnly)
         });
         assert!(has(&spec, "--strict-mcp-config") && !has(&spec, "--mcp-config"));
@@ -669,17 +761,24 @@ mod tests {
     }
 
     #[test]
-    fn user_hooks_cant_be_turned_off_alone() {
+    fn user_hooks_go_through_the_session_settings() {
         let tweak = ClaudeCodeAdapter.user_hooks_off();
         assert!(tweak.args.is_empty() && tweak.env_set.is_empty());
-        assert!(
-            matches!(tweak.effect, TweakEffect::NotPossible { note } if note.contains("--safe-mode"))
-        );
-        let spec = command(&SessionRequest {
+        assert_eq!(tweak.effect, TweakEffect::Exact);
+        let off = settings_file(&command(&SessionRequest {
             user_hooks_off: true,
+            scratch_dir: Some("/tmp/state/s-001".into()),
             ..request(SessionRole::Build)
-        });
-        assert_eq!(spec, command(&request(SessionRole::Build)));
+        }));
+        assert_eq!(off["disableAllHooks"], true);
+        // Your plugins and synced skills stay: only an isolated session drops them.
+        assert!(off.get("enabledPlugins").is_none());
+        assert!(off.get("syncClaudeAiSkills").is_none());
+        let kept = settings_file(&command(&SessionRequest {
+            scratch_dir: Some("/tmp/state/s-001".into()),
+            ..request(SessionRole::Build)
+        }));
+        assert!(kept.get("disableAllHooks").is_none());
     }
 
     #[test]
@@ -833,6 +932,23 @@ mod tests {
         );
         assert!(spec.keep_stdin_open);
         assert!(!spec.args.iter().any(|a| a.contains("Fix the bug")));
+
+        // Your conversation's session opens with `initialize`, then your message.
+        let mut main = full_request();
+        main.main_session = true;
+        let stdin = command(&main).stdin.unwrap();
+        let lines: Vec<Value> = stdin
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines[0]["request"]["subtype"], "initialize");
+        assert_eq!(lines[1]["message"]["content"], "Fix the bug");
+
+        // A message sent later carries the uuid its progress is reported by.
+        let line = adapter.message_line("Also this", "u-1").unwrap();
+        let value: Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(value["uuid"], "u-1");
+        assert!(adapter.capabilities().send_now && adapter.capabilities().screen);
     }
 
     #[test]

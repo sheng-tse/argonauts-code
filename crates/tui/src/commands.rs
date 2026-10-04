@@ -163,7 +163,8 @@ fn origin(command: &VendorCommand) -> Option<String> {
                 CommandScope::User => "user".to_owned(),
             })
         }
-        CommandSource::Plugin { plugin } => Some(plugin.clone()),
+        // A mod's command whose plugin the CLI didn't name has no mark.
+        CommandSource::Plugin { plugin } => Some(plugin.clone()).filter(|p| !p.is_empty()),
     }
 }
 

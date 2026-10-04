@@ -80,6 +80,19 @@ impl Paths {
         self.home.join("presets")
     }
 
+    /// Each agent CLI's newer versions already noticed, and the events each version sent that
+    /// its adapter doesn't read.
+    pub fn cli_versions(&self) -> PathBuf {
+        self.home.join("state").join("cli-versions.json")
+    }
+
+    /// The models an agent CLI listed itself last, such as `claude-code-models.json`.
+    pub fn reported_models(&self, adapter: &str) -> PathBuf {
+        self.home
+            .join("state")
+            .join(format!("{adapter}-models.json"))
+    }
+
     pub fn run_dir(&self, repo: &RepoId, run: &RunId) -> PathBuf {
         self.state_dir(repo).join("runs").join(run.as_str())
     }

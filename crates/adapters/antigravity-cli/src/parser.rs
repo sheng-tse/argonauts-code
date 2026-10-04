@@ -67,6 +67,9 @@ impl AgyStreamParser {
             session_id: conversation_id,
             model: init.model,
             tools,
+            plugins: Vec::new(),
+            capabilities: Vec::new(),
+            version: None,
         }]
     }
 
@@ -537,6 +540,7 @@ fn quota_exhausted(error: &AgyError) -> Option<AgentEvent> {
             source: QuotaSource::ErrorMessage,
             observed_at: OffsetDateTime::now_utc(),
             detail: Some(json!({"message": error.message})),
+            wrap_up: false,
         },
     })
 }
@@ -881,6 +885,9 @@ mod tests {
                 session_id: Some("c1".into()),
                 model: Some("gemini-3.6-flash-low".into()),
                 tools: vec!["run_command".into(), "write_to_file".into()],
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             }]
         );
     }

@@ -44,36 +44,34 @@ pub(super) fn declared(
         .filter(|text| !text.is_empty())
         .unwrap_or(declared.description.trim())
         .to_owned();
-    let mut details = Vec::new();
-    if !description.is_empty() {
-        details.push(sanitize_line(&description).into_owned());
-    }
-    details.extend(phase_lines(&declared.phases));
-    if let Some(based_on) = named
-        .and_then(|named| named.based_on.as_deref())
-        .map(str::trim)
-        .filter(|based_on| !based_on.is_empty() && *based_on != name)
-    {
-        details.push(format!(
-            "Started from {} · ctrl+t to watch",
-            sanitize_line(based_on)
-        ));
-    } else {
-        details.push("ctrl+t to watch".to_owned());
-    }
     let mut call = ToolCall::call(
         ToolKind::Other,
         "Workflow",
         sanitize_line(&name).into_owned(),
     )
     .with_state(ToolState::Done);
-    call.push(ToolItem::text(details.join("\n")));
+    if !description.is_empty() {
+        call.push(ToolItem::text(sanitize_line(&description)));
+    }
+    for phase in phase_lines(&declared.phases) {
+        call.push(phase);
+    }
+    let watch = match named
+        .and_then(|named| named.based_on.as_deref())
+        .map(str::trim)
+        .filter(|based_on| !based_on.is_empty() && *based_on != name)
+    {
+        Some(based_on) => format!("Started from {} · ctrl+t to watch", sanitize_line(based_on)),
+        None => "ctrl+t to watch".to_owned(),
+    };
+    call.push(ToolItem::text(watch));
     story.workflow = Some(name);
     emit(cx, call);
 }
 
-/// `1. Understand  three models read the issue`, the titles padded so the details line up.
-fn phase_lines(phases: &[DeclaredPhase]) -> Vec<String> {
+/// `1. Understand  three models read the issue`, the titles padded so the details line up, and
+/// a detail too long for one row wraps under its own column.
+fn phase_lines(phases: &[DeclaredPhase]) -> Vec<ToolItem> {
     let titles: Vec<String> = phases
         .iter()
         .map(|phase| sanitize_line(phase.title.trim()).into_owned())
@@ -90,9 +88,12 @@ fn phase_lines(phases: &[DeclaredPhase]) -> Vec<String> {
         .map(|(i, (phase, title))| {
             let detail = sanitize_line(phase.detail.trim()).into_owned();
             if detail.is_empty() {
-                format!("{}. {title}", i + 1)
+                ToolItem::text(format!("{}. {title}", i + 1))
             } else {
-                format!("{}. {}  {detail}", i + 1, left(title, widest))
+                ToolItem::Hanging {
+                    lead: format!("{}. {}  ", i + 1, left(title, widest)),
+                    text: detail,
+                }
             }
         })
         .collect()

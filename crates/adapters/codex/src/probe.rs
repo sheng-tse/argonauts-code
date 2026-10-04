@@ -70,6 +70,7 @@ pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaReading> 
         source: QuotaSource::AppServer,
         observed_at,
         detail: None,
+        wrap_up: false,
     };
     let Some(mut result) = answer.get("result").cloned() else {
         reading.detail =

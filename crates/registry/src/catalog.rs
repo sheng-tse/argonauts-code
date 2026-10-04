@@ -89,6 +89,12 @@ const HANDOFF: &[(&str, &str, Choices)] = &[
         Choices::Words(&["continue", "restart"]),
     ),
     (
+        "wrap_up",
+        "An agent finishing on its CLI's wrap-up allowance at a limit: let it finish, or hand \
+         its card off at once to save the allowance",
+        Choices::Words(&["let_finish", "hand_off"]),
+    ),
+    (
         "strategy",
         "Who takes the cards: the first fallback that's up, spread across them, or a race",
         Choices::Words(STRATEGIES),

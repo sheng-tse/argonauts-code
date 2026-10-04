@@ -158,6 +158,12 @@ pub trait ModelRegistry: Send + Sync {
     fn catalog(&self) -> ModelCatalog {
         ModelCatalog::default()
     }
+
+    /// `harness`'s CLI listed its own models, as Claude Code does when a session starts. The
+    /// list counts over the fetched catalog and under your files, and is kept for later runs.
+    fn models_reported(&self, harness: &str, models: &[crate::ReportedModel]) {
+        let _ = (harness, models);
+    }
 }
 
 /// The levels `worker`'s model takes, as the catalog or its CLI's own list says: empty for a

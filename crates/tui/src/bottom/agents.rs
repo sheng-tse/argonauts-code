@@ -84,6 +84,8 @@ pub struct RowMarkers {
     /// Work a weaker replacement did that still waits for a review.
     pub needs_review: bool,
     pub subagents: u32,
+    /// Its CLI is out of quota and finishing on a small allowance.
+    pub wrapping_up: bool,
 }
 
 impl AgentRow {
@@ -580,6 +582,9 @@ fn markers(markers: &RowMarkers, internals: VendorInternals, ctx: &RenderCtx<'_>
             style,
         )]);
     }
+    if markers.wrapping_up {
+        notes.push(vec![Span::styled("wrapping up".to_owned(), dim)]);
+    }
     if markers.subagents > 0 && internals != VendorInternals::Hidden {
         let noun = if markers.subagents == 1 {
             "subagent"
@@ -892,6 +897,27 @@ mod tests {
         assert_eq!(bar[0].style, theme.style(Role::BarFill));
         assert_eq!(bar[1].content.len(), 12);
         assert_eq!(bar[1].style, theme.style(Role::BarTrack));
+    }
+
+    /// A Claude Code agent on its wrap-up allowance keeps working, with a dim note after its
+    /// stats.
+    #[test]
+    fn an_agent_wrapping_up_says_so_after_its_stats() {
+        let theme = theme();
+        let t0 = Instant::now();
+        let ctx = RenderCtx::new(100, &theme, Clock::new(t0, t0 + Duration::from_secs(252)));
+        let mut panel = panel(t0);
+        panel.rows[0].markers.wrapping_up = true;
+        let lines = panel.lines(&ctx);
+        let first = plain_text(&lines[..1]);
+        assert!(first.starts_with("  ◐ claude-code/opus"), "{first}");
+        assert!(first.contains("↓ 18.1k tokens  wrapping up"), "{first}");
+        let note = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("wrapping up"))
+            .unwrap();
+        assert_eq!(note.style, theme.style(Role::Dim));
     }
 
     #[test]

@@ -170,6 +170,7 @@ pub fn quota(vendor: &str, status: QuotaStatus, used: Option<f64>) -> QuotaReadi
         source: QuotaSource::UsageProbe,
         observed_at: OffsetDateTime::now_utc(),
         detail: None,
+        wrap_up: false,
     }
 }
 

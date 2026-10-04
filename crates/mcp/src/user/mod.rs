@@ -393,6 +393,7 @@ mod tests {
             _run: &RunId,
             _session: &SessionKey,
             _text: String,
+            _now: bool,
         ) -> BoxFuture<'_, Result<SteerAck, ApiError>> {
             self.refuse("steer")
         }

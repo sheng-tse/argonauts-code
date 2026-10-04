@@ -37,6 +37,8 @@ pub struct HandoffSettings {
     /// The older spelling of `on_return = "hand_back"`, for this table only.
     pub return_to_original: bool,
     pub broken_work: BrokenWork,
+    /// What an agent on its CLI's wrap-up allowance does, as Claude Code gives at a limit.
+    pub wrap_up: WrapUp,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<HandoffStrategy>,
     /// Attempts at once with `strategy = "race"`.
@@ -76,6 +78,7 @@ impl Default for HandoffSettings {
             allow_api_billing: false,
             return_to_original: false,
             broken_work: BrokenWork::Continue,
+            wrap_up: WrapUp::LetFinish,
             strategy: None,
             race_count: None,
             on_return: None,
@@ -274,6 +277,17 @@ pub enum BrokenWork {
     Continue,
     /// Restart from the card's base.
     Restart,
+}
+
+/// An agent whose CLI is out of quota but finishing on a small allowance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WrapUp {
+    /// It finishes, and its work moves only if it ends on the limit after all.
+    #[default]
+    LetFinish,
+    /// Stopped at the first sign and handed off at once, to save the weekly allowance.
+    HandOff,
 }
 
 /// Who replaces one vendor. Unset keys come from the next list in the order above.

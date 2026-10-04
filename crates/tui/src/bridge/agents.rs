@@ -14,7 +14,7 @@ use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::RunLifecycle;
 use argonauts_core::events::session::{
     EndReason, FileDiff, SessionEnd, SessionEvent, SubagentKind, SubagentStatus, SubagentUpdate,
-    Watchdog,
+    Watchdog, loaded_words,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{SessionKey, WorkerRef};
@@ -24,7 +24,7 @@ use argonauts_core::{AgentEvent, CardId, ErrorCategory, RunId, TodoItem, TodoSta
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::{Cx, tools};
+use super::{Cx, mods, tools};
 use crate::cell::{
     AgentsStarted, Cell, DiffView, StartedAgent, Todo, TodoState, Tone, ToolCall, ToolItem,
     ToolKind, ToolState, ToolStats, ToolTitle,
@@ -99,6 +99,9 @@ struct Live {
     retries: u32,
     /// A Codex thread whose own steps don't reach us.
     hidden_steps: bool,
+    /// The last line a mod pushed here, so a mod that says the same on every tool call shows
+    /// it once.
+    last_push: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -272,6 +275,22 @@ impl AgentBlocks {
                 let before = live.started_row();
                 if live.rename(cx) {
                     self.started.rename(&before, live.started_row());
+                }
+            }
+            // What a mod pushes, and the CLI's notices, go in the agent's block, a repeat once.
+            AgentEvent::ModOutput {
+                kind, plugin, text, ..
+            } => {
+                let line = mods::in_block(*kind, plugin.as_deref(), text.as_deref(), cx);
+                if let Some(line) = line
+                    && live.last_push.as_ref() != Some(&line.text)
+                {
+                    live.last_push = Some(line.text.clone());
+                    let item = ToolItem::Text {
+                        text: line.text,
+                        tone: line.tone,
+                    };
+                    live.note(item, Verbosity::Normal, cx);
                 }
             }
             _ => {}
@@ -508,6 +527,7 @@ impl Live {
             preview: None,
             todos: Vec::new(),
             retry: None,
+            last_push: None,
             retries: 0,
             hidden_steps: false,
         };
@@ -977,6 +997,9 @@ fn reason_words(reason: &EndReason) -> Option<String> {
         | EndReason::StartFailed { message }
         | EndReason::Crashed { message } => first_line(message),
         EndReason::AdapterBroken { detail } => first_line(detail),
+        EndReason::IsolationBroken { plugins, skills } => {
+            format!("loaded {}", loaded_words(plugins, skills))
+        }
     })
 }
 

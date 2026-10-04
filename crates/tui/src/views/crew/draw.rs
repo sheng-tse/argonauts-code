@@ -149,6 +149,9 @@ pub(super) fn quota_part(label: &str, reading: &QuotaReading) -> (String, Role) 
     let warn = reading.status == QuotaStatus::Warning || reading.used.is_some_and(|u| u >= 0.9);
     let role = if warn { Role::Warning } else { Role::Dim };
     match (reading.status, reading.used) {
+        (QuotaStatus::Rejected, _) if reading.wrap_up => {
+            (format!("{label} wrapping up"), Role::Warning)
+        }
         (QuotaStatus::Rejected, _) => (format!("{label} out"), Role::Error),
         (_, Some(used)) => {
             let percent = (used.clamp(0.0, 1.0) * 100.0).round();

@@ -8,6 +8,7 @@ use argonauts_core::app::{AppMode, UiCommand, ViewRequest};
 use argonauts_core::events::run::RunMode;
 use argonauts_core::names::{RoleName, SessionKey, WorkflowId};
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::views::{conversation_run, vendor_workflow_id};
 
 use crate::app::UiAction;
 use crate::bottom::{AgentRef, ApprovalMode as ShownMode, ModeNotice};
@@ -139,12 +140,36 @@ fn approval_mode(mode: ShownMode) -> ApprovalMode {
 /// Ctrl+T and `/workflows`: the run's workflow view, or its Library tab alone when there's no
 /// run to show.
 pub(super) fn open_tree(cx: &mut Cx<'_>) {
+    // A workflow the conversation's own CLI runs now comes first, as Claude Code's does.
+    let chat = &cx.state.chat.workflows;
+    let running = chat.iter().rev().find(|workflow| !workflow.ended());
+    if let Some(workflow) = running {
+        let workflow = vendor_workflow_id(&workflow.id);
+        open_conversation_workflow(workflow, cx);
+        return;
+    }
     match shown_run(cx.state) {
         Some(run) => open_workflow(run.id.clone(), cx),
-        None => cx.out.send(UiCommand::Request {
-            view: ViewRequest::WorkflowLibrary,
-        }),
+        None => match chat.last() {
+            Some(workflow) => {
+                let workflow = vendor_workflow_id(&workflow.id);
+                open_conversation_workflow(workflow, cx);
+            }
+            None => cx.out.send(UiCommand::Request {
+                view: ViewRequest::WorkflowLibrary,
+            }),
+        },
     }
+}
+
+/// The workflow view of one the conversation's CLI runs itself.
+fn open_conversation_workflow(workflow: WorkflowId, cx: &mut Cx<'_>) {
+    cx.out.send(UiCommand::Request {
+        view: ViewRequest::Workflow {
+            run: conversation_run(),
+            workflow: Some(workflow),
+        },
+    });
 }
 
 /// Enter on a panel row: a run's workflow, or a workflow an agent's own CLI runs, whose key

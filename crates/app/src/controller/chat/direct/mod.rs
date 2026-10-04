@@ -11,6 +11,7 @@
 mod ask;
 mod listen;
 mod rewind;
+mod rm;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

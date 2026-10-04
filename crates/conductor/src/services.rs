@@ -11,6 +11,7 @@ use argonauts_core::limits::{
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::HealthSettings;
+use argonauts_core::worker::WorkerDirectory;
 
 use crate::gates::SandboxedGates;
 use crate::handoff::Planner;
@@ -38,15 +39,20 @@ pub fn boards_with(
 }
 
 /// The registry lets a retired model hand off to its successor and the retry ladder tell
-/// families apart.
+/// families apart, and the workers say which agents keep your plugins out of a blind role.
 pub fn limits_service(
     settings: Arc<Settings>,
     registry: Arc<dyn ModelRegistry>,
+    workers: Arc<dyn WorkerDirectory>,
     quota: Arc<dyn QuotaBoard>,
     health: Arc<dyn HealthBoard>,
     handoff: Arc<dyn HandoffPlanner>,
 ) -> Arc<dyn LimitsService> {
-    Arc::new(Limits::new(settings, quota, health, handoff).with_registry(registry))
+    Arc::new(
+        Limits::new(settings, quota, health, handoff)
+            .with_registry(registry)
+            .with_workers(workers),
+    )
 }
 
 /// `spread` weighs the concurrency slots every process shares under `~/.argonauts/`. Without a
@@ -116,6 +122,7 @@ mod tests {
         let limits = limits_service(
             settings,
             fixture.registry.clone(),
+            Arc::new(argonauts_testkit::FakeDirectory::new()),
             fixture.quota.clone(),
             fixture.health.clone(),
             planner,

@@ -141,7 +141,7 @@ fn a_catalog_with_a_bad_level_or_a_control_character_is_refused() {
 fn codex_and_agy_name_their_own_models_in_their_own_order() {
     let mut discovered = crate::models::discovery::parse_codex_models(CODEX).unwrap();
     discovered.extend(crate::models::discovery::parse_agy_models(AGY).unwrap());
-    let catalog = layered(None, &discovered, &[]);
+    let catalog = layered(None, &discovered, &[], &[]);
 
     let sol = catalog.label(&id("codex/gpt-6-sol"));
     assert_eq!(sol.name, "GPT-6-Sol");
@@ -235,7 +235,7 @@ fn your_models_toml_wins_over_every_other_layer() {
          [[model]]\nid = \"codex/gpt-6-sol\"\nname = \"Fetched Sol\"\n",
     )
     .unwrap();
-    let catalog = layered(Some(&fetched), &discovered, &[yours]);
+    let catalog = layered(Some(&fetched), &discovered, &[], &[yours]);
 
     let opus = catalog.entry(&id("claude-code/claude-opus-5-5")).unwrap();
     assert_eq!(opus.description.as_deref(), Some("My usual"));
@@ -255,7 +255,7 @@ fn your_models_toml_wins_over_every_other_layer() {
         Some("Only for proofs")
     );
 
-    let fetched_only = layered(Some(&fetched), &[], &[]);
+    let fetched_only = layered(Some(&fetched), &[], &[], &[]);
     assert_eq!(
         fetched_only
             .label(&id("claude-code/claude-opus-5-5"))

@@ -93,6 +93,10 @@ pub struct SessionRequest {
     /// [`SessionSpec::isolated`](crate::worker::SessionSpec::isolated).
     #[serde(default)]
     pub isolated: bool,
+    /// More of the CLI's own plugins an isolated session turns off, by name: built-ins a later
+    /// version added, learned when an earlier isolated session loaded them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builtins_off: Vec<String>,
     /// The CLI's own sandbox stays off and the commands it runs need no approval. Our sandbox
     /// holds the session (macOS won't start one sandbox inside another), or `sandbox.mode =
     /// "none"` asked for no protection at all.
@@ -105,6 +109,10 @@ pub struct SessionRequest {
     /// One of the CLI's own commands, which must reach it as a command (agy's slash commands).
     #[serde(default)]
     pub vendor_command: bool,
+    /// Your conversation's own session. Claude Code's opens with `initialize`, which brings
+    /// its commands and models, so messages you send later can join it as in its own screen.
+    #[serde(default)]
+    pub main_session: bool,
 }
 
 /// A file the conductor writes before spawning the command.

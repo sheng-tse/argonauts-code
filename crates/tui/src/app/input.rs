@@ -21,10 +21,10 @@ use ratatui::layout::{Position, Size};
 
 use super::{OverlayEvent, QuitArm, TranscriptOverlay, Ui, UiAction};
 use crate::bottom::{
-    CardEvent, CardPrompt, ComposerEvent, Hint, MenuEvent, Menus, PanelEvent, PickerEvent,
-    REMEMBER_KEY, SearchEvent,
+    CardEvent, CardPrompt, ComposerEvent, HeadsUpEvent, Hint, MenuEvent, Menus, PanelEvent,
+    PickerEvent, REMEMBER_KEY, SearchEvent,
 };
-use crate::keymap::{Action, KeySpec, Layer};
+use crate::keymap::{Action, CHORD_WAIT, KeySpec, Layer};
 use crate::views::list;
 
 /// How long a first Ctrl+C, Ctrl+D, or Esc waits for the second.
@@ -143,6 +143,9 @@ impl<W: Write> Ui<W> {
             }
             return;
         }
+        if self.chord_key(key, now, actions) || self.heads_up_key(key, now, actions) {
+            return;
+        }
         if self.scroll_key(&key) {
             return;
         }
@@ -159,6 +162,56 @@ impl<W: Write> Ui<W> {
             return;
         }
         self.composer_key(key, now, actions);
+    }
+
+    /// Two keys in a row, such as Ctrl+X Ctrl+S. After the first, the next key within
+    /// [`CHORD_WAIT`] completes the binding. Any other key, or one that comes too late, does
+    /// what it does alone, and Ctrl+X alone does nothing, as in Claude Code.
+    fn chord_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
+        if let Some((first, at)) = self.chord.take()
+            && now.saturating_duration_since(at) <= CHORD_WAIT
+        {
+            let bound = self.keymap.chord_actions(Layer::Global, &first, &key);
+            if bound.is_empty() {
+                return false;
+            }
+            for action in bound {
+                if self.global_action(action, &key, now, actions) {
+                    break;
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
+        let alone = !self.keymap.actions_for(Layer::Global, &key).is_empty();
+        if !alone && self.keymap.starts_chord(Layer::Global, &key) {
+            self.chord = Some((KeySpec::from_event(&key).to_string(), now));
+            return true;
+        }
+        false
+    }
+
+    /// The heads-up above the input, while it has the keys: a number presses its button,
+    /// ←/→ and Tab move, Enter or Space presses, Esc gives the keys back to the input.
+    fn heads_up_key(&mut self, key: KeyEvent, now: Instant, actions: &mut Vec<UiAction>) -> bool {
+        let heads_up = &mut self.model.bottom.heads_up;
+        if !heads_up.has_focus() {
+            return false;
+        }
+        match heads_up.handle_key(key) {
+            HeadsUpEvent::Press(at) => {
+                if let Some(button) = heads_up.drawn.buttons.get(at) {
+                    actions.push(UiAction::Command(UiCommand::PressHeadsUp {
+                        plugin: button.plugin.clone(),
+                        handle: button.handle,
+                    }));
+                }
+            }
+            HeadsUpEvent::Leave | HeadsUpEvent::Moved => {}
+            HeadsUpEvent::Unhandled => self.quit_key(key, now, actions),
+        }
+        self.dirty = true;
+        true
     }
 
     /// Vim's modes, when vim keys are on. Esc in INSERT only leaves INSERT, as in Claude Code,
@@ -554,6 +607,26 @@ impl<W: Write> Ui<W> {
                 }
             }
             Action::CrewView if empty => actions.push(UiAction::OpenCrewView),
+            // With text and nothing waiting, the text goes first, then the request.
+            Action::SendNow if bottom.send_now => {
+                if bottom.queued.is_empty() && !bottom.composer.is_empty() {
+                    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                    if let ComposerEvent::Submitted { text, shown } =
+                        bottom.composer.handle_key(enter)
+                    {
+                        actions.push(UiAction::Submit { text, shown });
+                    }
+                }
+                actions.push(UiAction::Command(UiCommand::SendNow));
+            }
+            Action::HeadsUpFocus => {
+                if !bottom.heads_up.focus() {
+                    return false;
+                }
+                bottom.agents.blur();
+                bottom.workflows.blur();
+            }
+            Action::HeadsUpToggle if !bottom.heads_up.drawn.is_empty() => bottom.heads_up.toggle(),
             Action::TakeBack
                 if bottom.composer.cursor_on_first_row() && !bottom.queued.is_empty() =>
             {

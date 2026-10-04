@@ -1,18 +1,22 @@
 use std::collections::{HashMap, HashSet};
 
+use argonauts_core::screen::ScreenChange;
 use argonauts_core::{AgentEvent, ErrorCategory, StreamParser};
 use serde_json::Value;
 use time::OffsetDateTime;
 
+use crate::background::BackgroundTracker;
 use crate::context::ContextTracker;
 use crate::errors;
-use crate::json::{array_at, bool_at, str_at, string_at, strings_at};
-use crate::quota;
+use crate::isolation;
+use crate::json::{array_at, bool_at, str_at, string_at, strings_at, u64_at};
+use crate::quota::{self, LimitTracker};
 use crate::settings::STATUS_SERVER;
 use crate::subagents::SubagentTracker;
 use crate::todo::TodoTracker;
 use crate::usage::UsageTracker;
 use crate::workflows::WorkflowTracker;
+use crate::{control, mods};
 
 const FILE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
@@ -27,12 +31,17 @@ pub struct ClaudeStreamParser {
     todos: TodoTracker,
     subagents: SubagentTracker,
     workflows: WorkflowTracker,
+    background: BackgroundTracker,
     open_tools: HashMap<String, OpenTool>,
     streaming_message_id: Option<String>,
     last_text: Option<String>,
     results_seen: usize,
     /// Output arrived after the last result, so a new turn is waiting for its own.
     turn_open: bool,
+    /// Your messages Claude Code queued and hasn't started, by uuid (`command_lifecycle`).
+    queued: HashSet<String>,
+    /// A message started since the last result.
+    message_started: bool,
     /// Whether this turn's failure was already reported, so the result doesn't repeat it.
     error_reported: bool,
     /// The category of the last result's error, for telling a crash from a clean failure.
@@ -43,6 +52,16 @@ pub struct ClaudeStreamParser {
     rejected_mcp: Option<String>,
     /// The last stderr error nothing classified, to explain an exit without a result.
     stderr_error: Option<String>,
+    /// A usage limit read this turn, which waits for the turn's end: Claude Code may finish on
+    /// its wrap-up allowance.
+    limits: LimitTracker,
+    /// A mod opened a pane, which only Claude Code's own screen shows. Said once.
+    pane_noted: bool,
+    /// An isolated session's init is checked for what isolation keeps out, once.
+    isolated: bool,
+    leak_checked: bool,
+    /// Why Claude Code turned down a tool call, by call id, for the call's own row.
+    denials: HashMap<String, String>,
     finished: bool,
 }
 
@@ -57,9 +76,18 @@ impl ClaudeStreamParser {
         Self::default()
     }
 
+    /// For an isolated session, whose init must list none of your plugins or synced skills.
+    pub fn isolated() -> Self {
+        Self {
+            isolated: true,
+            ..Self::default()
+        }
+    }
+
     /// `None` when the line isn't one this parser knows.
     fn on_line(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
-        match str_at(line, "type")? {
+        let kind = str_at(line, "type")?;
+        let mut events = match kind {
             "system" => self.on_system(line),
             "stream_event" => self.on_stream_event(line),
             "assistant" => self.on_assistant(line),
@@ -69,29 +97,75 @@ impl ClaudeStreamParser {
             // The heartbeat during a long tool call. Every line already counts as output for
             // the watchdog, so it needs no event, and as an unknown one it would pile up.
             "tool_progress" => Some(Vec::new()),
+            // Replies to control requests, by the request each answers.
+            "control_response" => Some(control::from_response(line)),
+            // A message's way through the queue: queued, started, completed.
+            "command_lifecycle" => {
+                if let Some(uuid) = str_at(line, "command_uuid") {
+                    match str_at(line, "state") {
+                        Some("queued") => {
+                            self.queued.insert(uuid.to_owned());
+                        }
+                        Some("started") => {
+                            self.queued.remove(uuid);
+                            self.message_started = true;
+                        }
+                        _ => {
+                            self.queued.remove(uuid);
+                        }
+                    }
+                }
+                Some(control::lifecycle(line).into_iter().collect())
+            }
             _ => None,
+        }?;
+        // Output after a limit means Claude Code is finishing on its allowance. Its own error
+        // message on a hard stop isn't the turn going on.
+        let went_on =
+            matches!(kind, "assistant" | "user" | "stream_event") && line.get("error").is_none();
+        if went_on && let Some(reading) = self.limits.went_on(OffsetDateTime::now_utc()) {
+            events.insert(0, AgentEvent::Quota { reading });
         }
+        Some(events)
     }
 
     fn on_system(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
         let events = match str_at(line, "subtype")? {
             "init" => self.on_init(line),
             "api_retry" => vec![self.on_api_retry(line)],
-            "permission_denied" => {
-                let tool = str_at(line, "tool_name").unwrap_or("A tool");
-                let reason = str_at(line, "message")
-                    .or_else(|| str_at(line, "decision_reason"))
-                    .unwrap_or("permission denied");
-                vec![AgentEvent::Error {
-                    category: ErrorCategory::Permission,
-                    message: format!("{tool} was denied: {reason}"),
-                    retryable: false,
+            "permission_denied" => self.on_denied(line),
+            // Transient hints about a request in flight or a running estimate of thinking tokens,
+            // and the --name title.
+            "status" | "thinking_tokens" | "session_title_changed" => Vec::new(),
+            // What runs in the background, which keeps the session's input open.
+            "background_tasks_changed" => self
+                .background
+                .observe("background_tasks_changed", line)
+                .into_iter()
+                .collect(),
+            "commands_changed" => vec![AgentEvent::CommandsChanged {
+                commands: control::commands(line),
+            }],
+            // Something drawn above the input changed, so a joined screen asks again.
+            "ui_invalidate" if str_at(line, "event") == Some("ui.render") => {
+                vec![AgentEvent::ScreenChanged {
+                    change: ScreenChange::Stale,
                 }]
             }
-            // Transient hints about a request in flight or a running estimate of thinking tokens,
-            // the list of background tasks (task events cover each one), and the --name title.
-            "status" | "thinking_tokens" | "background_tasks_changed" | "session_title_changed" => {
-                Vec::new()
+            "ui_panes" => {
+                let first = !std::mem::replace(&mut self.pane_noted, true);
+                first.then(mods::pane_notice).into_iter().collect()
+            }
+            subtype if mods::QUIET.contains(&subtype) => Vec::new(),
+            subtype if let Some(output) = mods::output(subtype, line) => {
+                let wrap_up = mods::says_wrapping_up(subtype, line)
+                    .then(|| self.limits.notice(line, OffsetDateTime::now_utc()))
+                    .flatten();
+                wrap_up
+                    .map(|reading| AgentEvent::Quota { reading })
+                    .into_iter()
+                    .chain([output])
+                    .collect()
             }
             // A workflow is a subagent too, so both trackers read its task events.
             subtype => {
@@ -99,6 +173,7 @@ impl ClaudeStreamParser {
                 child
                     .into_iter()
                     .chain(self.workflows.task_event(subtype, line))
+                    .chain(self.background.observe(subtype, line))
                     .collect()
             }
         };
@@ -114,6 +189,9 @@ impl ClaudeStreamParser {
             session_id: string_at(line, "session_id"),
             model,
             tools: strings_at(line, "tools"),
+            plugins: plugin_names(line),
+            capabilities: strings_at(line, "capabilities"),
+            version: string_at(line, "claude_code_version"),
         }];
         // Under -p Claude Code skips a bad --mcp-config entry and runs on. An entry naming
         // Argonauts' own server means the adapter produced something this version rejects; your
@@ -131,7 +209,35 @@ impl ClaudeStreamParser {
             });
             self.rejected_mcp = Some(servers);
         }
+        if self.isolated && !self.leak_checked {
+            self.leak_checked = true;
+            events.extend(isolation::leak(line));
+        }
         events
+    }
+
+    /// Claude Code turned a call down without asking anyone, such as a flagged rm under
+    /// `--permission-prompts none`. Its message says what to do instead, so it goes whole on the
+    /// call's own row rather than as an error line.
+    fn on_denied(&mut self, line: &Value) -> Vec<AgentEvent> {
+        let reason = str_at(line, "message")
+            .or_else(|| str_at(line, "decision_reason"))
+            .unwrap_or("permission denied");
+        match string_at(line, "tool_use_id") {
+            Some(id) if self.open_tools.contains_key(&id) => {
+                let words = format!("Claude Code turned this down: {reason}");
+                self.denials.insert(id, words);
+                Vec::new()
+            }
+            _ => {
+                let tool = str_at(line, "tool_name").unwrap_or("A tool");
+                vec![AgentEvent::Error {
+                    category: ErrorCategory::Permission,
+                    message: format!("{tool} was denied: {reason}"),
+                    retryable: false,
+                }]
+            }
+        }
     }
 
     /// Sent before each retry of an API request. Waiting fixes a rate limit or an overload, so
@@ -164,12 +270,9 @@ impl ClaudeStreamParser {
                 detail: info.clone(),
             }];
         };
-        let limit = quota::usage_limit_message(&reading);
-        let mut events = vec![AgentEvent::Quota { reading }];
-        if let Some(message) = limit {
-            events.push(self.error(ErrorCategory::UsageLimit, message));
-        }
-        events
+        vec![AgentEvent::Quota {
+            reading: self.limits.observe(reading),
+        }]
     }
 
     fn on_stream_event(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
@@ -309,6 +412,10 @@ impl ClaudeStreamParser {
     }
 
     fn on_result(&mut self, line: &Value) -> Vec<AgentEvent> {
+        if self.closes_a_left_over_notice(line) {
+            return Vec::new();
+        }
+        self.message_started = false;
         self.results_seen += 1;
         self.turn_open = false;
         let mut events: Vec<AgentEvent> = self.usage.result_totals(line).into_iter().collect();
@@ -317,6 +424,13 @@ impl ClaudeStreamParser {
         let mut is_error = bool_at(line, "is_error") || subtype != "success";
         let text = string_at(line, "result").filter(|t| !t.is_empty());
         self.result_error = None;
+        let (reading, limit) = self.limits.turn_ended(is_error, OffsetDateTime::now_utc());
+        events.extend(reading.map(|reading| AgentEvent::Quota { reading }));
+        if let Some(message) = limit
+            && !self.error_reported
+        {
+            events.push(self.error(ErrorCategory::UsageLimit, message));
+        }
         if is_error {
             let message = result_error_message(line, subtype, text.as_deref());
             let category = errors::from_result(line, &message);
@@ -346,6 +460,18 @@ impl ClaudeStreamParser {
         // The next turn reports its own failure.
         self.error_reported = false;
         events
+    }
+
+    /// A resumed session first tells the model about a background task the last process
+    /// stopped: a turn with no model call, while your message still waits in the queue, whose
+    /// empty result answers nothing you sent.
+    fn closes_a_left_over_notice(&self, line: &Value) -> bool {
+        !self.queued.is_empty()
+            && !self.message_started
+            && u64_at(line, "num_turns") == 0
+            && str_at(line, "subtype") == Some("success")
+            && !bool_at(line, "is_error")
+            && str_at(line, "result").is_none_or(str::is_empty)
     }
 
     fn start_tool(&mut self, block: &Value, parent: Option<String>) -> Vec<AgentEvent> {
@@ -379,8 +505,9 @@ impl ClaudeStreamParser {
         parent: Option<String>,
     ) -> Vec<AgentEvent> {
         let id = string_at(block, "tool_use_id").unwrap_or_default();
-        let ok = !bool_at(block, "is_error");
-        let output = tool_output_text(block.get("content"));
+        let denial = self.denials.remove(&id);
+        let ok = denial.is_none() && !bool_at(block, "is_error");
+        let output = denial.or_else(|| tool_output_text(block.get("content")));
         let child_done = self
             .subagents
             .tool_finished(&id, ok, output.as_deref(), structured);
@@ -516,7 +643,10 @@ impl StreamParser for ClaudeStreamParser {
             return events;
         }
         if !self.error_reported {
-            let (category, message) = missing_result_error(exit_code, self.stderr_error.as_deref());
+            let (category, message) = match self.limits.unfinished() {
+                Some(limit) => (ErrorCategory::UsageLimit, limit),
+                None => missing_result_error(exit_code, self.stderr_error.as_deref()),
+            };
             events.push(self.error(category, message));
         }
         events.push(AgentEvent::Result {
@@ -526,6 +656,17 @@ impl StreamParser for ClaudeStreamParser {
         });
         events
     }
+}
+
+/// The plugins and mods `init` lists, by name. Older versions list bare names.
+fn plugin_names(init: &Value) -> Vec<String> {
+    array_at(init, "plugins")
+        .iter()
+        .filter_map(|plugin| match plugin {
+            Value::String(name) => Some(name.clone()),
+            other => string_at(other, "name"),
+        })
+        .collect()
 }
 
 /// Argonauts' own server as `mcp_server_errors` names it, with its error, or `None` when it
@@ -678,6 +819,9 @@ mod tests {
                 session_id: Some("s-1".into()),
                 model: Some("claude-haiku".into()),
                 tools: vec!["Read".into(), "Bash".into()],
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             }]
         );
         assert_eq!(parser.relative_to_cwd("/w/src/a.rs"), "src/a.rs");
@@ -900,6 +1044,7 @@ mod tests {
             ),
             [AgentEvent::QuotaSignal { detail: odd }]
         );
+        // A denial for a call this parser never saw start has no row to go on.
         let denied = parse(
             &mut parser,
             json!({"type": "system", "subtype": "permission_denied", "tool_name": "Bash",
@@ -1257,31 +1402,314 @@ mod tests {
         }
     }
 
+    fn rejected() -> Value {
+        json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected",
+               "resetsAt": 1790678400, "rateLimitType": "five_hour"}})
+    }
+
+    fn assistant_text(id: &str, text: &str) -> Value {
+        json!({"type": "assistant", "message": {"id": id, "content": [{"type": "text", "text": text}]}})
+    }
+
+    fn readings(events: &[AgentEvent]) -> Vec<(QuotaStatus, bool)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Quota { reading } => Some((reading.status, reading.wrap_up)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn usage_limit_errors(events: &[AgentEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentEvent::Error {
+                        category: ErrorCategory::UsageLimit,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// Claude Code's wrap-up allowance: the turn goes on after a `rejected` reading, so the
+    /// agent is wrapping up rather than out, and a clean end brings no error.
     #[test]
-    fn a_rejected_rate_limit_is_a_usage_limit() {
+    fn a_limit_the_turn_goes_on_past_is_a_wrap_up() {
         let mut parser = ClaudeStreamParser::new();
-        let events = parse(
+        let mut events = parse(&mut parser, rejected());
+        assert_eq!(types(&events), ["quota"]);
+        events.extend(parse(
             &mut parser,
-            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected",
-                   "resetsAt": 1790678400, "rateLimitType": "five_hour"}}),
+            assistant_text("m2", "Finishing the step."),
+        ));
+        events.extend(parse(
+            &mut parser,
+            assistant_text("m3", "Left: format_cents."),
+        ));
+        let end = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "done"}),
         );
-        assert_eq!(types(&events), ["quota", "error"]);
-        let AgentEvent::Error {
-            category,
-            retryable,
-            message,
-        } = &events[1]
-        else {
-            unreachable!()
-        };
-        assert_eq!(*category, ErrorCategory::UsageLimit);
-        assert!(*retryable && message.contains("five_hour"));
+        assert_eq!(
+            readings(&events),
+            [
+                (QuotaStatus::Rejected, false),
+                (QuotaStatus::Rejected, true)
+            ]
+        );
+        assert_eq!(types(&events)[1..3], ["quota", "message"]);
+        // At the end it's out until the reset, and nothing failed.
+        assert_eq!(readings(&end), [(QuotaStatus::Rejected, false)]);
+        assert_eq!(usage_limit_errors(&events) + usage_limit_errors(&end), 0);
+        assert!(matches!(
+            end.last(),
+            Some(AgentEvent::Result {
+                is_error: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_limit_the_turn_ends_on_is_one_usage_limit_error_at_the_end() {
+        let mut parser = ClaudeStreamParser::new();
+        assert_eq!(types(&parse(&mut parser, rejected())), ["quota"]);
         let end = parse(
             &mut parser,
             json!({"type": "result", "subtype": "success", "is_error": true,
                    "result": "You've hit your limit"}),
         );
-        assert_eq!(types(&end), ["result"]);
+        assert_eq!(types(&end), ["error", "result"]);
+        let AgentEvent::Error {
+            category,
+            retryable,
+            message,
+        } = &end[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(*category, ErrorCategory::UsageLimit);
+        assert!(*retryable && message.contains("five_hour"));
+
+        // Wrapping up, then failing after all: out, with one error.
+        let mut parser = ClaudeStreamParser::new();
+        parse(&mut parser, rejected());
+        parse(&mut parser, assistant_text("m2", "Finishing."));
+        let end = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true}),
+        );
+        assert_eq!(readings(&end), [(QuotaStatus::Rejected, false)]);
+        assert_eq!(usage_limit_errors(&end), 1);
+        assert_eq!(
+            end.iter()
+                .filter(|e| matches!(e, AgentEvent::Error { .. }))
+                .count(),
+            1
+        );
+
+        // Nothing after the reading: the limit stopped the turn.
+        let mut parser = ClaudeStreamParser::new();
+        parse(&mut parser, rejected());
+        let end = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "ok"}),
+        );
+        assert_eq!(usage_limit_errors(&end), 1);
+
+        // Claude Code's own error message on a hard stop isn't the turn going on.
+        let mut parser = ClaudeStreamParser::new();
+        parse(&mut parser, rejected());
+        let said = parse(
+            &mut parser,
+            json!({"type": "assistant", "error": "rate_limit", "message": {"id": "m9",
+                   "content": [{"type": "text", "text": "You've hit your limit"}]}}),
+        );
+        assert!(readings(&said).is_empty());
+        let end = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": true}),
+        );
+        assert_eq!(
+            usage_limit_errors(&said) + usage_limit_errors(&end),
+            1,
+            "{said:?} {end:?}"
+        );
+
+        // A stream cut off with a limit waiting explains itself.
+        let mut parser = ClaudeStreamParser::new();
+        parse(&mut parser, rejected());
+        let finish = parser.finish(Some(1));
+        assert_eq!(usage_limit_errors(&finish), 1);
+    }
+
+    #[test]
+    fn a_full_window_that_still_allows_or_the_notice_is_a_wrap_up() {
+        let mut parser = ClaudeStreamParser::new();
+        let full = parse(
+            &mut parser,
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed",
+                   "rateLimitType": "five_hour", "unifiedWindows": {
+                       "five_hour": {"utilization": 1.0, "resetsAt": 1790678400}}}}),
+        );
+        assert_eq!(readings(&full), [(QuotaStatus::Rejected, true)]);
+        let end = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": false}),
+        );
+        assert_eq!(readings(&end), [(QuotaStatus::Rejected, false)]);
+        assert_eq!(usage_limit_errors(&end), 0);
+
+        // Paid overage carries the session, so it's neither.
+        let mut parser = ClaudeStreamParser::new();
+        let paid = parse(
+            &mut parser,
+            json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed",
+                   "isUsingOverage": true, "utilization": 1.0}}),
+        );
+        assert_eq!(readings(&paid), [(QuotaStatus::Allowed, false)]);
+
+        // The notice alone.
+        let mut parser = ClaudeStreamParser::new();
+        let notice = parse(
+            &mut parser,
+            json!({"type": "system", "subtype": "notification", "key": "limit",
+                   "text": "Usage limit reached · wrapping up · clau.de/wrap-up",
+                   "priority": "high"}),
+        );
+        assert_eq!(types(&notice), ["quota", "mod_output"]);
+        assert_eq!(readings(&notice), [(QuotaStatus::Rejected, true)]);
+        // A reading after it keeps the wrap-up.
+        let again = parse(&mut parser, rejected());
+        assert_eq!(readings(&again), [(QuotaStatus::Rejected, true)]);
+        let end = parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": false}),
+        );
+        assert_eq!(usage_limit_errors(&end), 0);
+    }
+
+    /// An empty result with no model call answers your message only when none of yours waits
+    /// in the queue. One that does is a resume closing out the last process's task; one that
+    /// doesn't, such as a background task's end told between turns, is a turn like any other.
+    #[test]
+    fn an_empty_result_is_left_over_only_while_your_message_waits() {
+        let lifecycle = |uuid: &str, state: &str| json!({"type": "command_lifecycle", "command_uuid": uuid, "state": state});
+        let empty = json!({"type": "result", "subtype": "success", "is_error": false,
+                           "num_turns": 0, "result": ""});
+        let results = |events: &[AgentEvent]| {
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::Result { .. }))
+                .count()
+        };
+        let mut resumed = ClaudeStreamParser::new();
+        parse(&mut resumed, lifecycle("u-1", "queued"));
+        assert_eq!(results(&parse(&mut resumed, empty.clone())), 0);
+        parse(&mut resumed, lifecycle("u-1", "started"));
+        let answer = json!({"type": "result", "subtype": "success", "is_error": false,
+                            "num_turns": 2, "result": "12 passed"});
+        assert_eq!(results(&parse(&mut resumed, answer)), 1);
+
+        let mut between_turns = ClaudeStreamParser::new();
+        parse(&mut between_turns, lifecycle("u-1", "queued"));
+        parse(&mut between_turns, lifecycle("u-1", "started"));
+        parse(&mut between_turns, lifecycle("u-1", "completed"));
+        assert_eq!(results(&parse(&mut between_turns, empty)), 1);
+    }
+
+    /// Only Claude Code's own notice says it's wrapping up. A mod that pushes the same words is
+    /// shown as it is, and Claude Code stays in for new work.
+    #[test]
+    fn a_mods_push_with_the_wrap_up_words_is_no_wrap_up() {
+        let text = "Usage limit reached · wrapping up · clau.de/wrap-up";
+        for line in [
+            json!({"type": "system", "subtype": "ui_toast", "plugin": "jokes", "text": text}),
+            json!({"type": "system", "subtype": "ui_log", "plugin": "jokes", "text": text}),
+            json!({"type": "system", "subtype": "ui_status", "plugin": "jokes", "text": text}),
+            json!({"type": "system", "subtype": "notification", "plugin": "jokes",
+                   "text": text, "priority": "high"}),
+        ] {
+            let mut parser = ClaudeStreamParser::new();
+            let events = parse(&mut parser, line.clone());
+            assert_eq!(types(&events), ["mod_output"], "{line}");
+        }
+        let mut parser = ClaudeStreamParser::new();
+        let own = parse(
+            &mut parser,
+            json!({"type": "system", "subtype": "informational", "level": "warning",
+                   "content": text}),
+        );
+        assert_eq!(readings(&own), [(QuotaStatus::Rejected, true)]);
+    }
+
+    #[test]
+    fn init_reads_the_version_plugins_and_capabilities() {
+        let mut parser = ClaudeStreamParser::new();
+        let events = parse(
+            &mut parser,
+            json!({"type": "system", "subtype": "init", "session_id": "s", "model": "haiku",
+                   "tools": ["Read"], "claude_code_version": "2.1.289",
+                   "capabilities": ["interrupt_send_now_v1", "ui_surface_v1"],
+                   "plugins": [{"name": "cc-plugin-agents-md", "path": "builtin"}, "old-style"]}),
+        );
+        let [
+            AgentEvent::Init {
+                plugins,
+                capabilities,
+                version,
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("{events:?}")
+        };
+        assert_eq!(plugins, &["cc-plugin-agents-md", "old-style"]);
+        assert_eq!(capabilities, &["interrupt_send_now_v1", "ui_surface_v1"]);
+        assert_eq!(version.as_deref(), Some("2.1.289"));
+    }
+
+    #[test]
+    fn screen_pushes_and_bookkeeping_are_read() {
+        let mut parser = ClaudeStreamParser::new();
+        for (line, kind) in [
+            (
+                json!({"type": "command_lifecycle", "command_uuid": "u", "state": "queued"}),
+                "message_state",
+            ),
+            (
+                json!({"type": "system", "subtype": "ui_invalidate", "event": "ui.render"}),
+                "screen_changed",
+            ),
+            (
+                json!({"type": "system", "subtype": "commands_changed", "commands": []}),
+                "commands_changed",
+            ),
+        ] {
+            assert_eq!(types(&parse(&mut parser, line)), [kind]);
+        }
+        for quiet in [
+            json!({"type": "system", "subtype": "ui_invalidate", "event": "ui.other"}),
+            json!({"type": "system", "subtype": "turn_preempted", "reason": "rapid_followup"}),
+            json!({"type": "system", "subtype": "plugin_install", "status": "started"}),
+            json!({"type": "control_response", "response": {"subtype": "success",
+                   "request_id": "r", "response": {"status": "delivering"}}}),
+        ] {
+            assert!(parse(&mut parser, quiet.clone()).is_empty(), "{quiet}");
+        }
+        let panes = json!({"type": "system", "subtype": "ui_panes"});
+        assert_eq!(types(&parse(&mut parser, panes.clone())), ["mod_output"]);
+        assert!(parse(&mut parser, panes).is_empty());
+        let toast = parse(
+            &mut parser,
+            json!({"type": "system", "subtype": "ui_toast", "plugin": "p", "text": "hi"}),
+        );
+        assert_eq!(types(&toast), ["mod_output"]);
     }
 
     #[test]
@@ -1385,5 +1813,69 @@ mod tests {
             json!({"type": "result", "subtype": "error_max_budget_usd", "is_error": true}),
         );
         assert!(budget.finish(Some(1)).is_empty());
+    }
+
+    /// A flagged rm turned down without asking: Claude Code's message, hint and all, goes on
+    /// the call's own row instead of an error line.
+    #[test]
+    fn a_denial_goes_whole_on_its_calls_row() {
+        let mut parser = ClaudeStreamParser::new();
+        let hint = "if BUILD_DIR were empty, this would remove /out. Use \"${BUILD_DIR:?}/out\" \
+                    so the shell stops instead, or a literal path.";
+        parse(
+            &mut parser,
+            json!({"type": "assistant", "message": {"id": "m1", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "rm -rf \"$BUILD_DIR/out\""}}]}}),
+        );
+        let denied = parse(
+            &mut parser,
+            json!({"type": "system", "subtype": "permission_denied", "tool_name": "Bash",
+                   "tool_use_id": "t1", "decision_reason_type": "mode", "message": hint}),
+        );
+        assert_eq!(denied, []);
+        let finished = parse(
+            &mut parser,
+            json!({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": true,
+                 "content": hint}]}}),
+        );
+        assert_eq!(
+            finished,
+            [AgentEvent::ToolFinished {
+                id: "t1".into(),
+                ok: false,
+                output: Some(format!("Claude Code turned this down: {hint}")),
+                parent: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn only_an_isolated_session_reports_your_plugins_as_a_leak() {
+        let init = json!({"type": "system", "subtype": "init", "session_id": "s1",
+            "plugins": [
+                {"name": "memory-keeper", "path": "~/p", "source": "memory-keeper@market"},
+                {"name": "cc-plugin-telemetry", "path": "builtin", "source": "cc-plugin-telemetry@builtin"}
+            ],
+            "skills": ["debug", "anthropic-skills:example-a"]});
+        let leaks = |parser: &mut ClaudeStreamParser| -> Vec<AgentEvent> {
+            parse(parser, init.clone())
+                .into_iter()
+                .filter(|event| matches!(event, AgentEvent::IsolationLeak { .. }))
+                .collect()
+        };
+        assert_eq!(leaks(&mut ClaudeStreamParser::new()), []);
+        let mut isolated = ClaudeStreamParser::isolated();
+        assert_eq!(
+            leaks(&mut isolated),
+            [AgentEvent::IsolationLeak {
+                plugins: vec!["memory-keeper".into()],
+                skills: vec!["anthropic-skills:example-a".into()],
+                builtins: Vec::new(),
+            }]
+        );
+        // Each turn's init repeats the list. It was said once.
+        assert_eq!(leaks(&mut isolated), []);
     }
 }

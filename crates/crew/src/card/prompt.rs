@@ -78,14 +78,21 @@ pub fn owner_parts(host: &Host, card: &CardId) -> EngineResult<Vec<InputPart>> {
             Some(ids),
         ));
     }
+    let owner = owner_of(host, &record);
+    let loaded = host
+        .services()
+        .workers
+        .get(&owner)
+        .map(|worker| worker.instruction_files(&tree, false))
+        .unwrap_or_default();
     parts.push(part(
         InputPartKind::Rules,
         "rules",
-        rules_text(&record.spec, host.settings(), &tree),
+        rules_text(&record.spec, host.settings(), &tree, &loaded),
         None,
     ));
     // Where the worker has no status tool, the engine adds the summary to every start itself.
-    if has_status_tool(host, &owner_of(host, &record)) {
+    if has_status_tool(host, &owner) {
         parts.push(status(host, card));
     }
     let build = &host.settings().prompts.build;
@@ -302,7 +309,9 @@ fn decisions_text(decisions: &[DesignDecision]) -> String {
     text
 }
 
-fn rules_text(spec: &CardSpec, settings: &Settings, tree: &Path) -> String {
+/// `loaded` names the instruction files the owner's CLI loads by itself, which the rules leave
+/// out so it doesn't read them twice.
+fn rules_text(spec: &CardSpec, settings: &Settings, tree: &Path, loaded: &[String]) -> String {
     let mut never = vec![".argonauts/**".to_owned()];
     never.extend(settings.limits.protected_paths.iter().cloned());
     never.extend(spec.forbidden_paths.iter().cloned());
@@ -323,7 +332,7 @@ fn rules_text(spec: &CardSpec, settings: &Settings, tree: &Path) -> String {
         );
     }
     for guide in ["AGENTS.md", "CLAUDE.md"] {
-        if tree.join(guide).is_file() {
+        if tree.join(guide).is_file() && !loaded.iter().any(|file| file == guide) {
             let _ = write!(text, "\n\nFollow the project's conventions in {guide}.");
         }
     }
@@ -410,12 +419,33 @@ mod tests {
         settings.limits.protected_paths = vec![".github/**".into()];
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "x").unwrap();
-        let text = rules_text(&spec, &settings, dir.path());
+        let text = rules_text(&spec, &settings, dir.path(), &[]);
         for path in [".argonauts/**", ".github/**", "migrations/**"] {
             assert!(text.contains(&format!("- {path}")), "{text}");
         }
         assert!(text.contains("AGENTS.md"));
         assert!(!text.contains("CLAUDE.md"));
+    }
+
+    /// A CLI that loads the conventions itself isn't told to read them again. One that doesn't,
+    /// or an isolated session that loads neither, is pointed at each.
+    #[test]
+    fn the_rules_name_only_instruction_files_the_cli_doesnt_load() {
+        let spec = card_spec("card-001", &[], None);
+        let settings = Settings::default();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "x").unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
+        let loads_both = ["CLAUDE.md".to_owned(), "AGENTS.md".to_owned()];
+        let text = rules_text(&spec, &settings, dir.path(), &loads_both);
+        assert!(!text.contains("conventions"), "{text}");
+        let text = rules_text(&spec, &settings, dir.path(), &["AGENTS.md".to_owned()]);
+        assert!(text.contains("conventions in CLAUDE.md"), "{text}");
+        assert!(!text.contains("conventions in AGENTS.md"), "{text}");
+        let text = rules_text(&spec, &settings, dir.path(), &[]);
+        assert!(
+            text.contains("conventions in AGENTS.md") && text.contains("conventions in CLAUDE.md")
+        );
     }
 
     #[test]

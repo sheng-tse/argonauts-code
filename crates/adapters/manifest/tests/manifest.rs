@@ -95,6 +95,9 @@ fn manifest_adapter_runs_jsonl_plugin() {
                 session_id: Some("plugin-session-1".into()),
                 model: Some("m-1".into()),
                 tools: strings(&["read", "write"]),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             },
             AgentEvent::Message {
                 text: "Read 5 bytes of prompt.".into(),
@@ -246,6 +249,9 @@ fn manifest_final_json_pointers() {
                 session_id: Some("exec-1".into()),
                 model: Some("m-1".into()),
                 tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
             },
             AgentEvent::Usage {
                 input_tokens: 5,

@@ -185,7 +185,7 @@ impl<'a> Supervisor<'a> {
 
         let mut live = LiveSession {
             process,
-            parser: self.adapter.parser(),
+            parser: self.adapter.session_parser(request),
             state: SessionState {
                 budget_level: self.meter.level(),
                 ..SessionState::default()

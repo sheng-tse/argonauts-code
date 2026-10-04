@@ -119,10 +119,12 @@ impl ConductorApi for Client {
         run: &RunId,
         session: &SessionKey,
         text: String,
+        now: bool,
     ) -> BoxFuture<'_, Result<SteerAck, ApiError>> {
         let request = ControlRequest::Steer {
             session: session.clone(),
             text,
+            now,
         };
         let run = run.clone();
         Box::pin(async move { control::call(self, &run, request).await?.steered() })

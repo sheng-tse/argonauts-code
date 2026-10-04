@@ -692,6 +692,7 @@ async fn status_comes_from_the_supervisor_or_else_the_journal() {
             &other_run("0502"),
             &argonauts_core::names::SessionKey::numbered(1),
             "x".to_owned(),
+            false,
         )
         .await;
     assert!(matches!(steer, Err(ApiError::NoRun(_))));

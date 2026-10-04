@@ -38,12 +38,14 @@ pub(crate) fn condensed_replay(
     })
 }
 
-/// What you and the front ends said to the run, and what its agents asked you.
+/// What you and the front ends said to the run, and what its agents asked you. A question
+/// still open is left out, since its card shows it.
 fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
     let mut workers: BTreeMap<SessionKey, WorkerRef> = BTreeMap::new();
     let mut seen: BTreeSet<MessageId> = BTreeSet::new();
+    let mut open: BTreeMap<CheckpointId, usize> = BTreeMap::new();
     let mut turns = Vec::new();
-    let mut say = |from: Party, text: &str| {
+    let say = |turns: &mut Vec<ReplayTurn>, from: Party, text: &str| {
         let text = sanitize_for_terminal(text.trim());
         if !text.is_empty() {
             turns.push(ReplayTurn { from, text });
@@ -58,7 +60,7 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
                     },
                     None => Party::User,
                 };
-                say(from, &started.request);
+                say(&mut turns, from, &started.request);
             }
             RunEventKind::Session(SessionEvent::Started(started)) => {
                 if let Some(key) = &event.session {
@@ -68,7 +70,7 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
             RunEventKind::Session(SessionEvent::Queued(message))
                 if from_a_person(&message.from) && seen.insert(message.id.clone()) =>
             {
-                say(message.from.clone(), &message.text);
+                say(&mut turns, message.from.clone(), &message.text);
             }
             RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
                 if let CheckpointPacket::Question(question) = &opened.packet {
@@ -82,17 +84,34 @@ fn turns(events: &[RunEvent]) -> Vec<ReplayTurn> {
                         },
                         None => Party::Conductor,
                     };
-                    say(from, &question.text);
+                    let at = turns.len();
+                    say(&mut turns, from, &question.text);
+                    if turns.len() > at {
+                        open.insert(opened.id.clone(), at);
+                    }
                 }
             }
             RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+                open.remove(&decided.id);
                 if from_a_person(&decided.by)
                     && let Some(text) = &decided.text
                 {
-                    say(decided.by.clone(), text);
+                    say(&mut turns, decided.by.clone(), text);
                 }
             }
+            RunEventKind::Checkpoint(CheckpointEvent::Withdrawn { id, .. }) => {
+                open.remove(id);
+            }
             _ => {}
+        }
+    }
+    // Turns only grow until here, so each question's place still holds it, and going from the
+    // last keeps the earlier places right.
+    let mut asked: Vec<usize> = open.into_values().collect();
+    asked.sort_unstable();
+    for at in asked.into_iter().rev() {
+        if at < turns.len() {
+            turns.remove(at);
         }
     }
     turns
@@ -372,5 +391,65 @@ mod tests {
             }
         );
         assert_eq!(turns[0].text, "Add --json to export");
+    }
+
+    /// An agent's question still open isn't repeated above the card that asks it; once
+    /// answered, the question and your answer read as turns.
+    #[test]
+    fn an_open_question_is_left_to_its_card() {
+        use argonauts_core::events::checkpoint::{FreeText, QuestionPacket};
+        use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+
+        let id = CheckpointId::numbered(1);
+        let card = argonauts_core::CardId::new("card-001").unwrap();
+        let opened = CheckpointOpened {
+            id: id.clone(),
+            kind: CheckpointKind::Question,
+            title: "Question from build:greet".to_owned(),
+            card: Some(card.clone()),
+            packet: CheckpointPacket::Question(QuestionPacket {
+                from: WorkerRef::new("codex", None),
+                card,
+                text: "Keep the old name as an alias?".to_owned(),
+                options: Vec::new(),
+            }),
+            evidence_sha256: String::new(),
+            mode: ApprovalMode::Supervised,
+            decide_with: DecideWith::Rules,
+            options: Vec::new(),
+            free_text: FreeText::Answer,
+            needs_you: true,
+        };
+        let mut events = vec![
+            run_started(0, "Rename the config loader", None),
+            event(
+                1,
+                RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened))),
+            ),
+            queued(2, "rename it everywhere", Party::User),
+        ];
+        let texts = |events: &[RunEvent]| -> Vec<String> {
+            turns(events).into_iter().map(|turn| turn.text).collect()
+        };
+        assert_eq!(
+            texts(&events),
+            ["Rename the config loader", "rename it everywhere"]
+        );
+        events.push(checkpoint_decided(
+            3,
+            &id,
+            AnswerAction::Answer,
+            Party::User,
+            Some("yes, keep it"),
+        ));
+        assert_eq!(
+            texts(&events),
+            [
+                "Rename the config loader",
+                "Keep the old name as an alias?",
+                "rename it everywhere",
+                "yes, keep it"
+            ]
+        );
     }
 }

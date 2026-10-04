@@ -41,6 +41,7 @@ pub mod prompt;
 pub mod redact;
 pub mod registry;
 pub mod sanitize;
+pub mod screen;
 pub mod session;
 pub mod settings;
 pub mod steps;
@@ -64,7 +65,10 @@ pub use config::{
     AgentConfig, BudgetConfig, Config, ConfigError, ConfigSources, GatesConfig, KeyScheme,
     LayerInfo, LoadedConfig, MergeConfig, MergeMode, Override, SoloConfig, UiConfig, Verbosity,
 };
-pub use event::{AgentEvent, ErrorCategory, RetryReason, TodoItem, TodoStatus};
+pub use event::{
+    AgentEvent, ErrorCategory, MessageStage, ModOutputKind, ReportedCommand, ReportedModel,
+    RetryReason, TodoItem, TodoStatus,
+};
 pub use hash::{canonical_json, sha256_hex};
 pub use ids::{CardId, IdError, RepoId, RunId};
 pub use log::{

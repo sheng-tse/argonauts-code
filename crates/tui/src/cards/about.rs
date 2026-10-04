@@ -69,16 +69,17 @@ pub fn about_cells_local(
     offset: UtcOffset,
     names: &DisplayNames,
 ) -> Vec<Cell> {
-    let _ = run;
-    about_item(opened, offset, names)
+    about_item(opened, run, offset, names)
         .map(|item| vec![Cell::Custom(Box::new(item))])
         .unwrap_or_default()
 }
 
 /// The item [`about_cells`] draws, for reading it some other way, with clock times at
-/// `offset`. `None` when the card has nothing to say before it opens.
+/// `offset`. `None` when the card has nothing to say before it opens. With the run, a merge's
+/// rows name their cards by label, as the chat does; without it, by id.
 pub fn about_item(
     opened: &CheckpointOpened,
+    run: Option<&RunState>,
     offset: UtcOffset,
     names: &DisplayNames,
 ) -> Option<AboutCell> {
@@ -89,7 +90,7 @@ pub fn about_item(
         CheckpointPacket::Merge(merge) if merge.waits_on_you() => {
             Some(in_the_way_item(merge, Some(IN_THE_WAY_SHOWN)))
         }
-        CheckpointPacket::Merge(merge) => Some(merge_item(merge, names)),
+        CheckpointPacket::Merge(merge) => Some(merge_item(merge, run, names)),
         CheckpointPacket::Handoff(plan) => Some(handoff_item(plan, names)),
         CheckpointPacket::VendorDown(down) => Some(vendor_down_item(down, offset)),
         CheckpointPacket::Escalation(escalation) => Some(escalation_item(escalation, false)),
@@ -104,7 +105,7 @@ pub fn details(opened: &CheckpointOpened, offset: UtcOffset, names: &DisplayName
         CheckpointPacket::Goal(goal) => goal_file(&goal.goal),
         CheckpointPacket::Plan(plan) => plan_item(plan, names),
         CheckpointPacket::Merge(merge) if merge.waits_on_you() => in_the_way_item(merge, None),
-        CheckpointPacket::Merge(merge) => merge_item(merge, names),
+        CheckpointPacket::Merge(merge) => merge_item(merge, None, names),
         CheckpointPacket::Handoff(plan) => handoff_item(plan, names),
         CheckpointPacket::VendorDown(down) => vendor_down_item(down, offset),
         CheckpointPacket::Escalation(escalation) => escalation_item(escalation, true),
@@ -332,7 +333,7 @@ fn in_the_way_item(merge: &MergePacket, shown: Option<usize>) -> AboutCell {
     item
 }
 
-fn merge_item(merge: &MergePacket, names: &DisplayNames) -> AboutCell {
+fn merge_item(merge: &MergePacket, run: Option<&RunState>, names: &DisplayNames) -> AboutCell {
     let into = merge.target.as_deref().unwrap_or("main");
     // The branch's name is plumbing, so the heading names the run.
     let mut item = AboutCell::new(format!("Merge the run into {into}"));
@@ -366,8 +367,9 @@ fn merge_item(merge: &MergePacket, names: &DisplayNames) -> AboutCell {
                 },
             ),
         };
+        let card = run.map_or_else(|| row.card.to_string(), |run| run.card_label(&row.card));
         table.row(vec![
-            TableCell::text(row.card.as_str()),
+            TableCell::text(card),
             TableCell::text(&row.title),
             TableCell::dim(row.stat.files_changed.to_string()),
             TableCell::text(words::lines(&row.stat)),

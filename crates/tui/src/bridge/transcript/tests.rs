@@ -1598,6 +1598,66 @@ fn a_crew_workflow_prints_its_start_and_its_end() {
     assert!(!printed.contains("Workflow(peer-crew)"), "{printed}");
 }
 
+/// A phase detail too long for one row wraps under the detail column, not under the phase's
+/// number, so the phases still read as two columns.
+#[test]
+fn a_wrapped_phase_detail_lines_up_under_the_details() {
+    use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
+    use argonauts_core::names::WorkflowId;
+    use argonauts_core::workflow::StandardPhase;
+
+    let mut harness = Harness::new();
+    let id = WorkflowId::numbered(1);
+    let mut run = crate::state::RunState::new(run_id());
+    run.workflows.push(crate::state::WorkflowState {
+        id: id.clone(),
+        name: "peer-crew".into(),
+        from: None,
+        description: String::new(),
+        phases: vec!["Fix".into(), "Merge".into()],
+        parent: None,
+        steps: Vec::new(),
+    });
+    harness.state.runs.insert(run_id(), run);
+    if let AppEvent::Run { event } = &mut started()
+        && let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind
+    {
+        let mut crew = (**started).clone();
+        crew.mode = RunMode::Crew;
+        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+            Box::new(crew),
+        ))));
+    }
+    let phase = |index: u32, title: &str, detail: &str| DeclaredPhase {
+        index,
+        title: title.into(),
+        detail: detail.into(),
+        standard: StandardPhase::Do,
+    };
+    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+        Box::new(WorkflowDeclared {
+            id,
+            name: "peer-crew".into(),
+            description: String::new(),
+            phases: vec![
+                phase(
+                    0,
+                    "Fix",
+                    "one owner per function, each with a test that failed before the fix",
+                ),
+                phase(1, "Merge", "the final check, then the merge"),
+            ],
+        }),
+    ))));
+    let printed = harness.printed_at(60);
+    assert!(
+        printed.contains(
+            "  ⎿  1. Fix    one owner per function, each with a test that\n               failed before the fix\n     2. Merge  the final check, then the merge\n"
+        ),
+        "{printed}"
+    );
+}
+
 /// A crew run whose request named who coordinates and who reviews: the Triage item says what
 /// was followed, the workflow the lead declared prints under it as Claude Code prints its own,
 /// and the closing answer comes last, after `Workflow(<name>) · done` and the merge.
@@ -1949,4 +2009,78 @@ fn started_fields() -> RunStarted {
         },
         _ => unreachable!(),
     }
+}
+
+/// A message the model read mid-turn prints where it read it, a mod's log line
+/// hangs dim under the plugin's name, and Claude Code's own workflow shows as the workflow it
+/// reports, never as the script it ran.
+#[test]
+fn a_joined_message_a_mods_log_and_a_mirrored_workflow_in_the_chat() {
+    use argonauts_core::ModOutputKind;
+    use argonauts_core::events::session::{SubagentStatus, VendorWorkflow};
+
+    let mut harness = Harness::new();
+    let turn = TurnId::numbered(1);
+    let chat = |event| AppEvent::Chat { event };
+    let agent = |event| {
+        chat(ChatEvent::Agent {
+            turn: turn.clone(),
+            event,
+        })
+    };
+    harness.send(chat(ChatEvent::TurnStarted {
+        turn: turn.clone(),
+        text: "check release.md, then run ./slow-test.sh".into(),
+        worker: WorkerRef::new("claude-code", Some("opus".into())),
+        read_only: false,
+        commit: "8b41d07".into(),
+        uncommitted: vec![],
+        settings_sha256: None,
+        continues: false,
+    }));
+    harness.send(agent(AgentEvent::ModOutput {
+        kind: ModOutputKind::Log,
+        plugin: Some("pr-tools".into()),
+        text: Some("3 reviewers asked".into()),
+        timeout_ms: None,
+    }));
+    harness.send(agent(AgentEvent::ToolStarted {
+        id: "wf-call".into(),
+        name: "Workflow".into(),
+        input: serde_json::json!({ "script": "export const meta = {}" }),
+        parent: None,
+    }));
+    harness.send(agent(AgentEvent::Workflow {
+        workflow: Box::new(VendorWorkflow {
+            id: "w4d273qmn".into(),
+            call: Some("wf-call".into()),
+            name: "release-check".into(),
+            description: "Reads the release notes and runs the slow test".into(),
+            phases: Vec::new(),
+            agents: Vec::new(),
+            status: SubagentStatus::Running,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            summary: None,
+            started_at_ms: None,
+        }),
+    }));
+    harness.send(chat(ChatEvent::Joined {
+        turn: turn.clone(),
+        text: "also check the changelog".into(),
+    }));
+    let printed = harness.printed_at(100);
+    assert!(
+        printed.contains("⎿  pr-tools: 3 reviewers asked"),
+        "{printed}"
+    );
+    assert!(printed.contains("Workflow(release-check)"), "{printed}");
+    assert!(printed.contains("ctrl+t to watch"), "{printed}");
+    assert!(
+        !printed.contains("script"),
+        "the raw call stays out:\n{printed}"
+    );
+    let joined = printed.find("❯ also check the changelog").expect(&printed);
+    assert!(printed.find("Workflow(").unwrap() < joined, "{printed}");
 }

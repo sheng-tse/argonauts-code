@@ -1,0 +1,15 @@
+---
+source: crates/tui/tests/snap_claude_code_live.rs
+expression: text(&view.lines)
+---
+✶ Rowing… (38s · ↓ 2.9k tokens)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Allow Bash(./slow-test.sh)?
+
+  ❯ 1. Yes
+    2. No
+
+  Enter to choose · Esc to set aside
+
+  ⏵⏵ auto mode on                                                                                    Claude 5h 53% used

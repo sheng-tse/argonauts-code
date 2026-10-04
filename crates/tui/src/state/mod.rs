@@ -236,6 +236,7 @@ impl AppState {
                 }
             }
             AppEvent::TakenBack { texts } => self.taken_back(texts),
+            AppEvent::ChatCleared => self.chat.heads_up = None,
             AppEvent::VendorCommands { set } => self.vendor_commands = Some(set.clone()),
             AppEvent::Names { names } => self.names = (**names).clone(),
             AppEvent::ReplayDone { run, .. } => {

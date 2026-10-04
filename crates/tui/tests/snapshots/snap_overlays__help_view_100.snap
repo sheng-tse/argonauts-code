@@ -16,21 +16,21 @@ The keys in effect, and every command by category                               
 │ shift+tab                     next approval mode                                                 │
 │ ctrl+o                        detailed transcript                                                │
 │ ctrl+t                        workflow view                                                      │
-│ ctrl+g                        edit the prompt in $EDITOR                                         │
+│ ctrl+g / ctrl+x ctrl+e        edit the prompt in $EDITOR                                         │
 │ left                          crew view, on an empty prompt                                      │
 │ down                          agent panel, on an empty prompt                                    │
 │ ctrl+r                        search prompt history                                              │
 │ ?                             shortcuts, on an empty prompt                                      │
 │ up                            take queued messages back                                          │
 │ tab / up                      answer a waiting card                                              │
+│ ctrl+enter / ctrl+x ctrl+s    send waiting messages to Claude Code now                           │
+│ ctrl+x tab                    move to the heads-up above the input                               │
+│ ctrl+x ctrl+a                 hide or show the heads-up                                          │
 │                                                                                                  │
 │ Session                                                                                          │
 │ /clear                        Start a fresh chat with the lead. Runs keep going                  │
 │ /resume                       Pick an earlier conversation or a run to carry on                  │
 │ /exit                         Close the screen. Runs keep going                                  │
 │ /compact [instructions]       Summarize the conversation to free context                         │
-│ /rename [name]                Rename the conversation                                            │
-│ /branch [name]                Start a new conversation from here and keep this one               │
-│ /fork [prompt]                Copy the conversation into a new background session                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                                                   1-26 of 107 ↓
+↑↓ scroll · esc back                                                                   1-26 of 110 ↓

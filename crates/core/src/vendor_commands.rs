@@ -191,6 +191,14 @@ impl VendorCommandSet {
             })
     }
 
+    /// The command running inside the CLI that also answers to `name`, an Argonauts command's
+    /// name, for when Argonauts' own can't take what was typed.
+    pub fn runs_inside_as(&self, name: &str) -> Option<&VendorCommand> {
+        self.commands.iter().find(|command| {
+            command.kind == CommandKind::Vendor && command.aliases.iter().any(|alias| alias == name)
+        })
+    }
+
     /// The menu's category for this CLI: what runs inside it.
     pub fn menu(&self) -> impl Iterator<Item = &VendorCommand> {
         self.of_kind(|kind| matches!(kind, CommandKind::Vendor))

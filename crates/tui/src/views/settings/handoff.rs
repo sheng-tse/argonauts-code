@@ -32,6 +32,7 @@ pub fn label(key: &str) -> Option<String> {
         "allow_api_billing" => "Hand off to a paid API",
         "return_to_original" => "Hand back when it returns",
         "broken_work" => "Broken work in progress",
+        "wrap_up" => "An agent finishing on its allowance",
         "strategy" => "How the cards are shared",
         "race_count" => "Attempts in a race",
         "on_return" => "When the agent comes back",
