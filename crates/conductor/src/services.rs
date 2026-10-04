@@ -155,6 +155,7 @@ mod tests {
             attempts: Vec::new(),
             reassigned_once: false,
             events,
+            logged_in: None,
         };
 
         match limits.after_stop(&context).await {

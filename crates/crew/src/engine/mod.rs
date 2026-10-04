@@ -40,6 +40,7 @@ pub mod recover;
 pub mod run_meter;
 pub mod shared;
 pub mod snapshot;
+pub(crate) mod stand_in;
 pub mod tasks;
 
 /// How often held text and reasoning deltas are checked for being due.
@@ -403,6 +404,20 @@ impl Loop {
                 err @ (EngineError::NotBuilt(_) | EngineError::Journal(_) | EngineError::Io(_)),
             ) => Err(err),
             Err(EngineError::Git(GitError::NotBuilt(what))) => Err(EngineError::NotBuilt(what)),
+            // A vendor error never ends a run: it parks until an agent can take the seat, tries
+            // again on its own after a wait that grows with each try, and its note says why.
+            Err(EngineError::Stalled(stall)) => {
+                let tries = self.host.read(|state| state.run.stand_in_waits);
+                let retry = stand_in::retry_after(self.host.settings(), tries);
+                let until = stall
+                    .resets_at
+                    .or_else(|| retry.map(|retry| self.host.now() + retry));
+                self.note(NoteLevel::Error, &stand_in::park_line(&stall, retry));
+                let detail = stall.detail.clone();
+                self.park(ParkReason::NoStandIn { detail, until })
+                    .await
+                    .map(Some)
+            }
             Err(err) => self
                 .finish(RunOutcome::Failed, Some(err.to_string()))
                 .await

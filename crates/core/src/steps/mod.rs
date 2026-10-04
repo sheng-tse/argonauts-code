@@ -3,6 +3,7 @@
 
 pub mod card;
 pub mod design;
+mod design_shorthand;
 pub mod goal;
 pub mod handoff;
 pub mod intake;
@@ -73,6 +74,12 @@ pub trait Step {
     type Input: Serialize + JsonSchema;
     /// What the worker must return, checked against [`output_schema`].
     type Output: Serialize + DeserializeOwned + JsonSchema;
+
+    /// The answer with the near-misses that can only mean one thing read as the schema says,
+    /// before the schema checks it. Most steps take their answers as they come.
+    fn normalize(output: Value) -> Value {
+        output
+    }
 }
 
 pub struct StepRequest {
@@ -85,6 +92,8 @@ pub struct StepRequest {
     pub control: Option<mpsc::Receiver<SessionControl>>,
     /// Cancelling stops the session at once, and the step ends with the session's end.
     pub cancel: CancellationToken,
+    /// The step's [`Step::normalize`], applied to each answer before the schema checks it.
+    pub normalize: fn(Value) -> Value,
 }
 
 impl StepRequest {
@@ -96,6 +105,7 @@ impl StepRequest {
             retries_on_mismatch: 1,
             control: None,
             cancel: CancellationToken::new(),
+            normalize: std::convert::identity,
         }
     }
 }

@@ -18,6 +18,7 @@ use crate::card::support::{
     newest_owner_session, owner_of, progress_of, record_card, record_of, state_of,
 };
 use crate::engine::host::Host;
+use crate::engine::stand_in;
 use crate::error::EngineResult;
 use crate::handoff;
 use crate::roles;
@@ -26,16 +27,19 @@ use crate::state::cards::CardRecord;
 pub async fn decide(host: &Host, card: &CardId, end: &SessionEnd) -> EngineResult<RecoveryAction> {
     handoff::broken::gate(host, card, &end.reason).await?;
     let record = record_of(host, card)?;
+    let worker = owner_of(host, &record);
+    let logged_in = stand_in::login_check(host, &worker, &end.reason).await;
     let context = StopContext {
         run: host.run_id().clone(),
         card: record.spec.clone(),
         state: record.state,
         role: RoleName::Owner,
-        worker: owner_of(host, &record),
+        worker,
         end: end.clone(),
         attempts: attempt_lines(&record),
         reassigned_once: progress_of(host, card).ladder_retries >= 1,
         events: host.repo().run_dir.join(run_files::EVENTS),
+        logged_in,
     };
     Ok(host.services().limits.after_stop(&context).await)
 }
@@ -79,7 +83,8 @@ pub async fn apply(host: &Host, card: &CardId, action: RecoveryAction) -> Engine
             let record = record_of(host, card)?;
             let until = match &reason {
                 ParkReason::AllVendorsOut { until }
-                | ParkReason::WaitingForVendor { until, .. } => *until,
+                | ParkReason::WaitingForVendor { until, .. }
+                | ParkReason::NoStandIn { until, .. } => *until,
                 ParkReason::Checkpoint | ParkReason::Paused => None,
             };
             let vendor = match reason {

@@ -34,7 +34,7 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::app::UiAction;
 use crate::bottom::{AnsweredPick, CardPrompt};
 use crate::bridge::Cx;
-use crate::cell::{Cell, Notice, Tone};
+use crate::cell::Cell;
 use crate::state::DecisionRecord;
 use crate::text::sanitize_line;
 use crate::views::ViewOutcome;
@@ -361,7 +361,12 @@ impl Cards {
         self.close_target(&target, cx);
         if let Some(opened) = opened {
             if !cx.replaying() {
-                // The screen shows one run at a time, so the record says "the run".
+                // The screen shows one run at a time, so the record says "the run", and its
+                // cards go by their labels, as the rest of the transcript names them.
+                let shown = cx.state.runs.get(run);
+                let label = |card: &CardId| {
+                    shown.map_or_else(|| card.to_string(), |shown| shown.card_label(card))
+                };
                 let record = records::record(
                     &opened,
                     decided,
@@ -369,6 +374,7 @@ impl Cards {
                     Some(at),
                     clock_offset(cx),
                     &cx.state.names,
+                    &label,
                 );
                 cx.model.history.push(Cell::Notice(record));
             }
@@ -654,7 +660,8 @@ impl Cards {
         match shown {
             views::Shown::Request(view) => cx.out.send(UiCommand::Request { view }),
             views::Shown::Pager(pager) => cx.out.open(pager),
-            views::Shown::Notice(text) => cx.model.history.push(Notice::new(Tone::Error, text)),
+            // Why the key did nothing, on the notice line, never in the transcript.
+            views::Shown::Notice(text) => crate::bridge::keys::notice(&text, cx),
         }
         true
     }
@@ -740,9 +747,10 @@ impl Cards {
     }
 
     /// Several cards can wait at once. One you set off yourself comes first, since you're
-    /// waiting on it. Then the one on screen stays while it holds the keys, then a card work
-    /// waits on and not set aside, then the one on screen while it's expanded, then the oldest
-    /// card not set aside, or the oldest one pinned.
+    /// waiting on it. Then the one on screen stays while it holds the keys, then the oldest
+    /// card work waits on, then the spot check on screen or the oldest one, and last the oldest
+    /// card set aside. A card that asks nothing yet, as one your rules still decide, stays off
+    /// the screen, so a card on screen always holds the keys or sits pinned to its one line.
     fn show(&mut self, cx: &mut Cx<'_>) {
         let shown = cx.model.bottom.card.as_ref();
         let prompt = |id: &u64| match shown.filter(|card| card.id == *id) {
@@ -752,18 +760,36 @@ impl Cards {
         let pinned = |id: &u64| prompt(id).is_some_and(|card| card.pinned);
         let yours = |id: &u64| prompt(id).is_some_and(|card| card.takes_focus && !card.pinned);
         let asks = |id: &u64| prompt(id).is_some_and(CardPrompt::claims_keys);
+        // A spot check asks too, but nothing waits on it, so it holds its place only while
+        // you work it.
+        let spot_check = |id: &u64| {
+            self.held
+                .get(id)
+                .is_some_and(|held| matches!(held.source, Source::SpotCheck(_)))
+        };
         let current = shown
             .map(|card| card.id)
-            .filter(|id| self.open.contains_key(id) && !pinned(id));
-        let holding = current.filter(|_| shown.is_some_and(|card| card.focused || card.needs_you));
+            .filter(|id| self.open.contains_key(id) && asks(id));
+        let holding = current.filter(|id| {
+            shown.is_some_and(|card| {
+                if spot_check(id) {
+                    card.engaged
+                } else {
+                    card.focused || card.needs_you
+                }
+            })
+        });
         let wanted = current
             .filter(|id| yours(id))
             .or_else(|| self.open.keys().find(|id| yours(id)).copied())
             .or(holding)
-            .or_else(|| self.open.keys().find(|id| asks(id)).copied())
+            .or_else(|| {
+                let waits = |id: &&u64| asks(id) && !spot_check(id);
+                self.open.keys().find(waits).copied()
+            })
             .or(current)
-            .or_else(|| self.open.keys().find(|id| !pinned(id)).copied())
-            .or_else(|| self.open.keys().next().copied());
+            .or_else(|| self.open.keys().find(|id| asks(id)).copied())
+            .or_else(|| self.open.keys().find(|id| pinned(id)).copied());
         match wanted {
             Some(id) => self.display(id, false, cx),
             None => cx.model.bottom.card = None,
@@ -839,7 +865,7 @@ pub fn spot_check_line(
     let decided = record.decided.as_ref()?;
     Some(format!(
         "{} · decided by {}",
-        records::outcome(&record.opened, decided, Some(run), names),
+        records::outcome(&record.opened, decided, Some(run), names, &records::by_id),
         words::party(&decided.by, names)
     ))
 }
@@ -894,7 +920,7 @@ fn answered_pick(
         shadow: None,
         cards: Vec::new(),
     };
-    let outcome = records::outcome(opened, &decided, Some(run), names);
+    let outcome = records::outcome(opened, &decided, Some(run), names, &records::by_id);
     Some(AnsweredPick::new(run.clone(), id.clone(), outcome))
 }
 

@@ -90,6 +90,7 @@ impl InputRouter {
                 cx.model.bottom.composer.keywords.clone_from(&set.keywords);
             }
             AppEvent::RepoFiles { paths } => cx.model.bottom.menus.set_files(paths),
+            AppEvent::Hint { text } => notice(cx, text.clone(), Tone::Dim),
             AppEvent::Attached { .. } | AppEvent::Detached { .. } | AppEvent::Run { .. } => {
                 let mentions = mentions::candidates(cx.state);
                 if cx.model.bottom.menus.mentions != mentions {
@@ -528,7 +529,20 @@ mod tests {
 
     #[test]
     fn submit_routes_ui_both_app_commands() {
-        let mut screen = Screen::new(fixture::working_state());
+        let mut state = fixture::working_state();
+        // A run with agents and no workflow opens its newest agent instead.
+        if let Some(run) = state.runs.get_mut(&fixture::run_id()) {
+            run.workflows.push(crate::state::WorkflowState {
+                id: argonauts_core::names::WorkflowId::parse("wf-001").unwrap(),
+                name: "export-json".into(),
+                from: None,
+                description: "Add a --json flag to export".into(),
+                phases: Vec::new(),
+                parent: None,
+                steps: Vec::new(),
+            });
+        }
+        let mut screen = Screen::new(state);
         assert_eq!(
             screen.submit("/workflows").commands,
             [UiCommand::Request {

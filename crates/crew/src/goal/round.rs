@@ -124,6 +124,18 @@ pub fn note(host: &Host, level: NoteLevel, text: String) -> EngineResult<()> {
     Ok(())
 }
 
+/// A note that says what happened in plain words, with the raw `detail` behind it for Ctrl+O.
+pub fn note_with_detail(
+    host: &Host,
+    level: NoteLevel,
+    line: &str,
+    detail: &str,
+) -> EngineResult<()> {
+    let note = Note::with_detail(level, line, detail);
+    host.record(None, None, RunEventKind::Note(note))?;
+    Ok(())
+}
+
 /// Writes the draft in the integration worktree as a conductor commit and records
 /// `Goal::Drafted`, unless this exact draft is already recorded.
 pub async fn write_draft(host: &Host, goal: GoalFile) -> EngineResult<GoalFile> {

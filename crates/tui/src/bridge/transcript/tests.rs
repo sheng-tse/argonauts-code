@@ -6,8 +6,8 @@ use argonauts_core::app::{AppEvent, ChatEvent, ReplayTurn, TurnReply};
 use argonauts_core::events::RetroEvent;
 use argonauts_core::events::card::{AttemptCause, CardEvent, CardState, GateKind, GateOutcome};
 use argonauts_core::events::run::{
-    ChangedFile, CheckLine, ClosingAnswer, Party, PhaseChange, RunLifecycle, RunMode, RunOutcome,
-    RunPhase, RunStarted,
+    ChangedFile, CheckLine, ClosingAnswer, ParkReason, Party, PhaseChange, RunLifecycle, RunMode,
+    RunOutcome, RunPhase, RunStarted,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::log::RETRO_FAILED;
@@ -296,6 +296,38 @@ fn replay_prints_summaries_only() {
     // Live events print again.
     harness.send(paused());
     assert!(harness.printed().contains("Paused the run"));
+}
+
+/// A run nobody could take a seat over in says so, not that every agent is out, and promises to
+/// go on by itself only when a retry is set.
+#[test]
+fn a_park_nobody_could_take_a_seat_in_says_so_and_when_it_tries_again() {
+    let parked = |until| {
+        run_event(RunEventKind::Run(RunLifecycle::Parked {
+            reason: ParkReason::NoStandIn {
+                detail: "nobody could take over as the lead".into(),
+                until,
+            },
+            waiting_on: Vec::new(),
+        }))
+    };
+    let mut harness = Harness::new();
+    harness.send(started());
+    harness.send(parked(Some(datetime!(2026-09-30 10:47 UTC))));
+    let retrying = harness.printed();
+    assert!(
+        retrying.contains("Parked the run · nobody could take over as the lead"),
+        "{retrying}"
+    );
+    assert!(retrying.contains("It tries again at "), "{retrying}");
+    assert!(retrying.contains("· /resume tries now"), "{retrying}");
+    assert!(!retrying.contains("every agent is out"), "{retrying}");
+    assert!(!retrying.contains("when one is back"), "{retrying}");
+
+    harness.send(parked(None));
+    let given_up = harness.printed();
+    assert!(given_up.contains("/resume tries again"), "{given_up}");
+    assert!(!given_up.contains("tries again at"), "{given_up}");
 }
 
 fn running_summary() -> RunSummary {
@@ -1523,11 +1555,8 @@ fn the_goal_line_counts_the_leads_answers_apart() {
     );
 }
 
-/// A crew run's workflow prints as Claude Code prints its own: `● Workflow(<name>)` with the
-/// run's description and the phases it declares, and `● Workflow(<name>) · done` before the
-/// run's end.
-#[test]
-fn a_crew_workflow_prints_its_start_and_its_end() {
+/// A crew run named `fix-slugify-median` that declared its workflow, ready to end.
+fn crew_workflow_harness() -> Harness {
     use argonauts_core::events::run::RunNamed;
     use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
     use argonauts_core::names::WorkflowId;
@@ -1580,6 +1609,15 @@ fn a_crew_workflow_prints_its_start_and_its_end() {
             ],
         }),
     ))));
+    harness
+}
+
+/// A crew run's workflow prints as Claude Code prints its own: `● Workflow(<name>)` with the
+/// run's description and the phases it declares, and `● Workflow(<name>) · done` before the
+/// run's end.
+#[test]
+fn a_crew_workflow_prints_its_start_and_its_end() {
+    let mut harness = crew_workflow_harness();
     harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
         outcome: RunOutcome::Merged,
         detail: None,
@@ -1656,6 +1694,44 @@ fn a_wrapped_phase_detail_lines_up_under_the_details() {
         ),
         "{printed}"
     );
+}
+
+/// A run's end reads one way everywhere it shows: a failed run's workflow ends `· failed` above
+/// "The run failed", as its panel row does, never `· done`, and a stopped one `· stopped`.
+#[test]
+fn a_workflow_ends_as_its_run_did() {
+    use crate::bottom::WorkflowRowState;
+
+    for (outcome, word, end) in [
+        (RunOutcome::Failed, "failed", "The run failed"),
+        (RunOutcome::Stopped, "stopped", "Stopped the run"),
+        (RunOutcome::Abandoned, "stopped", "Abandoned the run"),
+        (RunOutcome::Merged, "done", "Merged the run"),
+    ] {
+        let mut harness = crew_workflow_harness();
+        harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+            Box::new(ClosingAnswer {
+                text: "The run ended after 9 of its 10 agents reported.".into(),
+                by: None,
+                files: Vec::new(),
+                checks: Vec::new(),
+                tests: Vec::new(),
+                left: Vec::new(),
+            }),
+        ))));
+        harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+            outcome,
+            detail: None,
+        })));
+        let printed = harness.printed();
+        let item = format!("● Workflow(fix-slugify-median) · {word}");
+        assert!(printed.contains(&item), "{printed}");
+        assert!(printed.contains(end), "{printed}");
+        assert_eq!(WorkflowRowState::ended(outcome).word(), word);
+        if outcome == RunOutcome::Failed {
+            assert!(!printed.contains("· done"), "{printed}");
+        }
+    }
 }
 
 /// A crew run whose request named who coordinates and who reviews: the Triage item says what

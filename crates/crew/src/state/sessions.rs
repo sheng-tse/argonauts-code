@@ -9,7 +9,7 @@ use argonauts_core::CardId;
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent, SessionStarted};
-use argonauts_core::names::SessionKey;
+use argonauts_core::names::{SessionKey, WorkerRef};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Sessions {
@@ -18,6 +18,10 @@ pub struct Sessions {
     /// that moved to a new model. The outcome log keeps it per card.
     #[serde(default)]
     pub models: BTreeMap<SessionKey, String>,
+    /// Whether each worker's newest session ended on a sign-in error, so a resumed run asks
+    /// that worker's CLI whether it's logged out before starting it again.
+    #[serde(default)]
+    pub sign_in_failed: BTreeMap<WorkerRef, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,6 +42,14 @@ pub struct SessionRecord {
     /// It ended `Stopped` because the whole run stopped, so a reopened run resumes it.
     #[serde(default)]
     pub stopped_with_run: bool,
+    /// The worker its step asked, once another agent took the session over after a vendor
+    /// failure, or ran it from the start because the asked one was out. The step finds the
+    /// session by it.
+    #[serde(default)]
+    pub asked: Option<WorkerRef>,
+    /// Each time it ended for a vendor reason: the worker then, and the seq of the end.
+    #[serde(default)]
+    pub vendor_failures: Vec<(WorkerRef, u64)>,
 }
 
 impl SessionRecord {
@@ -50,6 +62,11 @@ impl SessionRecord {
                 ..
             })
         )
+    }
+
+    /// The worker its step asked for, whoever runs it now.
+    pub fn asked_worker(&self) -> &WorkerRef {
+        self.asked.as_ref().unwrap_or(&self.started.worker)
     }
 
     /// Still running, paused, or stopped with the run, so its step resumes it when re-entered.
@@ -66,6 +83,12 @@ impl Sessions {
         match event {
             SessionEvent::Started(started) => match self.by_key.get_mut(key) {
                 Some(record) => {
+                    if record.asked.is_none() {
+                        record.asked = started.asked.clone().or_else(|| {
+                            (started.worker != record.started.worker)
+                                .then(|| record.started.worker.clone())
+                        });
+                    }
                     record.started = (**started).clone();
                     record.starts += 1;
                     record.end = None;
@@ -86,6 +109,8 @@ impl Sessions {
                         context_used: None,
                         end: None,
                         stopped_with_run: false,
+                        asked: started.asked.clone(),
+                        vendor_failures: Vec::new(),
                     };
                     self.by_key.insert(key.clone(), record);
                 }
@@ -102,6 +127,12 @@ impl Sessions {
                 if let Some(record) = self.by_key.get_mut(key) {
                     if end.vendor_session.is_some() {
                         record.vendor_session = end.vendor_session.clone();
+                    }
+                    let worker = record.started.worker.clone();
+                    self.sign_in_failed
+                        .insert(worker.clone(), end.reason.is_sign_in_error());
+                    if end.reason.is_vendor_failure() {
+                        record.vendor_failures.push((worker, envelope.seq));
                     }
                     record.end = Some((**end).clone());
                 }

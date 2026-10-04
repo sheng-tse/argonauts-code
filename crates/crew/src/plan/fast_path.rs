@@ -104,7 +104,7 @@ async fn merge_drafts(
     for slot in 0..2u32 {
         let answered = ask_merge(host, call, merger, &all, gaps.as_deref(), slot).await?;
         let text = drafts::render(&answered.output);
-        merged = Some((answered.output, answered.session));
+        merged = Some((answered.output, answered.session, answered.worker));
         match check_complete(host, call, merger, &all, &text, slot).await? {
             Some((score, rationale)) if score < COMPLETE_AT => {
                 gaps = Some(format!(
@@ -114,11 +114,11 @@ async fn merge_drafts(
             _ => break,
         }
     }
-    let Some((draft, session)) = merged else {
+    let Some((draft, session, author)) = merged else {
         return Err(EngineError::Refused("the merge gave no plan".to_owned()));
     };
     let round = host.read(|state| state.plan.current_round());
-    let id = drafts::seal(host, MERGED_LABEL, merger, round, &draft, Some(&session))?;
+    let id = drafts::seal(host, MERGED_LABEL, &author, round, &draft, Some(&session))?;
     host.read(|state| state.plan.drafts.iter().find(|d| d.draft == id).cloned())
         .ok_or_else(|| EngineError::Refused(format!("draft {id} was not recorded")))
 }

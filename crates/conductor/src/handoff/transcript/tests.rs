@@ -68,6 +68,7 @@ impl Log {
             follow_key: None,
             workflow_step: None,
             label: None,
+            asked: None,
         };
         self.session(session, SessionEvent::Started(Box::new(started)));
     }

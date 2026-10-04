@@ -35,6 +35,10 @@ pub(super) fn run_events(ctx: &Ctx, runs: &RunsState, run: &RunId) -> Vec<RunEve
         .unwrap_or_default()
 }
 
+/// Before the lead's brief holds, Ctrl+T and Enter on the run's row open the lead at work, so
+/// only a run the screen doesn't hold yet gets this.
+const NO_WORKFLOW_YET: &str = "This run hasn't started a workflow yet.";
+
 fn show(ctx: &Ctx, data: ViewData) {
     ctx.send(AppEvent::View {
         data: Box::new(data),
@@ -70,7 +74,9 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
             show(ctx, ViewData::Raw { raw });
         }
         ViewRequest::Workflow { run, workflow } => {
-            show_workflow(ctx, runs, &run, workflow.as_ref());
+            if let Some(why) = show_workflow(ctx, runs, &run, workflow.as_ref()) {
+                ctx.hint(why);
+            }
         }
         ViewRequest::Agent { run, session } => {
             let events = run_events(ctx, runs, &run);
@@ -81,7 +87,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
                         view: Box::new(view),
                     },
                 ),
-                None => ctx.notice(NoteLevel::Info, format!("{run} has no session {session}.")),
+                None => ctx.hint(format!("{run} has no session {session}.")),
             }
         }
         ViewRequest::Goal { run } => {
@@ -93,10 +99,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
                         view: Box::new(view),
                     },
                 ),
-                None => ctx.notice(
-                    NoteLevel::Info,
-                    format!("{run} is a workflow, so it has no goal view."),
-                ),
+                None => ctx.hint(format!("{run} is a workflow, so it has no goal view.")),
             }
         }
         ViewRequest::AllRepos => {
@@ -317,28 +320,34 @@ pub(crate) async fn workflow_view(
     let Some(run) = on_screen(ctx, runs) else {
         return Ok(Vec::new());
     };
-    show_workflow(ctx, runs, &run, workflow.as_ref());
+    // A command you typed is answered in the transcript, as its other answers are.
+    if let Some(why) = show_workflow(ctx, runs, &run, workflow.as_ref()) {
+        ctx.notice(NoteLevel::Info, why);
+    }
     Ok(Vec::new())
 }
 
-fn show_workflow(ctx: &Ctx, runs: &RunsState, run: &RunId, workflow: Option<&WorkflowId>) {
+/// Shows the workflow view, or says why there's none to show.
+fn show_workflow(
+    ctx: &Ctx,
+    runs: &RunsState,
+    run: &RunId,
+    workflow: Option<&WorkflowId>,
+) -> Option<String> {
     let events = run_events(ctx, runs, run);
-    match views::workflow_view(&events, run, workflow) {
-        Some(view) => show(
-            ctx,
-            ViewData::Workflow {
-                view: Box::new(view),
-            },
-        ),
-        None => {
-            let text = match workflow {
-                Some(workflow) => format!("This run has no workflow {workflow}."),
-                None => "This run hasn't started a workflow yet. Ctrl+T shows it once one starts."
-                    .to_owned(),
-            };
-            ctx.notice(NoteLevel::Info, text);
-        }
-    }
+    let Some(view) = views::workflow_view(&events, run, workflow) else {
+        return Some(match workflow {
+            Some(workflow) => format!("This run has no workflow {workflow}."),
+            None => NO_WORKFLOW_YET.to_owned(),
+        });
+    };
+    show(
+        ctx,
+        ViewData::Workflow {
+            view: Box::new(view),
+        },
+    );
+    None
 }
 
 /// This repo first, then every other repo with a live supervisor, newest update first.

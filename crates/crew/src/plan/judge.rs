@@ -75,7 +75,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         let judges = judges(host, call, &latest, settings.method);
         let own = scores_own_plans(settings.method, &judges);
         let panels = panels(&judges, &plans, &authors, &family, own);
-        score(host, call, &panels, &flags, &reports).await?;
+        score(host, call, &panels, &authors, &flags, &reports).await?;
         let scores = recorded_scores(host);
         match settings.method {
             JudgingMethod::Vote => judging::vote(&scores, &authors, &settings),
@@ -256,11 +256,13 @@ fn panels(
 }
 
 /// Each judge scores every plan it may see, in both orders when `both_orders`. A score already
-/// recorded for this round is not asked again.
+/// recorded for this round is not asked again. A stand-in judges in a judge's place only from
+/// outside the companies of the plans it's shown, and its scores go under its own name.
 async fn score(
     host: &Host,
     call: &StepCall,
     panels: &[Panel],
+    authors: &Authors,
     flags: &BTreeMap<PlanLabel, bool>,
     reports: &[SpikeReport],
 ) -> EngineResult<()> {
@@ -270,6 +272,7 @@ async fn score(
     } else {
         &[0]
     };
+    // Each by the judge asked, so a stand-in's scores count for the seat it took.
     let done: Vec<(WorkerRef, u8)> = host.read(|state| {
         let round = state.plan.current_round();
         state
@@ -277,11 +280,19 @@ async fn score(
             .scores
             .iter()
             .filter(|s| s.round == round)
-            .map(|s| (s.judge.clone(), s.order))
+            .map(|s| {
+                let asked = s
+                    .session
+                    .as_ref()
+                    .and_then(|key| state.sessions.get(key))
+                    .map_or(&s.judge, |session| session.asked_worker());
+                (asked.clone(), s.order)
+            })
             .collect()
     });
+    let family = families(host);
     let mut asks = Vec::new();
-    for (judge, judge_family, shown) in panels {
+    for (judge, _, shown) in panels {
         let mut shown = shown.clone();
         if shown.is_empty() {
             continue;
@@ -310,14 +321,17 @@ async fn score(
             ask.blind = true;
             ask.slot = u32::from(*order);
             let labels: Vec<PlanLabel> = shown.iter().map(|p| p.label).collect();
-            let judge_family = judge_family.clone();
+            ask.independent_of = labels
+                .iter()
+                .filter_map(|label| authors.get(label).map(|(author, _)| author.clone()))
+                .collect();
             asks.push(async move {
                 let answer = host.ask::<Judge>(ask).await;
-                (judge, judge_family, *order, labels, answer)
+                (judge, *order, labels, answer)
             });
         }
     }
-    for (judge, judge_family, order, labels, answer) in join_all(asks).await {
+    for (judge, order, labels, answer) in join_all(asks).await {
         let answered = match answer {
             Ok(answered) => answered,
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
@@ -345,8 +359,8 @@ async fn score(
                 None,
                 Some(&answered.session),
                 RunEventKind::Plan(PlanEvent::Scored {
-                    judge: judge.clone(),
-                    judge_family: judge_family.clone(),
+                    judge: answered.worker.clone(),
+                    judge_family: family(&answered.worker),
                     plan: plan_score.plan,
                     order,
                     scores: plan_score.criteria,

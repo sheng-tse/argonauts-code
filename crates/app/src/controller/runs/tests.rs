@@ -1,11 +1,13 @@
 use std::time::Duration;
 
+use argonauts_core::Paths;
 use argonauts_core::api::{CardBrief, RunState, RunSummary, StatusSummary};
-use argonauts_core::app::{AppEvent, AppMode, ReplayTurn, UiCommand};
+use argonauts_core::app::{AppEvent, AppMode, ChatEvent, ReplayTurn, UiCommand};
 use argonauts_core::events::card::CardState;
 use argonauts_core::events::checkpoint::AnswerAction;
 use argonauts_core::events::run::{ParkReason, Party, RunMode, RunOutcome};
-use argonauts_core::names::CheckpointId;
+use argonauts_core::input::{ResumeTarget, SlashCommand};
+use argonauts_core::names::{ChatId, CheckpointId, TurnId};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{CardId, NoteLevel, Spend};
@@ -16,11 +18,13 @@ use time::OffsetDateTime;
 use super::rig::{Rig, finished, parked, question, resumed, run_id};
 use super::{RunUpdate, attached, focus, on_update, open, status_parts};
 use crate::FirstView;
+use crate::chat_store::{ChatRun, ChatStore};
 use crate::client::test_support as log;
 use crate::controller::recap::recap_from_summary;
 use crate::controller::status_line::status_line;
 use crate::controller::test_support::{ApprovalCall, Call, Harness, HarnessOptions, WAIT};
 use crate::controller::{Effect, Opening, run_commands};
+use crate::env::AppEnv;
 
 fn is_mode(mode: AppMode) -> impl Fn(&AppEvent) -> bool {
     move |event| matches!(event, AppEvent::Mode { mode: seen } if *seen == mode)
@@ -575,10 +579,22 @@ fn notices(events: &[AppEvent]) -> Vec<&str> {
         .collect()
 }
 
-/// `argonauts` opens a new conversation, as `claude` does. The runs going or waiting on you get
-/// panel rows, and nothing on them is resumed, watched, or answered.
+/// The rows of the last `BackgroundRuns`, or `None` when none was sent.
+fn panel_rows(events: &[AppEvent]) -> Option<Vec<&str>> {
+    events.iter().rev().find_map(|event| match event {
+        AppEvent::BackgroundRuns { runs } => {
+            Some(runs.iter().map(|run| run.run.as_str()).collect())
+        }
+        _ => None,
+    })
+}
+
+/// `argonauts` opens a new conversation, as `claude` does, and its panel holds only the runs
+/// started in it. Runs from earlier conversations get no rows; the header counts
+/// them, /resume lists them, and a change in one is said in one line. Nothing on them is
+/// resumed, watched, or answered.
 #[tokio::test]
-async fn a_plain_start_opens_a_new_conversation_and_lists_the_runs_for_the_panel() {
+async fn a_plain_start_gives_earlier_runs_no_panel_rows() {
     let mut rig = Rig::new();
     rig.conductor.set_runs(vec![
         waiting_on_you("run-009"),
@@ -592,16 +608,7 @@ async fn a_plain_start_opens_a_new_conversation_and_lists_the_runs_for_the_panel
     assert_eq!(attached(&rig.runs), None);
     assert_eq!(rig.conductor.calls(), [Call::List]);
     let events = rig.settle().await;
-    let rows: Vec<&str> = events
-        .iter()
-        .find_map(|event| match event {
-            AppEvent::BackgroundRuns { runs } => {
-                Some(runs.iter().map(|run| run.run.as_str()).collect())
-            }
-            _ => None,
-        })
-        .expect("the panel's rows");
-    assert_eq!(rows, ["run-009", "run-007"]);
+    assert_eq!(panel_rows(&events), None, "{events:#?}");
     assert!(
         !events.iter().any(|event| matches!(
             event,
@@ -619,39 +626,80 @@ async fn a_plain_start_opens_a_new_conversation_and_lists_the_runs_for_the_panel
         "{texts:?}"
     );
 
-    // The rows go again only when they change.
+    rig.conductor.set_runs(vec![
+        waiting_on_you("run-009"),
+        summary("run-007", RunState::Merged, false),
+        waiting_on_you("run-005"),
+    ]);
     super::refresh_background(&rig.ctx);
-    let again = rig.settle().await;
-    assert!(
-        !again
-            .iter()
-            .any(|event| matches!(event, AppEvent::BackgroundRuns { .. })),
-        "{again:#?}"
-    );
-    rig.conductor
-        .set_runs(vec![summary("run-007", RunState::Running, true)]);
-    super::refresh_background(&rig.ctx);
-    let changed = rig.settle().await;
-    assert!(
-        changed.iter().any(|event| matches!(
-            event,
-            AppEvent::BackgroundRuns { runs } if runs.len() == 1
-        )),
-        "{changed:#?}"
+    let later = rig.settle().await;
+    assert_eq!(panel_rows(&later), None, "{later:#?}");
+    // run-009 waited from the start, as the header said, so only what changed is said.
+    assert_eq!(
+        notices(&later),
+        [
+            "run-007 is merged. /resume run-007 shows it.",
+            "run-005 needs you · /resume run-005"
+        ]
     );
 }
 
-/// `argonauts -c` carries the newest conversation on and, like a plain start, leaves the runs
-/// where they are, as panel rows. A run opens only from its row or /resume.
+/// A run that isn't this conversation's, from an earlier one, another terminal, or a front end
+/// over MCP that started it after the app opened, notifies you while you're away when it needs
+/// you or ends, so a decision it waits on or a merge into your checkout is never missed. It
+/// still gets no panel row, so the mode line doesn't count it.
 #[tokio::test]
-async fn continuing_leaves_the_runs_as_panel_rows() {
+async fn a_run_from_elsewhere_notifies_you_while_you_are_away() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let log = dir.path().join("chat.log");
+    let mut rig = Rig::with(true, record_chat_to(&log));
+    rig.conductor
+        .set_runs(vec![summary("run-007", RunState::Running, true)]);
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+        .await
+        .expect("the app opens");
+    rig.settle().await;
+    focus(&mut rig.runs, false);
+
+    rig.conductor.set_runs(vec![
+        summary("run-007", RunState::Merged, false),
+        waiting_on_you("run-012"),
+    ]);
+    super::refresh_background(&rig.ctx);
+    let events = rig.settle().await;
+    assert_eq!(panel_rows(&events), None, "{events:#?}");
+    assert_eq!(
+        notices(&events),
+        [
+            "run-007 is merged. /resume run-007 shows it.",
+            "run-012 needs you · /resume run-012"
+        ]
+    );
+    let lines = lines_after(&log, 2, WAIT).await;
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    // Each notification goes out on its own, so they may land in either order.
+    for said in [
+        "run-007 finished (merged)",
+        "run-012 waits for you at cp-001",
+    ] {
+        assert!(lines.iter().any(|line| line.contains(said)), "{lines:?}");
+    }
+}
+
+/// `argonauts -c` carries a conversation on and brings back its own runs as panel rows, leaving
+/// them where they are: a run opens only from its row or /resume. Runs from other conversations
+/// stay off the panel.
+#[tokio::test]
+async fn continuing_brings_back_the_conversations_own_runs() {
     let mut rig = Rig::new();
     rig.conductor.set_runs(vec![
         waiting_on_you("run-009"),
         summary("run-008", RunState::Merged, false),
         summary("run-007", RunState::Pausing, true),
         summary("run-006", RunState::Crashed, false),
+        waiting_on_you("run-005"),
     ]);
+    super::adopt(&mut rig.runs, ["run-009", "run-008", "run-007"].map(run_id));
     open(&mut rig.ctx, &mut rig.runs, FirstView::Continue)
         .await
         .expect("the app opens");
@@ -670,20 +718,61 @@ async fn continuing_leaves_the_runs_as_panel_rows() {
         texts.iter().any(|text| text.contains("run-006 crashed")),
         "{texts:?}"
     );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::BackgroundRuns { runs }
-                if runs.iter().map(|run| run.run.as_str()).eq(["run-009", "run-007"])
-        )),
-        "{events:#?}"
-    );
+    assert_eq!(panel_rows(&events), Some(vec!["run-009", "run-007"]));
+
+    // The rows go again only when they change.
+    super::refresh_background(&rig.ctx);
+    let again = rig.settle().await;
+    assert_eq!(panel_rows(&again), None, "{again:#?}");
+    rig.conductor
+        .set_runs(vec![summary("run-007", RunState::Running, true)]);
+    super::refresh_background(&rig.ctx);
+    let changed = rig.settle().await;
+    assert_eq!(panel_rows(&changed), Some(vec!["run-007"]));
 }
 
-/// The header counts only the runs the agent panel shows rows for: a run parked with nothing
-/// for you has no row, so it isn't counted as going.
+/// A run started now, or one you opened, is this conversation's: once another takes the screen
+/// it keeps a panel row, and the conversation saves it for `argonauts -c`.
 #[tokio::test]
-async fn the_header_counts_only_the_runs_the_panel_shows() {
+async fn a_run_started_or_opened_here_keeps_its_row_off_screen() {
+    let mut rig = Rig::new();
+    rig.conductor.set_runs(vec![waiting_on_you("run-009")]);
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+        .await
+        .expect("the app opens");
+    rig.settle().await;
+
+    let started = rig.start("add --json to export").await;
+    super::resume_and_attach(&mut rig.ctx, &mut rig.runs, &run_id("run-009"))
+        .await
+        .expect("run-009 opens");
+    let opened: Vec<_> = super::take_opened(&mut rig.runs)
+        .into_iter()
+        .map(|kept| (kept.run, kept.title))
+        .collect();
+    assert_eq!(
+        opened,
+        [
+            (started.clone(), "add --json to export".to_owned()),
+            (run_id("run-009"), "run-009 title".to_owned())
+        ]
+    );
+    assert!(super::take_opened(&mut rig.runs).is_empty());
+
+    rig.conductor.set_runs(vec![
+        waiting_on_you("run-009"),
+        summary(started.as_str(), RunState::Running, true),
+        summary("run-008", RunState::Running, true),
+    ]);
+    super::refresh_background(&rig.ctx);
+    let events = rig.settle().await;
+    assert_eq!(panel_rows(&events), Some(vec![started.as_str()]));
+}
+
+/// The header counts this repo's runs going or waiting on you in any conversation, which
+/// /resume lists, but not a run parked with nothing for you.
+#[tokio::test]
+async fn the_header_counts_every_run_going_or_waiting_on_you() {
     let rig = Rig::new();
     rig.conductor.set_runs(vec![
         waiting_on_you("run-009"),
@@ -701,8 +790,8 @@ async fn the_header_counts_only_the_runs_the_panel_shows() {
     );
 }
 
-/// A run off screen that starts waiting on you, or finishes, says so once in the transcript,
-/// and its row changes with it.
+/// One of this conversation's runs off screen that starts waiting on you, or finishes, says so
+/// once in the transcript, and its row changes with it.
 #[tokio::test]
 async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
     let mut rig = Rig::new();
@@ -710,7 +799,8 @@ async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
         summary("run-009", RunState::Running, true),
         summary("run-008", RunState::Running, true),
     ]);
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+    super::adopt(&mut rig.runs, ["run-009", "run-008"].map(run_id));
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Continue)
         .await
         .expect("the app opens");
     rig.settle().await;
@@ -728,14 +818,7 @@ async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
             "run-008 is merged. /resume run-008 shows it."
         ]
     );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::BackgroundRuns { runs }
-                if runs.iter().map(|run| run.run.as_str()).eq(["run-009"])
-        )),
-        "{events:#?}"
-    );
+    assert_eq!(panel_rows(&events), Some(vec!["run-009"]));
 
     // Said once: the same list again says nothing.
     super::refresh_background(&rig.ctx);
@@ -743,7 +826,8 @@ async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
 }
 
 /// A run parked on a question at start waits while you chat: what you type goes to the new
-/// conversation, and only opening the run brings its card back.
+/// conversation, the run gets no panel row, and only opening it from /resume brings its card
+/// back and makes it this conversation's.
 #[tokio::test]
 async fn a_question_parked_at_start_waits_while_you_chat() {
     let mut harness = Harness::start_with(HarnessOptions {
@@ -751,9 +835,6 @@ async fn a_question_parked_at_start_waits_while_you_chat() {
         ..HarnessOptions::default()
     })
     .await;
-    harness
-        .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
-        .await;
     harness.agent.push(FakeSession::structured(
         json!({"kind": "answer", "answer_markdown": "Hi.", "estimate": null}),
     ));
@@ -787,15 +868,15 @@ async fn a_question_parked_at_start_waits_while_you_chat() {
     );
     assert!(harness.approvals.calls().is_empty());
     assert!(
-        !harness
-            .seen()
-            .iter()
-            .any(|event| matches!(event, AppEvent::Attached { .. })),
+        !harness.seen().iter().any(|event| matches!(
+            event,
+            AppEvent::Attached { .. } | AppEvent::BackgroundRuns { .. }
+        )),
         "{:#?}",
         harness.seen()
     );
 
-    // Enter on its panel row, or `/resume run-009`, opens it.
+    // Enter on it in /resume, or `/resume run-009`, opens it.
     harness
         .send(UiCommand::Resume {
             run: Some(run_id("run-009")),
@@ -810,7 +891,225 @@ async fn a_question_parked_at_start_waits_while_you_chat() {
             .calls()
             .contains(&Call::Resume(run_id("run-009")))
     );
+    // The conversation saves it once the step that opened it is done.
+    let conversation = ChatStore::open(&harness.env.chat_dir(), &ChatId::numbered(1));
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while conversation.runs().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(conversation.runs(), [run_id("run-009")]);
     harness.exit().await;
+}
+
+/// `argonauts -c` brings back the runs the conversation started or opened as panel rows, and
+/// only those.
+#[tokio::test]
+async fn continuing_puts_the_conversations_runs_back_in_the_panel() {
+    let mut harness = Harness::start_with(HarnessOptions {
+        opening: Opening {
+            guided_setup: false,
+            first: FirstView::Continue,
+        },
+        prepare: Some(Box::new(|repo| {
+            let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
+            let conversation = ChatStore::open(&env.chat_dir(), &ChatId::numbered(1));
+            conversation
+                .append(&ChatEvent::TurnStarted {
+                    turn: TurnId::numbered(1),
+                    text: "rename the config loader".to_owned(),
+                    worker: "claude-code".parse().unwrap(),
+                    read_only: true,
+                    commit: "abc".to_owned(),
+                    uncommitted: Vec::new(),
+                    settings_sha256: None,
+                    continues: false,
+                })
+                .unwrap();
+            conversation
+                .keep_run(&kept("run-009", "run-009 title"))
+                .unwrap();
+        })),
+        runs: vec![waiting_on_you("run-009"), waiting_on_you("run-008")],
+        ..HarnessOptions::default()
+    })
+    .await;
+    let rows = harness
+        .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
+        .await;
+    assert_eq!(panel_rows(&[rows]), Some(vec!["run-009"]));
+    let seen = harness.exit().await;
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event, AppEvent::Attached { .. })),
+        "{seen:#?}"
+    );
+}
+
+/// A conversation that only started or opened runs, with `/crew` or `/resume <run>`, is carried
+/// on like one with turns: `argonauts -c` picks it when it's the newest, named after its first
+/// run, and brings back its runs rather than an older conversation's. `/resume` takes it by id.
+#[tokio::test]
+async fn continuing_carries_on_a_conversation_that_only_opened_runs() {
+    let mut harness = Harness::start_with(HarnessOptions {
+        opening: Opening {
+            guided_setup: false,
+            first: FirstView::Continue,
+        },
+        prepare: Some(Box::new(|repo| {
+            let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
+            let older = ChatStore::open(&env.chat_dir(), &ChatId::numbered(1));
+            older.append(&asked("an older unrelated question")).unwrap();
+            older
+                .keep_run(&kept("run-008", "rename the loader"))
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            ChatStore::open(&env.chat_dir(), &ChatId::numbered(2))
+                .keep_run(&kept("run-009", "fix the median"))
+                .unwrap();
+        })),
+        runs: vec![waiting_on_you("run-009"), waiting_on_you("run-008")],
+        ..HarnessOptions::default()
+    })
+    .await;
+    let AppEvent::ChatResumed {
+        chat, title, turns, ..
+    } = harness
+        .until(|event| matches!(event, AppEvent::ChatResumed { .. }))
+        .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(chat, ChatId::numbered(2));
+    assert_eq!(title, "fix the median");
+    assert!(turns.is_empty(), "{turns:?}");
+    let rows = harness
+        .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
+        .await;
+    assert_eq!(panel_rows(&[rows]), Some(vec!["run-009"]));
+
+    for (chat, title) in [
+        ("chat-001", "an older unrelated question"),
+        ("chat-002", "fix the median"),
+    ] {
+        harness
+            .send(UiCommand::Slash {
+                command: SlashCommand::Resume {
+                    target: Some(ResumeTarget::Conversation(ChatId::parse(chat).unwrap())),
+                },
+            })
+            .await;
+        let resumed = harness
+            .until(|event| matches!(event, AppEvent::ChatResumed { .. }))
+            .await;
+        assert!(
+            matches!(&resumed, AppEvent::ChatResumed { chat: id, title: named, .. }
+                if id.as_str() == chat && named == title),
+            "{resumed:?}"
+        );
+    }
+    harness.exit().await;
+}
+
+/// The panel follows the conversation on screen, the way `argonauts -c` would bring it back:
+/// `/resume <chat>` shows that conversation's runs in place of the ones it left,
+/// `/branch` keeps them in the copy, and `/clear` starts with none. Each conversation keeps its
+/// own runs on disk.
+#[tokio::test]
+async fn the_panel_follows_the_conversation_on_screen() {
+    let mut harness = Harness::start_with(HarnessOptions {
+        opening: Opening {
+            guided_setup: false,
+            first: FirstView::Continue,
+        },
+        prepare: Some(Box::new(|repo| {
+            let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
+            let chats = [
+                (1, "rename the loader", "run-008"),
+                (2, "fix the median", "run-009"),
+            ];
+            for (n, request, run) in chats {
+                let conversation = ChatStore::open(&env.chat_dir(), &ChatId::numbered(n));
+                conversation.append(&asked(request)).unwrap();
+                conversation.keep_run(&kept(run, request)).unwrap();
+                // So chat-002 is the newest, for -c.
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })),
+        runs: vec![waiting_on_you("run-009"), waiting_on_you("run-008")],
+        ..HarnessOptions::default()
+    })
+    .await;
+    let rows = harness
+        .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
+        .await;
+    assert_eq!(panel_rows(&[rows]), Some(vec!["run-009"]));
+
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Resume {
+                target: Some(ResumeTarget::Conversation(ChatId::numbered(1))),
+            },
+        })
+        .await;
+    let rows = harness
+        .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
+        .await;
+    assert_eq!(panel_rows(&[rows]), Some(vec!["run-008"]));
+
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Branch { name: None },
+        })
+        .await;
+    harness
+        .until(|event| {
+            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Branched into chat-003"))
+        })
+        .await;
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Clear,
+        })
+        .await;
+    let rows = harness
+        .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
+        .await;
+    assert_eq!(panel_rows(&[rows]), Some(vec![]));
+
+    // The copy kept run-008's row, so the panel changed only for /resume and /clear.
+    let sent: Vec<Vec<&str>> = harness
+        .seen()
+        .iter()
+        .filter_map(|event| panel_rows(std::slice::from_ref(event)))
+        .collect();
+    assert_eq!(sent, [vec!["run-009"], vec!["run-008"], vec![]]);
+    let runs_of = |n| ChatStore::open(&harness.env.chat_dir(), &ChatId::numbered(n)).runs();
+    assert_eq!(runs_of(1), [run_id("run-008")]);
+    assert_eq!(runs_of(2), [run_id("run-009")]);
+    assert_eq!(runs_of(3), [run_id("run-008")], "the branch keeps its runs");
+    assert!(runs_of(4).is_empty(), "/clear starts with none");
+    harness.exit().await;
+}
+
+fn asked(text: &str) -> ChatEvent {
+    ChatEvent::TurnStarted {
+        turn: TurnId::numbered(1),
+        text: text.to_owned(),
+        worker: "claude-code".parse().unwrap(),
+        read_only: true,
+        commit: "abc".to_owned(),
+        uncommitted: Vec::new(),
+        settings_sha256: None,
+        continues: false,
+    }
+}
+
+fn kept(run: &str, title: &str) -> ChatRun {
+    ChatRun {
+        run: run_id(run),
+        title: title.to_owned(),
+    }
 }
 
 #[tokio::test]

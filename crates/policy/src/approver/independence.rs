@@ -1,20 +1,24 @@
 //! An approver must not be an author or owner of what it approves, and with
 //! `different_family` it must not share a model family with any of them.
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::worker::WorkerDirectory;
 
 /// Why `candidate` can't approve, or `Ok` when it's independent. An author whose family is
-/// unknown counts as the same family.
+/// unknown counts as the same family. The reason reaches the transcript, so it names agents as
+/// people read them, `Antigravity CLI` rather than `antigravity-cli`.
 pub fn check(
     candidate: &WorkerRef,
     authors: &[WorkerRef],
     different_family: bool,
     workers: &dyn WorkerDirectory,
 ) -> Result<(), String> {
-    if let Some(author) = authors.iter().find(|author| same_model(candidate, author)) {
+    let name = |worker: &WorkerRef| DisplayNames::default().worker(worker);
+    if authors.iter().any(|author| same_model(candidate, author)) {
         return Err(format!(
-            "{candidate} can't approve work {author} wrote or owns"
+            "{} worked on this, so it can't approve it",
+            name(candidate)
         ));
     }
     if !different_family {
@@ -22,7 +26,9 @@ pub fn check(
     }
     let Some(family) = family(candidate, workers) else {
         return Err(format!(
-            "{candidate}'s model family is unknown, so it can't be shown to differ from the authors'"
+            "the company behind {} isn't known, so it can't be shown to come from another \
+             company",
+            name(candidate)
         ));
     };
     for author in authors {
@@ -30,12 +36,17 @@ pub fn check(
             Some(theirs) if theirs != family => {}
             Some(_) => {
                 return Err(format!(
-                    "{candidate} is in the same model family ({family}) as {author}"
+                    "{} comes from the same company as {}, so it can't approve this",
+                    name(candidate),
+                    name(author)
                 ));
             }
             None => {
                 return Err(format!(
-                    "{author}'s model family is unknown, so {candidate} counts as the same family"
+                    "the company behind {} isn't known, so {} can't be shown to come from \
+                     another company",
+                    name(author),
+                    name(candidate)
                 ));
             }
         }
@@ -72,6 +83,26 @@ mod tests {
         workers.add(FakeWorker::endpoint("openrouter/gpt-oss", "GPT"));
         workers.add(FakeWorker::endpoint("openrouter/mystery", ""));
         workers
+    }
+
+    /// The reasons reach the transcript, so they name agents as people read them.
+    #[test]
+    fn reasons_name_agents_by_their_display_names() {
+        let workers = directory();
+        let author = check(
+            &r("antigravity-cli"),
+            &[r("antigravity-cli")],
+            false,
+            &workers,
+        );
+        assert_eq!(
+            author.unwrap_err(),
+            "Antigravity CLI worked on this, so it can't approve it"
+        );
+        let same = check(&r("openrouter/gpt-oss"), &[r("codex")], true, &workers);
+        let same = same.unwrap_err();
+        assert!(same.contains("same company as Codex"), "{same}");
+        assert!(!same.contains("codex"), "{same}");
     }
 
     #[test]

@@ -2,7 +2,6 @@
 //! a panel row, and the workflow view with whatever phases and agents it reports. The
 //! views name the conversation by [`conversation_run`], so a row and a refresh find it.
 
-use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::events::session::VendorWorkflow;
 use argonauts_core::names::WorkflowId;
@@ -40,10 +39,8 @@ pub(crate) fn show(ctx: &Ctx, chat: &ChatState, id: Option<&WorkflowId>) {
         None => chat.workflows.last(),
     };
     let (Some(workflow), Some(context)) = (workflow, chat.context.as_ref()) else {
-        ctx.notice(
-            NoteLevel::Info,
-            "This conversation runs no workflow now. Ctrl+T shows one once it starts.",
-        );
+        // Only a key asks for this view, so the answer goes on the notice line.
+        ctx.hint("This conversation runs no workflow now. Ctrl+T shows one once it starts.");
         return;
     };
     let host = AgentRow {

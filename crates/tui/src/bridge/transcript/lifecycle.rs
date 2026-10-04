@@ -8,6 +8,7 @@ use argonauts_core::settings::ui::VerbTheme;
 use argonauts_core::{CardId, RunId, Verbosity};
 use time::OffsetDateTime;
 
+use crate::bottom::WorkflowRowState;
 use crate::bottom::verbs::VerbStyle;
 use crate::cell::{AssistantMessage, Notice, Tone, ToolState, TurnEnd};
 use crate::format::{self, WallClock};
@@ -109,27 +110,39 @@ pub(super) fn paused(now: bool, sessions_stopped: u32, committed: &[CardId], cx:
     emit(cx, notice);
 }
 
-/// A run parked because the agents it needs are out. Pauses and checkpoints have their own
-/// lines.
+/// A run parked because the agents it needs are out, or nobody could take a seat over. Pauses
+/// and checkpoints have their own lines. It says it carries on by itself only when it will.
 pub(super) fn parked(reason: &ParkReason, clock: &WallClock, cx: &mut Cx<'_>) {
     let until = |at: &Option<OffsetDateTime>| {
         at.map(|at| format!(" until {}", clock.clock(at)))
             .unwrap_or_default()
     };
-    let text = match reason {
-        ParkReason::AllVendorsOut { until: at } => {
-            format!("Parked the run · every agent is out{}", until(at))
-        }
-        ParkReason::WaitingForVendor { vendor, until: at } => format!(
-            "Parked the run · its cards wait for {}{}",
-            cx.state.names.harness(&vendor.0),
-            until(at)
+    let back = "It resumes when one is back · /resume tries now".to_owned();
+    let (text, detail) = match reason {
+        ParkReason::AllVendorsOut { until: at } => (
+            format!("Parked the run · every agent is out{}", until(at)),
+            back,
+        ),
+        ParkReason::WaitingForVendor { vendor, until: at } => (
+            format!(
+                "Parked the run · its cards wait for {}{}",
+                cx.state.names.harness(&vendor.0),
+                until(at)
+            ),
+            back,
+        ),
+        ParkReason::NoStandIn { detail, until: at } => (
+            format!("Parked the run · {detail}"),
+            match at {
+                Some(at) => format!("It tries again at {} · /resume tries now", clock.clock(*at)),
+                None => "/resume tries again".to_owned(),
+            },
         ),
         ParkReason::Paused | ParkReason::Checkpoint => return,
     };
     let notice = Notice::new(Tone::Normal, text)
         .with_glyph(STOPPED)
-        .with_detail("It resumes when one is back · /resume tries now");
+        .with_detail(detail);
     emit(cx, notice);
 }
 
@@ -230,10 +243,11 @@ pub(super) fn run_end(
             VerbTheme::Plain => VerbStyle::Plain,
         };
         let label = format!("{} for", cx.model.verb_picker.done(style));
-        emit(
-            cx,
-            TurnEnd::new(label, elapsed, Some(clock.clock(event.ts))),
-        );
+        let mut end = TurnEnd::new(label, elapsed, Some(clock.clock(event.ts)));
+        if WorkflowRowState::ended(outcome) != WorkflowRowState::Done {
+            end = end.unfinished();
+        }
+        emit(cx, end);
     }
 }
 

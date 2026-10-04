@@ -139,6 +139,14 @@ impl Limits {
         let model = self.stopped_model(events, &context.worker);
         let mut packet = self.handoff.packet(&context.card, events);
         packet.why_stopped = match &context.end.reason {
+            // Logged out only where the CLI's own check says so.
+            EndReason::Auth { message }
+            | EndReason::VendorError {
+                category: ErrorCategory::Auth,
+                message,
+            } if context.logged_in != Some(false) => {
+                with_detail("a sign-in error".to_owned(), message)
+            }
             EndReason::ModelUnavailable { model: named } if named.is_empty() => {
                 stop_line(&EndReason::ModelUnavailable {
                     model: model
@@ -312,8 +320,14 @@ impl Limits {
         OffsetDateTime::now_utc() + cooldown(&self.settings.health)
     }
 
-    /// Always asks, with the retry the engine lists first. Candidates are still offered.
+    /// A sign-in error. A login is the fix only where the CLI's own check says it's logged out:
+    /// then it always asks, with the retry the engine lists first, and candidates still offered.
+    /// Otherwise the error was passing, so the card goes on as for an outage, by the handoff
+    /// mode.
     fn logged_out(&self, stop: &Stop<'_>, message: &str) -> RecoveryAction {
+        if stop.context.logged_in != Some(false) {
+            return self.vendor_out(stop, Out::Outage);
+        }
         let vendor = stop.vendor();
         let reason = with_detail(
             format!("logged out of {vendor}: log in to {vendor}, then retry"),
@@ -973,8 +987,9 @@ fn overlay(log: &Placements, picks: &mut Picks) -> Placements {
 fn too_many_handoffs(stop: &Stop<'_>) -> RecoveryAction {
     RecoveryAction::Escalate {
         reason: format!(
-            "{} stopped after {} handoffs, the most handoff.max_handoffs allows",
-            stop.context.card.id, stop.handed_off
+            "\"{}\" stopped after {} handoffs, the most /handoff allows",
+            stop.context.card.title.trim(),
+            stop.handed_off
         ),
     }
 }

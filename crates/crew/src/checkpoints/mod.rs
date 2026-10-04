@@ -176,7 +176,7 @@ pub fn keeps_yours(host: &Host, kind: CheckpointKind, topics: &[&str]) -> bool {
 
 /// Why a card about `topic` waits for you though the lead answers.
 pub fn yours_because(topic: &str) -> String {
-    format!("approvals.ask_you_about keeps {topic} yours")
+    format!("your /approvals settings keep {topic} yours")
 }
 
 /// An opened checkpoint, or the decision it already has.

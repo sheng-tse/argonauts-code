@@ -1046,7 +1046,9 @@ pub fn on_park(host: &Host, reason: &ParkReason) -> EngineResult<()> {
     let by = match reason {
         ParkReason::Checkpoint => return Ok(()),
         ParkReason::Paused => Party::User,
-        ParkReason::AllVendorsOut { .. } | ParkReason::WaitingForVendor { .. } => Party::Conductor,
+        ParkReason::AllVendorsOut { .. }
+        | ParkReason::WaitingForVendor { .. }
+        | ParkReason::NoStandIn { .. } => Party::Conductor,
     };
     let pursuing = host.read(|state| {
         state

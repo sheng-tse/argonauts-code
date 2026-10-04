@@ -129,12 +129,15 @@ pub fn restaters(host: &Host, call: &StepCall, mode: RunMode) -> Vec<WorkerRef> 
     chosen
 }
 
-/// A failed session or a bad answer drops that one restatement; anything else (a stop, the
-/// log) ends the step.
+/// A failed session, one no agent could take over, or a bad answer drops that one
+/// restatement; anything else (a stop, the log) ends the step.
 pub(crate) fn dropped(error: &EngineError) -> bool {
     matches!(
         error,
-        EngineError::Worker(_) | EngineError::Step(_) | EngineError::Refused(_)
+        EngineError::Worker(_)
+            | EngineError::Step(_)
+            | EngineError::Refused(_)
+            | EngineError::Stalled(_)
     )
 }
 

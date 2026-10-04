@@ -316,6 +316,7 @@ fn park_words(
         ParkReason::Paused => "the pause you asked for".to_owned(),
         ParkReason::AllVendorsOut { .. } => "a vendor to come back".to_owned(),
         ParkReason::WaitingForVendor { vendor, .. } => format!("{vendor} to come back"),
+        ParkReason::NoStandIn { .. } => "an agent to take over".to_owned(),
     }
 }
 

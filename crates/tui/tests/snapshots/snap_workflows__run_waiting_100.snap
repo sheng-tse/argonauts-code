@@ -1,0 +1,20 @@
+---
+source: crates/tui/tests/snap_workflows.rs
+expression: text
+---
+──────────────────────────────────────────────────────────────────────────────────────────────
+ add-per-api-key
+ Add per-API-key rate limiting with Retry-After headers
+
+ ╭ Starting ────────────────────────────────────────────────────────────────────────────────╮
+ │ Waiting for the lead to start designing the workflow.                                    │
+ │ Enter opens its agent once one starts.                                                   │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
+ │                                                                                          │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────╯
+ ⏎ open · esc back

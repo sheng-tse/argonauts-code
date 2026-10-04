@@ -106,9 +106,10 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
     let (goal, decisions) =
         host.read(|state| (context::goal_brief(state), context::decision_lines(state)));
     let notes = context::notes(host);
+    // By label, since a stand-in seals a drafter's plan under its own name.
     let missing: Vec<(WorkerRef, PlanLabel)> = labels(&drafters, host.run_id())
         .into_iter()
-        .filter(|(worker, _)| !sealed.iter().any(|d| &d.worker == worker))
+        .filter(|(_, label)| !sealed.iter().any(|d| d.label == *label))
         .collect();
     // A later `draft` step with nothing critiqued, such as with critique off: nothing to revise.
     let mapped = host.read(|state| state.plan.latest_map().is_some());
@@ -149,7 +150,7 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
                 drafts::seal(
                     host,
                     label,
-                    &worker,
+                    &answered.worker,
                     round,
                     &answered.output,
                     Some(&answered.session),
@@ -243,7 +244,7 @@ async fn revise(host: &Host, call: &StepCall, critiqued: u8) -> EngineResult<Ste
                 drafts::seal(
                     host,
                     target.label,
-                    &target.worker,
+                    &answered.worker,
                     critiqued.saturating_add(1),
                     &answered.output,
                     Some(&answered.session),

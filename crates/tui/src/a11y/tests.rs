@@ -661,3 +661,47 @@ fn a_bang_line_runs_in_your_shell() {
     );
     assert!(reader.typed("!   ").commands.is_empty());
 }
+
+/// `/workflows` shows what the run's row opens on screen: what the run waits for
+/// before any agent, the lead's session while it designs, then the workflow.
+#[test]
+fn workflows_shows_the_lead_while_it_designs() {
+    use crate::views::waiting::fixture::{RunLog, run_id};
+    use argonauts_core::names::SessionKey;
+
+    let workflows = |log: &RunLog| {
+        let mut reader = Reader::new(&UiOptions::default());
+        for event in &log.events {
+            reader.event(event);
+        }
+        reader.typed("/workflows")
+    };
+    let mut log = RunLog::started();
+    let said = workflows(&log);
+    assert!(said.commands.is_empty(), "{:?}", said.commands);
+    assert_eq!(
+        said.lines,
+        ["Waiting for the lead to start designing the workflow."]
+    );
+    log.design("s-001", "lead:design");
+    assert_eq!(
+        workflows(&log).commands,
+        [UiCommand::Request {
+            view: ViewRequest::Agent {
+                run: run_id(),
+                session: SessionKey::parse("s-001").unwrap(),
+            },
+        }]
+    );
+    log.ended("s-001");
+    log.declare();
+    assert_eq!(
+        workflows(&log).commands,
+        [UiCommand::Request {
+            view: ViewRequest::Workflow {
+                run: run_id(),
+                workflow: None,
+            },
+        }]
+    );
+}

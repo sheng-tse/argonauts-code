@@ -995,6 +995,7 @@ mod tests {
                 follow_key: None,
                 workflow_step: Some(step),
                 label: None,
+                asked: None,
             }))),
             RunEventKind::Session(SessionEvent::Ended(Box::new(SessionEnd {
                 reason: EndReason::Completed,

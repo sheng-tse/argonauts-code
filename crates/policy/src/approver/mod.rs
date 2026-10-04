@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::session::{EndReason, InputPartKind, loaded_words};
 use argonauts_core::future::BoxFuture;
 use argonauts_core::layout::{repo_state, run_files};
@@ -32,6 +33,9 @@ pub const PROMPT: &str = include_str!("../prompts/approver.md");
 
 /// An escalation's reason is cut to this many characters.
 const REASON_MAX: usize = 300;
+
+/// What fixes an approver that may not judge the work.
+const PICK_ANOTHER: &str = "Pick another approver in /approvals";
 
 pub struct StepApprover {
     workers: Arc<dyn WorkerDirectory>,
@@ -102,7 +106,7 @@ impl StepApprover {
         Err(if self.warned.swap(true, Ordering::SeqCst) {
             none.reason()
         } else {
-            none.warning()
+            none.warning(crate::approvals::in_full_auto(point))
         })
     }
 
@@ -120,13 +124,18 @@ impl StepApprover {
         if let Err(why) =
             independence::check(&first, &authors, approver.different_family, &*self.workers)
         {
-            return escalate(None, &why);
+            return escalate(None, &format!("{why}. {PICK_ANOTHER}"));
         }
+        // Approvers whose sessions failed for this checkpoint, left out of every stand-in.
+        let mut failed = Vec::new();
         let Some(second) = approver.second_model.clone() else {
-            return self
-                .ask(&first, point, evidence, settings)
+            return match self
+                .ask_or_stand_in(&first, &authors, &mut failed, point, evidence, settings)
                 .await
-                .verdict(first);
+            {
+                Ok((model, answer)) => answer.verdict(model),
+                Err(why) => unchecked(&why),
+            };
         };
         // The second must be independent of the authors and, always, of the first's family.
         let independent =
@@ -135,15 +144,37 @@ impl StepApprover {
                     independence::check(&second, std::slice::from_ref(&first), true, &*self.workers)
                 });
         if let Err(why) = independent {
-            return escalate(None, &format!("second approver: {why}"));
+            return escalate(None, &format!("second approver: {why}. {PICK_ANOTHER}"));
         }
 
         // Asked one after the other, so a first answer other than approve spends nothing more.
-        let first_answer = self.ask(&first, point, evidence, settings).await;
+        let (first, first_answer) = match self
+            .ask_or_stand_in(&first, &authors, &mut failed, point, evidence, settings)
+            .await
+        {
+            Ok(answered) => answered,
+            Err(why) => return unchecked(&why),
+        };
         if first_answer.decision != Verdict::Approve {
             return first_answer.labeled(&first).verdict(first);
         }
-        let second_answer = self.ask(&second, point, evidence, settings).await;
+        // Whoever answered first, a stand-in included, the second comes from another company
+        // than it and the authors, so both approvals never come from one company.
+        let mut others = authors;
+        others.push(first.clone());
+        let second = match self.second_besides(second, &first, &others, &failed, settings) {
+            Ok(second) => second,
+            Err(why) => return unchecked(&why),
+        };
+        // A second that couldn't answer leaves the work unchecked: full auto lets your rules
+        // decide alone, and elsewhere it's yours.
+        let (second, second_answer) = match self
+            .ask_or_stand_in(&second, &others, &mut failed, point, evidence, settings)
+            .await
+        {
+            Ok(answered) => answered,
+            Err(why) => return unchecked(&why),
+        };
         let verdict = second_answer.decision;
         let mut reasons = first_answer.labeled(&first).reasons;
         reasons.extend(second_answer.labeled(&second).reasons);
@@ -154,14 +185,98 @@ impl StepApprover {
         }
     }
 
-    /// One fresh session with one model. Every failure is an escalation with its reason.
-    async fn ask(
+    /// The second approver you set, when it comes from another company than `first`, the agent
+    /// that answered first; else the cheapest from another company than all of `others`, but
+    /// none whose sessions already `failed` here.
+    fn second_besides(
+        &self,
+        second: WorkerRef,
+        first: &WorkerRef,
+        others: &[WorkerRef],
+        failed: &[WorkerRef],
+        settings: &Settings,
+    ) -> Result<WorkerRef, String> {
+        let sources = pick::Sources {
+            workers: &*self.workers,
+            models: self.models.as_deref(),
+        };
+        let company = |worker: &WorkerRef| pick::company(worker, sources);
+        let elsewhere = company(&second).is_some() && company(&second) != company(first);
+        if elsewhere
+            && independence::check(&second, std::slice::from_ref(first), true, &*self.workers)
+                .is_ok()
+        {
+            return Ok(second);
+        }
+        let different_family = settings.approvals.approver.different_family;
+        pick::pick_besides(others, different_family, sources, failed).map_err(|_| {
+            format!(
+                "{} checked it first, and no second approver from another company could check \
+                 it too",
+                DisplayNames::default().worker(first)
+            )
+        })
+    }
+
+    /// Asks `first`, and when its session fails, asks it once more; when that fails too, the
+    /// next approver from another company than the authors stands in, the same way,
+    /// leaving out each in `failed`, to which it adds its own. A stand-in's CLI must keep
+    /// your plugins out of the approver's isolated session, and a CLI that loaded them anyway
+    /// is never asked again. `Err` says why none could answer, naming the last one asked, so no
+    /// model checked the work.
+    async fn ask_or_stand_in(
+        &self,
+        first: &WorkerRef,
+        authors: &[WorkerRef],
+        failed: &mut Vec<WorkerRef>,
+        point: &DecisionPoint,
+        evidence: &EvidencePacket,
+        settings: &Settings,
+    ) -> Result<(WorkerRef, Answer), String> {
+        let approver = &settings.approvals.approver;
+        let sources = pick::Sources {
+            workers: &*self.workers,
+            models: self.models.as_deref(),
+        };
+        let different_family = approver.different_family;
+        let mut model = first.clone();
+        loop {
+            let no_verdict = match self.ask_twice(&model, point, evidence, settings).await {
+                Ok(answer) => return Ok((model, answer)),
+                Err(no_verdict) => no_verdict,
+            };
+            failed.push(model.clone());
+            match pick::pick_stand_in(authors, different_family, sources, failed) {
+                Ok(next) => model = next,
+                Err(_) => {
+                    let again = if no_verdict.leaked {
+                        ""
+                    } else {
+                        " even when asked again"
+                    };
+                    // Named when the only agents left can't keep your plugins out.
+                    let fits = pick::pick_besides(authors, different_family, sources, failed)
+                        .map_or("", |_| " that keeps your plugins out");
+                    return Err(format!(
+                        "{} couldn't check it, as {}{again}, and no agent from another \
+                         company{fits} could instead",
+                        DisplayNames::default().worker(&model),
+                        no_verdict.why,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// One fresh session with one model, and one more when it fails, unless its CLI loaded your
+    /// plugins, which it would do again. `Err` says why the last one failed.
+    async fn ask_twice(
         &self,
         model: &WorkerRef,
         point: &DecisionPoint,
         evidence: &EvidencePacket,
         settings: &Settings,
-    ) -> Answer {
+    ) -> Result<Answer, NoVerdict> {
         let run_dir = self
             .state_dir
             .join(repo_state::RUNS)
@@ -170,8 +285,12 @@ impl StepApprover {
             .session(model, point, evidence, settings, &run_dir)
             .await
         {
-            Ok(answer) => answer,
-            Err(why) => Answer::escalate(why),
+            Ok(answer) => Ok(answer),
+            Err(no_verdict) if no_verdict.leaked => Err(no_verdict),
+            Err(_) => {
+                self.session(model, point, evidence, settings, &run_dir)
+                    .await
+            }
         }
     }
 
@@ -182,11 +301,11 @@ impl StepApprover {
         evidence: &EvidencePacket,
         settings: &Settings,
         run_dir: &Path,
-    ) -> Result<Answer, String> {
+    ) -> Result<Answer, NoVerdict> {
         let worker = self
             .workers
             .get(model)
-            .map_err(|err| format!("the approver {model} isn't available: {err}"))?;
+            .map_err(|err| format!("it isn't available ({err})"))?;
         let input = render::approver_input(
             point,
             evidence,
@@ -202,7 +321,7 @@ impl StepApprover {
         })?;
         let prefix = format!("approver-{}", point.checkpoint);
         let (key, session_dir) = claim_session(run_dir, &prefix)
-            .map_err(|err| format!("couldn't make the approver's session folder: {err}"))?;
+            .map_err(|err| format!("its session folder couldn't be made ({err})"))?;
         let prompt = vec![
             part(InputPartKind::Prompt, "approver", PROMPT.to_owned()),
             part(
@@ -228,7 +347,7 @@ impl StepApprover {
             settings,
             budget: None,
         })
-        .map_err(|err| format!("couldn't set up the approver's session: {err}"))?;
+        .map_err(|err| format!("its session couldn't be set up ({err})"))?;
         spec.worker = model.clone();
 
         let mut request = StepRequest::new(worker, spec);
@@ -236,12 +355,10 @@ impl StepApprover {
         request.retries_on_mismatch = 0;
         let outcome = run_step(&*self.steps, request, Box::new(|_| {}), self.deadline)
             .await
-            .map_err(|TimedOut { .. }| {
-                "the approver didn't answer in time, so it was stopped".to_owned()
-            })?
+            .map_err(|TimedOut { .. }| "it didn't answer in time".to_owned())?
             .map_err(|err| session_failure(&err))?;
         let verdict = decode::<ModelApprover>(&outcome)
-            .map_err(|_| "the approver's verdict didn't match the schema".to_owned())?;
+            .map_err(|_| "its verdict didn't match the schema".to_owned())?;
         Ok(Answer::from_verdict(verdict))
     }
 }
@@ -323,6 +440,12 @@ impl Answer {
     }
 }
 
+/// No model could check it. Full auto lets your rules decide alone and says why; other modes
+/// ask you.
+fn unchecked(why: &str) -> ModelVerdict {
+    escalate(None, why)
+}
+
 fn escalate(approver: Option<WorkerRef>, why: &str) -> ModelVerdict {
     ModelVerdict {
         verdict: Verdict::Escalate,
@@ -336,34 +459,64 @@ fn reason_line(text: &str) -> String {
     render::cut(&render::one_line(&clean_text(text)), REASON_MAX)
 }
 
-/// A session that ended early is named by its kind only. Its last words and the vendor's
-/// message can quote the evidence or a secret, and they stay in the raw log. What an isolated
-/// session loaded comes from the CLI's own list, so it's named.
-fn session_failure(err: &StepError) -> String {
+/// Why an approver's session gave no verdict, as a clause about the approver. A session that
+/// ended early is named by its kind only: its last words and the vendor's message can quote the
+/// evidence or a secret, and they stay in the raw log. What an isolated session loaded comes
+/// from the CLI's own list, so it's named.
+fn session_failure(err: &StepError) -> NoVerdict {
     match err {
         StepError::Session(end) => match &end.reason {
-            EndReason::IsolationBroken { plugins, skills } => format!(
-                "the approver's session ended early: it loaded {}, which a blind role mustn't see",
-                loaded_words(plugins, skills)
-            ),
-            other => format!("the approver's session ended early: {}", end_kind(other)),
+            EndReason::IsolationBroken { plugins, skills } => NoVerdict {
+                why: format!(
+                    "its session loaded {}, which a blind role mustn't see",
+                    loaded_words(plugins, skills)
+                ),
+                leaked: true,
+            },
+            other => format!("its session ended early ({})", end_kind(other)).into(),
         },
-        StepError::SchemaMismatch { .. } => {
-            "the approver's verdict didn't match the schema".to_owned()
-        }
-        StepError::Worker(err) => format!("the approver's session failed: {err}"),
+        StepError::SchemaMismatch { .. } => "its verdict didn't match the schema".to_owned().into(),
+        StepError::Worker(err) => format!("its session failed ({err})").into(),
     }
 }
 
-/// Why a session ended, in words, such as `vendor error`, without its details.
+/// Why one approver's session gave no verdict.
+struct NoVerdict {
+    /// A clause about the approver, such as `its session ended early (it crashed)`.
+    why: String,
+    /// Its CLI loaded your plugins into the session, as it would on every try, so neither it
+    /// nor another model of its CLI is asked again.
+    leaked: bool,
+}
+
+impl From<String> for NoVerdict {
+    fn from(why: String) -> Self {
+        Self { why, leaked: false }
+    }
+}
+
+/// Why a session ended, in plain words, such as `its vendor had an error`, without its
+/// details, never a tag such as `auth`.
 pub(crate) fn end_kind(reason: &EndReason) -> String {
-    let tag = serde_json::to_value(reason).ok().and_then(|value| {
-        value
-            .get("why")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-    });
-    tag.map_or_else(|| "unknown".to_owned(), |tag| tag.replace('_', " "))
+    match reason {
+        EndReason::Completed => "it finished",
+        EndReason::BudgetHit { .. } => "it ran out of budget",
+        EndReason::Paused => "the run paused",
+        EndReason::Stopped => "it was stopped",
+        EndReason::Stuck { .. } => "it got stuck",
+        EndReason::UsageLimit { .. } => "it hit its plan's usage limit",
+        EndReason::RateLimited => "it was rate limited",
+        EndReason::VendorError { .. } => "its vendor had an error",
+        EndReason::Auth { .. } => "its vendor refused the sign-in",
+        EndReason::Billing { .. } => "its vendor refused the billing",
+        EndReason::ContextFull => "its context filled up",
+        EndReason::ModelUnavailable { .. } => "its model isn't available",
+        EndReason::AdapterBroken { .. } => "its adapter broke",
+        EndReason::IsolationBroken { .. } => "it loaded your plugins where it mustn't",
+        EndReason::StartFailed { .. } => "it couldn't start",
+        EndReason::Crashed { .. } => "it crashed",
+    }
+    .to_owned()
 }
 
 #[cfg(test)]
@@ -532,7 +685,12 @@ mod tests {
             .verdict(&point(&["codex"]), &with_rules(), &settings("codex"))
             .await;
         assert_eq!(author.verdict, Verdict::Escalate);
-        assert!(author.reasons[0].contains("wrote or owns"), "{author:?}");
+        // The approver you set may not judge it, so picking another is the fix.
+        assert_eq!(
+            author.reasons[0],
+            "Codex worked on this, so it can't approve it. Pick another approver in /approvals",
+            "{author:?}"
+        );
 
         let same_family = setup
             .approver()
@@ -544,7 +702,7 @@ mod tests {
             .await;
         assert_eq!(same_family.verdict, Verdict::Escalate);
         assert!(
-            same_family.reasons[0].contains("same model family"),
+            same_family.reasons[0].contains("same company as Codex"),
             "{same_family:?}"
         );
 
@@ -600,13 +758,13 @@ mod tests {
                 decision
                     .reasons
                     .iter()
-                    .any(|reason| reason.contains("another company than openai")),
+                    .any(|reason| reason.contains("another company than OpenAI")),
                 "{decide_with:?}: {decision:?}"
             );
             warnings += decision
                 .reasons
                 .iter()
-                .filter(|reason| reason.contains("set approvals.approver.model"))
+                .filter(|reason| reason.contains("pick an approver in /approvals"))
                 .count();
         }
         assert_eq!(warnings, 1);
@@ -644,6 +802,7 @@ mod tests {
         let setup = Setup::new();
         let claude = setup.add(
             FakeWorker::harness("claude-code", "claude")
+                .then(FakeSession::until_stopped(Vec::new()))
                 .then(FakeSession::until_stopped(Vec::new())),
         );
         let mut approver = setup.approver();
@@ -659,6 +818,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_approver_is_asked_again_then_another_company_stands_in() {
+        let auth = || {
+            FakeSession::ended(EndReason::Auth {
+                message: "workspace routing discovery unauthorized (401)".to_owned(),
+            })
+        };
+        let setup = Setup::new();
+        let claude = setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .then(auth())
+                .then(FakeSession::structured(answer("approve"))),
+        );
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Approve, "{verdict:?}");
+        assert_eq!(claude.specs().len(), 2, "asked once more after the 401");
+
+        let setup = Setup::new();
+        let claude = setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .then(auth())
+                .then(auth()),
+        );
+        let gemini = setup.add(
+            FakeWorker::harness("antigravity-cli", "gemini")
+                .then(FakeSession::structured(answer("approve"))),
+        );
+        // A stand-in's CLI keeps your plugins out of the approver's isolated session.
+        setup.workers.isolating("antigravity-cli");
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Approve, "{verdict:?}");
+        assert_eq!(verdict.approver, Some("antigravity-cli".parse().unwrap()));
+        assert_eq!((claude.specs().len(), gemini.specs().len()), (2, 1));
+    }
+
+    /// Nobody chose a stand-in to see your plugins, so one whose CLI can't keep them out of the
+    /// approver's session never takes over, and the reason says so.
+    #[tokio::test]
+    async fn a_stand_in_approver_must_keep_your_plugins_out() {
+        let setup = Setup::new();
+        let auth = || {
+            FakeSession::ended(EndReason::Auth {
+                message: "unauthorized (401)".to_owned(),
+            })
+        };
+        setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .then(auth())
+                .then(auth()),
+        );
+        let gemini = setup.add(
+            FakeWorker::harness("antigravity-cli", "gemini")
+                .then(FakeSession::structured(answer("approve"))),
+        );
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Escalate, "{verdict:?}");
+        assert_eq!(verdict.approver, None, "no model checked it");
+        assert!(gemini.specs().is_empty());
+        assert_eq!(
+            verdict.reasons,
+            vec![
+                "Claude Code couldn't check it, as its session ended early (its vendor refused \
+                 the sign-in) even when asked again, and no agent from another company that \
+                 keeps your plugins out could instead"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn approver_schema_failure_escalates() {
         let setup = Setup::new();
         let claude = setup.add(
@@ -670,13 +907,14 @@ mod tests {
                 )),
         );
         let approver = setup.approver();
-        for _ in 0..3 {
+        // The first verdict is asked twice, each in a fresh session; the second came back.
+        for _ in 0..2 {
             let verdict = approver
                 .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
                 .await;
             assert_eq!(verdict.verdict, Verdict::Escalate, "{verdict:?}");
         }
-        // A mismatch isn't retried in the same session.
+        // A mismatch isn't retried in the same session, only in a fresh one.
         assert_eq!(claude.specs().len(), 3);
     }
 
@@ -691,15 +929,25 @@ mod tests {
         ended.end.result_text = ended.end.last_message.clone();
         ended.end.raw_log = Some(PathBuf::from("/state/sessions/approver-cp-003-1/raw.jsonl"));
         let setup = Setup::new();
-        setup.add(FakeWorker::harness("claude-code", "claude").then(ended));
+        setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .then(ended.clone())
+                .then(ended),
+        );
         let verdict = setup
             .approver()
             .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
             .await;
         assert_eq!(verdict.verdict, Verdict::Escalate);
+        assert_eq!(verdict.approver, None, "no model checked it");
+        // It names the approver and why, and gives no advice for a vendor's passing error.
         assert_eq!(
             verdict.reasons,
-            vec!["the approver's session ended early: vendor error".to_owned()]
+            vec![
+                "Claude Code couldn't check it, as its session ended early (its vendor had an \
+                 error) even when asked again, and no agent from another company could instead"
+                    .to_owned()
+            ]
         );
         let shown = verdict.reasons.join("\n");
         for leak in [
@@ -713,15 +961,23 @@ mod tests {
     }
 
     /// The approver is a blind role. One whose session loaded your plugins says which, since
-    /// the names come from the CLI's own list and quote nothing of the evidence.
+    /// the names come from the CLI's own list and quote nothing of the evidence. Its CLI would
+    /// load them again, so it isn't asked twice, and only an agent whose CLI keeps them out
+    /// stands in.
     #[tokio::test]
     async fn a_blind_approver_that_loaded_your_plugins_says_which() {
-        let ended = FakeSession::ended(EndReason::IsolationBroken {
-            plugins: vec!["memory-keeper".into(), "lint-helper".into()],
-            skills: Vec::new(),
-        });
+        let ended = || {
+            FakeSession::ended(EndReason::IsolationBroken {
+                plugins: vec!["memory-keeper".into(), "lint-helper".into()],
+                skills: Vec::new(),
+            })
+        };
         let setup = Setup::new();
-        setup.add(FakeWorker::harness("claude-code", "claude").then(ended));
+        let claude = setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .then(ended())
+                .then(ended()),
+        );
         let verdict = setup
             .approver()
             .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
@@ -730,11 +986,32 @@ mod tests {
         assert_eq!(
             verdict.reasons,
             vec![
-                "the approver's session ended early: it loaded your plugins memory-keeper and \
-                 lint-helper, which a blind role mustn't see"
+                "Claude Code couldn't check it, as its session loaded your plugins memory-keeper \
+                 and lint-helper, which a blind role mustn't see, and no agent from another \
+                 company could instead"
                     .to_owned()
             ]
         );
+        assert_eq!(claude.specs().len(), 1, "not asked again");
+
+        let setup = Setup::new();
+        let claude = setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .then(ended())
+                .then(ended()),
+        );
+        let gemini = setup.add(
+            FakeWorker::harness("antigravity-cli", "gemini")
+                .then(FakeSession::structured(answer("approve"))),
+        );
+        setup.workers.isolating("antigravity-cli");
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings("claude-code"))
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Approve, "{verdict:?}");
+        assert_eq!(verdict.approver, Some("antigravity-cli".parse().unwrap()));
+        assert_eq!((claude.specs().len(), gemini.specs().len()), (1, 1));
     }
 
     #[test]
@@ -755,7 +1032,13 @@ mod tests {
             end_kind(&EndReason::Stuck {
                 watchdog: argonauts_core::events::session::Watchdog::Repeat
             }),
-            "stuck"
+            "it got stuck"
+        );
+        assert_eq!(
+            end_kind(&EndReason::Auth {
+                message: "workspace routing discovery unauthorized (401)".to_owned()
+            }),
+            "its vendor refused the sign-in"
         );
     }
 
@@ -889,7 +1172,8 @@ mod tests {
 
         let broken = ask().await;
         assert_eq!(broken.verdict, Verdict::Escalate);
-        assert_eq!(glm.specs().len(), 3);
+        // The broken verdict was asked for once more, in a fresh session.
+        assert_eq!(glm.specs().len(), 4);
         assert!(
             glm.specs()
                 .iter()
@@ -901,6 +1185,127 @@ mod tests {
         let same_family = approver.verdict(&point, &packet, &settings).await;
         assert_eq!(same_family.verdict, Verdict::Escalate);
         assert_eq!(claude.specs().len(), 3);
+    }
+
+    /// A second approver whose sessions fail gets a stand-in from another company than the
+    /// authors and the first, the way the first does.
+    #[tokio::test]
+    async fn a_failing_second_approver_gets_a_stand_in_from_another_company() {
+        let failed = || {
+            FakeSession::ended(EndReason::Auth {
+                message: "workspace routing discovery unauthorized (401)".to_owned(),
+            })
+        };
+        let setup = Setup::new();
+        setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .respond_with(|_| FakeSession::structured(answer("approve"))),
+        );
+        let glm = setup.add(
+            FakeWorker::endpoint("openrouter/glm", "glm")
+                .then(failed())
+                .then(failed()),
+        );
+        // Of the first's company, so it may never stand in for the second.
+        let opus = setup.add(FakeWorker::endpoint("openrouter/opus", "claude"));
+        let gemini = setup.add(
+            FakeWorker::harness("antigravity-cli", "gemini")
+                .then(FakeSession::structured(answer("approve"))),
+        );
+        // A stand-in's CLI keeps your plugins out of the approver's isolated session.
+        setup.workers.isolating("antigravity-cli");
+        let mut settings = settings("claude-code");
+        settings.approvals.approver.second_model = Some("openrouter/glm".parse().unwrap());
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings)
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Approve, "{verdict:?}");
+        assert_eq!(glm.specs().len(), 2, "asked once more");
+        assert!(opus.specs().is_empty());
+        assert_eq!(gemini.specs().len(), 1);
+        assert!(
+            verdict
+                .reasons
+                .iter()
+                .any(|reason| reason.starts_with("antigravity-cli: ")),
+            "{verdict:?}"
+        );
+    }
+
+    /// When no second approver can answer, the work is left unchecked, with no approver named,
+    /// so full auto lets your rules decide alone rather than leave the card to you.
+    #[tokio::test]
+    async fn a_second_approver_that_cant_answer_leaves_it_unchecked() {
+        let setup = Setup::new();
+        setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .respond_with(|_| FakeSession::structured(answer("approve"))),
+        );
+        setup.add(
+            FakeWorker::endpoint("openrouter/glm", "glm").respond_with(|_| {
+                FakeSession::ended(EndReason::Auth {
+                    message: "unauthorized (401)".to_owned(),
+                })
+            }),
+        );
+        let mut settings = settings("claude-code");
+        settings.approvals.approver.second_model = Some("openrouter/glm".parse().unwrap());
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings)
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Escalate);
+        assert_eq!(verdict.approver, None, "{verdict:?}");
+        assert_eq!(
+            verdict.reasons,
+            vec![
+                "GLM on OpenRouter couldn't check it, as its session ended early (its vendor \
+                 refused the sign-in) even when asked again, and no agent from another company \
+                 could instead"
+                    .to_owned()
+            ]
+        );
+    }
+
+    /// A first approver that stood in is checked against the second again: a second of the
+    /// stand-in's company is replaced by one from yet another company.
+    #[tokio::test]
+    async fn a_stand_in_first_never_shares_a_company_with_the_second() {
+        let failed = || {
+            FakeSession::ended(EndReason::Auth {
+                message: "unauthorized (401)".to_owned(),
+            })
+        };
+        let setup = Setup::new();
+        setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .then(failed())
+                .then(failed()),
+        );
+        let gemini = setup.add(
+            FakeWorker::harness("antigravity-cli", "gemini")
+                .respond_with(|_| FakeSession::structured(answer("approve"))),
+        );
+        // A stand-in's CLI keeps your plugins out of the approver's isolated session.
+        setup.workers.isolating("antigravity-cli");
+        let gemma = setup.add(FakeWorker::endpoint("openrouter/gemma", "gemma"));
+        let glm = setup.add(
+            FakeWorker::endpoint("openrouter/glm", "glm")
+                .then(FakeSession::structured(answer("approve"))),
+        );
+        let mut settings = settings("claude-code");
+        // Google's, as the stand-in first turns out to be.
+        settings.approvals.approver.second_model = Some("openrouter/gemma".parse().unwrap());
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings)
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Approve, "{verdict:?}");
+        assert_eq!(verdict.approver, Some("antigravity-cli".parse().unwrap()));
+        assert_eq!(gemini.specs().len(), 1);
+        assert!(gemma.specs().is_empty(), "never two approvals from Google");
+        assert_eq!(glm.specs().len(), 1);
     }
 
     /// Recorded once from `claude -p --model haiku --effort low --json-schema`, and replayed

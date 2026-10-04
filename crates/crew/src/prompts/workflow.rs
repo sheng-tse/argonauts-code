@@ -2,6 +2,8 @@
 //! boundary.
 
 pub const DESIGN_WORKFLOW: &str = include_str!("workflow/design_workflow.md");
+/// The same lead session, told what code refused in its brief.
+pub const FIX_DESIGN: &str = include_str!("workflow/fix_design.md");
 
 #[cfg(test)]
 mod tests {
@@ -66,6 +68,20 @@ mod tests {
             );
         }
         assert!(DESIGN_WORKFLOW.contains("read-only"));
+        // What a resumed lead is told names every field it may have to fix.
+        for field in [
+            "errors",
+            "name",
+            "description",
+            "based_on",
+            "workflow",
+            "done_when",
+        ] {
+            assert!(
+                FIX_DESIGN.contains(&format!("`{field}`")),
+                "{field} missing from the fix prompt"
+            );
+        }
     }
 
     /// The schema the step enforces meets the strict rules every vendor accepts: closed

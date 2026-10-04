@@ -65,7 +65,7 @@ pub fn standard(kind: CheckpointKind) -> Vec<AnswerOption> {
             option('x', "Abandon the run", A::Abandon),
             option('d', "Show the diff", A::ShowDiff),
         ],
-        CheckpointKind::Handoff => handoff_tail(),
+        CheckpointKind::Handoff => handoff_tail(true),
         CheckpointKind::VendorDown => vec![
             option('a', "One agent for every paused card", A::OneForAll),
             option('e', "Choose per card", A::PerCard),
@@ -242,14 +242,21 @@ pub fn handoff(plan: &HandoffPlan, cause: HandoffCause) -> Vec<AnswerOption> {
                 detail: Some(candidate_detail(candidate)),
             }),
     );
-    options.extend(handoff_tail());
+    options.extend(handoff_tail(plan.resets_at.is_some()));
     options
 }
 
-fn handoff_tail() -> Vec<AnswerOption> {
+/// The handoff card's options after the candidates. Waiting is for the reset when one is known,
+/// else the card tries again after a while, as a sign-in error or an outage has no reset.
+fn handoff_tail(resets: bool) -> Vec<AnswerOption> {
+    let wait = if resets {
+        "Wait until the reset"
+    } else {
+        "Wait and try again later"
+    };
     vec![
         option('t', "Take over myself", AnswerAction::TakeOver),
-        option('w', "Wait until the reset", AnswerAction::Wait),
+        option('w', wait, AnswerAction::Wait),
         option('o', "Pick another agent", AnswerAction::OtherCandidates),
         option('d', "Show the diff", AnswerAction::ShowDiff),
         // A toggle the screen keeps; the candidate you then pick carries `remember`.
@@ -457,6 +464,35 @@ mod tests {
         .unwrap_or_else(|err| panic!("{err}"));
         assert_eq!(keys(&handoff(&plan, HandoffCause::LoggedOut)), "rtwodm");
         assert_eq!(keys(&handoff(&plan, HandoffCause::UsageLimit)), "twodm");
+    }
+
+    /// Waiting is "until the reset" only when one is known; a sign-in error or an outage has
+    /// none, so the card waits and tries again.
+    #[test]
+    fn a_handoff_waits_for_the_reset_only_when_one_is_known() {
+        let plan = |resets_at: serde_json::Value| -> HandoffPlan {
+            serde_json::from_value(serde_json::json!({
+                "card": "card-001", "title": "t", "stopped": "claude-code/opus",
+                "reason": "a sign-in error", "resets_at": resets_at,
+                "work": {"files_changed": 0, "insertions": 0, "deletions": 0},
+                "gates_ran": false, "candidates": [], "mode": "ask"
+            }))
+            .unwrap_or_else(|err| panic!("{err}"))
+        };
+        let wait = |plan: &HandoffPlan| {
+            handoff(plan, HandoffCause::Outage)
+                .into_iter()
+                .find(|option| option.action == AnswerAction::Wait)
+                .map(|option| option.label)
+        };
+        assert_eq!(
+            wait(&plan(serde_json::Value::Null)).as_deref(),
+            Some("Wait and try again later")
+        );
+        assert_eq!(
+            wait(&plan(serde_json::json!("2026-10-04T18:00:00Z"))).as_deref(),
+            Some("Wait until the reset")
+        );
     }
 
     #[test]

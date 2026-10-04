@@ -4,6 +4,7 @@
 
 use std::time::{Duration, Instant};
 
+use argonauts_core::events::run::RunOutcome;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -101,6 +102,30 @@ pub enum WorkflowRowState {
     Failed,
     Paused,
     Stopped,
+}
+
+impl WorkflowRowState {
+    /// How a run that ended reads, the same in its panel row and its Workflow item: work kept
+    /// is done, a stop or an abandon is stopped, and a failure is failed.
+    pub fn ended(outcome: RunOutcome) -> Self {
+        match outcome {
+            RunOutcome::Merged | RunOutcome::PullRequest | RunOutcome::BranchLeft => Self::Done,
+            RunOutcome::Stopped | RunOutcome::Abandoned => Self::Stopped,
+            RunOutcome::Failed => Self::Failed,
+        }
+    }
+
+    /// Its word, as the row shows it and the run's Workflow item ends with it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::NeedsYou => "needs you",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Paused => "paused",
+            Self::Stopped => "stopped",
+        }
+    }
 }
 
 /// One row of the panel, top down.

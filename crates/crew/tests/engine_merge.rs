@@ -819,8 +819,9 @@ async fn merge_rule_original_out_and_back() -> anyhow::Result<()> {
             };
             assert_eq!(packet.rows[0].debt, vec![debt.clone()]);
             let evidence = checkpoints::evidence_of(&bench.host, &first)?;
+            // The card goes by its label, as the merge table names it.
             ensure!(
-                evidence.facts.unreviewed_debt == Some(vec!["card-001".to_owned()]),
+                evidence.facts.unreviewed_debt == Some(vec!["build:redis-store".to_owned()]),
                 "{:?}",
                 evidence.facts.unreviewed_debt
             );

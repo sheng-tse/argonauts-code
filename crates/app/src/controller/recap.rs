@@ -36,25 +36,26 @@ pub(crate) fn recap_from_summary(
                      run."
                 .to_owned(),
         },
-        Some(RunOutcome::PullRequest) => with_cards(
-            &cards,
-            "The work waits in a pull request for review.",
-            "and the work waits in a pull request for review.",
-        ),
-        Some(RunOutcome::BranchLeft) => with_cards(
-            &cards,
-            &format!("The branches are kept for later. {run} picks it up."),
-            &format!("and the branches are kept for later. {run} picks it up."),
+        // A run that didn't merge only merged its cards into its own branch, so they're done,
+        // never "merged" beside an ending that says nothing merged.
+        Some(RunOutcome::PullRequest) => {
+            with_done(&cards, "The work waits in a pull request for review")
+        }
+        Some(RunOutcome::BranchLeft) => format!(
+            "{} {run} picks it up.",
+            with_done(&cards, "The branches are kept for later")
         ),
         Some(RunOutcome::Abandoned) => "You abandoned the run, so nothing merged.".to_owned(),
-        Some(RunOutcome::Stopped) => match cards.merged_phrase() {
-            Some(merged) => format!("The run stopped with {merged}. {run} goes on from there."),
-            None => format!("The run stopped. {run} goes on from there."),
-        },
-        Some(RunOutcome::Failed) => match cards.merged_phrase() {
-            Some(merged) => format!("The run failed with {merged}. /status shows where."),
-            None => "The run failed. /status shows where.".to_owned(),
-        },
+        Some(RunOutcome::Stopped) => format!(
+            "{} {run} goes on from there.",
+            with_done(&cards, "The run stopped")
+        ),
+        Some(RunOutcome::Failed) => {
+            format!(
+                "{} /status shows where.",
+                with_done(&cards, "The run failed")
+            )
+        }
         None => in_progress(summary, &cards),
     };
     match lead {
@@ -204,6 +205,17 @@ impl Cards {
     }
 
     /// "all 4 cards merged", "the card merged", "2 of 5 cards merged", or `None` with no cards.
+    /// "all 4 cards done", "the card done", "1 of 2 cards done", or `None` with no cards.
+    fn done_phrase(&self) -> Option<String> {
+        match (self.merged, self.total) {
+            (_, 0) => None,
+            (1, 1) => Some("the card done".to_owned()),
+            (0, 1) => Some("the card not done".to_owned()),
+            (done, total) if done == total => Some(format!("all {total} cards done")),
+            (done, total) => Some(format!("{done} of {total} cards done")),
+        }
+    }
+
     fn merged_phrase(&self) -> Option<String> {
         match (self.merged, self.total) {
             (_, 0) => None,
@@ -215,10 +227,11 @@ impl Cards {
     }
 }
 
-fn with_cards(cards: &Cards, alone: &str, after: &str) -> String {
-    match cards.merged_phrase() {
-        Some(merged) => format!("{}, {after}", capitalized(&merged)),
-        None => alone.to_owned(),
+/// `sentence`, then how many cards finished, as "The run failed, with 1 of 2 cards done."
+fn with_done(cards: &Cards, sentence: &str) -> String {
+    match cards.done_phrase() {
+        Some(done) => format!("{sentence}, with {done}."),
+        None => format!("{sentence}."),
     }
 }
 
@@ -300,7 +313,7 @@ mod tests {
         ]);
         assert_eq!(
             recap_from_summary(&stopped, Some(RunOutcome::Stopped), None),
-            "The run stopped with 1 of 2 cards merged. /resume run-007 goes on from there."
+            "The run stopped, with 1 of 2 cards done. /resume run-007 goes on from there."
         );
         let mut going = stopped.clone();
         going.waiting = vec!["the merge checkpoint".to_owned()];
@@ -337,7 +350,16 @@ mod tests {
         let one = summary(vec![card(1, CardState::Integrated)]);
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::PullRequest), None),
-            "The card merged, and the work waits in a pull request for review."
+            "The work waits in a pull request for review, with the card done."
+        );
+        // A run left on its branches never says its card merged.
+        assert_eq!(
+            recap_from_summary(&one, Some(RunOutcome::BranchLeft), None),
+            "The branches are kept for later, with the card done. /resume run-007 picks it up."
+        );
+        assert_eq!(
+            recap_from_summary(&stopped, Some(RunOutcome::Failed), None),
+            "The run failed, with 1 of 2 cards done. /status shows where."
         );
     }
 

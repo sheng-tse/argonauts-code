@@ -234,6 +234,7 @@ fn lifecycle_line(lifecycle: &RunLifecycle) -> Option<String> {
                 ParkReason::Paused => "paused".to_owned(),
                 ParkReason::AllVendorsOut { .. } => "every agent is out".to_owned(),
                 ParkReason::WaitingForVendor { vendor, .. } => format!("waiting for {vendor}"),
+                ParkReason::NoStandIn { detail, .. } => detail.clone(),
             }
         )),
         RunLifecycle::Finished { outcome, .. } => Some(

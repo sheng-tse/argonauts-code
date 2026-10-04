@@ -1004,7 +1004,7 @@ fn resume_picker_rows() {
     press(&mut view, KeyCode::Down, &state);
     let resume = press(&mut view, KeyCode::Enter, &state);
     assert!(
-        matches!(&resume, ViewOutcome::Send(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"),
+        matches!(&resume, ViewOutcome::SendToChat(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"),
         "{resume:?}"
     );
     // A run that ended has nothing to stop.
@@ -1100,6 +1100,7 @@ fn picker_with_sessions(title: &str) -> ResumePicker {
             updated: WALL - Duration::hours(2),
             worker: Some(worker("claude-code")),
             turns: 3,
+            runs: 0,
         }],
         vec![
             cli_session(

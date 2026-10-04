@@ -541,7 +541,9 @@ impl ResumePicker {
                     self.unfold(r)
                 }
             }
-            Some(Row::Run(r)) => ViewOutcome::Send(UiCommand::Resume {
+            // The run takes the screen, as a conversation carried on does, so its card isn't
+            // left waiting behind the picker.
+            Some(Row::Run(r)) => ViewOutcome::SendToChat(UiCommand::Resume {
                 run: Some(self.runs[r].run.clone()),
             }),
             None => ViewOutcome::Consumed,
@@ -804,12 +806,13 @@ fn session_details(session: &VendorSession) -> String {
     }
 }
 
-/// `3 turns with claude-code`.
+/// `3 turns with claude-code`, or `1 run` for one that only started or opened runs.
 fn chat_details(chat: &ChatSummary, names: &DisplayNames) -> String {
-    let turns = if chat.turns == 1 {
-        "1 turn".to_owned()
-    } else {
-        format!("{} turns", chat.turns)
+    let turns = match (chat.turns, chat.runs) {
+        (0, 1) => "1 run".to_owned(),
+        (0, runs) if runs > 1 => format!("{runs} runs"),
+        (1, _) => "1 turn".to_owned(),
+        (turns, _) => format!("{turns} turns"),
     };
     match &chat.worker {
         Some(worker) => format!("{turns} with {}", sanitize_line(&names.worker(worker))),
@@ -1155,6 +1158,7 @@ mod tests {
             updated: WALL - Duration::hours(hours_ago),
             worker: Some("claude-code".parse().unwrap()),
             turns: 2,
+            runs: 0,
         }
     }
 
@@ -1209,6 +1213,30 @@ mod tests {
         assert!(text[2].contains("run ") && text[2].contains("parked"));
     }
 
+    /// A conversation that only started or opened runs counts those, not "0 turns".
+    #[test]
+    fn a_conversation_with_only_runs_counts_its_runs() {
+        use super::chat_details;
+        let names = argonauts_core::display_names::DisplayNames::default();
+        let only_runs = ChatSummary {
+            turns: 0,
+            runs: 1,
+            worker: None,
+            ..chat(3, "fix the median", 1)
+        };
+        assert_eq!(chat_details(&only_runs, &names), "1 run");
+        let two = ChatSummary {
+            runs: 2,
+            ..only_runs.clone()
+        };
+        assert_eq!(chat_details(&two, &names), "2 runs");
+        let chatted = ChatSummary {
+            runs: 2,
+            ..chat(2, "hi", 1)
+        };
+        assert_eq!(chat_details(&chatted, &names), "2 turns with Claude Code");
+    }
+
     #[test]
     fn enter_carries_on_a_conversation_or_resumes_a_run() {
         let mut view = picker();
@@ -1229,12 +1257,11 @@ mod tests {
             ViewOutcome::Notice(text) if text.contains("chat-002 is a conversation")
         ));
         press(&mut view, KeyCode::Down);
-        assert_eq!(
-            sent(press(&mut view, KeyCode::Enter)),
-            Some(UiCommand::Resume {
-                run: Some(RunId::new("run-02").unwrap())
-            })
-        );
+        // A run closes the picker on the way, so it and its card take the screen.
+        assert!(matches!(
+            press(&mut view, KeyCode::Enter),
+            ViewOutcome::SendToChat(UiCommand::Resume { run: Some(run) }) if run.as_str() == "run-02"
+        ));
     }
 
     #[test]

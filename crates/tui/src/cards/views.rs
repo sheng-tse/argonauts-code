@@ -14,7 +14,7 @@ use argonauts_core::{CardId, RunId};
 use time::UtcOffset;
 
 use super::about::details;
-use super::records::outcome;
+use super::records::{by_id, outcome};
 use super::words;
 use crate::text::sanitize_line;
 use crate::views::pager::Pager;
@@ -80,7 +80,7 @@ pub fn evidence_view(
     if let Some(decided) = decided {
         lines.push(format!(
             "{} · decided by {}",
-            outcome(opened, decided, Some(run), names),
+            outcome(opened, decided, Some(run), names, &by_id),
             words::party(&decided.by, names)
         ));
     }

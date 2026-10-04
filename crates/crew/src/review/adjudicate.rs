@@ -81,6 +81,8 @@ pub async fn adjudicate(host: &Host, card: &CardId) -> EngineResult<Verdict> {
     ask.access = Access::NoTools;
     ask.blind = true;
     ask.slot = round;
+    // A stand-in rules only from outside the owner's and the reviewers' companies.
+    ask.independent_of = owner.iter().cloned().chain(reviewers).collect();
     match host.ask::<Adjudicate>(ask).await {
         Ok(answered) => {
             let verdict = verdict(&answered.output);
@@ -88,13 +90,15 @@ pub async fn adjudicate(host: &Host, card: &CardId) -> EngineResult<Verdict> {
                 Some(card),
                 Some(&answered.session),
                 RunEventKind::Review(ReviewEvent::Adjudicated {
-                    adjudicator,
+                    adjudicator: answered.worker,
                     ruling: answered.output,
                 }),
             )?;
             Ok(verdict)
         }
         Err(EngineError::Interrupted) => Err(EngineError::Interrupted),
+        // Nobody may rule in its place, so the run parks until someone can.
+        Err(EngineError::Stalled(stall)) => Err(EngineError::Stalled(stall)),
         Err(error) => Ok(Verdict::Escalated {
             reasons: vec![format!("The adjudicator failed: {error}")],
         }),

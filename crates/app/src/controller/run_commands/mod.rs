@@ -292,10 +292,7 @@ pub(crate) async fn take_over(
         match approvals.take_over(&run, &card).await {
             Ok(ticket) => out.send(AppEvent::TakeOver { ticket, place, run }),
             Err(err) => out.send(match plain_refusal(&err) {
-                Some(text) => AppEvent::Notice {
-                    level: NoteLevel::Info,
-                    text,
-                },
+                Some(text) => AppEvent::Hint { text },
                 None => AppEvent::Notice {
                     level: NoteLevel::Error,
                     text: format!("Couldn't take over {card}: {err}"),

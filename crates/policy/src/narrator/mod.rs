@@ -1348,7 +1348,7 @@ mod tests {
         assert_eq!(notice.kind, NarratorLineKind::Notice);
         assert_eq!(
             notice.text,
-            "couldn't narrate: the session ended early: vendor error"
+            "couldn't narrate: the session ended early: its vendor had an error"
         );
         let journal = serde_json::to_string(&journal::read(setup.run_dir()).unwrap()).unwrap();
         for leak in [token.as_str(), "upstream said", "Card 1 used"] {

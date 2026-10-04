@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use argonauts_core::RunId;
 use argonauts_core::app::{AppMode, UiCommand, ViewRequest};
-use argonauts_core::events::run::RunMode;
-use argonauts_core::names::{RoleName, SessionKey, WorkflowId};
+use argonauts_core::names::{SessionKey, WorkflowId};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::views::{conversation_run, vendor_workflow_id};
 
@@ -17,6 +16,7 @@ use crate::format;
 use crate::keymap::Keymap;
 use crate::state::{AppState, RunState, SessionState, SessionStatus};
 use crate::text::sanitize_line;
+use crate::views::waiting::{self, RunEntry, WaitingView};
 use crate::views::{crew::CrewView, help::HelpView, session::SessionView};
 
 use super::Cx;
@@ -136,7 +136,6 @@ fn approval_mode(mode: ShownMode) -> ApprovalMode {
     }
 }
 
-/// Ctrl+T and `/workflows`.
 /// Ctrl+T and `/workflows`: the run's workflow view, or its Library tab alone when there's no
 /// run to show.
 pub(super) fn open_tree(cx: &mut Cx<'_>) {
@@ -194,10 +193,11 @@ fn open_row(key: &str, cx: &mut Cx<'_>) {
     }
 }
 
-/// The run's workflow view, or for a run whose work is one agent's, that agent's session:
-/// a workflow view with one row says less than the agent does. A run from an
-/// earlier session comes back on screen first, as `/resume <run>` brings it, with its card if
-/// it waits on you.
+/// What Enter on a run's row opens, which is always something: the session of a
+/// run whose work is one agent's, the lead at work while it designs the workflow,
+/// the workflow view once it's declared, or a short view of what the run waits for. A run from
+/// an earlier session comes back on screen first, as `/resume <run>` brings it, with its card
+/// if it waits on you.
 fn open_workflow(run: RunId, cx: &mut Cx<'_>) {
     let elsewhere = !cx.state.runs.contains_key(&run)
         && cx.state.background.iter().any(|summary| summary.run == run);
@@ -208,31 +208,16 @@ fn open_workflow(run: RunId, cx: &mut Cx<'_>) {
         cx.out.send(UiCommand::Resume { run: Some(run) });
         return;
     }
-    if let Some(session) = single_agent(cx.state, &run) {
-        cx.out.open(SessionView::new(run, session));
-        return;
+    match waiting::entry(cx.state, &run) {
+        RunEntry::Session(session) => cx.out.open(SessionView::for_run(run, session)),
+        RunEntry::Waiting => cx.out.open(WaitingView::new(run)),
+        RunEntry::Workflow => cx.out.send(UiCommand::Request {
+            view: ViewRequest::Workflow {
+                run,
+                workflow: None,
+            },
+        }),
     }
-    cx.out.send(UiCommand::Request {
-        view: ViewRequest::Workflow {
-            run,
-            workflow: None,
-        },
-    });
-}
-
-/// The one agent a run's work is: a solo run's owner, or the only agent a run started.
-fn single_agent(state: &AppState, run: &RunId) -> Option<SessionKey> {
-    let run = state.runs.get(run)?;
-    if run.mode == Some(RunMode::Solo)
-        && let Some(owner) = run
-            .sessions_in_order()
-            .find(|session| session.role == RoleName::Owner)
-    {
-        return Some(owner.key.clone());
-    }
-    let mut sessions = run.sessions_in_order();
-    let only = sessions.next()?;
-    sessions.next().is_none().then(|| only.key.clone())
 }
 
 pub(crate) fn notice(text: &str, cx: &mut Cx<'_>) {
@@ -514,6 +499,57 @@ mod tests {
             out.commands,
             [UiCommand::Request {
                 view: ViewRequest::Context
+            }]
+        );
+    }
+
+    /// Enter on a run's row always opens something: the lead at work while it
+    /// designs, the workflow view once declared, and before any agent, what the run waits for.
+    #[test]
+    fn enter_on_a_run_row_always_opens_something() {
+        use crate::views::waiting::fixture::{RUN, RunLog, run_id};
+
+        let opened = |log: &RunLog, action: &UiAction| {
+            let (out, model) = act(&log.state, action);
+            assert!(model.bottom.mode.notice.is_none(), "no hint: {action:?}");
+            let views: Vec<String> = out.views.iter().map(|view| format!("{view:?}")).collect();
+            (views, out.commands)
+        };
+        let enter = UiAction::OpenWorkflow(RUN.into());
+
+        let mut log = RunLog::started();
+        let (views, commands) = opened(&log, &enter);
+        assert!(commands.is_empty(), "{commands:?}");
+        assert!(views[0].starts_with("WaitingView"), "{views:?}");
+
+        log.design("s-001", "lead:design");
+        let (views, commands) = opened(&log, &enter);
+        assert!(commands.is_empty(), "{commands:?}");
+        assert!(
+            views[0].starts_with("SessionView") && views[0].contains("s-001"),
+            "{views:?}"
+        );
+        // Ctrl+T opens the same, for the run on screen.
+        log.state.attached = Some(run_id());
+        let (views, _) = opened(&log, &UiAction::OpenTree);
+        assert!(views[0].contains("s-001"), "{views:?}");
+
+        log.ended("s-001");
+        log.design("s-002", "lead:design-2");
+        let (views, _) = opened(&log, &enter);
+        assert!(views[0].contains("s-002"), "the design at work: {views:?}");
+
+        log.ended("s-002");
+        log.declare();
+        let (views, commands) = opened(&log, &enter);
+        assert!(views.is_empty(), "{views:?}");
+        assert_eq!(
+            commands,
+            [UiCommand::Request {
+                view: ViewRequest::Workflow {
+                    run: run_id(),
+                    workflow: None
+                }
             }]
         );
     }

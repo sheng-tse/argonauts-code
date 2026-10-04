@@ -10,10 +10,11 @@ use argonauts_core::worker::Worker as _;
 use argonauts_testkit::{FakeSession, FakeWorker};
 use serde_json::json;
 
+use super::ChatState;
 use crate::FirstView;
 use crate::chat_store::{ChatSession, ChatStore};
 use crate::controller::Opening;
-use crate::controller::test_support::{Harness, HarnessOptions};
+use crate::controller::test_support::{Harness, HarnessOptions, TestCtx};
 use crate::env::AppEnv;
 
 fn answer(text: &str) -> FakeSession {
@@ -329,4 +330,19 @@ async fn continue_opens_the_newest_conversation() {
     assert_eq!(chat, ChatId::numbered(2));
     assert_eq!(title, "newest");
     harness.exit().await;
+}
+
+/// Two app sessions opened in the same repo before either writes a thing get a conversation
+/// each, so a run one of them opens is never kept with the other's. One left unused gives its
+/// number back when the app closes.
+#[tokio::test]
+async fn app_sessions_opened_together_never_share_a_conversation() {
+    let (mut parts, _) = TestCtx::new(HarnessOptions::default());
+    let mut first = ChatState::new(&parts.ctx).unwrap();
+    let second = ChatState::new(&parts.ctx).unwrap();
+    assert_ne!(first.id, second.id);
+
+    super::close(&mut parts.ctx, &mut first);
+    assert!(!first.store.journal_path().exists());
+    assert!(second.store.journal_path().exists());
 }

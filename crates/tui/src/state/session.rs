@@ -424,8 +424,15 @@ impl SessionState {
         for workflow in &mut self.workflows {
             workflow.end_with_session("its session ended before the workflow did");
         }
-        if self.cost_usd.is_none() && end.spend.cost_usd > 0.0 {
-            self.cost_usd = Some(end.spend.cost_usd);
+        // The metered count is the session's own. The vendor's totals for a session that
+        // resumed another's include what the earlier one spent, which its own row shows.
+        let spend = &end.spend;
+        if spend.cost_usd > 0.0 {
+            self.cost_usd = Some(spend.cost_usd);
+        }
+        if spend.input_tokens + spend.output_tokens > 0 {
+            self.tokens_in = spend.input_tokens;
+            self.tokens_out = spend.output_tokens;
         }
         self.end = Some(Box::new(end.clone()));
     }

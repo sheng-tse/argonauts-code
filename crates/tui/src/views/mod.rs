@@ -27,6 +27,7 @@ pub mod settings;
 pub mod status;
 #[cfg(test)]
 mod vim_tests;
+pub mod waiting;
 pub mod workflow;
 
 use std::fmt;
@@ -77,6 +78,21 @@ pub trait View: fmt::Debug + Send {
         let _ = now;
         None
     }
+
+    /// Asked after every event: what shows in its place once the run it was opened for has
+    /// moved on, such as the lead's session once it starts. `None` keeps it.
+    fn follow(&mut self, ctx: &ViewCtx<'_>) -> Option<Follow> {
+        let _ = ctx;
+        None
+    }
+}
+
+/// Where a view that follows its run goes next.
+#[derive(Debug)]
+pub enum Follow {
+    Replace(Box<dyn View>),
+    /// Closes it and asks the controller for the view that follows, such as the workflow view.
+    Request(ViewRequest),
 }
 
 pub struct ViewCtx<'a> {

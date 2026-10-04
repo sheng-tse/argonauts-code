@@ -5,7 +5,9 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+pub use super::design_shorthand::{names_a_test, starts_with_program};
 use super::pursue::AttemptPlan;
 use super::{Step, StepName};
 use crate::events::goal::Criterion;
@@ -16,6 +18,31 @@ impl Step for DesignWorkflow {
     const NAME: StepName = StepName::DesignWorkflow;
     type Input = DesignInput;
     type Output = DesignOutput;
+
+    fn normalize(output: Value) -> Value {
+        super::design_shorthand::design_brief(output)
+    }
+}
+
+/// The same lead session, resumed with what code refused in the brief it just wrote, answers
+/// with the whole brief again. It's the lead's design as much as the first answer was, so it
+/// goes by the same step.
+pub struct FixDesign;
+
+impl Step for FixDesign {
+    const NAME: StepName = StepName::DesignWorkflow;
+    type Input = DesignFix;
+    type Output = DesignOutput;
+
+    fn normalize(output: Value) -> Value {
+        super::design_shorthand::design_brief(output)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DesignFix {
+    /// What code refused, one problem a line.
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -97,6 +124,37 @@ pub struct DesignOutput {
     /// In a goal run, the first attempt, planned with the goal so the start card can estimate
     /// it.
     pub first_attempt: Option<AttemptPlan>,
+}
+
+impl DesignOutput {
+    /// `based_on` as one of `examples` names it, when the lead wrote another spelling of only
+    /// that name, such as `Peer Crew` for `peer-crew` or `quick-fix` for your `quick_fix.yaml`.
+    /// A name that is an example stays exactly as written.
+    pub fn read_based_on(&mut self, examples: &[String]) {
+        let Some(written) = self.based_on.as_deref() else {
+            return;
+        };
+        if examples.iter().any(|example| example == written) {
+            return;
+        }
+        let plain = super::design_shorthand::example_name(written);
+        let mut spelled = examples
+            .iter()
+            .filter(|example| super::design_shorthand::example_name(example) == plain);
+        if let (Some(example), None) = (spelled.next(), spelled.next()) {
+            self.based_on = Some(example.clone());
+        }
+    }
+
+    /// Whether `based_on` names `example`, as written or spelled another way, for a brief read
+    /// back from the log as the lead wrote it.
+    pub fn based_on_names(&self, example: &str) -> bool {
+        self.based_on.as_deref().is_some_and(|written| {
+            written == example
+                || super::design_shorthand::example_name(written)
+                    == super::design_shorthand::example_name(example)
+        })
+    }
 }
 
 /// One card of a brief's plan.

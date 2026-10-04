@@ -17,17 +17,11 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
     card.selected = first_recommended(&choice.options);
     card.allow_note = choice.free_text != FreeText::None;
     card.esc_hint = esc_hint(choice.kind).to_owned();
-    // The unclear request follows the lead's reply and holds your request until you answer, so
-    // it takes the keys like a run's card that needs you, and Esc sets it aside. You may answer
-    // the reply by typing, so once you do it leaves the keys with you. You set off the rest, so
-    // they open with the keys and Esc closes them.
-    if matches!(
-        choice.kind,
-        ChoiceKind::StartWork
-            | ChoiceKind::RefusedCommands
-            | ChoiceKind::GoAhead
-            | ChoiceKind::HandOff
-    ) {
+    // Every choice asks you, so every one takes the keys. What differs is who set it off. Work
+    // raised these after the lead's or the CLI's reply, which you may answer by typing, so once
+    // you do it leaves the keys with you, and Esc sets it aside. You set off the rest, so they
+    // open with the keys and Esc closes them.
+    if raised_by_work(choice.kind) {
         card.needs_you = true;
         card.yields_to_typing = true;
     } else {
@@ -61,6 +55,29 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
         | ChoiceKind::KeepInstructions => card.detail = rows,
     }
     card
+}
+
+/// Work raised it after a reply in the chat, rather than a command or key of yours. A CLI's
+/// permission prompt counts as yours, since Esc answers it No, as in Claude Code.
+fn raised_by_work(kind: ChoiceKind) -> bool {
+    match kind {
+        ChoiceKind::StartWork
+        | ChoiceKind::RefusedCommands
+        | ChoiceKind::GoAhead
+        | ChoiceKind::HandOff => true,
+        ChoiceKind::Permission
+        | ChoiceKind::ConfirmTakeOver
+        | ChoiceKind::ConfirmSafetySetting
+        | ChoiceKind::TermsNote
+        | ChoiceKind::Init
+        | ChoiceKind::SettingScope
+        | ChoiceKind::TrustProject
+        | ChoiceKind::DetectedGates
+        | ChoiceKind::ConfirmRevert
+        | ChoiceKind::ConfirmConnect
+        | ChoiceKind::KeepInstructions
+        | ChoiceKind::RewindTurn => false,
+    }
 }
 
 /// What the controller does when you press Esc, by kind.

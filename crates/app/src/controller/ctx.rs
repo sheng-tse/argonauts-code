@@ -183,6 +183,11 @@ impl Ctx {
         });
     }
 
+    /// The answer to a key that can't do anything now, for the notice line.
+    pub(crate) fn hint(&self, text: impl Into<String>) {
+        self.send(AppEvent::Hint { text: text.into() });
+    }
+
     /// Every error a handler returns reaches you as a notice, naming files in the repo by
     /// their path from it.
     pub(crate) fn error(&self, err: &anyhow::Error) {

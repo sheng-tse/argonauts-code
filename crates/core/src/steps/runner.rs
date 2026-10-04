@@ -29,6 +29,7 @@ impl StepRunner for SchemaStepRunner {
                 retries_on_mismatch,
                 mut control,
                 cancel,
+                normalize,
             } = request;
             let validator = match spec.json_schema.as_ref().map(jsonschema::validator_for) {
                 Some(Ok(validator)) => Some(validator),
@@ -56,7 +57,7 @@ impl StepRunner for SchemaStepRunner {
                 // What's checked and returned; a mismatch reports what the session sent.
                 let filled = output
                     .clone()
-                    .map(|value| fill_left_out(value, spec.json_schema.as_ref()));
+                    .map(|value| normalize(fill_left_out(value, spec.json_schema.as_ref())));
                 let errors = match (&filled, &validator) {
                     (Some(value), Some(validator)) => validator
                         .iter_errors(value)

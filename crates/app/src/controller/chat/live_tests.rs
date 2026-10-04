@@ -238,7 +238,8 @@ async fn the_main_session_joins_as_a_screen_only_when_you_should_know_is_on() {
             SessionControl::Screen(ScreenRequest::Render)
         ]
     );
-    // A press names a button the session drew; one it never drew says so and sends nothing.
+    // A press names a button the session drew; one it never drew says so on the notice line
+    // and sends nothing.
     harness
         .send(UiCommand::PressHeadsUp {
             plugin: "cc-plugin-you-should-know".into(),
@@ -246,7 +247,7 @@ async fn the_main_session_joins_as_a_screen_only_when_you_should_know_is_on() {
         })
         .await;
     harness
-        .until(|event| matches!(event, AppEvent::Notice { .. }))
+        .until(|event| matches!(event, AppEvent::Hint { .. }))
         .await;
     harness.send(UiCommand::CancelTurn).await;
     harness.exit().await;

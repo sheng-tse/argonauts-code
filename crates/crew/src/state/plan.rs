@@ -98,6 +98,9 @@ pub struct ScoreRecord {
     pub flagged: bool,
     /// The draft round it scored.
     pub round: u8,
+    /// The judge's session, which says whose seat a stand-in judged in.
+    #[serde(default)]
+    pub session: Option<SessionKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -200,6 +203,7 @@ impl PlanState {
                 rationale: rationale.clone(),
                 flagged: *flagged,
                 round,
+                session: envelope.session.clone(),
             }),
             PlanEvent::Judged(result) => {
                 self.judged = Some(result.clone());

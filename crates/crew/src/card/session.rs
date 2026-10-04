@@ -12,7 +12,7 @@ use argonauts_core::worker::Access;
 
 use crate::card::prompt;
 use crate::card::worktree::{self, CardTree};
-use crate::engine::host::{Host, SessionPlan};
+use crate::engine::host::{Host, Ran, SessionPlan, StandIns};
 use crate::error::EngineResult;
 use crate::workflow::StepAt;
 
@@ -134,10 +134,10 @@ pub(crate) async fn run(host: &Host, call: SessionCall<'_>) -> EngineResult<Ende
         slot: 0,
     };
     plan.slot = slot.unwrap_or_else(|| host.slot_for(&plan));
-    let running = host.start(plan).await?;
-    let (key, worker) = (running.key.clone(), running.worker.clone());
-    let end = running.ended().await?;
-    worktree::commit_in(host, card, tree, Some(&key), Some(worker.clone())).await?;
+    // A vendor error has the owner go again once on its own session; when it fails again, the
+    // card's recovery hands the card on.
+    let Ran { key, worker, end } = host.run_session(plan, StandIns::None).await?;
+    worktree::commit_in(host, card, tree, Some(&key), Some(worker)).await?;
     let report = report_of(&end);
     Ok(Ended { key, end, report })
 }

@@ -23,6 +23,7 @@ use super::narrator_host::NarratorHost;
 use super::recap;
 use super::runs::{RunUpdate, RunsState};
 use super::{Ctx, Internal};
+use crate::chat_store::ChatRun;
 use crate::{client, views};
 
 /// How a run's stream opens.
@@ -47,6 +48,8 @@ pub(super) enum Stage {
 /// The run on screen and what its events said so far.
 pub(super) struct Attached {
     pub(super) run: RunId,
+    /// Saved with each conversation the run is on screen in.
+    pub(super) title: String,
     show_replay: bool,
     /// The stream began at the latest snapshot, not at the run's first event.
     from_snapshot: bool,
@@ -106,6 +109,7 @@ pub(super) async fn attach(
     opening: Opening,
 ) -> anyhow::Result<()> {
     let run = summary.run.clone();
+    let title = summary.title.clone();
     let conductor = Arc::clone(&ctx.services.conductor);
     let stream = match opening {
         Opening::Reattach => conductor.reattach(&run).await,
@@ -138,6 +142,7 @@ pub(super) async fn attach(
     let task = forward(run.clone(), stream, ctx.internal.clone());
     let attached = Attached {
         run: run.clone(),
+        title: title.clone(),
         show_replay: opening != Opening::New,
         from_snapshot: opening == Opening::Reattach,
         replay_until,
@@ -159,6 +164,12 @@ pub(super) async fn attach(
         ctx.send(AppEvent::ReplayDone { run, seq: 0 });
         ctx.set_mode(attached.mode.clone());
     }
+    // Started or opened here, it's this conversation's run from now on.
+    runs.ours.insert(attached.run.clone());
+    runs.opened.push(ChatRun {
+        run: attached.run.clone(),
+        title,
+    });
     runs.attached = Some(attached);
     runs.attaches += 1;
     Ok(())

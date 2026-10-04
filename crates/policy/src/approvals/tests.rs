@@ -529,7 +529,7 @@ async fn full_auto_goes_on_where_auto_would_pause_or_be_demoted() {
     assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "presence");
     assert_eq!(
         last_reason(&outcome),
-        Some("approvals.presence = required keeps it for you at the terminal".to_owned())
+        Some("your /approvals settings keep it for you at the terminal".to_owned())
     );
 }
 
@@ -836,7 +836,7 @@ async fn policy_shadow_records_would_decide() {
         by: DecideWith::Model,
         reasons: vec![
             "the model says Reject".to_owned(),
-            "asked the approver model codex/gpt-5.6-luna".to_owned(),
+            "asked GPT 5.6 Luna on Codex to approve it".to_owned(),
         ],
     };
     assert_eq!(
@@ -1168,7 +1168,7 @@ async fn auto_that_does_not_decide_says_why() {
         by: DecideWith::Model,
         reasons: vec![
             "the model says Escalate".to_owned(),
-            "asked the approver model codex/gpt-5.6-luna".to_owned(),
+            "asked GPT 5.6 Luna on Codex to approve it".to_owned(),
         ],
     };
     assert_eq!(
@@ -1673,7 +1673,7 @@ async fn user_decided_before_evaluate_finishes() {
         by: DecideWith::Model,
         reasons: vec![
             "the model says Approve".to_owned(),
-            "asked the approver model codex/gpt-5.6-luna".to_owned(),
+            "asked GPT 5.6 Luna on Codex to approve it".to_owned(),
         ],
     };
     assert_eq!(

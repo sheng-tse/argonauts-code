@@ -305,6 +305,15 @@ pub enum ParkReason {
         #[serde(with = "time::serde::rfc3339::option")]
         until: Option<OffsetDateTime>,
     },
+    /// A step's agent stopped for a vendor reason, and no other agent could take its role.
+    NoStandIn {
+        /// Which role, in words: `nobody could take over as the lead`.
+        detail: String,
+        /// When it tries again: the agent's reset, else a retry after a wait that grows with
+        /// each try. `None` once it stopped trying on its own.
+        #[serde(with = "time::serde::rfc3339::option")]
+        until: Option<OffsetDateTime>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

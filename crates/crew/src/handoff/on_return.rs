@@ -484,7 +484,11 @@ pub(crate) async fn request(
     Ok(CheckpointRequest {
         at,
         kind: CheckpointKind::OriginalReturned,
-        title: format!("{} is back · {card}", vendor_label(&back.original.vendor())),
+        title: format!(
+            "{} is back · {}",
+            vendor_label(&back.original.vendor()),
+            host.read(|state| crate::labels::card_label(state, card))
+        ),
         card: Some(card.clone()),
         packet: CheckpointPacket::OriginalReturned(packet),
         facts: EvidenceFacts::default(),

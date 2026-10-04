@@ -7,7 +7,7 @@ use std::path::Path;
 use argonauts_core::CardId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::{CardKind, GateKind, IntegrationEvent};
-use argonauts_core::events::session::InputPartKind;
+use argonauts_core::events::session::{EndReason, InputPartKind};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::steps::card::{ReportStatus, ResolveConflict};
 use argonauts_core::steps::{StepName, output_schema};
@@ -19,7 +19,8 @@ use crate::card::prompt;
 use crate::card::session::report_of;
 use crate::card::support::{owner_of, part, record_of, wait_until};
 use crate::card::worktree::{self, CardTree};
-use crate::engine::host::{Host, SessionPlan};
+use crate::engine::host::{Host, Ran, SessionPlan, StandIns};
+use crate::engine::stand_in::{self, Seat};
 use crate::error::{EngineError, EngineResult};
 use crate::git::StagedMerge;
 use crate::idempotency;
@@ -202,16 +203,21 @@ async fn affected_tests(
 }
 
 /// How one resolver's session went.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Resolution {
     Resolved,
     /// The two sides disagree on behavior, which the phase lead decides.
     Semantic,
+    /// The resolver's session ended for a vendor reason, even when asked again, so another
+    /// agent takes the conflict.
+    Unavailable(EndReason),
     Failed,
 }
 
 /// The conflict goes to the interface's owner (or the integration chore's), and a semantic one
-/// on to the phase lead. True when the card's branch now holds the integration branch cleanly.
+/// on to the phase lead. A resolver whose vendor fails hands the conflict to the next, and after
+/// the last to a stand-in by the owner role's handoff list. True when the card's
+/// branch now holds the integration branch cleanly.
 async fn resolve(host: &Host, card: &CardId, files: &[String]) -> EngineResult<bool> {
     let assignee = conflict_owner(host, card);
     let conflict = IntegrationEvent::Conflict {
@@ -225,11 +231,37 @@ async fn resolve(host: &Host, card: &CardId, files: &[String]) -> EngineResult<b
     if let Some(lead) = lead.filter(|lead| !resolvers.contains(lead)) {
         resolvers.push(lead);
     }
-    for worker in resolvers {
-        match resolve_with(host, card, &worker, files).await? {
+    let mut unavailable: Vec<WorkerRef> = Vec::new();
+    let mut next = 0;
+    while let Some(worker) = resolvers.get(next).cloned() {
+        next += 1;
+        let reason = match resolve_with(host, card, &worker, files).await? {
             Resolution::Resolved => return Ok(true),
             Resolution::Semantic => continue,
             Resolution::Failed => return Ok(false),
+            Resolution::Unavailable(reason) => reason,
+        };
+        unavailable.push(worker.clone());
+        if next < resolvers.len() {
+            continue;
+        }
+        let seat = Seat {
+            at: None,
+            role: RoleName::Owner,
+            step: Some(StepName::ResolveConflict),
+            card: Some(card.clone()),
+            independent_of: Vec::new(),
+            isolated: false,
+        };
+        let failed: Vec<&WorkerRef> = unavailable.iter().collect();
+        match stand_in::after(host, &seat, &worker, &failed, &reason).await {
+            Ok(taker) => resolvers.push(taker),
+            Err(EngineError::Stalled(stall)) => {
+                let line = format!("{} The card's owner resolves it instead.", stall.line);
+                crate::plan::context::warn(host, Some(card), line)?;
+                return Ok(false);
+            }
+            Err(err) => return Err(err),
         }
     }
     Ok(false)
@@ -302,9 +334,16 @@ async fn resolve_with(
             StagedMerge::Conflict(_) => {}
         }
     }
-    let running = host.start(plan).await?;
-    let (key, by) = (running.key.clone(), running.worker.clone());
-    let end = running.ended().await?;
+    // A vendor error has the resolver go again once on its own session.
+    let Ran {
+        key,
+        worker: by,
+        end,
+    } = host.run_session(plan, StandIns::None).await?;
+    if end.reason.is_vendor_failure() {
+        git.abort_merge(&tree.path).await?;
+        return Ok(Resolution::Unavailable(end.reason));
+    }
     let report = report_of(&end);
     let status = report.as_ref().map(|r| r.status);
     if status == Some(ReportStatus::Done) && !has_markers(&tree, files) {

@@ -62,6 +62,10 @@ pub struct SessionStarted {
     /// in the run. Card ids stay in Ctrl+O and commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The worker its step asked, when another agent runs it in that worker's place because
+    /// the asked one was out. The step finds the session again by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<WorkerRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -313,6 +317,55 @@ pub fn loaded_words(plugins: &[String], skills: &[String]) -> String {
         (Some(plugins), Some(skills)) => format!("{plugins}, and {skills}"),
         (Some(only), None) | (None, Some(only)) => only,
         (None, None) => "your plugins".to_owned(),
+    }
+}
+
+impl EndReason {
+    /// The vendor's side ended it: a login, a limit, an outage, a crash, or the network, or its
+    /// CLI loaded your plugins into a session that must keep them out. Such an ending never
+    /// ends a run; the step tries again or another agent takes the role.
+    pub fn is_vendor_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Stuck { .. }
+                | Self::UsageLimit { .. }
+                | Self::RateLimited
+                | Self::VendorError { .. }
+                | Self::Auth { .. }
+                | Self::Billing { .. }
+                | Self::ModelUnavailable { .. }
+                | Self::AdapterBroken { .. }
+                | Self::IsolationBroken { .. }
+                | Self::StartFailed { .. }
+                | Self::Crashed { .. }
+        )
+    }
+
+    /// The vendor refused the agent's sign-in, which its CLI's own login check tells apart from a
+    /// passing error.
+    pub fn is_sign_in_error(&self) -> bool {
+        match self {
+            Self::Auth { .. } => true,
+            Self::VendorError { category, .. } => *category == ErrorCategory::Auth,
+            _ => false,
+        }
+    }
+
+    /// Whether the same agent may get past it a moment later. A spent plan or credit, a model
+    /// that's gone, a harness whose output changed, or a CLI that loads your plugins where it
+    /// mustn't stays that way, and an agent the watchdog found stuck was already nudged, so
+    /// only another agent helps.
+    pub fn may_pass(&self) -> bool {
+        self.is_vendor_failure()
+            && !matches!(
+                self,
+                Self::UsageLimit { .. }
+                    | Self::Billing { .. }
+                    | Self::ModelUnavailable { .. }
+                    | Self::AdapterBroken { .. }
+                    | Self::IsolationBroken { .. }
+                    | Self::Stuck { .. }
+            )
     }
 }
 

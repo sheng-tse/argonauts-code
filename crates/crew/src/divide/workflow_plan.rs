@@ -172,14 +172,48 @@ fn design_why(state: &RunState, from: Option<&WorkflowRef>) -> Option<String> {
             let structured = session.end.as_ref()?.structured.clone()?;
             let output: DesignOutput = serde_json::from_value(structured).ok()?;
             let why = output.why.trim();
-            (output.based_on.as_deref() == from.map(WorkflowRef::as_str) && !why.is_empty())
-                .then(|| why.to_owned())
+            let named = match from {
+                Some(from) => output.based_on_names(from.as_str()),
+                None => output.based_on.is_none(),
+            };
+            (named && !why.is_empty()).then(|| why.to_owned())
         })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use argonauts_core::events::RunEventKind;
+    use argonauts_core::events::session::{EndReason, SessionEvent};
+    use argonauts_core::names::RoleName;
+
+    use crate::state::tests::{end, envelope, session_started};
+
+    /// The plan card carries the lead's why when the template that runs is the one its brief
+    /// named, however the lead spelled it, since the log keeps the brief as written.
+    #[test]
+    fn the_leads_why_follows_the_template_it_spelled() {
+        let mut state = RunState::default();
+        let mut started =
+            session_started(&WorkerRef::new("claude-code", None), RoleName::PhaseLead);
+        started.step = Some(StepName::DesignWorkflow);
+        let kind = RunEventKind::Session(SessionEvent::Started(Box::new(started)));
+        state.apply(&envelope(1, None, Some("s-001"), kind));
+        let mut ended = end(EndReason::Completed, Some("v-1"));
+        ended.structured = Some(serde_json::json!({
+            "name": "fix-it", "description": "Fix it", "based_on": "Peer Crew",
+            "why": "each bug has one clear fix", "done_when": [],
+        }));
+        let kind = RunEventKind::Session(SessionEvent::Ended(Box::new(ended)));
+        state.apply(&envelope(2, None, Some("s-001"), kind));
+        assert_eq!(
+            design_why(&state, Some(&WorkflowRef::new("peer-crew"))).as_deref(),
+            Some("each bug has one clear fix")
+        );
+        assert_eq!(design_why(&state, Some(&WorkflowRef::new("solo"))), None);
+        assert_eq!(design_why(&state, None), None);
+    }
 
     #[test]
     fn a_workflow_plan_offers_no_edits_or_send_back() {

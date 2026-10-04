@@ -407,7 +407,9 @@ impl SessionMeter {
         Some(if limit > 0.0 { used / limit } else { 1.0 })
     }
 
-    fn without_earlier_turns(&self, event: &AgentEvent) -> AgentEvent {
+    /// A usage report as this session's own: where the vendor's totals include what earlier
+    /// sessions spent on the vendor session it resumed, that's taken off.
+    pub fn without_earlier_turns(&self, event: &AgentEvent) -> AgentEvent {
         if !self.capabilities.resume_totals_include_earlier {
             return event.clone();
         }

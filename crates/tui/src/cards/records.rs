@@ -1,12 +1,12 @@
 //! One line in scrollback after a card is answered or withdrawn, such as
 //! `◆ Approved merging card-002 into main · you, 10:58 AM`.
 
-use argonauts_core::RunId;
 use argonauts_core::app::NOT_CHANGED;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::checkpoint::{
     AnswerAction, CheckpointDecided, CheckpointKind, CheckpointOpened, CheckpointPacket,
 };
+use argonauts_core::{CardId, RunId};
 use ratatui::text::{Line, Span};
 use time::{OffsetDateTime, UtcOffset};
 
@@ -16,15 +16,29 @@ use crate::render::RenderCtx;
 use crate::text::{fit_lines, sanitize_line, str_width, wrap_spans};
 use crate::theme::Role;
 
-/// The record with agents by the names their ids give, for callers that don't know the app's
-/// names.
+/// The record with agents by the names their ids give and cards by their ids, for callers that
+/// don't know the app's names or the run.
 pub fn record_cell(opened: &CheckpointOpened, decided: &CheckpointDecided) -> Cell {
     let names = DisplayNames::default();
-    Cell::Notice(record(opened, decided, None, None, UtcOffset::UTC, &names))
+    Cell::Notice(record(
+        opened,
+        decided,
+        None,
+        None,
+        UtcOffset::UTC,
+        &names,
+        &by_id,
+    ))
+}
+
+/// A card by its id, for a record made where its run isn't on screen to give its label.
+pub fn by_id(card: &CardId) -> String {
+    card.to_string()
 }
 
 /// The record, naming the run for a merge without a card when `run` is given (lists that
-/// span runs) or as "the run", and the time it was decided in the terminal's zone.
+/// span runs) or as "the run", each card as `cards` names it, and the time it was decided in
+/// the terminal's zone.
 pub fn record(
     opened: &CheckpointOpened,
     decided: &CheckpointDecided,
@@ -32,12 +46,13 @@ pub fn record(
     at: Option<OffsetDateTime>,
     offset: UtcOffset,
     names: &DisplayNames,
+    cards: &dyn Fn(&CardId) -> String,
 ) -> Notice {
     let mut who = words::party(&decided.by, names);
     if let Some(at) = at {
         who.push_str(&format!(", {}", words::clock(at, offset)));
     }
-    let mut notice = Notice::answered(outcome(opened, decided, run, names), who);
+    let mut notice = Notice::answered(outcome(opened, decided, run, names, cards), who);
     let own_words = decided.action == AnswerAction::Answer;
     if let Some(text) = decided.text.as_deref().map(str::trim)
         && !text.is_empty()
@@ -48,18 +63,22 @@ pub fn record(
     notice
 }
 
-/// What the answer did, in a few words: `Approved merging card-002 into main`, `Plan approved`.
+/// What the answer did, in a few words: `Approved merging build:redis into main`, `Plan
+/// approved`, each card as `cards` names it.
 pub fn outcome(
     opened: &CheckpointOpened,
     decided: &CheckpointDecided,
     run: Option<&RunId>,
     names: &DisplayNames,
+    cards: &dyn Fn(&CardId) -> String,
 ) -> String {
     use AnswerAction as A;
     use CheckpointKind as K;
 
-    let subject = subject(opened, run);
-    let card = packet_card(opened).unwrap_or_else(|| subject.clone());
+    let subject = subject(opened, run, cards);
+    let card = packet_card(opened)
+        .map(cards)
+        .unwrap_or_else(|| subject.clone());
     let title = opened.title.trim();
     let text = decided.text.as_deref().map(str::trim).unwrap_or_default();
     match (&decided.action, opened.kind) {
@@ -70,8 +89,8 @@ pub fn outcome(
             "Sent every card back with changes".to_owned()
         }
         (A::RequestChanges, _) => {
-            let cards: Vec<String> = decided.cards.iter().map(ToString::to_string).collect();
-            format!("Sent {} back with changes", words::joined(&cards))
+            let sent: Vec<String> = decided.cards.iter().map(cards).collect();
+            format!("Sent {} back with changes", words::joined(&sent))
         }
         (A::KeepBranch, _) => format!("Kept {subject}'s work on its branch, not merged"),
         (A::Abandon, K::Goal) => "Abandoned the goal".to_owned(),
@@ -206,15 +225,19 @@ impl HistoryCell for DimRecord {
 }
 
 /// What a merge or a stop acts on: the card, or else the run.
-fn subject(opened: &CheckpointOpened, run: Option<&RunId>) -> String {
+fn subject(
+    opened: &CheckpointOpened,
+    run: Option<&RunId>,
+    cards: &dyn Fn(&CardId) -> String,
+) -> String {
     match (&opened.card, run) {
-        (Some(card), _) => card.to_string(),
+        (Some(card), _) => cards(card),
         (None, Some(run)) => run.to_string(),
         (None, None) => "the run".to_owned(),
     }
 }
 
-fn packet_card(opened: &CheckpointOpened) -> Option<String> {
+fn packet_card(opened: &CheckpointOpened) -> Option<&CardId> {
     let card = match &opened.packet {
         CheckpointPacket::Handoff(plan) => &plan.card,
         CheckpointPacket::Escalation(escalation) => &escalation.card,
@@ -225,7 +248,7 @@ fn packet_card(opened: &CheckpointOpened) -> Option<String> {
         CheckpointPacket::OriginalReturned(back) => &back.card,
         _ => opened.card.as_ref()?,
     };
-    Some(card.to_string())
+    Some(card)
 }
 
 fn merge_target(opened: &CheckpointOpened) -> String {

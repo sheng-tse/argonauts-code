@@ -705,7 +705,7 @@ impl GateRunner for ScriptedGates {
 }
 
 /// The model id prefixes that name a family.
-const MODEL_FAMILIES: &[&str] = &["claude", "gpt", "gemini"];
+const MODEL_FAMILIES: &[&str] = &["claude", "gpt", "gemini", "qwen"];
 
 /// The family of a built-in harness's default model, as the real registry knows it.
 const HARNESS_FAMILIES: &[(&str, &str)] = &[
@@ -715,7 +715,7 @@ const HARNESS_FAMILIES: &[(&str, &str)] = &[
 ];
 
 /// A registry of fixed entries. Families come from the entry, else from the model id's
-/// prefix (`claude`, `gpt`, `gemini`), else from the harness's default family as the real
+/// prefix (`claude`, `gpt`, `gemini`, `qwen`), else from the harness's default family as the real
 /// registry falls back, else `unknown`.
 #[derive(Default)]
 pub struct StaticRegistry {

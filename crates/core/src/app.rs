@@ -348,8 +348,9 @@ pub enum AppEvent {
     Detached {
         run: RunId,
     },
-    /// This repo's runs that go on or wait on you without being on this screen, for the agent
-    /// panel's rows. Each list replaces the last.
+    /// This conversation's runs that go on or wait on you without being on this screen, for the
+    /// agent panel's rows. Earlier conversations' runs are only counted in the header. Each list
+    /// replaces the last.
     BackgroundRuns {
         runs: Vec<RunSummary>,
     },
@@ -382,6 +383,12 @@ pub enum AppEvent {
     },
     Notice {
         level: NoteLevel,
+        text: String,
+    },
+    /// Why a key you pressed did nothing, such as asking for a view there's nothing in yet. It
+    /// goes on the notice line, replacing the last one, and never into the transcript, so
+    /// pressing the key again adds nothing.
+    Hint {
         text: String,
     },
     View {
@@ -864,14 +871,17 @@ pub enum ViewData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatSummary {
     pub chat: ChatId,
-    /// From its first prompt.
+    /// From its first prompt, or its first run when it has no turn.
     pub title: String,
-    /// When its journal was last written.
+    /// When it last had a turn or opened a run.
     #[serde(with = "time::serde::rfc3339")]
     pub updated: time::OffsetDateTime,
     /// The agent of its last turn.
     pub worker: Option<WorkerRef>,
     pub turns: u32,
+    /// The runs it started or opened, which carrying it on brings back to the agent panel.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub runs: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1002,4 +1012,8 @@ pub enum TraceLine {
 
 fn is_false(value: &bool) -> bool {
     !value
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }

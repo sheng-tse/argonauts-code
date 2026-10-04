@@ -8,7 +8,7 @@ pub(crate) mod rig;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -30,6 +30,7 @@ use super::recap;
 use super::status_line::RunStatusParts;
 use super::{Ctx, Effect, Internal};
 use crate::FirstView;
+use crate::chat_store::ChatRun;
 use crate::wake::{ParkedRuns, WakeCause};
 
 pub(crate) struct RunsState {
@@ -49,10 +50,23 @@ pub(crate) struct RunsState {
     /// `argonauts run` closes the app once this run finishes.
     exit_when_done: Option<RunId>,
     parked: ParkedRuns,
-    /// The agent panel's rows for runs not on screen, as last sent.
+    /// This repo's runs going or waiting on you that aren't on screen, in any conversation, from
+    /// the last listing, so a change in one is said once.
+    listed: Vec<RunSummary>,
+    /// The agent panel's rows for this conversation's runs not on screen, as last sent.
     background: Vec<RunSummary>,
     /// Runs this screen has shown, so one you left isn't announced as new when it gets its row.
     shown: HashSet<RunId>,
+    /// This conversation's runs: started or opened here, or brought back with the conversation,
+    /// and replaced when another conversation comes on screen. Only they get panel rows and
+    /// count in the mode line, as Claude Code's panel holds only its own session's tasks.
+    /// Any other run in the repo, from an earlier conversation, another terminal,
+    /// or a front end over MCP, is counted under the header at start, listed in /resume, and
+    /// said in one line instead: when it needs you, wakes, or ends, and at start when it
+    /// crashed.
+    pub(super) ours: BTreeSet<RunId>,
+    /// Runs that came on screen since the conversation last saved its runs.
+    pub(super) opened: Vec<ChatRun>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,8 +136,11 @@ impl RunsState {
             waking: HashSet::new(),
             exit_when_done: None,
             parked: ParkedRuns::default(),
+            listed: Vec::new(),
             background: Vec::new(),
             shown: HashSet::new(),
+            ours: BTreeSet::new(),
+            opened: Vec::new(),
         }
     }
 }
@@ -134,6 +151,16 @@ pub(crate) fn attached(runs: &RunsState) -> Option<&RunId> {
 
 pub(crate) fn attaches(runs: &RunsState) -> u64 {
     runs.attaches
+}
+
+/// At start, a conversation carried on brings its own runs back into the panel.
+pub(crate) fn adopt(runs: &mut RunsState, theirs: impl IntoIterator<Item = RunId>) {
+    runs.ours.extend(theirs);
+}
+
+/// The runs that came on screen since the last call, for the conversation to keep.
+pub(crate) fn take_opened(runs: &mut RunsState) -> Vec<ChatRun> {
+    std::mem::take(&mut runs.opened)
 }
 
 pub(crate) fn owns_choice(runs: &RunsState, id: &ChoiceId) -> bool {
@@ -170,8 +197,8 @@ pub(crate) fn focus(runs: &mut RunsState, focused: bool) {
 }
 
 /// At start: a new conversation, as `claude` opens one, the newest one `argonauts -c` carries
-/// on, or what `argonauts resume` asked for. This repo's runs going or waiting on you get their
-/// panel rows either way, and parked runs are checked for a wake.
+/// on, or what `argonauts resume` asked for. The conversation's own runs going or waiting on you
+/// get their panel rows, and parked runs are checked for a wake.
 pub(crate) async fn open(
     ctx: &mut Ctx,
     runs: &mut RunsState,
@@ -217,7 +244,8 @@ pub(crate) async fn open(
     Ok(effects)
 }
 
-/// A run the agent panel shows a row for when it isn't on screen.
+/// A run the header counts, and the agent panel shows a row for when it's this conversation's
+/// and isn't on screen.
 pub(crate) fn going_or_waiting(run: &RunSummary) -> bool {
     run.live
         || matches!(run.state, RunState::Running | RunState::Pausing)
@@ -249,14 +277,13 @@ fn on_listed(ctx: &mut Ctx, runs: &mut RunsState, listed: Result<Vec<RunSummary>
 }
 
 /// Says when a run off screen starts waiting on you or finishes, as a notice and, while you're
-/// away, a notification. The mode line counts what waits from the panel's rows.
+/// away, a notification. Every run in the repo does, so one from an earlier conversation or a
+/// front end can't wait or merge unseen, though only this conversation's get panel rows, which
+/// the mode line counts.
 fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
     let on_screen = attached(runs);
     for run in list.iter().filter(|run| Some(&run.run) != on_screen) {
-        let before = runs
-            .background
-            .iter()
-            .find(|earlier| earlier.run == run.run);
+        let before = runs.listed.iter().find(|earlier| earlier.run == run.run);
         let (trigger, kind, text) = if run.needs_you() {
             let waits_more = match before {
                 Some(before) => run.waiting.iter().any(|id| !before.waiting.contains(id)),
@@ -311,22 +338,53 @@ fn outcome_of(state: RunState) -> Option<RunOutcome> {
     }
 }
 
-/// The runs going or waiting on you that aren't on screen, for the agent panel. Their cards stay
-/// with them until you open one.
+/// Keeps this repo's runs going or waiting on you that aren't on screen, and sends this
+/// conversation's among them as the agent panel's rows. Their cards stay with them until you
+/// open one.
 fn send_background(ctx: &Ctx, runs: &mut RunsState, list: Vec<RunSummary>) {
     let on_screen = attached(runs).cloned();
     if let Some(run) = &on_screen {
         runs.shown.insert(run.clone());
     }
-    let background: Vec<RunSummary> = list
+    runs.listed = list
         .into_iter()
         .filter(|run| going_or_waiting(run) && Some(&run.run) != on_screen.as_ref())
+        .collect();
+    send_rows(ctx, runs);
+}
+
+/// The agent panel's rows, this conversation's runs among those listed, sent when they changed.
+fn send_rows(ctx: &Ctx, runs: &mut RunsState) {
+    let on_screen = attached(runs);
+    let background: Vec<RunSummary> = runs
+        .listed
+        .iter()
+        .filter(|run| runs.ours.contains(&run.run) && Some(&run.run) != on_screen)
+        .cloned()
         .collect();
     if background == runs.background {
         return;
     }
     runs.background.clone_from(&background);
     ctx.send(AppEvent::BackgroundRuns { runs: background });
+}
+
+/// Another conversation came on screen, by `/clear`, `/resume <chat>`, `/branch`, or carrying
+/// on a session: its own runs take the panel, and the ones it left go to the header and
+/// /resume. The run on screen stays, as it's this conversation's too now.
+pub(crate) fn follow_conversation(ctx: &Ctx, runs: &mut RunsState, theirs: Vec<RunId>) {
+    runs.ours = theirs.into_iter().collect();
+    if let Some(attached) = &runs.attached
+        && runs.ours.insert(attached.run.clone())
+    {
+        runs.opened.push(ChatRun {
+            run: attached.run.clone(),
+            title: attached.title.clone(),
+        });
+    }
+    send_rows(ctx, runs);
+    // The last listing may be a minute old.
+    refresh_background(ctx);
 }
 
 /// The `/resume` picker: this repo's runs with their agents' sessions, earlier conversations,

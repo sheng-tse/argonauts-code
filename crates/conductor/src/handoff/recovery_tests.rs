@@ -78,6 +78,7 @@ fn context(stopped: &str, reason: EndReason, events: &Path) -> StopContext {
         attempts: vec!["attempt 1: claude-code/opus".to_owned()],
         reassigned_once: false,
         events: events.to_path_buf(),
+        logged_in: None,
     }
 }
 
@@ -91,6 +92,19 @@ async fn decide(
     limits
         .after_stop(&context(stopped, reason, &journal.path))
         .await
+}
+
+/// [`decide`] for a stop whose CLI's own login check said `logged_in`.
+async fn decide_logged(
+    limits: &Limits,
+    stopped: &str,
+    reason: EndReason,
+    logged_in: Option<bool>,
+) -> RecoveryAction {
+    let journal = journal(&[]);
+    let mut stop = context(stopped, reason, &journal.path);
+    stop.logged_in = logged_in;
+    limits.after_stop(&stop).await
 }
 
 /// An event of the card in the test.
@@ -334,6 +348,42 @@ async fn retry_ladder() {
     }
 }
 
+/// A 401 whose CLI says it's logged in, or says nothing, was passing: the card goes on to the
+/// next candidate as for an outage, and nothing tells you to log in.
+#[tokio::test]
+async fn a_passing_sign_in_error_hands_the_card_on_without_a_login() {
+    let mut fixture = Fixture::with_models();
+    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    let limits = fixture.limits();
+    let unauthorized = || EndReason::Auth {
+        message: "workspace routing discovery unauthorized (401)".to_owned(),
+    };
+    for logged_in in [Some(true), None] {
+        let action = decide_logged(&limits, "claude-code/opus", unauthorized(), logged_in).await;
+        assert_eq!(handed_to(&action).0, "codex/gpt-5", "{logged_in:?}");
+        let RecoveryAction::HandOff { packet, .. } = &action else {
+            unreachable!()
+        };
+        assert!(
+            packet.why_stopped.starts_with("a sign-in error"),
+            "{}",
+            packet.why_stopped
+        );
+        assert!(
+            !packet.why_stopped.contains("logged out"),
+            "{}",
+            packet.why_stopped
+        );
+    }
+
+    // Asked how to go on, the card offers no login when the CLI says it's logged in.
+    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    let limits = fixture.limits();
+    let action = decide_logged(&limits, "claude-code/opus", unauthorized(), Some(true)).await;
+    let plan = asked(&action);
+    assert!(!plan.reason.contains("log in"), "{}", plan.reason);
+}
+
 #[tokio::test]
 async fn logged_out_and_billing_ask_with_reason() {
     let mut fixture = Fixture::with_models();
@@ -343,7 +393,7 @@ async fn logged_out_and_billing_ask_with_reason() {
     let auth = EndReason::Auth {
         message: "token expired".to_owned(),
     };
-    let action = decide(&limits, "claude-code/opus", auth, &[]).await;
+    let action = decide_logged(&limits, "claude-code/opus", auth, Some(false)).await;
     let plan = asked(&action);
     assert!(
         plan.reason.contains("log in to claude-code"),
@@ -365,14 +415,14 @@ async fn logged_out_and_billing_ask_with_reason() {
         "{}",
         asked(&action).reason
     );
-    let action = decide(
+    let action = decide_logged(
         &limits,
         "claude-code/opus",
         EndReason::VendorError {
             category: ErrorCategory::Auth,
             message: String::new(),
         },
-        &[],
+        Some(false),
     )
     .await;
     assert!(asked(&action).reason.contains("log in to claude-code"));
@@ -699,6 +749,7 @@ fn started(seq: u64, stopped: &str) -> RunEvent {
                 follow_key: None,
                 workflow_step: None,
                 label: None,
+                asked: None,
             }))),
         )
     }
@@ -767,7 +818,10 @@ async fn max_handoffs_escalates() {
     fixture.settings_mut().handoff.mode = HandoffMode::Auto;
     let three = [tagged(1), tagged(2), tagged(3)];
     match decide(&fixture.limits(), "claude-code/opus", usage(), &three).await {
-        RecoveryAction::Escalate { reason } => assert!(reason.contains("max_handoffs"), "{reason}"),
+        RecoveryAction::Escalate { reason } => assert_eq!(
+            reason, "\"Middleware\" stopped after 3 handoffs, the most /handoff allows",
+            "the card by its title and the limit by where it's set, never an id or a key"
+        ),
         other => panic!("expected an escalation, got {other:?}"),
     }
 

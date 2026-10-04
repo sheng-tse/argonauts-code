@@ -336,6 +336,7 @@ fn run_session(
             follow_key: u8::try_from(n).ok(),
             workflow_step: None,
             label: None,
+            asked: None,
         }))),
     )?;
     let (control, controls) = mpsc::channel(8);

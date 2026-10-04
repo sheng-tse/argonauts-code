@@ -20,6 +20,7 @@ use crate::checkpoints::Desk;
 use crate::engine::journal::DeltaBuffer;
 use crate::engine::live::LiveSessions;
 use crate::engine::run_meter::RunMeter;
+use crate::engine::stand_in;
 use crate::engine::tasks::Tasks;
 use crate::error::EngineResult;
 use crate::git::Git;
@@ -118,6 +119,8 @@ pub struct Shared {
     /// The build and cache output the run's commits left out that it has named so far, so each
     /// commit names only what's new.
     pub told_left_out: Mutex<BTreeSet<String>>,
+    /// Who is out, which stand-in took which seat, and which handovers were said.
+    pub(crate) stand_ins: Mutex<stand_in::Memory>,
 }
 
 impl Shared {
@@ -180,6 +183,7 @@ impl Shared {
             reusing: Mutex::new(()),
             run_meter: Mutex::new(run_meter),
             told_left_out: Mutex::new(BTreeSet::new()),
+            stand_ins: Mutex::default(),
             settings,
         })
     }

@@ -41,6 +41,7 @@ use crate::engine::commands;
 use crate::engine::live::{LiveSession, pump};
 use crate::engine::shared::{Admission, Interrupt, Shared, StatusTarget, lock};
 use crate::engine::snapshot;
+use crate::engine::stand_in::{self, Seat};
 use crate::error::{EngineError, EngineResult};
 use crate::git::Git;
 use crate::lifetime::{self, Reuse};
@@ -95,6 +96,9 @@ pub struct Ask<I> {
     pub label: Option<PlanLabel>,
     /// The card's item for its label, when the card has no record yet.
     pub item: Option<String>,
+    /// Agents whose company a stand-in for this ask may not share: the owner of the card a
+    /// review judges, or the authors of the plans a judge scores.
+    pub independent_of: Vec<WorkerRef>,
 }
 
 impl<I> Ask<I> {
@@ -121,6 +125,7 @@ impl<I> Ask<I> {
             blind: false,
             label: None,
             item: None,
+            independent_of: Vec::new(),
         }
     }
 }
@@ -178,6 +183,31 @@ impl Running {
     }
 }
 
+/// A session that ran to its end, and who ran it last.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ran {
+    pub key: SessionKey,
+    pub worker: WorkerRef,
+    pub end: SessionEnd,
+}
+
+/// Whether another agent may take a long session's seat after a vendor failure, or only the
+/// same agent may go again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandIns {
+    /// The next agent by the seat's handoff list, as asks have.
+    Allowed,
+    /// Only the same agent again, as for a card's owner, whose card is handed on by its own
+    /// recovery.
+    None,
+}
+
+/// A session to start over after a vendor failure, and who starts it.
+struct Again {
+    record: SessionRecord,
+    worker: WorkerRef,
+}
+
 /// What makes two sessions the same one for replay: the step and its round, the role, the
 /// card, the worker, the step name, and the slot.
 #[derive(Debug, Clone, PartialEq)]
@@ -227,14 +257,14 @@ impl Identity {
                             && session.started.workflow_step.is_none()))
                     && session.started.role == self.role
                     && session.card == self.card
-                    && session.started.worker == self.worker
+                    && *session.asked_worker() == self.worker
                     && session.started.step == self.step
             })
     }
 }
 
 /// The seqs a step's round covers: from its first `StepStarted` to the next round's.
-fn round_window(state: &RunState, at: Option<&StepAt>) -> (u64, Option<u64>) {
+pub(crate) fn round_window(state: &RunState, at: Option<&StepAt>) -> (u64, Option<u64>) {
     let Some(at) = at else {
         return (0, None);
     };
@@ -257,6 +287,8 @@ fn round_window(state: &RunState, at: Option<&StepAt>) -> (u64, Option<u64>) {
 /// Everything a session start needs, from an ask or a session plan.
 struct Launch {
     identity: Identity,
+    /// The worker the step asked, when another runs the session in its place.
+    asked: Option<WorkerRef>,
     earlier: Option<SessionRecord>,
     access: Access,
     workdir: Option<PathBuf>,
@@ -421,8 +453,44 @@ impl Host {
 
     /// Runs one LLM step. A finished ask with the same identity (step, round, role, card,
     /// worker, slot) returns its recorded output without running again; an unfinished one
-    /// resumes by its vendor session id.
+    /// resumes by its vendor session id. A session that ends for a vendor reason never ends
+    /// the run: [`stand_in`] tries the same agent once more, then hands its seat
+    /// to the next agent, and parks the run only when nobody can take it.
     pub async fn ask<S: Step>(&self, ask: Ask<S::Input>) -> EngineResult<Answered<S::Output>> {
+        let Ask {
+            at,
+            role,
+            worker,
+            card,
+            access,
+            workdir,
+            template,
+            input,
+            parts,
+            resume,
+            slot,
+            blind,
+            label,
+            item,
+            independent_of,
+        } = ask;
+        let ask = Ask {
+            input: serde_json::to_string_pretty(&input)?,
+            at,
+            role,
+            worker,
+            card,
+            access,
+            workdir,
+            template,
+            parts,
+            resume,
+            slot,
+            blind,
+            label,
+            item,
+            independent_of,
+        };
         let identity = Identity {
             at: ask.at.clone(),
             role: ask.role,
@@ -432,33 +500,93 @@ impl Host {
             slot: ask.slot,
             item: ask.item.clone(),
         };
-        let earlier = self.earlier(&identity).await?;
-        if let Some(record) = &earlier
-            && !record.resumable()
-        {
-            return replay::<S>(record);
+        let seat = Seat {
+            at: ask.at.clone(),
+            role: ask.role,
+            step: Some(S::NAME),
+            card: ask.card.clone(),
+            independent_of: ask.independent_of.clone(),
+            isolated: ask.blind,
+        };
+        let mut again = None;
+        loop {
+            let mut ran = None;
+            match self
+                .ask_once::<S>(&ask, &identity, &seat, again.take(), &mut ran)
+                .await
+            {
+                Err(EngineError::Step(err)) if vendor_failure(&err) => {
+                    // The session that just ended, by its key: finding it by its identity could
+                    // find another round's.
+                    let record =
+                        ran.and_then(|key| self.read(|state| state.sessions.get(&key).cloned()));
+                    let Some(record) = record else {
+                        return Err(EngineError::Step(err));
+                    };
+                    let worker = stand_in::next(self, &record, &seat).await?;
+                    again = Some(Again { record, worker });
+                }
+                answered => return answered,
+            }
         }
+    }
+
+    /// One try of an ask, saying in `ran` which session it ran or replayed. `again` starts that
+    /// session over, fresh, with its worker, after a vendor failure; otherwise a finished session
+    /// replays, an unfinished one resumes, and an agent known to be out has its seat taken at
+    /// once.
+    async fn ask_once<S: Step>(
+        &self,
+        ask: &Ask<String>,
+        identity: &Identity,
+        seat: &Seat,
+        again: Option<Again>,
+        ran: &mut Option<SessionKey>,
+    ) -> EngineResult<Answered<S::Output>> {
+        let mut identity = identity.clone();
+        let earlier = match again {
+            // A fresh start on the same session, so the step finds it again on a replay.
+            Some(Again { mut record, worker }) => {
+                record.vendor_session = None;
+                identity.worker = worker;
+                Some(record)
+            }
+            None => match self.earlier(&identity).await? {
+                Some(record) if !record.resumable() => {
+                    *ran = Some(record.key.clone());
+                    return replay::<S>(&record);
+                }
+                Some(record) => {
+                    identity.worker = record.started.worker.clone();
+                    Some(record)
+                }
+                None => None,
+            },
+        };
         self.check_access(ask.access, ask.card.as_ref())?;
-        if earlier.is_none()
-            && let Some(answered) = self.reuse::<S>(&identity, ask.access)?
-        {
-            return Ok(answered);
+        if earlier.is_none() {
+            if let Some(answered) = self.reuse::<S>(&identity, ask.access)? {
+                return Ok(answered);
+            }
+            if let Some(taker) = stand_in::instead_of(self, &identity.worker, seat).await? {
+                identity.worker = taker;
+            }
         }
         self.admitted().await?;
-        let input = serde_json::to_string_pretty(&ask.input)?;
         let mut parts = vec![
             part(InputPartKind::Prompt, "prompt", ask.template),
-            part(InputPartKind::StepInput, "input", &input),
+            part(InputPartKind::StepInput, "input", &ask.input),
         ];
-        parts.extend(ask.parts);
+        parts.extend(ask.parts.iter().cloned());
         let launched = self.launch(Launch {
-            identity,
+            asked: Some(ask.worker.clone()).filter(|asked| *asked != identity.worker),
+            identity: identity.clone(),
             earlier,
             access: ask.access,
-            workdir: ask.workdir,
+            workdir: ask.workdir.clone(),
             parts,
             json_schema: Some(output_schema::<S>()),
-            resume: ask.resume,
+            resume: ask.resume.clone(),
             blind: ask.blind,
             label: ask.label,
             status_part: true,
@@ -471,6 +599,7 @@ impl Host {
             status,
             deliveries,
         } = launched;
+        *ran = Some(key.clone());
         let card = live.card.clone();
         let (control, steering) = mpsc::channel(16);
         let cancel = live.cancel.clone();
@@ -481,6 +610,7 @@ impl Host {
             retries_on_mismatch: 1,
             control: Some(steering),
             cancel,
+            normalize: S::normalize,
         };
 
         // The session runs in a task of its own, so a step dropped mid-ask still records its end.
@@ -503,7 +633,7 @@ impl Host {
         Ok(Answered {
             output: decode::<S>(&outcome)?,
             session: key,
-            worker: ask.worker,
+            worker: identity.worker,
             end,
         })
     }
@@ -604,6 +734,7 @@ impl Host {
             follow_key: None,
             workflow_step: Some(at.step.clone()),
             label: Some(label),
+            asked: None,
         };
         let card = identity.card.as_ref();
         self.record(
@@ -730,22 +861,99 @@ impl Host {
 
     /// Starts a session and pumps its events into the log. Waits while the run is paused.
     /// An earlier session with the same identity that never ended is resumed, not restarted.
+    /// A worker that couldn't start ends the session `StartFailed`.
     pub async fn start(&self, plan: SessionPlan) -> EngineResult<Running> {
-        let identity = Identity::of(&plan);
-        let earlier = self.earlier(&identity).await?;
-        if let Some(record) = &earlier
-            && let Some(end) = record.end.clone().filter(|_| !record.resumable())
-        {
-            let (sender, ended) = oneshot::channel();
-            let _ = sender.send(Ok(end));
-            return Ok(Running::new(
-                record.key.clone(),
-                record.started.worker.clone(),
-                ended,
-            ));
+        self.start_with(plan, None, None).await
+    }
+
+    /// Runs a session to its end. One that ends for a vendor reason goes again on the same
+    /// session: the same agent once more after a short wait, then, when
+    /// `stand_ins` allows, the next agent that may take its seat, and an agent known to be out
+    /// has its seat taken at once. With `StandIns::None` the last vendor end comes back, for the
+    /// card's own recovery to hand the card on. `Err(Stalled)` when nobody can take the seat.
+    pub async fn run_session(&self, plan: SessionPlan, stand_ins: StandIns) -> EngineResult<Ran> {
+        let seat = Seat {
+            at: plan.at.clone(),
+            role: plan.role,
+            step: plan.step,
+            card: plan.card.clone(),
+            independent_of: Vec::new(),
+            // A planned session is never blind, so it loads your plugins as its CLI does.
+            isolated: false,
+        };
+        let allowed = stand_ins == StandIns::Allowed;
+        let mut running = self
+            .start_with(plan.clone(), None, allowed.then_some(&seat))
+            .await?;
+        loop {
+            let (key, worker) = (running.key.clone(), running.worker.clone());
+            let end = running.ended().await?;
+            if !end.reason.is_vendor_failure() {
+                return Ok(Ran { key, worker, end });
+            }
+            let Some(record) = self.read(|state| state.sessions.get(&key).cloned()) else {
+                return Ok(Ran { key, worker, end });
+            };
+            let next = if allowed {
+                stand_in::next(self, &record, &seat).await?
+            } else {
+                match stand_in::again(self, &record).await? {
+                    Some(next) => next,
+                    None => return Ok(Ran { key, worker, end }),
+                }
+            };
+            let again = Again {
+                record,
+                worker: next,
+            };
+            running = self.start_with(plan.clone(), Some(again), None).await?;
         }
+    }
+
+    /// [`Self::start`], or with `again`, that session started over by its worker with the same
+    /// prompt: in the same conversation when the plan continues one and the same agent goes
+    /// again, else fresh. With `seat`, an agent known to be out has the seat taken at once.
+    async fn start_with(
+        &self,
+        plan: SessionPlan,
+        again: Option<Again>,
+        seat: Option<&Seat>,
+    ) -> EngineResult<Running> {
+        let mut identity = Identity::of(&plan);
+        let earlier = match again {
+            Some(Again { mut record, worker }) => {
+                if plan.resume.is_none() || worker != record.started.worker {
+                    record.vendor_session = None;
+                }
+                identity.worker = worker;
+                Some(record)
+            }
+            None => {
+                let earlier = self.earlier(&identity).await?;
+                if let Some(record) = &earlier {
+                    if let Some(end) = record.end.clone().filter(|_| !record.resumable()) {
+                        let (sender, ended) = oneshot::channel();
+                        let _ = sender.send(Ok(end));
+                        return Ok(Running::new(
+                            record.key.clone(),
+                            record.started.worker.clone(),
+                            ended,
+                        ));
+                    }
+                    identity.worker = record.started.worker.clone();
+                }
+                earlier
+            }
+        };
         self.check_access(plan.access, plan.card.as_ref())?;
+        if earlier.is_none()
+            && let Some(seat) = seat
+            && let Some(taker) = stand_in::instead_of(self, &identity.worker, seat).await?
+        {
+            identity.worker = taker;
+        }
         self.admitted().await?;
+        let running = identity.worker.clone();
         let Launched {
             key,
             worker,
@@ -754,6 +962,7 @@ impl Host {
             status,
             deliveries,
         } = self.launch(Launch {
+            asked: Some(plan.worker).filter(|asked| *asked != identity.worker),
             identity,
             earlier,
             access: plan.access,
@@ -766,6 +975,7 @@ impl Host {
             status_part: false,
         })?;
         let card = live.card.clone();
+        let (sender, ended) = oneshot::channel();
         let handle = match worker.start(spec).await {
             Ok(handle) => handle,
             Err(err) => {
@@ -775,8 +985,9 @@ impl Host {
                     },
                     ..crashed_end("")
                 };
-                self.finish_session(&key, card.as_ref(), end)?;
-                return Err(err.into());
+                self.finish_session(&key, card.as_ref(), end.clone())?;
+                let _ = sender.send(Ok(end));
+                return Ok(Running::new(key, running, ended));
             }
         };
         deliveries.record(self)?;
@@ -788,7 +999,6 @@ impl Host {
             },
             status,
         );
-        let (sender, ended) = oneshot::channel();
         let host = self.clone();
         let pumped = key.clone();
         let halt = self.shared.halt.clone();
@@ -802,7 +1012,7 @@ impl Host {
                 () = halt.cancelled() => {}
             }
         });
-        Ok(Running::new(key, plan.worker, ended))
+        Ok(Running::new(key, running, ended))
     }
 
     /// Sends a control to a running session: a delivery, the wrap-up, stop after the tool
@@ -1060,6 +1270,7 @@ impl Host {
     fn launch(&self, launch: Launch) -> EngineResult<Launched> {
         let Launch {
             identity,
+            asked,
             earlier,
             access,
             workdir,
@@ -1073,6 +1284,7 @@ impl Host {
         let worker = self.shared.services.workers.get(&identity.worker)?;
         let settings = self.shared.settings.clone();
         let mut lease = None;
+        let mut kept_label = None;
         let (key, resume, continuing) = match &earlier {
             Some(record) => (
                 record.key.clone(),
@@ -1083,10 +1295,14 @@ impl Host {
                 let key = SessionKey::numbered(self.allocate(IdKind::Session)?);
                 let asked = resume.filter(|_| !blind).and_then(|earlier| {
                     self.read(|state| {
-                        state
-                            .sessions
-                            .get(&earlier)
-                            .and_then(|session| session.vendor_session.clone())
+                        let session = state.sessions.get(&earlier)?;
+                        // Carrying on the same step's work, it keeps that row's name.
+                        let same = session.started.step == identity.step
+                            && session.started.role == identity.role;
+                        if same && session.vendor_session.is_some() {
+                            kept_label.clone_from(&session.started.label);
+                        }
+                        session.vendor_session.clone()
                     })
                 });
                 let vendor_session = match asked {
@@ -1147,7 +1363,10 @@ impl Host {
         });
 
         let family = worker.family();
-        let agent_label = self.agent_label(&key, &identity, &family);
+        let agent_label = match kept_label {
+            Some(label) => label,
+            None => self.agent_label(&key, &identity, &family),
+        };
         let started = SessionStarted {
             worker: identity.worker.clone(),
             vendor: worker.vendor(),
@@ -1161,6 +1380,7 @@ impl Host {
             follow_key: None,
             workflow_step: identity.at.as_ref().map(|at| at.step.clone()),
             label: Some(agent_label),
+            asked,
         };
         self.record(
             identity.card.as_ref(),
@@ -1403,6 +1623,15 @@ impl Host {
         };
         mains.put(&main)?;
         Ok(())
+    }
+}
+
+/// The session ended for a vendor reason, or its agent couldn't start at all.
+fn vendor_failure(err: &StepError) -> bool {
+    match err {
+        StepError::Session(end) => end.reason.is_vendor_failure(),
+        StepError::Worker(_) => true,
+        StepError::SchemaMismatch { .. } => false,
     }
 }
 

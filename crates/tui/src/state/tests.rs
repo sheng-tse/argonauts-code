@@ -162,6 +162,7 @@ fn session_started(who: WorkerRef, follow: u8) -> SessionEvent {
         follow_key: Some(follow),
         workflow_step: None,
         label: None,
+        asked: None,
     }))
 }
 
@@ -895,6 +896,66 @@ fn state_folds_budget() {
     state.apply(&log.event(RunEventKind::Budget(BudgetEvent::Run(budget.clone()))));
     assert_eq!(run(&state).budget, Some(budget));
     assert!((run(&state).cost_usd() - 0.21).abs() < 1e-9);
+}
+
+/// A refused brief resumes the lead's vendor session as s-002. Claude Code's totals for it
+/// include what s-001 spent, so a log from before the conductor took that off reports $0.152
+/// for s-002, though it spent $0.086. Its row and the run show what each session spent.
+#[test]
+fn a_resumed_session_counts_only_what_it_spent() {
+    let mut log = Log::new();
+    let mut state = fold(&crew(&mut log));
+    let usage = |tokens_in: u64, tokens_out: u64, cost: f64| AgentEvent::Usage {
+        input_tokens: tokens_in,
+        output_tokens: tokens_out,
+        cached_tokens: 0,
+        cost_usd: Some(cost),
+        cumulative: true,
+    };
+    let ended = |tokens_in: u64, tokens_out: u64, cost: f64| {
+        SessionEvent::Ended(Box::new(SessionEnd {
+            vendor_session: Some("vendor-7".into()),
+            exit_code: Some(0),
+            signal: None,
+            duration_ms: 1_000,
+            reason: EndReason::Completed,
+            spend: Spend {
+                input_tokens: tokens_in,
+                output_tokens: tokens_out,
+                cost_usd: cost,
+                ..Spend::default()
+            },
+            tool_calls: 1,
+            result_text: None,
+            structured: None,
+            last_message: None,
+            raw_log: None,
+        }))
+    };
+    state.apply(&log.agent(1, usage(12_611, 8_142, 0.066)));
+    state.apply(&log.session(1, None, ended(12_611, 8_142, 0.066)));
+    let SessionEvent::Started(mut resumed) = session_started(worker("claude-code", "haiku"), 1)
+    else {
+        unreachable!()
+    };
+    resumed.resumed_from = Some("vendor-7".into());
+    state.apply(&log.session(2, Some(1), SessionEvent::Started(resumed)));
+    state.apply(&log.agent(2, usage(15_000, 9_000, 0.152)));
+    state.apply(&log.session(2, None, ended(2_389, 858, 0.086)));
+    let budget = RunBudget {
+        spent: Spend {
+            cost_usd: 0.152,
+            ..Spend::default()
+        },
+        limit: None,
+        lines: Vec::new(),
+        reserve_left: None,
+    };
+    state.apply(&log.event(RunEventKind::Budget(BudgetEvent::Run(budget))));
+    let fixed = &run(&state).sessions[&key(2)];
+    assert_eq!(fixed.cost_usd, Some(0.086));
+    assert_eq!((fixed.tokens_in, fixed.tokens_out), (2_389, 858));
+    assert!((run(&state).spend().cost_usd - 0.152).abs() < 1e-9);
 }
 
 #[test]

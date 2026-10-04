@@ -94,7 +94,7 @@ use super::recap::{mode_name, title_from_request};
 use super::shell::ShellRan;
 use super::turn::{DirectWords, TurnStep};
 use super::{Ctx, Effect};
-use crate::chat_store::{ChatPlace, ChatSession, ChatStore};
+use crate::chat_store::{ChatPlace, ChatRun, ChatSession, ChatStore};
 use argonauts_core::events::checkpoint::AnswerAction;
 
 pub(crate) struct ChatState {
@@ -203,11 +203,20 @@ pub(crate) enum TurnUpdate {
 }
 
 impl ChatState {
+    /// A new conversation, with an id set aside so no other app session takes it.
     pub(crate) fn new(ctx: &Ctx) -> anyhow::Result<Self> {
         let chat_dir = ctx.env.chat_dir();
-        let id = ChatStore::next_id(&chat_dir);
-        let store = ChatStore::open(&chat_dir, &id);
-        Ok(Self {
+        let id = ChatStore::claim(&chat_dir).unwrap_or_else(|err| {
+            // The journal's first write tells you, as it fails the same way.
+            tracing::warn!("setting a conversation id aside: {err:#}");
+            ChatStore::next_id(&chat_dir)
+        });
+        Ok(Self::empty(ctx, id))
+    }
+
+    fn empty(ctx: &Ctx, id: ChatId) -> Self {
+        let store = ChatStore::open(&ctx.env.chat_dir(), &id);
+        Self {
             id,
             store,
             title: String::new(),
@@ -232,7 +241,7 @@ impl ChatState {
             prefs: Prefs::default(),
             goal: None,
             direct: direct::DirectState::default(),
-        })
+        }
     }
 
     /// An earlier conversation, carried on: its turns go on numbering from its last, its
@@ -276,10 +285,24 @@ impl ChatState {
         }
     }
 
+    /// A new conversation to take `current`'s place, with `current`'s number when nothing was
+    /// ever written there, so opening the app to carry a session on leaves no gap.
+    fn instead_of(ctx: &Ctx, current: &ChatState) -> anyhow::Result<Self> {
+        if current.store.is_unused() {
+            return Ok(Self::empty(ctx, current.id.clone()));
+        }
+        Self::new(ctx)
+    }
+
     /// A new conversation that carries on a CLI's own session: its next turn resumes that
     /// session, and its turns so far prime a fresh one if another agent takes over.
-    fn carrying(ctx: &Ctx, picked: &vendor::Picked, worker: WorkerRef) -> anyhow::Result<Self> {
-        let mut chat = Self::new(ctx)?;
+    fn carrying(
+        ctx: &Ctx,
+        current: &ChatState,
+        picked: &vendor::Picked,
+        worker: WorkerRef,
+    ) -> anyhow::Result<Self> {
+        let mut chat = Self::instead_of(ctx, current)?;
         let session = ChatSession {
             worker,
             vendor_session: picked.launch.session.clone(),
@@ -295,8 +318,13 @@ impl ChatState {
 
     /// A new conversation that carries on an agent's session from a run, through its CLI's own
     /// resume, with that agent, in `place.folder`.
-    fn continuing(ctx: &Ctx, found: &agent::Found, place: ChatPlace) -> anyhow::Result<Self> {
-        let mut chat = Self::new(ctx)?;
+    fn continuing(
+        ctx: &Ctx,
+        current: &ChatState,
+        found: &agent::Found,
+        place: ChatPlace,
+    ) -> anyhow::Result<Self> {
+        let mut chat = Self::instead_of(ctx, current)?;
         let vendor_session = found
             .vendor_session
             .clone()
@@ -335,6 +363,9 @@ impl ChatState {
             .place
             .take()
             .filter(|place| place.made_again && !same_folder);
+        if next.id != self.id {
+            self.store.release_if_empty();
+        }
         *self = next;
         if let Some(place) = left {
             run_copy::leave(ctx, &place);
@@ -438,7 +469,7 @@ pub(crate) async fn resume(
     id: &ChatId,
 ) -> anyhow::Result<Vec<Effect>> {
     let id = past::normalize(id);
-    if id == chat.id && chat.turns > 0 {
+    if id == chat.id && (chat.turns > 0 || !chat.store.runs().is_empty()) {
         ctx.notice(
             NoteLevel::Info,
             format!("{id} is the conversation on screen."),
@@ -452,7 +483,7 @@ pub(crate) async fn resume(
         );
         return Ok(Vec::new());
     }
-    let past = past::load(&ctx.env.chat_dir(), &id).filter(|past| !past.turns.is_empty());
+    let past = past::load(&ctx.env.chat_dir(), &id).filter(|past| !past.is_empty());
     let Some(past) = past else {
         anyhow::bail!("There's no conversation {id} in this repo. /resume lists them.");
     };
@@ -540,7 +571,8 @@ pub(crate) async fn resume_vendor(
     }
     let default = ctx.settings().default_agent.clone();
     let worker = picked.worker(&default);
-    chat.succeed(ctx, ChatState::carrying(ctx, &picked, worker.clone())?);
+    let next = ChatState::carrying(ctx, chat, &picked, worker.clone())?;
+    chat.succeed(ctx, next);
     let mut replay = picked.replay(&worker);
     let shown = replay.split_off(replay.len().saturating_sub(past::SHOWN_TURNS));
     ctx.send(AppEvent::ChatResumed {
@@ -652,7 +684,8 @@ pub(crate) async fn resume_agent(
         branch: found.branch.clone(),
         made_again,
     };
-    chat.succeed(ctx, ChatState::continuing(ctx, &found, place.clone())?);
+    let next = ChatState::continuing(ctx, chat, &found, place.clone())?;
+    chat.succeed(ctx, next);
     let worker = place.worker.clone();
     let turns = found
         .last_message
@@ -725,6 +758,10 @@ pub(crate) fn title(chat: &ChatState) -> &str {
     &chat.title
 }
 
+pub(crate) fn id(chat: &ChatState) -> &ChatId {
+    &chat.id
+}
+
 /// No step of this chat is still running.
 pub(crate) fn settled(chat: &ChatState) -> bool {
     chat.turn.is_none() && chat.stopping.is_empty()
@@ -734,6 +771,20 @@ pub(crate) fn settled(chat: &ChatState) -> bool {
 pub(crate) fn run_attached(chat: &mut ChatState) {
     if let Some(turn) = chat.turn.as_mut() {
         turn.run_began = true;
+    }
+}
+
+/// The runs this conversation started or opened, which carrying it on brings back to the panel.
+pub(crate) fn own_runs(chat: &ChatState) -> Vec<RunId> {
+    chat.store.runs()
+}
+
+/// Runs that came on screen are this conversation's, so `argonauts -c` brings them back.
+pub(crate) fn keep_runs(chat: &ChatState, runs: Vec<ChatRun>) {
+    for kept in runs {
+        if let Err(err) = chat.store.keep_run(&kept) {
+            tracing::warn!("saving {} with {}: {err:#}", kept.run, chat.id);
+        }
     }
 }
 
@@ -846,10 +897,7 @@ pub(crate) fn press_heads_up(ctx: &Ctx, chat: &mut ChatState, plugin: &str, hand
         .as_mut()
         .is_some_and(|turn| turn.live.press(plugin, handle));
     if !pressed {
-        ctx.notice(
-            NoteLevel::Info,
-            "Claude Code takes that while it's working on your message.",
-        );
+        ctx.hint("Claude Code takes that while it's working on your message.");
     }
 }
 
@@ -1136,6 +1184,7 @@ pub(crate) fn close(ctx: &mut Ctx, chat: &mut ChatState) {
     {
         run_copy::leave(ctx, place);
     }
+    chat.store.release_if_empty();
 }
 
 fn stop_turn(ctx: &mut Ctx, chat: &mut ChatState) -> Option<TurnId> {

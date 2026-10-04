@@ -8,7 +8,7 @@ use argonauts_core::events::checkpoint::{
 };
 
 use super::options::answer;
-use super::records::outcome;
+use super::records::{by_id, outcome};
 use super::words;
 use crate::bottom::{CardOption, CardPrompt};
 
@@ -29,11 +29,13 @@ pub fn spot_check_card(
     if let Some(decided) = decided {
         card.detail.push(format!(
             "{} · decided by {}",
-            outcome(opened, decided, run, names),
+            outcome(opened, decided, run, names, &by_id),
             words::party(&decided.by, names)
         ));
     }
     card.question = Some("Was this the right call?".into());
+    // Nothing waits on it, but it asks you, so it takes the keys as every card that asks does.
+    card.needs_you = true;
     card
 }
 

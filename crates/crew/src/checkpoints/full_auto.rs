@@ -14,7 +14,7 @@ use argonauts_core::events::run::Party;
 use argonauts_core::policy::{HardLimit, Violation};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, AtHardLimit};
-use argonauts_core::text::clause_case;
+use argonauts_core::text::{clause_case, sentence_case};
 use argonauts_core::{Note, NoteLevel};
 
 use crate::engine::host::Host;
@@ -321,19 +321,27 @@ fn ending_line(opened: &CheckpointOpened, label: &str, why: Option<&str>) -> Str
     )
 }
 
-/// Says that your rules alone decided a checkpoint in full auto, since no model could check it,
-/// with `why` none could and how to have one.
+/// Says that your rules alone decided a checkpoint in full auto, since no model could check it:
+/// which card, why none could, and what fixes that when the policy says, in plain words:
+/// `"Run this workflow?": Antigravity CLI worked on this, so it can't approve it; your rules
+/// decided. Pick another approver in /approvals.` A vendor's passing error comes with no fix.
 pub(super) fn rules_alone(host: &Host, opened: &CheckpointOpened, why: &str) -> EngineResult<()> {
-    note(
-        host,
-        opened,
-        format!(
-            "Full auto went ahead on \"{}\" by your rules alone, since {}. To have a model \
-             check it, set approvals.approver.model, or install and log in to an agent from \
-             another company.",
-            opened.title.trim(),
-            clause_case(first_sentence(why))
-        ),
+    note(host, opened, rules_alone_line(&opened.title, why))
+}
+
+fn rules_alone_line(title: &str, why: &str) -> String {
+    let why = why.trim().trim_end_matches('.');
+    let (clause, fix) = match why.split_once(". ") {
+        Some((clause, fix)) => (clause, Some(fix)),
+        None => (why, None),
+    };
+    let fix = fix
+        .map(|fix| format!(" {}.", sentence_case(fix.trim_end_matches('.'))))
+        .unwrap_or_default();
+    format!(
+        "\"{}\": {}; your rules decided.{fix}",
+        title.trim(),
+        sentence_case(clause)
     )
 }
 
@@ -607,6 +615,32 @@ mod tests {
         assert_eq!(
             choice(&opened(CheckpointKind::Goal, own), Held::Undecided),
             None
+        );
+    }
+
+    /// The line names the card and the agents as people read them, and points to /approvals
+    /// only when the policy says picking another approver is the fix, never to an id or a
+    /// setting key.
+    #[test]
+    fn rules_alone_says_why_in_plain_words() {
+        // As the approver's independence check says it when the only agent from another company
+        // wrote the work.
+        let why = "Antigravity CLI worked on this, so it can't approve it. Pick another approver \
+                   in /approvals";
+        assert_eq!(
+            rules_alone_line("Run this workflow?", why),
+            "\"Run this workflow?\": Antigravity CLI worked on this, so it can't approve it; your \
+             rules decided. Pick another approver in /approvals."
+        );
+        // A vendor's passing error names the approver, and asks nothing of you.
+        let why = "Haiku on Claude Code couldn't check it, as its session ended early (its vendor \
+                   refused the sign-in) even when asked again, and no agent from another company \
+                   could instead";
+        assert_eq!(
+            rules_alone_line("Approve this plan?", why),
+            "\"Approve this plan?\": Haiku on Claude Code couldn't check it, as its session ended \
+             early (its vendor refused the sign-in) even when asked again, and no agent from \
+             another company could instead; your rules decided."
         );
     }
 }

@@ -142,6 +142,9 @@ pub struct StopContext {
     pub attempts: Vec<String>,
     pub reassigned_once: bool,
     pub events: PathBuf,
+    /// What the stopped worker's CLI says of its login, asked after a sign-in error: `Some(false)`
+    /// when it says it's logged out, the only time a login is the fix.
+    pub logged_in: Option<bool>,
 }
 
 /// What the engine does after a session stops for any reason but a clean finish.

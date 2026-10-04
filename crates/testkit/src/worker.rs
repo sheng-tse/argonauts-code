@@ -159,6 +159,7 @@ pub struct FakeWorker {
     capabilities: WorkerCapabilities,
     enforce_rules: bool,
     cheapest: Option<String>,
+    logged_in: Option<bool>,
     script: Mutex<Script>,
     specs: Mutex<Vec<SessionSpec>>,
     controls: Arc<Mutex<Vec<(SessionKey, SessionControl)>>>,
@@ -204,6 +205,7 @@ impl FakeWorker {
             },
             enforce_rules: true,
             cheapest: None,
+            logged_in: None,
             script: Mutex::new(Script::Queue(VecDeque::new())),
             specs: Mutex::new(Vec::new()),
             controls: Arc::new(Mutex::new(Vec::new())),
@@ -218,6 +220,12 @@ impl FakeWorker {
     /// The model its harness names as its cheapest, such as `gpt-5.6-luna`.
     pub fn with_cheapest_model(mut self, model: &str) -> Self {
         self.cheapest = Some(model.to_owned());
+        self
+    }
+
+    /// What its CLI's own login check says: `Some(false)` is logged out.
+    pub fn with_login(mut self, logged_in: Option<bool>) -> Self {
+        self.logged_in = logged_in;
         self
     }
 
@@ -429,6 +437,11 @@ impl Worker for FakeWorker {
     fn cheapest_model(&self) -> Option<String> {
         self.cheapest.clone()
     }
+
+    fn logged_in(&self) -> BoxFuture<'_, Option<bool>> {
+        let logged_in = self.logged_in;
+        Box::pin(async move { logged_in })
+    }
 }
 
 fn is_stop(message: &SessionControl) -> bool {
@@ -540,8 +553,13 @@ impl WorkerDirectory for FakeDirectory {
             .collect()
     }
 
+    /// As the real directory: a CLI marked [`FakeDirectory::isolating`], or an endpoint, which
+    /// answers with no tools, so nothing of yours reaches it.
     fn isolates(&self, worker: &WorkerRef) -> bool {
         lock(&self.isolating).contains(&worker.worker)
+            || self
+                .get(worker)
+                .is_ok_and(|found| found.kind() == WorkerKind::Endpoint)
     }
 }
 

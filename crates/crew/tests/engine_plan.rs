@@ -16,13 +16,14 @@ use argonauts_core::events::checkpoint::{
 };
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent};
-use argonauts_core::events::run::{Party, PhaseChange, RunPhase};
+use argonauts_core::events::run::{Party, PhaseChange, RunLifecycle, RunPhase};
+use argonauts_core::events::session::{EndReason, SessionEvent};
 use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{PlanLabel, RoleName, WorkerRef, WorkflowId};
-use argonauts_core::settings::Settings;
-use argonauts_core::settings::approvals::Answerer;
+use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
 use argonauts_core::settings::protocol::RoutingAlgorithm;
+use argonauts_core::settings::{Settings, Span};
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::plan::{CoordinateInput, JudgeInput, LabeledPlan, MapInput};
 use argonauts_core::worker::{Access, SessionSpec};
@@ -389,7 +390,17 @@ fn crew_worker(
     disputed: bool,
     scores: &'static [(&'static str, f64)],
 ) -> FakeWorker {
-    FakeWorker::harness(name, family).respond_with(move |spec| {
+    FakeWorker::harness(name, family).respond_with(answers(marker, counters, disputed, scores))
+}
+
+/// A crew worker's answers, as [`crew_worker`] gives them.
+fn answers(
+    marker: &'static str,
+    counters: &'static str,
+    disputed: bool,
+    scores: &'static [(&'static str, f64)],
+) -> impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static {
+    move |spec| {
         let value = match spec.step {
             Some(StepName::Draft) if spec.role == RoleName::PhaseLead => {
                 plan_json("MERGED", counters)
@@ -421,7 +432,46 @@ fn crew_worker(
             _ => json!({}),
         };
         FakeSession::structured(value).with_vendor_session(&format!("{marker}-session"))
-    })
+    }
+}
+
+/// `answer`, except that the first `times` sessions of `step` that `fails` picks end on a 401
+/// the CLI's own login check contradicts, counted in `failed` with any other worker's.
+fn failing_first(
+    step: StepName,
+    times: usize,
+    failed: &Arc<std::sync::atomic::AtomicUsize>,
+    fails: impl Fn(&SessionSpec) -> bool + Send + Sync + 'static,
+    answer: impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static,
+) -> impl Fn(&SessionSpec) -> FakeSession + Send + Sync + 'static {
+    let failed = failed.clone();
+    move |spec| {
+        if spec.step == Some(step)
+            && fails(spec)
+            && failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < times
+        {
+            return FakeSession::ended(EndReason::Auth {
+                message: "workspace routing discovery unauthorized (401)".to_owned(),
+            });
+        }
+        answer(spec)
+    }
+}
+
+/// The run in full auto, as Shift+Tab sets it.
+fn full_auto() -> RunEvent {
+    RunEvent {
+        seq: 0,
+        ts: time::OffsetDateTime::UNIX_EPOCH,
+        run_id: RunId::new("run-01").expect("the run id"),
+        card_id: None,
+        session: None,
+        source: "app".to_owned(),
+        kind: RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
+            mode: ApprovalMode::FullAuto,
+            by: Party::User,
+        }),
+    }
 }
 
 /// Two cards: the interface contracts first needs, and the limiter.
@@ -1049,6 +1099,239 @@ async fn plan_spike_within_budget() -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// A spike whose session ends on a 401 goes again on its own session, and after a second 401
+/// another agent runs it, in full auto, so both spikes still report.
+#[tokio::test]
+async fn a_401_on_a_spike_goes_again_then_to_another_agent() -> anyhow::Result<()> {
+    for failures in [1, 2] {
+        let proposals = json!({ "proposals": [
+            { "topic": "counters", "question": "Redis or memory?",
+              "options": [{ "label": "Redis", "build": "a Redis counter" },
+                          { "label": "memory", "build": "a map counter" }],
+              "measure": "p50 latency", "decides_by": "lower p50",
+              "est_minutes": 10.0, "est_cost_usd": 1.0 }
+        ]});
+        let lead = move |spec: &SessionSpec| {
+            let value = match spec.step {
+                Some(StepName::ProposeSpike) => proposals.clone(),
+                Some(StepName::SpikeReport) => spike_report(spec),
+                Some(StepName::Draft) => plan_json("CLAUDE", "Redis"),
+                Some(StepName::Judge) => match input_of::<JudgeInput>(spec) {
+                    Some(input) => judge_json(&input, CLAUDE_WINS),
+                    None => json!({ "scores": [] }),
+                },
+                _ => json!({}),
+            };
+            FakeSession::structured(value)
+        };
+        // The Redis option's spike sessions fail, the first `failures` times whoever runs them.
+        let redis = |spec: &SessionSpec| prompt_text(spec).contains("a Redis counter");
+        let failed = Arc::default();
+        let spike = StepName::SpikeReport;
+        let workers = vec![
+            FakeWorker::harness(CLAUDE, "claude")
+                .respond_with(failing_first(spike, failures, &failed, redis, lead)),
+            FakeWorker::harness(CODEX, "gpt").respond_with(failing_first(
+                spike,
+                failures,
+                &failed,
+                redis,
+                answers("CODEX", "memory", true, CLAUDE_WINS),
+            )),
+            FakeWorker::harness(AGY, "gemini").respond_with(failing_first(
+                spike,
+                failures,
+                &failed,
+                redis,
+                answers("AGY", "Redis", true, CLAUDE_WINS),
+            )),
+        ];
+        let bench = Bench::new(
+            workers,
+            |settings| settings.supervisor.retry_wait = Span::new("0s"),
+            vec![approved_goal()?, full_auto()],
+        )?;
+        judged(&bench, AGY).await?;
+
+        let finished: Vec<String> = bench
+            .plan_events()
+            .iter()
+            .filter_map(|e| match e {
+                PlanEvent::SpikeFinished { report, .. } => Some(report.option.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finished.len(), 2, "after {failures} 401s: {finished:?}");
+        assert!(finished.contains(&"Redis".to_owned()), "{finished:?}");
+        let redis_spikes: Vec<(String, String)> = bench
+            .sink
+            .events()
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::Session(SessionEvent::Started(started))
+                    if started.step == Some(StepName::SpikeReport) =>
+                {
+                    Some((
+                        event
+                            .session
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                        started.worker.to_string(),
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        // Both options' sessions, the Redis one started again on its own key.
+        let keys: std::collections::BTreeSet<&String> =
+            redis_spikes.iter().map(|(key, _)| key).collect();
+        assert_eq!(keys.len(), 2, "{redis_spikes:?}");
+        let workers: std::collections::BTreeSet<&String> =
+            redis_spikes.iter().map(|(_, worker)| worker).collect();
+        if failures == 2 {
+            assert!(workers.len() >= 2, "another agent ran it: {redis_spikes:?}");
+        }
+    }
+    Ok(())
+}
+
+/// A judge's seat goes only to an agent from outside the companies of the plans it's shown,
+/// and the stand-in's scores go under its own name and family. With none, the seat's scores
+/// are dropped rather than given by a plan's own company.
+#[tokio::test]
+async fn a_judges_stand_in_comes_from_outside_the_companies_it_judges() -> anyhow::Result<()> {
+    const GPT_OSS: &str = "opencode/gpt-oss";
+    const QWEN: &str = "opencode/qwen3-coder";
+    for with_qwen in [false, true] {
+        let claude = FakeWorker::harness(CLAUDE, "claude").respond_with(failing_first(
+            StepName::Judge,
+            usize::MAX,
+            &Arc::default(),
+            |_| true,
+            answers("CLAUDE", "Redis", false, CLAUDE_WINS),
+        ));
+        let mut workers = vec![
+            claude,
+            crew_worker(CODEX, "gpt", "CODEX", "memory", false, CLAUDE_WINS),
+            crew_worker(AGY, "gemini", "AGY", "Redis", false, CLAUDE_WINS),
+            crew_worker(GPT_OSS, "gpt", "OSS", "memory", false, CLAUDE_WINS),
+        ];
+        if with_qwen {
+            workers.push(crew_worker(
+                QWEN,
+                "qwen",
+                "QWEN",
+                "memory",
+                false,
+                CLAUDE_WINS,
+            ));
+        }
+        let drafters: Vec<WorkerRef> = [CLAUDE, CODEX, AGY]
+            .iter()
+            .map(|worker| worker.parse())
+            .collect::<Result<_, _>>()?;
+        let bench = Bench::new(
+            workers,
+            move |settings| {
+                settings.supervisor.retry_wait = Span::new("0s");
+                settings.roles.entry(RoleName::Drafter).or_default().workers = drafters;
+            },
+            vec![approved_goal()?, full_auto()],
+        )?;
+        // A judge is blind, so its stand-in's CLI must keep your plugins out, as OpenCode's
+        // does here.
+        bench.services.workers.isolating("opencode");
+        judged(&bench, AGY).await?;
+
+        let scored: Vec<(String, String)> = bench
+            .plan_events()
+            .iter()
+            .filter_map(|e| match e {
+                PlanEvent::Scored {
+                    judge,
+                    judge_family,
+                    ..
+                } => Some((judge.to_string(), judge_family.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !scored
+                .iter()
+                .any(|(judge, _)| judge == CLAUDE || judge == GPT_OSS),
+            "{scored:?}"
+        );
+        assert!(bench.specs_of(GPT_OSS, StepName::Judge).is_empty());
+        if with_qwen {
+            assert!(
+                scored.contains(&(QWEN.to_owned(), "qwen".to_owned())),
+                "{scored:?}"
+            );
+        } else {
+            let dropped = bench.sink.events().iter().any(|event| {
+                matches!(&event.kind, RunEventKind::Note(note)
+                    if note.text.contains("scores are dropped"))
+            });
+            assert!(dropped);
+        }
+    }
+    Ok(())
+}
+
+/// A drafter's seat goes to an agent that isn't drafting already, and the plan it seals goes
+/// under its own name, in the drafter's place.
+#[tokio::test]
+async fn a_drafters_stand_in_seals_the_plan_under_its_own_name() -> anyhow::Result<()> {
+    const QWEN: &str = "opencode/qwen3-coder";
+    let claude = FakeWorker::harness(CLAUDE, "claude").respond_with(failing_first(
+        StepName::Draft,
+        usize::MAX,
+        &Arc::default(),
+        |_| true,
+        answers("CLAUDE", "Redis", false, CLAUDE_WINS),
+    ));
+    let workers = vec![
+        claude,
+        crew_worker(CODEX, "gpt", "CODEX", "memory", false, CLAUDE_WINS),
+        crew_worker(AGY, "gemini", "AGY", "Redis", false, CLAUDE_WINS),
+        crew_worker(QWEN, "qwen", "QWEN", "memory", false, CLAUDE_WINS),
+    ];
+    let drafters: Vec<WorkerRef> = [CLAUDE, CODEX, AGY]
+        .iter()
+        .map(|worker| worker.parse())
+        .collect::<Result<_, _>>()?;
+    let bench = Bench::new(
+        workers,
+        move |settings| {
+            settings.supervisor.retry_wait = Span::new("0s");
+            settings.roles.entry(RoleName::Drafter).or_default().workers = drafters;
+        },
+        vec![approved_goal()?, full_auto()],
+    )?;
+    // Drafts are blind, so the stand-in's CLI must keep your plugins out, as OpenCode's does
+    // here.
+    bench.services.workers.isolating("opencode");
+    bench.step("draft", "drafter", json!({})).await?;
+
+    let sealed: Vec<String> = bench
+        .plan_events()
+        .iter()
+        .filter_map(|e| match e {
+            PlanEvent::Sealed { worker, .. } => Some(worker.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sealed.len(), 3, "{sealed:?}");
+    assert!(sealed.contains(&QWEN.to_owned()), "{sealed:?}");
+    assert!(!sealed.contains(&CLAUDE.to_owned()), "{sealed:?}");
+    // Codex and Antigravity draft once each, as themselves.
+    assert_eq!(bench.specs_of(CODEX, StepName::Draft).len(), 1);
+    assert_eq!(bench.specs_of(AGY, StepName::Draft).len(), 1);
+    assert_eq!(bench.specs_of(QWEN, StepName::Draft).len(), 1);
     Ok(())
 }
 

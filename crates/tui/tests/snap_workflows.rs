@@ -1844,3 +1844,86 @@ fn library_alone_with_no_run() {
         "{text}"
     );
 }
+
+/// A crew run as the engine reports it before its workflow is declared: started and named,
+/// and with `lead`, its lead designing the workflow and saying what it reads.
+fn before_the_workflow(lead: bool) -> AppState {
+    let mut state = AppState::default();
+    let mut seq = 0;
+    let mut send = |session: Option<&str>, kind: serde_json::Value| {
+        let event = serde_json::json!({"type": "run", "event": {"seq": seq,
+            "ts": "2026-10-04T16:54:13Z", "run_id": "run-01", "card_id": null,
+            "session": session, "source": "conductor", "kind": kind}});
+        seq += 1;
+        state.apply(&serde_json::from_value(event).expect("a run event"));
+    };
+    let request = "Make the rate limiter per API key";
+    send(
+        None,
+        serde_json::json!({"type": "run", "data": {"event": "started", "request": request,
+            "title": request, "mode": "crew", "forced": false, "preset": "peer-crew",
+            "estimate": null, "triage": null, "chat_turn": null, "continues": null,
+            "repo_root": "/repo", "base_branch": "main", "base_commit": "8b41d07",
+            "uncommitted": [], "uncommitted_included": false, "settings_sha256": "",
+            "settings": {}, "overrides": [], "harness_versions": {}, "version": "0.1.0"}}),
+    );
+    send(
+        None,
+        serde_json::json!({"type": "run", "data": {"event": "named",
+            "name": "add-per-api-key",
+            "description": "Add per-API-key rate limiting with Retry-After headers",
+            "style": "workflow"}}),
+    );
+    if lead {
+        send(
+            Some("s-002"),
+            serde_json::json!({"type": "session", "data": {"event": "started",
+                "worker": "claude-code/haiku", "vendor": "claude-code", "family": "claude",
+                "kind": "harness", "role": "phase-lead", "step": "design_workflow",
+                "access": "read_only", "lifetime": "card", "resumed_from": null,
+                "follow_key": null, "label": "lead:design-2"}}),
+        );
+        for text in [
+            "Reading the rate limiter and its failing test.",
+            "Each X-Api-Key gets its own bucket; requests without one share a bucket.",
+        ] {
+            send(
+                Some("s-002"),
+                serde_json::json!({"type": "agent", "data": {"type": "message", "text": text,
+                    "parent": null}}),
+            );
+        }
+    }
+    state
+}
+
+/// Enter on a run's row always opens something: before any agent starts, a short
+/// view of what the run waits for, and while the lead designs the workflow, its session.
+#[test]
+fn a_run_before_its_workflow() {
+    let waiting = before_the_workflow(false);
+    let designing = before_the_workflow(true);
+    let at = OffsetDateTime::parse(
+        "2026-10-04T16:55:35Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    for (width, height) in [(100, 16), (120, 16)] {
+        let mut view = argonauts_tui::views::waiting::WaitingView::new(run());
+        let text = screen(&mut view, width, height, &waiting);
+        assert!(
+            text.contains("Waiting for the lead to start designing the workflow."),
+            "{text}"
+        );
+        insta::assert_snapshot!(format!("run_waiting_{width}"), text);
+
+        let mut lead = argonauts_tui::views::session::SessionView::new(run(), key("s-002"));
+        lead.clock = argonauts_tui::format::WallClock::pinned(at);
+        let text = screen(&mut lead, width, height, &designing);
+        assert!(
+            text.contains("lead:design-2 · Haiku on Claude Code · 1m22s"),
+            "{text}"
+        );
+        insta::assert_snapshot!(format!("lead_designing_{width}"), text);
+    }
+}

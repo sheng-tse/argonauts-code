@@ -9,6 +9,7 @@ use argonauts_core::events::run::{RunLifecycle, RunSnapshot};
 use argonauts_core::events::{RunEvent, RunEventKind};
 
 use argonauts_core::events::session::{EndReason, SessionEvent};
+use argonauts_core::names::SessionKey;
 
 use crate::error::{EngineError, EngineResult};
 
@@ -78,6 +79,16 @@ impl RunState {
         state
     }
 
+    /// Whether a `›` note whose first line is `line` was written after session `about` started,
+    /// or anywhere in the log when there's no session it's about. A step that replays after a
+    /// stop asks, so it says why once, and a later session with the same trouble gets its own.
+    pub fn said_after(&self, line: &str, about: Option<&SessionKey>) -> bool {
+        let since = about
+            .and_then(|key| self.sessions.get(key))
+            .map_or(0, |session| session.since);
+        self.run.said.get(line).is_some_and(|&seq| seq > since)
+    }
+
     /// Folds one event in. A snapshot the engine records live was built from this same state,
     /// so only a fold of a log restores one.
     pub fn apply(&mut self, event: &RunEvent) {
@@ -95,6 +106,13 @@ impl RunState {
                     self.run.card_active(card);
                 }
                 self.sessions.apply(e, event);
+                // An agent got through a session, so the next park nobody could take a seat in
+                // starts its waits over.
+                if let SessionEvent::Ended(end) = e
+                    && end.reason == EndReason::Completed
+                {
+                    self.run.stand_in_waits = 0;
+                }
                 if let (SessionEvent::Ended(end), Some(key)) = (e, &event.session)
                     && end.reason == EndReason::Stopped
                     && self.run.stop_requested
@@ -119,7 +137,7 @@ impl RunState {
             RunEventKind::Budget(e) => self.run.apply_budget(e, event),
             RunEventKind::Blackboard(e) => self.blackboard.apply(e, event),
             RunEventKind::Retro(e) => self.retro.apply(e, event),
-            RunEventKind::Note(_) => {}
+            RunEventKind::Note(note) => self.run.noted(note, event.seq),
             RunEventKind::Workflow(e) => self.workflows.apply(e, event),
         }
     }
@@ -251,6 +269,7 @@ pub(crate) mod tests {
             follow_key: None,
             workflow_step: None,
             label: None,
+            asked: None,
         }
     }
 
@@ -266,6 +285,8 @@ pub(crate) mod tests {
             context_used: None,
             end: None,
             stopped_with_run: false,
+            asked: None,
+            vendor_failures: Vec::new(),
         }
     }
 
@@ -389,6 +410,41 @@ pub(crate) mod tests {
         ));
         assert_eq!(state.run.finished, Some(RunOutcome::Stopped));
         assert_eq!(state.seq, Some(8));
+    }
+
+    /// A note says why once for the session it's about, however often a stopped run replays to
+    /// it, and anew for a later session with the same trouble, such as a nested workflow's
+    /// change refused after its own phase 1.
+    #[test]
+    fn a_note_is_said_after_the_session_it_is_about() {
+        use argonauts_core::Note;
+        use argonauts_core::log::NoteLevel;
+
+        let worker = WorkerRef::new("claude-code", None);
+        let started = |seq: u64, key: &str| {
+            let started = session_started(&worker, RoleName::PhaseLead);
+            let kind = RunEventKind::Session(SessionEvent::Started(Box::new(started)));
+            envelope(seq, None, Some(key), kind)
+        };
+        let line = "The lead's change after phase 1 wrote a workflow that breaks its rules; it's \
+                    fixing that.";
+        let noted = |seq: u64| {
+            let note = Note::with_detail(NoteLevel::Info, line, "phase 1 already ran");
+            envelope(seq, None, None, RunEventKind::Note(note))
+        };
+        let (first, later) = (SessionKey::numbered(1), SessionKey::numbered(3));
+        let mut state = RunState::default();
+        state.apply(&started(1, "s-001"));
+        assert!(!state.said_after(line, Some(&first)));
+        assert!(!state.said_after(line, None));
+        state.apply(&noted(2));
+        assert!(state.said_after(line, Some(&first)));
+        assert!(state.said_after(line, None));
+        state.apply(&started(3, "s-003"));
+        assert!(!state.said_after(line, Some(&later)));
+        assert!(state.said_after(line, Some(&first)));
+        state.apply(&noted(4));
+        assert!(state.said_after(line, Some(&later)));
     }
 
     #[test]

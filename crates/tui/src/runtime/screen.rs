@@ -246,13 +246,18 @@ impl<W: Write> Screen<W> {
         {
             return;
         }
-        let effects = self
-            .bridge
-            .on_event(self.ui.model_mut(), &event, Instant::now());
+        let now = Instant::now();
+        let effects = self.bridge.on_event(self.ui.model_mut(), &event, now);
         if matches!(event, AppEvent::UiSettings { .. }) {
             self.refresh_keymap();
         }
         self.apply(effects).await;
+        if !self.bridge.state.replaying() {
+            for action in self.ui.follow_views(now, &self.bridge.state) {
+                let effects = self.bridge.on_action(self.ui.model_mut(), &action, now);
+                self.apply(effects).await;
+            }
+        }
         if matches!(event, AppEvent::Exit) && self.exit.is_none() {
             self.exit = Some(exit_lines(&self.bridge.state));
         }

@@ -81,6 +81,10 @@ pub struct CardProgress {
     pub handed_from: Option<WorkerRef>,
     /// Set while the card waits for its vendor to come back.
     pub waiting_for: Option<VendorId>,
+    /// Times it waited for its vendor, which makes each next wait with no reset to wait for
+    /// longer.
+    #[serde(default)]
+    pub vendor_waits: u32,
     /// What your take-over changed and its commit, once you're done with it, until the card
     /// is taken over again.
     pub take_over_end: Option<(DiffStat, Option<String>)>,
@@ -103,6 +107,7 @@ static NO_PROGRESS: CardProgress = CardProgress {
     packet: None,
     handed_from: None,
     waiting_for: None,
+    vendor_waits: 0,
     take_over_end: None,
     changes: 0,
 };
@@ -282,7 +287,10 @@ impl Cards {
                 record.owner = Some(to.clone());
                 progress.waiting_for = None;
             }
-            HandoffEvent::Waiting { vendor, .. } => progress.waiting_for = Some(vendor.clone()),
+            HandoffEvent::Waiting { vendor, .. } => {
+                progress.waiting_for = Some(vendor.clone());
+                progress.vendor_waits += 1;
+            }
         }
     }
 

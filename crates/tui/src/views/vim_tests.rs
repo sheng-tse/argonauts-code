@@ -139,7 +139,7 @@ fn resume_picker() {
     vim.press(&mut view, 'G');
     vim.press(&mut view, 'k');
     let resumed = |outcome: ViewOutcome| match outcome {
-        ViewOutcome::Send(UiCommand::Resume { run: Some(run) }) => run.to_string(),
+        ViewOutcome::SendToChat(UiCommand::Resume { run: Some(run) }) => run.to_string(),
         other => panic!("{other:?}"),
     };
     assert_eq!(resumed(vim.press(&mut view, 'l')), "run-02");

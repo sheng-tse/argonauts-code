@@ -16,6 +16,9 @@ pub struct TurnEnd {
     pub label: String,
     pub elapsed: Duration,
     pub done_at: Option<ClockTime>,
+    /// What the clock time says happened: `done`, or `ended` after a run that failed, so the
+    /// line never calls a failure done.
+    pub ended: &'static str,
 }
 
 impl TurnEnd {
@@ -24,7 +27,14 @@ impl TurnEnd {
             label: label.into(),
             elapsed,
             done_at,
+            ended: "done",
         }
+    }
+
+    /// Ended without its work done, as a failed or stopped run does.
+    pub fn unfinished(mut self) -> Self {
+        self.ended = "ended";
+        self
     }
 }
 
@@ -40,7 +50,7 @@ impl HistoryCell for TurnEnd {
             format!("{label} {}", format::duration(self.elapsed))
         };
         if let Some(clock) = self.done_at {
-            text.push_str(&format!(" · done {clock}"));
+            text.push_str(&format!(" · {} {clock}", self.ended));
         }
         let first = [Span::styled(glyph, dim), Span::raw(" ")];
         let rest = [Span::raw(" ".repeat(str_width(glyph) + 1))];

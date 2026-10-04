@@ -483,6 +483,7 @@ spend_cap = "0.50 usd"
 park_grace = "10s"
 snapshot_every = 5000
 journal_deltas_per_second = 10
+retry_wait = "5s"
 
 [runs]
 remind_parked_days = 7

@@ -798,6 +798,7 @@ fn replayed_session(key: &str) -> [AppEvent; 2] {
         follow_key: None,
         workflow_step: None,
         label: None,
+        asked: None,
     };
     let ended = SessionEnd {
         vendor_session: None,

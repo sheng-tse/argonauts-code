@@ -1436,3 +1436,41 @@ fn an_agent_question_shows_only_what_answers_it() {
         )
     });
 }
+
+/// The go-ahead full auto left to you, as the peer crew's "Run this workflow?" was: it asks, so
+/// it takes the keys as it shows and the input box goes, the way Claude Code's permission
+/// prompt stands in for its input. Nothing waits for ↑ under a ruled input.
+#[test]
+fn the_go_ahead_holds_the_keys_with_the_input_hidden() {
+    let mut opened = goal_approval();
+    opened.title = "Run this workflow?".into();
+    opened.mode = ApprovalMode::FullAuto;
+    opened.decide_with = DecideWith::RulesAndModel;
+    opened.free_text = FreeText::None;
+    opened.options = vec![
+        option('y', "Yes, run it", AnswerAction::Approve),
+        choose(
+            'l',
+            "Yes, and let the lead answer",
+            "Yes, and let the lead answer",
+        ),
+        option('b', "Send back for another round", AnswerAction::SendBack),
+        option('d', "Show the goal", AnswerAction::ShowDiff),
+        option('x', "No, stop here", AnswerAction::Abandon),
+    ];
+    let mut bottom = argonauts_tui::model::BottomState::new();
+    bottom.composer.label = Some("peer-crew".into());
+    bottom.mode.approval = argonauts_tui::bottom::ApprovalMode::FullAuto;
+    bottom.card = Some(checkpoint_card(1, &opened, None));
+    assert!(bottom.hand_keys_to_card(std::time::Instant::now()));
+    let theme = theme();
+    for width in [100, 120] {
+        let view = bottom.render(&still(&theme, width));
+        assert_fits(&view.lines, width);
+        let shown = text(&view.lines);
+        assert!(!shown.contains("to answer the card"), "{shown}");
+        assert!(!shown.lines().any(|row| row.starts_with('❯')), "{shown}");
+        assert!(shown.contains("❯ 1. Yes, run it"), "{shown}");
+        insta::assert_snapshot!(format!("go_ahead_holds_the_keys_{width}"), shown);
+    }
+}

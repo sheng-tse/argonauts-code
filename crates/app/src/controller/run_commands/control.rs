@@ -104,6 +104,7 @@ pub(crate) async fn steer(
             );
             Ok(Vec::new())
         }
+        // It answers text you typed, so it stays in the transcript beside it.
         Err(ApiError::NotNow(why)) => {
             ctx.notice(NoteLevel::Info, format!("Nothing was sent, since {why}."));
             Ok(Vec::new())
@@ -112,12 +113,14 @@ pub(crate) async fn steer(
     }
 }
 
+/// Esc while a run works. When there's nothing to pause, the notice line says why.
 pub(crate) async fn pause(ctx: &mut Ctx, runs: &mut RunsState, now: bool) -> Handled {
-    let Some(run) = on_screen(ctx, runs) else {
+    let Some(run) = runs::attached(runs).cloned() else {
+        ctx.hint(super::NO_RUN);
         return Ok(Vec::new());
     };
     if let Some(why) = not_going(runs, &run) {
-        ctx.notice(NoteLevel::Info, why);
+        ctx.hint(why);
         return Ok(Vec::new());
     }
     if let Err(err) = ctx.services.conductor.pause(&run, now).await {

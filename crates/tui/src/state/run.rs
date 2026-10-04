@@ -120,6 +120,27 @@ impl RunState {
             .filter_map(|key| self.sessions.get(key))
     }
 
+    /// The session that carried on `key`'s work once it ended, such as the lead's design that
+    /// code sent back to it: the newest later one with its label and step, or one that resumed
+    /// its vendor session.
+    pub fn carried_on(&self, key: &SessionKey) -> Option<&SessionState> {
+        let ended = self
+            .sessions
+            .get(key)
+            .filter(|session| !session.is_running())?;
+        self.sessions_in_order()
+            .skip_while(|session| session.key != *key)
+            .skip(1)
+            .filter(|later| {
+                let same_work =
+                    later.label.is_some() && later.label == ended.label && later.step == ended.step;
+                let resumed =
+                    later.vendor_session.is_some() && later.vendor_session == ended.vendor_session;
+                same_work || resumed
+            })
+            .last()
+    }
+
     pub fn running_sessions(&self) -> impl Iterator<Item = &SessionState> {
         self.sessions_in_order()
             .filter(|session| session.is_running())

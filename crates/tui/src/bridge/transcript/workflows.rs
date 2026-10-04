@@ -1,12 +1,15 @@
 //! A crew run's workflow in the chat, as Claude Code prints its own: `● Workflow(<name>)` when
 //! it starts, with the description and the phases it declares, a line when the lead adds a
-//! phase, and `● Workflow(<name>) · done` when it ends.
+//! phase, and `● Workflow(<name>) · done` when it ends, or `· failed` or
+//! `· stopped` as the run ended.
 
 use std::time::Duration;
 
 use argonauts_core::RunId;
+use argonauts_core::events::run::RunOutcome;
 use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared};
 
+use crate::bottom::WorkflowRowState;
 use crate::cell::{ToolCall, ToolItem, ToolKind, ToolState};
 use crate::format;
 use crate::text::{sanitize_line, str_width};
@@ -120,8 +123,15 @@ pub(super) fn phase_added(title: &str, why: &str, story: &RunStory, cx: &mut Cx<
 }
 
 /// `● Workflow(<name>) · done`, with its agents, time, tokens, and spend, as Claude Code's
-/// tool call returns, before the run's own end.
-pub(super) fn done(run: &RunId, story: &RunStory, elapsed: Option<Duration>, cx: &mut Cx<'_>) {
+/// tool call returns, before the run's own end. It ends as the run's panel row does, so a
+/// failed run's workflow reads `· failed` above "The run failed", never `· done`.
+pub(super) fn done(
+    run: &RunId,
+    story: &RunStory,
+    outcome: RunOutcome,
+    elapsed: Option<Duration>,
+    cx: &mut Cx<'_>,
+) {
     let Some(name) = &story.workflow else {
         return;
     };
@@ -141,11 +151,17 @@ pub(super) fn done(run: &RunId, story: &RunStory, elapsed: Option<Duration>, cx:
         }
         parts.push(format::spend(&state.spend()));
     }
+    let ended = WorkflowRowState::ended(outcome);
+    let state = match ended {
+        WorkflowRowState::Failed => ToolState::Failed,
+        WorkflowRowState::Stopped => ToolState::Stopped,
+        _ => ToolState::Done,
+    };
     let mut call = ToolCall::described(
         ToolKind::Other,
-        format!("Workflow({}) · done", sanitize_line(name)),
+        format!("Workflow({}) · {}", sanitize_line(name), ended.word()),
     )
-    .with_state(ToolState::Done);
+    .with_state(state);
     if !parts.is_empty() {
         call.push(ToolItem::text(parts.join(" · ")));
     }

@@ -42,9 +42,9 @@ pub struct CardPrompt {
     pub focused: bool,
     /// You set it off yourself, so it holds the keys whenever it's on screen.
     pub takes_focus: bool,
-    /// Work waits on your answer, so it takes the keys when it shows and keeps them until
-    /// you answer or set it aside. A draft in the input holds them off until it's sent or
-    /// cleared.
+    /// It waits on your answer: work stops for it, or it asks your view, as a spot check does.
+    /// So it takes the keys when it shows and keeps them until you answer or set it aside. A
+    /// draft in the input holds them off until it's sent or cleared.
     pub needs_you: bool,
     /// Letters or a paste came to it, likely chat meant for the input, so nothing answers it
     /// until you move the pointer: not a number, and not the Enter that ends the line.
@@ -334,9 +334,16 @@ impl CardPrompt {
         self
     }
 
-    /// Whether it takes the keys as it shows: yours always, one that needs you until set aside.
+    /// It asks you something: you set it off, or work waits on your answer. A card that asks
+    /// takes the keys and stands in for the input, whatever its kind. A run's
+    /// card your rules or full auto still decide asks nothing yet, so it stays off the screen.
+    pub fn asks(&self) -> bool {
+        self.takes_focus || self.needs_you
+    }
+
+    /// Whether it takes the keys as it shows: any card that asks, until it's set aside.
     pub fn claims_keys(&self) -> bool {
-        !self.pinned && (self.takes_focus || self.needs_you)
+        !self.pinned && self.asks()
     }
 
     /// Takes the keys if it claims them. One that needs you waits for `input_free`, an empty
@@ -414,12 +421,9 @@ impl CardPrompt {
                 self.move_to(self.selected.saturating_sub(1));
                 CardEvent::Moved
             }
-            // A card you set off, or one work waits on, keeps the keys, so typing never slips
-            // into the input under it. Esc is the way out.
-            KeyCode::Down
-                if self.selected + 1 == self.options.len()
-                    && (self.takes_focus || self.needs_you) =>
-            {
+            // A card that asks keeps the keys, so typing never slips into the input under it.
+            // Esc is the way out.
+            KeyCode::Down if self.selected + 1 == self.options.len() && self.asks() => {
                 CardEvent::Moved
             }
             KeyCode::Down if self.selected + 1 == self.options.len() => self.back_to_input(),
@@ -497,9 +501,7 @@ impl CardPrompt {
         let (top, bottom) = (editor.cursor_on_first_row(), editor.cursor_on_last_row());
         match key.code {
             KeyCode::Esc => Some(self.pin()),
-            KeyCode::Down if bottom && !(self.takes_focus || self.needs_you) => {
-                Some(self.back_to_input())
-            }
+            KeyCode::Down if bottom && !self.asks() => Some(self.back_to_input()),
             KeyCode::Up if top => Some(CardEvent::Moved),
             KeyCode::Down if bottom => Some(CardEvent::Moved),
             KeyCode::Tab => Some(CardEvent::Moved),

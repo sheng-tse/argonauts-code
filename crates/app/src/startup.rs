@@ -246,8 +246,9 @@ pub(crate) struct RunCounts {
     pub need_you: u32,
 }
 
-/// The runs the agent panel shows rows for, so the header never counts one you can't find
-/// there. A list that fails counts none.
+/// This repo's runs going or waiting on you, in any conversation. A new conversation's panel
+/// holds only its own runs, so the header and /resume are where earlier ones show. A list that
+/// fails counts none.
 pub(crate) async fn run_counts(conductor: &dyn ConductorApi) -> RunCounts {
     let Ok(runs) = conductor.list().await else {
         return RunCounts::default();

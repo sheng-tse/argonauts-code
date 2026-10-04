@@ -167,6 +167,9 @@ pub struct SupervisorSettings {
     /// Most text and reasoning deltas per second per session that go into the journal. Finer
     /// deltas reach live subscribers only.
     pub journal_deltas_per_second: u32,
+    /// How long a step waits before it asks an agent again whose session ended for a vendor
+    /// reason, such as a passing sign-in error.
+    pub retry_wait: Span,
 }
 
 impl Default for SupervisorSettings {
@@ -175,6 +178,7 @@ impl Default for SupervisorSettings {
             park_grace: Span::new("10s"),
             snapshot_every: 5000,
             journal_deltas_per_second: 10,
+            retry_wait: Span::new("5s"),
         }
     }
 }

@@ -43,6 +43,7 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             };
             labeled(label, text)
         }
+        AppEvent::Hint { text } => labeled("notice", text),
         AppEvent::View { data } => view_lines(data, &state.names),
         AppEvent::Recap { text, .. } => labeled("recap", text),
         AppEvent::TakenBack { texts } => texts

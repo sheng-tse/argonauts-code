@@ -142,6 +142,7 @@ impl Controller {
         if self.apply_all(effects).await {
             return self.close().await;
         }
+        self.keep_runs();
         self.follow_chat();
         let mut wake = tokio::time::interval(WAKE_EVERY);
         wake.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -149,6 +150,7 @@ impl Controller {
         wake.tick().await;
         loop {
             let attaches = runs::attaches(&self.runs);
+            let conversation = chat::id(&self.chat).clone();
             let effects = tokio::select! {
                 command = commands.recv() => {
                     let Some(command) = command else { break };
@@ -174,6 +176,10 @@ impl Controller {
             if runs::attaches(&self.runs) != attaches {
                 chat::run_attached(&mut self.chat);
             }
+            if chat::id(&self.chat) != &conversation {
+                runs::follow_conversation(&self.ctx, &mut self.runs, chat::own_runs(&self.chat));
+            }
+            self.keep_runs();
             self.follow_chat();
             if exit {
                 break;
@@ -204,6 +210,11 @@ impl Controller {
             tracing::warn!("a chat step was still stopping when the app closed");
         }
         Ok(())
+    }
+
+    /// A run that came on screen is the conversation's, saved with it for `argonauts -c`.
+    fn keep_runs(&mut self) {
+        chat::keep_runs(&self.chat, runs::take_opened(&mut self.runs));
     }
 
     /// The `/` menu, its keywords, and the `@` list follow the conversation: its CLI, and the
@@ -268,6 +279,9 @@ impl Controller {
             // Copies made again for earlier conversations go, now that the one on screen is
             // known.
             chat::tidy_copies(&self.ctx, &self.chat);
+            // `argonauts -c` brings the conversation's own runs back into the panel. A new one
+            // has none, so earlier runs show only under the header and in /resume.
+            runs::adopt(&mut self.runs, chat::own_runs(&self.chat));
             effects.extend(runs::open(&mut self.ctx, &mut self.runs, first).await?);
         }
         Ok(effects)

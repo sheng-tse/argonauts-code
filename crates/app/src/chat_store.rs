@@ -1,7 +1,8 @@
 //! A chat's files: `chat/<chat>.jsonl` holds its `ChatEvent`s, `chat/<chat>.json` the
 //! vendor session to resume, so `/resume` can carry the conversation on in a later app
-//! session, and `chat/<chat>.title` the name `/rename` gave it. Like a run's files, they are
-//! the owner's alone and have secrets redacted, since the chat reads your checkout.
+//! session, `chat/<chat>.title` the name `/rename` gave it, and `chat/<chat>.runs` the runs it
+//! started or opened, with their titles. Like a run's files, they are the owner's alone and have
+//! secrets redacted, since the chat reads your checkout.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
@@ -9,11 +10,12 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
+use argonauts_core::RunId;
 use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::app::ChatEvent;
 use argonauts_core::names::{ChatId, WorkerRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::redact::redact_json;
+use argonauts_core::redact::{redact_json, redact_secrets};
 use serde::{Deserialize, Serialize};
 
 /// How an agent event's line starts, `{"chat":"agent",...}`, so reading turns back skips it
@@ -43,12 +45,21 @@ pub(crate) struct ChatPlace {
     pub made_again: bool,
 }
 
+/// A run a conversation started or opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChatRun {
+    pub run: RunId,
+    /// Names a conversation that has no turn of its own.
+    pub title: String,
+}
+
 pub(crate) struct ChatStore {
     dir: PathBuf,
     journal: PathBuf,
     session: PathBuf,
     place: PathBuf,
     title: PathBuf,
+    runs: PathBuf,
 }
 
 impl ChatStore {
@@ -59,24 +70,61 @@ impl ChatStore {
             session: chat_dir.join(format!("{chat}.json")),
             place: chat_dir.join(format!("{chat}.place.json")),
             title: chat_dir.join(format!("{chat}.title")),
+            runs: chat_dir.join(format!("{chat}.runs")),
         }
     }
 
     /// The number after the highest chat in `chat_dir`, so a new app session never reuses an
     /// older chat's files.
     pub(crate) fn next_id(chat_dir: &Path) -> ChatId {
-        let highest = fs::read_dir(chat_dir)
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let name = entry.file_name();
-                let stem = Path::new(&name).file_stem()?.to_str()?.to_owned();
-                stem.strip_prefix("chat-")?.parse::<u32>().ok()
-            })
-            .max()
-            .unwrap_or(0);
-        ChatId::numbered(highest.saturating_add(1))
+        ChatId::numbered(highest_number(chat_dir).saturating_add(1))
+    }
+
+    /// A new conversation's id, set aside by creating its empty journal, so two app sessions
+    /// opened at the same moment never share one, nor the runs it keeps.
+    pub(crate) fn claim(chat_dir: &Path) -> anyhow::Result<ChatId> {
+        create_private_dir_all(chat_dir)
+            .with_context(|| format!("creating {}", chat_dir.display()))?;
+        let mut number = highest_number(chat_dir);
+        loop {
+            number = number
+                .checked_add(1)
+                .context("no conversation number is left")?;
+            let id = ChatId::numbered(number);
+            let journal = Self::open(chat_dir, &id).journal;
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&journal)
+            {
+                Ok(_) => return Ok(id),
+                // Another app session took this number first.
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(err) => {
+                    return Err(err).with_context(|| format!("creating {}", journal.display()));
+                }
+            }
+        }
+    }
+
+    /// Nothing was ever written to the conversation: no turn in its journal, and no session,
+    /// place, title, or run.
+    pub(crate) fn is_unused(&self) -> bool {
+        let no_turn = fs::metadata(&self.journal).map_or(true, |meta| meta.len() == 0);
+        no_turn
+            && [&self.session, &self.place, &self.title, &self.runs]
+                .iter()
+                .all(|path| !path.exists())
+    }
+
+    /// Gives the id back when nothing was ever written to the conversation, so opening the app
+    /// and leaving it leaves no empty journal behind.
+    pub(crate) fn release_if_empty(&self) {
+        let empty = fs::metadata(&self.journal).is_ok_and(|meta| meta.len() == 0);
+        if empty && let Err(err) = fs::remove_file(&self.journal) {
+            tracing::warn!("removing {}: {err}", self.journal.display());
+        }
     }
 
     pub(crate) fn journal_path(&self) -> &Path {
@@ -187,8 +235,63 @@ impl ChatStore {
             .with_context(|| format!("writing {}", self.title.display()))
     }
 
-    /// Starts `to` with this conversation's journal and where it works, for `/branch` and
-    /// `/fork`. The vendor session stays with this one, since two conversations must never
+    pub(crate) fn runs_path(&self) -> &Path {
+        &self.runs
+    }
+
+    /// The runs this conversation started or opened, oldest first.
+    pub(crate) fn runs(&self) -> Vec<RunId> {
+        self.kept_runs().into_iter().map(|kept| kept.run).collect()
+    }
+
+    /// The title of its first run that has one, which names a conversation with no turn.
+    pub(crate) fn first_run_title(&self) -> Option<String> {
+        self.kept_runs()
+            .into_iter()
+            .map(|kept| kept.title)
+            .find(|title| !title.is_empty())
+    }
+
+    /// One run a line, its id and then its title. A line that doesn't start with a run id is
+    /// skipped.
+    fn kept_runs(&self) -> Vec<ChatRun> {
+        fs::read_to_string(&self.runs)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let (run, title) = line.split_once(' ').unwrap_or((line, ""));
+                Some(ChatRun {
+                    run: RunId::new(run).ok()?,
+                    title: title.trim().to_owned(),
+                })
+            })
+            .collect()
+    }
+
+    /// Adds a run to the conversation's runs, once.
+    pub(crate) fn keep_run(&self, kept: &ChatRun) -> anyhow::Result<()> {
+        if self.runs().contains(&kept.run) {
+            return Ok(());
+        }
+        // The title is your request's, so it's redacted, and kept to one line.
+        let title: String = redact_secrets(&kept.title)
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        self.make_dir()?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&self.runs)
+            .with_context(|| format!("opening {}", self.runs.display()))?;
+        writeln!(file, "{} {}", kept.run, title.trim())
+            .with_context(|| format!("writing {}", self.runs.display()))
+    }
+
+    /// Starts `to` with this conversation's journal, its runs, and where it works, for `/branch`
+    /// and `/fork`. The vendor session stays with this one, since two conversations must never
     /// share it.
     pub(crate) fn copy_to(&self, to: &ChatStore) -> anyhow::Result<()> {
         to.make_dir()?;
@@ -201,6 +304,14 @@ impl ChatStore {
         };
         write_private_file(&to.journal, &journal)
             .with_context(|| format!("writing {}", to.journal.display()))?;
+        match fs::read(&self.runs) {
+            Ok(runs) => write_private_file(&to.runs, &runs)
+                .with_context(|| format!("writing {}", to.runs.display()))?,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| format!("reading {}", self.runs.display()));
+            }
+        }
         match self.place() {
             Some(place) => to.save_place(&place),
             None => Ok(()),
@@ -234,10 +345,85 @@ impl ChatStore {
     }
 }
 
+/// The highest chat number in `chat_dir`, counting every file of a chat, so one that has only
+/// runs or a place still holds its number.
+fn highest_number(chat_dir: &Path) -> u32 {
+    fs::read_dir(chat_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let (id, _) = name.to_str()?.split_once('.')?;
+            id.strip_prefix("chat-")?.parse::<u32>().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use argonauts_core::names::TurnId;
+
+    fn kept(run: &str, title: &str) -> ChatRun {
+        ChatRun {
+            run: RunId::new(run).unwrap(),
+            title: title.to_owned(),
+        }
+    }
+
+    #[test]
+    fn keeps_each_run_once_and_holds_the_id_of_a_conversation_with_only_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let chat_dir = dir.path().join("chat");
+        let store = ChatStore::open(&chat_dir, &ChatId::numbered(1));
+        assert!(store.runs().is_empty());
+        assert_eq!(store.first_run_title(), None);
+        let first = kept("run-001", "add --json\nto export");
+        let second = kept("run-002", "fix the median");
+        store.keep_run(&first).unwrap();
+        store.keep_run(&second).unwrap();
+        store.keep_run(&first).unwrap();
+        assert_eq!(store.runs(), [first.run, second.run]);
+        assert_eq!(
+            store.first_run_title().as_deref(),
+            Some("add --json to export")
+        );
+        // A new conversation never takes over another's runs.
+        assert_eq!(ChatStore::next_id(&chat_dir).as_str(), "chat-002");
+
+        // A copy for /branch or /fork keeps them, with their titles.
+        let copy = ChatStore::open(&chat_dir, &ChatId::numbered(2));
+        store.copy_to(&copy).unwrap();
+        assert_eq!(copy.runs(), store.runs());
+        assert_eq!(copy.first_run_title(), store.first_run_title());
+    }
+
+    /// Two app sessions opened at once, before either writes a thing, still get a conversation
+    /// each, and one left unused gives its number back.
+    #[test]
+    fn a_claimed_id_is_never_shared_and_an_unused_one_goes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let chat_dir = dir.path().join("chat");
+        let first = ChatStore::claim(&chat_dir).unwrap();
+        let second = ChatStore::claim(&chat_dir).unwrap();
+        assert_eq!(first.as_str(), "chat-001");
+        assert_eq!(second.as_str(), "chat-002");
+
+        let used = ChatStore::open(&chat_dir, &first);
+        used.keep_run(&kept("run-001", "hi")).unwrap();
+        used.release_if_empty();
+        let unused = ChatStore::open(&chat_dir, &second);
+        unused.release_if_empty();
+        assert!(!unused.journal_path().exists());
+        // The first keeps its number by its runs, the second's is free again.
+        assert_eq!(ChatStore::claim(&chat_dir).unwrap().as_str(), "chat-002");
+
+        // A conversation that only carries on an agent's session holds its number too.
+        write_private_file(&chat_dir.join("chat-007.place.json"), b"{}").unwrap();
+        assert_eq!(ChatStore::next_id(&chat_dir).as_str(), "chat-008");
+    }
 
     #[test]
     fn keeps_events_and_the_session_to_resume() {

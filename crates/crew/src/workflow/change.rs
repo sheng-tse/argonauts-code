@@ -18,26 +18,29 @@ use argonauts_core::events::goal::Criterion;
 use argonauts_core::events::run::{
     CheckedInstruction, InstructionOutcome, Party, RunLifecycle, RunMode, RunNamed,
 };
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::events::session::{EndReason, InputPart, InputPartKind};
 use argonauts_core::events::workflow::{
     DeclaredPhase, RunNote, WorkflowChanged, WorkflowDeclared, WorkflowEvent,
 };
 use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::names::{CheckpointId, RoleName, WorkflowId};
+use argonauts_core::names::{CheckpointId, RoleName, SessionKey, WorkerRef, WorkflowId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::workflows::{LeadDesign, RunStyle};
 use argonauts_core::steps::StepError;
-use argonauts_core::steps::design::{DesignInput, DesignOutput, DesignWorkflow, WorkflowExample};
+use argonauts_core::steps::design::{
+    DesignFix, DesignInput, DesignOutput, DesignWorkflow, FixDesign, WorkflowExample,
+};
 use argonauts_core::steps::intake::InstructionKind;
 use argonauts_core::workflow::{
     StandardPhase, StepKind, StepRef, Workflow, WorkflowParams, WorkflowRef,
 };
 
 use crate::checkpoints::{self, CheckpointRequest};
-use crate::engine::host::{Ask, Host};
+use crate::engine::host::{Answered, Ask, Host};
 use crate::error::{EngineError, EngineResult};
-use crate::prompts::workflow::DESIGN_WORKFLOW;
+use crate::prompts::workflow::{DESIGN_WORKFLOW, FIX_DESIGN};
 use crate::state::RunState;
+use crate::workflow::brief::Problem;
 use crate::workflow::validate::kind_name;
 use crate::workflow::{StepAt, brief, builtin, params, preset, runner, shape, yaml};
 
@@ -381,16 +384,17 @@ fn note(host: &Host, level: NoteLevel, text: String) -> EngineResult<()> {
     Ok(())
 }
 
-/// A warning in one plain line, with the raw reasons behind it for Ctrl+O.
-fn note_with_detail(host: &Host, line: &str, detail: &str) -> EngineResult<()> {
-    let note = Note::with_detail(NoteLevel::Warn, line, detail);
+/// A note in one plain line, with the raw reasons behind it for Ctrl+O.
+fn note_with_detail(host: &Host, level: NoteLevel, line: &str, detail: &str) -> EngineResult<()> {
+    let note = Note::with_detail(level, line, detail);
     host.record(None, None, RunEventKind::Note(note))?;
     Ok(())
 }
 
 /// With `workflows.adapt_at_phase_ends` on a crew run, runs `DesignWorkflow` in a fresh session
 /// with the running workflow as YAML and one line per finished phase or step. A different answer
-/// is proposed like any change; an unchanged one does nothing.
+/// is proposed like any change; an unchanged one does nothing. One code refuses goes back once
+/// to the same session.
 pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<()> {
     if !host.settings().workflows.adapt_at_phase_ends
         || !host.read(|state| runner::crew_run(state, id))
@@ -466,20 +470,33 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
     let sizes_only =
         host.settings().lead_designs() == LeadDesign::Size && input.as_you_asked.is_empty();
     let examples = preset::part(host).unwrap_or_else(|| examples_part(host));
+    let names = example_names(host);
+    let mut refused: Option<SessionKey> = None;
     for slot in 0..2 {
-        let answered = host
-            .ask::<DesignWorkflow>(Ask {
-                slot,
-                parts: vec![examples.clone()],
-                ..Ask::new(
-                    Some(at.clone()),
-                    RoleName::PhaseLead,
-                    lead.clone(),
-                    DESIGN_WORKFLOW,
-                    input.clone(),
-                )
-            })
-            .await?;
+        let asked = Designing {
+            slot,
+            at: Some(at.clone()),
+            lead: &lead,
+            refused: refused.as_ref(),
+            input: &input,
+            examples: &examples,
+            names: &names,
+        };
+        let answered = ask_design(host, asked).await?;
+        // A change code refuses goes back to the session that proposed it, and the first time
+        // a `›` note says why, as it does for a brief.
+        refused = resumable(host, &answered);
+        let resumed = refused.is_some();
+        let mut send_back = |plainly: &str, errors: Vec<String>| {
+            input.errors = errors;
+            if slot > 0 {
+                return Ok(());
+            }
+            let what = format!("The lead's change after phase {}", phase + 1);
+            let line = fixing(&what, plainly, resumed);
+            let detail = input.errors.join("\n");
+            say_once(host, Some(&answered.session), &line, &detail)
+        };
         let proposed = match resolve(host, &answered.output) {
             // A phase end changes the plan, never the run's name.
             Ok(Some((_, mut proposed))) => {
@@ -496,14 +513,14 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                 });
                 let proposed = shape::as_written(host, keep_what_ran(&current, proposed, from));
                 if sizes_only && let Err(error) = preset::keeps(host, &current, &proposed) {
-                    input.errors = vec![error];
+                    send_back("went beyond sizing your preset", vec![error])?;
                     continue;
                 }
                 proposed
             }
             Ok(None) => return Ok(()),
             Err(error) => {
-                input.errors = vec![error];
+                send_back("wrote a workflow code couldn't read", vec![error])?;
                 continue;
             }
         };
@@ -515,7 +532,8 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
         // approves it as it then stands.
         if prior.is_none() && host.read(|state| before_go_ahead(state, id)) {
             if let Err(errors) = valid_change(host, id, &proposed) {
-                input.errors = errors.lines().map(str::to_owned).collect();
+                let errors = errors.lines().map(str::to_owned).collect();
+                send_back(BROKE, errors)?;
                 continue;
             }
             let note = match why.trim() {
@@ -534,7 +552,8 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                 let request = match change_request(host, id, &proposed, &why, from, Some(&at)) {
                     Ok(request) => request,
                     Err(errors) => {
-                        input.errors = errors.lines().map(str::to_owned).collect();
+                        let errors = errors.lines().map(str::to_owned).collect();
+                        send_back(BROKE, errors)?;
                         continue;
                     }
                 };
@@ -575,8 +594,11 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
          unchanged.",
         phase + 1
     );
-    note_with_detail(host, &line, &input.errors.join("\n"))
+    note_with_detail(host, NoteLevel::Warn, &line, &input.errors.join("\n"))
 }
+
+/// What a change that breaks the workflow's rules did, in plain words.
+const BROKE: &str = "wrote a workflow that breaks its rules";
 
 /// Nothing has been built yet, and the checkpoint that gives the go-ahead is still to come, so
 /// it will show the workflow as changed.
@@ -616,9 +638,10 @@ fn withdrawn(host: &Host, checkpoint: &CheckpointId) -> bool {
 /// labels, and done-when list, starting from an example (built in, or one of your files) or
 /// composed when `allow_composed`. Code shapes it for the run (`shape`): Understand first when
 /// it runs, the checkpoints and the checks, and a goal's first attempt. The brief and the
-/// workflow are validated, and the errors go back to the lead once. An accepted brief names
-/// the run. `None` keeps the preset's workflow, with a note saying why when the lead's answer
-/// didn't hold.
+/// workflow are validated, and what code refuses goes back once to the same lead session,
+/// which fixes it with what it already read. An accepted brief names the run.
+/// `None` keeps the preset's workflow, with a note saying why when the lead's answer didn't
+/// hold.
 pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<WorkflowRef>, Workflow)>> {
     let settings = host.settings();
     let solo = host.read(runner::run_mode) == Some(RunMode::Solo);
@@ -629,27 +652,30 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
     let lead = lead(host);
     // Where the lead may only size your preset, it sees only the preset's workflow.
     let examples = preset::part(host).unwrap_or_else(|| examples_part(host));
-    let names: Vec<String> = self::examples(host)
-        .into_iter()
-        .map(|example| example.name)
-        .collect();
+    let names = example_names(host);
+    let mut refused: Option<SessionKey> = None;
+    let mut refusals = 0;
     for slot in 0..2 {
-        let answered = host
-            .ask::<DesignWorkflow>(Ask {
-                slot,
-                parts: vec![examples.clone()],
-                ..Ask::new(
-                    None,
-                    RoleName::PhaseLead,
-                    lead.clone(),
-                    DESIGN_WORKFLOW,
-                    input.clone(),
-                )
-            })
-            .await;
-        let answered = match answered {
+        let asked = Designing {
+            slot,
+            at: None,
+            lead: &lead,
+            refused: refused.as_ref(),
+            input: &input,
+            examples: &examples,
+            names: &names,
+        };
+        let answered = match ask_design(host, asked).await {
             Ok(answered) => answered,
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
+            // A session that ended without a brief has nothing to fix, so a new one writes it.
+            Err(err) if slot == 0 && ended_early(&err) => {
+                let line = "The lead's session stopped before its brief was done, so a new \
+                            session is writing it.";
+                // A run's brief is written once, so this is said once in its log.
+                say_once(host, None, line, &err.to_string())?;
+                continue;
+            }
             Err(err) => {
                 // Said plainly; what the validator or the session said waits for Ctrl+O.
                 let (what, detail) = match &err {
@@ -660,72 +686,204 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
                     other => ("The lead couldn't design the workflow", other.to_string()),
                 };
                 let line = format!("{what}, so {} runs as written.", settings.workflow);
-                note_with_detail(host, &line, &detail)?;
+                note_with_detail(host, NoteLevel::Warn, &line, &detail)?;
                 return Ok(None);
             }
         };
         let brief = &answered.output;
-        let (from, mut workflow) = match resolve(host, brief) {
-            Ok(Some(resolved)) => resolved,
-            Ok(None) => return Ok(None),
-            Err(error) => {
-                input.errors = vec![error];
-                continue;
-            }
-        };
-        if brief.workflow.is_some()
-            && brief.based_on.is_none()
-            && !settings.workflows.allow_composed
-        {
-            input.errors = vec!["composing is off; start from one of the examples".to_owned()];
-            continue;
-        }
-        input.errors = brief::problems(brief, &workflow, &names);
-        if !input.errors.is_empty() {
-            continue;
-        }
-        // The run keeps your preset, sized, unless `workflows.lead_designs = "any"` or your
-        // request said how to run it.
-        let asked = !input.as_you_asked.is_empty();
-        let sizing = match preset::check(host, from.as_ref(), &workflow, asked) {
-            Ok(sizing) => sizing,
-            Err(error) => {
-                input.errors = vec![error];
-                continue;
-            }
-        };
-        brief::apply_identity(&mut workflow, brief);
-        workflow.name = crate::workflow::naming::unique_name(host, &workflow.name);
-        let first_attempt = match &brief.first_attempt {
-            Some(plan) if shape::run_style(host) == RunStyle::Goal => {
-                match crate::goal::pursue::first_attempt(plan) {
-                    Ok(phase) => Some(phase),
-                    Err(error) => {
-                        input.errors = vec![format!("`first_attempt`: {error}")];
-                        continue;
-                    }
-                }
-            }
-            _ => None,
-        };
-        let workflow = shape::for_run(host, workflow, first_attempt);
-        match runner::check(host, &workflow, 0) {
-            Ok(()) => {
+        let problems = match accept(host, brief, &names, &input) {
+            Ok(Some((sizing, workflow))) => {
                 if let Some(line) = preset::line(&sizing.changes, &brief.why) {
                     note(host, NoteLevel::Info, line)?;
                 }
                 name_run(host, &workflow, &brief.done_when)?;
                 return Ok(Some((sizing.from, workflow)));
             }
-            Err(errors) => input.errors = errors.iter().map(ToString::to_string).collect(),
+            Ok(None) => return Ok(None),
+            Err(problems) => problems,
+        };
+        refusals += 1;
+        input.errors = problems
+            .iter()
+            .map(|problem| problem.line.clone())
+            .collect();
+        refused = resumable(host, &answered);
+        if slot == 0 {
+            let plainly = problems
+                .first()
+                .map_or("broke a rule", |problem| problem.plainly.as_str());
+            let line = fixing("The lead's brief", plainly, refused.is_some());
+            let about = Some(&answered.session);
+            say_once(host, about, &line, &input.errors.join("\n"))?;
         }
     }
-    let line = format!(
-        "The lead's workflow broke the rules twice, so {} runs as written.",
-        settings.workflow
-    );
-    note_with_detail(host, &line, &input.errors.join("\n"))?;
+    let line = if refusals > 1 {
+        format!(
+            "The lead's workflow broke the rules twice, so {} runs as written.",
+            settings.workflow
+        )
+    } else {
+        format!(
+            "The lead's workflow broke the rules, so {} runs as written.",
+            settings.workflow
+        )
+    };
+    note_with_detail(host, NoteLevel::Warn, &line, &input.errors.join("\n"))?;
     Ok(None)
+}
+
+/// What code makes of the lead's brief: the workflow it runs, as sized against your preset;
+/// `None` to keep the preset's; or what code refused, for the lead to fix.
+fn accept(
+    host: &Host,
+    brief: &DesignOutput,
+    names: &[String],
+    input: &DesignInput,
+) -> Result<Option<(preset::Sizing, Workflow)>, Vec<Problem>> {
+    let one = |plainly: &str, line: String| vec![Problem::new(plainly, line)];
+    let (from, mut workflow) = match resolve(host, brief) {
+        Ok(Some(resolved)) => resolved,
+        Ok(None) => return Ok(None),
+        Err(error) => return Err(one("wrote a workflow code couldn't read", error)),
+    };
+    if brief.workflow.is_some()
+        && brief.based_on.is_none()
+        && !host.settings().workflows.allow_composed
+    {
+        return Err(one(
+            "composed a workflow while composing is off",
+            "composing is off; start from one of the examples".to_owned(),
+        ));
+    }
+    let problems = brief::problems(brief, &workflow, names);
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    // The run keeps your preset, sized, unless `workflows.lead_designs = "any"` or your
+    // request said how to run it.
+    let asked = !input.as_you_asked.is_empty();
+    let sizing = preset::check(host, from.as_ref(), &workflow, asked)
+        .map_err(|error| one("went beyond sizing your preset", error))?;
+    brief::apply_identity(&mut workflow, brief);
+    workflow.name = crate::workflow::naming::unique_name(host, &workflow.name);
+    let first_attempt = match &brief.first_attempt {
+        Some(plan) if shape::run_style(host) == RunStyle::Goal => {
+            Some(crate::goal::pursue::first_attempt(plan).map_err(|error| {
+                one(
+                    "planned a first attempt code couldn't read",
+                    format!("`first_attempt`: {error}"),
+                )
+            })?)
+        }
+        _ => None,
+    };
+    let workflow = shape::for_run(host, workflow, first_attempt);
+    runner::check(host, &workflow, 0).map_err(|errors| {
+        errors
+            .iter()
+            .map(|error| Problem::new(BROKE, error.to_string()))
+            .collect::<Vec<_>>()
+    })?;
+    Ok(Some((sizing, workflow)))
+}
+
+/// One ask for the lead's design.
+struct Designing<'a> {
+    slot: u32,
+    /// The phase end it adapts the workflow at, or `None` for the run's brief.
+    at: Option<StepAt>,
+    lead: &'a WorkerRef,
+    /// The session whose design code refused, when it can carry on.
+    refused: Option<&'a SessionKey>,
+    input: &'a DesignInput,
+    examples: &'a InputPart,
+    /// The names the lead may start from, so `based_on` is read as one of them.
+    names: &'a [String],
+}
+
+/// The whole prompt the first time. After code refused a design, the same session hears only
+/// what it refused and what the brief needs, so it keeps what it read of the repository.
+async fn ask_design(host: &Host, asked: Designing<'_>) -> EngineResult<Answered<DesignOutput>> {
+    let Designing {
+        slot,
+        at,
+        lead,
+        refused,
+        input,
+        examples,
+        names,
+    } = asked;
+    let mut answered = match refused {
+        Some(session) => {
+            let fix = DesignFix {
+                errors: input.errors.clone(),
+            };
+            host.ask::<FixDesign>(Ask {
+                slot,
+                resume: Some(session.clone()),
+                ..Ask::new(at, RoleName::PhaseLead, lead.clone(), FIX_DESIGN, fix)
+            })
+            .await?
+        }
+        None => {
+            host.ask::<DesignWorkflow>(Ask {
+                slot,
+                parts: vec![examples.clone()],
+                ..Ask::new(
+                    at,
+                    RoleName::PhaseLead,
+                    lead.clone(),
+                    DESIGN_WORKFLOW,
+                    input.clone(),
+                )
+            })
+            .await?
+        }
+    };
+    answered.output.read_based_on(names);
+    Ok(answered)
+}
+
+/// A `›` note on why the lead is asked again about what session `about` answered, written once
+/// however often a stopped run replays to here.
+fn say_once(host: &Host, about: Option<&SessionKey>, line: &str, detail: &str) -> EngineResult<()> {
+    if host.read(|state| state.said_after(line, about)) {
+        return Ok(());
+    }
+    note_with_detail(host, NoteLevel::Info, line, detail)
+}
+
+/// The note's line: what was refused, in plain words, and who fixes it.
+fn fixing(what: &str, plainly: &str, resumed: bool) -> String {
+    if resumed {
+        format!("{what} {plainly}; it's fixing that.")
+    } else {
+        format!(
+            "{what} {plainly}; a new session is fixing that, since the lead's session can't be \
+             resumed."
+        )
+    }
+}
+
+/// The session that gave a refused design, when its CLI can carry it on.
+fn resumable(host: &Host, answered: &Answered<DesignOutput>) -> Option<SessionKey> {
+    let resumes = host
+        .services()
+        .workers
+        .get(&answered.worker)
+        .is_ok_and(|worker| worker.capabilities().resume);
+    (resumes && answered.end.vendor_session.is_some()).then(|| answered.session.clone())
+}
+
+/// A session that stopped on its own before it answered, which a new one may get past: its
+/// context filled up. A vendor's failure never ends up here, since the ask goes again or hands
+/// the seat on by itself, and a stop of yours ends the same way however often
+/// it's asked.
+fn ended_early(err: &EngineError) -> bool {
+    matches!(
+        err,
+        EngineError::Step(StepError::Session(end)) if end.reason == EndReason::ContextFull
+    )
 }
 
 pub(crate) fn lead(host: &Host) -> argonauts_core::names::WorkerRef {
@@ -874,6 +1032,14 @@ pub fn examples(host: &Host) -> Vec<WorkflowExample> {
     }
     rank_examples(&mut examples);
     examples
+}
+
+/// The names of every workflow the lead may pick, as `lookup` finds them.
+fn example_names(host: &Host) -> Vec<String> {
+    examples(host)
+        .into_iter()
+        .map(|example| example.name)
+        .collect()
 }
 
 /// Best first: more passes, then a better pass rate over the runs. Workflows with no runs keep

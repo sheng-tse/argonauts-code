@@ -53,13 +53,15 @@ pub struct Outcome {
 
 impl Crew {
     /// The default preset's settings with an empty crew. A run with a checkpoint waiting parks
-    /// at once instead of after the usual grace, so scenarios don't wait. The lead doesn't
+    /// at once instead of after the usual grace, and a session that failed for a vendor reason
+    /// goes again at once, so scenarios don't wait. The lead doesn't
     /// design the workflow, runs are workflows whoever leads, and no final check runs, unless a
     /// scenario turns them on, so scripted answers go to the steps they were written for.
     pub fn new() -> anyhow::Result<Self> {
         let mut settings = Settings::default();
         settings.crew.clear();
         settings.supervisor.park_grace = Span::new("0s");
+        settings.supervisor.retry_wait = Span::new("0s");
         settings.workflows.lead_designs = false.into();
         settings.workflows.style = StyleSetting::Workflow;
         settings.workflows.final_check = false;

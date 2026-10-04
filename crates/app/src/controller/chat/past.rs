@@ -1,6 +1,7 @@
 //! Earlier conversations, read back from their journals at no token cost: the `/resume` list,
 //! and the turns a resumed conversation reprints and primes a fresh session with.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use argonauts_core::app::{ChatEvent, ChatSummary, ReplayTurn, TurnReply};
@@ -34,6 +35,11 @@ pub(super) struct PastChat {
 }
 
 impl PastChat {
+    /// Nothing to carry on: no turn, and no run started or opened in it.
+    pub(super) fn is_empty(&self) -> bool {
+        self.turns.is_empty() && self.summary.runs == 0
+    }
+
     /// The turns a fresh session is primed with: from the last `/compact` on, since its
     /// summary stands for everything before it.
     pub(super) fn since_compacted(&self) -> &[PastTurn] {
@@ -81,46 +87,64 @@ impl PastChat {
     }
 }
 
-/// Every conversation in `chat_dir` that has at least one turn, newest first.
+/// Every conversation in `chat_dir` with a turn or a run it started or opened, newest first.
 pub(crate) fn list(chat_dir: &Path) -> Vec<ChatSummary> {
-    let mut chats: Vec<ChatSummary> = std::fs::read_dir(chat_dir)
+    let ids: BTreeSet<ChatId> = std::fs::read_dir(chat_dir)
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
-            if path.extension()? != "jsonl" {
+            let extension = path.extension()?;
+            if extension != "jsonl" && extension != "runs" {
                 return None;
             }
-            let chat = ChatId::parse(path.file_stem()?.to_str()?)?;
-            let past = load(chat_dir, &chat)?;
-            (past.summary.turns > 0).then_some(past.summary)
+            ChatId::parse(path.file_stem()?.to_str()?)
         })
+        .collect();
+    let mut chats: Vec<ChatSummary> = ids
+        .iter()
+        .filter_map(|chat| load(chat_dir, chat))
+        .filter(|past| !past.is_empty())
+        .map(|past| past.summary)
         .collect();
     chats.sort_by(|a, b| b.updated.cmp(&a.updated).then(b.chat.cmp(&a.chat)));
     chats
 }
 
-/// The conversation `chat`, or `None` when it has no journal.
+/// The conversation `chat`, or `None` when it has neither a journal nor runs.
 pub(super) fn load(chat_dir: &Path, chat: &ChatId) -> Option<PastChat> {
     let store = ChatStore::open(chat_dir, chat);
-    let events = store.read_events().ok()??;
-    let updated = std::fs::metadata(store.journal_path())
-        .and_then(|meta| meta.modified())
-        .map(OffsetDateTime::from)
-        .unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let runs = store.runs();
+    let events = match store.read_events().ok()? {
+        Some(events) => events,
+        None if !runs.is_empty() => Vec::new(),
+        None => return None,
+    };
+    // Opening a run writes only the runs file, and that's using the conversation too.
+    let updated = [store.journal_path(), store.runs_path()]
+        .into_iter()
+        .filter_map(|path| {
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .max()
+        .map_or_else(OffsetDateTime::now_utc, OffsetDateTime::from);
     let turns = fold(events);
+    let title = store
+        .title()
+        .or_else(|| turns.first().map(|turn| title_from_request(&turn.request)))
+        .or_else(|| store.first_run_title())
+        .unwrap_or_default();
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
     let summary = ChatSummary {
         chat: chat.clone(),
-        title: store.title().unwrap_or_else(|| {
-            turns
-                .first()
-                .map(|turn| title_from_request(&turn.request))
-                .unwrap_or_default()
-        }),
+        title,
         updated,
         worker: turns.last().map(|turn| turn.worker.clone()),
-        turns: u32::try_from(turns.len()).unwrap_or(u32::MAX),
+        turns: count(turns.len()),
+        runs: count(runs.len()),
     };
     Some(PastChat { summary, turns })
 }
@@ -273,6 +297,67 @@ mod tests {
         let ids: Vec<&str> = chats.iter().map(|chat| chat.chat.as_str()).collect();
         assert_eq!(ids, vec!["chat-003", "chat-001"]);
         assert_eq!(chats[0].title, "second chat");
+    }
+
+    /// One that only started or opened runs is listed, named after its first run, and opening a
+    /// run in an older one makes that one the newest again. One claimed and never used isn't.
+    #[test]
+    fn a_conversation_with_only_runs_is_listed_by_its_last_change() {
+        use crate::chat_store::ChatRun;
+        use argonauts_core::RunId;
+        use std::time::{Duration, SystemTime};
+
+        fn touch(path: &Path, hours_ago: u64) {
+            let at = SystemTime::now() - Duration::from_secs(hours_ago * 3600);
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(at).unwrap();
+        }
+        fn kept(run: &str, title: &str) -> ChatRun {
+            ChatRun {
+                run: RunId::new(run).unwrap(),
+                title: title.to_owned(),
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), 1, &[started(1, "hi", "claude-code")]);
+        let chatted = ChatStore::open(dir.path(), &ChatId::numbered(1));
+        touch(chatted.journal_path(), 2);
+        let only_runs = ChatStore::open(dir.path(), &ChatId::numbered(2));
+        only_runs
+            .keep_run(&kept("run-009", "fix the median"))
+            .unwrap();
+        touch(only_runs.runs_path(), 1);
+        ChatStore::claim(dir.path()).unwrap();
+
+        let chats = list(dir.path());
+        let shown: Vec<(&str, &str, u32, u32)> = chats
+            .iter()
+            .map(|chat| {
+                (
+                    chat.chat.as_str(),
+                    chat.title.as_str(),
+                    chat.turns,
+                    chat.runs,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("chat-002", "fix the median", 0, 1),
+                ("chat-001", "hi", 1, 0)
+            ]
+        );
+        assert!(!load(dir.path(), &ChatId::numbered(2)).unwrap().is_empty());
+
+        chatted
+            .keep_run(&kept("run-010", "rename the loader"))
+            .unwrap();
+        let chats = list(dir.path());
+        assert_eq!(chats[0].chat.as_str(), "chat-001");
+        assert_eq!(chats[0].title, "hi");
+        assert_eq!(chats[0].runs, 1);
     }
 
     #[test]

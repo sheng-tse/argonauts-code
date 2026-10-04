@@ -19,6 +19,7 @@ use crate::commands::help_sections;
 use crate::mentions::{Resolved, resolve_target};
 use crate::runtime::{TakeOverPlan, plan_take_over, write_spec_files};
 use crate::state::AppState;
+use crate::views::waiting::{self, RunEntry};
 
 use super::answer::Armed;
 use super::cards::{CardList, ListTarget};
@@ -231,13 +232,23 @@ impl Reader {
             SlashCommand::Help => said
                 .lines
                 .extend(help_lines(self.state.vendor_commands.as_ref())),
-            SlashCommand::Workflows => match shown_run(&self.state) {
-                Some(run) => said.commands.push(UiCommand::Request {
-                    view: ViewRequest::Workflow {
-                        run: run.id.clone(),
-                        workflow: None,
-                    },
-                }),
+            // What the run's row opens on screen: the lead's session while it
+            // designs, else the workflow, printed as text.
+            SlashCommand::Workflows => match shown_run(&self.state).map(|run| run.id.clone()) {
+                Some(run) => match waiting::entry(&self.state, &run) {
+                    RunEntry::Session(session) => said.commands.push(UiCommand::Request {
+                        view: ViewRequest::Agent { run, session },
+                    }),
+                    RunEntry::Workflow => said.commands.push(UiCommand::Request {
+                        view: ViewRequest::Workflow {
+                            run,
+                            workflow: None,
+                        },
+                    }),
+                    RunEntry::Waiting => said
+                        .lines
+                        .push(waiting::waiting_for(self.state.runs.get(&run))),
+                },
                 None => said.commands.push(UiCommand::Request {
                     view: ViewRequest::WorkflowLibrary,
                 }),

@@ -244,7 +244,8 @@ impl Observer {
         ) {
             self.understood += 1;
         }
-        self.out.agent(event.clone());
+        // The earlier sessions' rows show what they spent, so a resumed one shows only its own.
+        self.out.agent(self.meter.without_earlier_turns(&event));
         self.note(&event);
         for path in changed_paths(&event) {
             self.diffs.changed(path);
@@ -721,7 +722,8 @@ mod tests {
     use crate::harness_worker::capabilities::CLAUDE_CODE;
     use crate::harness_worker::outbox;
     use crate::harness_worker::testing::{
-        Harness, TestAdapter, collect, event_line, session_events, spec_in, unique_key,
+        Harness, TestAdapter, agent_events, collect, event_line, session_events, spec_in,
+        unique_key,
     };
     use crate::health::is_vendor_trouble;
 
@@ -921,6 +923,20 @@ mod tests {
         };
         let (events, end) = collect(h.worker.start(resumed).await.unwrap()).await;
         assert!((end.spend.cost_usd - 0.4).abs() < 1e-9, "{:?}", end.spend);
+        // Its usage reaches you as its own, so the first session's $0.60 shows once.
+        let reported = agent_events(&events)
+            .into_iter()
+            .find_map(|event| match event {
+                AgentEvent::Usage {
+                    cost_usd,
+                    input_tokens,
+                    ..
+                } => Some((*cost_usd, *input_tokens)),
+                _ => None,
+            });
+        let (cost, tokens) = reported.unwrap_or_default();
+        assert!((cost.unwrap_or_default() - 0.4).abs() < 1e-9, "{cost:?}");
+        assert_eq!(tokens, 0);
         assert!(!matches!(end.reason, EndReason::BudgetHit { .. }));
         let cap = session_events(&events)
             .into_iter()

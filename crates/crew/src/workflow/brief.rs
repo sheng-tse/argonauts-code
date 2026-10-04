@@ -8,9 +8,10 @@ use std::collections::BTreeSet;
 use unicode_width::UnicodeWidthStr;
 
 use argonauts_core::events::checkpoint::CheckpointKind;
+use argonauts_core::events::goal::{Criterion, CriterionCheck};
 use argonauts_core::labels;
 use argonauts_core::steps::StepName;
-use argonauts_core::steps::design::DesignOutput;
+use argonauts_core::steps::design::{DesignOutput, names_a_test, starts_with_program};
 use argonauts_core::workflow::{Step, StepKind, Workflow};
 
 use crate::state::RunState;
@@ -23,101 +24,187 @@ pub const MAX_PHASES: usize = 6;
 pub const MAX_CRITERIA: usize = 8;
 pub const MAX_QUESTIONS: usize = 3;
 
+/// One thing code refused in a brief: what the lead is told, and the few plain words your
+/// `›` note says after "The lead's brief", such as "named the run in 5 words".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    pub plainly: String,
+    /// For the lead, with what the rule wants.
+    pub line: String,
+}
+
+impl Problem {
+    pub fn new(plainly: impl Into<String>, line: impl Into<String>) -> Self {
+        Self {
+            plainly: plainly.into(),
+            line: line.into(),
+        }
+    }
+}
+
 /// What's wrong with the brief, each as one line for the lead. `workflow` is the one it names,
 /// filled in and before code frames it; `examples` are the names it may start from.
-pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) -> Vec<String> {
+pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) -> Vec<Problem> {
     let mut problems = Vec::new();
     if let Some(problem) = name_problem(&brief.name, examples) {
         problems.push(problem);
     }
     let description = brief.description.trim();
     if description.is_empty() {
-        problems.push("`description` is empty; say the task in one plain line".to_owned());
+        problems.push(Problem::new(
+            "left out the description",
+            "`description` is empty; say the task in one plain line",
+        ));
     } else if description.contains('\n') {
-        problems.push("`description` is more than one line".to_owned());
+        problems.push(Problem::new(
+            "wrote the description on more than one line",
+            "`description` is more than one line",
+        ));
     } else if description.width() > DESCRIPTION_CELLS {
-        problems.push(format!(
-            "`description` is {} cells; keep it to {DESCRIPTION_CELLS}",
-            description.width()
+        problems.push(Problem::new(
+            "wrote a description too long for its line",
+            format!(
+                "`description` is {} cells; keep it to {DESCRIPTION_CELLS}",
+                description.width()
+            ),
         ));
     }
     if let Some(based_on) = &brief.based_on
         && !examples.iter().any(|example| example == based_on)
     {
-        problems.push(format!("`based_on: {based_on}` names no example"));
+        problems.push(Problem::new(
+            "started from an example that doesn't exist",
+            format!("`based_on: {based_on}` names no example"),
+        ));
     }
     let phases = workflow.phases.len();
     if phases == 0 || phases > MAX_PHASES {
-        problems.push(format!(
-            "the workflow has {phases} phases; write 1 to {MAX_PHASES}"
+        problems.push(Problem::new(
+            format!("planned {phases} phases"),
+            format!("the workflow has {phases} phases; write 1 to {MAX_PHASES}"),
         ));
     }
     let mut titles = BTreeSet::new();
     for (index, phase) in workflow.phases.iter().enumerate() {
         let at = format!("phase {} ({})", index + 1, phase.name);
         if !titles.insert(phase.name.trim().to_lowercase()) {
-            problems.push(format!(
-                "{at} has the title another phase has; give each phase its own"
+            problems.push(Problem::new(
+                "gave two phases one title",
+                format!("{at} has the title another phase has; give each phase its own"),
             ));
         }
         if !title_case(&phase.name) {
-            problems.push(format!(
-                "{at}: a title is one or two words in Title Case, such as `Fix` or `Final Check`"
+            problems.push(Problem::new(
+                "gave a phase a title that isn't one or two words in Title Case",
+                format!(
+                    "{at}: a title is one or two words in Title Case, such as `Fix` or `Final \
+                     Check`"
+                ),
             ));
         }
         if !phase.steps.is_empty() && phase.steps.iter().all(is_checkpoint) {
-            problems.push(format!(
-                "{at} holds only a checkpoint; a checkpoint gates the phase it comes before, so \
-                 put it there"
+            problems.push(Problem::new(
+                "put a checkpoint in a phase of its own",
+                format!(
+                    "{at} holds only a checkpoint; a checkpoint gates the phase it comes before, \
+                     so put it there"
+                ),
             ));
         }
         // An example run as written keeps its own words; a workflow the lead wrote says them.
         if brief.workflow.is_some() && phase.detail.trim().is_empty() {
-            problems.push(format!(
-                "{at} has no `detail`; say who does what in one line"
+            problems.push(Problem::new(
+                "left a phase without its detail",
+                format!("{at} has no `detail`; say who does what in one line"),
             ));
         }
     }
     let criteria = brief.done_when.len();
     if criteria == 0 || criteria > MAX_CRITERIA {
-        problems.push(format!(
-            "`done_when` has {criteria} criteria; write 1 to {MAX_CRITERIA}, each one sentence a \
-             check can prove"
+        problems.push(Problem::new(
+            format!("listed {criteria} done-when criteria"),
+            format!(
+                "`done_when` has {criteria} criteria; write 1 to {MAX_CRITERIA}, each one \
+                 sentence a check can prove"
+            ),
         ));
     }
     let mut ids = BTreeSet::new();
     for criterion in &brief.done_when {
         if criterion.text.trim().is_empty() {
-            problems.push(format!("criterion {} has no text", criterion.id));
+            problems.push(Problem::new(
+                "left a done-when criterion without its sentence",
+                format!("criterion {} has no text", criterion.id),
+            ));
         }
         if !ids.insert(criterion.id.as_str()) {
-            problems.push(format!("criterion id {} is used twice", criterion.id));
+            problems.push(Problem::new(
+                "gave two criteria one id",
+                format!("criterion id {} is used twice", criterion.id),
+            ));
         }
+        problems.extend(check_problem(criterion));
     }
     if brief.questions.len() > MAX_QUESTIONS {
-        problems.push(format!(
-            "{} questions; ask at most {MAX_QUESTIONS}, the rest are yours to decide",
-            brief.questions.len()
+        problems.push(Problem::new(
+            format!("asked {} questions", brief.questions.len()),
+            format!(
+                "{} questions; ask at most {MAX_QUESTIONS}, the rest are yours to decide",
+                brief.questions.len()
+            ),
         ));
     }
     if brief.plan.len() > 1 {
-        problems.push(format!(
-            "`plan` lists {} cards; a build from the goal makes one card, and a drafted plan's \
-             planner names its own",
-            brief.plan.len()
+        problems.push(Problem::new(
+            format!(
+                "planned {} cards where its build makes one",
+                brief.plan.len()
+            ),
+            format!(
+                "`plan` lists {} cards; a build from the goal makes one card, and a drafted \
+                 plan's planner names its own",
+                brief.plan.len()
+            ),
         ));
     }
     let mut items = BTreeSet::new();
     for card in &brief.plan {
         let item = labels::slug(&card.item, 3);
         if item.is_empty() || !items.insert(item.clone()) {
-            problems.push(format!(
-                "plan item `{}` is empty or repeats; each card needs its own one-token name",
-                card.item
+            problems.push(Problem::new(
+                "gave a card no name of its own",
+                format!(
+                    "plan item `{}` is empty or repeats; each card needs its own one-token name",
+                    card.item
+                ),
             ));
         }
     }
     problems
+}
+
+/// A check nothing can run: prose given as a test's name or as a command, such as
+/// `{"test": "test passes"}`.
+fn check_problem(criterion: &Criterion) -> Option<Problem> {
+    let id = &criterion.id;
+    match &criterion.check {
+        CriterionCheck::Test(name) if !names_a_test(name) => Some(Problem::new(
+            "gave a check a test name that isn't one",
+            format!(
+                "criterion {id}: `test: {name}` isn't a test's name; name the one test that \
+                 proves it as its runner does, such as `test_median_empty` or \
+                 `tests/test_bucket.py::test_cap`, or give a command, or `review`"
+            ),
+        )),
+        CriterionCheck::Command(command) if !starts_with_program(command) => Some(Problem::new(
+            "gave a check a command that isn't one",
+            format!(
+                "criterion {id}: `command: {command}` doesn't start with a program; write the \
+                 command that proves it, such as `pytest tests/test_bucket.py`, or `review`"
+            ),
+        )),
+        _ => None,
+    }
 }
 
 /// The brief the lead wrote for this run: the newest design asked before the workflow
@@ -148,7 +235,7 @@ pub fn item(state: &RunState) -> Option<String> {
 }
 
 /// Why a run's name can't be used, or `None`.
-pub fn name_problem(name: &str, examples: &[String]) -> Option<String> {
+pub fn name_problem(name: &str, examples: &[String]) -> Option<Problem> {
     let words: Vec<&str> = name.split('-').collect();
     let well_formed = !name.is_empty()
         && words.iter().all(|word| {
@@ -158,22 +245,36 @@ pub fn name_problem(name: &str, examples: &[String]) -> Option<String> {
                     .all(|c| c.is_alphanumeric() && !c.is_uppercase())
         });
     if !well_formed {
-        return Some(format!(
-            "name `{name}` isn't lowercase words joined with `-`, such as `fix-slugify-median`"
+        return Some(Problem::new(
+            if name.is_empty() {
+                "left out the run's name"
+            } else {
+                "named the run in something other than lowercase words"
+            },
+            format!(
+                "name `{name}` isn't lowercase words joined with `-`, such as `fix-slugify-median`"
+            ),
         ));
     }
     if !(2..=4).contains(&words.len()) {
-        return Some(format!(
-            "name `{name}` has {} words; use two to four about the task",
-            words.len()
+        return Some(Problem::new(
+            format!("named the run in {} words", words.len()),
+            format!(
+                "name `{name}` has {} words; use two to four about the task",
+                words.len()
+            ),
         ));
     }
     if name.width() > NAME_CELLS {
-        return Some(format!("name `{name}` is wider than {NAME_CELLS} cells"));
+        return Some(Problem::new(
+            "named the run too wide to show",
+            format!("name `{name}` is wider than {NAME_CELLS} cells"),
+        ));
     }
     if examples.iter().any(|example| example == name) {
-        return Some(format!(
-            "name `{name}` is an example's; name the run for its task"
+        return Some(Problem::new(
+            "named the run after an example",
+            format!("name `{name}` is an example's; name the run for its task"),
         ));
     }
     None
@@ -324,11 +425,56 @@ phases:
         yaml::parse(FIX).unwrap()
     }
 
+    /// Why Haiku's first brief for a peer-crew run on 10-04 was refused: its name. Its checks
+    /// written as `"review"` were never the problem.
+    #[test]
+    fn the_logged_brief_was_refused_for_its_five_word_name() {
+        let refused = name_problem("rate-limiter-per-api-key", &examples());
+        assert_eq!(
+            refused.map(|problem| problem.plainly),
+            Some("named the run in 5 words".to_owned())
+        );
+    }
+
+    /// The same brief gave G3 and G5 as `{"test": "test passes"}`, which no check can run, so
+    /// that goes back too, as does a command written as a sentence.
+    #[test]
+    fn a_check_written_as_prose_is_refused() {
+        let plainly = |check: CriterionCheck| {
+            let mut written = brief();
+            written.done_when[0].check = check;
+            problems(&written, &workflow(), &examples())
+                .into_iter()
+                .map(|problem| problem.plainly)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            plainly(CriterionCheck::Test("test passes".to_owned())),
+            ["gave a check a test name that isn't one"]
+        );
+        assert_eq!(
+            plainly(CriterionCheck::Command("run the tests".to_owned())),
+            ["gave a check a command that isn't one"]
+        );
+        assert!(
+            plainly(CriterionCheck::Test(
+                "test_never_holds_more_than_capacity".to_owned()
+            ))
+            .is_empty()
+        );
+        assert!(
+            plainly(CriterionCheck::Command(
+                "python -m pytest tests/".to_owned()
+            ))
+            .is_empty()
+        );
+    }
+
     #[test]
     fn a_good_brief_passes() {
         assert_eq!(
             problems(&brief(), &workflow(), &examples()),
-            Vec::<String>::new()
+            Vec::<Problem>::new()
         );
     }
 
@@ -336,16 +482,32 @@ phases:
     fn the_name_and_description_are_checked() {
         let mut missing = brief();
         missing.name = String::new();
-        assert!(problems(&missing, &workflow(), &examples())[0].contains("name ``"));
+        assert!(
+            problems(&missing, &workflow(), &examples())[0]
+                .line
+                .contains("name ``")
+        );
         let mut template = brief();
         template.name = "peer-crew".to_owned();
-        assert!(problems(&template, &workflow(), &examples())[0].contains("an example's"));
+        assert!(
+            problems(&template, &workflow(), &examples())[0]
+                .line
+                .contains("an example's")
+        );
         let mut long = brief();
         long.description = "x".repeat(73);
-        assert!(problems(&long, &workflow(), &examples())[0].contains("72"));
+        assert!(
+            problems(&long, &workflow(), &examples())[0]
+                .line
+                .contains("72")
+        );
         let mut unknown = brief();
         unknown.based_on = Some("nonesuch".to_owned());
-        assert!(problems(&unknown, &workflow(), &examples())[0].contains("names no example"));
+        assert!(
+            problems(&unknown, &workflow(), &examples())[0]
+                .line
+                .contains("names no example")
+        );
     }
 
     #[test]
@@ -360,7 +522,7 @@ phases:
         assert!(
             problems(&brief(), &seven, &examples())
                 .iter()
-                .any(|problem| problem.contains("7 phases"))
+                .any(|problem| problem.line.contains("7 phases"))
         );
 
         let lone: Workflow = yaml::parse(
@@ -371,7 +533,7 @@ phases:
         assert!(
             problems(&brief(), &lone, &examples())
                 .iter()
-                .any(|problem| problem.contains("only a checkpoint"))
+                .any(|problem| problem.line.contains("only a checkpoint"))
         );
     }
 
@@ -379,10 +541,18 @@ phases:
     fn the_done_when_list_has_one_to_eight_criteria() {
         let mut none = brief();
         none.done_when.clear();
-        assert!(problems(&none, &workflow(), &examples())[0].contains("0 criteria"));
+        assert!(
+            problems(&none, &workflow(), &examples())[0]
+                .line
+                .contains("0 criteria")
+        );
         let mut twice = brief();
         twice.done_when.push(Criterion::new("G1", "again"));
-        assert!(problems(&twice, &workflow(), &examples())[0].contains("used twice"));
+        assert!(
+            problems(&twice, &workflow(), &examples())[0]
+                .line
+                .contains("used twice")
+        );
     }
 
     #[test]
@@ -393,11 +563,13 @@ phases:
         assert!(
             found
                 .iter()
-                .any(|problem| problem.contains("title another phase has")),
+                .any(|problem| problem.line.contains("title another phase has")),
             "{found:?}"
         );
         assert!(
-            found.iter().any(|problem| problem.contains("Title Case")),
+            found
+                .iter()
+                .any(|problem| problem.line.contains("Title Case")),
             "{found:?}"
         );
         let mut long = workflow();
@@ -405,13 +577,13 @@ phases:
         assert!(
             problems(&brief(), &long, &examples())
                 .iter()
-                .any(|problem| problem.contains("Title Case"))
+                .any(|problem| problem.line.contains("Title Case"))
         );
         let mut two_words = workflow();
         two_words.phases[1].name = "Final Check".to_owned();
         assert_eq!(
             problems(&brief(), &two_words, &examples()),
-            Vec::<String>::new()
+            Vec::<Problem>::new()
         );
     }
 
@@ -425,7 +597,7 @@ phases:
         assert!(
             problems(&two, &workflow(), &examples())
                 .iter()
-                .any(|problem| problem.contains("lists 2 cards"))
+                .any(|problem| problem.line.contains("lists 2 cards"))
         );
     }
 

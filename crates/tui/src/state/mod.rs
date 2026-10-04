@@ -50,8 +50,8 @@ pub struct AppState {
     pub runs: BTreeMap<RunId, RunState>,
     /// The attached run, the one Esc, `/stop`, and plain text act on.
     pub attached: Option<RunId>,
-    /// This repo's runs going or waiting on you that this screen doesn't hold, from the last
-    /// `BackgroundRuns`. Each gets an agent panel row; its card waits until you open it.
+    /// This conversation's runs going or waiting on you that this screen doesn't hold, from the
+    /// last `BackgroundRuns`. Each gets an agent panel row; its card waits until you open it.
     pub background: Vec<RunSummary>,
     pub chat: ChatState,
     /// Open app choices, oldest first.
@@ -269,6 +269,7 @@ impl AppState {
             | AppEvent::CondensedReplay { .. }
             | AppEvent::ChatResumed { .. }
             | AppEvent::Report { .. }
+            | AppEvent::Hint { .. }
             | AppEvent::Exit => {}
         }
     }

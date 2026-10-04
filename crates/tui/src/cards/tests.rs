@@ -1607,10 +1607,13 @@ fn a_card_your_rules_still_decide_takes_the_keys_once_it_needs_you() {
     auto.mode = ApprovalMode::Auto;
     auto.needs_you = false;
     screen.event(opened_event(auto));
-    assert!(!screen.card().focused, "it waits while your rules decide");
+    assert_eq!(
+        screen.model.bottom.card, None,
+        "it asks nothing while your rules decide, so it stays off the screen"
+    );
     let out = screen.event(check(Some(Verdict::Escalate), true));
     assert!(
-        !out.bell && !screen.card().focused,
+        !out.bell && screen.model.bottom.card.is_none(),
         "a shadow check is only recorded"
     );
     // The engine's own shape for "ask the user": no verdict, and maybe no reason either.
@@ -1651,7 +1654,10 @@ fn a_card_that_needs_you_goes_before_a_waiting_spot_check() {
         id: CheckpointId::numbered(1),
     }));
     assert!(screen.card().title.starts_with("Spot check"));
-    assert!(!screen.card().focused, "a spot check waits for ↑");
+    assert!(
+        screen.card().focused,
+        "a spot check asks, so it takes the keys"
+    );
 
     let mut next = handoff();
     next.id = CheckpointId::numbered(2);
@@ -1660,7 +1666,10 @@ fn a_card_that_needs_you_goes_before_a_waiting_spot_check() {
     assert!(screen.card().focused);
     screen.keys(&[KeyCode::Esc]);
     assert!(screen.card().title.starts_with("Spot check"));
-    assert!(!screen.card().focused);
+    assert!(
+        screen.card().focused,
+        "and it asks again once the handoff is set aside"
+    );
 }
 
 #[test]
@@ -1705,7 +1714,7 @@ fn an_answered_question_goes_by_its_label() {
     answer.text = Some("Yes, half up.".into());
     let names = DisplayNames::default();
     assert_eq!(
-        records::outcome(&question, &answer, None, &names),
+        records::outcome(&question, &answer, None, &names, &records::by_id),
         "Question from build:fix-money answered · Yes, half up."
     );
     let chosen = decided(
@@ -1715,7 +1724,7 @@ fn an_answered_question_goes_by_its_label() {
         Party::User,
     );
     assert_eq!(
-        records::outcome(&question, &chosen, None, &names),
+        records::outcome(&question, &chosen, None, &names, &records::by_id),
         "Question from build:fix-money answered · half up"
     );
 }
@@ -1768,4 +1777,147 @@ fn a_goal_question_takes_your_own_answer_inside_the_card() {
     };
     assert_eq!(*action, AnswerAction::Answer);
     assert_eq!(text.as_deref(), Some("only behind a flag"));
+}
+
+/// Every kind of choice, each naming the one after it, so a new kind can't build until it's
+/// walked here too.
+fn next_choice_kind(kind: Option<ChoiceKind>) -> Option<ChoiceKind> {
+    use ChoiceKind::*;
+    match kind {
+        None => Some(StartWork),
+        Some(StartWork) => Some(ConfirmTakeOver),
+        Some(ConfirmTakeOver) => Some(ConfirmSafetySetting),
+        Some(ConfirmSafetySetting) => Some(TermsNote),
+        Some(TermsNote) => Some(Init),
+        Some(Init) => Some(SettingScope),
+        Some(SettingScope) => Some(DetectedGates),
+        Some(DetectedGates) => Some(TrustProject),
+        Some(TrustProject) => Some(ConfirmRevert),
+        Some(ConfirmRevert) => Some(ConfirmConnect),
+        Some(ConfirmConnect) => Some(KeepInstructions),
+        Some(KeepInstructions) => Some(Permission),
+        Some(Permission) => Some(RefusedCommands),
+        Some(RefusedCommands) => Some(RewindTurn),
+        Some(RewindTurn) => Some(GoAhead),
+        Some(GoAhead) => Some(HandOff),
+        Some(HandOff) => None,
+    }
+}
+
+/// Every kind of checkpoint, walked the same way.
+fn next_checkpoint_kind(kind: Option<CheckpointKind>) -> Option<CheckpointKind> {
+    use CheckpointKind::*;
+    match kind {
+        None => Some(Goal),
+        Some(Goal) => Some(Plan),
+        Some(Plan) => Some(Merge),
+        Some(Merge) => Some(Handoff),
+        Some(Handoff) => Some(VendorDown),
+        Some(VendorDown) => Some(Escalation),
+        Some(Escalation) => Some(Budget),
+        Some(Budget) => Some(ChangeRequest),
+        Some(ChangeRequest) => Some(GoalChange),
+        Some(GoalChange) => Some(RecipePromotion),
+        Some(RecipePromotion) => Some(TakeOverReturn),
+        Some(TakeOverReturn) => Some(Question),
+        Some(Question) => Some(OriginalReturned),
+        Some(OriginalReturned) => None,
+    }
+}
+
+/// The bottom of the screen with `card` up and an input nobody touched, after a frame.
+fn bottom_with(card: CardPrompt) -> (crate::bottom::BottomState, Vec<String>) {
+    let mut bottom = crate::bottom::BottomState::new();
+    bottom.card = Some(card);
+    let now = Instant::now();
+    bottom.hand_keys_to_card(now);
+    let mut theme = Theme::dark();
+    theme.glyphs = Glyphs::UNICODE;
+    let view = bottom.render(&RenderCtx::new(100, &theme, Clock::still(now)));
+    let rows = plain_text(&view.lines).lines().map(str::to_owned).collect();
+    (bottom, rows)
+}
+
+/// As a rule rather than a list: every card that asks you something takes the keys
+/// once the input is free, and the input box goes while it holds them, whatever its kind. A new
+/// kind of choice or checkpoint fails here until it does.
+#[test]
+fn every_card_that_asks_takes_the_keys_and_hides_the_input() {
+    let mut cards = Vec::new();
+    let mut kind = next_choice_kind(None);
+    while let Some(each) = kind {
+        let options = vec![
+            option('y', "Yes", AnswerAction::Approve),
+            option('n', "No", AnswerAction::Cancel),
+        ];
+        cards.push(choice::choice_card(1, &choice(each, options)));
+        kind = next_choice_kind(Some(each));
+    }
+    let mut kind = next_checkpoint_kind(None);
+    while let Some(each) = kind {
+        let mut opened = merge();
+        opened.kind = each;
+        cards.push(checkpoint::checkpoint_card(1, &opened, None));
+        kind = next_checkpoint_kind(Some(each));
+    }
+    let names = DisplayNames::default();
+    cards.push(spot::spot_check_card(1, &merge(), None, None, &names));
+
+    for card in cards {
+        let title = card.title.clone();
+        assert!(card.asks(), "{title} asks you, so it says so");
+        let (bottom, rows) = bottom_with(card);
+        assert!(bottom.focused_card().is_some(), "{title} takes the keys");
+        assert!(
+            !rows.iter().any(|row| row.starts_with('❯')),
+            "{title} stands in for the input:\n{}",
+            rows.join("\n")
+        );
+    }
+}
+
+/// A go-ahead in full auto, as the peer crew's was: while full auto decides, "Run this
+/// workflow?" asks nothing and stays off the screen. Once its approver can't check it and full
+/// auto leaves it to you, it asks and holds the keys with the input hidden, never waiting for ↑
+/// under a ruled input.
+#[test]
+fn a_go_ahead_full_auto_leaves_to_you_holds_the_keys() {
+    let mut screen = Screen::new();
+    let mut go_ahead = merge();
+    go_ahead.kind = CheckpointKind::Goal;
+    go_ahead.title = "Run this workflow?".into();
+    go_ahead.mode = ApprovalMode::FullAuto;
+    go_ahead.decide_with = DecideWith::RulesAndModel;
+    go_ahead.needs_you = false;
+    go_ahead.options = vec![
+        option('y', "Yes, run it", AnswerAction::Approve),
+        option('x', "No, stop here", AnswerAction::Abandon),
+    ];
+    screen.event(opened_event(go_ahead));
+    assert_eq!(
+        screen.model.bottom.card, None,
+        "a card full auto still decides isn't on screen"
+    );
+    screen.event(checkpoint(CheckpointEvent::Checked(PolicyCheck {
+        id: CheckpointId::numbered(1),
+        violations: Vec::new(),
+        verdict: None,
+        by: None,
+        approver: None,
+        reasons: vec!["the approver's session ended early: auth".into()],
+        shadow: false,
+    })));
+    let card = screen.card();
+    assert_eq!(card.title, "Run this workflow?");
+    assert!(card.asks());
+    assert!(card.focused, "it took the keys as it showed");
+    let (bottom, rows) = bottom_with(card.clone());
+    assert!(bottom.focused_card().is_some(), "{}", rows.join("\n"));
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.contains("to answer the card") || row.starts_with('❯')),
+        "{}",
+        rows.join("\n")
+    );
 }

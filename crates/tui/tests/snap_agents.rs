@@ -175,6 +175,7 @@ impl Crew {
             follow_key: None,
             workflow_step: None,
             label: None,
+            asked: None,
         };
         self.send(
             session,

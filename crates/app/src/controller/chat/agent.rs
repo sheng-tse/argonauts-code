@@ -660,6 +660,7 @@ mod tests {
                 follow_key: None,
                 workflow_step: None,
                 label: Some(format!("build:item-{session}")),
+                asked: None,
             };
             event(
                 u64::from(session),

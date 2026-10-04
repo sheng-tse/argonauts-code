@@ -226,6 +226,51 @@ impl Worker for HarnessWorker {
     fn instruction_files(&self, workdir: &Path, isolated: bool) -> Vec<String> {
         self.adapter.instruction_files(workdir, isolated)
     }
+
+    fn logged_in(&self) -> BoxFuture<'_, Option<bool>> {
+        Box::pin(login_state(
+            self.adapter.as_ref(),
+            &self.worker,
+            &self.settings,
+        ))
+    }
+}
+
+/// How long the CLI's own login check may take before it claims nothing.
+const LOGIN_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs the adapter's verified login check as the app's start check does: exit 0 is logged in,
+/// exit 1 logged out, and anything else, a check that's slow, or an agent that signs in with
+/// an API key claims nothing. It runs without vendor keys and calls no model.
+async fn login_state(
+    adapter: &dyn Adapter,
+    worker: &WorkerRef,
+    settings: &Settings,
+) -> Option<bool> {
+    let agent = settings.agents.get(&worker.worker);
+    if agent.is_some_and(|agent| agent.auth == argonauts_core::AuthMode::ApiKey) {
+        return None;
+    }
+    let args = adapter.setup_hints().login_check?;
+    let binary = resolve_binary(adapter, agent.and_then(|agent| agent.binary.as_deref())).ok()?;
+    let mut command = tokio::process::Command::new(binary);
+    command
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    for name in argonauts_core::VENDOR_KEY_ENV_VARS {
+        command.env_remove(name);
+    }
+    match tokio::time::timeout(LOGIN_CHECK_TIMEOUT, command.status()).await {
+        Ok(Ok(status)) => match status.code() {
+            Some(0) => Some(true),
+            Some(1) => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[cfg(test)]

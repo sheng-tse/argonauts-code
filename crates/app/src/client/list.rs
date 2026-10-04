@@ -359,21 +359,31 @@ fn parked_words(tally: &Tally, reason: &ParkReason, waiting_on: &[CheckpointId])
         ParkReason::WaitingForVendor { vendor, until } => {
             with_until(&format!("waiting for {vendor}"), *until)
         }
+        // It tries again by itself at `until`, when there is one.
+        ParkReason::NoStandIn { detail, until } => match until {
+            Some(at) => format!("{detail} · tries again {}", utc_minute(*at)),
+            None => detail.clone(),
+        },
     }
 }
 
 fn with_until(what: &str, until: Option<OffsetDateTime>) -> String {
     match until {
-        Some(until) => format!(
-            "{what} until {:04}-{:02}-{:02} {:02}:{:02} UTC",
-            until.year(),
-            u8::from(until.month()),
-            until.day(),
-            until.hour(),
-            until.minute()
-        ),
+        Some(until) => format!("{what} until {}", utc_minute(until)),
         None => what.to_owned(),
     }
+}
+
+/// `2026-10-04 20:30 UTC`.
+fn utc_minute(at: OffsetDateTime) -> String {
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        at.year(),
+        u8::from(at.month()),
+        at.day(),
+        at.hour(),
+        at.minute()
+    )
 }
 
 fn kind_words(kind: CheckpointKind) -> &'static str {
@@ -460,6 +470,38 @@ mod tests {
             }),
         );
         assert!(Tally::of(&[waiting, landed]).waiting_to_merge.is_empty());
+    }
+
+    /// A run nobody could take a seat in says who couldn't be replaced, and when it tries again
+    /// by itself only when it will.
+    #[test]
+    fn a_run_nobody_could_take_a_seat_in_says_when_it_tries_again() {
+        let parked = |until| {
+            event(
+                1,
+                RunEventKind::Run(RunLifecycle::Parked {
+                    reason: ParkReason::NoStandIn {
+                        detail: "nobody could take over as the lead".to_owned(),
+                        until,
+                    },
+                    waiting_on: Vec::new(),
+                }),
+            )
+        };
+        let at = OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(5);
+        let tally = Tally::of(&[parked(Some(at))]);
+        assert_eq!(
+            state_of(&tally, false),
+            (
+                RunState::Parked,
+                "nobody could take over as the lead · tries again 1970-01-01 00:05 UTC".to_owned()
+            )
+        );
+        let tally = Tally::of(&[parked(None)]);
+        assert_eq!(
+            state_of(&tally, false).1,
+            "nobody could take over as the lead"
+        );
     }
 
     /// A run goes by its newest name, from a `Named` or the engine's snapshot, so the panel

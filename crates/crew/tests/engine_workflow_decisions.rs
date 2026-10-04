@@ -17,6 +17,7 @@ use argonauts_core::events::checkpoint::{
     CheckpointPacket, FreeText, QuestionPacket,
 };
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::session::{EndReason, SessionEvent, SessionStarted};
 use argonauts_core::events::workflow::{
     StepEnd, StepFinished, StepStarted, WorkflowEvent, WorkflowStarted,
 };
@@ -135,6 +136,18 @@ fn responder(
     designs: Vec<Value>,
     answers: Vec<(StepName, Value)>,
 ) -> Arc<FakeWorker> {
+    let designs = designs.into_iter().map(FakeSession::structured).collect();
+    session_responder(crew, worker, family, designs, answers)
+}
+
+/// The same worker, whose design sessions end as `designs` say, such as in a crash.
+fn session_responder(
+    crew: &mut Crew,
+    worker: &str,
+    family: &str,
+    designs: Vec<FakeSession>,
+    answers: Vec<(StepName, Value)>,
+) -> Arc<FakeWorker> {
     let designs = Mutex::new(VecDeque::from(designs));
     let fake = FakeWorker::harness(worker, family).respond_with(move |spec| {
         if spec.step == Some(StepName::DesignWorkflow) {
@@ -143,7 +156,7 @@ fn responder(
                 .unwrap_or_else(PoisonError::into_inner)
                 .pop_front();
             if let Some(design) = next {
-                return FakeSession::structured(design);
+                return design;
             }
         }
         if let Some((_, answer)) = answers.iter().find(|(step, _)| spec.step == Some(*step)) {
@@ -166,12 +179,17 @@ fn responder(
 /// A crew run whose lead is the one worker, designing the workflow at the start. Understand is
 /// the lead's to add, so the workflows here run as the lead wrote them.
 fn designing_crew(answers: Vec<Value>) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
+    designing_crew_with(answers.into_iter().map(FakeSession::structured).collect())
+}
+
+/// The same crew, whose lead's design sessions end as `sessions` say, such as in a crash.
+fn designing_crew_with(sessions: Vec<FakeSession>) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
     let mut crew = Crew::new()?;
-    let lead = responder(
+    let lead = session_responder(
         &mut crew,
         "claude-code/opus",
         "anthropic",
-        answers,
+        sessions,
         Vec::new(),
     );
     crew.settings.workflow = WorkflowRef::new("look-then-look");
@@ -275,6 +293,275 @@ async fn two_invalid_designs_fall_back_with_a_note() -> anyhow::Result<()> {
             .any(|text| text.contains("broke the rules twice") && text.contains("no-such-workflow")),
         "{warned:?}"
     );
+    Ok(())
+}
+
+/// Haiku's first brief for a peer-crew run on 10-04, as its session's result held it. Code
+/// refused it for its name, `rate-limiter-per-api-key`, in five words, with no note, and a new
+/// session started over and read the repository again, so the run's workflow began at 2m06s.
+const LOGGED_BRIEF: &str = r#"{"based_on":"peer-crew","description":"Make rate limiter per API key with Retry-After headers and tests.","done_when":[{"id":"G1","short":"Per-API-key buckets","text":"Rate limiter creates separate buckets for each X-Api-Key value.","check":"review"},{"id":"G2","short":"Shared bucket for no header","text":"Requests without the X-Api-Key header share a single rate limit bucket.","check":"review"},{"id":"G3","short":"Capped refills","text":"Refills are capped at capacity, making the previously failing test pass.","check":{"test":"test passes"}},{"id":"G4","short":"Retry-After header","text":"429 responses include a Retry-After header with whole seconds remaining.","check":"review"},{"id":"G5","short":"New tests","text":"Tests cover per-API-key buckets, shared bucket behavior, and Retry-After headers.","check":{"test":"test passes"}}],"first_attempt":{"title":"Rate Limiter","detail":"Owner implements per-API-key rate limiting with Retry-After headers and tests","steps":"- kind: build\n  label: build:rate-limiter\n  role: owner\n  input: plan"},"name":"rate-limiter-per-api-key","params":[],"plan":[],"questions":[],"why":"Standard peer-crew without modifications; multiple perspectives help with implementation decisions.","workflow":null}"#;
+
+fn design_sessions(spec_of: &FakeWorker) -> Vec<argonauts_core::worker::SessionSpec> {
+    spec_of
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.step == Some(StepName::DesignWorkflow))
+        .collect()
+}
+
+fn design_starts(events: &[RunEvent]) -> Vec<&SessionStarted> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Session(SessionEvent::Started(started))
+                if started.step == Some(StepName::DesignWorkflow) =>
+            {
+                Some(&**started)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The brief from the log, its name read without its filler, goes back once to the session that
+/// wrote it, since G3 and G5 named their tests `test passes`. That session names the checks,
+/// and the run checks what it named.
+#[tokio::test]
+async fn the_logged_brief_runs_once_its_session_names_its_checks() -> anyhow::Result<()> {
+    let logged: Value = serde_json::from_str(LOGGED_BRIEF)?;
+    let mut fixed = logged.clone();
+    fixed["done_when"][2]["check"] = json!({"test": "test_never_holds_more_than_capacity"});
+    fixed["done_when"][4]["check"] = json!({"command": "python -m pytest tests/"});
+    let (crew, lead) = designing_crew(vec![logged, fixed])?;
+    // peer-crew as a file of yours, so the run stays short.
+    crew.repo.write(
+        ".argonauts/workflows/peer-crew.yaml",
+        &ONE_LOOK.replace("one-look", "peer-crew"),
+    )?;
+    let outcome = crew.start(RunMode::Crew, "rate limit per API key").await?;
+    let asked = design_sessions(&lead);
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[1].resume.as_deref(), Some("fake-session"));
+    let told: String = asked[1]
+        .prompt
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect();
+    assert!(
+        told.contains("criterion G3: `test: test passes` isn't a test's name"),
+        "{told}"
+    );
+    assert!(told.contains("criterion G5:"), "{told}");
+    assert!(!told.contains("words; use two to four"), "{told}");
+    let said = notes(&outcome.events, NoteLevel::Info);
+    let why = "The lead's brief gave a check a test name that isn't one; it's fixing that.";
+    assert!(
+        said.iter().any(|text| text.lines().next() == Some(why)),
+        "{said:?}"
+    );
+    let started = workflows_started(&outcome.events);
+    assert_eq!(
+        started.len(),
+        1,
+        "{:?}",
+        notes(&outcome.events, NoteLevel::Warn)
+    );
+    assert_eq!(started[0].from, Some(WorkflowRef::new("peer-crew")));
+    assert_eq!(started[0].workflow.name, "rate-limiter-api-key");
+    let checks: Vec<String> = outcome
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Run(RunLifecycle::Named(named)) => Some(&named.done_when),
+            _ => None,
+        })
+        .into_iter()
+        .flatten()
+        .map(|criterion| format!("{}: {:?}", criterion.id, criterion.check))
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            "G1: Review",
+            "G2: Review",
+            "G3: Test(\"test_never_holds_more_than_capacity\")",
+            "G4: Review",
+            "G5: Command(\"python -m pytest tests/\")",
+        ]
+    );
+    Ok(())
+}
+
+/// Your own workflow files go by their file names, so a lead that names `quick_fix` or
+/// `Hotfix` exactly runs it from its one session, and another spelling of only that name reads
+/// as it.
+#[tokio::test]
+async fn your_workflow_files_run_by_their_own_names() -> anyhow::Result<()> {
+    for (file, written) in [
+        ("quick_fix", "quick_fix"),
+        ("Hotfix", "Hotfix"),
+        ("quick_fix", "Quick Fix"),
+    ] {
+        let (crew, lead) = designing_crew(vec![design(Some(written), json!([]), None)])?;
+        crew.repo
+            .write(&format!(".argonauts/workflows/{file}.yaml"), ONE_LOOK)?;
+        let outcome = crew.start(RunMode::Crew, "look once").await?;
+        assert_eq!(designs(&lead), 1, "{written}");
+        let started = workflows_started(&outcome.events);
+        assert_eq!(
+            started.first().and_then(|started| started.from.clone()),
+            Some(WorkflowRef::new(file)),
+            "{written}: {:?}",
+            notes(&outcome.events, NoteLevel::Warn)
+        );
+    }
+    Ok(())
+}
+
+/// A brief code refuses goes back to the session that wrote it, resumed with only what was
+/// refused, and a `›` note says why in plain words, the errors behind it for Ctrl+O.
+#[tokio::test]
+async fn a_refused_brief_goes_back_to_the_same_session() -> anyhow::Result<()> {
+    let mut long = design(Some("one-look"), json!([]), None);
+    long["name"] = json!("split-parse-render-cache-layers");
+    let (crew, lead) = designing_crew(vec![long, design(Some("one-look"), json!([]), None)])?;
+    let outcome = crew.start(RunMode::Crew, "look once").await?;
+    let asked = design_sessions(&lead);
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0].resume, None);
+    assert_eq!(asked[1].resume.as_deref(), Some("fake-session"));
+    let told: String = asked[1]
+        .prompt
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect();
+    assert!(told.contains("has 5 words; use two to four"), "{told}");
+    assert!(
+        told.contains("Code checked the brief you just wrote"),
+        "{told}"
+    );
+    assert!(!told.contains("## Example workflows"), "{told}");
+    // The same lead, by its row's name, carries on.
+    let starts = design_starts(&outcome.events);
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1].resumed_from.as_deref(), Some("fake-session"));
+    assert_eq!(starts[0].label, starts[1].label);
+    let said = notes(&outcome.events, NoteLevel::Info);
+    let note = said
+        .iter()
+        .find(|text| text.starts_with("The lead's brief"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    let mut lines = note.lines();
+    assert_eq!(
+        lines.next(),
+        Some("The lead's brief named the run in 5 words; it's fixing that.")
+    );
+    assert!(lines.any(|line| line.contains("has 5 words")), "{note}");
+    let started = workflows_started(&outcome.events);
+    assert_eq!(started[0].workflow.name, "look-at-it");
+    assert_eq!(started[0].from, Some(WorkflowRef::new("one-look")));
+    Ok(())
+}
+
+/// A run stopped while the lead fixes its brief says why once, however often it replays: one
+/// stopped right after the note, before the fix started, and one stopped during the fix.
+#[tokio::test]
+async fn a_replayed_fix_says_why_once() -> anyhow::Result<()> {
+    let mut long = design(Some("one-look"), json!([]), None);
+    long["name"] = json!("split-parse-render-cache-layers");
+    let valid = design(Some("one-look"), json!([]), None);
+    let (crew, _lead) = designing_crew(vec![long, valid.clone(), valid.clone(), valid])?;
+    let outcome = crew.start(RunMode::Crew, "look once").await?;
+    let why = "The lead's brief named the run in 5 words";
+    let noted = cut_after(
+        &outcome.events,
+        |event| matches!(event, RunEventKind::Note(note) if note.text.starts_with(why)),
+    );
+    let fixing = cut_after(&outcome.events, |event| {
+        matches!(event, RunEventKind::Session(SessionEvent::Started(started))
+            if started.step == Some(StepName::DesignWorkflow) && started.resumed_from.is_some())
+    });
+    for cut in [noted, fixing] {
+        let resumed = crew.resume(cut, Vec::new()).await?;
+        let said = notes(&resumed.events, NoteLevel::Info);
+        let told = said.iter().filter(|text| text.starts_with(why)).count();
+        assert_eq!(told, 1, "{said:?}");
+        assert_eq!(workflows_started(&resumed.events).len(), 1);
+    }
+    Ok(())
+}
+
+/// A lead whose session crashed before its brief failed for a vendor reason, so its own session
+/// goes again with the whole prompt, saying nothing new.
+#[tokio::test]
+async fn a_crashed_lead_designs_again_on_its_own_session() -> anyhow::Result<()> {
+    let crashed = FakeSession::ended(EndReason::Crashed {
+        message: "claude exited with code 1".to_owned(),
+    });
+    let valid = FakeSession::structured(design(Some("one-look"), json!([]), None));
+    let (crew, lead) = designing_crew_with(vec![crashed, valid])?;
+    let outcome = crew.start(RunMode::Crew, "look once").await?;
+    let asked = design_sessions(&lead);
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0].key, asked[1].key, "its own session again");
+    assert_eq!(asked[1].resume, None);
+    let told: String = asked[1]
+        .prompt
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect();
+    assert!(
+        told.contains("## Example workflows"),
+        "the whole prompt again"
+    );
+    let said = notes(&outcome.events, NoteLevel::Info);
+    assert!(
+        !said
+            .iter()
+            .any(|text| text.starts_with("The lead's session stopped")),
+        "{said:?}"
+    );
+    let started = workflows_started(&outcome.events);
+    assert_eq!(started[0].workflow.name, "look-at-it");
+    Ok(())
+}
+
+/// A lead whose context filled up before its brief has nothing to fix, so a new session writes
+/// it, and a `›` note says so.
+#[tokio::test]
+async fn a_lead_whose_context_filled_gets_a_new_session_with_a_note() -> anyhow::Result<()> {
+    let full = FakeSession::ended(EndReason::ContextFull);
+    let valid = FakeSession::structured(design(Some("one-look"), json!([]), None));
+    let (crew, lead) = designing_crew_with(vec![full, valid])?;
+    let outcome = crew.start(RunMode::Crew, "look once").await?;
+    let asked = design_sessions(&lead);
+    assert_eq!(asked.len(), 2);
+    assert_ne!(asked[0].key, asked[1].key, "a new session");
+    assert_eq!(asked[1].resume, None);
+    let told: String = asked[1]
+        .prompt
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect();
+    assert!(
+        told.contains("## Example workflows"),
+        "the whole prompt again"
+    );
+    let said = notes(&outcome.events, NoteLevel::Info);
+    let note = said
+        .iter()
+        .find(|text| text.starts_with("The lead's session stopped"))
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert_eq!(
+        note.lines().next(),
+        Some(
+            "The lead's session stopped before its brief was done, so a new session is \
+             writing it."
+        )
+    );
+    let started = workflows_started(&outcome.events);
+    assert_eq!(started[0].workflow.name, "look-at-it");
     Ok(())
 }
 
@@ -815,7 +1102,8 @@ async fn nested_workflow_keeps_its_id_after_a_change() -> anyhow::Result<()> {
 }
 
 /// The lead's change may only change phases that haven't started. One that rewrites the phase
-/// that just ended is refused twice, noted, and the workflow goes on unchanged.
+/// that just ended is refused twice, noted, and the workflow goes on unchanged. A run stopped
+/// right after the note that says why says it once when it carries on.
 #[tokio::test]
 async fn change_to_a_phase_that_ran_is_refused() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
@@ -825,16 +1113,30 @@ async fn change_to_a_phase_that_ran_is_refused() -> anyhow::Result<()> {
         .write(".argonauts/workflows/look-then-look.yaml", LOOK_THEN_LOOK)?;
     let rewritten = LOOK_THEN_LOOK.replacen("name: First look", "name: Another first look", 1);
     let rewrite = design(None, json!([]), Some(&rewritten));
-    responder(
+    let lead = responder(
         &mut crew,
         "claude-code/opus",
         "anthropic",
-        vec![rewrite.clone(), rewrite],
+        vec![rewrite.clone(), rewrite.clone(), rewrite],
         Vec::new(),
     );
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
     ended(&outcome, RunOutcome::BranchLeft);
     assert!(opened(&outcome.events, CheckpointKind::ChangeRequest).is_empty());
+    // The first refusal goes back to the session that proposed it, and a note says why.
+    let asked = design_sessions(&lead);
+    assert_eq!(
+        asked.last().and_then(|spec| spec.resume.as_deref()),
+        Some("fake-session")
+    );
+    let said = notes(&outcome.events, NoteLevel::Info);
+    let why = "The lead's change after phase 1 wrote a workflow that breaks its rules; it's \
+               fixing that.";
+    let told = said
+        .iter()
+        .filter(|text| text.lines().next() == Some(why))
+        .count();
+    assert_eq!(told, 1, "{said:?}");
     let warned = notes(&outcome.events, NoteLevel::Warn);
     assert!(
         warned
@@ -847,6 +1149,17 @@ async fn change_to_a_phase_that_ran_is_refused() -> anyhow::Result<()> {
             .iter()
             .all(|event| !matches!(event, WorkflowEvent::Changed(_)))
     );
+    let noted = cut_after(
+        &outcome.events,
+        |event| matches!(event, RunEventKind::Note(note) if note.text.starts_with(why)),
+    );
+    let resumed = crew.resume(noted, Vec::new()).await?;
+    let said = notes(&resumed.events, NoteLevel::Info);
+    let told = said
+        .iter()
+        .filter(|text| text.lines().next() == Some(why))
+        .count();
+    assert_eq!(told, 1, "{said:?}");
     Ok(())
 }
 

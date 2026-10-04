@@ -295,62 +295,75 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `argonauts` opens a new conversation, as `claude` does. A run parked on a question gets one
-/// line under the header and its panel row, what you type goes to the new conversation, and
-/// the card waits until you open the run. `argonauts -c` carries the conversation on and leaves
-/// the run where it was, so what you type there goes to the conversation too.
+/// Fails when a run waiting on you has a panel row, `◆ needs you`, or counts in the mode line,
+/// `← 1 needs you`, or when the app attached to it or listed rows for the panel. The line under
+/// the header says `1 run needs you`.
+fn check_off_the_panel(scenario: &Scenario, pty: &Pty) -> anyhow::Result<()> {
+    let text = pty.screen().visible_text();
+    assert!(
+        !text.contains("◆ needs you"),
+        "the run got a panel row:\n{text}"
+    );
+    assert!(
+        !text.contains(" 1 needs you"),
+        "the mode line counted the run:\n{text}"
+    );
+    let events = events(scenario)?;
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            AppEvent::Attached { .. } | AppEvent::BackgroundRuns { .. }
+        )),
+        "{events:#?}"
+    );
+    Ok(())
+}
+
+/// `argonauts` opens a new conversation, as `claude` does, and its panel holds only the runs
+/// started in it. A run parked on a question in an earlier session gets one line
+/// under the header, and no panel row or mode-line count; what you type goes to the new
+/// conversation, and the card waits until you open the run. `argonauts -c` carries on a
+/// conversation that never opened the run, so it stays off that panel too.
 #[test]
 fn app_start_leaves_a_parked_question_for_you_to_open() -> anyhow::Result<()> {
     const QUESTION: &str = "Keep the old name as an alias?";
+    const TITLE: &str = "Rename the config loader";
     let scenario = scenario()?;
     let parked = fabricate_parked_run(&scenario, 0)?;
     let journal_before = run_events(&parked.dir)?.len();
     let mut pty = start(&scenario)?;
     pty.wait_for("1 run needs you · /resume", WAIT)?;
-    let screen = pty.wait_for(r"◆ solo · Rename the config loader .*◆ needs you", WAIT)?;
-    let text = screen.visible_text();
-    assert!(
-        !text.contains(QUESTION),
-        "the card showed at start:\n{text}"
-    );
-    assert!(
-        !events(&scenario)?
-            .iter()
-            .any(|event| matches!(event, AppEvent::Attached { .. })),
-        "the app attached to the parked run"
-    );
-    scenario.shot(&pty, "app_start_leaves_a_parked_question_for_you_to_open")?;
-
+    check_mode_line(&pty)?;
     submit(&mut pty, requests::HI)?;
     wait_turns_finished(&scenario, 1)?;
+    let text = pty.screen().visible_text();
+    assert!(
+        !text.contains(QUESTION) && !text.contains(TITLE),
+        "the card or the run showed at start:\n{text}"
+    );
+    check_off_the_panel(&scenario, &pty)?;
     assert_eq!(
         run_events(&parked.dir)?.len(),
         journal_before,
         "the parked run changed while you chatted"
     );
+    scenario.shot(&pty, "app_start_leaves_a_parked_question_for_you_to_open")?;
     quit(&mut pty)?;
 
-    // `argonauts -c` carries the conversation on, and the run keeps its panel row.
     rotate_trace(&scenario, "first")?;
     let mut pty = start_with(&scenario, &["-c"])?;
     wait_event(&scenario, "the conversation to carry on", |event| {
         matches!(event, AppEvent::ChatResumed { .. })
     })?;
     pty.wait_for("1 run needs you · /resume", WAIT)?;
-    pty.wait_for(r"◆ needs you", WAIT)?;
     submit(&mut pty, requests::HI)?;
     wait_turns_finished(&scenario, 1)?;
     let text = pty.screen().visible_text();
     assert!(
-        !text.contains(QUESTION),
-        "the card showed after -c:\n{text}"
+        !text.contains(QUESTION) && !text.contains(TITLE),
+        "the card or the run showed after -c:\n{text}"
     );
-    assert!(
-        !events(&scenario)?
-            .iter()
-            .any(|event| matches!(event, AppEvent::Attached { .. })),
-        "-c attached to the parked run"
-    );
+    check_off_the_panel(&scenario, &pty)?;
     assert_eq!(run_events(&parked.dir)?.len(), journal_before);
     scenario.shot(
         &pty,
@@ -359,14 +372,19 @@ fn app_start_leaves_a_parked_question_for_you_to_open() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A run parked at a card from an earlier session opens with Enter on its panel row, and its
-/// card comes with it.
+/// A run belongs to the conversation that started or opened it. Started now, it
+/// gets a panel row. After a restart it shows only under the header, with no row and no count
+/// in the mode line, until `/resume <run>` opens it, card and row. `argonauts -c` carries on the
+/// newest conversation, one with no turn that only opened the run, and brings its row back, and
+/// Enter on the row opens it.
 #[test]
-fn app_parked_run_opens_from_its_panel_row() -> anyhow::Result<()> {
+fn app_parked_run_belongs_to_the_conversation_that_started_it() -> anyhow::Result<()> {
     let scenario = scenario_with(&merge_card_config())?;
     let mut pty = start(&scenario)?;
     let (run_dir, _) = reach_merge_card(&scenario, &mut pty)?;
     let run = run_id(&run_dir)?;
+    pty.wait_for("◆ needs you", WAIT)?;
+    scenario.shot(&pty, "app_run_started_now_gets_a_row")?;
     wait_journal(&run_dir, "the run to park", is_parked)?;
     wait_pid_gone(supervisor_pid(&run_dir)?)?;
     quit(&mut pty)?;
@@ -374,7 +392,30 @@ fn app_parked_run_opens_from_its_panel_row() -> anyhow::Result<()> {
     rotate_trace(&scenario, "first")?;
     let mut pty = start(&scenario)?;
     pty.wait_for("1 run needs you · /resume", WAIT)?;
-    pty.wait_for(r"◆ needs you", WAIT)?;
+    check_mode_line(&pty)?;
+    check_off_the_panel(&scenario, &pty)?;
+    scenario.shot(&pty, "app_restart_leaves_an_earlier_run_off_the_panel")?;
+    submit(&mut pty, &format!("/resume {run}"))?;
+    wait_event(
+        &scenario,
+        "the run to open",
+        |event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run),
+    )?;
+    wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    pty.wait_for("◆ Merge this run into main?", WAIT)?;
+    pty.wait_for("◆ needs you", WAIT)?;
+    scenario.shot(&pty, "app_resume_brings_a_run_into_the_panel")?;
+    quit(&mut pty)?;
+
+    // The newest conversation carries on, though it only opened the run, and brings its row
+    // back.
+    rotate_trace(&scenario, "second")?;
+    let mut pty = start_with(&scenario, &["-c"])?;
+    wait_event(&scenario, "the conversation to carry on", |event| {
+        matches!(event, AppEvent::ChatResumed { .. })
+    })?;
+    pty.wait_for("◆ needs you", WAIT)?;
+    pty.wait_for(" 1 needs you", WAIT)?;
     check_mode_line(&pty)?;
     pty.press(Key::Down)?;
     pty.wait_for(r"❯ ◆ ", WAIT)?;
@@ -384,11 +425,10 @@ fn app_parked_run_opens_from_its_panel_row() -> anyhow::Result<()> {
         "the run to open",
         |event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run),
     )?;
-    wait_checkpoint(&scenario, CheckpointKind::Merge)?;
     pty.wait_for("◆ Merge this run into main?", WAIT)?;
     // Focus left the panel, so the card takes the keys.
     pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to ", WAIT)?;
-    scenario.shot(&pty, "app_parked_run_opens_from_its_panel_row")?;
+    scenario.shot(&pty, "app_continue_brings_back_the_conversations_run")?;
     Ok(())
 }
 

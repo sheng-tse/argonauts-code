@@ -229,7 +229,12 @@ async fn status_and_every_view_start_no_model_session() {
     for command in commands {
         harness.send(command).await;
         harness
-            .until(|event| matches!(event, AppEvent::View { .. } | AppEvent::Notice { .. }))
+            .until(|event| {
+                matches!(
+                    event,
+                    AppEvent::View { .. } | AppEvent::Notice { .. } | AppEvent::Hint { .. }
+                )
+            })
             .await;
     }
     assert!(harness.agent.specs().is_empty(), "a view started a session");
@@ -1048,17 +1053,45 @@ async fn the_workflow_view_before_a_workflow_starts_says_so_plainly() {
     super::view(&mut rig.ctx, &mut rig.runs, request)
         .await
         .expect("the workflow view");
-    let AppEvent::Notice { text, .. } = rig
-        .until(|event| matches!(event, AppEvent::Notice { .. }))
+    // The key that asked gets its answer on the notice line, never in the transcript.
+    let AppEvent::Hint { text } = rig
+        .until(|event| matches!(event, AppEvent::Hint { .. } | AppEvent::Notice { .. }))
         .await
     else {
-        unreachable!()
+        panic!("a key's answer went into the transcript")
+    };
+    assert_eq!(text, "This run hasn't started a workflow yet.");
+    assert!(!text.contains(run.as_str()), "{text}");
+}
+
+/// A steer that can't be sent answers text you typed, not a key, so it stays in the transcript
+/// beside it rather than passing on the notice line.
+#[tokio::test]
+async fn a_steer_that_isnt_sent_says_so_in_the_transcript() {
+    let mut rig = Rig::new();
+    let run = rig.start("Rename the flag").await;
+    rig.settle().await;
+    let session = SessionKey::numbered(1);
+    super::control::steer(
+        &mut rig.ctx,
+        &mut rig.runs,
+        run,
+        session,
+        "keep the old name".to_owned(),
+        false,
+    )
+    .await
+    .expect("the steer is answered");
+    let AppEvent::Notice { text, .. } = rig
+        .until(|event| matches!(event, AppEvent::Hint { .. } | AppEvent::Notice { .. }))
+        .await
+    else {
+        panic!("a typed steer's answer went to the notice line")
     };
     assert_eq!(
         text,
-        "This run hasn't started a workflow yet. Ctrl+T shows it once one starts."
+        "Nothing was sent, since the fake conductor doesn't steer."
     );
-    assert!(!text.contains(run.as_str()), "{text}");
 }
 
 /// Refusals you meet by acting on a run that ended read as what happened and what you can do,

@@ -29,7 +29,7 @@ use super::crew::CrewView;
 use super::layout::cut;
 use super::list::{self, ListState, Nav};
 use super::panes::{self, Footer, Marks};
-use super::{View, ViewCtx, ViewOutcome};
+use super::{Follow, View, ViewCtx, ViewOutcome};
 
 /// Result lines kept under a tool call; the raw log (`r`) has the rest.
 const RESULT_LINES: usize = 40;
@@ -50,6 +50,8 @@ pub struct SessionView {
     pub clock: WallClock,
     /// Opened from the crew view, so ← goes back to it rather than opening another.
     from_crew: bool,
+    /// Opened from the run's row, so it moves on with the run.
+    for_run: bool,
     /// The selected prompt part on the input side, and the one `→` expanded.
     part: ListState,
     expanded: Option<usize>,
@@ -101,6 +103,7 @@ impl SessionView {
             offset: 0,
             clock: WallClock::local(),
             from_crew: false,
+            for_run: false,
             part: ListState::default(),
             expanded: None,
             steer: None,
@@ -110,6 +113,17 @@ impl SessionView {
             ticking: false,
             cache: None,
             input_top: 0,
+        }
+    }
+
+    /// Opened from the run's row: once its agent is done and the run has moved on, to the lead's
+    /// next design or to its declared workflow, so does the view, though never while you type
+    /// a steer. A view opened for one agent follows only that agent, into the session that
+    /// carries on its work.
+    pub fn for_run(run: RunId, session: SessionKey) -> Self {
+        Self {
+            for_run: true,
+            ..Self::new(run, session)
         }
     }
 
@@ -191,8 +205,11 @@ impl SessionView {
                 theme,
             )
         } else {
+            // The echo stands only while the session can still take it. The controller's answer
+            // in the transcript says what came of it.
+            let sent = self.sent.as_deref().filter(|_| session.is_running());
             Body {
-                lines: output_lines(session, self.sent.as_deref(), width, theme),
+                lines: output_lines(session, sent, width, theme),
                 selected_row: 0,
             }
         };
@@ -791,6 +808,27 @@ fn part_lines(
 }
 
 impl View for SessionView {
+    fn follow(&mut self, ctx: &ViewCtx<'_>) -> Option<Follow> {
+        let run = ctx.state.runs.get(&self.run)?;
+        let working = run
+            .sessions
+            .get(&self.session)
+            .is_some_and(SessionState::is_running);
+        // It stays while its agent works, and while you type a steer to it.
+        if working || self.steer.is_some() {
+            return None;
+        }
+        if self.for_run {
+            return super::waiting::follow(ctx.state, &self.run, Some(&self.session));
+        }
+        // The agent you chose carried on in another session, so the view does too.
+        let next = run.carried_on(&self.session)?;
+        Some(Follow::Replace(Box::new(Self {
+            from_crew: self.from_crew,
+            ..Self::new(self.run.clone(), next.key.clone())
+        })))
+    }
+
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         let theme = ctx.theme;
         let width = usize::from(area.width);
@@ -1012,6 +1050,57 @@ mod tests {
             );
         }
         assert!(view.steer.is_none());
+    }
+
+    /// A steer typed as its session ended never reached it, such as the lead's design session
+    /// that ends when code sends its brief back, so the view stops saying it was sent. The
+    /// controller's answer says why in the transcript.
+    #[test]
+    fn a_steer_shows_as_sent_only_while_its_session_runs() {
+        let mut state = crate::mentions::fixture::working_state();
+        let run = state.attached.clone().unwrap();
+        let session = SessionKey::numbered(1);
+        let theme = Theme::dark();
+        let mut view = SessionView::new(run.clone(), session.clone());
+        let press = |view: &mut SessionView, state: &AppState, code: KeyCode| {
+            let ctx = ViewCtx {
+                theme: &theme,
+                state,
+                now: Instant::now(),
+            };
+            view.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctx)
+        };
+        press(&mut view, &state, KeyCode::Char('s'));
+        for c in "keep the old limits".chars() {
+            press(&mut view, &state, KeyCode::Char(c));
+        }
+        let sent = press(&mut view, &state, KeyCode::Enter);
+        assert!(matches!(sent, ViewOutcome::Send(UiCommand::Steer { .. })));
+        let shown = |view: &mut SessionView, state: &AppState| {
+            let session = state.session(&run, &session).unwrap();
+            let body = view.body(session, 80, &theme);
+            body.lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect()
+                })
+                .collect::<Vec<String>>()
+                .join("\n")
+        };
+        assert!(
+            shown(&mut view, &state).contains("Sent keep the old limits"),
+            "{}",
+            shown(&mut view, &state)
+        );
+        let ended = state.runs.get_mut(&run).unwrap();
+        let ended = ended.sessions.get_mut(&session).unwrap();
+        ended.status = SessionStatus::Done;
+        ended.last_event += time::Duration::seconds(1);
+        let after = shown(&mut view, &state);
+        assert!(!after.contains("Sent keep the old limits"), "{after}");
     }
 
     #[test]

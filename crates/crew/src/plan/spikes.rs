@@ -11,7 +11,7 @@ use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::{CardBudget, CardEvent, CardKind, CardSpec, CardState};
 use argonauts_core::events::plan::PlanEvent;
 use argonauts_core::events::session::InputPartKind;
-use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::protocol::SpikeSettings;
 use argonauts_core::steps::plan::{
@@ -21,12 +21,13 @@ use argonauts_core::steps::{StepName, last_json_object, output_schema};
 use argonauts_core::worker::Access;
 
 use crate::card::worktree;
-use crate::engine::host::{Ask, Host, SessionPlan};
+use crate::engine::host::{Ask, Host, SessionPlan, StandIns};
 use crate::error::{EngineError, EngineResult};
 use crate::lead;
 use crate::plan::context::{crew_for, part, warn};
 use crate::plan::map;
 use crate::prompts::plan::{PROPOSE_SPIKE, SPIKE_REPORT};
+use crate::state::RunState;
 use crate::workflow::StepCall;
 
 /// Whether one proposal fits on its own: spikes on, at least one option, each option within
@@ -327,15 +328,27 @@ async fn spike(
         resume: None,
         slot: 0,
     };
-    let running = host.start(plan).await?;
-    let session = running.key.clone();
-    let end = running.ended().await?;
+    // A vendor error has the spike go again, or to another agent; when nobody can run it, the
+    // dispute stays open, as without a report.
+    let (session, end) = match host.run_session(plan, StandIns::Allowed).await {
+        Ok(ran) => (ran.key, Some(ran.end)),
+        Err(EngineError::Stalled(stall)) => {
+            warn(host, Some(card), stall.line.clone())?;
+            let session = host.read(|state| newest_spike_session(state, card));
+            let Some(session) = session else {
+                return Ok(());
+            };
+            (session, None)
+        }
+        Err(err) => return Err(err),
+    };
     worktree::commit_after_end(host, card, &session).await?;
-    let report = end
-        .structured
-        .clone()
-        .or_else(|| end.result_text.as_deref().and_then(last_json_object))
-        .and_then(|value| serde_json::from_value::<SpikeReport>(value).ok());
+    let report = end.and_then(|end| {
+        end.structured
+            .clone()
+            .or_else(|| end.result_text.as_deref().and_then(last_json_object))
+            .and_then(|value| serde_json::from_value::<SpikeReport>(value).ok())
+    });
     match report {
         Some(report) => {
             host.record(
@@ -364,6 +377,17 @@ async fn spike(
         }),
     )?;
     Ok(())
+}
+
+/// The spike card's newest session.
+fn newest_spike_session(state: &RunState, card: &CardId) -> Option<SessionKey> {
+    state
+        .sessions
+        .by_key
+        .values()
+        .filter(|session| session.card.as_ref() == Some(card))
+        .max_by_key(|session| session.since)
+        .map(|session| session.key.clone())
 }
 
 #[cfg(test)]

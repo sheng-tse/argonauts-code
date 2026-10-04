@@ -4,6 +4,7 @@
 use time::OffsetDateTime;
 
 use argonauts_core::CardId;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::CardState;
 use argonauts_core::events::checkpoint::{
@@ -14,29 +15,47 @@ use argonauts_core::events::vendor::{HandoffEvent, HandoffPlan};
 use argonauts_core::limits::HealthState;
 use argonauts_core::names::{RoleName, VendorId};
 use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::{Note, NoteLevel};
 
 use crate::card::machine::Trigger;
+use crate::card::support::newest_owner_session;
 use crate::card::{pipeline, takeover};
 use crate::checkpoints::options::{self, HandoffCause};
-use crate::checkpoints::{self, CheckpointRequest};
+use crate::checkpoints::{self, CheckpointRequest, full_auto};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
+use crate::engine::stand_in;
+use crate::error::{EngineError, EngineResult, Stall};
 use crate::handoff::{assign, choose, rules};
+use crate::roles::display_name;
 use crate::state::RunState;
 
-/// Opens the handoff card and acts on your answer.
+/// Opens the handoff card and acts on your answer. Full auto never asks: with nobody to take
+/// the card, it waits for its agent and tries again on its own.
 pub async fn ask(host: &Host, card: &CardId, plan: HandoffPlan) -> EngineResult<()> {
     if vendor_down(host, card, &plan).await? == Asked::Settled {
         return Ok(());
     }
+    if plan.candidates.is_empty() && full_auto::applies_now(host, CheckpointKind::Handoff) {
+        return wait_to_retry(host, card, &plan).await;
+    }
     let mut plan = plan;
     let mut seen = Vec::new();
     loop {
-        let cause = host.read(|state| cause(state, card));
+        let mut cause = host.read(|state| cause(state, card));
+        // "I logged in, retry" only where the CLI's own check says it's logged out.
+        if cause == HandoffCause::LoggedOut && !says_logged_out(host, card, &plan).await {
+            cause = HandoffCause::Outage;
+        }
         let request = CheckpointRequest {
             at: host.read(rules::current_step),
             kind: CheckpointKind::Handoff,
-            title: format!("{} stopped · {card}", plan.stopped),
+            // Titles reach the transcript's notices, so they name the agent and the card as
+            // people read them, not by their ids.
+            title: format!(
+                "{} stopped · {}",
+                DisplayNames::default().worker(&plan.stopped),
+                plan.title.trim()
+            ),
             card: Some(card.clone()),
             packet: CheckpointPacket::Handoff(plan.clone()),
             facts: EvidenceFacts::default(),
@@ -76,7 +95,11 @@ pub async fn ask(host: &Host, card: &CardId, plan: HandoffPlan) -> EngineResult<
                     .map_err(EngineError::Refused)?;
                 return Ok(());
             }
-            AnswerAction::Wait => return wait(host, card, plan.stopped.vendor(), plan.resets_at),
+            AnswerAction::Wait => {
+                // Without a reset to wait for, it tries again after a while.
+                let until = plan.resets_at.or_else(|| retry_at(host, card));
+                return wait(host, card, plan.stopped.vendor(), until);
+            }
             AnswerAction::Retry => {
                 return rules::back_in_line(host, card, "retry after you fixed the account");
             }
@@ -127,7 +150,11 @@ async fn vendor_down(host: &Host, card: &CardId, plan: &HandoffPlan) -> EngineRe
     let request = CheckpointRequest {
         at: host.read(rules::current_step),
         kind: CheckpointKind::VendorDown,
-        title: format!("{vendor} is down · {card} paused"),
+        title: format!(
+            "{} is down · {} paused",
+            DisplayNames::default().harness(&vendor.0),
+            plan.title.trim()
+        ),
         card: Some(card.clone()),
         packet: CheckpointPacket::VendorDown(packet),
         facts: EvidenceFacts::default(),
@@ -158,6 +185,73 @@ async fn vendor_down(host: &Host, card: &CardId, plan: &HandoffPlan) -> EngineRe
             "the vendor-down card doesn't offer {other:?}"
         ))),
     }
+}
+
+/// Full auto, and nobody may take the card: it waits for its agent, until the reset when one
+/// is known, else for a retry after a wait that grows with each, and one line says why and what
+/// fixes it.
+async fn wait_to_retry(host: &Host, card: &CardId, plan: &HandoffPlan) -> EngineResult<()> {
+    let ended = ended(host, card);
+    let stopped = display_name(&plan.stopped);
+    let logged_out = says_logged_out(host, card, plan).await;
+    let why = ended.as_ref().map_or_else(
+        || "it stopped".to_owned(),
+        |reason| format!("its session ended early ({})", stand_in::in_words(reason)),
+    );
+    let stall = Stall {
+        detail: format!("nobody could take over {}", plan.title.trim()),
+        line: format!(
+            "Nobody could take over \"{}\" from {stopped}: {why}, and no other agent can take \
+             the card.",
+            plan.title.trim()
+        ),
+        logged_out: if logged_out {
+            vec![stopped]
+        } else {
+            Vec::new()
+        },
+        resets_at: plan.resets_at,
+    };
+    let waits = host.read(|state| state.cards.progress(card).vendor_waits);
+    let retry = stand_in::retry_after(host.settings(), waits);
+    let until = plan
+        .resets_at
+        .or_else(|| retry.map(|retry| host.now() + retry));
+    let line = stand_in::park_line(&stall, retry.filter(|_| plan.resets_at.is_none()));
+    host.record(
+        Some(card),
+        None,
+        RunEventKind::Note(Note {
+            level: NoteLevel::Warn,
+            text: line,
+        }),
+    )?;
+    wait(host, card, plan.stopped.vendor(), until)
+}
+
+/// When a card with no reset to wait for tries again: after the breaker's cool-down, doubled for
+/// each wait it had. `None` once it stopped trying on its own.
+fn retry_at(host: &Host, card: &CardId) -> Option<OffsetDateTime> {
+    let waits = host.read(|state| state.cards.progress(card).vendor_waits);
+    stand_in::retry_after(host.settings(), waits).map(|retry| host.now() + retry)
+}
+
+/// Whether the stopped agent's CLI says it's logged out, after the sign-in error that stopped
+/// the card.
+async fn says_logged_out(host: &Host, card: &CardId, plan: &HandoffPlan) -> bool {
+    match ended(host, card) {
+        Some(reason) => stand_in::login_check(host, &plan.stopped, &reason).await == Some(false),
+        None => false,
+    }
+}
+
+/// How the card's newest owner session ended.
+fn ended(host: &Host, card: &CardId) -> Option<EndReason> {
+    host.read(|state| {
+        newest_owner_session(state, card)
+            .and_then(|session| session.end.as_ref())
+            .map(|end| end.reason.clone())
+    })
 }
 
 /// The card waits for its vendor, in `NeedsDecision`.

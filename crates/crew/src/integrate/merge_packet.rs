@@ -162,10 +162,11 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         .all(|row| row.review == Some(ReviewVerdict::Approve) && row.debt.is_empty());
     let suite_on_latest_main = check.passed && check.suite_ran() && main_in;
     // Debt counts where the card's merge rule is `upgrade_review`; under `none` it never blocks.
+    // Each card goes by its label, as the merge table and its card name it.
     let unreviewed_debt: Vec<String> = rows
         .iter()
         .filter(|row| !row.debt.is_empty() && merge_rule::enforced(host, &row.card))
-        .map(|row| row.card.to_string())
+        .map(|row| host.read(|state| crate::labels::card_label(state, &row.card)))
         .collect();
 
     let mut agent_outputs: Vec<String> = rows.iter().map(row_line).collect();

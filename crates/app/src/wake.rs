@@ -1,8 +1,8 @@
-//! Which parked runs wake now. A run parked for `AllVendorsOut` or `WaitingForVendor` wakes once
-//! its `until` has passed or its vendor left `Down`; a handoff checkpoint wakes once its role's
-//! `ask_timeout` has passed since it opened; a merge checkpoint whose debt waits for an original
-//! that was out wakes once that original is back, so its `on_return` can act. The engine records
-//! the cause. A wake never approves anything.
+//! Which parked runs wake now. A run parked for `AllVendorsOut`, `WaitingForVendor`, or
+//! `NoStandIn` wakes once its `until` has passed or its vendor left `Down`; a handoff checkpoint
+//! wakes once its role's `ask_timeout` has passed since it opened; a merge checkpoint whose debt
+//! waits for an original that was out wakes once that original is back, so its `on_return` can
+//! act. The engine records the cause. A wake never approves anything.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -171,10 +171,14 @@ impl Park {
         };
         let events = || journal::read_all(&events_path).ok().map(|back| back.events);
         match reason {
-            ParkReason::AllVendorsOut { until } => Some(Self::Vendor {
-                until,
-                down_at_park: vendors_down_at_park(&events()?),
-            }),
+            // Nobody could take a seat over: it tries again at its `until`, or once a vendor
+            // that went down is back.
+            ParkReason::AllVendorsOut { until } | ParkReason::NoStandIn { until, .. } => {
+                Some(Self::Vendor {
+                    until,
+                    down_at_park: vendors_down_at_park(&events()?),
+                })
+            }
             ParkReason::WaitingForVendor { vendor, until } => {
                 let mut down_at_park = vendors_down_at_park(&events()?);
                 down_at_park.retain(|down| *down == vendor);
@@ -483,6 +487,58 @@ mod tests {
         );
         let due = ParkedRuns::default().due(&env, &Settings::default(), &Board::default(), now);
         assert_eq!(due, vec![(past, WakeCause::VendorBack)]);
+    }
+
+    /// A run nobody could take a seat over in tries again at its `until`, with no vendor to come
+    /// back: an auth error or a usage limit never marks one down.
+    #[test]
+    fn a_run_nobody_could_take_a_seat_in_wakes_at_its_retry() {
+        let home = TestHome::new();
+        let env = home.env(true);
+        let now = OffsetDateTime::now_utc();
+        let stalled = |until| ParkReason::NoStandIn {
+            detail: "nobody could take over as the lead".to_owned(),
+            until,
+        };
+        let due_now = run("0f01");
+        home.run_with(
+            &env,
+            &due_now,
+            &[
+                run_started(0, "stalled", None),
+                parked(
+                    1,
+                    now - time::Duration::minutes(6),
+                    stalled(Some(now - time::Duration::minutes(1))),
+                    Vec::new(),
+                ),
+            ],
+        );
+        let later = run("0f02");
+        home.run_with(
+            &env,
+            &later,
+            &[
+                run_started(0, "stalled", None),
+                parked(
+                    1,
+                    now,
+                    stalled(Some(now + time::Duration::minutes(5))),
+                    Vec::new(),
+                ),
+            ],
+        );
+        let given_up = run("0f03");
+        home.run_with(
+            &env,
+            &given_up,
+            &[
+                run_started(0, "stalled", None),
+                parked(1, now, stalled(None), Vec::new()),
+            ],
+        );
+        let due = ParkedRuns::default().due(&env, &Settings::default(), &Board::default(), now);
+        assert_eq!(due, vec![(due_now, WakeCause::VendorBack)]);
     }
 
     #[test]

@@ -121,6 +121,7 @@ pub(crate) fn session_started(
         follow_key: None,
         workflow_step: None,
         label: None,
+        asked: None,
     };
     session_event(
         seq,

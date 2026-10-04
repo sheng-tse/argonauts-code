@@ -53,7 +53,8 @@ pub fn checkpoint_card_local(
     let mut card = CardPrompt::new(id, title.clone(), title, options);
     card.selected = first_recommended(&opened.options);
     card.allow_note = opened.free_text != FreeText::None;
-    // While the rules still decide, the card waits quietly; it takes the keys once it's yours.
+    // While your rules or full auto still decide, it asks nothing and stays off the screen;
+    // once it's yours it asks, whatever its kind, and takes the keys.
     card.needs_you = opened.needs_you;
     card.offers_shift_tab = true;
     for (option, answer) in card.options.iter_mut().zip(&opened.options) {
@@ -139,7 +140,10 @@ pub fn remember_toggle(opened: &CheckpointOpened) -> Option<usize> {
 fn goal_card(card: &mut CardPrompt, goal: &GoalPacket, options: &[AnswerOption]) {
     let Some(current) = goal.questions.iter().min_by_key(|question| question.n) else {
         card.detail.push(goal.goal.summary.clone());
-        card.question = Some("Approve this goal?".into());
+        // A go-ahead's title asks already, as "Run this workflow?" does, so it isn't asked twice.
+        if !card.title.trim_end().ends_with('?') {
+            card.question = Some("Approve this goal?".into());
+        }
         return;
     };
     let of = current.of.max(current.n);

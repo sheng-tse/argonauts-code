@@ -3,6 +3,7 @@
 //! live lists found for each installed agent, else each agent's cheapest model, else the agent
 //! as it's set up.
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::pricing::builtin_price;
 use argonauts_core::registry::{CostUnit, ModelEntry, ModelRegistry, company_of};
@@ -32,24 +33,47 @@ impl NoApprover {
     pub fn reason(&self) -> String {
         match self {
             Self::UnknownAuthor(author) => format!(
-                "{author}'s model family is unknown, so no approver model can be shown to come \
-                 from another company"
+                "the company behind {} isn't known, so no approver can be shown to come from \
+                 another company",
+                DisplayNames::default().worker(author)
             ),
-            Self::NoneElsewhere { companies } => format!(
-                "no model you can run comes from another company than {}, so no approver \
-                 model can judge this",
-                companies.join(" or ")
-            ),
+            Self::NoneElsewhere { companies } => {
+                let companies: Vec<String> = companies
+                    .iter()
+                    .map(|company| company_name(company))
+                    .collect();
+                format!(
+                    "no model you can run comes from another company than {}, so no approver \
+                     can judge this",
+                    companies.join(" or ")
+                )
+            }
         }
     }
 
-    /// The fuller warning, given once, saying how to give auto an approver.
-    pub fn warning(&self) -> String {
-        format!(
-            "{}. Auto asks you instead until you set approvals.approver.model, or install and \
-             log in to an agent from another company",
-            sentence_case(&self.reason())
-        )
+    /// The fuller warning, given once, saying how to give auto an approver. Auto asks you
+    /// meanwhile, and full auto lets your rules decide alone, which its own line says.
+    pub fn warning(&self, full_auto: bool) -> String {
+        let fix = "pick an approver in /approvals, or install and log in to an agent from \
+                   another company";
+        if full_auto {
+            format!("{}. {}", sentence_case(&self.reason()), sentence_case(fix))
+        } else {
+            format!(
+                "{}. Auto asks you instead until you {fix}",
+                sentence_case(&self.reason())
+            )
+        }
+    }
+}
+
+/// A company as people write it, `OpenAI` for `openai`.
+fn company_name(company: &str) -> String {
+    match company {
+        "openai" => "OpenAI".to_owned(),
+        "xai" => "xAI".to_owned(),
+        "deepseek" => "DeepSeek".to_owned(),
+        other => sentence_case(other),
     }
 }
 
@@ -59,6 +83,41 @@ pub fn pick(
     authors: &[WorkerRef],
     different_family: bool,
     sources: Sources<'_>,
+) -> Result<WorkerRef, NoApprover> {
+    pick_besides(authors, different_family, sources, &[])
+}
+
+/// Like [`pick`], leaving out every agent of a vendor in `failed`, whose approver sessions
+/// already failed for this checkpoint.
+pub fn pick_besides(
+    authors: &[WorkerRef],
+    different_family: bool,
+    sources: Sources<'_>,
+    failed: &[WorkerRef],
+) -> Result<WorkerRef, NoApprover> {
+    cheapest(authors, different_family, sources, failed, |_| true)
+}
+
+/// Like [`pick_besides`], for an agent that takes over from an approver whose session failed:
+/// only one whose CLI keeps your plugins out of the approver's isolated session, which the role
+/// needs, since nobody chose it to see them.
+pub fn pick_stand_in(
+    authors: &[WorkerRef],
+    different_family: bool,
+    sources: Sources<'_>,
+    failed: &[WorkerRef],
+) -> Result<WorkerRef, NoApprover> {
+    cheapest(authors, different_family, sources, failed, |worker| {
+        sources.workers.isolates(worker)
+    })
+}
+
+fn cheapest(
+    authors: &[WorkerRef],
+    different_family: bool,
+    sources: Sources<'_>,
+    failed: &[WorkerRef],
+    fits: impl Fn(&WorkerRef) -> bool,
 ) -> Result<WorkerRef, NoApprover> {
     let family_of = |worker: &WorkerRef| family(worker, sources);
     let mut companies: Vec<String> = Vec::new();
@@ -76,6 +135,13 @@ pub fn pick(
         let Some(family) = family_of(&candidate) else {
             continue;
         };
+        if failed
+            .iter()
+            .any(|failed| failed.vendor() == candidate.vendor())
+            || !fits(&candidate)
+        {
+            continue;
+        }
         if companies.contains(&company_of(&family))
             || independence::check(&candidate, authors, different_family, sources.workers).is_err()
         {
@@ -163,6 +229,11 @@ fn entry_price(entry: &ModelEntry) -> f64 {
 
 /// The worker's family as its agent reports it, else as the model lists know it. `None` when
 /// neither knows.
+/// The company behind `worker`'s model family, when its family is known.
+pub fn company(worker: &WorkerRef, sources: Sources<'_>) -> Option<String> {
+    family(worker, sources).map(|family| company_of(&family))
+}
+
 fn family(worker: &WorkerRef, sources: Sources<'_>) -> Option<String> {
     let known = |family: String| {
         let family = family.trim().to_lowercase();
@@ -297,19 +368,30 @@ mod tests {
         let workers = FakeDirectory::new();
         workers.add(FakeWorker::harness("claude-code", "claude"));
         let none = picked(&["claude-code/opus"], &workers, None).unwrap_err();
-        assert!(none.reason().contains("another company than anthropic"));
-        assert!(none.warning().starts_with("No model"));
-        assert!(none.warning().contains("approvals.approver.model"));
+        assert!(none.reason().contains("another company than Anthropic"));
+        assert!(none.warning(false).starts_with("No model"));
+        assert!(
+            none.warning(false)
+                .contains("pick an approver in /approvals")
+        );
+        assert!(!none.warning(false).contains("approvals.approver"));
+        // Full auto never asks you, so its warning only says what gives it an approver.
+        let full_auto = none.warning(true);
+        assert!(!full_auto.contains("asks you"), "{full_auto}");
+        assert!(
+            full_auto.contains(". Pick an approver in /approvals"),
+            "{full_auto}"
+        );
         let unknown = picked(&["mystery"], &workers, None).unwrap_err();
         assert_eq!(unknown, NoApprover::UnknownAuthor(r("mystery")));
-        // A worker's name keeps its spelling at the start of the warning.
+        // A worker the app has no name for keeps its spelling.
         let unknown = NoApprover::UnknownAuthor(r("my-cli/fast"));
         assert!(
             unknown
-                .warning()
-                .starts_with("my-cli/fast's model family is unknown"),
+                .warning(false)
+                .starts_with("The company behind Fast on my-cli isn't known"),
             "{}",
-            unknown.warning()
+            unknown.warning(false)
         );
     }
 

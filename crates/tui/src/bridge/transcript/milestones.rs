@@ -97,7 +97,7 @@ impl Milestones {
                         let seconds = (event.ts - at).whole_seconds().max(0);
                         std::time::Duration::from_secs(u64::try_from(seconds).unwrap_or(0))
                     });
-                    workflows::done(&event.run_id, story, elapsed, cx);
+                    workflows::done(&event.run_id, story, *outcome, elapsed, cx);
                     lifecycle::run_end(event, story, *outcome, detail.as_deref(), clock, cx);
                     self.runs.remove(&event.run_id);
                 }

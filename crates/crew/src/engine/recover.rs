@@ -141,9 +141,11 @@ pub fn cause(
         Some(ParkReason::Paused) => ResumeCause::User,
         Some(ParkReason::Checkpoint) if !timed_out.is_empty() => ResumeCause::AskTimeout,
         Some(ParkReason::Checkpoint) => ResumeCause::Answer,
-        Some(ParkReason::AllVendorsOut { .. } | ParkReason::WaitingForVendor { .. }) => {
-            ResumeCause::VendorBack
-        }
+        Some(
+            ParkReason::AllVendorsOut { .. }
+            | ParkReason::WaitingForVendor { .. }
+            | ParkReason::NoStandIn { .. },
+        ) => ResumeCause::VendorBack,
         // Only the supervisor's `RunStarted`: a new run, nothing to recover.
         None if state.seq.unwrap_or(0) == 0 => return (None, Vec::new()),
         // You paused it, and the engine stopped before it parked.
@@ -234,7 +236,7 @@ async fn ask_timed_out(host: &Host, id: &CheckpointId, card: Option<&CardId>) ->
     checkpoints::withdraw(
         host,
         id,
-        "nobody answered within handoff.ask_timeout; handed to the next candidate",
+        "nobody answered in the time /handoff allows, so the next agent in line took it",
     )?;
     let spec = host.read(|state| state.cards.get(card).map(|record| record.spec.clone()));
     let Some(spec) = spec else {

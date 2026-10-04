@@ -174,9 +174,9 @@ pub struct EvidenceFacts {
     pub tamper_flags: Option<u32>,
     pub combined_diff_lines: Option<u32>,
     pub suite_on_latest_main: Option<bool>,
-    /// Cards whose quality debt no strong enough model reviewed, from the merge rows under
-    /// `merge_rule = "upgrade_review"`, and empty under `none`. `None` means not measured, so
-    /// auto won't merge unless `allow_debt` is set.
+    /// Cards whose quality debt no strong enough model reviewed, by the labels the merge table
+    /// gives them, from the merge rows under `merge_rule = "upgrade_review"`, and empty under
+    /// `none`. `None` means not measured, so auto won't merge unless `allow_debt` is set.
     #[serde(default)]
     pub unreviewed_debt: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

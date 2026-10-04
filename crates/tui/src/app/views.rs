@@ -10,7 +10,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use super::{Ui, UiAction};
 use crate::keymap::{Action, Layer};
 use crate::state::AppState;
-use crate::views::{ViewCtx, ViewOutcome};
+use crate::views::{Follow, ViewCtx, ViewOutcome};
 
 impl<W: Write> Ui<W> {
     /// Like [`handle_event`](Self::handle_event), with the top view seeing `state`.
@@ -35,6 +35,31 @@ impl<W: Write> Ui<W> {
             Event::Paste(text) if !self.views.is_empty() => self.view_paste(&text, now, state),
             Event::Mouse(mouse) => self.mouse_event(mouse, now, state),
             event => self.handle_chat_event(event, now),
+        }
+    }
+
+    /// After an event, the top view moves on with its run when it follows one: it's replaced,
+    /// or it closes and what follows is asked for.
+    pub fn follow_views(&mut self, now: Instant, state: &AppState) -> Vec<UiAction> {
+        let Some(view) = self.views.last_mut() else {
+            return Vec::new();
+        };
+        let ctx = ViewCtx {
+            theme: &self.theme,
+            state,
+            now,
+        };
+        let Some(next) = view.follow(&ctx) else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        self.views.pop();
+        match next {
+            Follow::Replace(view) => {
+                self.views.push(view);
+                Vec::new()
+            }
+            Follow::Request(request) => vec![UiAction::Request(request)],
         }
     }
 

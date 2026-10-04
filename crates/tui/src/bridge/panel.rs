@@ -7,7 +7,7 @@ use argonauts_core::RunId;
 use argonauts_core::api::{RunState as ApiRunState, RunSummary};
 use argonauts_core::app::StatusLine;
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::run::{ParkReason, RunMode, RunOutcome};
+use argonauts_core::events::run::{ParkReason, RunMode};
 use argonauts_core::events::session::{VendorAgentState, VendorWorkflow};
 use argonauts_core::settings::budget::BudgetUnit;
 use argonauts_core::views::{conversation_run, vendor_workflow_id};
@@ -242,9 +242,7 @@ fn run_row(
 
 fn row_state(run: &RunState) -> WorkflowRowState {
     match (&run.finished, &run.parked) {
-        (Some(RunOutcome::Failed), _) => WorkflowRowState::Failed,
-        (Some(RunOutcome::Stopped | RunOutcome::Abandoned), _) => WorkflowRowState::Stopped,
-        (Some(_), _) => WorkflowRowState::Done,
+        (Some(outcome), _) => WorkflowRowState::ended(*outcome),
         (None, _) if !run.checkpoints.is_empty() => WorkflowRowState::NeedsYou,
         (None, Some(ParkReason::Checkpoint)) => WorkflowRowState::NeedsYou,
         (None, Some(_)) => WorkflowRowState::Paused,
@@ -259,6 +257,7 @@ fn parked_notice(run: &RunState) -> Option<String> {
     }
     match &run.parked {
         Some(ParkReason::AllVendorsOut { .. }) => Some("every vendor is out".to_owned()),
+        Some(ParkReason::NoStandIn { detail, .. }) => Some(detail.clone()),
         Some(ParkReason::WaitingForVendor { vendor, .. }) => Some(format!("waiting for {vendor}")),
         _ if run.pausing && run.parked.is_none() => Some("pausing at a safe point".to_owned()),
         _ => None,
@@ -374,6 +373,7 @@ fn millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
+    use argonauts_core::events::run::RunOutcome;
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::budget::BudgetAmount;
     use argonauts_core::settings::ui::NarratorMode;
@@ -470,6 +470,16 @@ mod tests {
             until: None,
         });
         assert_eq!(row(&run).notice.as_deref(), Some("waiting for codex"));
+        // Nobody could take a seat over: the row says which, not that every vendor is out.
+        run.parked = Some(ParkReason::NoStandIn {
+            detail: "nobody could take over as the lead".into(),
+            until: None,
+        });
+        assert_eq!(
+            row(&run).notice.as_deref(),
+            Some("nobody could take over as the lead")
+        );
+        assert_eq!(row(&run).state, WorkflowRowState::Paused);
 
         // A finished run's time stops at its end.
         run.parked = None;

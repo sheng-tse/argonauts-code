@@ -96,14 +96,12 @@ pub async fn answer_in_slot(
         && !matches!(err, EngineError::Interrupted)
         && the_lead != picked
     {
-        round::note(
-            host,
-            NoteLevel::Warn,
-            format!(
-                "{} couldn't answer the goal's questions, so the lead answers them: {err}",
-                crate::roles::display_name(&picked)
-            ),
-        )?;
+        // Said plainly; what the session or the validator said waits for Ctrl+O.
+        let line = format!(
+            "{} couldn't answer the goal's questions, so the lead answers them.",
+            crate::roles::display_name(&picked)
+        );
+        round::note_with_detail(host, NoteLevel::Warn, &line, &err.to_string())?;
         lead = the_lead;
         answered = host.ask::<AnswerQuestions>(ask(&lead)).await;
     }
@@ -116,11 +114,8 @@ pub async fn answer_in_slot(
             } else {
                 "they come to you"
             };
-            round::note(
-                host,
-                NoteLevel::Warn,
-                format!("The lead couldn't answer the goal's questions, so {whose}: {err}"),
-            )?;
+            let line = format!("The lead couldn't answer the goal's questions, so {whose}.");
+            round::note_with_detail(host, NoteLevel::Warn, &line, &err.to_string())?;
             let picks = questions
                 .iter()
                 .map(|question| {

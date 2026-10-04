@@ -181,7 +181,9 @@ async fn review_in(
     let settings = host.settings();
     let blind = settings.review.blind
         || (reviewers.len() > 1 && settings.visibility.reviews_hidden_until_adjudicated);
-    let mut reviews = reviews_of_round(&record, round, reviewers);
+    let mut reviews = host.read(|state| reviews_of_round(state, &record, round, reviewers));
+    // A stand-in may not come from the owner's company, as no reviewer may.
+    let owner = record.owner.clone().or_else(|| record.spec.owner.clone());
     let (chunks, cut_note) = diff_cut::cut(
         &work_diff(host, workdir.as_deref(), record.base.as_deref()).await?,
         settings.review.max_diff_lines,
@@ -221,6 +223,7 @@ async fn review_in(
             ask.card = Some(card.clone());
             ask.blind = blind;
             ask.slot = round;
+            ask.independent_of = owner.iter().cloned().collect();
             if is_endpoint(host, reviewer) {
                 ask.access = Access::NoTools;
             } else {
@@ -229,14 +232,16 @@ async fn review_in(
             }
             async move { (reviewer, host.ask::<Review>(ask).await) }
         });
+    let mut stalls = Vec::new();
     for (reviewer, answer) in join_all(asks).await {
         match answer {
             Ok(answered) => {
+                // Under the name of whoever reviewed, a stand-in included.
                 host.record(
                     Some(card),
                     Some(&answered.session),
                     RunEventKind::Review(ReviewEvent::Reviewed {
-                        reviewer: reviewer.clone(),
+                        reviewer: answered.worker.clone(),
                         blind,
                         round,
                         review: answered.output.clone(),
@@ -245,12 +250,23 @@ async fn review_in(
                 reviews.push((reviewer.clone(), answered.output));
             }
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
+            // Nobody else may take that reviewer's seat, so the review goes on without it.
+            Err(EngineError::Stalled(stall)) => stalls.push(stall),
             Err(error) => {
                 return Ok(Verdict::Escalated {
                     reasons: vec![format!("{reviewer}'s review failed: {error}")],
                 });
             }
         }
+    }
+    if reviews.is_empty()
+        && let Some(stall) = stalls.first()
+    {
+        return Err(EngineError::Stalled(stall.clone()));
+    }
+    for stall in stalls {
+        let text = format!("{} The review goes on without that seat.", stall.line);
+        context::warn(host, Some(card), text)?;
     }
     let outputs: Vec<ReviewOutput> = reviews.into_iter().map(|(_, review)| review).collect();
     if tree.is_some() {
@@ -263,8 +279,9 @@ async fn review_in(
 }
 
 /// Reviews these reviewers already recorded for this round, so a re-entered review asks only
-/// the rest.
+/// the rest. A stand-in's review counts for the reviewer whose seat it took.
 fn reviews_of_round(
+    state: &RunState,
     record: &CardRecord,
     round: u32,
     reviewers: &[WorkerRef],
@@ -278,12 +295,38 @@ fn reviews_of_round(
                 round: r,
                 review,
                 ..
-            } if *r == round && reviewers.contains(reviewer) => {
-                Some((reviewer.clone(), review.clone()))
+            } if *r == round => {
+                let seat = if reviewers.contains(reviewer) {
+                    Some(reviewer.clone())
+                } else {
+                    stood_in_for(state, &record.spec.id, reviewer, reviewers)
+                };
+                seat.map(|seat| (seat, review.clone()))
             }
             _ => None,
         })
         .collect()
+}
+
+/// The reviewer of `reviewers` whose seat on `card` `worker` took, its newest.
+fn stood_in_for(
+    state: &RunState,
+    card: &CardId,
+    worker: &WorkerRef,
+    reviewers: &[WorkerRef],
+) -> Option<WorkerRef> {
+    state
+        .sessions
+        .in_order()
+        .into_iter()
+        .rev()
+        .filter(|session| {
+            session.card.as_ref() == Some(card)
+                && session.started.role == RoleName::Reviewer
+                && session.started.worker == *worker
+        })
+        .map(|session| session.asked_worker().clone())
+        .find(|asked| asked != worker && reviewers.contains(asked))
 }
 
 pub(crate) fn agree(reviews: &[ReviewOutput]) -> bool {
@@ -414,6 +457,8 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         decisions: context::decision_lines(state),
         round: call.at.round,
     });
+    // A stand-in may not come from the company of whoever made what's reviewed.
+    let authors = host.read(|state| authors::excluded(state, settings, call));
     let asks = reviewers.iter().enumerate().map(|(slot, reviewer)| {
         let mut ask = Ask::new(
             Some(call.at.clone()),
@@ -424,6 +469,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         );
         ask.blind = blind;
         ask.slot = slot as u32;
+        ask.independent_of = authors.clone();
         ask.access = if is_endpoint(host, reviewer) {
             Access::NoTools
         } else {
@@ -432,6 +478,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         async move { (reviewer, host.ask::<Review>(ask).await) }
     });
     let mut outputs = Vec::new();
+    let mut stalls = Vec::new();
     for (reviewer, answer) in join_all(asks).await {
         match answer {
             Ok(answered) => {
@@ -439,7 +486,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                     None,
                     Some(&answered.session),
                     RunEventKind::Review(ReviewEvent::Reviewed {
-                        reviewer: reviewer.clone(),
+                        reviewer: answered.worker.clone(),
                         blind,
                         round: call.at.round,
                         review: answered.output.clone(),
@@ -448,6 +495,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                 outputs.push(answered.output);
             }
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
+            Err(EngineError::Stalled(stall)) => stalls.push(stall),
             Err(error) => {
                 return Ok(StepDone {
                     end: argonauts_core::events::workflow::StepEnd::Failed,
@@ -456,6 +504,15 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                 });
             }
         }
+    }
+    if outputs.is_empty()
+        && let Some(stall) = stalls.first()
+    {
+        return Err(EngineError::Stalled(stall.clone()));
+    }
+    for stall in stalls {
+        let text = format!("{} The review goes on without that seat.", stall.line);
+        context::warn(host, None, text)?;
     }
     let summary = if agree(&outputs) {
         format!(

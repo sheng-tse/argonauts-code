@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::checkpoint::CheckpointKind;
 use argonauts_core::policy::{
     DecisionPoint, EvidencePacket, PolicyOutcome, ShadowRecord, Verdict, Violation,
@@ -93,7 +94,7 @@ pub async fn evaluate(
 }
 
 /// Why full auto leaves a plan or a merge to you with `presence = required`.
-const PRESENCE: &str = "approvals.presence = required keeps it for you at the terminal";
+const PRESENCE: &str = "your /approvals settings keep it for you at the terminal";
 
 /// Whether this point is decided in full auto, as `evaluate` set it for what decides below.
 pub(crate) fn in_full_auto(point: &DecisionPoint) -> bool {
@@ -403,7 +404,8 @@ fn decided(decision: Decision, spot_check: bool) -> PolicyOutcome {
 fn record(decision: &Decision, why: Option<String>) -> ShadowRecord {
     let mut reasons = decision.reasons.clone();
     if let Some(approver) = &decision.approver {
-        reasons.push(format!("asked the approver model {approver}"));
+        let approver = DisplayNames::default().worker(approver);
+        reasons.push(format!("asked {approver} to approve it"));
     }
     reasons.extend(why);
     ShadowRecord {

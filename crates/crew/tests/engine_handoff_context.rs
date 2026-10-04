@@ -702,19 +702,24 @@ async fn a_hand_back_follows_the_replacements_vendor() -> anyhow::Result<()> {
 #[tokio::test]
 async fn a_full_context_rotates_with_the_transcript() -> anyhow::Result<()> {
     let bench = Bench::in_state(Settings::default(), CardState::Ready).await?;
+    let crashed = || {
+        FakeSession::ended(EndReason::Crashed {
+            message: "segfault".to_owned(),
+        })
+    };
     let opus = bench.add(
         FakeWorker::harness(OPUS, "claude")
             .then(FakeSession::ended(EndReason::ContextFull))
-            .then(FakeSession::ended(EndReason::Crashed {
-                message: "segfault".to_owned(),
-            })),
+            .then(crashed())
+            .then(crashed()),
     );
     bench.services.limits.set_next(RecoveryAction::Rotate {
         packet: Box::new(packet(Some(bench.paths.clone()))),
     });
 
     let at = rules::step_now(&bench.host)?;
-    // The second session crashes and the card escalates, where it waits for you.
+    // The second session crashes, goes again once on its own session, crashes
+    // again, and the card escalates, where it waits for you.
     let escalated = async {
         while bench.state() != Some(CardState::Escalated) {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -729,7 +734,11 @@ async fn a_full_context_rotates_with_the_transcript() -> anyhow::Result<()> {
     }
 
     let specs = opus.specs();
-    ensure!(specs.len() == 2, "{} sessions", specs.len());
+    ensure!(specs.len() == 3, "{} sessions", specs.len());
+    ensure!(
+        specs[1].key == specs[2].key,
+        "the crash went again on its own session"
+    );
     let first = &specs[0].prompt;
     ensure!(first.iter().all(|part| part.kind != InputPartKind::Handoff));
     let handoff = specs[1]

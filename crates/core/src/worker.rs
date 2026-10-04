@@ -296,6 +296,12 @@ pub trait Worker: Send + Sync {
         let _ = (workdir, isolated);
         Vec::new()
     }
+
+    /// What its CLI's own login check says, the way the app's start check reads it: `Some(true)`
+    /// logged in, `Some(false)` logged out, `None` when there's no check or it claims nothing.
+    fn logged_in(&self) -> BoxFuture<'_, Option<bool>> {
+        Box::pin(async { None })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

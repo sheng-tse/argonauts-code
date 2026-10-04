@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use argonauts_core::CardId;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::checkpoint::CheckpointEvent;
 use argonauts_core::events::run::{
@@ -17,6 +16,7 @@ use argonauts_core::events::vendor::{BudgetEvent, HandoffEvent, RunBudget, Vendo
 use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::names::{CheckpointId, VendorId};
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::{CardId, Note};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunInfo {
@@ -42,6 +42,14 @@ pub struct RunInfo {
     pub last_snapshot: Option<u64>,
     /// How many times the run woke after parking or a crash.
     pub resumes: u32,
+    /// The seq of its newest `Resumed`. A vendor failure from before it no longer counts
+    /// against an agent, since what fixes one may have happened while the run was parked.
+    #[serde(default)]
+    pub last_resumed: Option<u64>,
+    /// Parks in a row because nobody could take a seat over, since an agent last finished a
+    /// session. Each makes the wait before the next try on its own longer.
+    #[serde(default)]
+    pub stand_in_waits: u32,
     pub health: BTreeMap<VendorId, HealthState>,
     pub quota: BTreeMap<VendorId, QuotaStatus>,
     /// When a vendor whose quota ran out said it resets, in Unix seconds.
@@ -52,6 +60,10 @@ pub struct RunInfo {
     pub vendor_waits: BTreeMap<CardId, VendorWait>,
     /// When each checkpoint opened, in Unix seconds, for the handoff ask timeout.
     pub opened_at: BTreeMap<CheckpointId, i64>,
+    /// The first line of every `›` note in the log, with the seq of the newest, so a step that
+    /// replays after a stop can tell it said why already.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub said: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +74,12 @@ pub struct VendorWait {
 }
 
 impl RunInfo {
+    pub fn noted(&mut self, note: &Note, seq: u64) {
+        if let Some(line) = note.text.lines().next() {
+            self.said.insert(line.to_owned(), seq);
+        }
+    }
+
     pub fn apply(&mut self, event: &RunLifecycle, envelope: &RunEvent) {
         match event {
             RunLifecycle::Started(started) => {
@@ -71,6 +89,7 @@ impl RunInfo {
             RunLifecycle::Named(named) => self.named = Some(named.clone()),
             RunLifecycle::Resumed(resumed) => {
                 self.resumes += 1;
+                self.last_resumed = Some(envelope.seq);
                 // A crash that cut a pause short keeps the pause: only a parked run's resume
                 // ends it. Reopening a stopped run ends its stop.
                 let reopened = self.finished.take().is_some();
@@ -98,7 +117,12 @@ impl RunInfo {
                 self.paused = true;
             }
             RunLifecycle::StopRequested { .. } => self.stop_requested = true,
-            RunLifecycle::Parked { reason, .. } => self.parked = Some(reason.clone()),
+            RunLifecycle::Parked { reason, .. } => {
+                if matches!(reason, ParkReason::NoStandIn { .. }) {
+                    self.stand_in_waits += 1;
+                }
+                self.parked = Some(reason.clone());
+            }
             RunLifecycle::Snapshot(_) => self.last_snapshot = Some(envelope.seq),
             RunLifecycle::ClosingAnswer(_) => self.closed = true,
             RunLifecycle::Finished { outcome, .. } => self.finished = Some(*outcome),

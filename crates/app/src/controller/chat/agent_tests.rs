@@ -76,6 +76,7 @@ fn started(worker: &str, role: RoleName, step: StepName, access: Access) -> RunE
         follow_key: None,
         workflow_step: None,
         label: Some(label.to_owned()),
+        asked: None,
     })))
 }
 

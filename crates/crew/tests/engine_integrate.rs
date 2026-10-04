@@ -6,6 +6,7 @@ mod support;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -21,6 +22,7 @@ use argonauts_core::events::checkpoint::{
 use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
 use argonauts_core::events::plan::{BudgetPlan, TaskGraph};
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
+use argonauts_core::events::session::EndReason;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::future::BoxFuture;
 use argonauts_core::limits::{GateRequest, GateRunner};
@@ -182,6 +184,75 @@ async fn conflict_goes_to_interface_owner() -> anyhow::Result<()> {
         .repo
         .git(&["show", &format!("{integration}:shared.txt")])?;
     assert!(merged.starts_with("both sides"), "{merged}");
+    Ok(())
+}
+
+/// A conflict resolver whose session ends on a 401 goes again on its own session, and after a
+/// second 401 the conflict goes on to another agent instead of failing the card's merge, in full
+/// auto.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_401_on_the_conflict_resolver_goes_again_then_to_another_agent() -> anyhow::Result<()> {
+    for failures in [1, 2] {
+        let crew = Crew::new()?;
+        let tries = Arc::new(AtomicUsize::new(0));
+        let interface =
+            crew.services
+                .workers
+                .add(
+                    FakeWorker::harness(INTERFACE_OWNER, "claude").respond_with(move |spec| {
+                        if spec.step != Some(StepName::ResolveConflict) {
+                            return work(spec, &[("src/api.rs", "pub trait Api {}\n")]);
+                        }
+                        if tries.fetch_add(1, Ordering::SeqCst) < failures {
+                            return FakeSession::ended(EndReason::Auth {
+                                message: "workspace routing discovery unauthorized (401)"
+                                    .to_owned(),
+                            });
+                        }
+                        work(spec, &[("shared.txt", "both sides\n")])
+                    }),
+                );
+        crew.services
+            .workers
+            .add(owner(OWNER_B, &[("shared.txt", "from card-002\n")]));
+        crew.services
+            .workers
+            .add(owner(OWNER_C, &[("shared.txt", "from card-003\n")]));
+        crew.services.workers.add(reviewer(REVIEWER));
+        let cards = vec![
+            spec("card-001", CardKind::Interface, &[], INTERFACE_OWNER),
+            spec("card-002", CardKind::Build, &["card-001"], OWNER_B),
+            spec("card-003", CardKind::Build, &["card-001"], OWNER_C),
+        ];
+        let bench = Bench::new(&crew, &cards).await?;
+        bench.host.record(
+            None,
+            None,
+            RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
+                mode: ApprovalMode::FullAuto,
+                by: Party::User,
+            }),
+        )?;
+        let done = bench.build().await?;
+        assert_eq!(
+            done.summary.as_deref(),
+            Some("3 cards integrated"),
+            "after {failures} 401s"
+        );
+        let resolving = |fake: &FakeWorker| {
+            fake.specs()
+                .iter()
+                .filter(|spec| spec.step == Some(StepName::ResolveConflict))
+                .count()
+        };
+        assert_eq!(resolving(&interface), 2, "after {failures} 401s");
+        let elsewhere: usize = [OWNER_B, OWNER_C, REVIEWER]
+            .into_iter()
+            .filter_map(|name| crew.services.workers.fake(name))
+            .map(|fake| resolving(&fake))
+            .sum();
+        assert_eq!(elsewhere, failures - 1, "after {failures} 401s");
+    }
     Ok(())
 }
 

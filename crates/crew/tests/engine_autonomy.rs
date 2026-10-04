@@ -20,8 +20,9 @@ use argonauts_core::events::goal::{GoalEvent, GoalFile};
 use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
 use argonauts_core::events::session::EndReason;
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::WorkerRef;
+use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::approvals::{Answerer, ApprovalMode, AtHardLimit, DecideWith};
+use argonauts_core::settings::handoff::FallbackEntry;
 use argonauts_core::settings::protocol::GateCommand;
 use argonauts_core::settings::workflows::LeadDesigns;
 use argonauts_core::steps::StepName;
@@ -381,8 +382,8 @@ async fn with_no_agent_of_another_company_the_goal_asks_with_a_warning() -> anyh
     );
     assert_eq!(open_kinds(&outcome.events), [CheckpointKind::Goal]);
     let why = reasons(&outcome.events, CheckpointKind::Goal).join("\n");
-    assert!(why.contains("another company than anthropic"), "{why}");
-    assert!(why.contains("set approvals.approver.model"), "{why}");
+    assert!(why.contains("another company than Anthropic"), "{why}");
+    assert!(why.contains("pick an approver in /approvals"), "{why}");
     Ok(())
 }
 
@@ -638,6 +639,15 @@ fn crew_asking(tag: &'static str, lead: Option<Own>, approver: FakeWorker) -> an
     Ok(crew)
 }
 
+/// The lead's role goes only to the crew's other agent, which fails the same way, so nobody
+/// answers in the lead's place.
+fn only_the_crew_leads(crew: &mut Crew) -> anyhow::Result<()> {
+    let codex: WorkerRef = "codex/gpt-x".parse()?;
+    let lead = crew.settings.roles.entry(RoleName::PhaseLead).or_default();
+    lead.handoff.fallback = vec![FallbackEntry::Worker(codex)];
+    Ok(())
+}
+
 fn lead_picks_trace() -> serde_json::Value {
     serde_json::json!({"answers": [{
         "n": 1,
@@ -844,7 +854,7 @@ async fn a_topic_ask_you_about_names_stays_yours_in_auto() -> anyhow::Result<()>
     let why = why_asked(events, CheckpointKind::Goal);
     assert_eq!(
         why,
-        ["approvals.ask_you_about keeps security questions yours"]
+        ["your /approvals settings keep security questions yours"]
     );
     Ok(())
 }
@@ -872,7 +882,7 @@ async fn a_picked_model_leaves_ask_you_about_questions_yours_in_auto() -> anyhow
     let why = why_asked(events, CheckpointKind::Goal);
     assert_eq!(
         why,
-        ["approvals.ask_you_about keeps security questions yours"]
+        ["your /approvals settings keep security questions yours"]
     );
     let picked = crew
         .services
@@ -893,7 +903,8 @@ async fn a_picked_model_leaves_ask_you_about_questions_yours_in_auto() -> anyhow
 /// never stands in, and nothing calls it the lead's.
 #[tokio::test]
 async fn when_the_lead_fails_its_questions_come_to_you() -> anyhow::Result<()> {
-    let crew = asking_crew_about("detail", Some(Own::Crash))?;
+    let mut crew = asking_crew_about("detail", Some(Own::Crash))?;
+    only_the_crew_leads(&mut crew)?;
     let outcome = run(&crew).await?;
     let events = &outcome.events;
     assert!(
@@ -903,7 +914,8 @@ async fn when_the_lead_fails_its_questions_come_to_you() -> anyhow::Result<()> {
     );
     assert_eq!(question_cards(events), 1);
     assert!(approved_goal(events).is_none());
-    assert_eq!(lead_asked(&crew), 1);
+    // A crash is a vendor failure, so the lead is asked once more before it counts as failed.
+    assert_eq!(lead_asked(&crew), 2);
     let said = notes(events);
     assert!(
         said.iter().any(|note| note
@@ -1504,7 +1516,7 @@ async fn full_auto_leaves_the_waiting_goal_question_to_the_lead() -> anyhow::Res
     );
     assert_eq!(
         why_asked(&outcome.events, CheckpointKind::Goal),
-        ["approvals.ask_you_about keeps security questions yours"]
+        ["your /approvals settings keep security questions yours"]
     );
 
     let (host, sink) = crew.host_over(outcome.events.clone())?;
@@ -1733,7 +1745,8 @@ async fn the_lead_sizes_the_preset_and_says_what_it_changed() -> anyhow::Result<
 #[tokio::test]
 async fn in_full_auto_a_question_the_lead_fails_takes_the_recommended_answer() -> anyhow::Result<()>
 {
-    let crew = asking_crew_about("scope", Some(Own::Crash))?;
+    let mut crew = asking_crew_about("scope", Some(Own::Crash))?;
+    only_the_crew_leads(&mut crew)?;
     let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
     let events = &outcome.events;
     assert!(
@@ -1743,7 +1756,8 @@ async fn in_full_auto_a_question_the_lead_fails_takes_the_recommended_answer() -
         open_kinds(events)
     );
     assert_eq!(question_cards(events), 0);
-    assert_eq!(lead_asked(&crew), 1);
+    // Asked once more after its crash.
+    assert_eq!(lead_asked(&crew), 2);
     let goal = approved_goal(events).expect("the goal was approved");
     let assumed = goal
         .assumptions
@@ -1871,7 +1885,7 @@ async fn full_auto_goes_on_past_waiting_spot_checks() -> anyhow::Result<()> {
 }
 
 /// With no model of another company to run, full auto goes ahead on your rules alone, keeps the
-/// lead's answers as assumptions, and says so with how to have a model check.
+/// lead's answers as assumptions, and says so in plain words with where to pick an approver.
 #[tokio::test]
 async fn full_auto_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
@@ -1890,10 +1904,11 @@ async fn full_auto_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result
     assert!(decided(events).contains(&(CheckpointKind::Goal, Party::Rules)));
     let said = notes(events);
     assert!(
-        said.iter().any(|note| note.starts_with(
-            "Full auto went ahead on \"Run this workflow?\" by your rules alone, since no model \
-             you can run comes from another company than anthropic"
-        ) && note.contains("set approvals.approver.model")),
+        said.contains(
+            &"\"Run this workflow?\": No model you can run comes from another company than \
+              Anthropic, so no approver can judge this; your rules decided. Pick an approver in \
+              /approvals, or install and log in to an agent from another company."
+        ),
         "{said:#?}"
     );
     Ok(())
@@ -1916,8 +1931,8 @@ async fn full_auto_parks_on_a_plan_it_cant_approve() -> anyhow::Result<()> {
     let said = notes(events);
     assert!(
         said.iter().any(|note| note
-            == &"Full auto left \"Approve this plan?\" to you, since approvals.presence = \
-                 required keeps it for you at the terminal."),
+            == &"Full auto left \"Approve this plan?\" to you, since your /approvals settings \
+                 keep it for you at the terminal."),
         "{said:#?}"
     );
     Ok(())
@@ -2103,7 +2118,7 @@ async fn in_full_auto_an_answer_no_one_can_check_goes_as_best_judgment() -> anyh
     );
     let said = notes(&events).join("\n");
     assert!(said.contains("Go with your best judgment"), "{said}");
-    assert!(said.contains("same model family"), "{said}");
+    assert!(said.contains("same company as"), "{said}");
     assert!(
         !said.contains("no rules decide this kind of checkpoint"),
         "{said}"
