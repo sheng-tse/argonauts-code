@@ -51,6 +51,7 @@ pub use spot::spot_check_card;
 pub(crate) use spot::spot_check_options;
 pub use table::{Column, Table, TableCell};
 pub(crate) use views::{Shown, checkpoint_view, choice_view};
+pub(crate) use words::joined;
 
 /// Auto decisions kept for a spot check that may follow them.
 const RECENT_DECISIONS: usize = 32;

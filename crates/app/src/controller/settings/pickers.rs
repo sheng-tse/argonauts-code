@@ -185,9 +185,18 @@ pub(crate) fn approvals(ctx: &Ctx) -> ViewData {
         Arc::clone(&ctx.services.workers),
         Arc::clone(&ctx.services.steps),
     );
-    ViewData::Approvals {
-        view: policy.view(),
-    }
+    let mut view = policy.view();
+    // The settings check's warnings about approvals, such as a picked answerer the approver
+    // can't check, show where you'd change them.
+    view.warnings = ctx
+        .settings
+        .resolved()
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("approvals."))
+        .cloned()
+        .collect();
+    ViewData::Approvals { view }
 }
 
 fn view(rows: Vec<SettingRow>, command: &str, section: Option<String>) -> ViewData {

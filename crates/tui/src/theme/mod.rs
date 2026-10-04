@@ -36,6 +36,8 @@ pub enum Role {
     ModeSupervised,
     ModeShadow,
     ModeAuto,
+    /// Claude Code's bypass-permissions red, since nothing in full auto waits for you.
+    ModeFullAuto,
     /// Shell mode: the input's `!`, its rules, and the mode line's words.
     Shell,
     /// Background of a removed diff row.
@@ -77,7 +79,7 @@ pub enum Role {
 }
 
 impl Role {
-    pub const COUNT: usize = 43;
+    pub const COUNT: usize = 44;
 
     pub const ALL: [Role; Role::COUNT] = [
         Role::Text,
@@ -96,6 +98,7 @@ impl Role {
         Role::ModeSupervised,
         Role::ModeShadow,
         Role::ModeAuto,
+        Role::ModeFullAuto,
         Role::Shell,
         Role::RemovedRow,
         Role::RemovedWord,
@@ -144,6 +147,7 @@ impl Role {
             Role::ModeSupervised => "mode-supervised",
             Role::ModeShadow => "mode-shadow",
             Role::ModeAuto => "mode-auto",
+            Role::ModeFullAuto => "mode-full-auto",
             Role::Shell => "shell",
             Role::RemovedRow => "removed-row",
             Role::RemovedWord => "removed-word",
@@ -377,6 +381,7 @@ fn dark_style(role: Role) -> Style {
         Role::ModeSupervised => fg(0x999999),
         Role::ModeShadow => fg(0x48968c),
         Role::ModeAuto => fg(0xffc107),
+        Role::ModeFullAuto => fg(0xff6b80),
         // Claude Code's bash mode pink.
         Role::Shell => fg(0xfd5db1),
         Role::RemovedRow => bg(0x3d0100),
@@ -429,6 +434,7 @@ fn light_style(role: Role) -> Style {
         Role::ModeSupervised => fg(0x666666),
         Role::ModeShadow => fg(0x006666),
         Role::ModeAuto => fg(0x966c1e),
+        Role::ModeFullAuto => fg(0xcf222e),
         Role::Shell => fg(0xff0087),
         Role::RemovedRow => bg(0xffdcdc),
         Role::RemovedWord => bg(0xffc7c7),

@@ -601,6 +601,7 @@ mod tests {
             recipe: None,
             authors: Vec::new(),
             mode_override: None,
+            lead: None,
         };
         let document = |label: &str, text: &str| EvidenceDocument {
             label: label.to_owned(),

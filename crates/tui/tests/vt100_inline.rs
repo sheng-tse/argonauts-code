@@ -647,13 +647,13 @@ fn keys_do_what_the_reference_says() {
     h.settle();
     assert_eq!(
         h.key_with(KeyCode::BackTab, KeyModifiers::SHIFT),
-        vec![UiAction::ModeChanged(ApprovalMode::Shadow)]
+        vec![UiAction::ModeChanged(ApprovalMode::Auto)]
     );
     h.settle();
     assert!(
         h.rows()
             .iter()
-            .any(|row| row == "  ǁ shadow mode on (shift+tab to cycle) · ? for shortcuts"),
+            .any(|row| row == "  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts"),
         "{}",
         dump(&h.rows())
     );

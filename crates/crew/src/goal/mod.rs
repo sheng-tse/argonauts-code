@@ -2,10 +2,12 @@
 //! the goal file, and the goal checkpoint. Until the goal is approved only read-only and
 //! no-tools sessions start; once approved it's frozen by its hash.
 
+use argonauts_core::events::checkpoint::CheckpointKind;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::steps::goal::{DifferOutput, Restatement};
 
+use crate::checkpoints;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::solo;
@@ -91,7 +93,8 @@ pub async fn differ_step(host: &Host, call: &StepCall) -> EngineResult<StepDone>
 
     let listings = differ::compare(host, call).await?;
     let outputs: Vec<DifferOutput> = listings.into_iter().map(|(_, output)| output).collect();
-    let goal_settings = materiality::goal_settings(host.settings());
+    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
+    let goal_settings = materiality::goal_settings(host.settings(), full_auto);
     let settled = materiality::settle(&outputs, restated.len(), &goal_settings);
     let request = host.read(round::request)?;
     round::settle_and_draft(host, host.run_id(), &request, &restated, &settled, enough).await?;

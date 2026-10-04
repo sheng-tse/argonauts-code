@@ -10,6 +10,7 @@ use argonauts_core::settings::sessions::NativeFanout;
 use argonauts_core::settings::{Settings, Span};
 use toml::{Table, Value};
 
+use super::full_auto;
 use super::handoff;
 use super::plain;
 use super::roles::{self, Workers};
@@ -66,6 +67,7 @@ pub(crate) fn validate(
     let workers = Workers::new(settings).resolving(context.harness_ids, turned_on(context));
     let mut warnings = roles::warnings(settings, &workers);
     warnings.extend(handoff::warnings(settings, &workers));
+    warnings.extend(full_auto::warnings(settings, &workers));
     Ok(warnings)
 }
 

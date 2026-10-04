@@ -260,6 +260,7 @@ impl Autonomy for StateAutonomy {
         };
         let scope = Scope::Recipe(point.recipe.as_deref());
         let tally = scoring::tally(&records, point.kind, scope, None, self.clock.now());
+        // Full auto stays itself: nobody answers spot checks there to win autonomy back.
         if configured == ApprovalMode::Auto && tally.demoted {
             ApprovalMode::Shadow
         } else {
@@ -305,16 +306,18 @@ impl Autonomy for StateAutonomy {
             });
         }
         // Checked again under the lock, since a wrong spot check, or a spot check drawn by
-        // another run, can land while the approver model is deciding.
+        // another run, can land while the approver model is deciding. Full auto goes on past
+        // both, since nobody answers spot checks there; its daily caps below still hold.
         let scope = Scope::Recipe(point.recipe.as_deref());
-        if scoring::tally(locked.records(), point.kind, scope, None, now).demoted {
+        let full_auto = crate::approvals::in_full_auto(point);
+        if !full_auto && scoring::tally(locked.records(), point.kind, scope, None, now).demoted {
             return Err(Refusal::Paused(
                 "a wrong spot check or a revert put this kind of checkpoint back in shadow \
                  until you reinstate auto for it"
                     .to_owned(),
             ));
         }
-        if let Some(reason) = spot_check_pause(locked.records(), settings) {
+        if let Some(reason) = spot_check_pause(locked.records(), settings).filter(|_| !full_auto) {
             return Err(Refusal::Paused(reason));
         }
         let limits = &settings.limits;
@@ -550,6 +553,7 @@ mod tests {
             recipe: None,
             authors: Vec::new(),
             mode_override: None,
+            lead: None,
         }
     }
 

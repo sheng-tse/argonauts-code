@@ -29,6 +29,18 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
+# the lead answers the goal's questions, when they're left to it as in full auto
+[[rule]]
+argv0 = "claude"
+prompt_contains = '"needs_user"'
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-answers\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+[[rule.step]]
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-answers\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"answers\":[{\"n\":1,\"option\":0,\"why\":\"the public API authenticates by key, so the limit follows the key\",\"needs_user\":null}]}}"
+[[rule.step]]
+exit = 0
+
+
 # the lead's workflow design: the preset's own workflow
 [[rule]]
 argv0 = "claude"

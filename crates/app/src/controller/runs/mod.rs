@@ -49,6 +49,10 @@ pub(crate) struct RunsState {
     /// `argonauts run` closes the app once this run finishes.
     exit_when_done: Option<RunId>,
     parked: ParkedRuns,
+    /// The agent panel's rows for runs not on screen, as last sent.
+    background: Vec<RunSummary>,
+    /// Runs this screen has shown, so one you left isn't announced as new when it gets its row.
+    shown: HashSet<RunId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +104,8 @@ pub(crate) enum RunUpdate {
         cause: WakeCause,
         started: Result<(), ApiError>,
     },
+    /// This repo's runs, listed for the agent panel's rows.
+    Listed(Result<Vec<RunSummary>, ApiError>),
 }
 
 impl RunsState {
@@ -116,6 +122,8 @@ impl RunsState {
             waking: HashSet::new(),
             exit_when_done: None,
             parked: ParkedRuns::default(),
+            background: Vec::new(),
+            shown: HashSet::new(),
         }
     }
 }
@@ -146,9 +154,14 @@ pub(crate) fn status_parts(runs: &RunsState) -> RunStatusParts {
         run: attached.map(|attached| attached.run.clone()),
         spent: attached.and_then(|attached| attached.spent),
         limit: attached.and_then(|attached| attached.limit),
-        approval_mode: attached
-            .and_then(|attached| attached.approval_mode)
-            .or(runs.approval_mode),
+        // A run that goes on shows its own mode, which is the settings' until Shift+Tab sets
+        // one. Shift+Tab's pick for this session shows once none does.
+        approval_mode: match attached {
+            Some(attached) if !matches!(attached.stage, Stage::Finished(_)) => {
+                attached.approval_mode
+            }
+            _ => runs.approval_mode,
+        },
     }
 }
 
@@ -156,48 +169,38 @@ pub(crate) fn focus(runs: &mut RunsState, focused: bool) {
     runs.focused = focused;
 }
 
-/// At start: attach to the newest live or waiting run, check parked runs for a wake, or open
-/// what `argonauts resume` asked for.
+/// At start: a new conversation, as `claude` opens one, the newest one `argonauts -c` carries
+/// on, or what `argonauts resume` asked for. This repo's runs going or waiting on you get their
+/// panel rows either way, and parked runs are checked for a wake.
 pub(crate) async fn open(
     ctx: &mut Ctx,
     runs: &mut RunsState,
     first: FirstView,
 ) -> anyhow::Result<Vec<Effect>> {
     let effects = vec![Effect::Status];
+    // A list that fails still opens what you asked for.
+    let list = match ctx.services.conductor.list().await {
+        Ok(list) => list,
+        Err(err) => {
+            ctx.error(&anyhow::Error::new(err).context("listing this repo's runs"));
+            Vec::new()
+        }
+    };
     match first {
-        FirstView::Chat => reattach_newest(ctx, runs).await?,
-        // The controller opened the conversation; a run would take the screen from it.
-        FirstView::Conversation(_)
+        // A run that waits on you keeps its card until you open that run, from its panel row or
+        // /resume, so nothing on it is answered from a screen that opened for something else.
+        // The controller opened the conversation, or the agent session it carries on.
+        FirstView::Chat
+        | FirstView::Continue
+        | FirstView::Conversation(_)
         | FirstView::VendorSession(_)
-        | FirstView::Agent(_)
-        | FirstView::Continue => {}
+        | FirstView::Agent(_) => {}
         FirstView::ResumePicker => show_runs(ctx).await?,
         FirstView::Resume(run) => resume_and_attach(ctx, runs, &run).await?,
         FirstView::Attach(run) => {
             runs.exit_when_done = Some(run.clone());
             let summary = summary_of(ctx, &run).await;
             attach::attach(ctx, runs, summary, Opening::Watch).await?;
-        }
-    }
-    wake_parked(ctx, runs).await?;
-    Ok(effects)
-}
-
-async fn reattach_newest(ctx: &mut Ctx, runs: &mut RunsState) -> anyhow::Result<()> {
-    let list = ctx.services.conductor.list().await?;
-    let going: Vec<&RunSummary> = list.iter().filter(|run| going_or_waiting(run)).collect();
-    if let Some(newest) = going.first() {
-        attach::attach(ctx, runs, (*newest).clone(), Opening::Reattach).await?;
-        if going.len() > 1 {
-            ctx.notice(
-                NoteLevel::Info,
-                format!(
-                    "{} runs are going or waiting in this repo, and {} is on screen. /resume picks \
-                     another.",
-                    going.len(),
-                    newest.run
-                ),
-            );
         }
     }
     for crashed in list.iter().filter(|run| run.state == RunState::Crashed) {
@@ -209,13 +212,121 @@ async fn reattach_newest(ctx: &mut Ctx, runs: &mut RunsState) -> anyhow::Result<
             ),
         );
     }
-    Ok(())
+    send_background(ctx, runs, list);
+    wake_parked(ctx, runs).await?;
+    Ok(effects)
 }
 
-fn going_or_waiting(run: &RunSummary) -> bool {
+/// A run the agent panel shows a row for when it isn't on screen.
+pub(crate) fn going_or_waiting(run: &RunSummary) -> bool {
     run.live
         || matches!(run.state, RunState::Running | RunState::Pausing)
         || (run.state == RunState::Parked && !run.waiting.is_empty())
+}
+
+/// Once a minute: the panel's rows for runs not on screen, sent again when they changed, such
+/// as a run answered from another terminal. Listing reads every run's journal, so it runs on a
+/// blocking thread and comes back as [`RunUpdate::Listed`].
+pub(crate) fn refresh_background(ctx: &Ctx) {
+    let conductor = Arc::clone(&ctx.services.conductor);
+    let internal = ctx.internal.clone();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let listed = runtime.block_on(conductor.list());
+        // After Exit nobody listens.
+        let _ = internal.send(Internal::Run(RunUpdate::Listed(listed)));
+    });
+}
+
+fn on_listed(ctx: &mut Ctx, runs: &mut RunsState, listed: Result<Vec<RunSummary>, ApiError>) {
+    match listed {
+        Ok(list) => {
+            announce_background(ctx, runs, &list);
+            send_background(ctx, runs, list);
+        }
+        Err(err) => tracing::warn!("listing this repo's runs for the agent panel: {err}"),
+    }
+}
+
+/// Says when a run off screen starts waiting on you or finishes, as a notice and, while you're
+/// away, a notification. The mode line counts what waits from the panel's rows.
+fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
+    let on_screen = attached(runs);
+    for run in list.iter().filter(|run| Some(&run.run) != on_screen) {
+        let before = runs
+            .background
+            .iter()
+            .find(|earlier| earlier.run == run.run);
+        let (trigger, kind, text) = if run.needs_you() {
+            let waits_more = match before {
+                Some(before) => run.waiting.iter().any(|id| !before.waiting.contains(id)),
+                None => !runs.shown.contains(&run.run),
+            };
+            if !waits_more {
+                continue;
+            }
+            let kind = match run.stopped_at.trim() {
+                "" => "a card".to_owned(),
+                at => at.to_owned(),
+            };
+            let text = format!("{run} needs you · /resume {run}", run = run.run);
+            (ChatTrigger::NeedsYou, kind, text)
+        } else if let (Some(_), Some(outcome)) = (before, outcome_of(run.state)) {
+            let text = format!(
+                "{} /resume {} shows it.",
+                track::outcome_sentence(&run.run, outcome),
+                run.run
+            );
+            (
+                ChatTrigger::Finished,
+                track::outcome_label(outcome).to_owned(),
+                text,
+            )
+        } else {
+            continue;
+        };
+        ctx.notice(NoteLevel::Info, text);
+        let needs = NeedsYou {
+            repo: repo_name(ctx),
+            run: run.run.clone(),
+            checkpoint: run.waiting.last().cloned(),
+            kind,
+            spent: Some(run.spent),
+            trigger,
+        };
+        notify_if_away(ctx, runs, &needs);
+    }
+}
+
+/// How a run ended, from its listed state. `None` while it's open, or when it crashed.
+fn outcome_of(state: RunState) -> Option<RunOutcome> {
+    match state {
+        RunState::Merged => Some(RunOutcome::Merged),
+        RunState::PullRequest => Some(RunOutcome::PullRequest),
+        RunState::BranchLeft => Some(RunOutcome::BranchLeft),
+        RunState::Stopped => Some(RunOutcome::Stopped),
+        RunState::Failed => Some(RunOutcome::Failed),
+        RunState::Abandoned => Some(RunOutcome::Abandoned),
+        RunState::Running | RunState::Pausing | RunState::Parked | RunState::Crashed => None,
+    }
+}
+
+/// The runs going or waiting on you that aren't on screen, for the agent panel. Their cards stay
+/// with them until you open one.
+fn send_background(ctx: &Ctx, runs: &mut RunsState, list: Vec<RunSummary>) {
+    let on_screen = attached(runs).cloned();
+    if let Some(run) = &on_screen {
+        runs.shown.insert(run.clone());
+    }
+    let background: Vec<RunSummary> = list
+        .into_iter()
+        .filter(|run| going_or_waiting(run) && Some(&run.run) != on_screen.as_ref())
+        .collect();
+    if background == runs.background {
+        return;
+    }
+    runs.background.clone_from(&background);
+    ctx.send(AppEvent::BackgroundRuns { runs: background });
 }
 
 /// The `/resume` picker: this repo's runs with their agents' sessions, earlier conversations,
@@ -248,7 +359,7 @@ pub(super) async fn resume_and_attach(
         .conductor
         .resume(run)
         .await
-        .map_err(|err| resume_error(run, err))?;
+        .map_err(resume_error)?;
     let stopped_here = runs.attached.as_mut().filter(|attached| {
         &attached.run == run
             && attached.ended
@@ -256,25 +367,50 @@ pub(super) async fn resume_and_attach(
             && attached.stage == Stage::Finished(RunOutcome::Stopped)
     });
     if let Some(attached) = stopped_here {
-        return attach::follow_on(ctx, attached).await;
+        attach::follow_on(ctx, attached).await?;
+    } else {
+        let streaming = runs
+            .attached
+            .as_ref()
+            .is_some_and(|attached| &attached.run == run && !attached.ended);
+        if !streaming {
+            let summary = summary_of(ctx, run).await;
+            attach::attach(ctx, runs, summary, Opening::Reattach).await?;
+        }
     }
-    let streaming = runs
-        .attached
-        .as_ref()
-        .is_some_and(|attached| &attached.run == run && !attached.ended);
-    if !streaming {
-        let summary = summary_of(ctx, run).await;
-        attach::attach(ctx, runs, summary, Opening::Reattach).await?;
-    }
+    raise_to_chosen(ctx, runs, run).await;
     Ok(())
 }
 
-fn resume_error(run: &RunId, err: ApiError) -> anyhow::Error {
+/// A run that comes back on screen to do more work takes the mode Shift+Tab chose in this
+/// session, as a run started now does.
+async fn raise_to_chosen(ctx: &Ctx, runs: &mut RunsState, run: &RunId) {
+    let Some(mode) = runs.approval_mode else {
+        return;
+    };
+    let Some(attached) = runs
+        .attached
+        .as_mut()
+        .filter(|attached| &attached.run == run)
+    else {
+        return;
+    };
+    if attached.approval_mode != Some(mode) && set_approval_mode(ctx, run, mode).await {
+        attached.approval_mode = Some(mode);
+    }
+}
+
+/// Why a run didn't resume, in plain words and without its id, which the screen already shows.
+fn resume_error(err: ApiError) -> anyhow::Error {
     match err {
-        ApiError::Merged(_) => {
-            anyhow::anyhow!("{run} is merged, so it can't resume. /follow-up builds on it.")
-        }
-        err => anyhow::anyhow!("couldn't resume {run}: {err}"),
+        ApiError::Merged(_) => anyhow::anyhow!(
+            "That run already merged, so it can't resume. To build on its result, type \
+             /follow-up and what you want next."
+        ),
+        err => anyhow::anyhow!(
+            super::run_commands::plain_refusal(&err)
+                .unwrap_or_else(|| super::run_commands::failure(&err, "Couldn't resume that run"))
+        ),
     }
 }
 
@@ -399,6 +535,7 @@ fn new_summary(ctx: &Ctx, run: &RunId, title: String, mode: RunMode) -> RunSumma
         waiting: Vec::new(),
         live: true,
         remind: false,
+        name: None,
     }
 }
 
@@ -420,6 +557,10 @@ pub(crate) async fn on_update(
             cause,
             started,
         } => on_woke(ctx, runs, run, cause, started).await?,
+        RunUpdate::Listed(listed) => {
+            on_listed(ctx, runs, listed);
+            Vec::new()
+        }
     };
     Ok(effects)
 }
@@ -661,6 +802,7 @@ async fn on_woke(
     }
     let summary = summary_of(ctx, &run).await;
     attach::attach(ctx, runs, summary, Opening::Reattach).await?;
+    raise_to_chosen(ctx, runs, &run).await;
     Ok(vec![Effect::Status])
 }
 

@@ -131,8 +131,8 @@ fn app_refuses_approval_inside_agent_session() -> anyhow::Result<()> {
 
 #[test]
 fn app_answer_refused_from_chat_agent_descendant() -> anyhow::Result<()> {
-    // The parked run is on screen at start, and during a run the narrator answers `/ask`; with
-    // it off, the chat agent does.
+    // The parked run waits off screen, so the chat agent answers `/ask`. The narrator is off so
+    // it never could, even with a run on screen.
     let scenario = scenario_with(&GLOBAL_CONFIG.replace("[ui]\n", "[ui]\nnarrator = \"off\"\n"))?;
     let parked = fabricate_parked_run(&scenario, 1)?;
     let events_before = run_events(&parked.dir)?.len();
@@ -166,8 +166,6 @@ fn app_answer_refused_from_chat_agent_descendant() -> anyhow::Result<()> {
         &[("PATH", path_with_first(&scenario, &wrap))],
     )?;
     wait_ready(&scenario, &pty)?;
-    // The parked run's question takes the keys as the app opens, so `/ask` sets it aside first.
-    set_card_aside(&mut pty)?;
     submit(&mut pty, &format!("/ask {}", requests::ASK))?;
     wait_turns_finished(&scenario, 1)?;
 

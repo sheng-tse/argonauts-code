@@ -76,6 +76,7 @@ mod tests {
             waiting: waiting.iter().map(|n| CheckpointId::numbered(*n)).collect(),
             live: false,
             remind: false,
+            name: None,
         }
     }
 

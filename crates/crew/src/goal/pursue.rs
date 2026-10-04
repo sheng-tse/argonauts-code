@@ -20,7 +20,7 @@ use argonauts_core::events::run::{ParkReason, Party, RunMode, RunOutcome};
 use argonauts_core::events::workflow::{RunNote, StepEnd, WorkflowEvent};
 use argonauts_core::names::{RoleName, WorkerRef, WorkflowId};
 use argonauts_core::policy::EvidenceFacts;
-use argonauts_core::settings::approvals::Answerer;
+use argonauts_core::settings::approvals::AtHardLimit;
 use argonauts_core::settings::budget::BudgetUnit;
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::goal::DiffTag;
@@ -736,16 +736,26 @@ fn other_company(host: &Host, owner: Option<&WorkerRef>) -> Option<WorkerRef> {
 }
 
 /// What a question is about: one the crew's answerer takes, or a hard limit, which comes to you
-/// in every mode.
+/// in every mode but full auto.
 #[derive(Debug, Clone, Copy)]
 enum Topic<'a> {
     Crew(&'a str),
     HardLimit(&'a str),
 }
 
+fn topic_of(topic: &str, hard_limit: bool) -> Topic<'_> {
+    if hard_limit {
+        Topic::HardLimit(topic)
+    } else {
+        Topic::Crew(topic)
+    }
+}
+
 /// Asks whoever answers the crew's questions to pick one of `options`, the recommended first.
 /// The lead takes the recommended one and says so; you get a choose-only card, unless the topic
-/// is one `approvals.ask_you_about` keeps yours.
+/// is one `approvals.ask_you_about` keeps yours. In full auto nothing waits for you: the lead
+/// answers, and a hard limit does what `approvals.goal.at_hard_limit` says, which stops it
+/// unless that's `park`.
 async fn choose(
     host: &Host,
     call: &StepCall,
@@ -759,8 +769,25 @@ async fn choose(
         Topic::Crew(topic) => (topic, false),
         Topic::HardLimit(topic) => (topic, true),
     };
-    let yours = hard_limit || checkpoints::asks_you_about(host.settings(), &[topic]);
-    if !yours && checkpoints::answerer(host, CheckpointKind::Goal) == Answerer::Lead {
+    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
+    if full_auto
+        && hard_limit
+        && checkpoints::configured(host.settings(), CheckpointKind::Goal).at_hard_limit
+            != AtHardLimit::Park
+        && let Some(stop) = options.iter().find(|option| **option == STOP)
+    {
+        answered(host, question, stop, Decider::Rules)?;
+        note(
+            host,
+            format!(
+                "Full auto stopped at the goal's {topic}, a hard limit, and kept the branch, as \
+                 approvals.goal.at_hard_limit says"
+            ),
+        )?;
+        return Ok((*stop).to_owned());
+    }
+    let yours = hard_limit || checkpoints::keeps_yours(host, CheckpointKind::Goal, &[topic]);
+    if !yours && checkpoints::answerer(host, CheckpointKind::Goal).answers_for_you() {
         answered(host, question, &recommended, Decider::Lead)?;
         note(
             host,
@@ -834,15 +861,35 @@ async fn choose(
         free_text: FreeText::None,
         authors: Vec::new(),
     };
-    let decided = if hard_limit {
+    let opening = if hard_limit {
         let because = format!("the {topic} is a hard limit, so it comes to you in every mode");
-        checkpoints::open_and_wait_yours(host, request, because).await?
+        checkpoints::open_yours(host, request, because)?
     } else if yours {
         let because = checkpoints::yours_because(&format!("{topic} questions"));
-        checkpoints::open_and_wait_yours(host, request, because).await?
+        checkpoints::open_yours(host, request, because)?
     } else {
         let because = "you answer the crew's questions".to_owned();
-        checkpoints::open_and_wait_because(host, request, Some(because)).await?
+        checkpoints::open_because(host, request, Some(because))?
+    };
+    let decided = match opening.decided_or_withdrawn(host).await? {
+        Ok(decided) => decided,
+        // Full auto came on while it waited for you, so it's answered as full auto answers it.
+        Err(left) if left == checkpoints::full_auto::LEFT_TO_THE_LEAD => {
+            return Box::pin(choose(
+                host,
+                call,
+                question,
+                topic_of(topic, hard_limit),
+                options,
+                why,
+            ))
+            .await;
+        }
+        Err(left) => {
+            return Err(EngineError::Refused(format!(
+                "\"{question}\" was withdrawn: {left}"
+            )));
+        }
     };
     let answer = match &decided.action {
         AnswerAction::Choose { value } if options.contains(&value.as_str()) => value.clone(),

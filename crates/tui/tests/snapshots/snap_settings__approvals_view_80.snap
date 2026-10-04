@@ -6,15 +6,15 @@ Approvals
 Who decides each checkpoint, and how auto matched you       1 spot check waiting
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
+│ Who checks                                                  GPT 5.6 on Codex │
+│ ❯ Approver model                GPT 5.6 on Codex         everywhere (global) │
+│   Rules file                    ~/.argonauts/approver.…  everywhere (global) │
+│                                                                              │
 │ Merge · shadow · your rules decide  12 matches in a row · 1 miss · ready fo… │
-│ ❯ How it's decided              shadow                   this project        │
+│   How it's decided              shadow                   this project        │
 │   Who decides in auto           your rules               built-in            │
 │   Changed lines tests cover     0.8                      built-in            │
 │   When auto doesn't approve     ask you                  built-in            │
-│                                                                              │
-│ Approver                                                    GPT 5.6 on Codex │
-│   Model                         GPT 5.6 on Codex         everywhere (global) │
-│   Rules file                    ~/.argonauts/approver.…  everywhere (global) │
 │                                                                              │
 │ Everything else                                                              │
 │   Share of auto calls to check  0.1                      built-in            │

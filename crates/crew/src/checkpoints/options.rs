@@ -10,7 +10,7 @@ use argonauts_core::limits::{Candidate, CostEstimate};
 use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::protocol::JudgingMethod;
 
-const TYPE_MY_OWN_ANSWER: &str = "Type my own answer";
+pub(crate) const TYPE_MY_OWN_ANSWER: &str = "Type my own answer";
 
 fn option(key: char, label: &str, action: AnswerAction) -> AnswerOption {
     AnswerOption {
@@ -163,6 +163,14 @@ pub fn question(offered: &[String]) -> Vec<AnswerOption> {
         AnswerAction::Answer,
     ));
     options
+}
+
+/// An agent's question the lead answered in full auto, for the approver to check before the
+/// answer goes: send it, recommended, or your own answer.
+pub fn lead_answer(lead: &str) -> Vec<AnswerOption> {
+    let mut send = option('y', &format!("Send {lead}'s answer"), AnswerAction::Approve);
+    send.recommended = true;
+    vec![send, option('a', TYPE_MY_OWN_ANSWER, AnswerAction::Answer)]
 }
 
 /// Picking the plan after a near tie or with `judging.method: human`: one option per plan,

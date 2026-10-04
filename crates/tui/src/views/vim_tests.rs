@@ -87,6 +87,7 @@ fn run(n: u32) -> RunSummary {
         waiting: Vec::new(),
         live: false,
         remind: false,
+        name: None,
     }
 }
 

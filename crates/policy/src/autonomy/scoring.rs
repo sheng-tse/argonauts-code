@@ -64,7 +64,7 @@ pub fn point_settings(approvals: &ApprovalSettings, kind: CheckpointKind) -> Opt
         Kind::Goal => of(&approvals.goal, approver),
         Kind::Plan => of(&approvals.plan, approver),
         Kind::Merge => of(&approvals.merge, approver),
-        Kind::RecipePromotion => of(&approvals.recipe_promotion, approver),
+        Kind::RecipePromotion => of(&approvals.recipe_promotion.as_checkpoint(), approver),
         Kind::Escalation => of(&approvals.escalation, approver),
         Kind::Budget => of(&approvals.budget, approver),
         Kind::ChangeRequest => of(&approvals.change_request, approver),

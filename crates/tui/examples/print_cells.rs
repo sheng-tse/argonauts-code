@@ -82,6 +82,7 @@ fn samples(now: Instant) -> Vec<argonauts_tui::Cell> {
             },
         ],
         runs_going: 0,
+        runs_need_you: 0,
     };
 
     let workflow = ToolCall::call(

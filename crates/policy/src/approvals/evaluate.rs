@@ -31,7 +31,8 @@ pub async fn evaluate(
     if !violations.is_empty() {
         return ask_with(violations);
     }
-    let Some(route) = route(point.kind, &settings) else {
+    let Some(route) = route(point.kind, &settings).or_else(|| full_auto_route(point, &settings))
+    else {
         return ask();
     };
 
@@ -44,11 +45,24 @@ pub async fn evaluate(
         })
         .await
     };
-    // The records may only lower a mode, and a mistake there must not raise one.
-    let mut mode = less_autonomous(requested, effective);
+    // The records may only lower a mode, and a mistake there must not raise one. Full auto
+    // keeps going where they'd lower auto to shadow, since nobody answers spot checks there;
+    // `auto-off` still stops it.
+    let mut mode = match (requested, effective) {
+        (ApprovalMode::FullAuto, ApprovalMode::Shadow) => ApprovalMode::FullAuto,
+        _ => less_autonomous(requested, effective),
+    };
     if needs_presence(point.kind, &settings) {
+        if mode == ApprovalMode::FullAuto {
+            return ask_about(route.decide_with, PRESENCE.to_owned());
+        }
         mode = ApprovalMode::Supervised;
     }
+    // What decides below, and the records, read the mode this point is decided in.
+    let point = &DecisionPoint {
+        mode_override: Some(mode),
+        ..point.clone()
+    };
 
     match mode {
         ApprovalMode::Supervised => {
@@ -69,11 +83,34 @@ pub async fn evaluate(
             let decision = decide_point(parts, point, evidence, &settings, route.decide_with).await;
             shadow(parts, point, evidence, &settings, &decision, None).await
         }
-        ApprovalMode::Auto => {
+        // Full auto decides as auto does. What it can't approve comes back as a question,
+        // which the engine ends safely instead of asking, since only it knows the options.
+        ApprovalMode::Auto | ApprovalMode::FullAuto => {
             let decision = decide_point(parts, point, evidence, &settings, route.decide_with).await;
             auto(parts, point, evidence, &settings, route.on_reject, decision).await
         }
     }
+}
+
+/// Why full auto leaves a plan or a merge to you with `presence = required`.
+const PRESENCE: &str = "approvals.presence = required keeps it for you at the terminal";
+
+/// Whether this point is decided in full auto, as `evaluate` set it for what decides below.
+pub(crate) fn in_full_auto(point: &DecisionPoint) -> bool {
+    point.mode_override == Some(ApprovalMode::FullAuto)
+}
+
+/// In full auto an agent's question meant for you comes here with the lead's answer, for
+/// the approver to check before it's sent. Every other kind without a table asks.
+fn full_auto_route(point: &DecisionPoint, settings: &Settings) -> Option<Route> {
+    let chosen = point
+        .mode_override
+        .unwrap_or_else(|| settings.approvals.mode());
+    (point.kind == CheckpointKind::Question && chosen == ApprovalMode::FullAuto).then_some(Route {
+        mode: ApprovalMode::FullAuto,
+        decide_with: DecideWith::Model,
+        on_reject: OnReject::Ask,
+    })
 }
 
 /// Runs the autonomy records' file work on the blocking pool, since a lock held elsewhere or a
@@ -121,8 +158,21 @@ enum OnReject {
     Decide,
 }
 
-/// `None` for kinds that always ask you.
+/// `None` for kinds that always ask you. The `full_auto` switch puts each checkpoint a run
+/// opens in full auto; a recipe promotion is decided outside runs, so it keeps its own mode.
 fn route(kind: CheckpointKind, settings: &Settings) -> Option<Route> {
+    let approvals = &settings.approvals;
+    let route = own_route(kind, settings)?;
+    Some(match kind {
+        CheckpointKind::RecipePromotion | CheckpointKind::GoalChange => route,
+        _ => Route {
+            mode: approvals.run_mode(route.mode),
+            ..route
+        },
+    })
+}
+
+fn own_route(kind: CheckpointKind, settings: &Settings) -> Option<Route> {
     let approvals = &settings.approvals;
     match kind {
         CheckpointKind::Goal => Some(configured(kind, &approvals.goal)),
@@ -130,7 +180,10 @@ fn route(kind: CheckpointKind, settings: &Settings) -> Option<Route> {
         CheckpointKind::Merge => Some(configured(kind, &approvals.merge)),
         CheckpointKind::Escalation => Some(configured(kind, &approvals.escalation)),
         CheckpointKind::Budget => Some(configured(kind, &approvals.budget)),
-        CheckpointKind::RecipePromotion => Some(configured(kind, &approvals.recipe_promotion)),
+        CheckpointKind::RecipePromotion => Some(configured(
+            kind,
+            &approvals.recipe_promotion.as_checkpoint(),
+        )),
         CheckpointKind::ChangeRequest => Some(configured(kind, &approvals.change_request)),
         // `deny` refuses the change itself, so a rejection is decided here, not by `otherwise`.
         CheckpointKind::GoalChange => match approvals.goal_changes {
@@ -300,8 +353,11 @@ async fn auto(
     match decision.verdict {
         Verdict::Approve => {
             // Checked again in `reserve`, under the records lock, since a pause can land while
-            // the approver model is deciding.
-            if let Some(why) = auto_paused(parts, settings).await {
+            // the approver model is deciding. Full auto leaves it all to `reserve`, which still
+            // stops it for `auto-off` and broken records.
+            if !in_full_auto(point)
+                && let Some(why) = auto_paused(parts, settings).await
+            {
                 return shadow(parts, point, evidence, settings, &decision, Some(why)).await;
             }
             let reserved = {
@@ -509,6 +565,7 @@ mod tests {
             recipe: None,
             authors: Vec::new(),
             mode_override: None,
+            lead: None,
         };
         let evidence = EvidencePacket {
             kind: CheckpointKind::Goal,

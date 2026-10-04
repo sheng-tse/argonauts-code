@@ -270,13 +270,13 @@ fn card_expanded() {
         "the number alone picks it, with no letter after: {merge}"
     );
     assert!(
-        all.contains("peer-crew ─\n❯ ↑↓ to move · Enter or a number to answer · Esc to set aside"),
-        "the input names the card's keys: {all}"
+        !all.contains("peer-crew ─"),
+        "the card stands in for the input while it has the keys: {all}"
     );
 }
 
 /// A card that needs you, under the working line, took the keys as it showed. Letters typed
-/// at it change the input's hint, and nothing offers to guide the run.
+/// at it change its key line, and nothing offers to guide the run.
 #[test]
 fn a_card_that_needs_you_holds_the_keys() {
     let mut bottom = crew();
@@ -296,7 +296,7 @@ fn a_card_that_needs_you_holds_the_keys() {
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     assert!(
         text(&view.lines).contains(
-            "❯ Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+            "\n  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
         ),
         "{}",
         text(&view.lines)
@@ -340,10 +340,7 @@ fn card_with_a_note() {
     let mut bottom = idle();
     let mut card = merge_card();
     card.selected = 1;
-    card.note = Some(CardNote {
-        option: 1,
-        text: "squash the commits first".into(),
-    });
+    card.note = Some(CardNote::with_text(1, "squash the commits first"));
     bottom.card = Some(card);
     snapshot_widths("card_note", &bottom);
     let view = bottom.render(&ctx(&theme(), 80, NOW));
@@ -615,7 +612,10 @@ fn live_blocks_share_a_short_screen() {
     let all = text(&with_card.lines);
     assert!(with_card.lines.len() <= 24);
     assert!(all.contains("6. Show the diff"), "{all}");
-    assert!(all.contains("\n❯"), "{all}");
+    assert!(
+        !all.contains("peer-crew ─"),
+        "the card stands in for the input: {all}"
+    );
     assert!(
         style_of(&with_card.lines, "Merge card-002 into main?")
             .is_some_and(|s| s.add_modifier.contains(Modifier::BOLD) || s.fg.is_some())

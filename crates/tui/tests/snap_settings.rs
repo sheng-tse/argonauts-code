@@ -1257,6 +1257,7 @@ fn approvals() -> ApprovalsView {
         }],
         spot_checks_waiting: 1,
         approver: Some("codex/gpt-5.6".parse().unwrap()),
+        warnings: Vec::new(),
     };
     let rows = vec![
         row(
@@ -1370,10 +1371,10 @@ fn approvals_view() {
     let marked = screen(&mut view, 120, 40, &state);
     assert!(marked.contains("marked wrong"), "{marked}");
 
-    // An edit goes through the scope question.
+    // An edit goes through the scope question. The merge's mode is past who checks.
     key(&mut view, KeyCode::Home, &state);
-    for _ in 0..7 {
-        key(&mut view, KeyCode::Up, &state);
+    for _ in 0..2 {
+        key(&mut view, KeyCode::Down, &state);
     }
     key(&mut view, KeyCode::Enter, &state);
     key(&mut view, KeyCode::Char('3'), &state);
@@ -1435,8 +1436,10 @@ fn pastes_reach_the_settings_editors() {
     for _ in 0..7 {
         key(&mut view, KeyCode::Up, &state);
     }
-    key(&mut view, KeyCode::Down, &state);
-    key(&mut view, KeyCode::Down, &state);
+    // Past who checks, the approver model and its rules file, to the merge's coverage.
+    for _ in 0..4 {
+        key(&mut view, KeyCode::Down, &state);
+    }
     key(&mut view, KeyCode::Enter, &state);
     let editing = screen(&mut view, 120, 40, &state);
     assert!(
@@ -1660,6 +1663,7 @@ fn autonomous_approvals() -> ApprovalsView {
         ],
         spot_checks_waiting: 0,
         approver: None,
+        warnings: Vec::new(),
     };
     let modes = ["\"supervised\"", "\"shadow\"", "\"auto\""];
     let deciders = [
@@ -1881,6 +1885,7 @@ fn approvals_like_the_catalog() -> ApprovalsView {
         ],
         spot_checks_waiting: 0,
         approver: None,
+        warnings: Vec::new(),
     };
     let checkpoint = |name: &str, label: &str, decide_with: &str| {
         vec![
@@ -1915,9 +1920,37 @@ fn approvals_like_the_catalog() -> ApprovalsView {
                 &["\"ask\"", "\"send_back\"", "\"stop\""],
                 &format!("{label}: what happens when auto doesn't approve"),
             ),
+            row(
+                &format!("approvals.{name}.at_hard_limit"),
+                "\"stop\"",
+                "built-in",
+                &["\"stop\"", "\"send_back\"", "\"park\""],
+                &format!("{label}: what a hard limit does in full auto"),
+            ),
         ]
     };
-    let mut rows = checkpoint("plan", "The plan checkpoint", "\"rules_and_model\"");
+    // Full auto first: the one switch and who answers in your place.
+    let mut rows = vec![
+        row(
+            "approvals.full_auto",
+            "false",
+            "built-in",
+            &["true", "false"],
+            "Full auto for every checkpoint a run opens",
+        ),
+        row(
+            "approvals.answered_by",
+            "\"codex/gpt-5.6\"",
+            "global",
+            &[],
+            "Who answers the crew's questions in your place",
+        ),
+    ];
+    rows.extend(checkpoint(
+        "plan",
+        "The plan checkpoint",
+        "\"rules_and_model\"",
+    ));
     rows.push(row(
         "approvals.plan.rules.max_score_spread",
         "1.0",
@@ -1940,6 +1973,13 @@ fn approvals_like_the_catalog() -> ApprovalsView {
         &[],
         "The approver model, any model in the registry",
     ));
+    rows.push(row(
+        "approvals.approver.second_model",
+        "",
+        "built-in",
+        &[],
+        "A second approver, from another vendor, that must also approve",
+    ));
     let mut view = ApprovalsView::new(data);
     view.rows = rows;
     view
@@ -1958,5 +1998,7 @@ fn approvals_go_by_name_without_a_mark_on_every_row() {
         // Values read whole, even at 80 columns.
         assert!(shown.contains("both agree"), "{shown}");
         assert!(shown.contains("cheapest, other company"), "{shown}");
+        assert!(shown.contains("GPT 5.6 on Codex"), "{shown}");
+        assert!(shown.contains("stop safely"), "{shown}");
     }
 }

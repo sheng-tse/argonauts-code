@@ -121,6 +121,7 @@ pub fn party(party: &Party, names: &DisplayNames) -> String {
         Party::Rules => "your rules".to_owned(),
         Party::Approver { .. } => "the approver model".to_owned(),
         Party::Config => "a setting".to_owned(),
+        Party::FullAuto => "full auto".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => names.worker(worker),
         Party::FrontEnd { client } => client.clone(),

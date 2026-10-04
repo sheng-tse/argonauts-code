@@ -69,27 +69,40 @@ impl StepApprover {
         self
     }
 
-    /// The approver you set, else the cheapest model from another company than the authors.
-    /// The first time none can be picked, the reason is the fuller warning.
+    /// The approver you set, else the cheapest model from another company than the authors,
+    /// with the authors it must be independent of. In full auto, when none comes from outside
+    /// every author, as with a crew of every company you run, it's the cheapest from another
+    /// company than the lead, whose answers it checks. The first time none can be picked, the
+    /// reason is the fuller warning.
     fn first_approver(
         &self,
         point: &DecisionPoint,
         settings: &Settings,
-    ) -> Result<WorkerRef, String> {
+    ) -> Result<(WorkerRef, Vec<WorkerRef>), String> {
         let approver = &settings.approvals.approver;
         if let Some(model) = &approver.model {
-            return Ok(model.clone());
+            return Ok((model.clone(), point.authors.clone()));
         }
         let sources = pick::Sources {
             workers: &*self.workers,
             models: self.models.as_deref(),
         };
-        pick::pick(&point.authors, approver.different_family, sources).map_err(|none| {
-            if self.warned.swap(true, Ordering::SeqCst) {
-                none.reason()
-            } else {
-                none.warning()
+        let none = match pick::pick(&point.authors, approver.different_family, sources) {
+            Ok(first) => return Ok((first, point.authors.clone())),
+            Err(none) => none,
+        };
+        if crate::approvals::in_full_auto(point)
+            && let Some(lead) = &point.lead
+        {
+            let lead = vec![lead.clone()];
+            if let Ok(first) = pick::pick(&lead, approver.different_family, sources) {
+                return Ok((first, lead));
             }
+        }
+        Err(if self.warned.swap(true, Ordering::SeqCst) {
+            none.reason()
+        } else {
+            none.warning()
         })
     }
 
@@ -100,16 +113,13 @@ impl StepApprover {
         settings: &Settings,
     ) -> ModelVerdict {
         let approver = &settings.approvals.approver;
-        let first = match self.first_approver(point, settings) {
-            Ok(first) => first,
+        let (first, authors) = match self.first_approver(point, settings) {
+            Ok(picked) => picked,
             Err(why) => return escalate(None, &why),
         };
-        if let Err(why) = independence::check(
-            &first,
-            &point.authors,
-            approver.different_family,
-            &*self.workers,
-        ) {
+        if let Err(why) =
+            independence::check(&first, &authors, approver.different_family, &*self.workers)
+        {
             return escalate(None, &why);
         }
         let Some(second) = approver.second_model.clone() else {
@@ -119,15 +129,11 @@ impl StepApprover {
                 .verdict(first);
         };
         // The second must be independent of the authors and, always, of the first's family.
-        let independent = independence::check(
-            &second,
-            &point.authors,
-            approver.different_family,
-            &*self.workers,
-        )
-        .and_then(|()| {
-            independence::check(&second, std::slice::from_ref(&first), true, &*self.workers)
-        });
+        let independent =
+            independence::check(&second, &authors, approver.different_family, &*self.workers)
+                .and_then(|()| {
+                    independence::check(&second, std::slice::from_ref(&first), true, &*self.workers)
+                });
         if let Err(why) = independent {
             return escalate(None, &format!("second approver: {why}"));
         }
@@ -382,6 +388,7 @@ mod tests {
             recipe: None,
             authors: authors.iter().map(|a| a.parse().unwrap()).collect(),
             mode_override: None,
+            lead: None,
         }
     }
 

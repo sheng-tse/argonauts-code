@@ -233,6 +233,8 @@ fn name(mode: RunMode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::settings::workflows::{LeadDesign, LeadDesigns};
+
     use super::*;
 
     /// `(settings, files, tests exist, labels)`, then the expected `(mode, escalate, rule)`.
@@ -512,10 +514,12 @@ mod tests {
     #[test]
     fn all_hands_has_the_lead_design_the_crews_workflow() {
         let mut settings = Settings::default();
-        settings.workflows.lead_designs = false;
-        assert!(!settings.lead_designs());
+        settings.workflows.lead_designs = false.into();
+        assert_eq!(settings.lead_designs(), LeadDesign::Off);
         settings.triage.all_hands = true;
-        assert!(settings.lead_designs());
+        assert_eq!(settings.lead_designs(), LeadDesign::Size);
+        settings.workflows.lead_designs = LeadDesigns::ANY;
+        assert_eq!(settings.lead_designs(), LeadDesign::Any);
         assert_eq!(
             decide(&estimate(1, true, &[]), &settings).reason,
             "All hands is on"

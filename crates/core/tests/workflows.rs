@@ -11,6 +11,7 @@ use argonauts_core::names::{CheckpointId, WorkflowId};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::ui::{Glyphs, VendorInternals};
+use argonauts_core::settings::workflows::LeadDesign;
 use argonauts_core::steps::design::{DesignInput, DesignWorkflow};
 use argonauts_core::steps::{Step, StepName};
 use argonauts_core::workflow::{
@@ -428,7 +429,8 @@ fn the_new_workflow_defaults_hold() {
     let settings = Settings::default();
     assert_eq!(settings.workflow, WorkflowRef::new("peer-crew"));
     let workflows = &settings.workflows;
-    assert!(workflows.lead_designs && workflows.allow_composed && workflows.adapt_at_phase_ends);
+    assert_eq!(workflows.lead_designs.design(), LeadDesign::Size);
+    assert!(workflows.allow_composed && workflows.adapt_at_phase_ends);
     assert_eq!(workflows.max_depth, 2);
     let ui = &settings.ui;
     assert_eq!(ui.panel.vendor_internals, VendorInternals::Discovered);

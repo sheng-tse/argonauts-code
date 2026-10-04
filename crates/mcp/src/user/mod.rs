@@ -583,6 +583,7 @@ mod tests {
             waiting: vec![CheckpointId::numbered(1)],
             live: false,
             remind: false,
+            name: None,
         }
     }
 

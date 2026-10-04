@@ -20,20 +20,25 @@ pub enum ApprovalMode {
     Supervised,
     Shadow,
     Auto,
+    /// Nothing waits for you.
+    FullAuto,
 }
 
 impl ApprovalMode {
-    pub const ALL: [ApprovalMode; 3] = [
+    pub const ALL: [ApprovalMode; 4] = [
         ApprovalMode::Supervised,
         ApprovalMode::Shadow,
         ApprovalMode::Auto,
+        ApprovalMode::FullAuto,
     ];
 
+    /// Shift+Tab's cycle: supervised, auto, full auto. Shadow is a
+    /// setting; from it, Shift+Tab goes on to auto.
     pub fn next(self) -> Self {
         match self {
-            ApprovalMode::Supervised => ApprovalMode::Shadow,
-            ApprovalMode::Shadow => ApprovalMode::Auto,
-            ApprovalMode::Auto => ApprovalMode::Supervised,
+            ApprovalMode::Supervised | ApprovalMode::Shadow => ApprovalMode::Auto,
+            ApprovalMode::Auto => ApprovalMode::FullAuto,
+            ApprovalMode::FullAuto => ApprovalMode::Supervised,
         }
     }
 
@@ -42,11 +47,12 @@ impl ApprovalMode {
             ApprovalMode::Supervised => "supervised",
             ApprovalMode::Shadow => "shadow",
             ApprovalMode::Auto => "auto",
+            ApprovalMode::FullAuto => "full auto",
         }
     }
 
     pub fn asks_first(self) -> bool {
-        self != ApprovalMode::Auto
+        matches!(self, ApprovalMode::Supervised | ApprovalMode::Shadow)
     }
 
     pub fn role(self) -> Role {
@@ -54,6 +60,7 @@ impl ApprovalMode {
             ApprovalMode::Supervised => Role::ModeSupervised,
             ApprovalMode::Shadow => Role::ModeShadow,
             ApprovalMode::Auto => Role::ModeAuto,
+            ApprovalMode::FullAuto => Role::ModeFullAuto,
         }
     }
 }
@@ -149,9 +156,12 @@ impl ModeLine {
         let width = usize::from(ctx.width);
         let lead = vec![Span::raw("  ")];
 
+        // A card that has the keys stands in for the input, so the input's vim mode isn't
+        // shown while it does.
+        let vim = self.vim.filter(|_| !state.card_focused);
         if let Some(hint) = state.hint {
             let mut parts = Vec::new();
-            if let Some(vim) = self.vim {
+            if let Some(vim) = vim {
                 parts.push(Part::new(vec![Span::styled(vim.label(), dim)], KEEP));
             }
             let hint = sanitize_line(hint).into_owned();
@@ -165,7 +175,7 @@ impl ModeLine {
 
         let dot = || Span::styled(" · ", dim);
         let mut parts = Vec::new();
-        if let Some(vim) = self.vim {
+        if let Some(vim) = vim {
             parts.push(Part::new(vec![Span::styled(vim.label(), dim)], KEEP));
         }
         let status = status_parts(state.status, ctx);
@@ -191,8 +201,8 @@ impl ModeLine {
             )],
             KEEP,
         ));
-        // A focused card holds every key but the quit keys, so a hint here would name a key
-        // that does nothing until the card lets go.
+        // A focused card holds every key but Shift+Tab and the quit keys, and its own key line
+        // names Shift+Tab, so a hint here would name a key that does nothing until it lets go.
         if state.card_focused {
             return two_sided(lead, &parts, &status, width);
         }
@@ -423,9 +433,55 @@ mod tests {
         );
         assert_eq!(line.spans[1].style, theme.style(Role::ModeAuto));
         assert_eq!(line.spans[3].style, theme.style(Role::Dim));
+        mode.approval = ApprovalMode::FullAuto;
+        let line = mode.line(&ctx, idle());
+        assert_eq!(
+            text(line.clone()),
+            "  ⏵⏵ full auto mode on (shift+tab to cycle) · ? for shortcuts"
+        );
+        assert_eq!(line.spans[1].style, theme.style(Role::ModeFullAuto));
         mode.approval = ApprovalMode::Supervised;
         let line = mode.line(&ctx, idle());
         assert_eq!(line.spans[1].style, theme.style(Role::ModeSupervised));
+    }
+
+    /// The cycle: supervised, auto, full auto. Shadow is a setting, and Shift+Tab goes
+    /// on from it to auto.
+    #[test]
+    fn shift_tab_goes_from_auto_to_full_auto_and_back_round() {
+        let cycle: Vec<ApprovalMode> =
+            std::iter::successors(Some(ApprovalMode::Supervised), |mode| Some(mode.next()))
+                .take(4)
+                .collect();
+        assert_eq!(
+            cycle,
+            [
+                ApprovalMode::Supervised,
+                ApprovalMode::Auto,
+                ApprovalMode::FullAuto,
+                ApprovalMode::Supervised,
+            ]
+        );
+        assert_eq!(ApprovalMode::Shadow.next(), ApprovalMode::Auto);
+        assert!(!ApprovalMode::FullAuto.asks_first());
+    }
+
+    /// A card that has the keys stands in for the input, so neither the input's vim mode nor a
+    /// hint for its keys shows; the card's own key line names Shift+Tab.
+    #[test]
+    fn a_card_with_the_keys_leaves_the_vim_mode_off() {
+        let theme = theme();
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let mode = ModeLine {
+            vim: Some(VimMode::Insert),
+            ..ModeLine::default()
+        };
+        let card = ModeState {
+            card_focused: true,
+            ..idle()
+        };
+        assert_eq!(text(mode.line(&ctx, card)), "  ǁ supervised mode on");
+        assert!(text(mode.line(&ctx, idle())).starts_with("  -- INSERT -- ǁ supervised"));
     }
 
     /// As Claude Code's bash mode reads, `-- INSERT -- ! for shell mode`, with a notice still at

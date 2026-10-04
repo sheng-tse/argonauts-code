@@ -85,6 +85,11 @@ pub struct DecisionPoint {
     pub authors: Vec<WorkerRef>,
     /// Set from Shift+Tab; replaces the configured mode for this point.
     pub mode_override: Option<ApprovalMode>,
+    /// The lead, whose answers the approver checks. In full auto, when nothing you can run
+    /// comes from a company none of the authors come from, the approver comes from another
+    /// company than this one's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<WorkerRef>,
 }
 
 /// Rules read only `facts`. Agent outputs can add conditions but never remove them.
@@ -308,6 +313,9 @@ pub struct ApprovalsView {
     pub points: Vec<ApprovalRow>,
     pub spot_checks_waiting: u32,
     pub approver: Option<WorkerRef>,
+    /// What the settings check found in these settings that may not do what you meant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -333,6 +333,9 @@ pub enum Party {
     },
     /// A setting, such as `merge.mode = "leave"`.
     Config,
+    /// Full auto, in your place: nothing waits for you there, so what your rules and the
+    /// approver couldn't settle takes its safe option.
+    FullAuto,
     /// By a fixed rule.
     Conductor,
     Agent {

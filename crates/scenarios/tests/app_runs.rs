@@ -264,7 +264,8 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     pty.wait_for_exit(WAIT)?;
     let text = pty.screen().text();
     assert!(text.contains(&format!("{run} keeps going")), "{text}");
-    assert!(text.contains("Reattach with: argonauts"), "{text}");
+    let reattach = format!("Reattach with: argonauts resume {run}");
+    assert!(text.contains(&reattach), "{text}");
     assert!(
         pid_alive(supervisor),
         "closing the screen stopped the supervisor"
@@ -272,7 +273,7 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
     assert!(pid_alive(owner), "closing the screen stopped the owner");
 
     rotate_trace(&scenario, "first")?;
-    let pty = start(&scenario)?;
+    let pty = start_with(&scenario, &["resume", run.as_str()])?;
     wait_event(
         &scenario,
         "the app to reattach",
@@ -291,6 +292,103 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
         "reattaching started another owner"
     );
     scenario.shot(&pty, "app_close_screen_run_continues_and_reattaches")?;
+    Ok(())
+}
+
+/// `argonauts` opens a new conversation, as `claude` does. A run parked on a question gets one
+/// line under the header and its panel row, what you type goes to the new conversation, and
+/// the card waits until you open the run. `argonauts -c` carries the conversation on and leaves
+/// the run where it was, so what you type there goes to the conversation too.
+#[test]
+fn app_start_leaves_a_parked_question_for_you_to_open() -> anyhow::Result<()> {
+    const QUESTION: &str = "Keep the old name as an alias?";
+    let scenario = scenario()?;
+    let parked = fabricate_parked_run(&scenario, 0)?;
+    let journal_before = run_events(&parked.dir)?.len();
+    let mut pty = start(&scenario)?;
+    pty.wait_for("1 run needs you · /resume", WAIT)?;
+    let screen = pty.wait_for(r"◆ solo · Rename the config loader .*◆ needs you", WAIT)?;
+    let text = screen.visible_text();
+    assert!(
+        !text.contains(QUESTION),
+        "the card showed at start:\n{text}"
+    );
+    assert!(
+        !events(&scenario)?
+            .iter()
+            .any(|event| matches!(event, AppEvent::Attached { .. })),
+        "the app attached to the parked run"
+    );
+    scenario.shot(&pty, "app_start_leaves_a_parked_question_for_you_to_open")?;
+
+    submit(&mut pty, requests::HI)?;
+    wait_turns_finished(&scenario, 1)?;
+    assert_eq!(
+        run_events(&parked.dir)?.len(),
+        journal_before,
+        "the parked run changed while you chatted"
+    );
+    quit(&mut pty)?;
+
+    // `argonauts -c` carries the conversation on, and the run keeps its panel row.
+    rotate_trace(&scenario, "first")?;
+    let mut pty = start_with(&scenario, &["-c"])?;
+    wait_event(&scenario, "the conversation to carry on", |event| {
+        matches!(event, AppEvent::ChatResumed { .. })
+    })?;
+    pty.wait_for("1 run needs you · /resume", WAIT)?;
+    pty.wait_for(r"◆ needs you", WAIT)?;
+    submit(&mut pty, requests::HI)?;
+    wait_turns_finished(&scenario, 1)?;
+    let text = pty.screen().visible_text();
+    assert!(
+        !text.contains(QUESTION),
+        "the card showed after -c:\n{text}"
+    );
+    assert!(
+        !events(&scenario)?
+            .iter()
+            .any(|event| matches!(event, AppEvent::Attached { .. })),
+        "-c attached to the parked run"
+    );
+    assert_eq!(run_events(&parked.dir)?.len(), journal_before);
+    scenario.shot(
+        &pty,
+        "app_continue_leaves_the_parked_question_for_you_to_open",
+    )?;
+    Ok(())
+}
+
+/// A run parked at a card from an earlier session opens with Enter on its panel row, and its
+/// card comes with it.
+#[test]
+fn app_parked_run_opens_from_its_panel_row() -> anyhow::Result<()> {
+    let scenario = scenario_with(&merge_card_config())?;
+    let mut pty = start(&scenario)?;
+    let (run_dir, _) = reach_merge_card(&scenario, &mut pty)?;
+    let run = run_id(&run_dir)?;
+    wait_journal(&run_dir, "the run to park", is_parked)?;
+    wait_pid_gone(supervisor_pid(&run_dir)?)?;
+    quit(&mut pty)?;
+
+    rotate_trace(&scenario, "first")?;
+    let mut pty = start(&scenario)?;
+    pty.wait_for("1 run needs you · /resume", WAIT)?;
+    pty.wait_for(r"◆ needs you", WAIT)?;
+    check_mode_line(&pty)?;
+    pty.press(Key::Down)?;
+    pty.wait_for(r"❯ ◆ ", WAIT)?;
+    pty.press(Key::Enter)?;
+    wait_event(
+        &scenario,
+        "the run to open",
+        |event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run),
+    )?;
+    wait_checkpoint(&scenario, CheckpointKind::Merge)?;
+    pty.wait_for("◆ Merge this run into main?", WAIT)?;
+    // Focus left the panel, so the card takes the keys.
+    pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to ", WAIT)?;
+    scenario.shot(&pty, "app_parked_run_opens_from_its_panel_row")?;
     Ok(())
 }
 
@@ -866,7 +964,10 @@ fn app_checkpoints_and_revert_commands() -> anyhow::Result<()> {
 
 #[test]
 fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
-    let scenario = scenario_with(&codex_config(&format!("{GLOBAL_CONFIG}{YOU_ANSWER}")))?;
+    // Picking another workflow than the preset's takes `lead_designs = "any"`.
+    let scenario = scenario_with(&codex_config(&format!(
+        "{GLOBAL_CONFIG}{YOU_ANSWER}\n[workflows]\nlead_designs = \"any\"\n"
+    )))?;
     // The review panel is a project's own workflow, offered to the lead beside the built-ins.
     scenario
         .repo

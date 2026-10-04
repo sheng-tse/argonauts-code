@@ -10,7 +10,6 @@ use argonauts_core::events::checkpoint::{
 use argonauts_core::events::plan::{JudgingResult, PlanEvent, TaskGraph};
 use argonauts_core::names::PlanLabel;
 use argonauts_core::policy::EvidenceDocument;
-use argonauts_core::settings::approvals::Answerer;
 use argonauts_core::settings::protocol::JudgingMethod;
 use argonauts_core::{Note, NoteLevel};
 
@@ -34,7 +33,7 @@ pub async fn pick_if_tied(host: &Host, call: &StepCall) -> EngineResult<()> {
         return Ok(());
     };
     let by_lead = judged.method != JudgingMethod::Human
-        && checkpoints::answerer(host, CheckpointKind::Plan) == Answerer::Lead;
+        && checkpoints::answerer(host, CheckpointKind::Plan).answers_for_you();
     if by_lead && let Some(top) = top_scored(&judged) {
         let chosen = latest
             .iter()

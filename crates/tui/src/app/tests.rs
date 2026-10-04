@@ -460,14 +460,25 @@ fn a_card_that_needs_you_keeps_typing_out_until_set_aside() {
     ui.handle_event(Event::FocusGained, t0);
     assert!(ui.model().bottom.focused_card().is_some());
     ui.frame(t0).unwrap();
-    let rows = screen(&ui);
-    assert!(
+    // The card stands in for the input: only its rule shows, its own key line, then the mode.
+    let rules = |rows: &[String]| {
         rows.iter()
-            .any(|row| row == "❯ ↑↓ to move · Enter or a number to answer · Esc to set aside"),
+            .filter(|row| !row.is_empty() && row.chars().all(|c| c == '─'))
+            .count()
+    };
+    let rows = screen(&ui);
+    assert_eq!(rules(&rows), 1, "{rows:#?}");
+    assert_eq!(
+        rows[rows.len() - 3..],
+        [
+            "  Enter to choose · Tab to add a note · Esc to set aside",
+            "",
+            "  ǁ supervised mode on"
+        ],
         "{rows:#?}"
     );
     assert!(
-        !rows.iter().any(|row| row.contains("type to guide the run")),
+        !rows.iter().any(|row| row.contains("to answer the card")),
         "{rows:#?}"
     );
 
@@ -480,7 +491,7 @@ fn a_card_that_needs_you_keeps_typing_out_until_set_aside() {
     ui.frame(t0 + Duration::from_millis(20)).unwrap();
     assert!(
         screen(&ui).iter().any(|row| row
-            == "❯ Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"),
+            == "  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"),
         "{:#?}",
         screen(&ui)
     );
@@ -493,6 +504,9 @@ fn a_card_that_needs_you_keeps_typing_out_until_set_aside() {
         [UiAction::SetAside { card: 9 }]
     );
     assert!(ui.model().bottom.composer_has_focus());
+    ui.frame(t0 + Duration::from_millis(40)).unwrap();
+    let rows = screen(&ui);
+    assert_eq!(rules(&rows), 2, "the input's rules are back: {rows:#?}");
     type_text(&mut ui, "keep it", t0);
     assert_eq!(
         press(&mut ui, KeyCode::Enter, t0),
@@ -882,7 +896,7 @@ fn a_card_moves_with_vim_keys_and_answers_by_number() {
             .note
             .as_ref()
             .unwrap()
-            .text,
+            .text(),
         "jk"
     );
     press(&mut ui, KeyCode::Esc, t0);
@@ -1008,9 +1022,9 @@ fn global_keys_ask_the_host() {
             Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
             t0
         ),
-        [UiAction::ModeChanged(ApprovalMode::Shadow)]
+        [UiAction::ModeChanged(ApprovalMode::Auto)]
     );
-    assert_eq!(ui.model().bottom.mode.approval, ApprovalMode::Shadow);
+    assert_eq!(ui.model().bottom.mode.approval, ApprovalMode::Auto);
     assert_eq!(chord(&mut ui, 't', t0), [UiAction::OpenTree]);
     assert_eq!(chord(&mut ui, 'g', t0), [UiAction::EditDraft]);
     assert_eq!(press(&mut ui, KeyCode::Left, t0), [UiAction::OpenCrewView]);
@@ -1917,14 +1931,23 @@ fn a_picker_list_filters_on_a_paste_and_never_opens_the_crew_view() {
 }
 
 #[test]
-fn a_focused_card_holds_every_key_but_the_quit_keys() {
+fn a_focused_card_holds_every_key_but_shift_tab_and_the_quit_keys() {
     let (mut ui, t0) = ui();
     ui.model_mut().bottom.card = Some(card(5));
     press(&mut ui, KeyCode::Up, t0);
     assert!(ui.model().bottom.focused_card().is_some());
-    let approval = ui.model().bottom.mode.approval;
-    assert!(shift_tab(&mut ui, t0).is_empty());
-    assert_eq!(ui.model().bottom.mode.approval, approval);
+    // Shift+Tab still cycles the mode, as at Claude Code's prompts: full auto settles the card,
+    // which keeps the keys until then.
+    assert_eq!(
+        shift_tab(&mut ui, t0),
+        [UiAction::ModeChanged(ApprovalMode::Auto)]
+    );
+    assert_eq!(
+        shift_tab(&mut ui, t0),
+        [UiAction::ModeChanged(ApprovalMode::FullAuto)]
+    );
+    assert_eq!(ui.model().bottom.mode.approval, ApprovalMode::FullAuto);
+    assert!(ui.model().bottom.focused_card().is_some());
     assert!(press(&mut ui, KeyCode::Left, t0).is_empty());
     assert!(chord(&mut ui, 'o', t0).is_empty());
     assert!(ui.model().bottom.focused_card().is_some());
@@ -2121,4 +2144,44 @@ fn in_shell_mode_slash_question_mark_and_at_are_the_commands_own() {
             command: "/bin/ls @src".into()
         }]
     );
+}
+
+/// A view hides the mode line, so why one of its keys can't act shows over its footer while
+/// the notice lasts, wrapped when it needs two rows, and the footer comes back after.
+#[test]
+fn a_views_notice_shows_over_its_footer_while_it_lasts() {
+    let (mut ui, t0) = ui_at(80);
+    let mut state = crate::mentions::fixture::working_state();
+    let run = state.attached.clone().unwrap();
+    state.runs.get_mut(&run).unwrap().finished =
+        Some(argonauts_core::events::run::RunOutcome::Merged);
+    ui.push_view(Box::new(crate::views::session::SessionView::new(
+        run,
+        argonauts_core::names::SessionKey::numbered(1),
+    )));
+    let actions = ui.handle_event_in(
+        Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+        t0,
+        &state,
+    );
+    let [UiAction::Notice(text)] = actions.as_slice() else {
+        panic!("t says why it can't take over");
+    };
+    ui.model_mut().bottom.mode.notice = Some(crate::bottom::ModeNotice {
+        text: text.clone(),
+        tone: crate::cell::Tone::Dim,
+        until: t0 + Duration::from_secs(4),
+    });
+    ui.frame_in(t0 + Duration::from_millis(20), &state).unwrap();
+    let rows = screen(&ui);
+    let bottom = rows[rows.len() - 2..].join(" ");
+    assert!(
+        bottom.starts_with("That run already merged, so its agents are done.")
+            && bottom.ends_with("type /follow-up and what you want next."),
+        "{rows:#?}"
+    );
+
+    ui.frame_in(t0 + Duration::from_secs(5), &state).unwrap();
+    let rows = screen(&ui);
+    assert!(rows[rows.len() - 1].contains("esc back"), "{rows:#?}");
 }

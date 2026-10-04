@@ -101,7 +101,7 @@ impl CardList {
                 id: opened.id.clone(),
             }),
             evidence: Some(opened.evidence_sha256.clone()),
-            title: opened.title.clone(),
+            title: prompt.title.clone(),
             body: clean(body),
             options: opened.options.clone(),
             free_text: opened.free_text,

@@ -13,4 +13,4 @@ expression: text(&lines)
     5. Abandon the run
     6. Show the diff
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside

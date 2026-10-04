@@ -18,4 +18,4 @@ expression: text(&lines)
     2. Choose per card
     3. Wait for Claude Code
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Enter to choose · Tab to add a note · Esc to set aside · shift+tab to cycle modes

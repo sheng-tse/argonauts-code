@@ -60,7 +60,7 @@ impl Crew {
         let mut settings = Settings::default();
         settings.crew.clear();
         settings.supervisor.park_grace = Span::new("0s");
-        settings.workflows.lead_designs = false;
+        settings.workflows.lead_designs = false.into();
         settings.workflows.style = StyleSetting::Workflow;
         settings.workflows.final_check = false;
         Ok(Self {

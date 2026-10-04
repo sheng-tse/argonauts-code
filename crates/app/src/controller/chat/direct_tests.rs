@@ -340,6 +340,33 @@ async fn auto_mode_asks_nothing() {
     );
 }
 
+/// Full auto asks nothing either: with its switch on, the session gets no approval tool though
+/// `solo.asks` would have it ask as its CLI does, and no card comes.
+#[tokio::test]
+async fn full_auto_asks_nothing() {
+    let mut harness = Harness::start_with(solo_preset(
+        "[approvals]\nfull_auto = true\n[solo]\nasks = \"like_cli\"\n",
+    ))
+    .await;
+    harness.agent.push(FakeSession::completed(ANSWER));
+    harness.submit(TASK).await;
+    harness.until(turn_ended).await;
+    let spec = harness.agent.specs().remove(0);
+    let events = harness.exit().await;
+    assert!(
+        spec.asking
+            .as_ref()
+            .is_none_or(|asking| asking.asks == Asks::Never),
+        "{:?}",
+        spec.asking
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AppEvent::Choice { .. })),
+    );
+}
+
 /// Running out mid-turn: Codex carries on the same request in the same folder, told what
 /// changed, under a `↷` line naming both.
 #[tokio::test]

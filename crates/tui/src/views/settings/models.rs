@@ -16,17 +16,28 @@ use argonauts_core::registry::ModelAccess;
 use super::flow::{self, Flow, Kept, RowAction, Stage, Step};
 use super::words::{model_role, value_words};
 use crate::bottom::{Picker, PickerRow};
-use crate::format;
+use crate::format::{self, setting_value};
 
 const DEFAULT_LABEL: &str = "Default";
 const RECOMMENDED_LABEL: &str = "Default (recommended)";
 const OTHER_LABEL: &str = "Other model…";
 const ROLES_LABEL: &str = "Roles…";
 
-/// The first level, from the controller's answer.
+/// The first level, from the controller's answer. Opened for a setting, the model that setting
+/// holds is the one marked current, not the role's.
 pub fn fill(picker: &mut Picker, role: Option<RoleName>, choices: &[ModelChoice]) {
     picker.flow.waiting = None;
     picker.flow.models = choices.to_vec();
+    if let Some(row) = picker
+        .flow
+        .model_for
+        .and_then(|key| picker.flow.settings.get(key))
+    {
+        let held = setting_value(row.value.trim());
+        for choice in &mut picker.flow.models {
+            choice.current = choice.worker.to_string() == held;
+        }
+    }
     // The answer's own freshness follows through `show_freshness`.
     picker.flow.freshness = None;
     cli_list(picker, role);
@@ -55,13 +66,18 @@ pub fn refresh(picker: &mut Picker, choices: &[ModelChoice]) {
 
 fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
     picker.flow.stage = Stage::Models { role };
-    picker.title = match role {
-        None => "Default agent".to_owned(),
-        Some(role) => format!("Model for {}", role.as_str()),
-    };
+    // Opened for a setting, the picker keeps that setting's name.
+    let for_setting = picker.flow.model_for.is_some();
+    if !for_setting {
+        picker.title = match role {
+            None => "Default agent".to_owned(),
+            Some(role) => format!("Model for {}", role.as_str()),
+        };
+    }
     picker.about = with_freshness(
         picker,
         match role {
+            _ if for_setting => "Every vendor's CLIs and endpoints you can run, best fit first",
             None => "Who answers in chat, does solo work, and steps in last when others stop",
             Some(_) => "The CLIs and endpoints this role's rules allow, best fit first",
         },
@@ -118,7 +134,12 @@ fn model_list(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
     };
     let label = format::vendor_label(cli);
     picker.title = label.clone();
-    picker.about = with_freshness(picker, &format!("The model {} runs on {label}", who(role)));
+    let about = if picker.flow.model_for.is_some() {
+        format!("The models {label} runs")
+    } else {
+        format!("The model {} runs on {label}", who(role))
+    };
+    picker.about = with_freshness(picker, &about);
     picker.placeholder = "No models listed".to_owned();
     picker.enter_hint.clear();
     picker.esc_hint = "Esc to go back".to_owned();
@@ -171,22 +192,20 @@ pub fn other_model(picker: &mut Picker, role: Option<RoleName>, cli: &str) {
     };
 }
 
-/// The typed name, as the argument form a pick sends.
-pub fn typed(picker: &mut Picker, role: Option<RoleName>, cli: &str, text: &str) -> Step {
+/// The typed name as a worker on `cli`, or `None` with a warning when it can't name one.
+pub fn typed(picker: &mut Picker, cli: &str, text: &str) -> Option<WorkerRef> {
     let name = text.trim();
     if name.is_empty() {
         picker.warning = Some("Type a model name, or Esc to go back.".to_owned());
-        return Step::Stay;
+        return None;
     }
     match format!("{cli}/{name}").parse::<WorkerRef>() {
-        Ok(worker) if worker.worker == cli && worker.model.as_deref() == Some(name) => {
-            pick(role, worker)
-        }
+        Ok(worker) if worker.worker == cli && worker.model.as_deref() == Some(name) => Some(worker),
         _ => {
             picker.warning = Some(format!(
                 "{name:?} can't name a model; type it without spaces."
             ));
-            Step::Stay
+            None
         }
     }
 }
@@ -224,7 +243,8 @@ pub fn pick_listed(picker: &Picker, role: Option<RoleName>, worker: WorkerRef) -
 pub fn follow_pointer(picker: &mut Picker) {
     let flow = &picker.flow;
     let line = match &flow.stage {
-        Stage::ModelsOf { .. } => picker
+        // A setting holds the model alone, so there's no effort to move.
+        Stage::ModelsOf { .. } if flow.model_for.is_none() => picker
             .pointed()
             .and_then(|index| flow.actions.get(index))
             .and_then(|action| match action {

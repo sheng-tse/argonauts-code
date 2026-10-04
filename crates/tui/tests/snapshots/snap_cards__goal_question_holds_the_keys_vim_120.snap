@@ -1,0 +1,18 @@
+---
+source: crates/tui/tests/snap_cards.rs
+expression: shown
+---
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◆ What should the goal say? · 1 of 2
+  ☐ Scope   ☐ Data
+
+  Should the limit apply per API key or per user?
+  ❯ 1. Per API key (recommended)
+       2 of 3 restatements read it this way
+    2. Per user
+       1 of 3 read it this way
+    3. Type my own answer
+
+  Enter to choose · Tab to add a note · Esc to set aside · shift+tab to cycle modes
+
+  ǁ supervised mode on

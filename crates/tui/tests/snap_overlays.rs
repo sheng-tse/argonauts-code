@@ -275,6 +275,7 @@ fn crew_state(asks: &str) -> AppState {
             })
             .collect(),
         runs_going: 1,
+        runs_need_you: 0,
         example_prompt: None,
     });
     let status: StatusLine = serde_json::from_value(json!({
@@ -314,6 +315,7 @@ fn summary(run: &str, title: &str, state: RunPhase, remind: bool, hours_ago: i64
         waiting: Vec::new(),
         live: state == RunPhase::Running,
         remind,
+        name: None,
     }
 }
 
@@ -804,6 +806,50 @@ fn session_view_output() {
         press(&mut from_crew, KeyCode::Left, &state),
         ViewOutcome::Close
     ));
+}
+
+/// Enter on a finished agent in the crew panel opens its transcript, after its run merged,
+/// and the footer offers only the keys that still act.
+#[test]
+fn the_crew_panel_opens_a_finished_agents_transcript() {
+    let mut state = session_state("The JSON writer goes beside the CSV one.");
+    let run = state.runs.get_mut(&run_id()).unwrap();
+    run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+    // A merged run asks nothing more.
+    run.checkpoints.clear();
+    for session in run.sessions.values_mut() {
+        session.status = SessionStatus::Done;
+        session.ended = Some(WALL);
+    }
+    let mut opened = None;
+    for at in 0..12 {
+        let mut crew = open_crew(&state);
+        crew.list.selected = at;
+        let picked = screen(&mut crew, 120, 32, &state);
+        if !row_with(&picked, "❯").contains("Add the JSON writer") {
+            continue;
+        }
+        opened = Some(press(&mut crew, KeyCode::Enter, &state));
+        break;
+    }
+    let Some(ViewOutcome::Open(mut view)) = opened else {
+        panic!("Enter opens the agent");
+    };
+    let text = screen(&mut *view, 120, 32, &state);
+    assert!(
+        text.starts_with("✓ GPT 5.6 on Codex · owner · card-002"),
+        "{text}"
+    );
+    for (width, height) in [(80, 24), (100, 32), (120, 32)] {
+        let mut view = SessionView::from_crew(run_id(), key("s-002"));
+        view.clock = WallClock::pinned(WALL);
+        let text = screen(&mut view, width, height, &state);
+        let footer = text.lines().last().unwrap_or_default();
+        for gone in ["s steer", "t take over"] {
+            assert!(!footer.contains(gone), "{gone}: {footer}");
+        }
+        insta::assert_snapshot!(format!("crew_opens_a_finished_agent_{width}"), text);
+    }
 }
 
 #[test]

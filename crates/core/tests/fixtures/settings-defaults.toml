@@ -212,6 +212,7 @@ security_and_performance = [
 [routing.resets]
 
 [approvals]
+full_auto = false
 ask_you_about = []
 goal_changes = "ask"
 spot_check_sample = 0.1
@@ -228,6 +229,7 @@ allow_commands = []
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
+at_hard_limit = "stop"
 
 [approvals.goal.rules]
 
@@ -235,6 +237,7 @@ otherwise = "ask"
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
+at_hard_limit = "stop"
 
 [approvals.plan.rules]
 max_score_spread = 1.0
@@ -244,6 +247,7 @@ min_winner_margin = 1.5
 mode = "auto"
 decide_with = "rules"
 otherwise = "ask"
+at_hard_limit = "stop"
 
 [approvals.merge.rules]
 min_changed_line_coverage = 0.8
@@ -269,6 +273,7 @@ min_days_between = 14
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
+at_hard_limit = "stop"
 
 [approvals.escalation.rules]
 max_extra_attempts = 1
@@ -277,6 +282,7 @@ max_extra_attempts = 1
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
+at_hard_limit = "stop"
 
 [approvals.budget.rules]
 use_reserve = true
@@ -285,6 +291,7 @@ use_reserve = true
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
+at_hard_limit = "stop"
 
 [approvals.change_request.rules]
 

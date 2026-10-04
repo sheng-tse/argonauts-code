@@ -34,6 +34,7 @@ use std::time::Instant;
 
 use argonauts_core::agent_sessions::AgentSessionRef;
 use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
+use argonauts_core::events::run::RunOutcome;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::SessionKey;
 use argonauts_core::{CardId, RunId};
@@ -43,6 +44,7 @@ use ratatui::layout::Rect;
 
 use crate::bridge::Cx;
 use crate::state::AppState;
+use crate::text::sanitize_line;
 use crate::theme::Theme;
 
 pub trait View: fmt::Debug + Send {
@@ -152,6 +154,63 @@ pub(crate) fn carry_on(
                 session: session.clone(),
             })),
         },
+    })
+}
+
+/// Why keys that act on `run`'s agents can't any more, in plain words, once the run has
+/// ended. `None` while it goes on.
+pub(crate) fn ended_why(state: &AppState, run: &RunId) -> Option<&'static str> {
+    let outcome = state.runs.get(run)?.finished?;
+    Some(match outcome {
+        RunOutcome::Merged => {
+            "That run already merged, so its agents are done. To build on its result, type \
+             /follow-up and what you want next."
+        }
+        RunOutcome::PullRequest | RunOutcome::BranchLeft => {
+            "That run has finished, so its agents are done. To build on its branch, type \
+             /follow-up and what you want next."
+        }
+        RunOutcome::Stopped => {
+            "That run stopped, so its agents are done. To go on with it, type /resume and pick \
+             it."
+        }
+        RunOutcome::Abandoned | RunOutcome::Failed => {
+            "That run has ended, so its agents are done. To carry its work on, type /follow-up \
+             and what you want next."
+        }
+    })
+}
+
+/// `t` on an agent: the take-over confirm while its run goes on and it holds a card, else why
+/// not, in plain words.
+pub(crate) fn take_over(state: &AppState, run: &RunId, session: &SessionKey) -> ViewOutcome {
+    if let Some(why) = ended_why(state, run) {
+        return ViewOutcome::Notice(why.to_owned());
+    }
+    match state
+        .session(run, session)
+        .and_then(|session| session.card.clone())
+    {
+        Some(card) => ViewOutcome::ConfirmTakeOver {
+            run: run.clone(),
+            card,
+        },
+        None => ViewOutcome::Notice("This agent has no card to take over".to_owned()),
+    }
+}
+
+/// Why `i` can't steer an agent now, in plain words: steering needs it running. `None` when
+/// it can.
+pub(crate) fn steer_refusal(state: &AppState, run: &RunId, session: &SessionKey) -> Option<String> {
+    if let Some(why) = ended_why(state, run) {
+        return Some(why.to_owned());
+    }
+    let session = state.session(run, session)?;
+    (!session.is_running()).then(|| {
+        format!(
+            "{} has finished, so it can't take a message. Type in the chat to guide the run",
+            sanitize_line(&state.names.worker(&session.worker)).trim()
+        )
     })
 }
 

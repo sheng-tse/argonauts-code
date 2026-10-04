@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkflowSettings {
-    /// The lead picks or composes a workflow per task. Off runs the preset's workflow as is.
-    pub lead_designs: bool,
+    /// How far the lead may change your preset's workflow for a task: `true` lets it size the
+    /// workflow, `false` runs it as it is, and `"any"` lets it pick another or compose one.
+    pub lead_designs: LeadDesigns,
     /// The lead may compose new workflows from the step kinds. Code validates them first.
     pub allow_composed: bool,
     /// Nesting depth, at most 2.
@@ -95,7 +96,7 @@ impl WorkflowSettings {
 impl Default for WorkflowSettings {
     fn default() -> Self {
         Self {
-            lead_designs: true,
+            lead_designs: LeadDesigns::Preset(true),
             allow_composed: true,
             max_depth: 2,
             adapt_at_phase_ends: true,
@@ -109,9 +110,59 @@ impl Default for WorkflowSettings {
     }
 }
 
+/// `workflows.lead_designs`, written `true`, `false`, or `"any"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum LeadDesigns {
+    /// `true`: the lead sizes your preset's workflow for the task. `false`: it runs as it is.
+    Preset(bool),
+    /// `"any"`: the lead may run another template, or compose one when `allow_composed`.
+    Any(AnyWorkflow),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AnyWorkflow {
+    Any,
+}
+
+impl LeadDesigns {
+    pub const ANY: Self = Self::Any(AnyWorkflow::Any);
+
+    pub fn design(self) -> LeadDesign {
+        match self {
+            Self::Preset(false) => LeadDesign::Off,
+            Self::Preset(true) => LeadDesign::Size,
+            Self::Any(AnyWorkflow::Any) => LeadDesign::Any,
+        }
+    }
+}
+
+impl From<bool> for LeadDesigns {
+    fn from(on: bool) -> Self {
+        Self::Preset(on)
+    }
+}
+
+/// How far the lead may change the preset's workflow for one task, least first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LeadDesign {
+    /// The preset's workflow runs as it is.
+    Off,
+    /// The lead keeps the preset's workflow and sizes it: more or fewer agents at a step, or a
+    /// step that doesn't apply left out.
+    Size,
+    /// The lead may run another template or compose one.
+    Any,
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct File {
+        workflows: WorkflowSettings,
+    }
 
     #[test]
     fn the_style_follows_the_lead_unless_set() {
@@ -126,5 +177,24 @@ mod tests {
         assert_eq!(settings.style_for_lead("antigravity-cli"), RunStyle::Goal);
         settings.style = StyleSetting::Goal;
         assert_eq!(settings.style_for_lead("claude-code"), RunStyle::Goal);
+    }
+
+    #[test]
+    fn lead_designs_reads_a_switch_or_any() {
+        for (text, design) in [
+            ("true", LeadDesign::Size),
+            ("false", LeadDesign::Off),
+            ("\"any\"", LeadDesign::Any),
+        ] {
+            let file: File = toml::from_str(&format!("[workflows]\nlead_designs = {text}\n"))
+                .unwrap_or_else(|err| panic!("{text}: {err}"));
+            assert_eq!(file.workflows.lead_designs.design(), design);
+            let written = toml::to_string(&file).expect("written");
+            assert!(
+                written.contains(&format!("lead_designs = {text}")),
+                "{written}"
+            );
+        }
+        assert!(toml::from_str::<File>("[workflows]\nlead_designs = \"all\"\n").is_err());
     }
 }

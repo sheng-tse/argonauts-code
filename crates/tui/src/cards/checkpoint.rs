@@ -49,11 +49,13 @@ pub fn checkpoint_card_local(
 ) -> CardPrompt {
     let cancel_is_final = opened.kind == CheckpointKind::Escalation;
     let options = card_options(&opened.options, cancel_is_final);
-    let mut card = CardPrompt::new(id, opened.title.clone(), opened.title.clone(), options);
+    let title = title(opened, run, names);
+    let mut card = CardPrompt::new(id, title.clone(), title, options);
     card.selected = first_recommended(&opened.options);
     card.allow_note = opened.free_text != FreeText::None;
     // While the rules still decide, the card waits quietly; it takes the keys once it's yours.
     card.needs_you = opened.needs_you;
+    card.offers_shift_tab = true;
     for (option, answer) in card.options.iter_mut().zip(&opened.options) {
         option.asks_note = carries_words(&answer.action);
     }
@@ -62,7 +64,7 @@ pub fn checkpoint_card_local(
         CheckpointPacket::Goal(goal) => goal_card(&mut card, goal, &opened.options),
         CheckpointPacket::Plan(plan) => plan_card(&mut card, plan, names),
         CheckpointPacket::Merge(merge) => merge_card(&mut card, merge, run, &opened.options),
-        CheckpointPacket::Handoff(plan) => handoff_card(&mut card, plan, names),
+        CheckpointPacket::Handoff(plan) => handoff_card(&mut card, plan, run, names),
         CheckpointPacket::VendorDown(down) => vendor_down_card(&mut card, down, offset),
         CheckpointPacket::Escalation(escalation) => {
             escalation_card(&mut card, escalation, run, names);
@@ -84,6 +86,19 @@ pub fn checkpoint_card_local(
         card.question = None;
     }
     card
+}
+
+/// The event's title, except that a question names who asks it as the rest of the app names
+/// the agent, `Question from build:fix-money`, or by its model when the run doesn't know the
+/// card yet, and never by the card's id.
+fn title(opened: &CheckpointOpened, run: Option<&RunState>, names: &DisplayNames) -> String {
+    match &opened.packet {
+        CheckpointPacket::Question(question) => {
+            let asker = agent_line(&question.from, None, &question.card, run, names);
+            format!("Question from {}", asker.name)
+        }
+        _ => opened.title.clone(),
+    }
 }
 
 /// Answers whose note is what the agents act on, such as the changes to make, so the card asks
@@ -325,8 +340,19 @@ fn merge_card(
     }
 }
 
-fn handoff_card(card: &mut CardPrompt, plan: &HandoffPlan, names: &DisplayNames) {
-    card.agent = Some(agent_line(&plan.stopped, Some("owner"), &plan.card, names));
+fn handoff_card(
+    card: &mut CardPrompt,
+    plan: &HandoffPlan,
+    run: Option<&RunState>,
+    names: &DisplayNames,
+) {
+    card.agent = Some(agent_line(
+        &plan.stopped,
+        Some("owner"),
+        &plan.card,
+        run,
+        names,
+    ));
     card.detail.push(format!(
         "{} stopped: {}",
         names.worker(&plan.stopped),
@@ -503,6 +529,7 @@ fn take_over_return_card(
         &back.owner,
         role_of(run, &back.card, &back.owner),
         &back.card,
+        run,
         names,
     ));
     let mut line = format!("You changed {} on {}", changed(&back.changed), back.card);
@@ -524,6 +551,7 @@ fn question_card(
         &question.from,
         role_of(run, &question.card, &question.from),
         &question.card,
+        run,
         names,
     ));
     card.question = Some(question.text.clone());
@@ -560,28 +588,69 @@ fn changed(stat: &DiffStat) -> String {
     )
 }
 
-/// `Agent: GPT-6.1 Sol on Codex · owner · card-002`.
+/// `Agent: build:fix-money · Haiku 4.5 on Claude Code`: the agent by its label and model, as
+/// its panel row names it. An agent other than the card's owner goes by its own label, such as
+/// `review:fix-money`, else its role, and one on a card the run doesn't know yet by its model
+/// alone. The card id stays in the agent view and Ctrl+O.
 fn agent_line(
     worker: &WorkerRef,
     role: Option<&'static str>,
     card: &CardId,
+    run: Option<&RunState>,
     names: &DisplayNames,
 ) -> CardAgent {
-    let detail = match role {
-        Some(role) => format!("{role} · {card}"),
-        None => card.to_string(),
+    let model = names.worker(&running(worker, card, run, names));
+    let label = match role {
+        None | Some("owner") => card_label(run, card),
+        Some(role) => own_label(worker, card, run).or_else(|| Some(role.to_owned())),
+    };
+    let (name, detail) = match label {
+        Some(label) => (label, model),
+        None => (model, String::new()),
     };
     CardAgent {
-        name: names.worker(worker),
+        name,
         worker: worker.to_string(),
         color: None,
         detail,
     }
 }
 
+/// What a card goes by: its label, `build:fix-money`. `None` until the run knows the card,
+/// since its id belongs to Ctrl+O and the agent view.
+fn card_label(run: Option<&RunState>, card: &CardId) -> Option<String> {
+    let label = run?.card_label(card);
+    (label != card.to_string()).then_some(label)
+}
+
+/// The label of `worker`'s newest session on `card`, as the panel shows it.
+fn own_label(worker: &WorkerRef, card: &CardId, run: Option<&RunState>) -> Option<String> {
+    run?.sessions_in_order()
+        .filter(|session| session.card.as_ref() == Some(card) && session.is_worker(worker))
+        .last()?
+        .label
+        .clone()
+}
+
+/// The worker with the model its session on `card` runs, else the one its CLI's settings
+/// give, so a question from a CLI on its default model still names the model.
+fn running(
+    worker: &WorkerRef,
+    card: &CardId,
+    run: Option<&RunState>,
+    names: &DisplayNames,
+) -> WorkerRef {
+    let session = run.and_then(|run| {
+        run.sessions_in_order()
+            .filter(|session| session.card.as_ref() == Some(card) && session.is_worker(worker))
+            .last()
+    });
+    names.running(session.map_or(worker, |session| &session.worker))
+}
+
 fn owner_line(run: Option<&RunState>, card: &CardId, names: &DisplayNames) -> Option<CardAgent> {
     let owner = run?.cards.get(card)?.owner.as_ref()?;
-    Some(agent_line(owner, Some("owner"), card, names))
+    Some(agent_line(owner, Some("owner"), card, run, names))
 }
 
 fn party_line(
@@ -591,9 +660,13 @@ fn party_line(
     names: &DisplayNames,
 ) -> Option<CardAgent> {
     match party {
-        Party::Agent { worker, .. } => {
-            Some(agent_line(worker, role_of(run, card, worker), card, names))
-        }
+        Party::Agent { worker, .. } => Some(agent_line(
+            worker,
+            role_of(run, card, worker),
+            card,
+            run,
+            names,
+        )),
         _ => None,
     }
 }

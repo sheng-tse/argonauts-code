@@ -469,21 +469,26 @@ impl BottomState {
         let focused = self.composer_has_focus();
         let busy = self.working.is_some();
         let waiting = self.waiting_card().is_some();
-        let card_keys = self.focused_card().map(CardPrompt::input_hint);
-        let placeholder = card_keys.as_deref().or_else(|| {
-            waiting.then_some(if busy || self.run_takes_text {
-                CARD_PLACEHOLDER_RUN
-            } else {
-                CARD_PLACEHOLDER
-            })
+        let placeholder = waiting.then_some(if busy || self.run_takes_text {
+            CARD_PLACEHOLDER_RUN
+        } else {
+            CARD_PLACEHOLDER
         });
         // An example prompt is a way to start, so it waits while work runs or a card is up.
         let offer_example = !busy && self.card.is_none();
+        // A card that holds the keys stands in for the input, as Claude Code's permission
+        // prompts do, so nothing on screen looks typeable while typing goes nowhere.
+        let card_holds_keys =
+            self.focused_card().is_some() && self.history_search.is_none() && self.picker.is_none();
         let mut composer = match &self.history_search {
             Some(search) => {
                 let (lines, cursor) = search.lines(ctx, max_rows);
                 ComposerView { lines, cursor }
             }
+            None if card_holds_keys => ComposerView {
+                lines: Vec::new(),
+                cursor: (0, 0),
+            },
             None => self.composer.render_with(
                 ctx,
                 ComposerState {

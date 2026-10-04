@@ -77,8 +77,13 @@ fn count(screen: &Screen, pattern: &str) -> usize {
         .count()
 }
 
-/// The live region fits the terminal, and the scrollback holds each item once.
+/// The live region fits the terminal, and the scrollback holds each item once. A card that
+/// holds the keys stands in for the input, so its rules are gone then.
 fn check(screen: &Screen, cols: u16, state: &str) {
+    check_with(screen, cols, state, true);
+}
+
+fn check_with(screen: &Screen, cols: u16, state: &str, input: bool) {
     for row in &screen.visible {
         let cells = row.chars().count();
         assert!(
@@ -94,7 +99,7 @@ fn check(screen: &Screen, cols: u16, state: &str) {
     );
     assert_eq!(
         count(screen, r"^─+ \S+ ─$"),
-        1,
+        usize::from(input),
         "{state} at {cols}:\n{}",
         screen.text()
     );
@@ -125,8 +130,10 @@ fn capture(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<()> {
     check(&screen, cols, "busy");
     shot(&pty, "busy")?;
 
-    let screen = pty.wait_for(r"(?m)^◆ Merge", WAIT)?;
-    check(&screen, cols, "checkpoint");
+    pty.wait_for(r"(?m)^◆ Merge", WAIT)?;
+    // The merge card needs you, so it takes the keys once the input is quiet.
+    let screen = pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to set aside", WAIT)?;
+    check_with(&screen, cols, "checkpoint", false);
     shot(&pty, "checkpoint")?;
 
     pty.press(Key::Up)?;

@@ -26,9 +26,9 @@ use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::WorkerRef;
-use argonauts_core::settings::approvals::Answerer;
+use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
 use argonauts_core::settings::protocol::{GateCommand, UnderstandWhen};
-use argonauts_core::settings::workflows::StyleSetting;
+use argonauts_core::settings::workflows::{LeadDesigns, StyleSetting};
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::SessionSpec;
 use argonauts_crew::engine::shared::with_git_env;
@@ -721,7 +721,7 @@ async fn the_leads_goal_brief_plans_its_first_attempt() -> anyhow::Result<()> {
         },
     )?;
     crew.settings.workflows.style = StyleSetting::Goal;
-    crew.settings.workflows.lead_designs = true;
+    crew.settings.workflows.lead_designs = true.into();
     crew.settings.workflows.adapt_at_phase_ends = false;
     let outcome = run(&crew).await?;
     finished(&outcome);
@@ -933,7 +933,8 @@ async fn the_leads_own_questions_come_to_the_card_when_it_skips_understand() -> 
             ..Own::default()
         },
     )?;
-    crew.settings.workflows.lead_designs = true;
+    // The lead runs another example than the preset's, which only "any" lets it do.
+    crew.settings.workflows.lead_designs = LeadDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.understand.when = UnderstandWhen::Lead;
     crew.settings.approvals.answered_by = Some(Answerer::You);
@@ -967,7 +968,8 @@ fn unread(when: UnderstandWhen, style: StyleSetting, yours: bool) -> anyhow::Res
             ..Own::default()
         },
     )?;
-    crew.settings.workflows.lead_designs = true;
+    // The lead runs another example than the preset's, which only "any" lets it do.
+    crew.settings.workflows.lead_designs = LeadDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.workflows.style = style;
     crew.settings.understand.when = when;
@@ -1130,6 +1132,31 @@ async fn ask_you_about_the_go_ahead_brings_it_to_you_in_auto_mode() -> anyhow::R
     let card = open(&outcome.events).context("the go-ahead waits for you")?;
     assert_eq!(card.title, "Run this workflow?");
     assert!(first(&outcome.events, build_started).is_none());
+    Ok(())
+}
+
+/// In full auto nothing waits for you, so the go-ahead `approvals.ask_you_about` names is
+/// weighed as full auto weighs it, never kept for you.
+#[tokio::test]
+async fn ask_you_about_leaves_the_go_ahead_to_full_auto() -> anyhow::Result<()> {
+    let mut crew = unread(UnderstandWhen::Lead, StyleSetting::Workflow, false)?;
+    crew.settings.approvals.ask_you_about = vec!["go-ahead".to_owned()];
+    crew.settings.approvals.full_auto = true;
+    let outcome = run(&crew).await?;
+    let go_ahead = outcome
+        .events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+                if opened.title == "Run this workflow?" =>
+            {
+                Some((**opened).clone())
+            }
+            _ => None,
+        })
+        .context("the go-ahead")?;
+    assert_eq!(go_ahead.mode, ApprovalMode::FullAuto);
+    assert!(!go_ahead.needs_you);
     Ok(())
 }
 

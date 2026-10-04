@@ -9,6 +9,7 @@ mod session;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use argonauts_core::api::RunSummary;
 use argonauts_core::app::{
     AgentReady, AppChoice, AppEvent, AppMode, ChatEvent, ShellEvent, StatusLine, UiCommand,
     ViewData,
@@ -49,6 +50,9 @@ pub struct AppState {
     pub runs: BTreeMap<RunId, RunState>,
     /// The attached run, the one Esc, `/stop`, and plain text act on.
     pub attached: Option<RunId>,
+    /// This repo's runs going or waiting on you that this screen doesn't hold, from the last
+    /// `BackgroundRuns`. Each gets an agent panel row; its card waits until you open it.
+    pub background: Vec<RunSummary>,
     pub chat: ChatState,
     /// Open app choices, oldest first.
     pub choices: Vec<AppChoice>,
@@ -93,6 +97,7 @@ pub struct Welcome {
     pub default_agent: Option<WorkerRef>,
     pub agents: Vec<AgentReady>,
     pub runs_going: u32,
+    pub runs_need_you: u32,
     /// The input's example until the first prompt, made from recent commit subjects.
     pub example_prompt: Option<String>,
 }
@@ -150,6 +155,7 @@ impl AppState {
                 preset,
                 agents,
                 runs_going,
+                runs_need_you,
                 example_prompt,
                 default_agent,
                 ..
@@ -161,6 +167,7 @@ impl AppState {
                     default_agent: default_agent.clone(),
                     agents: agents.clone(),
                     runs_going: *runs_going,
+                    runs_need_you: *runs_need_you,
                     example_prompt: example_prompt.clone(),
                 });
             }
@@ -183,6 +190,7 @@ impl AppState {
                     self.replay = Replay::Live;
                 }
             }
+            AppEvent::BackgroundRuns { runs } => self.background.clone_from(runs),
             AppEvent::Run { event } => self.apply_run(event),
             AppEvent::Chat { event } => {
                 // A chat turn's quota reading is as good as a run's, so the mode line shows it.
@@ -274,6 +282,15 @@ impl AppState {
 
     pub fn session(&self, run: &RunId, key: &SessionKey) -> Option<&SessionState> {
         self.runs.get(run).and_then(|run| run.sessions.get(key))
+    }
+
+    /// Cards waiting on you in runs this screen doesn't hold, which only their panel rows show.
+    pub fn background_waiting(&self) -> usize {
+        self.background
+            .iter()
+            .filter(|run| run.needs_you() && !self.runs.contains_key(&run.run))
+            .map(|run| run.waiting.len())
+            .sum()
     }
 
     /// Cards waiting on you across every run and app choice, oldest first.

@@ -29,6 +29,30 @@ pub struct Asking<'a> {
     pub family: &'a str,
 }
 
+/// What a card goes by where it asks you something: its owner's label, such as `build:flag`,
+/// else `build:` and its item. Its id shows only for a card with neither.
+pub fn card_label(state: &RunState, card: &CardId) -> String {
+    let owner = state
+        .sessions
+        .in_order()
+        .into_iter()
+        .filter(|session| session.card.as_ref() == Some(card))
+        .find(|session| session.started.step == Some(StepName::Build))
+        .and_then(|session| session.started.label.clone());
+    owner
+        .or_else(|| {
+            let record = state.cards.get(card)?;
+            let item = record
+                .spec
+                .item
+                .clone()
+                .filter(|item| !item.is_empty())
+                .unwrap_or_else(|| labels::item_from_title(&record.spec.title, "build"));
+            (!item.is_empty()).then(|| format!("build:{item}"))
+        })
+        .unwrap_or_else(|| card.to_string())
+}
+
 /// The session's label, unique in the run.
 pub fn session_label(state: &RunState, asking: &Asking<'_>) -> String {
     if let Some(kept) = earlier_label(state, asking) {

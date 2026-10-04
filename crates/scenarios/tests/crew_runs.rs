@@ -14,7 +14,7 @@ use argonauts_core::events::card::{CardEvent, CardState, IntegrationEvent};
 use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, CheckpointKind};
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, PlanEvent};
-use argonauts_core::events::run::{ParkReason, RunLifecycle, RunOutcome};
+use argonauts_core::events::run::{ParkReason, Party, RunLifecycle, RunOutcome};
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::worker::Access;
@@ -613,5 +613,62 @@ fn crew_merge_request_changes() -> anyhow::Result<()> {
             ))
     );
     scenario.shot(&pty, "crew-merge-request-changes")?;
+    Ok(())
+}
+
+/// Full auto through the binary: every checkpoint, your rules deciding, and a
+/// budget that fits the plan. The example's scope question, which `goal.always_ask` keeps yours
+/// in auto, is the lead's to answer, and the run goes from request to merge without a card.
+#[test]
+fn crew_full_auto_runs_to_merge_without_a_card() -> anyhow::Result<()> {
+    let scenario = crew_scenario()?;
+    let mut config = CREW_CONFIG.replace(
+        "mode = \"supervised\"",
+        "mode = \"full_auto\"\ndecide_with = \"rules\"",
+    );
+    for point in ["recipe_promotion", "escalation", "budget", "change_request"] {
+        config.push_str(&format!("\n[approvals.{point}]\nmode = \"full_auto\"\n"));
+    }
+    config.push_str("\n[budget]\nrun_usd = 100.0\n");
+    fs::write(scenario.repo.global_config(), config)?;
+    let pty = run(&scenario)?;
+    let outcome = wait_for_event(&scenario, STEPS_WAIT * 2, finished)?;
+    assert_eq!(outcome, RunOutcome::Merged);
+    let events = scenario.latest_run_events()?;
+
+    // Nothing waited for you: every checkpoint was decided by your rules, none by you.
+    let by: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => Some(decided.by.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!by.is_empty());
+    assert!(by.iter().all(|by| *by == Party::Rules), "{by:?}");
+    let asked = events.iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Checked(check))
+            if !check.shadow && check.verdict.is_none())
+    });
+    assert!(!asked, "a checkpoint asked you");
+
+    // The scope question is the lead's assumption, which the goal carries for you to review.
+    let goal = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Goal(GoalEvent::Approved { file, .. }) => Some(file.clone()),
+            _ => None,
+        })
+        .context("the goal was approved")?;
+    assert!(
+        goal.assumptions
+            .iter()
+            .any(|assumption| assumption.by_lead() && assumption.text.ends_with("Per API key")),
+        "{:?}",
+        goal.assumptions
+    );
+    let screen = pty.screen().text();
+    assert!(!screen.contains("Auto couldn't decide"), "{screen}");
+    scenario.shot(&pty, "crew-full-auto-merged")?;
     Ok(())
 }

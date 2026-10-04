@@ -107,13 +107,17 @@ pub(crate) fn keys(answers: &Answers, interactive: bool) -> Vec<(String, String)
             keys.push((roles::REVIEWER_KEY.to_owned(), workers(&reviewers)));
         }
     }
+    // Full auto is the one switch, over auto, so turning it off later leaves auto.
     if let Some(mode) = answers.approvals {
+        let full_auto = mode == ApprovalMode::FullAuto;
+        let each = if full_auto { ApprovalMode::Auto } else { mode };
         for point in APPROVAL_POINTS {
             keys.push((
                 format!("approvals.{point}.mode"),
-                string(approval_mode_name(mode)),
+                string(approval_mode_name(each)),
             ));
         }
+        keys.push(("approvals.full_auto".to_owned(), full_auto.to_string()));
     }
     if !interactive {
         keys.retain(|(key, value)| safety_keys_in(key, value).is_empty());
@@ -126,6 +130,7 @@ pub(crate) fn approval_mode_name(mode: ApprovalMode) -> &'static str {
         ApprovalMode::Supervised => "supervised",
         ApprovalMode::Shadow => "shadow",
         ApprovalMode::Auto => "auto",
+        ApprovalMode::FullAuto => "full_auto",
     }
 }
 
@@ -141,6 +146,7 @@ pub(crate) fn approval_mode_from(name: &str) -> Option<ApprovalMode> {
         ApprovalMode::Supervised,
         ApprovalMode::Shadow,
         ApprovalMode::Auto,
+        ApprovalMode::FullAuto,
     ]
     .into_iter()
     .find(|mode| approval_mode_name(*mode) == name)
@@ -193,12 +199,35 @@ mod tests {
                 "approvals.escalation.mode",
                 "approvals.budget.mode",
                 "approvals.change_request.mode",
+                "approvals.full_auto",
             ]
         );
         assert_eq!(keys[0].1, r#"["claude-code", "codex"]"#);
         assert_eq!(keys[1].1, r#""claude-code""#);
         assert_eq!(keys[2].1, r#""peer-crew""#);
         assert_eq!(keys[3].1, r#""auto""#);
+        assert_eq!(keys[9].1, "false");
+    }
+
+    /// Full auto turns the one switch on over auto, so turning it off later leaves auto.
+    #[test]
+    fn full_auto_writes_the_switch_over_auto() {
+        let mut answers = answers();
+        answers.approvals = Some(ApprovalMode::FullAuto);
+        let keys = keys(&answers, true);
+        let value = |key: &str| {
+            keys.iter()
+                .find(|(written, _)| written == key)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(value("approvals.full_auto"), Some("true"));
+        for point in APPROVAL_POINTS {
+            assert_eq!(
+                value(&format!("approvals.{point}.mode")),
+                Some(r#""auto""#),
+                "{point}"
+            );
+        }
     }
 
     #[test]
@@ -267,6 +296,7 @@ mod tests {
             ApprovalMode::Supervised,
             ApprovalMode::Shadow,
             ApprovalMode::Auto,
+            ApprovalMode::FullAuto,
         ] {
             assert_eq!(approval_mode_from(approval_mode_name(mode)), Some(mode));
         }

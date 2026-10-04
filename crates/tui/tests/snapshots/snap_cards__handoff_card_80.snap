@@ -10,7 +10,7 @@ expression: text(&lines)
 
 ────────────────────────────────────────────────────────────────────────────────
 ◆ Handoff · card-003 Middleware · needs you
-  Agent: Opus on Claude Code · owner · card-003
+  Agent: Opus on Claude Code
   Opus on Claude Code stopped: usage limit, resets in 2h 10m
   Work so far is committed: 4 files, +96 -12. Gates haven't run on it yet.
   Claude Code's 3 cards will be spread across Codex, Antigravity CLI and

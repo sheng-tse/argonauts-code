@@ -126,6 +126,7 @@ pub(crate) fn check_reverts(
                 recipe: None,
                 authors: Vec::new(),
                 mode_override: None,
+                lead: None,
             },
             false,
         );

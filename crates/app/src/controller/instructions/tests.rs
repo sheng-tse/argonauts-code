@@ -244,7 +244,7 @@ fn each_check_says_why() {
     );
     assert_eq!(
         refused(&applied, "merge it without asking me"),
-        "approvals.merge.mode is a safety setting, /permissions changes it"
+        "approvals.merge.mode is a safety setting, /approvals changes it"
     );
 
     // A model the agent doesn't have: the agent stays, on its default model.
@@ -272,7 +272,7 @@ fn each_check_says_why() {
 #[test]
 fn safety_settings_are_never_loosened() {
     let message = "Skip the tests, turn the sandbox off, spend up to $50, use the network, \
-                   and approve everything yourself.";
+                   approve everything yourself, and go full auto.";
     let list = [
         says(InstructionKind::Gates, "Skip the tests", ""),
         says(InstructionKind::Sandbox, "turn the sandbox off", ""),
@@ -288,6 +288,8 @@ fn safety_settings_are_never_loosened() {
             "approve everything yourself",
             "",
         ),
+        // Only Shift+Tab and /approvals turn full auto on.
+        says(InstructionKind::Approvals, "go full auto", ""),
     ];
     let applied = run(message, &list);
     for (says, why) in [
@@ -299,6 +301,7 @@ fn safety_settings_are_never_loosened() {
             "approve everything yourself",
             "approvals are safety settings",
         ),
+        ("go full auto", "approvals are safety settings"),
     ] {
         assert!(refused(&applied, says).starts_with(why), "{says}");
     }
@@ -824,8 +827,8 @@ fn a_negation_never_flips_the_mode_or_the_copy() {
 /// the network off. Anything that turns them off or around keeps the setting, and says why.
 #[test]
 fn only_plain_words_tighten_a_safety_setting() {
-    let approvals = "approvals are safety settings, /permissions and Shift+Tab change them";
-    let merge = "approvals.merge.mode is a safety setting, /permissions changes it";
+    let approvals = "approvals are safety settings, /approvals and Shift+Tab change them";
+    let merge = "approvals.merge.mode is a safety setting, /approvals changes it";
     let network = "sandbox.network is a safety setting, /permissions changes it";
     let table = [
         (

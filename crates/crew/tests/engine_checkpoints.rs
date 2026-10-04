@@ -329,6 +329,33 @@ async fn user_answer_beats_slow_approver() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// In full auto nothing waits for you, so `approvals.ask_you_about` doesn't keep a workflow
+/// change yours: your rules and the approver weigh it as full auto weighs any change.
+#[tokio::test]
+async fn ask_you_about_leaves_a_workflow_change_to_full_auto() -> anyhow::Result<()> {
+    let mut crew = crew_with_a_change(ApprovalMode::FullAuto)?;
+    crew.settings.approvals.ask_you_about = vec!["Workflow change".to_owned()];
+    let outcome = crew.start(RunMode::Crew, "look twice").await?;
+    let changes: Vec<CheckpointOpened> = outcome
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+                if opened.kind == CheckpointKind::ChangeRequest =>
+            {
+                Some((**opened).clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!changes.is_empty(), "{:?}", outcome.exit);
+    for card in &changes {
+        assert_eq!(card.mode, ApprovalMode::FullAuto, "{card:?}");
+        assert!(!card.needs_you, "{card:?}");
+    }
+    Ok(())
+}
+
 /// `approvals.ask_you_about` brings a workflow change to you even in auto, where the approver
 /// would otherwise decide it.
 #[tokio::test]

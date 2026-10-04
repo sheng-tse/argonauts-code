@@ -326,6 +326,8 @@ fn return_from_take_over_shows_needs_you() {
     assert_eq!(ended["card"], agent.card);
     assert_eq!(ended["exit_code"], 3);
     let screen = harness.wait_visible("Let the owner continue");
-    assert_order(&screen, &["◆", "Let the owner continue", TOP_RULE]);
+    // The card holds the keys, so it stands in for the input above the mode line.
+    assert_order(&screen, &["◆", "Let the owner continue", "mode on"]);
+    harness.wait_gone(TOP_RULE);
     harness.wait_until("the bell", |_| harness.bells() > 0);
 }

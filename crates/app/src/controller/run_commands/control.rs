@@ -73,7 +73,7 @@ fn queued(
             ctx.notice(NoteLevel::Info, format!("Queued for when {run} resumes."));
             Ok(Vec::new())
         }
-        Err(err) => Err(err).with_context(|| format!("sending to {run}")),
+        Err(err) => super::refused(ctx, err, || "Couldn't send it to the run".to_owned()),
     }
 }
 
@@ -99,13 +99,10 @@ pub(crate) async fn steer(
             Ok(Vec::new())
         }
         Err(ApiError::NotNow(why)) => {
-            ctx.notice(
-                NoteLevel::Info,
-                format!("{session} can't take it now: {why}"),
-            );
+            ctx.notice(NoteLevel::Info, format!("Nothing was sent, since {why}."));
             Ok(Vec::new())
         }
-        Err(err) => Err(err).with_context(|| format!("steering {session} of {run}")),
+        Err(err) => super::refused(ctx, err, || format!("Couldn't steer {session}")),
     }
 }
 
@@ -117,11 +114,9 @@ pub(crate) async fn pause(ctx: &mut Ctx, runs: &mut RunsState, now: bool) -> Han
         ctx.notice(NoteLevel::Info, why);
         return Ok(Vec::new());
     }
-    ctx.services
-        .conductor
-        .pause(&run, now)
-        .await
-        .with_context(|| format!("pausing {run}"))?;
+    if let Err(err) = ctx.services.conductor.pause(&run, now).await {
+        return super::refused(ctx, err, || "Couldn't pause the run".to_owned());
+    }
     ctx.set_mode(AppMode::Pausing { run });
     Ok(Vec::new())
 }
@@ -141,11 +136,9 @@ pub(crate) async fn cancel_pause(ctx: &mut Ctx, runs: &mut RunsState) -> Handled
     let Some(run) = on_screen(ctx, runs) else {
         return Ok(Vec::new());
     };
-    ctx.services
-        .conductor
-        .cancel_pause(&run)
-        .await
-        .with_context(|| format!("cancelling the pause of {run}"))?;
+    if let Err(err) = ctx.services.conductor.cancel_pause(&run).await {
+        return super::refused(ctx, err, || "Couldn't cancel the pause".to_owned());
+    }
     ctx.set_mode(AppMode::Working { run });
     Ok(Vec::new())
 }
@@ -186,11 +179,9 @@ pub(crate) async fn stop(ctx: &mut Ctx, runs: &mut RunsState, run: Option<RunId>
         ctx.notice(NoteLevel::Info, format!("{run} has finished."));
         return Ok(Vec::new());
     }
-    ctx.services
-        .conductor
-        .stop(&run)
-        .await
-        .with_context(|| format!("stopping {run}"))?;
+    if let Err(err) = ctx.services.conductor.stop(&run).await {
+        return super::refused(ctx, err, || "Couldn't stop that run".to_owned());
+    }
     ctx.notice(
         NoteLevel::Info,
         format!("Stopping {run}: its agents wrap up and report, and their work is committed."),
@@ -205,12 +196,10 @@ pub(crate) async fn stop_agent(
     session: SessionKey,
 ) -> Handled {
     let _ = runs;
-    ctx.services
-        .conductor
-        .stop_session(&run, &session)
-        .await
-        .with_context(|| format!("stopping {session} of {run}"))?;
-    Ok(Vec::new())
+    match ctx.services.conductor.stop_session(&run, &session).await {
+        Ok(()) => Ok(Vec::new()),
+        Err(err) => super::refused(ctx, err, || format!("Couldn't stop {session}")),
+    }
 }
 
 /// With no ids given, takes back every message this app queued for the run.
@@ -232,12 +221,12 @@ pub(crate) async fn take_back(
         ctx.notice(NoteLevel::Info, "Nothing is waiting to be taken back.");
         return Ok(Vec::new());
     }
-    let back = ctx
-        .services
-        .conductor
-        .take_back(&run, ids.clone())
-        .await
-        .with_context(|| format!("taking messages back from {run}"))?;
+    let back = match ctx.services.conductor.take_back(&run, ids.clone()).await {
+        Ok(back) => back,
+        Err(err) => {
+            return super::refused(ctx, err, || "Couldn't take the messages back".to_owned());
+        }
+    };
     // What didn't come back was delivered, so none of these can be taken back again.
     if let Some(queued) = runs.queued.get_mut(&run) {
         queued.retain(|message| !ids.contains(&message.id));
@@ -324,11 +313,14 @@ pub(crate) async fn continue_run(
         instructions: Vec::new(),
         request_settings: Vec::new(),
     };
-    let handle = ctx
+    let handle = match ctx
         .services
         .conductor
         .continue_run(&merged.run, follow_up)
         .await
-        .with_context(|| format!("continuing {}", merged.run))?;
+    {
+        Ok(handle) => handle,
+        Err(err) => return super::refused(ctx, err, || "Couldn't start the follow-up".to_owned()),
+    };
     runs::started(ctx, runs, handle.run, title_from_task(&request), mode).await
 }

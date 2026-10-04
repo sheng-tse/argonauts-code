@@ -218,6 +218,7 @@ fn summary(run: RunId, state: RunState, live: bool) -> RunSummary {
         waiting: Vec::new(),
         live,
         remind: false,
+        name: None,
     }
 }
 

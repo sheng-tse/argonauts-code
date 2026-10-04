@@ -6,7 +6,7 @@
 use argonauts_core::events::run::Party;
 use argonauts_core::events::session::{InputPart, InputPartKind, SessionEnd};
 use argonauts_core::events::shared::{BlackboardKind, BlackboardMessage};
-use argonauts_core::names::{MessageId, RoleName, WorkerRef};
+use argonauts_core::names::{MessageId, RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::worker::Access;
 
@@ -35,25 +35,7 @@ pub async fn answer(host: &Host, question: &MessageId) -> EngineResult<MessageId
         .ok_or_else(|| EngineError::Refused(format!("{question} isn't a question")))?;
 
     let worker = consultant(host.settings());
-    let running = host
-        .start(SessionPlan {
-            at: None,
-            role: RoleName::Consultant,
-            worker: worker.clone(),
-            card: None,
-            access: Access::ReadOnly,
-            step: None,
-            workdir: host.repo().base_worktree.clone(),
-            parts: parts(host, &asked),
-            json_schema: None,
-            resume: None,
-            slot: slot(question),
-        })
-        .await?;
-    let session = running.key.clone();
-    let end = running.ended().await?;
-
-    let text = answer_text(&end);
+    let (session, text) = session_answer(host, &asked, &worker, RoleName::Consultant).await?;
     let reply = host.read(|state| Post {
         kind: BlackboardKind::Answer,
         from: Party::Agent {
@@ -71,6 +53,38 @@ pub async fn answer(host: &Host, question: &MessageId) -> EngineResult<MessageId
     Ok(id)
 }
 
+/// One read-only session in which `worker`, as `role`, answers the question: the session and
+/// what it said. The consultant answers as itself; in full auto the lead answers in your place.
+pub(crate) async fn session_answer(
+    host: &Host,
+    asked: &BlackboardMessage,
+    worker: &WorkerRef,
+    role: RoleName,
+) -> EngineResult<(SessionKey, String)> {
+    let prompt = match role {
+        RoleName::Consultant => prompts::board::CONSULTANT,
+        _ => prompts::board::FOR_YOU,
+    };
+    let running = host
+        .start(SessionPlan {
+            at: None,
+            role,
+            worker: worker.clone(),
+            card: None,
+            access: Access::ReadOnly,
+            step: None,
+            workdir: host.repo().base_worktree.clone(),
+            parts: parts(host, asked, role, prompt),
+            json_schema: None,
+            resume: None,
+            slot: slot(&asked.id),
+        })
+        .await?;
+    let session = running.key.clone();
+    let end = running.ended().await?;
+    Ok((session, answer_text(&end)))
+}
+
 /// `roles.consultant.workers`, else the default agent.
 pub fn consultant(settings: &Settings) -> WorkerRef {
     settings
@@ -80,9 +94,9 @@ pub fn consultant(settings: &Settings) -> WorkerRef {
         .unwrap_or_else(|| settings.default_agent.clone())
 }
 
-fn parts(host: &Host, asked: &BlackboardMessage) -> Vec<InputPart> {
+fn parts(host: &Host, asked: &BlackboardMessage, role: RoleName, prompt: &str) -> Vec<InputPart> {
     let viewer = Viewer::Session {
-        role: RoleName::Consultant,
+        role,
         card: None,
         label: None,
     };
@@ -96,12 +110,7 @@ fn parts(host: &Host, asked: &BlackboardMessage) -> Vec<InputPart> {
         question.push_str(&format!("\nCites: {}", asked.refs.join(", ")));
     }
     vec![
-        part(
-            InputPartKind::Prompt,
-            "consultant",
-            prompts::board::CONSULTANT,
-            None,
-        ),
+        part(InputPartKind::Prompt, role.as_str(), prompt, None),
         part(
             InputPartKind::Message,
             "question",

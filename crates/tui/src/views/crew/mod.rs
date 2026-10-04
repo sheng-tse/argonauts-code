@@ -10,7 +10,7 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use argonauts_core::RunId;
-use argonauts_core::app::{AnswerTarget, UiCommand};
+use argonauts_core::app::{AnswerTarget, UiCommand, ViewRequest};
 use argonauts_core::crew_panel::{CrewPanel, CrewRow, CrewState, CrewTab, CrewTarget};
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::SessionKey;
@@ -131,7 +131,7 @@ impl CrewView {
         ViewOutcome::Consumed
     }
 
-    fn footer(&self, state: &AppState) -> Footer {
+    fn footer(&self, state: &AppState, row: Option<&CrewRow>) -> Footer {
         if let Some((run, session)) = &self.confirm_stop {
             let name = state.session(run, session).map_or_else(
                 || rows::clean(session.as_str()),
@@ -152,12 +152,18 @@ impl CrewView {
         if !self.wide {
             parts.push(("Space details", 2));
         }
-        parts.extend([
-            ("Tab filter", 4),
-            ("x stop", 3),
-            ("? keys", 1),
-            (panes::ESC_BACK, 0),
-        ]);
+        parts.push(("Tab filter", 4));
+        // Only a working agent has something to stop.
+        let stops = row.is_some_and(|row| match &row.target {
+            CrewTarget::Agent { run, session } => state
+                .session(run, session)
+                .is_some_and(|session| session.is_running()),
+            _ => false,
+        });
+        if stops {
+            parts.push(("x stop", 3));
+        }
+        parts.extend([("? keys", 1), (panes::ESC_BACK, 0)]);
         Footer::hints(&parts)
     }
 
@@ -181,13 +187,15 @@ impl CrewView {
                         run: run.clone(),
                         id: open.opened.id.clone(),
                     }),
+                    // Its transcript, finished or running: live from the screen, else from the
+                    // run's log.
                     None if state.session(run, session).is_some() => ViewOutcome::Open(Box::new(
                         SessionView::from_crew(run.clone(), session.clone()),
                     )),
-                    None => ViewOutcome::Notice(format!(
-                        "{} isn't on this screen. /resume {run} brings it here",
-                        rows::clean(session.as_str())
-                    )),
+                    None => ViewOutcome::Request(ViewRequest::Agent {
+                        run: run.clone(),
+                        session: session.clone(),
+                    }),
                 }
             }
             CrewTarget::Checkpoint { run, checkpoint } => {
@@ -198,6 +206,17 @@ impl CrewView {
             }
             CrewTarget::Run { run } if state.attached.as_ref() == Some(run) => {
                 ViewOutcome::CloseAll
+            }
+            // A run that finished, or failed, can't resume, so its workflow view shows its
+            // agents, and Enter there opens each one's transcript.
+            CrewTarget::Run { run }
+                if row.repo == panel.repo
+                    && matches!(row.state, CrewState::Done | CrewState::Failed) =>
+            {
+                ViewOutcome::Request(ViewRequest::Workflow {
+                    run: run.clone(),
+                    workflow: None,
+                })
             }
             CrewTarget::Run { run } if row.repo == panel.repo => {
                 ViewOutcome::SendToChat(UiCommand::Resume {
@@ -460,7 +479,8 @@ impl View for CrewView {
                 }
             }
         }
-        panes::draw_footer(buf, footer, self.footer(state), "", theme);
+        let row = rows.get(self.list.selected).copied();
+        panes::draw_footer(buf, footer, self.footer(state, row), "", theme);
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome {

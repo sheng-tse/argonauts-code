@@ -42,21 +42,22 @@ struct Merged {
 }
 
 /// The goal settings differences settle by. The question limit spares your attention, so when
-/// you chose the lead to answer the crew's questions it answers every one, and nothing is
-/// held back over the limit.
-pub fn goal_settings(settings: &Settings) -> UnderstandSettings {
+/// the lead answers every question, in `full_auto` or because you chose it to, nothing is held
+/// back over the limit.
+pub fn goal_settings(settings: &Settings, full_auto: bool) -> UnderstandSettings {
     let mut goal = settings.understand.clone();
-    if settings.approvals.answered_by == Some(Answerer::Lead) {
+    if lead_answers_all(settings, full_auto) {
         goal.max_questions = u32::MAX;
     }
     goal
 }
 
 /// Whether the lead, answering the crew's questions, may answer this one for you: any of them,
-/// unless `approvals.ask_you_about` names its tag or topic. `understand.always_ask` only makes
-/// a topic a question, never one that waits for you.
-pub fn lead_may_answer(question: &GoalQuestion, settings: &Settings) -> bool {
-    asked_about(question, settings).is_none()
+/// unless `approvals.ask_you_about` names its tag or topic, and every one in `full_auto`, where
+/// nothing waits for you. `understand.always_ask` only makes a topic a question, never one that
+/// waits for you.
+pub fn lead_may_answer(question: &GoalQuestion, settings: &Settings, full_auto: bool) -> bool {
+    full_auto || asked_about(question, settings).is_none()
 }
 
 /// The word of `approvals.ask_you_about` that keeps this question yours: its tag, such as
@@ -65,6 +66,12 @@ pub fn asked_about<'q>(question: &'q GoalQuestion, settings: &Settings) -> Optio
     std::iter::once(tag_name(question.tag))
         .chain(question.topic.as_deref())
         .find(|word| checkpoints::asks_you_about(settings, &[word]))
+}
+
+/// The lead answers every question in full auto, where the model you picked may answer in its
+/// place, or once you chose the lead to. A model you picked answers in full auto only.
+fn lead_answers_all(settings: &Settings, full_auto: bool) -> bool {
+    full_auto || settings.approvals.answered_by == Some(Answerer::Lead)
 }
 
 /// Settles every differ's listing of `restaters` restatements.

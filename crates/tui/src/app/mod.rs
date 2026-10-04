@@ -396,6 +396,16 @@ impl<W: Write> Ui<W> {
             let area = Rect::new(0, 0, screen.width, screen.height);
             let mut buffer = Buffer::empty(area);
             view.render(area, &mut buffer, &ctx);
+            if let Some(notice) = self
+                .model
+                .bottom
+                .mode
+                .notice
+                .as_ref()
+                .filter(|notice| notice.until > now)
+            {
+                paint_notice(&mut buffer, area, notice, &self.theme);
+            }
             self.paint_selection(&mut buffer);
             return self.terminal.draw_buffer(&buffer);
         }
@@ -705,15 +715,24 @@ impl<W: Write> Ui<W> {
         let clock = Clock::new(self.started, now);
         let ctx = RenderCtx::new(screen.width, &self.theme, clock);
         let mut next = if let Some(view) = self.views.last() {
-            // A docked view's working line still moves above it.
+            // A docked view's working line still moves above it, and a notice over the view's
+            // footer goes when it expires.
             let working = view
                 .docked()
                 .then(|| self.model.bottom.next_change(&ctx))
                 .flatten();
-            match (view.next_change(now), working) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            }
+            let notice = self
+                .model
+                .bottom
+                .mode
+                .notice
+                .as_ref()
+                .map(|notice| notice.until)
+                .filter(|until| *until > now);
+            [view.next_change(now), working, notice]
+                .into_iter()
+                .flatten()
+                .min()
         } else if self.overlay.is_some() {
             None
         } else {
@@ -731,4 +750,37 @@ impl<W: Write> Ui<W> {
         }
         next
     }
+}
+
+/// A view hides the mode line, so a notice from one of its keys, such as why it can't act
+/// now, takes the view's bottom rows while it lasts: the footer where its keys are named, and
+/// the row above it when the words need two.
+fn paint_notice(
+    buffer: &mut Buffer,
+    area: Rect,
+    notice: &crate::bottom::ModeNotice,
+    theme: &Theme,
+) {
+    use ratatui::text::Span;
+    use ratatui::widgets::{Clear, Widget};
+
+    const MOST_ROWS: usize = 2;
+    let width = usize::from(area.width);
+    if width == 0 || area.height == 0 {
+        return;
+    }
+    let text = crate::text::sanitize_line(&notice.text).trim().to_owned();
+    let style = theme.style(notice.tone.role());
+    let mut lines = crate::text::wrap_text(&text, style, width, &[], &[]);
+    if lines.len() > MOST_ROWS {
+        lines.truncate(MOST_ROWS);
+        let last = crate::text::truncate_line(&lines[MOST_ROWS - 1], width - 1);
+        let mut spans = last.spans;
+        spans.push(Span::styled("…", style));
+        lines[MOST_ROWS - 1] = Line::from(spans);
+    }
+    let rows = (lines.len() as u16).min(area.height);
+    let at = Rect::new(area.x, area.bottom() - rows, area.width, rows);
+    Clear.render(at, buffer);
+    paint_rows(buffer, at, &lines);
 }

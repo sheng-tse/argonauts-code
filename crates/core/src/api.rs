@@ -68,6 +68,9 @@ pub struct RunHandle {
 pub struct RunSummary {
     pub run: RunId,
     pub title: String,
+    /// The run's own name once the lead or intake gave it one, such as `fix-slugify-median`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub mode: RunMode,
     pub preset: String,
     pub state: RunState,
@@ -84,6 +87,21 @@ pub struct RunSummary {
     /// Parked longer than `runs.remind_parked_days`. Parked runs never expire.
     #[serde(default)]
     pub remind: bool,
+}
+
+impl RunSummary {
+    /// Not finished, and one of its cards waits on you.
+    pub fn needs_you(&self) -> bool {
+        self.is_open() && !self.waiting.is_empty()
+    }
+
+    /// Going, pausing, or parked: not finished, and not crashed.
+    pub fn is_open(&self) -> bool {
+        matches!(
+            self.state,
+            RunState::Running | RunState::Pausing | RunState::Parked
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

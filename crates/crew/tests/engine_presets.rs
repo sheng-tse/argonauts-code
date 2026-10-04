@@ -358,7 +358,7 @@ fn crew_of_three(workflow: &str) -> anyhow::Result<support::Crew> {
     crew.settings.default_agent = crew.settings.crew[0].clone();
     crew.settings.workflow = WorkflowRef::new(workflow);
     crew.settings.workflows.adapt_at_phase_ends = false;
-    crew.settings.workflows.lead_designs = false;
+    crew.settings.workflows.lead_designs = false.into();
     // One build card is plan enough here; contracts first would ask for an interface card and
     // acceptance tests besides.
     crew.settings.divide.contracts_first = false;

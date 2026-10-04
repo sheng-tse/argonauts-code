@@ -6,6 +6,7 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::DecideWith;
 use time::OffsetDateTime;
 
+use crate::approvals::in_full_auto;
 use crate::parts::{Approve, ModelVerdict};
 use crate::rules::{self, RuleVerdict};
 
@@ -30,9 +31,17 @@ pub async fn decide(
 ) -> Decision {
     let by_rules = || rules::check(point, evidence, settings, now);
     let by_model = || approver.verdict(point, evidence, settings);
+    // Full auto never waits for you, so when no model can check, your rules decide alone.
+    let unchecked = |model: &ModelVerdict| in_full_auto(point) && model.approver.is_none();
     match decide_with {
         DecideWith::Rules => from_rules(by_rules(), decide_with),
-        DecideWith::Model => from_model(by_model().await, decide_with),
+        DecideWith::Model => {
+            let model = by_model().await;
+            if unchecked(&model) {
+                return rules_alone(by_rules(), model);
+            }
+            from_model(model, decide_with)
+        }
         DecideWith::RulesAndModel => {
             let rules = by_rules();
             // A measured failure already settles it, so the model isn't worth the tokens.
@@ -40,6 +49,9 @@ pub async fn decide(
                 return from_rules(rules, decide_with);
             }
             let model = by_model().await;
+            if unchecked(&model) {
+                return rules_alone(rules, model);
+            }
             combine(
                 both(rules.verdict, model.verdict),
                 rules,
@@ -53,6 +65,9 @@ pub async fn decide(
                 return from_rules(rules, decide_with);
             }
             let model = by_model().await;
+            if unchecked(&model) {
+                return rules_alone(rules, model);
+            }
             combine(
                 either(rules.verdict, model.verdict),
                 rules,
@@ -61,6 +76,14 @@ pub async fn decide(
             )
         }
     }
+}
+
+/// Your rules' verdict, decided by them alone, with why no model could check it last, which
+/// the engine reports in the transcript.
+fn rules_alone(rules: RuleVerdict, model: ModelVerdict) -> Decision {
+    let mut decision = from_rules(rules, DecideWith::Rules);
+    decision.reasons.extend(model.reasons);
+    decision
 }
 
 /// Approve only when both approve; otherwise a reject from either wins over an escalate.

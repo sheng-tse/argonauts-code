@@ -6,15 +6,15 @@ Approvals
 Who decides each checkpoint, and how auto matched you                                               1 spot check waiting
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Who checks                                                                                          GPT 5.6 on Codex │
+│ ❯ Approver model                GPT 5.6 on Codex          everywhere (global)  The approver model                    │
+│   Rules file                    ~/.argonauts/approver.md  everywhere (global)  The approver's rules file             │
+│                                                                                                                      │
 │ Merge · shadow · your rules decide                                     12 matches in a row · 1 miss · ready for auto │
-│ ❯ How it's decided              shadow                    this project         Who approves a merge                  │
+│   How it's decided              shadow                    this project         Who approves a merge                  │
 │   Who decides in auto           your rules                built-in             What decides in auto                  │
 │   Changed lines tests cover     0.8                       built-in             Coverage a merge needs                │
 │   When auto doesn't approve     ask you                   built-in                                                   │
-│                                                                                                                      │
-│ Approver                                                                                            GPT 5.6 on Codex │
-│   Model                         GPT 5.6 on Codex          everywhere (global)  The approver model                    │
-│   Rules file                    ~/.argonauts/approver.md  everywhere (global)  The approver's rules file             │
 │                                                                                                                      │
 │ Everything else                                                                                                      │
 │   Share of auto calls to check  0.1                       built-in                                                   │

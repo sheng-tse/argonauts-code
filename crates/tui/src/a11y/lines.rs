@@ -49,9 +49,10 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             .iter()
             .flat_map(|text| labeled("taken back", text))
             .collect(),
-        AppEvent::VendorCommands { .. } | AppEvent::Names { .. } | AppEvent::RepoFiles { .. } => {
-            Vec::new()
-        }
+        AppEvent::VendorCommands { .. }
+        | AppEvent::Names { .. }
+        | AppEvent::RepoFiles { .. }
+        | AppEvent::BackgroundRuns { .. } => Vec::new(),
         AppEvent::SettingChanged {
             key,
             value,
@@ -167,11 +168,15 @@ fn welcome_lines(state: &AppState) -> Vec<String> {
         }
         lines.push(line);
     }
+    let mut runs = Vec::new();
     if welcome.runs_going > 0 {
-        lines.push(format!(
-            "runs: {} going or waiting. /resume lists them.",
-            welcome.runs_going
-        ));
+        runs.push(format!("{} going", welcome.runs_going));
+    }
+    if welcome.runs_need_you > 0 {
+        runs.push(format!("{} need you", welcome.runs_need_you));
+    }
+    if !runs.is_empty() {
+        lines.push(format!("runs: {}. /resume lists them.", runs.join(", ")));
     }
     lines.push("Type a message and press Enter. /help lists the commands. Ctrl+D leaves.".into());
     lines

@@ -57,7 +57,8 @@ pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
                 NoteLevel::Warn => "warning",
                 NoteLevel::Error => "error",
             };
-            labeled(label, &note.text)
+            // The plain line; its detail is for Ctrl+O on screen.
+            labeled(label, note.line())
         }
         RunEventKind::Vendor(VendorEvent::Quota(_)) | RunEventKind::Budget(BudgetEvent::Run(_))
             if !full =>
@@ -218,7 +219,13 @@ fn checkpoint_lines(
             if full || !check.violations.is_empty() || auto_left_it(check) =>
         {
             let mut line = format!("policy: {} checked", check.id);
-            if !check.violations.is_empty() || auto_left_it(check) {
+            // Full auto keeps what the policy found on a card it already settled in your place.
+            let open = state.runs.get(&event.run_id).is_none_or(|run| {
+                run.checkpoints
+                    .iter()
+                    .any(|open| open.opened.id == check.id)
+            });
+            if open && (!check.violations.is_empty() || auto_left_it(check)) {
                 line.push_str(", it waits for you");
             }
             if let Some(reason) = check.reasons.first() {
@@ -237,4 +244,94 @@ fn auto_left_it(check: &PolicyCheck) -> bool {
 
 fn one_line(text: &str) -> String {
     sanitize_line(text).trim().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::app::AppEvent;
+    use argonauts_core::events::checkpoint::{
+        CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, FreeText, PolicyCheck,
+        QuestionPacket,
+    };
+    use argonauts_core::events::{RunEvent, RunEventKind};
+    use argonauts_core::names::{CheckpointId, WorkerRef};
+    use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::{CardId, RunId};
+    use time::OffsetDateTime;
+
+    use super::run_lines;
+    use crate::state::AppState;
+
+    fn event(seq: u64, kind: RunEventKind) -> RunEvent {
+        RunEvent {
+            seq,
+            ts: OffsetDateTime::UNIX_EPOCH,
+            run_id: RunId::new("run-20261004-043029-d8bb").unwrap(),
+            card_id: None,
+            session: None,
+            source: "engine".into(),
+            kind,
+        }
+    }
+
+    /// What the policy found on a card full auto already settled is kept for review, and the
+    /// line for it never says the card waits for you.
+    #[test]
+    fn a_check_kept_after_full_auto_settled_the_card_doesnt_say_it_waits() {
+        let id = CheckpointId::numbered(1);
+        let card = CardId::new("card-001").unwrap();
+        let opened = CheckpointOpened {
+            id: id.clone(),
+            kind: CheckpointKind::Question,
+            title: "Question from card-001".into(),
+            card: Some(card.clone()),
+            packet: CheckpointPacket::Question(QuestionPacket {
+                from: WorkerRef::new("codex", None),
+                card,
+                text: "Which level?".into(),
+                options: Vec::new(),
+            }),
+            evidence_sha256: String::new(),
+            mode: ApprovalMode::FullAuto,
+            decide_with: DecideWith::Model,
+            options: Vec::new(),
+            free_text: FreeText::Answer,
+            needs_you: false,
+        };
+        let check = event(
+            2,
+            RunEventKind::Checkpoint(CheckpointEvent::Checked(PolicyCheck {
+                id: id.clone(),
+                violations: Vec::new(),
+                verdict: None,
+                by: None,
+                approver: None,
+                reasons: vec!["the approver escalated".into()],
+                shadow: false,
+            })),
+        );
+        let mut state = AppState::default();
+        let opened = event(
+            1,
+            RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(opened))),
+        );
+        state.apply(&AppEvent::Run {
+            event: Box::new(opened),
+        });
+        let waiting = run_lines(&check, &state).join("\n");
+        assert!(waiting.contains("it waits for you"), "{waiting}");
+
+        state.apply(&AppEvent::Run {
+            event: Box::new(event(
+                2,
+                RunEventKind::Checkpoint(CheckpointEvent::Withdrawn {
+                    id,
+                    reason: "settled".into(),
+                }),
+            )),
+        });
+        let settled = run_lines(&check, &state).join("\n");
+        assert!(!settled.contains("it waits for you"), "{settled}");
+        assert!(settled.contains("the approver escalated"), "{settled}");
+    }
 }

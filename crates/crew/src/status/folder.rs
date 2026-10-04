@@ -13,15 +13,18 @@ use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, Checkpoi
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent};
 use argonauts_core::events::run::{Party, PhaseChange, RunLifecycle};
-use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind};
+use argonauts_core::events::shared::{
+    BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
+};
 use argonauts_core::events::vendor::{BudgetEvent, HandoffEvent, RunBudget, VendorEvent};
 use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::QuotaReading;
-use argonauts_core::names::{CheckpointId, DecisionId};
+use argonauts_core::names::{CheckpointId, DecisionId, MessageId};
 use argonauts_core::settings::protocol::VisibilitySettings;
 use argonauts_core::{CardId, PhaseStatus, RunId};
 
+use crate::goal::materiality::one_line;
 use crate::state::workflow::Workflows;
 use crate::status::Viewer;
 use crate::status::visibility::{self, Audience, Moment};
@@ -77,6 +80,10 @@ pub struct Folder {
     proposed_plan: Option<(CheckpointId, String)>,
     /// Who the last pushed event changed the summary for.
     changed: Option<Audience>,
+    /// Agents' questions meant for you, by id, until one is answered.
+    asked_you: Vec<(MessageId, String)>,
+    /// What full auto answered in your place, kept with the goal for you to review.
+    answered_for_you: Vec<String>,
 }
 
 impl Folder {
@@ -139,6 +146,11 @@ impl Folder {
             RunEventKind::Vendor(e) => self.vendor(e),
             RunEventKind::Budget(e) => self.budget(e),
             RunEventKind::Workflow(e) => self.workflow(e, event),
+            RunEventKind::Blackboard(BlackboardEvent::Posted(message))
+                if self.answered_for_you(message) =>
+            {
+                Some(Audience::Everyone)
+            }
             RunEventKind::Blackboard(BlackboardEvent::Posted(message)) => {
                 // Only settled records count as decisions; the traffic itself isn't state.
                 let record = message.kind == BlackboardKind::Decision
@@ -224,6 +236,7 @@ impl Folder {
                             .map(|criterion| format!("{}: {}", criterion.id, criterion.text)),
                     )
                     .chain(by_lead)
+                    .chain(self.answered_for_you.iter().cloned())
                     .collect();
                 self.line(format!("Goal approved, version {}", file.version))
             }
@@ -231,6 +244,38 @@ impl Folder {
                 self.line(format!("Goal change {id}: {}", words(resolution)))
             }
             _ => None,
+        }
+    }
+
+    /// Notes an agent's question meant for you, and, once full auto answers one in your place,
+    /// keeps the answer with the goal, beside the lead's answers to the goal's questions. True
+    /// when the summary changed.
+    fn answered_for_you(&mut self, message: &BlackboardMessage) -> bool {
+        match message.kind {
+            BlackboardKind::Question if message.to == Recipient::User => {
+                self.asked_you
+                    .push((message.id.clone(), one_line(&message.text)));
+                false
+            }
+            BlackboardKind::Answer if message.from != Party::User => {
+                let Some(at) = self
+                    .asked_you
+                    .iter()
+                    .position(|(id, _)| message.in_reply_to.as_ref() == Some(id))
+                else {
+                    return false;
+                };
+                let (_, question) = self.asked_you.remove(at);
+                let line = format!(
+                    "Answered for you in full auto · {}: {}",
+                    question.trim_end_matches(['?', '.', ':']),
+                    one_line(&message.text)
+                );
+                self.answered_for_you.push(line.clone());
+                self.tagged.goal.push(line);
+                true
+            }
+            _ => false,
         }
     }
 

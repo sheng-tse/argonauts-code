@@ -432,6 +432,7 @@ fn who(by: &Party) -> String {
         Party::Rules => "your rules".to_owned(),
         Party::Approver { model } => format!("the approver {model}"),
         Party::Config => "a setting".to_owned(),
+        Party::FullAuto => "full auto".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         Party::FrontEnd { client } => client.clone(),

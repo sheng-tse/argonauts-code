@@ -301,8 +301,12 @@ pub enum AppEvent {
         repo: String,
         preset: String,
         agents: Vec<AgentReady>,
-        /// Runs going or waiting in this repo.
+        /// Runs going in this repo that don't wait on you.
         runs_going: u32,
+        /// Runs in this repo that wait on you. The app opens a new conversation all the same,
+        /// and each one's card waits until you open its run.
+        #[serde(default)]
+        runs_need_you: u32,
         /// The input's placeholder until your first prompt, made from recent commit subjects,
         /// never by a model.
         #[serde(default)]
@@ -328,6 +332,11 @@ pub enum AppEvent {
     },
     Detached {
         run: RunId,
+    },
+    /// This repo's runs that go on or wait on you without being on this screen, for the agent
+    /// panel's rows. Each list replaces the last.
+    BackgroundRuns {
+        runs: Vec<RunSummary>,
     },
     Run {
         event: Box<RunEvent>,

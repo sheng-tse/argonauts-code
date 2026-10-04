@@ -311,6 +311,19 @@ fn values_serde_accepts_are_still_checked() {
             "[approvals.plan]\notherwise = \"open_pull_request\"\n",
             "approvals.plan.otherwise",
         ),
+        // Only a merge opens a pull request, and a budget has nothing to send back.
+        (
+            "[approvals.plan]\nat_hard_limit = \"open_pull_request\"\n",
+            "approvals.plan.at_hard_limit",
+        ),
+        (
+            "[approvals.budget]\nat_hard_limit = \"send_back\"\n",
+            "approvals.budget.at_hard_limit",
+        ),
+        (
+            "[approvals]\nanswered_by = \"the lead\"\n",
+            "approvals.answered_by",
+        ),
         (
             "[approvals]\nspot_check_sample = 2.0\n",
             "approvals.spot_check_sample",
@@ -322,10 +335,13 @@ fn values_serde_accepts_are_still_checked() {
         assert_eq!(layer, repo.project_file(), "{text}");
         assert!(message.starts_with(key), "{key}: {message}");
     }
-    // A model approver makes the same approvals sane.
+    // A model approver makes the same approvals sane, and full auto takes a picked answerer
+    // and a merge that opens a pull request at a hard limit.
     repo.project(
-        "[approvals.approver]\nmodel = \"codex/<model>\"\nsecond_model = \"claude-code/opus\"\n\
+        "[approvals]\nfull_auto = true\nanswered_by = \"opencode/glm-5\"\n\
+         [approvals.approver]\nmodel = \"codex/<model>\"\nsecond_model = \"claude-code/opus\"\n\
          [approvals.merge]\nmode = \"auto\"\ndecide_with = \"model\"\n\
+         at_hard_limit = \"open_pull_request\"\n\
          [approvals.merge.rules]\nmin_changed_line_coverage = 0.5\n",
     );
     let resolved = resolve(&repo.trusted()).unwrap();
@@ -334,6 +350,65 @@ fn values_serde_accepts_are_still_checked() {
     assert_eq!(
         effort.settings.agents["codex"].effort.as_deref(),
         Some("high")
+    );
+}
+
+/// Full auto's settings that wouldn't do what you meant say so: a picked answerer no agent
+/// provides, or one the approver can't check, and a checkpoint the switch leaves with you. A
+/// checkpoint kept supervised in the repo stays supervised under a global switch.
+#[test]
+fn full_auto_settings_that_miss_say_so() {
+    use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
+
+    let repo = Repo::new();
+    for (word, answerer) in [("You", Answerer::You), ("Lead", Answerer::Lead)] {
+        repo.project(&format!("[approvals]\nanswered_by = \"{word}\"\n"));
+        let resolved = resolve(&repo.trusted()).unwrap();
+        assert_eq!(resolved.settings.approvals.answered_by, Some(answerer));
+        assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
+    }
+
+    repo.project("[approvals]\nanswered_by = \"me\"\n");
+    let resolved = resolve(&repo.trusted()).unwrap();
+    assert!(
+        resolved.warnings.iter().any(|warning| warning
+            .starts_with("approvals.answered_by names me")
+            && warning.ends_with("the lead answers in its place")),
+        "{:?}",
+        resolved.warnings
+    );
+
+    repo.project(
+        "[approvals]\nanswered_by = \"codex/gpt-5.6\"\n\
+         [approvals.approver]\nmodel = \"codex/gpt-5.6-luna\"\n",
+    );
+    let resolved = resolve(&repo.trusted()).unwrap();
+    assert!(
+        resolved
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("both come from openai")),
+        "{:?}",
+        resolved.warnings
+    );
+
+    repo.global("[approvals]\nfull_auto = true\n");
+    repo.project("[approvals.merge]\nmode = \"supervised\"\n");
+    let resolved = resolve(&repo.trusted()).unwrap();
+    let approvals = &resolved.settings.approvals;
+    assert_eq!(
+        approvals.run_mode(approvals.merge.mode),
+        ApprovalMode::Supervised
+    );
+    assert_eq!(
+        approvals.run_mode(approvals.plan.mode),
+        ApprovalMode::FullAuto
+    );
+    assert!(
+        resolved.warnings.iter().any(|warning| warning
+            .contains("approvals.merge.mode = \"supervised\" keeps that checkpoint for you")),
+        "{:?}",
+        resolved.warnings
     );
 }
 

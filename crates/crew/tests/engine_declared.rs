@@ -127,7 +127,7 @@ async fn a_phase_whose_steps_all_skip_is_skipped_with_its_reason() -> anyhow::Re
     let mut crew = support::Crew::new()?;
     crew.worker("claude-code/opus", "anthropic");
     crew.settings.workflow = WorkflowRef::new("look-then-maybe");
-    crew.settings.workflows.lead_designs = false;
+    crew.settings.workflows.lead_designs = false.into();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.repo
         .write(".argonauts/workflows/look-then-maybe.yaml", LOOK_THEN_MAYBE)?;

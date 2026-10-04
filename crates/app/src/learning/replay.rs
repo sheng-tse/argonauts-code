@@ -220,7 +220,7 @@ pub(crate) fn replay_approvals(settings: &mut Settings) {
 /// Whether a checkpoint a replay can open, left to auto mode, asks your approver model. A
 /// replay leaves its branch before the merge checkpoint, so that one never opens.
 fn approver_decides(settings: &Settings) -> bool {
-    use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+    use argonauts_core::settings::approvals::DecideWith;
     let a = &settings.approvals;
     [
         (a.escalation.mode, a.escalation.decide_with),
@@ -228,7 +228,7 @@ fn approver_decides(settings: &Settings) -> bool {
         (a.change_request.mode, a.change_request.decide_with),
     ]
     .into_iter()
-    .any(|(mode, with)| mode == ApprovalMode::Auto && with != DecideWith::Rules)
+    .any(|(mode, with)| mode.goes_ahead() && with != DecideWith::Rules)
 }
 
 impl ReplayRunner for SupervisedReplays {

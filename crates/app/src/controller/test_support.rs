@@ -126,9 +126,22 @@ pub(crate) struct FakeConductor {
     streams: Mutex<HashMap<RunId, Stream>>,
     started: AtomicU32,
     messages: AtomicU32,
+    /// Runs that already merged, which refuse what acts on them as the real ones do.
+    merged: Mutex<Vec<RunId>>,
 }
 
 impl FakeConductor {
+    /// `run` already merged, so acting on it is refused.
+    pub(crate) fn merged(&self, run: &RunId) {
+        lock(&self.merged).push(run.clone());
+    }
+
+    fn refuses(&self, run: &RunId) -> Option<ApiError> {
+        lock(&self.merged)
+            .contains(run)
+            .then(|| ApiError::Merged(run.clone()))
+    }
+
     pub(crate) fn calls(&self) -> Vec<Call> {
         lock(&self.calls).clone()
     }
@@ -305,7 +318,7 @@ impl ConductorApi for FakeConductor {
 
     fn stop(&self, run: &RunId) -> BoxFuture<'_, Result<(), ApiError>> {
         self.record(Call::Stop(run.clone()));
-        ready(Ok(()))
+        ready(self.refuses(run).map_or(Ok(()), Err))
     }
 
     fn stop_session(
@@ -544,6 +557,8 @@ pub(crate) struct HarnessOptions {
     pub prepare: Option<Prepare>,
     /// The model registry, such as testkit's `StaticRegistry`; the real one knows no models yet.
     pub registry: Option<Arc<dyn ModelRegistry>>,
+    /// This repo's runs as the conductor lists them when the app opens.
+    pub runs: Vec<RunSummary>,
 }
 
 impl Default for HarnessOptions {
@@ -554,6 +569,7 @@ impl Default for HarnessOptions {
             opening: Opening::default(),
             prepare: None,
             registry: None,
+            runs: Vec::new(),
         }
     }
 }
@@ -592,6 +608,7 @@ impl TestCtx {
         let directory = Arc::new(FakeDirectory::new());
         let agent = directory.add(FakeWorker::harness("claude-code", "claude"));
         let conductor = Arc::new(FakeConductor::default());
+        conductor.set_runs(options.runs);
         let approvals = Arc::new(FakeApprovals::default());
         let quota = Arc::new(MemoryQuotaBoard::default());
         let health = Arc::new(MemoryHealthBoard::default());

@@ -10,6 +10,7 @@ use argonauts_core::events::card::{CardKind, CardSpec, CardState};
 use argonauts_core::events::run::RunPhase;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::Answerer;
 
 use crate::state::RunState;
 
@@ -41,6 +42,16 @@ pub fn phase_lead(state: &RunState, settings: &Settings) -> Option<WorkerRef> {
         .map(|graph| graph.critical_path.as_slice())
         .filter(|path| !path.is_empty());
     Some(lead_for(phase, &cards, critical, &settings.default_agent))
+}
+
+/// Who answers the crew's questions in your place: in `full_auto` the model
+/// `approvals.answered_by` picked, else the lead of the phase the run is in, else the default
+/// agent.
+pub fn answering(state: &RunState, settings: &Settings, full_auto: bool) -> WorkerRef {
+    match &settings.approvals.answered_by {
+        Some(Answerer::Model(model)) if full_auto => model.clone(),
+        _ => phase_lead(state, settings).unwrap_or_else(|| settings.default_agent.clone()),
+    }
 }
 
 /// The rule itself: `critical` is the task graph's critical path when it has one.

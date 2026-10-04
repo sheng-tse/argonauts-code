@@ -131,6 +131,7 @@ fn approval_mode(mode: ShownMode) -> ApprovalMode {
         ShownMode::Supervised => ApprovalMode::Supervised,
         ShownMode::Shadow => ApprovalMode::Shadow,
         ShownMode::Auto => ApprovalMode::Auto,
+        ShownMode::FullAuto => ApprovalMode::FullAuto,
     }
 }
 
@@ -169,8 +170,19 @@ fn open_row(key: &str, cx: &mut Cx<'_>) {
 }
 
 /// The run's workflow view, or for a run whose work is one agent's, that agent's session:
-/// a workflow view with one row says less than the agent does.
+/// a workflow view with one row says less than the agent does. A run from an
+/// earlier session comes back on screen first, as `/resume <run>` brings it, with its card if
+/// it waits on you.
 fn open_workflow(run: RunId, cx: &mut Cx<'_>) {
+    let elsewhere = !cx.state.runs.contains_key(&run)
+        && cx.state.background.iter().any(|summary| summary.run == run);
+    if elsewhere {
+        // Focus goes back to the prompt, so the run's card can take the keys once it opens.
+        cx.model.bottom.workflows.blur();
+        cx.model.bottom.agents.blur();
+        cx.out.send(UiCommand::Resume { run: Some(run) });
+        return;
+    }
     if let Some(session) = single_agent(cx.state, &run) {
         cx.out.open(SessionView::new(run, session));
         return;
@@ -287,7 +299,7 @@ pub fn watch_line(state: &AppState) -> Option<String> {
             ))
         }
         runs => Some(format!(
-            "{} runs keep going · watch them with: argonauts",
+            "{} runs keep going · watch them with: argonauts resume",
             runs.len()
         )),
     }
@@ -324,7 +336,11 @@ pub fn exit_lines(state: &AppState) -> Vec<String> {
             parts.join(" · ")
         })
         .collect();
-    lines.push("Reattach with: argonauts".to_owned());
+    // A plain `argonauts` opens a new conversation, so the way back names the run.
+    lines.push(match going.as_slice() {
+        [run] => format!("Reattach with: argonauts resume {}", run.id),
+        _ => "Reattach with: argonauts resume".to_owned(),
+    });
     lines
 }
 
@@ -418,6 +434,34 @@ mod tests {
                 }
             }]
         );
+        // A run from an earlier session that this screen doesn't hold comes back on screen,
+        // with its card.
+        let mut earlier = AppState::default();
+        earlier.apply(&argonauts_core::app::AppEvent::BackgroundRuns {
+            runs: vec![argonauts_core::api::RunSummary {
+                run: run_id(),
+                title: "hi".into(),
+                mode: argonauts_core::events::run::RunMode::Solo,
+                preset: "peer-crew".into(),
+                state: argonauts_core::api::RunState::Parked,
+                stopped_at: String::new(),
+                updated: time::OffsetDateTime::UNIX_EPOCH,
+                spent: argonauts_core::Spend::default(),
+                sessions_to_resume: 0,
+                waiting: vec![argonauts_core::names::CheckpointId::numbered(1)],
+                live: false,
+                remind: false,
+                name: None,
+            }],
+        });
+        let (out, _) = act(&earlier, &UiAction::OpenWorkflow("run-01".into()));
+        assert_eq!(
+            out.commands,
+            [UiCommand::Resume {
+                run: Some(run_id())
+            }]
+        );
+
         // With no run to show, Ctrl+T opens the workflow library on its own.
         let (out, model) = act(&state, &UiAction::OpenTree);
         assert_eq!(
@@ -464,7 +508,7 @@ mod tests {
             exit_lines(&state),
             [
                 "run-01 keeps going · $7.40 spent",
-                "Reattach with: argonauts"
+                "Reattach with: argonauts resume run-01"
             ]
         );
     }
@@ -484,7 +528,7 @@ mod tests {
         state.runs.insert(second.clone(), RunState::new(second));
         assert_eq!(
             watch_line(&state).as_deref(),
-            Some("2 runs keep going · watch them with: argonauts")
+            Some("2 runs keep going · watch them with: argonauts resume")
         );
     }
 }

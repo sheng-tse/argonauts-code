@@ -15,7 +15,7 @@ use argonauts_scenarios::{Scenario, scenario_file};
 use argonauts_testkit::{FakeOpenAi, FakeRule, FakeScenario, FakeStep, Key, Pty};
 
 /// The keys an Enter-through setup writes, and nothing else.
-const SETUP_KEYS: [&str; 9] = [
+const SETUP_KEYS: [&str; 10] = [
     "crew",
     "default_agent",
     "preset",
@@ -25,6 +25,7 @@ const SETUP_KEYS: [&str; 9] = [
     "approvals.escalation.mode",
     "approvals.budget.mode",
     "approvals.change_request.mode",
+    "approvals.full_auto",
 ];
 
 const CLOSING_COMMANDS: [&str; 7] = [
@@ -131,12 +132,19 @@ fn assert_recommended_global(scenario: &Scenario) -> anyhow::Result<()> {
         &toml_value(&text, "preset").unwrap_or_default(),
         "\"peer-crew\""
     ));
-    for key in SETUP_KEYS.iter().filter(|k| k.starts_with("approvals.")) {
+    for key in SETUP_KEYS.iter().filter(|k| k.ends_with(".mode")) {
         assert!(
             same_toml(&toml_value(&text, key).unwrap_or_default(), "\"auto\""),
             "{key}:\n{text}"
         );
     }
+    assert!(
+        same_toml(
+            &toml_value(&text, "approvals.full_auto").unwrap_or_default(),
+            "false"
+        ),
+        "{text}"
+    );
     Ok(())
 }
 

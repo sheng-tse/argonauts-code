@@ -6,7 +6,7 @@ use argonauts_core::app::{QuotaChip, StatusLine};
 use argonauts_core::limits::{HealthBoard, QuotaBoard};
 use argonauts_core::names::{VendorId, WorkerRef};
 use argonauts_core::registry::effort_to_run;
-use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
+use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::budget::BudgetAmount;
 
 use super::Ctx;
@@ -43,7 +43,7 @@ pub(crate) fn status_line(ctx: &Ctx, title: &str, run: RunStatusParts) -> Status
         narrator: settings.ui.narrator,
         approval_mode: run
             .approval_mode
-            .unwrap_or_else(|| settings_mode(&settings.approvals)),
+            .unwrap_or_else(|| settings.approvals.mode()),
     }
 }
 
@@ -64,27 +64,6 @@ pub(crate) fn header_agent(ctx: &Ctx) -> (WorkerRef, Option<String>) {
         .or_else(|| registry.get(&agent)?.default_effort)
         .or_else(|| catalog.entry(&agent)?.default_effort.clone());
     (agent, effort)
-}
-
-/// One mode for the settings: the checkpoints' own when they agree, else the least autonomous
-/// of them, since that one still waits for you.
-pub(crate) fn settings_mode(approvals: &ApprovalSettings) -> ApprovalMode {
-    [
-        approvals.goal.mode,
-        approvals.plan.mode,
-        approvals.merge.mode,
-        approvals.recipe_promotion.mode,
-        approvals.escalation.mode,
-        approvals.budget.mode,
-        approvals.change_request.mode,
-    ]
-    .into_iter()
-    .min_by_key(|mode| match mode {
-        ApprovalMode::Supervised => 0,
-        ApprovalMode::Shadow => 1,
-        ApprovalMode::Auto => 2,
-    })
-    .unwrap_or_default()
 }
 
 /// One chip per vendor, in `crew` order, so two models of one vendor share a chip.

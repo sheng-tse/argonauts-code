@@ -25,10 +25,10 @@ use argonauts_core::events::workflow::{
 use argonauts_core::log::{Note, NoteLevel};
 use argonauts_core::names::{CheckpointId, RoleName, WorkflowId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
-use argonauts_core::settings::workflows::RunStyle;
+use argonauts_core::settings::workflows::{LeadDesign, RunStyle};
+use argonauts_core::steps::StepError;
 use argonauts_core::steps::design::{DesignInput, DesignOutput, DesignWorkflow, WorkflowExample};
 use argonauts_core::steps::intake::InstructionKind;
-use argonauts_core::text::sentence_case;
 use argonauts_core::workflow::{
     StandardPhase, StepKind, StepRef, Workflow, WorkflowParams, WorkflowRef,
 };
@@ -39,7 +39,7 @@ use crate::error::{EngineError, EngineResult};
 use crate::prompts::workflow::DESIGN_WORKFLOW;
 use crate::state::RunState;
 use crate::workflow::validate::kind_name;
-use crate::workflow::{StepAt, brief, builtin, params, runner, shape, yaml};
+use crate::workflow::{StepAt, brief, builtin, params, preset, runner, shape, yaml};
 
 /// The evidence document that holds the proposed workflow as YAML.
 const PROPOSED: &str = "Proposed workflow";
@@ -381,6 +381,13 @@ fn note(host: &Host, level: NoteLevel, text: String) -> EngineResult<()> {
     Ok(())
 }
 
+/// A warning in one plain line, with the raw reasons behind it for Ctrl+O.
+fn note_with_detail(host: &Host, line: &str, detail: &str) -> EngineResult<()> {
+    let note = Note::with_detail(NoteLevel::Warn, line, detail);
+    host.record(None, None, RunEventKind::Note(note))?;
+    Ok(())
+}
+
 /// With `workflows.adapt_at_phase_ends` on a crew run, runs `DesignWorkflow` in a fresh session
 /// with the running workflow as YAML and one line per finished phase or step. A different answer
 /// is proposed like any change; an unchanged one does nothing.
@@ -453,7 +460,12 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
         progress,
     );
     let lead = lead(host);
-    let examples = examples_part(host);
+    // Where the lead may only size your preset, it keeps it here too: it may size what's left
+    // of it, never run another workflow in its place, unless your request said
+    // how to run it.
+    let sizes_only =
+        host.settings().lead_designs() == LeadDesign::Size && input.as_you_asked.is_empty();
+    let examples = preset::part(host).unwrap_or_else(|| examples_part(host));
     for slot in 0..2 {
         let answered = host
             .ask::<DesignWorkflow>(Ask {
@@ -482,7 +494,12 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                         .get(id)
                         .map_or(0, |record| record.change_from())
                 });
-                shape::as_written(host, keep_what_ran(&current, proposed, from))
+                let proposed = shape::as_written(host, keep_what_ran(&current, proposed, from));
+                if sizes_only && let Err(error) = preset::keeps(host, &current, &proposed) {
+                    input.errors = vec![error];
+                    continue;
+                }
+                proposed
             }
             Ok(None) => return Ok(()),
             Err(error) => {
@@ -521,13 +538,16 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                         continue;
                     }
                 };
-                let opening =
-                    if checkpoints::asks_you_about(host.settings(), &[checkpoints::CHANGE_TOPIC]) {
-                        let because = checkpoints::yours_because("workflow changes");
-                        checkpoints::open_yours(host, request, because)?
-                    } else {
-                        checkpoints::open(host, request)?
-                    };
+                let opening = if checkpoints::keeps_yours(
+                    host,
+                    CheckpointKind::ChangeRequest,
+                    &[checkpoints::CHANGE_TOPIC],
+                ) {
+                    let because = checkpoints::yours_because("workflow changes");
+                    checkpoints::open_yours(host, request, because)?
+                } else {
+                    checkpoints::open(host, request)?
+                };
                 let checkpoint = opening.id().clone();
                 match opening.decided(host).await {
                     Ok(decided) => decided,
@@ -550,15 +570,12 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
             other => other,
         };
     }
-    note(
-        host,
-        NoteLevel::Warn,
-        format!(
-            "The lead's change to workflow {id} after phase {} broke the rules twice, so it goes on unchanged: {}",
-            phase + 1,
-            input.errors.join("; ")
-        ),
-    )
+    let line = format!(
+        "The lead's change after phase {} broke the rules twice, so the workflow goes on \
+         unchanged.",
+        phase + 1
+    );
+    note_with_detail(host, &line, &input.errors.join("\n"))
 }
 
 /// Nothing has been built yet, and the checkpoint that gives the go-ahead is still to come, so
@@ -605,12 +622,13 @@ fn withdrawn(host: &Host, checkpoint: &CheckpointId) -> bool {
 pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<WorkflowRef>, Workflow)>> {
     let settings = host.settings();
     let solo = host.read(runner::run_mode) == Some(RunMode::Solo);
-    if !settings.lead_designs() || solo {
+    if settings.lead_designs() == LeadDesign::Off || solo {
         return Ok(None);
     }
     let mut input = design_input(host, None, Vec::new());
     let lead = lead(host);
-    let examples = examples_part(host);
+    // Where the lead may only size your preset, it sees only the preset's workflow.
+    let examples = preset::part(host).unwrap_or_else(|| examples_part(host));
     let names: Vec<String> = self::examples(host)
         .into_iter()
         .map(|example| example.name)
@@ -633,15 +651,16 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
             Ok(answered) => answered,
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
             Err(err) => {
-                note(
-                    host,
-                    NoteLevel::Warn,
-                    format!(
-                        "The lead couldn't design the workflow, so `{}` runs. {}",
-                        settings.workflow,
-                        sentence(&err.to_string())
+                // Said plainly; what the validator or the session said waits for Ctrl+O.
+                let (what, detail) = match &err {
+                    EngineError::Step(StepError::SchemaMismatch { errors, .. }) => (
+                        "The lead's design came back incomplete",
+                        format!("output didn't match the schema:\n{}", errors.join("\n")),
                     ),
-                )?;
+                    other => ("The lead couldn't design the workflow", other.to_string()),
+                };
+                let line = format!("{what}, so {} runs as written.", settings.workflow);
+                note_with_detail(host, &line, &detail)?;
                 return Ok(None);
             }
         };
@@ -665,6 +684,16 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
         if !input.errors.is_empty() {
             continue;
         }
+        // The run keeps your preset, sized, unless `workflows.lead_designs = "any"` or your
+        // request said how to run it.
+        let asked = !input.as_you_asked.is_empty();
+        let sizing = match preset::check(host, from.as_ref(), &workflow, asked) {
+            Ok(sizing) => sizing,
+            Err(error) => {
+                input.errors = vec![error];
+                continue;
+            }
+        };
         brief::apply_identity(&mut workflow, brief);
         workflow.name = crate::workflow::naming::unique_name(host, &workflow.name);
         let first_attempt = match &brief.first_attempt {
@@ -682,32 +711,21 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
         let workflow = shape::for_run(host, workflow, first_attempt);
         match runner::check(host, &workflow, 0) {
             Ok(()) => {
+                if let Some(line) = preset::line(&sizing.changes, &brief.why) {
+                    note(host, NoteLevel::Info, line)?;
+                }
                 name_run(host, &workflow, &brief.done_when)?;
-                return Ok(Some((from, workflow)));
+                return Ok(Some((sizing.from, workflow)));
             }
             Err(errors) => input.errors = errors.iter().map(ToString::to_string).collect(),
         }
     }
-    note(
-        host,
-        NoteLevel::Warn,
-        format!(
-            "The lead's workflow broke the rules twice, so `{}` runs. {}",
-            settings.workflow,
-            sentence(&input.errors.join("; "))
-        ),
-    )?;
+    let line = format!(
+        "The lead's workflow broke the rules twice, so {} runs as written.",
+        settings.workflow
+    );
+    note_with_detail(host, &line, &input.errors.join("\n"))?;
     Ok(None)
-}
-
-/// A reason as a sentence of its own, with one closing period. A reason that starts with a
-/// step or a key keeps its spelling.
-fn sentence(reason: &str) -> String {
-    let reason = reason.trim().trim_end_matches('.');
-    if reason.is_empty() {
-        return String::new();
-    }
-    format!("{}.", sentence_case(reason))
 }
 
 pub(crate) fn lead(host: &Host) -> argonauts_core::names::WorkerRef {

@@ -137,8 +137,13 @@ impl SetupView {
     }
 
     /// The one mode every checkpoint the setup sets has now, or `None` when they differ. A
-    /// checkpoint your file leaves out has its built-in mode.
+    /// checkpoint your file leaves out has its built-in mode, and the full auto switch puts
+    /// them all in full auto.
     fn current_approvals(&self) -> Option<ApprovalMode> {
+        let switch = self.current_value("approvals.full_auto");
+        if switch.and_then(toml::Value::as_bool) == Some(true) {
+            return Some(ApprovalMode::FullAuto);
+        }
         let mut modes = APPROVAL_POINTS.iter().map(|point| {
             match self.current_value(&format!("approvals.{point}.mode")) {
                 None => built_in_mode(point),
@@ -467,6 +472,12 @@ fn approvals_question(view: &SetupView) -> Question {
              rule fails.",
         ),
         described(
+            "full_auto",
+            "Full auto",
+            "Nothing waits for you: the lead answers every question, a reviewer from another \
+             AI company checks, and what can't be approved ends safely.",
+        ),
+        described(
             "supervised",
             "Supervised",
             "You approve the goal, the plan, and every merge.",
@@ -599,7 +610,7 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
         Step::RoleAgent(key) => roles::chose_agent(view, answers, key, value),
         Step::RoleModel(key) => roles::chose_model(view, answers, key, value),
         Step::Approvals => {
-            // The question offers the three modes and, when they differ now, Keep.
+            // The question offers the four modes and, when they differ now, Keep.
             answers.approvals = approval_mode_from(value);
             match answers.approvals {
                 Some(_) => format!("Approvals: {value}."),
@@ -734,8 +745,35 @@ mod tests {
         assert_eq!(presets.len(), 4);
         assert_eq!(
             values(&approvals_question(&view)),
-            vec!["shadow", "auto", "supervised"]
+            vec!["shadow", "auto", "full_auto", "supervised"]
         );
+    }
+
+    /// Full auto is one answer away: picking it makes every checkpoint a run opens full auto,
+    /// so the kinds without settings of their own follow too, and a rerun offers it first.
+    #[test]
+    fn full_auto_is_one_answer_for_every_checkpoint() {
+        let mut view = view(Vec::new());
+        let mut answers = Answers::default();
+        let line = apply(&Step::Approvals, "full_auto", &view, &mut answers);
+        assert_eq!(answers.approvals, Some(ApprovalMode::FullAuto));
+        assert_eq!(line, "Approvals: full_auto.");
+        // What the setup writes for it: the switch, over auto.
+        let mut file = "[approvals]\nfull_auto = true\n".to_owned();
+        for point in APPROVAL_POINTS {
+            file.push_str(&format!("[approvals.{point}]\nmode = \"auto\"\n"));
+        }
+        view.current = toml::from_str(&file).unwrap();
+        assert_eq!(values(&approvals_question(&view))[0], "full_auto");
+        let settings: argonauts_core::settings::approvals::ApprovalSettings =
+            toml::from_str::<toml::Value>(&file)
+                .unwrap()
+                .get("approvals")
+                .cloned()
+                .unwrap()
+                .try_into()
+                .unwrap();
+        assert_eq!(settings.mode(), ApprovalMode::FullAuto);
     }
 
     #[test]
@@ -748,7 +786,7 @@ mod tests {
         let question = approvals_question(&view);
         assert_eq!(
             values(&question),
-            vec![KEEP, "auto", "supervised", "shadow"]
+            vec![KEEP, "auto", "full_auto", "supervised", "shadow"]
         );
         let mut answers = Answers::default();
         let line = apply(&Step::Approvals, KEEP, &view, &mut answers);

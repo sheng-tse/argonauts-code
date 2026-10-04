@@ -263,10 +263,38 @@ pub enum NoteLevel {
 /// which the main view keeps for Ctrl+O, so a raw schema error never shows there.
 pub const RETRO_FAILED: &str = "The retro failed. The run's result stands.";
 
+/// One line in plain words. Lines after the first are its detail, such as a validator's
+/// errors, which the main view keeps for Ctrl+O.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub level: NoteLevel,
     pub text: String,
+}
+
+impl Note {
+    /// A note that says what happened in `line`, with the raw `detail` behind it.
+    pub fn with_detail(level: NoteLevel, line: &str, detail: &str) -> Self {
+        let (line, detail) = (line.trim(), detail.trim());
+        let text = if detail.is_empty() {
+            line.to_owned()
+        } else {
+            format!("{line}\n{detail}")
+        };
+        Self { level, text }
+    }
+
+    /// What the main view shows: the first line.
+    pub fn line(&self) -> &str {
+        self.text.lines().next().unwrap_or_default().trim()
+    }
+
+    /// The lines after the first, for Ctrl+O. `None` for a note of one line.
+    pub fn detail(&self) -> Option<&str> {
+        self.text
+            .split_once('\n')
+            .map(|(_, rest)| rest.trim())
+            .filter(|rest| !rest.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -688,6 +716,23 @@ mod tests {
         assert!(back.events.is_empty() && back.skipped.is_empty());
         let missing = EventLog::read(&dir.path().join("nope.jsonl"));
         assert!(matches!(missing, Err(EventLogError::Io { .. })));
+    }
+
+    #[test]
+    fn a_notes_detail_follows_its_line() {
+        let note = Note::with_detail(
+            NoteLevel::Warn,
+            "The lead's design came back incomplete.",
+            "output didn't match the schema: \"name\" is a required property",
+        );
+        assert_eq!(note.line(), "The lead's design came back incomplete.");
+        assert_eq!(
+            note.detail(),
+            Some("output didn't match the schema: \"name\" is a required property")
+        );
+        let plain = Note::with_detail(NoteLevel::Info, "Done.", "  ");
+        assert_eq!(plain.text, "Done.");
+        assert_eq!(plain.detail(), None);
     }
 
     #[test]

@@ -60,6 +60,9 @@ pub struct Flow {
     /// The levels this one opened from, nearest last, for ← to go back to. `/model`'s own
     /// levels are rebuilt from `models` instead, so a refreshed list shows through.
     pub parents: Vec<Level>,
+    /// The setting a model pick fills, by its index in `settings`, when the model picker
+    /// opened from that setting's row, such as the second approver, rather than for a role.
+    pub model_for: Option<usize>,
 }
 
 impl Flow {
@@ -72,7 +75,7 @@ impl Flow {
     pub fn can_go_back(&self) -> bool {
         match &self.stage {
             Stage::ModelsOf { .. } | Stage::OtherModel { .. } => true,
-            Stage::Models { .. } => models::opened_from_roles(self),
+            Stage::Models { .. } => models::opened_from_roles(self) || self.model_for.is_some(),
             Stage::Keys if models::on_roles(self) => true,
             _ => !self.parents.is_empty(),
         }
@@ -203,6 +206,11 @@ pub enum RowAction {
     /// `/model`'s roles, one level under the default agent's CLIs.
     OpenRoles,
     AskModels(Option<RoleName>),
+    /// The model picker for a setting that takes a model, listing what `role` may use.
+    ModelFor {
+        key: usize,
+        role: RoleName,
+    },
     Value {
         key: usize,
         value: String,
@@ -510,22 +518,12 @@ fn act(picker: &mut Picker, action: RowAction) -> Step {
             Step::Stay
         }
         RowAction::AskModels(role) => ask_models(picker, role),
-        RowAction::Value { key, value } => {
-            let Some(row) = picker.flow.settings.get(key).cloned() else {
-                return Step::Stay;
-            };
-            let kept = kept(picker);
-            let change = Change {
-                key: row.key,
-                value,
-                layer: row.layer,
-                preset_from: row.preset_from,
-                kept,
-            };
+        RowAction::ModelFor { key, role } => {
             push_level(picker);
-            scope_question(picker, change, row.default_scope);
-            Step::Stay
+            picker.flow.model_for = Some(key);
+            ask_models(picker, Some(role))
         }
+        RowAction::Value { key, value } => set_value(picker, key, value),
         RowAction::Type { key } => {
             push_level(picker);
             typing(picker, key);
@@ -547,7 +545,10 @@ fn act(picker: &mut Picker, action: RowAction) -> Step {
             models::open_cli(picker, role, &cli);
             Step::Stay
         }
-        RowAction::Worker { role, worker } => models::pick_listed(picker, role, worker),
+        RowAction::Worker { role, worker } => match picker.flow.model_for {
+            Some(key) => set_value(picker, key, quote(&worker.to_string())),
+            None => models::pick_listed(picker, role, worker),
+        },
         RowAction::OtherModel { role, cli } => {
             models::other_model(picker, role, &cli);
             Step::Stay
@@ -574,6 +575,24 @@ fn act(picker: &mut Picker, action: RowAction) -> Step {
             _ => Step::Stay,
         },
     }
+}
+
+/// A value picked for the setting at `key`, which then asks where to save it.
+fn set_value(picker: &mut Picker, key: usize, value: String) -> Step {
+    let Some(row) = picker.flow.settings.get(key).cloned() else {
+        return Step::Stay;
+    };
+    let kept = kept(picker);
+    let change = Change {
+        key: row.key,
+        value,
+        layer: row.layer,
+        preset_from: row.preset_from,
+        kept,
+    };
+    push_level(picker);
+    scope_question(picker, change, row.default_scope);
+    Step::Stay
 }
 
 fn entered(picker: &mut Picker, text: &str) -> Step {
@@ -612,7 +631,13 @@ fn entered(picker: &mut Picker, text: &str) -> Step {
                 Step::Stay
             }
         },
-        Stage::OtherModel { role, cli } => models::typed(picker, role, &cli, text),
+        Stage::OtherModel { role, cli } => match models::typed(picker, &cli, text) {
+            Some(worker) => match picker.flow.model_for {
+                Some(key) => set_value(picker, key, quote(&worker.to_string())),
+                None => models::pick(role, worker),
+            },
+            None => Step::Stay,
+        },
         _ => Step::Stay,
     }
 }
@@ -804,10 +829,12 @@ pub(super) fn role_list(picker: &mut Picker) {
 
 /// Asks the controller for a role's models; the picker waits for them.
 fn ask_models(picker: &mut Picker, role: Option<RoleName>) -> Step {
-    picker.title = match role {
-        None => role_words(role),
-        Some(role) => format!("Model for {}", role.as_str()),
-    };
+    if picker.flow.model_for.is_none() {
+        picker.title = match role {
+            None => role_words(role),
+            Some(role) => format!("Model for {}", role.as_str()),
+        };
+    }
     picker.about.clear();
     picker.placeholder = "Asking which models fit…".to_owned();
     picker.set_rows(Vec::new());
@@ -821,6 +848,14 @@ fn ask_models(picker: &mut Picker, role: Option<RoleName>) -> Step {
 /// the roles and the roles back to the default agent's CLIs. `None` on the first level.
 fn back(picker: &mut Picker) -> Option<Step> {
     if models::back(picker) {
+        return Some(Step::Stay);
+    }
+    // The CLIs listed for a setting go back to that setting's values.
+    if picker.flow.model_for.is_some() && matches!(picker.flow.stage, Stage::Models { .. }) {
+        let level = picker.flow.parents.pop()?;
+        level.restore(picker);
+        picker.flow.model_for = None;
+        picker.flow.waiting = None;
         return Some(Step::Stay);
     }
     models::on_roles(&picker.flow).then(|| ask_models(picker, None))
@@ -972,6 +1007,13 @@ fn open_key(picker: &mut Picker, key: usize) {
     if allowed.is_empty() && row.key.ends_with(".effort") {
         allowed = EFFORT_LEVELS.iter().map(|level| quote(level)).collect();
     }
+    if let Some(role) = model_setting(&row.key) {
+        if picker.flow.settings.len() > 1 || picker.title.is_empty() {
+            picker.title = row.key.clone();
+        }
+        model_values(picker, key, &row, role);
+        return;
+    }
     if allowed.is_empty() && resettable.is_none() {
         typing(picker, key);
         return;
@@ -1022,6 +1064,73 @@ fn open_key(picker: &mut Picker, key: usize) {
     picker.flow.stage = Stage::Values { key };
     if let Some(current) = picker.rows.iter().position(|row| row.current) {
         picker.point_at(current);
+    }
+}
+
+/// A setting that takes a model, such as the second approver: its words, if it has any, then
+/// the model picker of every vendor's models `role` may use, then Reset.
+fn model_values(picker: &mut Picker, key: usize, row: &SettingRow, role: RoleName) {
+    picker.about = row.description.clone();
+    picker.enter_hint.clear();
+    let mut rows = Vec::new();
+    let mut actions = Vec::new();
+    let words = model_setting_words(&row.key);
+    for (word, label, note) in words {
+        let value = quote(word);
+        rows.push(PickerRow {
+            current: same_value(&value, &row.value),
+            ..PickerRow::new(*label, *note)
+        });
+        actions.push(RowAction::Value { key, value });
+    }
+    let set = setting_value(row.value.trim());
+    let picked = !set.is_empty() && !words.iter().any(|(word, ..)| *word == set);
+    let note = if picked {
+        format!("now {set}")
+    } else {
+        "From every vendor's models".to_owned()
+    };
+    rows.push(PickerRow {
+        current: picked,
+        ..PickerRow::new("Pick a model…", note)
+    });
+    actions.push(RowAction::ModelFor { key, role });
+    if let Some(scope) = reset_scope(&row.layer) {
+        rows.push(PickerRow {
+            reset: true,
+            ..PickerRow::new("Reset", reset_note(scope))
+        });
+        actions.push(RowAction::Reset { key });
+    }
+    picker.set_rows(rows);
+    picker.flow.actions = actions;
+    picker.flow.stage = Stage::Values { key };
+    if let Some(current) = picker.rows.iter().position(|row| row.current) {
+        picker.point_at(current);
+    }
+}
+
+/// The settings that take a model from the model picker, with the role whose models it lists.
+pub fn model_setting(key: &str) -> Option<RoleName> {
+    match key {
+        "approvals.answered_by" => Some(RoleName::PhaseLead),
+        "approvals.approver.model" | "approvals.approver.second_model" => Some(RoleName::Approver),
+        _ => None,
+    }
+}
+
+/// The words such a setting takes besides a model, each with its label and what it means.
+fn model_setting_words(key: &str) -> &'static [(&'static str, &'static str, &'static str)] {
+    match key {
+        "approvals.answered_by" => &[
+            ("you", "You", "Questions wait for you, except in full auto"),
+            (
+                "lead",
+                "The lead",
+                "The phase's lead answers; you review its assumptions",
+            ),
+        ],
+        _ => &[],
     }
 }
 

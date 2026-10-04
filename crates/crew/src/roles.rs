@@ -2,6 +2,7 @@
 //! here, and role conflicts (an owner reviewing its own card, a judge of its own plan) are
 //! blocked here.
 
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
 
@@ -38,6 +39,11 @@ pub fn candidates(settings: &Settings, role: RoleName) -> Vec<WorkerRef> {
 /// The worker's model family from the registry.
 pub fn family(host: &Host, worker: &WorkerRef) -> String {
     host.services().registry.family(worker)
+}
+
+/// What the transcript calls `worker`, such as `GPT 5.6 on Codex`, rather than its id.
+pub fn display_name(worker: &WorkerRef) -> String {
+    DisplayNames::default().worker(worker)
 }
 
 /// Why `worker` can't take `role` for this card, if it can't. `owner` is whoever made the work

@@ -408,6 +408,24 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         row(&rows, "approvals.approver.model").default_scope,
         Project
     );
+    // Full auto's settings are all there with their values: the switch, who answers, the
+    // second approver, and what a hard limit does at each checkpoint.
+    assert_eq!(row(&rows, "approvals.full_auto").value, "false");
+    assert!(row(&rows, "approvals.answered_by").allowed.is_empty());
+    assert!(
+        row(&rows, "approvals.approver.second_model")
+            .value
+            .is_empty()
+    );
+    let merge = row(&rows, "approvals.merge.at_hard_limit");
+    assert_eq!(merge.value, "\"stop\"");
+    assert!(merge.allowed.contains(&"\"open_pull_request\"".to_owned()));
+    let plan = row(&rows, "approvals.plan.at_hard_limit");
+    assert!(!plan.allowed.contains(&"\"open_pull_request\"".to_owned()));
+    assert_eq!(
+        row(&rows, "approvals.plan.rules.max_score_spread").value,
+        "1.0"
+    );
 
     slash(
         &harness,

@@ -23,7 +23,7 @@ use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use crate::builtin_adapters;
 use crate::choices::app_choice;
 use crate::controller::{Ctx, Effect, Internal};
-use crate::startup::{runs_going, settings_warnings, welcome_from};
+use crate::startup::{RunCounts, run_counts, settings_warnings, welcome_from};
 use crate::trust::cant_trust;
 
 pub(crate) use probe::{FoundAgent, LocalServer, LoginState};
@@ -49,7 +49,7 @@ pub(crate) struct Setup {
 /// What the header showed besides your settings, so it can print again with the new ones.
 pub(crate) struct Header {
     pub report: DoctorReport,
-    pub runs_going: u32,
+    pub runs: RunCounts,
 }
 
 /// Results of the setup's probes, which run on their own tasks.
@@ -75,8 +75,8 @@ impl Setup {
         let adapters = builtin_adapters();
         let report = doctor(&adapters, ctx.settings()).await;
         let agents = probe::found_agents(&adapters, &report, ctx.settings());
-        let runs_going = runs_going(ctx.services.conductor.as_ref()).await;
-        let header = Header { report, runs_going };
+        let runs = run_counts(ctx.services.conductor.as_ref()).await;
+        let header = Header { report, runs };
         Self::begin_with(ctx, agents, header, Probing::Live).await
     }
 
@@ -380,11 +380,7 @@ impl Setup {
         }
         // The header printed before you answered, so it changes in place to the new agent and
         // preset, followed by the warnings about the settings now in effect.
-        ctx.send(welcome_from(
-            ctx,
-            &self.header.report,
-            self.header.runs_going,
-        ));
+        ctx.send(welcome_from(ctx, &self.header.report, self.header.runs));
         notices.splice(0..0, settings_warnings(&ctx.settings.resolved().warnings));
         for (level, text) in notices {
             ctx.notice(level, text);

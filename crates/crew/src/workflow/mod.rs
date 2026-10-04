@@ -19,6 +19,7 @@ pub mod conditions;
 pub mod kinds;
 pub mod naming;
 pub mod params;
+pub mod preset;
 pub mod replay;
 pub mod runner;
 pub mod shape;

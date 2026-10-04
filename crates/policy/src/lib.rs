@@ -113,6 +113,7 @@ mod tests {
             recipe: None,
             authors: Vec::new(),
             mode_override: None,
+            lead: None,
         }
     }
 

@@ -550,14 +550,16 @@ pub(super) fn begin_vendor(
     Ok(Vec::new())
 }
 
-/// Nothing in auto mode, unless your words asked to be asked first, and what `solo.asks` says
-/// otherwise.
+/// Nothing in auto mode or full auto, unless your words asked to be asked first, and what
+/// `solo.asks` says otherwise. Words only ever add asking: none make a turn ask less than its
+/// mode says.
 fn mode_asks(ctx: &Ctx, chat: &ChatState, words: &DirectWords) -> Asks {
     match chat.direct.approval {
-        ApprovalMode::Auto if !words.supervised => Asks::Never,
-        ApprovalMode::Auto | ApprovalMode::Supervised | ApprovalMode::Shadow => {
-            ctx.settings().solo.asks
-        }
+        ApprovalMode::Auto | ApprovalMode::FullAuto if !words.supervised => Asks::Never,
+        ApprovalMode::Auto
+        | ApprovalMode::FullAuto
+        | ApprovalMode::Supervised
+        | ApprovalMode::Shadow => ctx.settings().solo.asks,
     }
 }
 

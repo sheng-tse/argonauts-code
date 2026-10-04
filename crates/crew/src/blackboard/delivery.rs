@@ -303,6 +303,7 @@ pub fn party_label(party: &Party) -> String {
         Party::Rules => "your approval rules".to_owned(),
         Party::Approver { model } => format!("your approver {model}"),
         Party::Config => "a setting".to_owned(),
+        Party::FullAuto => "full auto".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         Party::FrontEnd { client } => client.clone(),

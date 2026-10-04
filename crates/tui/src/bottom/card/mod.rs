@@ -9,8 +9,8 @@
 mod render;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use unicode_segmentation::UnicodeSegmentation;
 
+use crate::bottom::composer::{Composer, ComposerEvent};
 use crate::text::sanitize_line;
 use crate::theme::AgentColor;
 use crate::views::list;
@@ -20,6 +20,9 @@ pub use render::CardView;
 pub const NOTE_PLACEHOLDER: &str = "and add a note";
 
 pub const ESC_HINT: &str = "Esc to set aside";
+
+/// What a free-text question's open answer field shows until you type.
+pub const ANSWER_PLACEHOLDER: &str = "Type your answer";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardPrompt {
@@ -71,6 +74,9 @@ pub struct CardPrompt {
     /// Esc closes it with an answer, such as cancel or the recommended answers, instead of
     /// setting it aside to wait. Then only Esc on the focused card does that.
     pub esc_answers: bool,
+    /// A run's card, which full auto settles, so its key line names Shift+Tab as Claude Code's
+    /// prompts do.
+    pub offers_shift_tab: bool,
 }
 
 /// One question's chip on a card that asks several.
@@ -91,11 +97,48 @@ pub struct CardAgent {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// A note on an option, or an answer typed into a free-text one, in the input box's own
+/// editor: an answer takes new lines, pastes, and the cursor keys as the input does, and a note
+/// is a line typed at its end.
+#[derive(Debug, Clone)]
 pub struct CardNote {
     pub option: usize,
-    pub text: String,
+    pub editor: Composer,
 }
+
+impl CardNote {
+    pub fn new(option: usize) -> Self {
+        Self {
+            option,
+            editor: Composer::field(),
+        }
+    }
+
+    pub fn with_text(option: usize, text: &str) -> Self {
+        let mut note = Self::new(option);
+        note.editor.set_text(text);
+        note
+    }
+
+    /// What was typed, pasted blocks in full.
+    pub fn text(&self) -> String {
+        self.editor.expanded_text()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.editor.is_empty()
+    }
+}
+
+impl PartialEq for CardNote {
+    fn eq(&self, other: &Self) -> bool {
+        self.option == other.option
+            && self.editor.text() == other.editor.text()
+            && self.editor.cursor() == other.editor.cursor()
+    }
+}
+
+impl Eq for CardNote {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Checklist {
@@ -225,7 +268,7 @@ impl CardPrompt {
         short_title: impl Into<String>,
         options: Vec<CardOption>,
     ) -> Self {
-        Self {
+        let mut card = Self {
             id,
             title: title.into(),
             short_title: short_title.into(),
@@ -252,6 +295,21 @@ impl CardPrompt {
             footer: None,
             esc_hint: ESC_HINT.to_owned(),
             esc_answers: false,
+            offers_shift_tab: false,
+        };
+        card.open_field();
+        card
+    }
+
+    /// A free-text question: its only option is your own answer, so the card shows its answer
+    /// field open, rather than a list of one to open it from.
+    pub fn is_answer_field(&self) -> bool {
+        matches!(self.options.as_slice(), [only] if only.kind == OptionKind::FreeText)
+    }
+
+    fn open_field(&mut self) {
+        if self.is_answer_field() && self.note.is_none() {
+            self.note = Some(CardNote::new(0));
         }
     }
 
@@ -265,6 +323,7 @@ impl CardPrompt {
         self.focused = true;
         self.stray_typing = false;
         self.engaged = true;
+        self.open_field();
     }
 
     /// A card you set off yourself: it opens with the keys, as Claude Code's questions do.
@@ -297,36 +356,6 @@ impl CardPrompt {
     pub fn pasted_at(&mut self) {
         self.stray_typing = true;
         self.armed = None;
-    }
-
-    /// The input's hint while this card has the keys, which names them, since nothing typed
-    /// reaches the input then.
-    pub fn input_hint(&self) -> String {
-        if self.note.is_some() {
-            return "Typing goes into the card".to_owned();
-        }
-        if self.checklist.is_some() {
-            return "Space to tick the card's rows".to_owned();
-        }
-        if self.stray_typing {
-            let mut hint = "Typing waits while the card has the keys · ↑↓ to choose".to_owned();
-            let esc = sanitize_line(&self.esc_hint).trim().to_owned();
-            if !esc.is_empty() {
-                hint.push_str(" · ");
-                hint.push_str(&esc);
-            }
-            return hint;
-        }
-        if self.armed.is_some() {
-            return "Enter or the same number to confirm · Esc to cancel".to_owned();
-        }
-        let mut hint = "↑↓ to move · Enter or a number to answer".to_owned();
-        let esc = sanitize_line(&self.esc_hint).trim().to_owned();
-        if !esc.is_empty() {
-            hint.push_str(" · ");
-            hint.push_str(&esc);
-        }
-        hint
     }
 
     /// The key as the card reads it. Arrows, Home, End, and Tab are meant for the card, so
@@ -368,6 +397,9 @@ impl CardPrompt {
         if let Some(event) = self.checklist_key(key) {
             return event;
         }
+        if let Some(event) = self.field_key(key) {
+            return event;
+        }
         if let Some(event) = self.note_key(key) {
             return event;
         }
@@ -407,10 +439,7 @@ impl CardPrompt {
             KeyCode::Enter => self.pick(self.selected, true),
             KeyCode::Tab if self.can_note(self.selected) => {
                 self.armed = None;
-                self.note = Some(CardNote {
-                    option: self.selected,
-                    text: String::new(),
-                });
+                self.note = Some(CardNote::new(self.selected));
                 CardEvent::Moved
             }
             KeyCode::Esc if self.armed.is_some() => {
@@ -456,6 +485,38 @@ impl CardPrompt {
         }
     }
 
+    /// The answer field is the whole card, so Esc sets the card aside rather than closing the
+    /// field. The arrows move between the field's rows, and past its edges have nowhere to go,
+    /// though ↓ still hands the keys back to the input on a card that waits for them.
+    fn field_key(&mut self, key: KeyEvent) -> Option<CardEvent> {
+        if !self.is_answer_field() {
+            return None;
+        }
+        self.open_field();
+        let editor = &self.note.as_ref()?.editor;
+        let (top, bottom) = (editor.cursor_on_first_row(), editor.cursor_on_last_row());
+        match key.code {
+            KeyCode::Esc => Some(self.pin()),
+            KeyCode::Down if bottom && !(self.takes_focus || self.needs_you) => {
+                Some(self.back_to_input())
+            }
+            KeyCode::Up if top => Some(CardEvent::Moved),
+            KeyCode::Down if bottom => Some(CardEvent::Moved),
+            KeyCode::Tab => Some(CardEvent::Moved),
+            _ => None,
+        }
+    }
+
+    /// Whether the open note is an answer typed into a free-text option, which takes every key
+    /// the input does.
+    fn note_is_answer(&self) -> bool {
+        self.note.as_ref().is_some_and(|note| {
+            self.options
+                .get(note.option)
+                .is_some_and(|option| option.kind == OptionKind::FreeText)
+        })
+    }
+
     fn checklist_key(&mut self, key: KeyEvent) -> Option<CardEvent> {
         let option = self.checklist.as_ref()?.option;
         // The note on the ticks takes the keys once it's open, and Esc goes back to the ticks.
@@ -488,10 +549,7 @@ impl CardPrompt {
             // Sending nothing back would decide nothing, so Enter waits for a tick.
             KeyCode::Enter if !list.checked.contains(&true) => {}
             KeyCode::Enter if wants_note => {
-                self.note = Some(CardNote {
-                    option,
-                    text: String::new(),
-                });
+                self.note = Some(CardNote::new(option));
             }
             KeyCode::Enter => return Some(self.send_checklist()),
             KeyCode::Esc => self.checklist = None,
@@ -528,36 +586,75 @@ impl CardPrompt {
     fn take_note(&mut self) -> Option<String> {
         self.note
             .take()
-            .map(|note| note.text.trim().to_owned())
+            .map(|note| note.text().trim().to_owned())
             .filter(|text| !text.is_empty())
     }
 
-    /// The note's cursor stays at its end, so keys that would move it are taken too, where
-    /// they would otherwise reach the prompt.
+    /// An answer takes the keys the input does: Shift+Enter, Alt+Enter, and Ctrl+J start a new
+    /// line, and the arrows, Home, and End move its cursor. Enter alone sends it. A note on an
+    /// option is a line typed at its end, so keys that would move its cursor are taken too,
+    /// where they would otherwise reach the prompt.
     fn note_key(&mut self, key: KeyEvent) -> Option<CardEvent> {
+        let answer = self.note_is_answer();
         let note = self.note.as_mut()?;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Esc => self.note = None,
-            KeyCode::Char('c') if ctrl && !note.text.is_empty() => note.text.clear(),
-            KeyCode::Char('u') if ctrl => note.text.clear(),
-            KeyCode::Char('w') if ctrl => delete_word(&mut note.text),
-            KeyCode::Backspace if ctrl || alt => delete_word(&mut note.text),
-            KeyCode::Backspace => delete_grapheme(&mut note.text),
+            KeyCode::Esc => {
+                self.note = None;
+                return Some(CardEvent::Moved);
+            }
+            KeyCode::Char('c') if ctrl && !note.is_empty() => {
+                note.editor.clear();
+                return Some(CardEvent::Moved);
+            }
+            KeyCode::Char('c') if ctrl => return None,
+            KeyCode::Enter if !(answer && (shift || alt)) => return None,
+            KeyCode::Tab => return None,
+            _ => {}
+        }
+        if answer {
+            // Past the answer's first or last row, the arrows are the card's.
+            match key.code {
+                KeyCode::Up if note.editor.cursor_on_first_row() => return None,
+                KeyCode::Down if note.editor.cursor_on_last_row() => return None,
+                _ => {}
+            }
+            // A key the editor had no use for, such as End at the line's end, stays in the
+            // field, so it never moves the card's pointer and closes the answer. The app's
+            // own shortcuts, such as Ctrl+O, go on to it.
+            let ctrl_only = ctrl && !alt;
+            return match note.editor.handle_key(key) {
+                ComposerEvent::Unhandled if ctrl_only => None,
+                _ => Some(CardEvent::Moved),
+            };
+        }
+        match key.code {
             // Plain keys, and AltGr, which arrives as Ctrl+Alt on some systems.
-            KeyCode::Char(c) if ctrl == alt => note.text.push(c),
-            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End | KeyCode::Delete => {}
+            KeyCode::Char(_) if ctrl == alt => {}
+            KeyCode::Char('u' | 'w') if ctrl => {}
+            KeyCode::Backspace => {}
+            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End | KeyCode::Delete => {
+                return Some(CardEvent::Moved);
+            }
             _ => return None,
         }
+        note.editor.handle_key(key);
         Some(CardEvent::Moved)
     }
 
-    /// Returns whether a note took the text.
+    /// Returns whether a note took the text. An answer keeps a paste's line breaks, as the
+    /// input does; a note takes it as one line.
     pub fn handle_paste(&mut self, text: &str) -> bool {
+        let answer = self.note_is_answer();
         match &mut self.note {
             Some(note) if self.focused && !self.pinned => {
-                note.text.push_str(&sanitize_line(text));
+                if answer {
+                    note.editor.handle_paste(text);
+                } else {
+                    note.editor.handle_paste(&sanitize_line(text));
+                }
                 true
             }
             _ => false,
@@ -629,7 +726,7 @@ impl CardPrompt {
                     .note
                     .as_ref()
                     .filter(|note| note.option == index)
-                    .map(|note| note.text.trim().to_owned());
+                    .map(|note| note.text().trim().to_owned());
                 return match typed {
                     Some(text) if !text.is_empty() => {
                         self.note = None;
@@ -642,10 +739,7 @@ impl CardPrompt {
                     Some(_) => CardEvent::Moved,
                     None => {
                         self.move_to(index);
-                        self.note = Some(CardNote {
-                            option: index,
-                            text: String::new(),
-                        });
+                        self.note = Some(CardNote::new(index));
                         CardEvent::Moved
                     }
                 };
@@ -667,10 +761,7 @@ impl CardPrompt {
         let noted = self.note.as_ref().is_some_and(|note| note.option == index);
         if self.wants_note(index) && !noted {
             self.move_to(index);
-            self.note = Some(CardNote {
-                option: index,
-                text: String::new(),
-            });
+            self.note = Some(CardNote::new(index));
             return CardEvent::Moved;
         }
         CardEvent::Answered {
@@ -688,11 +779,14 @@ impl CardPrompt {
         CardEvent::BackToInput
     }
 
+    /// An answer typed into the answer field stays, so coming back finds it.
     fn pin(&mut self) -> CardEvent {
         self.pinned = true;
         self.focused = false;
         self.stray_typing = false;
-        self.note = None;
+        if !self.is_answer_field() {
+            self.note = None;
+        }
         self.armed = None;
         self.checklist = None;
         CardEvent::Pinned
@@ -706,21 +800,5 @@ impl CardPrompt {
 }
 
 /// Drops the last grapheme, so an accent or a flag goes whole.
-fn delete_grapheme(text: &mut String) {
-    if let Some((index, _)) = text.grapheme_indices(true).next_back() {
-        text.truncate(index);
-    }
-}
-
-fn delete_word(text: &mut String) {
-    let trimmed = text.trim_end();
-    let start = trimmed
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_whitespace())
-        .map_or(0, |(index, c)| index + c.len_utf8());
-    text.truncate(start);
-}
-
 #[cfg(test)]
 mod tests;

@@ -70,6 +70,7 @@ fn point(kind: CheckpointKind) -> DecisionPoint {
         recipe: None,
         authors: Vec::new(),
         mode_override: None,
+        lead: None,
     }
 }
 

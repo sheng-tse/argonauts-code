@@ -322,6 +322,7 @@ fn startup_header() {
                 ready("agy", "1.2.13"),
             ],
             runs_going: 2,
+            runs_need_you: 0,
             example_prompt: None,
             default_agent: None,
             effort: None,
@@ -855,6 +856,7 @@ fn resumed_run(harness: &mut Harness, text: Option<&str>) {
             waiting: vec![],
             live: false,
             remind: false,
+            name: None,
         },
         started_here: false,
     });

@@ -15,11 +15,8 @@ expression: text(&view.lines)
     5. Abandon the run
     6. Show the diff
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside
 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
-❯ Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on
 
   ◐ claude-code/opus  card-002                        2/5  ↓ 18.1k tokens                                         4m12s

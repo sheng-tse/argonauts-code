@@ -945,11 +945,12 @@ fn every_app_event_round_trips() {
     let mut events = vec![
         json!({"type": "welcome", "version": "0.0.1", "repo": "~/code/api", "preset": "peer-crew",
                "agents": [{"id": "codex", "version": "0.158.0", "ready": true, "note": null}],
-               "runs_going": 1, "example_prompt": "fix the flaky retry test",
+               "runs_going": 1, "runs_need_you": 1, "example_prompt": "fix the flaky retry test",
                "default_agent": "codex/gpt-5.6-luna", "effort": "high"}),
         json!({"type": "attached", "summary": run_summary()}),
         json!({"type": "attached", "summary": run_summary(), "started_here": true}),
         json!({"type": "detached", "run": "run-01"}),
+        json!({"type": "background_runs", "runs": [run_summary()]}),
         json!({"type": "run", "event": envelope(json!({"type": "note",
                "data": {"level": "info", "text": "x"}}))}),
         json!({"type": "chat", "event": {"chat": "turn_started", "turn": "t-012", "text": "hi",

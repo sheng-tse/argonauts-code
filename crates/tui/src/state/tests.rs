@@ -250,6 +250,7 @@ fn summary() -> RunSummary {
         waiting: Vec::new(),
         live: true,
         remind: false,
+        name: None,
     }
 }
 
@@ -985,6 +986,7 @@ fn state_folds_welcome_status_and_mode() {
         preset: "peer-crew".into(),
         agents: Vec::new(),
         runs_going: 0,
+        runs_need_you: 0,
         example_prompt: None,
         default_agent: None,
         effort: None,

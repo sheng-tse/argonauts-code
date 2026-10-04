@@ -26,7 +26,7 @@ use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::goal::{DiffTag, DifferOutput};
 use argonauts_core::workflow::StepRef;
 
-use crate::checkpoints::{self, CheckpointRequest, options};
+use crate::checkpoints::{self, CheckpointRequest, full_auto, options};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::solo;
@@ -39,12 +39,22 @@ use super::materiality::{self, one_line};
 use super::{draft, file, round};
 
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
+    loop {
+        // `None` when the step looks again: your prompt just became the draft, or full auto came
+        // on while a question waited for you and the lead answers it.
+        if let Some(done) = settle(host, call).await? {
+            return Ok(done);
+        }
+    }
+}
+
+async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> {
     let view = host.read(|state| View::of(state, host.settings(), host.run_id(), &call.at.step));
     if view.approved {
-        return Ok(StepDone::done("The goal is already approved"));
+        return Ok(Some(StepDone::done("The goal is already approved")));
     }
     if view.sent_back {
-        return Ok(StepDone::done("Sent back for another round"));
+        return Ok(Some(StepDone::done("Sent back for another round")));
     }
     // Nothing read the request, as when Understand is off or the lead left it out. Your prompt
     // is the draft, and the lead's own open questions, when it wrote some, come to this card.
@@ -60,26 +70,38 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         });
         if questions.is_empty() && plan_card_follows {
             solo::prompt_is_the_goal(host).await?;
-            return Ok(StepDone::skipped(
+            return Ok(Some(StepDone::skipped(
                 "Your prompt is the goal, and the plan card gives the go-ahead",
-            ));
+            )));
         }
         draft_from_the_prompt(host, questions).await?;
-        return Box::pin(run(host, call)).await;
+        return Ok(None);
     }
     let drafted = view
         .drafted
         .clone()
         .ok_or_else(|| EngineError::Refused("there is no goal draft to check yet".to_owned()))?;
 
-    let by_lead = checkpoints::answerer(host, CheckpointKind::Goal) == Answerer::Lead;
+    let by_lead = checkpoints::answerer(host, CheckpointKind::Goal).answers_for_you();
+    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
     let mut drafted = drafted;
     let mut lead_answered = None;
     let questions = &view.settled.questions;
+    // A question you answered on its card keeps your answer, whoever answers the rest.
+    let yours_answered = |question: &GoalQuestion| {
+        view.answered
+            .iter()
+            .find(|(asked, _)| *asked == question.text)
+            .map(|(_, decided)| decided)
+    };
     if !questions.is_empty() {
         let for_lead: Vec<bool> = questions
             .iter()
-            .map(|question| by_lead && materiality::lead_may_answer(question, host.settings()))
+            .map(|question| {
+                by_lead
+                    && materiality::lead_may_answer(question, host.settings(), full_auto)
+                    && yours_answered(question).is_none()
+            })
             .collect();
         let lead_questions: Vec<GoalQuestion> = questions
             .iter()
@@ -132,7 +154,16 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                 round::note(
                     host,
                     NoteLevel::Info,
-                    lead::answered_line(assumed.len(), yours.len()),
+                    lead::answered_line(
+                        host.settings()
+                            .approvals
+                            .answered_by
+                            .as_ref()
+                            .and_then(Answerer::model)
+                            .filter(|_| full_auto),
+                        assumed.len(),
+                        yours.len(),
+                    ),
                 )?;
                 for (question, pick) in lead_questions.iter().zip(&answered.picks) {
                     if let Pick::Answered(assumption) = pick {
@@ -147,29 +178,36 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         let mut answers = Vec::new();
         let mut by = Party::User;
         // From here on the lead decides, once you chose "Let the lead decide this and the rest".
+        // A question you answered on its card before keeps your answer.
         let mut to_lead = None;
-        for (index, (question, decided)) in renumbered.iter().zip(&view.answered).enumerate() {
-            if lets_the_lead_decide(decided) {
+        for (index, question) in renumbered.iter().enumerate() {
+            let (decided, fresh) = match yours_answered(question) {
+                Some(decided) => (decided.clone(), false),
+                None => {
+                    let request = question_request(call, &drafted, &view, &renumbered[index..]);
+                    let because = yours[index].1.clone();
+                    let opening = checkpoints::open_because(host, request, because)?;
+                    match opening.decided_or_withdrawn(host).await? {
+                        Ok(decided) => (decided, true),
+                        Err(why) if why == full_auto::LEFT_TO_THE_LEAD => return Ok(None),
+                        Err(why) => {
+                            return Err(EngineError::Refused(format!(
+                                "the goal's question was withdrawn: {why}"
+                            )));
+                        }
+                    }
+                }
+            };
+            by = decided.by.clone();
+            if lets_the_lead_decide(&decided) {
                 to_lead = Some(index);
                 break;
             }
-            answers.push(answer_text(question, decided)?);
-            by = decided.by.clone();
-        }
-        if to_lead.is_none() {
-            for index in answers.len()..renumbered.len() {
-                let request = question_request(call, &drafted, &view, &renumbered[index..]);
-                let because = yours[index].1.clone();
-                let decided = checkpoints::open_and_wait_because(host, request, because).await?;
-                by = decided.by.clone();
-                if lets_the_lead_decide(&decided) {
-                    to_lead = Some(index);
-                    break;
-                }
-                let answer = answer_text(&renumbered[index], &decided)?;
-                answered_by(host, &renumbered[index].text, &answer, decider(&decided.by))?;
-                answers.push(answer);
+            let answer = answer_text(question, &decided)?;
+            if fresh {
+                answered_by(host, &question.text, &answer, decider(&decided.by))?;
             }
+            answers.push(answer);
         }
         if !answers.is_empty() {
             drafted = round::write_draft(host, draft::with_answers(&drafted, &answers)).await?;
@@ -201,10 +239,10 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         if lead_answered.is_none() {
             // Answering the last question approves the goal, with every answer written in.
             approve(host, drafted, by)?;
-            return Ok(StepDone::done(match answers.len() {
+            return Ok(Some(StepDone::done(match answers.len() {
                 1 => "You answered 1 question and approved the goal".to_owned(),
                 n => format!("You answered {n} questions and approved the goal"),
-            }));
+            })));
         }
         // The lead's answers still need the approval, which in auto the approver gives.
     }
@@ -215,7 +253,8 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             let style = shape::run_style(host);
             let request =
                 approval_request(call, &drafted, &view, by_lead, lead_answered.clone(), style);
-            if checkpoints::asks_you_about(host.settings(), &[checkpoints::GO_AHEAD_TOPIC]) {
+            if checkpoints::keeps_yours(host, CheckpointKind::Goal, &[checkpoints::GO_AHEAD_TOPIC])
+            {
                 let because = checkpoints::yours_because("the go-ahead");
                 checkpoints::open_and_wait_yours(host, request, because).await?
             } else {
@@ -223,43 +262,44 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             }
         }
     };
-    match decided.action {
+    let done = match decided.action {
         AnswerAction::Choose { value } if value == LET_THE_LEAD_ANSWER => {
             // The lead answers what comes next in this run; the app saves it for the project.
             if !host.read(lead_answers_for_you) {
                 answered_by(host, GO_AHEAD, LET_THE_LEAD_ANSWER, decider(&decided.by))?;
             }
             approve(host, drafted, decided.by)?;
-            Ok(StepDone::done(
-                "The goal is approved, and the lead answers from here",
-            ))
+            StepDone::done("The goal is approved, and the lead answers from here")
         }
         AnswerAction::Approve => {
             approve(host, drafted, decided.by)?;
-            Ok(StepDone::done(match lead_answered {
+            StepDone::done(match lead_answered {
                 Some((_, 1)) => "The lead answered 1 question, and the goal is approved".to_owned(),
                 Some((_, n)) => {
                     format!("The lead answered {n} questions, and the goal is approved")
                 }
                 None => "The goal is approved".to_owned(),
-            }))
+            })
         }
         AnswerAction::ApproveWithEdits => {
             let note = decided.text.unwrap_or_default();
             let goal = round::write_draft(host, file::with_edits(&drafted, &note)).await?;
             approve(host, goal, decided.by)?;
-            Ok(StepDone::done("The goal is approved with your edits"))
+            StepDone::done("The goal is approved with your edits")
         }
-        AnswerAction::SendBack => Ok(StepDone::done("Sent back for another round")),
-        AnswerAction::Abandon => Ok(StepDone {
+        AnswerAction::SendBack => StepDone::done("Sent back for another round"),
+        AnswerAction::Abandon => StepDone {
             end: StepEnd::Done,
             summary: Some("You abandoned the goal".to_owned()),
             flow: Flow::Finish(RunOutcome::Abandoned),
-        }),
-        other => Err(EngineError::Refused(format!(
-            "the goal checkpoint doesn't offer {other:?}"
-        ))),
-    }
+        },
+        other => {
+            return Err(EngineError::Refused(format!(
+                "the goal checkpoint doesn't offer {other:?}"
+            )));
+        }
+    };
+    Ok(Some(done))
 }
 
 /// The open questions the lead's brief listed, when it decided Understand wasn't needed.
@@ -396,8 +436,9 @@ pub struct View {
     pub sent_back: bool,
     pub drafted: Option<GoalFile>,
     pub settled: SettledGoal,
-    /// This round's decided question checkpoints, oldest first.
-    pub answered: Vec<CheckpointDecided>,
+    /// This round's decided question checkpoints, oldest first, each with the question it
+    /// asked.
+    pub answered: Vec<(String, CheckpointDecided)>,
     /// This round's decided approval card, if it was decided.
     pub decided: Option<CheckpointDecided>,
     /// Reasons the approval card must wait for you even with no question open: differences
@@ -433,15 +474,24 @@ impl View {
             })
             .collect();
         this_round.sort_by_key(|record| record.since);
-        let decisions = this_round
-            .iter()
-            .filter_map(|record| record.decided.clone());
-        let (answered, approvals): (Vec<_>, Vec<_>) = decisions.partition(|decided| {
+        let decisions = this_round.iter().filter_map(|record| {
+            let asked = match &record.opened.packet {
+                CheckpointPacket::Goal(packet) => packet.questions.first(),
+                _ => None,
+            };
+            let asked = asked.map(|question| question.text.clone());
+            Some((asked.unwrap_or_default(), record.decided.clone()?))
+        });
+        let (answered, approvals): (Vec<_>, Vec<_>) = decisions.partition(|(_, decided)| {
             matches!(
                 decided.action,
                 AnswerAction::Choose { .. } | AnswerAction::Answer
             )
         });
+        let last_approval = approvals
+            .into_iter()
+            .next_back()
+            .map(|(_, decided)| decided);
 
         let listings: Vec<DifferOutput> = goal
             .compared
@@ -451,14 +501,17 @@ impl View {
                 differences: differences.clone(),
             })
             .collect();
-        let goal_settings = materiality::goal_settings(settings);
+        let full_auto = checkpoints::full_auto::applies(state, settings, CheckpointKind::Goal);
+        let goal_settings = materiality::goal_settings(settings, full_auto);
         let settled = materiality::settle(&listings, goal.restated.len(), &goal_settings);
         let held_back = settled.held_back;
+        // Nothing waits for you in full auto, whatever `approvals.ask_you_about` names.
         let held_back_yours = settled
             .over_limit
             .iter()
             .filter(|(tag, topic)| {
-                checkpoints::asks_you_about(settings, &[materiality::tag_name(*tag), topic])
+                !full_auto
+                    && checkpoints::asks_you_about(settings, &[materiality::tag_name(*tag), topic])
             })
             .count();
         let unchecked = round::mode(state) == RunMode::Crew
@@ -497,7 +550,7 @@ impl View {
             drafted: goal.drafted.clone(),
             settled: goal.settled.clone().unwrap_or_default(),
             answered,
-            decided: approvals.into_iter().last(),
+            decided: last_approval,
             waits: held_back + u32::from(unchecked),
             held_back,
             held_back_yours: u32::try_from(held_back_yours).unwrap_or(u32::MAX),
@@ -587,7 +640,7 @@ pub fn approval_request(
     }
     if let Some((lead, answered)) = lead_answered {
         agent_outputs.push(format!(
-            "The lead, {lead}, answered {answered} of the open questions for the user. Its \
+            "{lead} answered {answered} of the open questions for the user. Its \
              answers are the assumptions whose basis starts with \"{}\"; check them against the \
              request",
             argonauts_core::events::goal::LEAD_ANSWER

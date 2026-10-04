@@ -438,6 +438,7 @@ fn the_status_line_shows_only_what_the_header_lacks() {
         preset: "peer-crew".into(),
         agents: Vec::new(),
         runs_going: 0,
+        runs_need_you: 0,
         example_prompt: None,
         default_agent: None,
         effort: None,
@@ -727,12 +728,13 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     sync(&mut model, &state, &ui, NOW + 2.0);
     assert_eq!(model.bottom.mode.approval, ScreenMode::Auto);
 
-    // A solo run labels the input `solo`, and a finished one leaves nothing working.
+    // The input keeps your preset whatever the run follows, and a finished run leaves nothing
+    // working.
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     run.mode = Some(RunMode::Solo);
     run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
     sync(&mut model, &state, &ui, NOW + 3.0);
-    assert_eq!(model.bottom.composer.label.as_deref(), Some("solo"));
+    assert_eq!(model.bottom.composer.label.as_deref(), Some("peer-crew"));
     assert!(model.bottom.working.is_none());
     assert_eq!(model.bottom.exit_note, None);
 }

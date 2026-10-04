@@ -32,6 +32,7 @@ pub use builtin::{
 };
 pub use cache::ModelCache;
 pub use catalog::{CatalogSource, FetchedCatalog, shipped_catalog};
+pub(crate) use family::resolve_family;
 pub use family::{family_from_model_id, family_problems};
 pub use files::{ModelTier, ModelsFile, read_registry_file, set_model_tier};
 pub use trust::ProjectModels;

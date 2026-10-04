@@ -258,7 +258,7 @@ impl Milestones {
             RunEventKind::Retro(_) => story.retro = true,
             // The engine's note repeats the line the failed phase printed, without the reason.
             RunEventKind::Note(note) if story.retro_failed && note.text == RETRO_FAILED => {}
-            RunEventKind::Note(note) => items.notice(note.level, &note.text, cx),
+            RunEventKind::Note(note) => items.note(note, cx),
             _ => {}
         }
     }

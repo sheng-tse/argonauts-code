@@ -11,8 +11,7 @@ mod tests;
 
 use std::sync::Arc;
 
-use anyhow::Context;
-use argonauts_core::api::{Approvals, CheckpointAnswer, DiffScope};
+use argonauts_core::api::{ApiError, Approvals, CheckpointAnswer, DiffScope};
 use argonauts_core::app::{AppEvent, NOT_CHANGED, ViewData};
 use argonauts_core::events::checkpoint::AnswerAction;
 use argonauts_core::events::goal::{GoalAction, LET_THE_LEAD_ANSWER};
@@ -37,6 +36,65 @@ pub(crate) use views::{
 pub(super) const NO_APPROVALS: &str = "This app can't approve anything or change autonomy: it \
      has no terminal, or it runs inside an agent session. Nothing was sent.";
 const NO_RUN: &str = "No run is on screen. /resume picks one.";
+
+/// What you see when you act on an agent of a run that already merged.
+const RUN_MERGED: &str = "That run already merged, so its agents are done. To build \
+     on its result, type /follow-up and what you want next.";
+
+/// A refusal you can meet by acting on a run that ended or went, in plain words: what happened
+/// and what you can do. `None` for errors whose own detail says more.
+pub(crate) fn plain_refusal(err: &ApiError) -> Option<String> {
+    match err {
+        ApiError::Merged(_) => Some(RUN_MERGED.to_owned()),
+        ApiError::NoRun(_) => {
+            Some("That run isn't in this folder any more, so nothing is left to act on.".to_owned())
+        }
+        ApiError::NotNow(why) => Some(sentence(why)),
+        ApiError::Refused(_) | ApiError::Supervisor(_) => None,
+    }
+}
+
+/// Says plainly why the run refused when it can. Else the error goes on as one plain line
+/// under `doing`, such as "Couldn't pause the run", never an internal error line.
+pub(crate) fn refused(ctx: &Ctx, err: ApiError, doing: impl FnOnce() -> String) -> Handled {
+    match plain_refusal(&err) {
+        Some(words) => {
+            ctx.notice(NoteLevel::Info, words);
+            Ok(Vec::new())
+        }
+        None => Err(anyhow::anyhow!(failure(&err, &doing()))),
+    }
+}
+
+/// One plain line for an error the run's own words explain: what you were `doing`, then why.
+pub(crate) fn failure(err: &ApiError, doing: &str) -> String {
+    let why = match err {
+        ApiError::Refused(why) => why.trim().to_owned(),
+        ApiError::Supervisor(why) => format!("its run didn't answer ({})", why.trim()),
+        ApiError::Merged(_) => "that run already merged".to_owned(),
+        ApiError::NoRun(_) => "that run isn't in this folder any more".to_owned(),
+        ApiError::NotNow(why) => why.trim().to_owned(),
+    };
+    let mut line = format!("{doing}: {why}");
+    if !line.ends_with(['.', '!', '?']) {
+        line.push('.');
+    }
+    line
+}
+
+/// `the run isn't running` as a sentence of its own.
+fn sentence(text: &str) -> String {
+    let text = text.trim();
+    let mut chars = text.chars();
+    let mut out: String = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => return String::new(),
+    };
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
+}
 
 /// `UiCommand::Answer` for a run's checkpoint.
 #[derive(Debug, Clone, PartialEq)]
@@ -106,10 +164,9 @@ pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: Checkpoin
         evidence_sha256,
         cards: reply.cards,
     };
-    approvals
-        .answer(&reply.run, answer)
-        .await
-        .with_context(|| format!("answering {} of {}", reply.id, reply.run))?;
+    if let Err(err) = approvals.answer(&reply.run, answer).await {
+        return refused(ctx, err, || "Couldn't send your answer".to_owned());
+    }
     if lead_answers {
         return super::settings::let_the_lead_answer(ctx);
     }
@@ -137,14 +194,19 @@ pub(crate) async fn answer_choice(
             .services
             .conductor
             .diff(run, card, DiffScope::Card)
-            .await
-            .with_context(|| format!("the diff of {card} in {run}"));
+            .await;
+        let card = card.clone();
         // The card stays open, so you can still revert after reading the diff.
         runs.choices.insert(id, choice);
-        ctx.send(AppEvent::View {
-            data: Box::new(ViewData::Diff { diff: diff? }),
-        });
-        return Ok(Vec::new());
+        return match diff {
+            Ok(diff) => {
+                ctx.send(AppEvent::View {
+                    data: Box::new(ViewData::Diff { diff }),
+                });
+                Ok(Vec::new())
+            }
+            Err(err) => refused(ctx, err, || format!("Couldn't show the diff of {card}")),
+        };
     }
     let outcome = match (choice, action) {
         (
@@ -162,11 +224,10 @@ pub(crate) async fn answer_choice(
             };
             let overridden = approvals
                 .reassign_overriding(&run, &card, to.clone(), rule.clone())
-                .await
-                .with_context(|| format!("reassigning {card} of {run}"));
+                .await;
             if let Err(err) = overridden {
                 close(ctx, id, NOT_CHANGED);
-                return Err(err);
+                return refused(ctx, err, || format!("Couldn't reassign {card}"));
             }
             let name = ctx.names.worker(&to);
             format!("Reassigned {card} to {name}, overriding {rule} for this card.")
@@ -179,15 +240,10 @@ pub(crate) async fn answer_choice(
             },
             AnswerAction::Approve,
         ) => {
-            let reverted = ctx
-                .services
-                .conductor
-                .revert(&run, &card, checkpoint)
-                .await
-                .with_context(|| format!("reverting {card} of {run}"));
+            let reverted = ctx.services.conductor.revert(&run, &card, checkpoint).await;
             if let Err(err) = reverted {
                 close(ctx, id, "Not reverted.");
-                return Err(err);
+                return refused(ctx, err, || format!("Couldn't revert {card}"));
             }
             format!(
                 "Reverted {card} to handoff-{checkpoint}. The work after it is on \
@@ -235,9 +291,15 @@ pub(crate) async fn take_over(
     tokio::spawn(async move {
         match approvals.take_over(&run, &card).await {
             Ok(ticket) => out.send(AppEvent::TakeOver { ticket, place, run }),
-            Err(err) => out.send(AppEvent::Notice {
-                level: NoteLevel::Error,
-                text: format!("taking over {card} of {run}: {err}"),
+            Err(err) => out.send(match plain_refusal(&err) {
+                Some(text) => AppEvent::Notice {
+                    level: NoteLevel::Info,
+                    text,
+                },
+                None => AppEvent::Notice {
+                    level: NoteLevel::Error,
+                    text: format!("Couldn't take over {card}: {err}"),
+                },
             }),
         }
     });
@@ -255,10 +317,9 @@ pub(crate) async fn take_over_ended(
     let Some(approvals) = approvals(ctx) else {
         return Ok(Vec::new());
     };
-    approvals
-        .take_over_ended(&run, &card)
-        .await
-        .with_context(|| format!("handing {card} of {run} back"))?;
+    if let Err(err) = approvals.take_over_ended(&run, &card).await {
+        return refused(ctx, err, || format!("Couldn't hand {card} back"));
+    }
     let how = match exit_code {
         Some(0) | None => String::new(),
         Some(code) => format!("The vendor's UI exited with code {code}. "),
@@ -287,10 +348,11 @@ pub(crate) async fn approval_mode(
         .as_mut()
         .filter(|attached| !matches!(attached.stage, Stage::Finished(_)))
     {
-        approvals
-            .set_approval_mode(&attached.run, mode)
-            .await
-            .with_context(|| format!("setting the approval mode of {}", attached.run))?;
+        if let Err(err) = approvals.set_approval_mode(&attached.run, mode).await {
+            return refused(ctx, err, || {
+                format!("Couldn't put the run in {} mode", mode.label())
+            });
+        }
         attached.approval_mode = Some(mode);
     }
     Ok(vec![Effect::Status])
@@ -328,11 +390,9 @@ pub(crate) async fn goal(
              plans with it."
         }
     };
-    ctx.services
-        .conductor
-        .goal(&run, action)
-        .await
-        .with_context(|| format!("changing {run}'s goal"))?;
+    if let Err(err) = ctx.services.conductor.goal(&run, action).await {
+        return refused(ctx, err, || "Couldn't change the goal".to_owned());
+    }
     ctx.notice(NoteLevel::Info, done);
     Ok(Vec::new())
 }
@@ -346,11 +406,9 @@ pub(crate) async fn spot_check(
     if approvals(ctx).is_none() {
         return Ok(Vec::new());
     }
-    ctx.services
-        .conductor
-        .spot_check(&run, &id, correct)
-        .await
-        .with_context(|| format!("marking {id} of {run}"))?;
+    if let Err(err) = ctx.services.conductor.spot_check(&run, &id, correct).await {
+        return refused(ctx, err, || format!("Couldn't mark {id}"));
+    }
     let verdict = if correct {
         "right, so it counts toward autonomy"
     } else {

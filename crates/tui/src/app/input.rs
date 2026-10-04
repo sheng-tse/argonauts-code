@@ -138,7 +138,7 @@ impl<W: Write> Ui<W> {
             return;
         }
         if self.model.bottom.focused_card().is_some() {
-            if !self.card_key(key, actions) {
+            if !self.cycle_key(key, actions) && !self.card_key(key, actions) {
                 self.quit_key(key, now, actions);
             }
             return;
@@ -349,6 +349,30 @@ impl<W: Write> Ui<W> {
         true
     }
 
+    /// Shift+Tab cycles the approval mode while a card has the keys too, as at Claude Code's
+    /// prompts, so you can stop being asked: full auto settles the card. A note being typed on
+    /// the card keeps its keys, and so does a question's answer field once you've typed in it.
+    fn cycle_key(&mut self, key: KeyEvent, actions: &mut Vec<UiAction>) -> bool {
+        let bottom = &mut self.model.bottom;
+        let typing_a_note = bottom.card.as_ref().is_some_and(|card| {
+            card.note
+                .as_ref()
+                .is_some_and(|note| !(card.is_answer_field() && note.is_empty()))
+        });
+        if typing_a_note
+            || !self
+                .keymap
+                .actions_for(Layer::Global, &key)
+                .contains(&Action::CycleApprovalMode)
+        {
+            return false;
+        }
+        bottom.mode.approval = bottom.mode.approval.next();
+        actions.push(UiAction::ModeChanged(bottom.mode.approval));
+        self.dirty = true;
+        true
+    }
+
     fn card_key(&mut self, key: KeyEvent, actions: &mut Vec<UiAction>) -> bool {
         let vim = self.model.bottom.mode.vim.is_some();
         let Some(card) = self.model.bottom.card.as_mut().filter(|card| card.focused) else {
@@ -358,7 +382,7 @@ impl<W: Write> Ui<W> {
         let key = card.read_key(key, vim);
         let was_stray = card.stray_typing;
         let event = card.handle_key(key);
-        // Stray letters change the input's hint, though the card does nothing with them.
+        // Stray letters change the card's key line, though the card does nothing with them.
         if card.stray_typing != was_stray {
             self.dirty = true;
         }

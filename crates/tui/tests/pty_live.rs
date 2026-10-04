@@ -202,21 +202,22 @@ fn queued_message_gray_and_taken_back() {
 
 #[test]
 fn shift_tab_cycles_approval_mode() {
+    // Shift+Tab's cycle: supervised, auto, full auto.
     let script = Script::idle()
         .await_command("approval_mode")
-        .at(0, status_with(json!({"approval_mode": "shadow"})))
-        .await_command("approval_mode")
         .at(0, status_with(json!({"approval_mode": "auto"})))
+        .await_command("approval_mode")
+        .at(0, status_with(json!({"approval_mode": "full_auto"})))
         .await_command("approval_mode")
         .at(0, status_with(json!({"approval_mode": "supervised"})));
     let mut harness = Harness::start(script);
     harness.wait_visible(MODE_IDLE);
     harness.press(Key::ShiftTab);
-    assert_eq!(harness.wait_command("approval_mode")["mode"], "shadow");
-    harness.wait_visible("^  ǁ shadow mode on \\(shift\\+tab to cycle\\)");
-    harness.press(Key::ShiftTab);
     assert_eq!(harness.wait_command("approval_mode")["mode"], "auto");
     harness.wait_visible("^  ⏵⏵ auto mode on \\(shift\\+tab to cycle\\)");
+    harness.press(Key::ShiftTab);
+    assert_eq!(harness.wait_command("approval_mode")["mode"], "full_auto");
+    harness.wait_visible("^  ⏵⏵ full auto mode on \\(shift\\+tab to cycle\\)");
     harness.press(Key::ShiftTab);
     assert_eq!(harness.wait_command("approval_mode")["mode"], "supervised");
     harness.wait_visible(MODE_IDLE);

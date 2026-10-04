@@ -17,9 +17,6 @@ expression: text(&view.lines)
 
   Enter to choose · Tab to add a note · Esc to set aside
 
-──────────────────────────────────────────────────────────────────── peer-crew ─
-❯ ↑↓ to move · Enter or a number to answer · Esc to set aside
-────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on
 
   ◐ claude-code/opus  card-002                      2/5  ↓ 18.1k tokens   4m12s

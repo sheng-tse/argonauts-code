@@ -216,7 +216,8 @@ fn default_meaning(key: &str) -> Option<&'static str> {
     let segments: Vec<&str> = key.split('.').collect();
     Some(match segments.as_slice() {
         ["approvals", "approver", "model"] => "cheapest, other company",
-        ["approvals", "answered_by"] => "the lead in auto, else you",
+        ["approvals", "answered_by"] => "you or the lead, by mode",
+        ["approvals", "approver", "second_model"] => "none, one approver",
         ["handoff", "fallback"] | ["roles", _, "handoff", "fallback"] => "other logged-in CLIs",
         ["roles", _, "sandbox", _] => "same as every agent",
         _ => return None,
@@ -289,6 +290,23 @@ pub fn value_note(key: &str, value: &str) -> &'static str {
         ["sandbox", leaf] | ["roles", _, "sandbox", leaf] => {
             super::permissions::value_note(leaf, value)
         }
+        ["approvals", "full_auto"] => match value {
+            "true" => "Nothing waits for you at any checkpoint a run opens",
+            "false" => "Each checkpoint keeps its own mode",
+            _ => "",
+        },
+        ["approvals", _, "at_hard_limit"] => hard_limit_note(value),
+        _ => "",
+    }
+}
+
+/// What each `at_hard_limit` does in full auto.
+fn hard_limit_note(value: &str) -> &'static str {
+    match value {
+        "stop" => "End that part safely and keep its work",
+        "send_back" => "Run another round, or decline the change",
+        "open_pull_request" => "Open a pull request for you to review",
+        "park" => "Leave the card for you; the run waits",
         _ => "",
     }
 }

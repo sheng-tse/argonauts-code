@@ -103,6 +103,7 @@ fn decision(
         recipe: Some(candidate.parent.name.clone()),
         authors: Vec::new(),
         mode_override: None,
+        lead: None,
     };
     let facts = EvidenceFacts {
         promotion: Some(PromotionFacts {

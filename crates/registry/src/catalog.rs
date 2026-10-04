@@ -705,19 +705,30 @@ fn named() -> Vec<SettingMeta> {
             BOOL,
         ),
         // /approvals
-        words(
+        meta(
+            "approvals.full_auto",
+            "Full auto for every checkpoint a run opens that its own mode leaves to auto: \
+             nothing waits for you there. One you keep supervised or in shadow stays yours. \
+             Off, each checkpoint keeps its own mode",
+            BOOL,
+        ),
+        meta(
             "approvals.answered_by",
-            "Who answers the crew's questions, Understand's open questions and the go-ahead: \
-             you, or the lead, whose answers become assumptions you can review. Unset, the lead \
-             in auto mode and you otherwise. Set to the lead, it answers in every mode",
-            &["you", "lead"],
+            "Who answers the crew's questions, Understand's open questions and the go-ahead, \
+             and in full auto the agents' questions meant for you: you, the lead, or a model you \
+             pick such as codex/gpt-5.6, whose answers become assumptions you can review. Unset, \
+             the lead in auto mode and you otherwise. Set to the lead, it answers in every mode. \
+             A model answers in full auto only, where nothing waits for you; elsewhere the mode \
+             decides. Full auto never has you answer: the model you picked does, else the lead",
+            &[],
         ),
         meta(
             "approvals.ask_you_about",
             "Topics that come to you even when the lead answers, matched without case: a \
              question's tag (scope, security, data, cost, detail) or its topic, such as \"log \
              level\", and \"go-ahead\", \"workflow change\", \"stuck goal\", or \"keep \
-             going\". Over budget always comes to you",
+             going\". Over budget always comes to you. Full auto answers them too, since \
+             nothing waits for you there",
             &[],
         ),
         words(
@@ -732,9 +743,10 @@ fn named() -> Vec<SettingMeta> {
             &format!("approvals.{checkpoint}.mode"),
             &format!(
                 "{label}: supervised waits for you, shadow also records what auto would do, \
-                 auto lets your settings decide"
+                 auto lets your settings decide, and full auto never waits: what they can't \
+                 approve ends safely and is reported"
             ),
-            &["supervised", "shadow", "auto"],
+            &["supervised", "shadow", "auto", "full_auto"],
         ));
         entries.push(words(
             &format!("approvals.{checkpoint}.decide_with"),
@@ -750,6 +762,23 @@ fn named() -> Vec<SettingMeta> {
             &format!("approvals.{checkpoint}.otherwise"),
             &format!("{label}: what happens when auto doesn't approve"),
             otherwise,
+        ));
+        // Only a merge opens a pull request, and a stuck card or a budget has nothing to send
+        // back. A promotion is decided outside runs, where full auto never reaches.
+        let at_hard_limit: &[&str] = match *checkpoint {
+            "recipe_promotion" => continue,
+            "merge" => &["stop", "send_back", "open_pull_request", "park"],
+            "escalation" | "budget" => &["stop", "park"],
+            _ => &["stop", "send_back", "park"],
+        };
+        entries.push(words(
+            &format!("approvals.{checkpoint}.at_hard_limit"),
+            &format!(
+                "{label}: what a hard limit does in full auto, where no one is there to ask: \
+                 stop ends that part safely and keeps its work, send_back runs another round, \
+                 open_pull_request opens one for you, and park leaves the card for you"
+            ),
+            at_hard_limit,
         ));
     }
     entries.extend([
@@ -966,9 +995,10 @@ fn later_keys() -> Vec<SettingMeta> {
         ),
         meta(
             "workflows.lead_designs",
-            "The lead picks or composes a workflow for each task. Off runs the preset's workflow \
-             as it is",
-            BOOL,
+            "The lead sizes the preset's workflow for each task, with more or fewer agents at a \
+             step or a step left out, and says what it changed. Off runs it as it is, and \
+             \"any\" lets the lead run another workflow or compose one",
+            &["true", "false", "\"any\""],
         ),
         meta(
             "workflows.allow_composed",
@@ -1358,6 +1388,7 @@ mod tests {
             "narrator.model" | "handoff.summarizer" | "roles.*.handoff.summarizer" => {
                 "\"ollama/llama3.2\""
             }
+            "approvals.answered_by" => "\"codex/gpt-5.6\"",
             "narrator.interval"
             | "roles.*.handoff.ask_timeout"
             | "handoff.ask_timeout"
@@ -1636,7 +1667,10 @@ mod tests {
         assert!(meta.safety);
         let meta = setting_meta("approvals.merge.mode").unwrap();
         assert!(meta.safety);
-        assert_eq!(meta.allowed, ["\"supervised\"", "\"shadow\"", "\"auto\""]);
+        assert_eq!(
+            meta.allowed,
+            ["\"supervised\"", "\"shadow\"", "\"auto\"", "\"full_auto\""]
+        );
         assert!(!setting_meta("ui.keys").unwrap().safety);
         assert!(
             setting_meta("preset")

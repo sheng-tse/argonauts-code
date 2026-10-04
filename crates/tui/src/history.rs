@@ -469,6 +469,7 @@ mod tests {
             folder: "~/repo".to_owned(),
             agents: Vec::new(),
             runs_going: 0,
+            runs_need_you: 0,
         }
     }
 

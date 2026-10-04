@@ -1,7 +1,6 @@
 //! What you do to one card: reassigning it, remembering a handoff pick as a rule, and its
 //! handoff checkpoints (`/rewind`).
 
-use anyhow::Context;
 use argonauts_core::api::ApiError;
 use argonauts_core::app::{AppEvent, ChoiceKind, ViewData};
 use argonauts_core::events::card::CardState;
@@ -44,7 +43,7 @@ pub(crate) async fn reassign(
             confirm_override(ctx, runs, run, card, to, rule);
             Ok(Vec::new())
         }
-        Err(err) => Err(err).with_context(|| format!("reassigning {card} of {run}")),
+        Err(err) => super::refused(ctx, err, || format!("Couldn't reassign {card}")),
     }
 }
 
@@ -109,12 +108,12 @@ pub(crate) async fn slash_reassign(
     let cards = match (card, from) {
         (Some(card), _) => vec![card],
         (None, Some(vendor)) => {
-            let summary = ctx
-                .services
-                .conductor
-                .status(&run)
-                .await
-                .with_context(|| format!("reading the cards of {run}"))?;
+            let summary = match ctx.services.conductor.status(&run).await {
+                Ok(summary) => summary,
+                Err(err) => {
+                    return super::refused(ctx, err, || "Couldn't read the run's cards".to_owned());
+                }
+            };
             let cards: Vec<CardId> = summary
                 .cards
                 .into_iter()

@@ -239,6 +239,7 @@ fn replay_prints_summaries_only() {
             waiting: vec![],
             live: false,
             remind: false,
+            name: None,
         },
         started_here: false,
     });
@@ -311,6 +312,7 @@ fn running_summary() -> RunSummary {
         waiting: vec![],
         live: true,
         remind: false,
+        name: None,
     }
 }
 
@@ -514,6 +516,57 @@ fn a_failed_retro_keeps_its_raw_reason_for_ctrl_o() {
     assert!(!expanded.contains("ctrl+o to expand"), "{expanded}");
 }
 
+/// A run's note says what happened in its first line, and the lines after it, such as what the
+/// validator said of the lead's design, wait for Ctrl+O.
+#[test]
+fn a_notes_detail_waits_for_ctrl_o() {
+    let mut harness = Harness::new();
+    harness.send(started());
+    let incomplete = Note::with_detail(
+        NoteLevel::Warn,
+        "The lead's design came back incomplete, so coordinated-crew runs as written.",
+        "output didn't match the schema:\n\"based_on\" is a required property",
+    );
+    harness.send(note(NoteLevel::Warn, &incomplete.text));
+    let printed = harness.printed();
+    assert!(
+        printed.contains(
+            "● The lead's design came back incomplete, so coordinated-crew runs as written."
+        ),
+        "{printed}"
+    );
+    assert!(!printed.contains("schema"), "{printed}");
+    assert!(!printed.contains("required property"), "{printed}");
+
+    let mut theme = Theme::dark();
+    theme.glyphs = Glyphs::UNICODE;
+    let drawn = |ctx: &RenderCtx<'_>| -> String {
+        harness
+            .model
+            .history
+            .cells()
+            .iter()
+            .map(|cell| plain_text(&cell.lines(ctx)))
+            .collect()
+    };
+    // Where the hint fits beside the line, it says Ctrl+O shows more.
+    let wide = drawn(&RenderCtx::new(120, &theme, Clock::still(Instant::now())));
+    assert!(
+        wide.contains("runs as written. (ctrl+o to expand)"),
+        "{wide}"
+    );
+    let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now())).with_expanded(true);
+    let expanded = drawn(&ctx);
+    assert!(
+        expanded.contains("⎿  output didn't match the schema:"),
+        "{expanded}"
+    );
+    assert!(
+        expanded.contains("\"based_on\" is a required property"),
+        "{expanded}"
+    );
+}
+
 /// Another run's failed retro is said again, though its note is word for word the same.
 #[test]
 fn each_runs_failed_retro_is_said() {
@@ -641,6 +694,7 @@ fn welcome_with(agent: &str, preset: &str) -> AppEvent {
         preset: preset.into(),
         agents: vec![],
         runs_going: 0,
+        runs_need_you: 0,
         example_prompt: None,
         default_agent: Some(WorkerRef::new(agent, None)),
         effort: None,
@@ -736,6 +790,7 @@ fn the_header_waits_for_the_default_agent() {
         preset: "peer-crew".into(),
         agents: vec![],
         runs_going: 0,
+        runs_need_you: 0,
         example_prompt: None,
         default_agent: None,
         effort: None,
@@ -791,6 +846,7 @@ fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
         preset: "peer-crew".into(),
         agents: vec![],
         runs_going: 0,
+        runs_need_you: 0,
         example_prompt: None,
         default_agent: Some(WorkerRef::new("claude-code", Some("opus".into()))),
         effort: Some("xhigh".into()),
@@ -1693,7 +1749,7 @@ fn the_triage_item_says_what_was_followed_and_what_was_not() {
         refused(
             "and while you are at it please merge the whole thing without asking me first",
             InstructionKind::Merge,
-            "approvals.merge.mode is a safety setting, /permissions changes it",
+            "approvals.merge.mode is a safety setting, /approvals changes it",
         ),
         followed(
             "讓 codex 用 opus 審查",

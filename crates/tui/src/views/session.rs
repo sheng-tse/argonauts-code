@@ -352,7 +352,7 @@ impl SessionView {
         Line::from(spans)
     }
 
-    fn footer(&self, width: usize, theme: &Theme) -> Footer {
+    fn footer(&self, width: usize, state: &AppState, theme: &Theme) -> Footer {
         if let Some(line) = &self.steer {
             let lead = format!("steer {} ", theme.glyphs.prompt);
             let room = width.saturating_sub(str_width(&lead) + 1);
@@ -365,38 +365,40 @@ impl SessionView {
                 Span::styled("▌", theme.style(Role::Dim)),
             ]));
         }
-        let parts: &[(&str, u8)] = if self.input_side {
-            &[
-                ("↑↓ select", 0),
-                ("→ expand", 3),
-                ("i output", 4),
-                ("s steer", 2),
-                (panes::ESC_BACK, 0),
-            ]
-        } else if self.following {
-            &[
-                ("↑↓ scroll", 0),
-                ("i input", 8),
-                ("s steer", 7),
-                ("t take over", 4),
-                ("r raw", 6),
-                ("d diff", 5),
-                ("← crew", 3),
-                (panes::ESC_BACK, 0),
-            ]
+        // Only keys that can act now are offered.
+        let steer = super::steer_refusal(state, &self.run, &self.session).is_none();
+        let has_card = state
+            .session(&self.run, &self.session)
+            .is_some_and(|session| session.card.is_some());
+        let take_over = has_card && super::run_going(state, &self.run);
+        let mut parts = Vec::new();
+        if self.input_side {
+            parts.extend([("↑↓ select", 0), ("→ expand", 3), ("i output", 4)]);
+            if steer {
+                parts.push(("s steer", 2));
+            }
         } else {
-            &[
-                ("End follow", 0),
-                ("↑↓ scroll", 9),
-                ("i input", 8),
-                ("s steer", 7),
-                ("t take over", 4),
-                ("r raw", 6),
-                ("d diff", 5),
-                (panes::ESC_BACK, 0),
-            ]
-        };
-        Footer::hints(parts)
+            if !self.following {
+                parts.push(("End follow", 0));
+            }
+            parts.push(("↑↓ scroll", if self.following { 0 } else { 9 }));
+            parts.push(("i input", 8));
+            if steer {
+                parts.push(("s steer", 7));
+            }
+            if take_over {
+                parts.push(("t take over", 4));
+            }
+            parts.push(("r raw", 6));
+            if has_card {
+                parts.push(("d diff", 5));
+            }
+            if self.following {
+                parts.push(("← crew", 3));
+            }
+        }
+        parts.push((panes::ESC_BACK, 0));
+        Footer::hints(&parts)
     }
 }
 
@@ -862,7 +864,13 @@ impl View for SessionView {
             0 => width,
             mark => width.saturating_sub(mark + 2),
         };
-        panes::draw_footer(buf, footer, self.footer(room, theme), &mark, theme);
+        panes::draw_footer(
+            buf,
+            footer,
+            self.footer(room, ctx.state, theme),
+            &mark,
+            theme,
+        );
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome {
@@ -884,17 +892,14 @@ impl View for SessionView {
                 return ViewOutcome::Consumed;
             }
             KeyCode::Char('s') if plain => {
+                if let Some(why) = super::steer_refusal(state, &self.run, &self.session) {
+                    return ViewOutcome::Notice(why);
+                }
                 self.steer = Some(String::new());
                 return ViewOutcome::Consumed;
             }
             KeyCode::Char('t') if plain => {
-                return match session.and_then(|session| session.card.clone()) {
-                    Some(card) => ViewOutcome::ConfirmTakeOver {
-                        run: self.run.clone(),
-                        card,
-                    },
-                    None => ViewOutcome::Notice("This agent has no card to take over".into()),
-                };
+                return super::take_over(state, &self.run, &self.session);
             }
             KeyCode::Char('r') if plain => {
                 return ViewOutcome::Request(ViewRequest::Raw {
@@ -960,6 +965,51 @@ mod tests {
         view.rows = rows;
         view.page = page;
         view
+    }
+
+    /// Keys that can't act aren't offered, and pressed anyway they say why in plain words:
+    /// an agent of a merged run can't be steered or taken over.
+    #[test]
+    fn a_merged_runs_agent_offers_only_the_keys_that_act() {
+        let mut state = crate::mentions::fixture::working_state();
+        let run = state.attached.clone().unwrap();
+        let session = SessionKey::numbered(1);
+        let theme = Theme::dark();
+        let offered = |view: &SessionView, state: &AppState| match view.footer(120, state, &theme) {
+            Footer::Hints(hints) => hints.into_iter().map(|(hint, _)| hint).collect(),
+            Footer::Line(_) => Vec::<String>::new(),
+        };
+        let mut view = SessionView::new(run.clone(), session.clone());
+        let keys = offered(&view, &state);
+        for hint in ["s steer", "t take over", "d diff"] {
+            assert!(keys.iter().any(|key| key == hint), "{hint}: {keys:?}");
+        }
+
+        let held = state.runs.get_mut(&run).unwrap();
+        held.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+        held.sessions.get_mut(&session).unwrap().status = SessionStatus::Done;
+        let keys = offered(&view, &state);
+        for hint in ["s steer", "t take over"] {
+            assert!(!keys.iter().any(|key| key == hint), "{hint}: {keys:?}");
+        }
+        assert!(keys.iter().any(|key| key == "d diff"), "{keys:?}");
+        let ctx = ViewCtx {
+            theme: &theme,
+            state: &state,
+            now: Instant::now(),
+        };
+        for c in ['t', 's'] {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            let ViewOutcome::Notice(why) = view.handle_key(key, &ctx) else {
+                panic!("{c} says why");
+            };
+            assert_eq!(
+                why,
+                "That run already merged, so its agents are done. To build on its result, \
+                 type /follow-up and what you want next."
+            );
+        }
+        assert!(view.steer.is_none());
     }
 
     #[test]

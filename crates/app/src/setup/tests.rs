@@ -120,7 +120,7 @@ fn header_for(agents: &[FoundAgent]) -> Header {
                 problem: None,
             },
         },
-        runs_going: 0,
+        runs: RunCounts::default(),
     }
 }
 
@@ -279,6 +279,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         "approvals.escalation.mode",
         "approvals.budget.mode",
         "approvals.change_request.mode",
+        "approvals.full_auto",
     ]);
     let mut keys = written_keys(&text);
     keys.sort();

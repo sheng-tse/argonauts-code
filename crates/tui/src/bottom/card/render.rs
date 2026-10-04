@@ -4,7 +4,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{CardNote, CardOption, CardPrompt, OptionKind};
+use super::{ANSWER_PLACEHOLDER, CardNote, CardOption, CardPrompt, OptionKind};
+use crate::bottom::composer::{Composer, ComposerState};
 use crate::render::RenderCtx;
 use crate::text::marks::decorative;
 use crate::text::{
@@ -183,6 +184,9 @@ impl CardPrompt {
         lines: &mut Vec<Line<'static>>,
         ctx: &RenderCtx<'_>,
     ) -> Option<(u16, u16)> {
+        if self.is_answer_field() {
+            return self.push_field(lines, ctx);
+        }
         let theme = ctx.theme;
         let width = usize::from(ctx.width);
         let dim = theme.style(Role::Dim);
@@ -214,7 +218,13 @@ impl CardPrompt {
             let rest = [Span::raw(" ".repeat(prefix_width))];
 
             if let Some(note) = self.note.as_ref().filter(|note| note.option == index) {
-                let (rows, at) = self.note_rows(note, option, &first, &rest, ctx);
+                let label = sanitize_line(&option.label).trim().to_owned();
+                let (rows, at) = if option.kind == OptionKind::FreeText {
+                    editor_rows(&note.editor, &label, self.focused, &first, &rest, ctx)
+                } else {
+                    let placeholder = sanitize_line(&self.note_placeholder).trim().to_owned();
+                    note_rows(&note.text(), Some(&label), &placeholder, &first, &rest, ctx)
+                };
                 cursor = at.map(|(column, row)| (column, row + lines.len() as u16));
                 lines.extend(rows);
             } else {
@@ -296,66 +306,38 @@ impl CardPrompt {
         spans
     }
 
-    /// An empty note shows its placeholder with the cursor on its first letter, as Claude
-    /// Code's amend field does. The cursor is (column, row) within the returned rows.
-    fn note_rows(
+    /// A free-text question's answer field, open from the start, with the `❯` Claude Code's
+    /// input has, and the input's own editor. Until the card has the keys it shows no cursor,
+    /// and the input under it is where typing goes.
+    fn push_field(
         &self,
-        note: &CardNote,
-        option: &CardOption,
-        first: &[Span<'static>],
-        rest: &[Span<'static>],
+        lines: &mut Vec<Line<'static>>,
         ctx: &RenderCtx<'_>,
-    ) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    ) -> Option<(u16, u16)> {
         let theme = ctx.theme;
-        let width = usize::from(ctx.width);
-        let block = Style::new().add_modifier(Modifier::REVERSED);
-        let text = sanitize_line(&note.text).into_owned();
-        let label = sanitize_line(&option.label).trim().to_owned();
-        let free_text = option.kind == OptionKind::FreeText;
-        let mut spans = Vec::new();
-        if !free_text {
-            spans.push(Span::styled(format!("{label}, "), theme.style(Role::Card)));
-        }
-
-        if text.trim().is_empty() {
-            let placeholder = if free_text {
-                label
-            } else {
-                sanitize_line(&self.note_placeholder).trim().to_owned()
-            };
-            let first_letter = placeholder.graphemes(true).next().unwrap_or(" ").to_owned();
-            spans.push(Span::styled(first_letter.clone(), block));
-            spans.push(Span::styled(
-                placeholder[first_letter.len().min(placeholder.len())..].to_owned(),
-                theme.style(Role::Dim),
-            ));
-            let rows = wrap_spans(&spans, width, first, rest);
-            let at = find_block(&rows);
-            return (rows, at);
-        }
-
-        spans.push(Span::raw(text.clone()));
-        let mut rows = wrap_spans(&spans, width, first, rest);
-        // The wrap drops trailing spaces, so the cursor goes after them by hand, onto a row of
-        // its own when the last row is full.
-        let trailing = str_width(&text) - str_width(text.trim_end());
-        let used = rows.last().map_or(0, |row| spans_width(&row.spans));
-        if used + trailing + 1 > width {
-            rows.push(Line::from(rest.to_vec()));
-        }
-        let last = rows.len() - 1;
-        let row = &mut rows[last];
-        let column = spans_width(&row.spans) + if used + trailing < width { trailing } else { 0 };
-        if column > spans_width(&row.spans) {
-            row.spans
-                .push(Span::raw(" ".repeat(column - spans_width(&row.spans))));
-        }
-        row.spans.push(Span::styled(" ", block));
-        let at = (
-            u16::try_from(column).unwrap_or(u16::MAX),
-            u16::try_from(last).unwrap_or(u16::MAX),
+        let pointer = if self.focused {
+            format!("{} ", theme.glyphs.prompt)
+        } else {
+            "  ".to_owned()
+        };
+        let first = [
+            Span::raw("  "),
+            Span::styled(pointer, theme.style(Role::Card)),
+        ];
+        let rest = [Span::raw("    ")];
+        let editor = self.note.as_ref().map(|note| &note.editor);
+        let empty = Composer::field();
+        let (rows, at) = editor_rows(
+            editor.unwrap_or(&empty),
+            ANSWER_PLACEHOLDER,
+            self.focused,
+            &first,
+            &rest,
+            ctx,
         );
-        (rows, Some(at))
+        let top = lines.len() as u16;
+        lines.extend(rows);
+        at.map(|(column, row)| (column, row + top))
     }
 
     fn hint_line(&self, ctx: &RenderCtx<'_>) -> Line<'static> {
@@ -378,6 +360,18 @@ impl CardPrompt {
             } else {
                 hint("Space to tick · Enter to send", "Esc to go back");
             }
+        } else if self.is_answer_field() {
+            parts.push(Part::new(part("Enter to send"), KEEP));
+            let esc = sanitize_line(&self.esc_hint).trim().to_owned();
+            if !esc.is_empty() {
+                parts.push(Part::joined(dot(), part(&esc), 1));
+            }
+            // Once you've typed, Shift+Tab stays with the field, so a draft isn't lost to the
+            // lead answering in full auto.
+            let empty = self.note.as_ref().is_none_or(CardNote::is_empty);
+            if self.needs_you && self.offers_shift_tab && empty {
+                parts.push(Part::joined(dot(), part("shift+tab to cycle modes"), 0));
+            }
         } else if let Some(note) = &self.note {
             let free_text = self
                 .options
@@ -387,6 +381,18 @@ impl CardPrompt {
                 hint("Enter to answer", "Esc to close");
             } else {
                 hint("Enter to choose with the note", "Esc to close the note");
+            }
+        } else if self.stray_typing {
+            // The input is hidden while the card has the keys, so this is where letters
+            // typed at it are told where they went.
+            parts.push(Part::new(
+                part("Typing waits while the card has the keys"),
+                KEEP,
+            ));
+            parts.push(Part::joined(dot(), part("↑↓ to choose"), 0));
+            let esc = sanitize_line(&self.esc_hint).trim().to_owned();
+            if !esc.is_empty() {
+                parts.push(Part::joined(dot(), part(&esc), 1));
             }
         } else if let Some(armed) = self.armed.and_then(|index| self.options.get(index)) {
             let verb = lowercase_first(sanitize_line(&armed.label).trim());
@@ -415,6 +421,11 @@ impl CardPrompt {
             if !esc.is_empty() {
                 parts.push(Part::joined(dot(), part(&esc), 1));
             }
+            // As Claude Code's prompts offer it: full auto, a press or two away, settles a run's
+            // card that waits on you.
+            if self.needs_you && self.offers_shift_tab {
+                parts.push(Part::joined(dot(), part("shift+tab to cycle modes"), 0));
+            }
         }
         fit_parts(vec![Span::raw("  ")], &parts, usize::from(ctx.width))
     }
@@ -426,6 +437,116 @@ fn lowercase_first(text: &str) -> String {
         Some(first) => first.to_lowercase().chain(chars).collect(),
         None => String::new(),
     }
+}
+
+/// Columns the editor draws its own prompt in, which the card's prefix takes the place of.
+const EDITOR_PROMPT: usize = 2;
+
+/// An answer in the input's own editor, drawn as the input draws it without its rules, after
+/// `first` on its first row and `rest` on the others. Empty, it shows `placeholder`. The cursor
+/// is (column, row) within the returned rows, while the card has the keys.
+fn editor_rows(
+    editor: &Composer,
+    placeholder: &str,
+    focused: bool,
+    first: &[Span<'static>],
+    rest: &[Span<'static>],
+    ctx: &RenderCtx<'_>,
+) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    let lead = spans_width(first).max(spans_width(rest));
+    let room = usize::from(ctx.width).saturating_sub(lead).max(1) + EDITOR_PROMPT;
+    let inner = RenderCtx {
+        width: u16::try_from(room).unwrap_or(u16::MAX),
+        ..*ctx
+    };
+    let view = editor.render_with(
+        &inner,
+        ComposerState {
+            focused,
+            busy: false,
+            offer_example: false,
+            placeholder: Some(placeholder),
+        },
+    );
+    // The first and last lines are the input's rules.
+    let rows = view.lines.len().saturating_sub(2);
+    let lines = view
+        .lines
+        .iter()
+        .skip(1)
+        .take(rows)
+        .enumerate()
+        .map(|(index, row)| {
+            let mut spans = if index == 0 { first } else { rest }.to_vec();
+            spans.extend(row.spans.iter().skip(1).cloned());
+            Line::from(spans)
+        })
+        .collect();
+    let (column, row) = view.cursor;
+    let cursor = focused.then(|| {
+        let column = usize::from(column).saturating_sub(EDITOR_PROMPT) + lead;
+        (
+            u16::try_from(column).unwrap_or(u16::MAX),
+            row.saturating_sub(1),
+        )
+    });
+    (lines, cursor)
+}
+
+/// A note or an answer being typed, after `label` when it notes an option. Empty, it shows
+/// its placeholder with the cursor on its first letter, as Claude Code's amend field does. The
+/// cursor is (column, row) within the returned rows.
+fn note_rows(
+    text: &str,
+    label: Option<&str>,
+    placeholder: &str,
+    first: &[Span<'static>],
+    rest: &[Span<'static>],
+    ctx: &RenderCtx<'_>,
+) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    let theme = ctx.theme;
+    let width = usize::from(ctx.width);
+    let block = Style::new().add_modifier(Modifier::REVERSED);
+    let text = sanitize_line(text).into_owned();
+    let mut spans = Vec::new();
+    if let Some(label) = label {
+        spans.push(Span::styled(format!("{label}, "), theme.style(Role::Card)));
+    }
+
+    if text.trim().is_empty() {
+        let first_letter = placeholder.graphemes(true).next().unwrap_or(" ").to_owned();
+        spans.push(Span::styled(first_letter.clone(), block));
+        spans.push(Span::styled(
+            placeholder[first_letter.len().min(placeholder.len())..].to_owned(),
+            theme.style(Role::Dim),
+        ));
+        let rows = wrap_spans(&spans, width, first, rest);
+        let at = find_block(&rows);
+        return (rows, at);
+    }
+
+    spans.push(Span::raw(text.clone()));
+    let mut rows = wrap_spans(&spans, width, first, rest);
+    // The wrap drops trailing spaces, so the cursor goes after them by hand, onto a row of its
+    // own when the last row is full.
+    let trailing = str_width(&text) - str_width(text.trim_end());
+    let used = rows.last().map_or(0, |row| spans_width(&row.spans));
+    if used + trailing + 1 > width {
+        rows.push(Line::from(rest.to_vec()));
+    }
+    let last = rows.len() - 1;
+    let row = &mut rows[last];
+    let column = spans_width(&row.spans) + if used + trailing < width { trailing } else { 0 };
+    if column > spans_width(&row.spans) {
+        row.spans
+            .push(Span::raw(" ".repeat(column - spans_width(&row.spans))));
+    }
+    row.spans.push(Span::styled(" ", block));
+    let at = (
+        u16::try_from(column).unwrap_or(u16::MAX),
+        u16::try_from(last).unwrap_or(u16::MAX),
+    );
+    (rows, Some(at))
 }
 
 fn find_block(rows: &[Line<'static>]) -> Option<(u16, u16)> {

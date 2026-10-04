@@ -74,6 +74,9 @@ pub struct Composer {
     vim_pending: vim::Pending,
     visual: Option<vim::Visual>,
     burst: PasteBurst,
+    /// A field inside a card, such as a question's answer: `!` is a letter there, and nothing
+    /// typed in it joins the input's history.
+    field: bool,
 }
 
 /// A draft put aside while history shows, with the mode it was typed in.
@@ -139,6 +142,15 @@ pub struct ComposerView {
 impl Composer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The input's editor for a field inside a card: new lines, pastes, and the cursor keys work
+    /// as in the input, with no shell mode and no history.
+    pub fn field() -> Self {
+        Self {
+            field: true,
+            ..Self::default()
+        }
     }
 
     /// With pasted blocks as their labels.
@@ -283,6 +295,12 @@ impl Composer {
         layout::cursor_position(&self.draft.text, &rows, self.draft.cursor, width).0 == 0
     }
 
+    pub fn cursor_on_last_row(&self) -> bool {
+        let (rows, width) = self.rows();
+        let (row, _) = layout::cursor_position(&self.draft.text, &rows, self.draft.cursor, width);
+        row + 1 >= rows.len()
+    }
+
     /// A key without its arrival time, so it never counts toward a paste burst. Use
     /// [`handle_key_at`](Self::handle_key_at) for keys from the terminal.
     pub fn handle_key(&mut self, key: KeyEvent) -> ComposerEvent {
@@ -306,7 +324,7 @@ impl Composer {
             KeyCode::Enter if shift || alt => self.insert("\n"),
             KeyCode::Enter if ctrl => ComposerEvent::Unhandled,
             KeyCode::Enter => self.enter(),
-            KeyCode::Char('!') if ctrl == alt && self.is_empty() && !self.shell => {
+            KeyCode::Char('!') if ctrl == alt && self.is_empty() && !self.shell && !self.field => {
                 self.shell = true;
                 self.edited()
             }
@@ -361,6 +379,7 @@ impl Composer {
         // lines, such as a notebook cell or Markdown that opens with `![image]`, stays text.
         if self.is_empty()
             && !self.shell
+            && !self.field
             && !text.contains('\n')
             && let Some(command) = text.strip_prefix('!')
         {

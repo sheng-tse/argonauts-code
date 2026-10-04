@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context as _, anyhow, bail};
 use argonauts_conductor::{AgentCheck, AgentStatus, DoctorReport, doctor};
 use argonauts_core::NoteLevel;
-use argonauts_core::api::{ConductorApi, RunState};
+use argonauts_core::api::ConductorApi;
 use argonauts_core::app::{AgentReady, AppEvent};
 use argonauts_core::clock::SystemClock;
 use argonauts_core::paths::{create_private_dir_all, old_global_config_path, write_private_file};
@@ -207,35 +207,47 @@ fn services(env: &Arc<AppEnv>, settings: &AppSettings) -> anyhow::Result<AppServ
 /// the agent as the rest of the screen will.
 async fn greet(ctx: &mut Ctx) {
     crate::controller::names::send(ctx);
-    let going = runs_going(ctx.services.conductor.as_ref()).await;
-    let hello = welcome(ctx, going).await;
+    let runs = run_counts(ctx.services.conductor.as_ref()).await;
+    let hello = welcome(ctx, runs).await;
     ctx.send(hello);
     for (level, text) in start_notices(ctx) {
         ctx.notice(level, text);
     }
 }
 
-/// Runs going or waiting in this repo. A list that fails counts none.
-pub(crate) async fn runs_going(conductor: &dyn ConductorApi) -> u32 {
+/// This repo's runs the header names: those that go on without you, and those that wait on you.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RunCounts {
+    pub going: u32,
+    pub need_you: u32,
+}
+
+/// The runs the agent panel shows rows for, so the header never counts one you can't find
+/// there. A list that fails counts none.
+pub(crate) async fn run_counts(conductor: &dyn ConductorApi) -> RunCounts {
     let Ok(runs) = conductor.list().await else {
-        return 0;
+        return RunCounts::default();
     };
-    let going = runs.iter().filter(|run| {
-        matches!(
-            run.state,
-            RunState::Running | RunState::Pausing | RunState::Parked
-        )
-    });
-    u32::try_from(going.count()).unwrap_or(u32::MAX)
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let shown: Vec<_> = runs
+        .iter()
+        .filter(|run| crate::controller::runs::going_or_waiting(run))
+        .collect();
+    let need_you = shown.iter().filter(|run| run.needs_you()).count();
+    RunCounts {
+        going: count(shown.len() - need_you),
+        need_you: count(need_you),
+    }
 }
 
-/// The startup header: version, repo, preset, each harness's readiness, and runs going.
-pub(crate) async fn welcome(ctx: &Ctx, runs_going: u32) -> AppEvent {
+/// The startup header: version, repo, preset, each harness's readiness, and the runs going or
+/// waiting on you.
+pub(crate) async fn welcome(ctx: &Ctx, runs: RunCounts) -> AppEvent {
     let report = doctor(&builtin_adapters(), ctx.settings()).await;
-    welcome_from(ctx, &report, runs_going)
+    welcome_from(ctx, &report, runs)
 }
 
-pub(crate) fn welcome_from(ctx: &Ctx, report: &DoctorReport, runs_going: u32) -> AppEvent {
+pub(crate) fn welcome_from(ctx: &Ctx, report: &DoctorReport, runs: RunCounts) -> AppEvent {
     let settings = ctx.settings();
     let (default_agent, effort) = header_agent(ctx);
     AppEvent::Welcome {
@@ -243,7 +255,8 @@ pub(crate) fn welcome_from(ctx: &Ctx, report: &DoctorReport, runs_going: u32) ->
         repo: ctx.env.display_repo(),
         preset: settings.preset.clone(),
         agents: readiness(report, settings),
-        runs_going,
+        runs_going: runs.going,
+        runs_need_you: runs.need_you,
         example_prompt: example_prompt(&ctx.env.repo_root),
         default_agent: Some(default_agent),
         effort,
@@ -565,7 +578,7 @@ mod tests {
             default_agent,
             effort,
             ..
-        } = welcome_from(&parts.ctx, &report, 0)
+        } = welcome_from(&parts.ctx, &report, RunCounts::default())
         else {
             panic!("a welcome");
         };
@@ -592,7 +605,7 @@ mod tests {
             default_agent,
             effort,
             ..
-        } = welcome_from(&parts.ctx, &report, 0)
+        } = welcome_from(&parts.ctx, &report, RunCounts::default())
         else {
             panic!("a welcome");
         };
@@ -682,7 +695,7 @@ mod tests {
             default_agent,
             effort,
             ..
-        } = welcome_from(&parts.ctx, &report, 0)
+        } = welcome_from(&parts.ctx, &report, RunCounts::default())
         else {
             panic!("a welcome");
         };
@@ -749,7 +762,9 @@ mod tests {
                 problem: None,
             },
         };
-        let AppEvent::Welcome { example_prompt, .. } = welcome_from(&parts.ctx, &report, 0) else {
+        let AppEvent::Welcome { example_prompt, .. } =
+            welcome_from(&parts.ctx, &report, RunCounts::default())
+        else {
             panic!("a welcome");
         };
         assert_eq!(

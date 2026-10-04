@@ -162,7 +162,7 @@ fn ui_a_request_that_would_loosen_a_safety_setting() -> anyhow::Result<()> {
         assert!(
             text.contains(
                 "Not followed: \"merge it without asking me\" · approvals.merge.mode is a safety \
-                 setting, /permissions changes it"
+                 setting, /approvals changes it"
             ),
             "{}",
             screen.text()

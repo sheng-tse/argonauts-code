@@ -276,7 +276,8 @@ pub async fn stop(host: &Host) -> EngineResult<()> {
     Ok(())
 }
 
-/// Records `ApprovalModeChanged`; later decision points carry it as `mode_override`.
+/// Records `ApprovalModeChanged`; later decision points carry it as `mode_override`. Full auto
+/// also settles the cards already waiting for you, since nothing waits there.
 pub fn approval_mode(host: &Host, mode: ApprovalMode) -> EngineResult<()> {
     host.record(
         None,
@@ -286,6 +287,9 @@ pub fn approval_mode(host: &Host, mode: ApprovalMode) -> EngineResult<()> {
             by: Party::User,
         }),
     )?;
+    if mode == ApprovalMode::FullAuto {
+        checkpoints::full_auto::settle_open(host)?;
+    }
     Ok(())
 }
 

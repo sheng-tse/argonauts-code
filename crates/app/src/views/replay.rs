@@ -14,7 +14,6 @@ use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{IntegrationEvent, RunEvent, RunEventKind};
 use argonauts_core::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
 use argonauts_core::sanitize::sanitize_for_terminal;
-use argonauts_core::settings::approvals::ApprovalMode;
 
 /// Chat turns a resumed run repeats word for word; older ones are one Ctrl+O away.
 const REPLAY_TURNS: usize = 6;
@@ -199,21 +198,16 @@ fn lifecycle_line(lifecycle: &RunLifecycle) -> Option<String> {
         RunLifecycle::Resumed(resumed) => Some(
             match resumed.cause {
                 ResumeCause::User => "Resumed",
-                ResumeCause::Answer => "Resumed with your answer",
+                ResumeCause::Answer => "Resumed for your answer",
                 ResumeCause::VendorBack => "Resumed as an agent came back",
                 ResumeCause::AskTimeout => "Resumed as a handoff question timed out",
                 ResumeCause::Crash => "Resumed after a crash",
             }
             .to_owned(),
         ),
-        RunLifecycle::ApprovalModeChanged { mode, .. } => Some(format!(
-            "Approval mode set to {}",
-            match mode {
-                ApprovalMode::Supervised => "supervised",
-                ApprovalMode::Shadow => "shadow",
-                ApprovalMode::Auto => "auto",
-            }
-        )),
+        RunLifecycle::ApprovalModeChanged { mode, .. } => {
+            Some(format!("Approval mode set to {}", mode.label()))
+        }
         RunLifecycle::Parked { reason, .. } => Some(format!(
             "Parked · {}",
             match reason {

@@ -97,6 +97,7 @@ fn header() -> SessionHeader {
             ready("Antigravity CLI", false, "not signed in"),
         ],
         runs_going: 0,
+        runs_need_you: 0,
     }
 }
 

@@ -185,10 +185,13 @@ pub fn check_mode_line(pty: &Pty) -> anyhow::Result<()> {
 }
 
 /// [`check_mode_line`], or a card that needs you holding the keys, as a parked run's question
-/// does when the app opens.
+/// does once you open its run.
 fn check_ready(pty: &Pty) -> anyhow::Result<()> {
-    check_screen_for(pty, r"shift\+tab to cycle|Enter or a number to answer")
+    check_screen_for(pty, &format!(r"shift\+tab to cycle|{CARD_HAS_THE_KEYS}"))
 }
+
+/// The key line of a card that has the keys, which then stands in for the input.
+const CARD_HAS_THE_KEYS: &str = r"(?m)^  Enter to \w+.* · Esc to ";
 
 fn check_screen_for(pty: &Pty, ready: &str) -> anyhow::Result<()> {
     let screen = pty.wait_for(ready, WAIT)?;
@@ -251,7 +254,7 @@ pub fn answer_card(pty: &mut Pty, number: char) -> anyhow::Result<()> {
 /// A card that needs you takes the keys once the input is quiet, so a command typed while it
 /// waits needs it set aside first, as you would with Esc.
 pub fn set_card_aside(pty: &mut Pty) -> anyhow::Result<()> {
-    pty.wait_for(r"Enter or a number to answer", WAIT)?;
+    pty.wait_for(CARD_HAS_THE_KEYS, WAIT)?;
     pty.press(Key::Esc)?;
     pty.wait_for(r"needs you · ↑ to answer", WAIT).map(drop)
 }

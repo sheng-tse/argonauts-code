@@ -3,9 +3,11 @@
 
 use std::time::{Duration, Instant};
 
+use argonauts_core::RunId;
+use argonauts_core::api::{RunState as ApiRunState, RunSummary};
 use argonauts_core::app::StatusLine;
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::run::{ParkReason, RunOutcome};
+use argonauts_core::events::run::{ParkReason, RunMode, RunOutcome};
 use argonauts_core::events::session::{VendorAgentState, VendorWorkflow};
 use argonauts_core::settings::budget::BudgetUnit;
 use argonauts_core::views::vendor_workflow_id;
@@ -40,20 +42,30 @@ pub fn sync(cx: &mut Cx<'_>) {
 }
 
 /// One row per run still going, oldest first, then one for each workflow an agent's own CLI
-/// runs in it. A finished run leaves the panel once nothing waits on you;
-/// its closing answer is at the end of the conversation.
+/// runs in it. The runs this screen doesn't hold, from an earlier session, come
+/// first. A finished run leaves the panel once nothing waits on you; its closing answer
+/// is at the end of the conversation.
 pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<WorkflowRow> {
+    let mut background: Vec<&RunSummary> = state
+        .background
+        .iter()
+        .filter(|run| !state.runs.contains_key(&run.run))
+        .collect();
+    background.sort_by(|a, b| a.updated.cmp(&b.updated).then_with(|| a.run.cmp(&b.run)));
     let mut runs: Vec<&RunState> = state
         .runs
         .values()
         .filter(|run| run.finished.is_none() || !run.checkpoints.is_empty())
         .collect();
     runs.sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.id.cmp(&b.id)));
-    runs.into_iter()
-        .flat_map(|run| {
-            std::iter::once(run_row(run, state.status.as_ref(), wall, now))
-                .chain(vendor_rows(run, wall, now))
-        })
+    let held = runs.into_iter().flat_map(|run| {
+        std::iter::once(run_row(run, state.status.as_ref(), wall, now))
+            .chain(vendor_rows(run, wall, now))
+    });
+    background
+        .into_iter()
+        .map(background_row)
+        .chain(held)
         .collect()
 }
 
@@ -112,14 +124,45 @@ fn run_name(run: &RunState) -> String {
     {
         return named.to_owned();
     }
-    let title = run.title.trim();
-    let workflow = workflow_name(run);
+    row_name(workflow_name(run), &run.title, &run.id)
+}
+
+fn row_name(workflow: Option<&str>, title: &str, run: &RunId) -> String {
+    let title = title.trim();
     match (workflow, title.is_empty()) {
         (Some(workflow), false) => format!("{workflow} · {title}"),
         (Some(workflow), true) => workflow.to_owned(),
         (None, false) => title.to_owned(),
-        (None, true) => run.id.to_string(),
+        (None, true) => run.to_string(),
     }
+}
+
+/// A run this screen doesn't hold, drawn from its summary. Its agents and time aren't known
+/// here, so the row names it as it'll be named once open, says whether it needs you, and shows
+/// what it spent. Enter on it opens the run, and its card with it.
+fn background_row(run: &RunSummary) -> WorkflowRow {
+    let state = if run.needs_you() {
+        WorkflowRowState::NeedsYou
+    } else if matches!(run.state, ApiRunState::Pausing | ApiRunState::Parked) {
+        WorkflowRowState::Paused
+    } else {
+        WorkflowRowState::Running
+    };
+    let workflow = match run.mode {
+        RunMode::Solo => Some("solo"),
+        RunMode::Crew => Some(run.preset.trim()).filter(|preset| !preset.is_empty()),
+    };
+    let name = run
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| row_name(workflow, &run.title, &run.run), str::to_owned);
+    let mut row = WorkflowRow::new(run.run.as_str(), name, state);
+    row.timed = false;
+    row.tokens = run.spent.output_tokens;
+    row.spend = panes::spend(&run.spent);
+    row
 }
 
 /// The run's own workflow. Before the lead picks it, a goal alignment runs ahead of it, so the
@@ -464,5 +507,80 @@ mod tests {
             run_row(&run, None, wall, now).spend.as_deref(),
             Some("$0.21")
         );
+    }
+
+    fn parked_summary(id: &str, waiting: bool) -> RunSummary {
+        RunSummary {
+            run: RunId::new(id).unwrap(),
+            title: "hi".into(),
+            mode: RunMode::Solo,
+            preset: "peer-crew".into(),
+            state: ApiRunState::Parked,
+            stopped_at: String::new(),
+            updated: OffsetDateTime::UNIX_EPOCH,
+            spent: Spend::default(),
+            sessions_to_resume: 0,
+            waiting: if waiting {
+                vec![argonauts_core::names::CheckpointId::numbered(1)]
+            } else {
+                Vec::new()
+            },
+            live: false,
+            remind: false,
+            name: None,
+        }
+    }
+
+    /// The mode line counts a card that waits in a run not on screen, until the run opens and
+    /// its card counts with the rest.
+    #[test]
+    fn a_card_waiting_in_a_run_not_on_screen_counts_as_needing_you() {
+        let wall = OffsetDateTime::now_utc();
+        let mut state = AppState::default();
+        state.background = vec![
+            parked_summary("run-001", true),
+            parked_summary("run-002", false),
+        ];
+        assert_eq!(state.background_waiting(), 1);
+        state
+            .runs
+            .insert(RunId::new("run-001").unwrap(), run_state("run-001", wall));
+        assert_eq!(state.background_waiting(), 0);
+    }
+
+    #[test]
+    fn a_run_not_on_screen_keeps_its_row_until_it_is_opened() {
+        let wall = OffsetDateTime::now_utc();
+        let now = Instant::now();
+        let mut state = AppState::default();
+        state.background = vec![
+            parked_summary("run-001", true),
+            parked_summary("run-002", false),
+        ];
+        state
+            .runs
+            .insert(RunId::new("run-003").unwrap(), run_state("run-003", wall));
+
+        let rows = run_rows(&state, wall, now);
+        let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
+        assert_eq!(keys, ["run-001", "run-002", "run-003"]);
+        assert_eq!(rows[0].state, WorkflowRowState::NeedsYou);
+        assert_eq!(rows[0].name, "solo · hi");
+        assert!(!rows[0].timed, "its time isn't known here");
+        assert_eq!(rows[1].state, WorkflowRowState::Paused);
+        assert!(rows[2].timed);
+
+        // A run that has its own name goes by it, as its row will once it's open.
+        state.background[1].name = Some("say-hi".to_owned());
+        assert_eq!(run_rows(&state, wall, now)[1].name, "say-hi");
+
+        // Opened, the run is held here, and its own row takes the place of the summary's.
+        state
+            .runs
+            .insert(RunId::new("run-001").unwrap(), run_state("run-001", wall));
+        let rows = run_rows(&state, wall, now);
+        let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
+        assert_eq!(keys, ["run-002", "run-001", "run-003"]);
+        assert!(rows[1].timed);
     }
 }

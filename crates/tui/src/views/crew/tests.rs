@@ -129,6 +129,7 @@ fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
         default_agent: None,
         agents: Vec::new(),
         runs_going: 1,
+        runs_need_you: 0,
         example_prompt: None,
     });
     let held = state.runs.keys().next().unwrap().clone();
@@ -357,5 +358,109 @@ fn c_carries_a_finished_agent_on_and_leaves_a_working_one_to_take_over() {
             );
         }
         other => panic!("{other:?}"),
+    }
+}
+
+fn hints(footer: &Footer) -> Vec<String> {
+    match footer {
+        Footer::Hints(hints) => hints.iter().map(|(hint, _)| hint.clone()).collect(),
+        Footer::Line(_) => Vec::new(),
+    }
+}
+
+/// Enter on any agent opens its transcript, finished or running, even once its run merged,
+/// and only a working agent offers `x stop`.
+#[test]
+fn enter_opens_any_agents_transcript_finished_or_running() {
+    let mut state = crate::mentions::fixture::working_state();
+    let run = state.attached.clone().unwrap();
+    let held = |state: &AppState| {
+        let panel = rows::panel(state, now());
+        let agents: Vec<(CrewRow, bool)> = ordered(&panel, CrewTab::All)
+            .into_iter()
+            .filter_map(|row| match &row.target {
+                CrewTarget::Agent { run, session } => Some((
+                    row.clone(),
+                    state.session(run, session).unwrap().is_running(),
+                )),
+                _ => None,
+            })
+            .collect();
+        (panel, agents)
+    };
+    let (panel, agents) = held(&state);
+    assert!(
+        agents.iter().any(|(_, running)| !running),
+        "one has finished"
+    );
+    let view = CrewView::new(&state);
+    for (row, running) in &agents {
+        assert!(
+            matches!(view.open(&state, &panel, row), ViewOutcome::Open(_)),
+            "{}",
+            row.title
+        );
+        let offered = hints(&view.footer(&state, Some(row)));
+        assert_eq!(offered.iter().any(|hint| hint == "x stop"), *running);
+    }
+
+    state.runs.get_mut(&run).unwrap().finished =
+        Some(argonauts_core::events::run::RunOutcome::Merged);
+    for session in state.runs.get_mut(&run).unwrap().sessions.values_mut() {
+        session.status = SessionStatus::Done;
+    }
+    let (panel, agents) = held(&state);
+    for (row, _) in &agents {
+        assert!(matches!(
+            view.open(&state, &panel, row),
+            ViewOutcome::Open(_)
+        ));
+        assert!(!hints(&view.footer(&state, Some(row))).contains(&"x stop".to_owned()));
+    }
+}
+
+/// An agent the screen doesn't hold opens from its run's log, and a run that finished shows
+/// its workflow, whose agents open the same way, rather than trying to resume.
+#[test]
+fn an_agent_or_run_the_screen_doesnt_hold_opens_from_its_log() {
+    let state = AppState::default();
+    let view = CrewView::new(&state);
+    let panel = rows::panel(&state, now());
+    let run = RunId::new("run-20261004-043029-d8bb").unwrap();
+    let agent = CrewRow {
+        target: CrewTarget::Agent {
+            run: run.clone(),
+            session: SessionKey::numbered(1),
+        },
+        repo: panel.repo.clone(),
+        ..row("Wire the flag", CrewState::Done, "done")
+    };
+    assert!(matches!(
+        view.open(&state, &panel, &agent),
+        ViewOutcome::Request(ViewRequest::Agent { run: asked, session })
+            if asked == run && session == SessionKey::numbered(1)
+    ));
+    // A stopped or parked run can go on, so Enter resumes it. One that finished, was
+    // abandoned (which reads as done), or failed can't, so Enter opens its workflow.
+    for (done, opens_workflow) in [
+        (CrewState::Done, true),
+        (CrewState::Failed, true),
+        (CrewState::Stopped, false),
+        (CrewState::Ready, false),
+    ] {
+        let whole = CrewRow {
+            target: CrewTarget::Run { run: run.clone() },
+            repo: panel.repo.clone(),
+            ..row("A run", done, "")
+        };
+        let outcome = view.open(&state, &panel, &whole);
+        assert_eq!(
+            matches!(
+                outcome,
+                ViewOutcome::Request(ViewRequest::Workflow { workflow: None, .. })
+            ),
+            opens_workflow,
+            "{done:?}"
+        );
     }
 }

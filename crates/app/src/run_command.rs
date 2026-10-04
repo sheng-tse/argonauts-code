@@ -380,12 +380,18 @@ fn plain_line(event: &RunEvent) -> Option<String> {
     }
 }
 
+/// The note's line, then its detail indented under it, since a log keeps both.
 fn note_line(note: &Note) -> String {
-    match note.level {
-        NoteLevel::Info => note.text.clone(),
-        NoteLevel::Warn => format!("warning: {}", note.text),
-        NoteLevel::Error => format!("error: {}", note.text),
+    let mut line = match note.level {
+        NoteLevel::Info => note.line().to_owned(),
+        NoteLevel::Warn => format!("warning: {}", note.line()),
+        NoteLevel::Error => format!("error: {}", note.line()),
+    };
+    for detail in note.detail().into_iter().flat_map(str::lines) {
+        line.push_str("\n  ");
+        line.push_str(detail.trim_end());
     }
+    line
 }
 
 /// An enum's snake-case name, as its serde form spells it.
@@ -437,6 +443,7 @@ mod tests {
             waiting: Vec::new(),
             live: false,
             remind: false,
+            name: None,
         }
     }
 

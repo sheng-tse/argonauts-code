@@ -42,12 +42,17 @@ pub fn build(
                 Some(&point.fingerprint),
                 now,
             );
+            // The full auto switch covers the checkpoints a run opens, not a promotion.
+            let own = match kind {
+                CheckpointKind::RecipePromotion => point.mode,
+                _ => approvals.run_mode(point.mode),
+            };
             let mode = if supervised_everywhere {
                 ApprovalMode::Supervised
-            } else if point.mode == ApprovalMode::Auto && tally.demoted {
+            } else if own.goes_ahead() && tally.demoted {
                 ApprovalMode::Shadow
             } else {
-                point.mode
+                own
             };
             Some(ApprovalRow {
                 kind,
@@ -63,6 +68,7 @@ pub fn build(
         points,
         spot_checks_waiting: records::spot_checks_waiting(records),
         approver: approvals.approver.model.clone(),
+        warnings: Vec::new(),
     }
 }
 
@@ -92,5 +98,21 @@ mod tests {
                 .iter()
                 .all(|row| row.mode == ApprovalMode::Supervised)
         );
+    }
+
+    /// The full auto switch shows on every checkpoint a run opens, and not on a promotion.
+    #[test]
+    fn the_full_auto_switch_shows_on_each_run_checkpoint() {
+        let mut settings = Settings::default();
+        settings.approvals.full_auto = true;
+        let now = datetime!(2026-09-29 10:00 UTC);
+        let view = build(&[], &settings, now, false);
+        for row in &view.points {
+            let expected = match row.kind {
+                CheckpointKind::RecipePromotion => ApprovalMode::Auto,
+                _ => ApprovalMode::FullAuto,
+            };
+            assert_eq!(row.mode, expected, "{:?}", row.kind);
+        }
     }
 }

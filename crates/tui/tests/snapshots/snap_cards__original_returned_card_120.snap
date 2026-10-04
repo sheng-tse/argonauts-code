@@ -14,4 +14,4 @@ expression: text(&lines)
     5. Take over myself
     6. Show the diff since handoff-1
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Enter to choose · Tab to add a note · Esc to set aside · shift+tab to cycle modes

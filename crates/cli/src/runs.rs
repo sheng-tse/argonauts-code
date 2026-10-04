@@ -243,6 +243,7 @@ mod tests {
                 waiting: Vec::new(),
                 live: false,
                 remind: false,
+                name: None,
             }],
         };
         assert_eq!(

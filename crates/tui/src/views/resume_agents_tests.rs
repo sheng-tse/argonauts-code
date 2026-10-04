@@ -37,6 +37,7 @@ fn run(id: &str, hours_ago: i64, state: RunPhase) -> RunSummary {
         waiting: Vec::new(),
         live: false,
         remind: false,
+        name: None,
     }
 }
 

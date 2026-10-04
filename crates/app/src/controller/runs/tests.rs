@@ -9,6 +9,8 @@ use argonauts_core::names::CheckpointId;
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{CardId, NoteLevel, Spend};
+use argonauts_testkit::FakeSession;
+use serde_json::json;
 use time::OffsetDateTime;
 
 use super::rig::{Rig, finished, parked, question, resumed, run_id};
@@ -360,6 +362,115 @@ async fn shift_tab_sets_the_mode_now_and_after_the_next_start() {
     );
 }
 
+/// Full auto is the mode after auto in the Shift+Tab cycle and a setting too: chosen either
+/// way, the mode line says so, and every run started after Shift+Tab is raised to it.
+#[tokio::test]
+async fn full_auto_comes_from_shift_tab_or_the_settings() {
+    let set = Rig::with(true, |global| {
+        let points = [
+            "goal",
+            "plan",
+            "merge",
+            "recipe_promotion",
+            "escalation",
+            "budget",
+            "change_request",
+        ];
+        let file: String = points
+            .iter()
+            .map(|point| format!("[approvals.{point}]\nmode = \"full_auto\"\n"))
+            .collect();
+        std::fs::create_dir_all(global.parent().expect("a config dir")).expect("the dir");
+        std::fs::write(global, file).expect("the config");
+    });
+    assert_eq!(
+        status_line(&set.ctx, "", status_parts(&set.runs)).approval_mode,
+        ApprovalMode::FullAuto
+    );
+
+    let mut rig = Rig::new();
+    let first = rig.start("First change").await;
+    run_commands::approval_mode(&mut rig.ctx, &mut rig.runs, ApprovalMode::FullAuto)
+        .await
+        .expect("the mode changes");
+    let second = rig.start("Second change").await;
+    assert_eq!(
+        rig.approvals.calls(),
+        [
+            ApprovalCall::Mode {
+                run: first,
+                mode: ApprovalMode::FullAuto
+            },
+            ApprovalCall::Mode {
+                run: second,
+                mode: ApprovalMode::FullAuto
+            }
+        ]
+    );
+    assert_eq!(
+        status_parts(&rig.runs).approval_mode,
+        Some(ApprovalMode::FullAuto)
+    );
+}
+
+/// A run you resume after Shift+Tab chose full auto runs in full auto, as one started then
+/// does, and the mode line goes by the run's own mode, not this session's pick, while it shows.
+#[tokio::test]
+async fn a_resumed_run_takes_the_mode_shift_tab_chose() {
+    let mut rig = Rig::new();
+    let run = rig.start("Add --json to export").await;
+    rig.until(is_mode(AppMode::Working { run: run.clone() }))
+        .await;
+    assert!(
+        rig.conductor
+            .push(&run, finished(&run, 1, RunOutcome::Stopped))
+            .await
+    );
+    rig.until(is_mode(AppMode::Idle)).await;
+    rig.conductor.end(&run, false);
+    rig.settle().await;
+
+    run_commands::approval_mode(&mut rig.ctx, &mut rig.runs, ApprovalMode::FullAuto)
+        .await
+        .expect("the mode changes");
+    assert_eq!(rig.approvals.calls(), [], "the stopped run isn't asked");
+    assert_eq!(
+        status_parts(&rig.runs).approval_mode,
+        Some(ApprovalMode::FullAuto),
+        "with the run over, the mode line says what the next one gets"
+    );
+
+    super::resume_and_attach(&mut rig.ctx, &mut rig.runs, &run)
+        .await
+        .expect("the run resumes");
+    assert_eq!(
+        rig.approvals.calls(),
+        [ApprovalCall::Mode {
+            run: run.clone(),
+            mode: ApprovalMode::FullAuto
+        }]
+    );
+    assert_eq!(
+        status_parts(&rig.runs).approval_mode,
+        Some(ApprovalMode::FullAuto)
+    );
+}
+
+/// The mode line shows the run on screen's own mode: one that never changed it shows your
+/// settings', whatever Shift+Tab picked for runs not yet on screen.
+#[tokio::test]
+async fn the_mode_line_goes_by_the_run_on_screen() {
+    let mut rig = Rig::new();
+    let run = rig.start("Add --json to export").await;
+    rig.until(is_mode(AppMode::Working { run: run.clone() }))
+        .await;
+    rig.runs.approval_mode = Some(ApprovalMode::FullAuto);
+    if let Some(attached) = rig.runs.attached.as_mut() {
+        attached.approval_mode = None;
+    }
+    assert_eq!(status_parts(&rig.runs).approval_mode, None);
+}
+
 /// `argonauts run` opens the app on its run, and the app closes once that run finishes.
 #[tokio::test]
 async fn a_finished_run_sends_a_recap_and_closes_the_app() {
@@ -442,45 +553,264 @@ fn summary(run: &str, state: RunState, live: bool) -> RunSummary {
         waiting: Vec::new(),
         live,
         remind: false,
+        name: None,
     }
 }
 
-#[tokio::test]
-async fn opening_reattaches_the_newest_going_run_and_names_the_rest() {
-    let mut rig = Rig::new();
-    rig.conductor.set_runs(vec![
-        summary("run-009", RunState::Running, true),
-        summary("run-008", RunState::Merged, false),
-        summary("run-007", RunState::Pausing, true),
-        summary("run-006", RunState::Crashed, false),
-    ]);
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
-        .await
-        .expect("the app opens");
-    assert_eq!(attached(&rig.runs), Some(&run_id("run-009")));
-    assert!(
-        rig.conductor
-            .calls()
-            .contains(&Call::Reattach(run_id("run-009")))
-    );
-    let events = rig.settle().await;
-    let texts: Vec<&str> = events
+fn waiting_on_you(run: &str) -> RunSummary {
+    RunSummary {
+        waiting: vec![CheckpointId::numbered(1)],
+        stopped_at: "question, waiting for you".to_owned(),
+        ..summary(run, RunState::Parked, false)
+    }
+}
+
+fn notices(events: &[AppEvent]) -> Vec<&str> {
+    events
         .iter()
         .filter_map(|event| match event {
             AppEvent::Notice { text, .. } => Some(text.as_str()),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// `argonauts` opens a new conversation, as `claude` does. The runs going or waiting on you get
+/// panel rows, and nothing on them is resumed, watched, or answered.
+#[tokio::test]
+async fn a_plain_start_opens_a_new_conversation_and_lists_the_runs_for_the_panel() {
+    let mut rig = Rig::new();
+    rig.conductor.set_runs(vec![
+        waiting_on_you("run-009"),
+        summary("run-008", RunState::Merged, false),
+        summary("run-007", RunState::Running, true),
+        summary("run-006", RunState::Crashed, false),
+    ]);
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+        .await
+        .expect("the app opens");
+    assert_eq!(attached(&rig.runs), None);
+    assert_eq!(rig.conductor.calls(), [Call::List]);
+    let events = rig.settle().await;
+    let rows: Vec<&str> = events
+        .iter()
+        .find_map(|event| match event {
+            AppEvent::BackgroundRuns { runs } => {
+                Some(runs.iter().map(|run| run.run.as_str()).collect())
+            }
+            _ => None,
+        })
+        .expect("the panel's rows");
+    assert_eq!(rows, ["run-009", "run-007"]);
     assert!(
-        texts
-            .iter()
-            .any(|text| text.starts_with("2 runs are going")),
-        "{texts:?}"
+        !events.iter().any(|event| matches!(
+            event,
+            AppEvent::Attached { .. } | AppEvent::Mode { .. } | AppEvent::Run { .. }
+        )),
+        "{events:#?}"
     );
+    let texts = notices(&events);
     assert!(
         texts.iter().any(|text| text.contains("run-006 crashed")),
         "{texts:?}"
     );
+    assert!(
+        !texts.iter().any(|text| text.contains("is on screen")),
+        "{texts:?}"
+    );
+
+    // The rows go again only when they change.
+    super::refresh_background(&rig.ctx);
+    let again = rig.settle().await;
+    assert!(
+        !again
+            .iter()
+            .any(|event| matches!(event, AppEvent::BackgroundRuns { .. })),
+        "{again:#?}"
+    );
+    rig.conductor
+        .set_runs(vec![summary("run-007", RunState::Running, true)]);
+    super::refresh_background(&rig.ctx);
+    let changed = rig.settle().await;
+    assert!(
+        changed.iter().any(|event| matches!(
+            event,
+            AppEvent::BackgroundRuns { runs } if runs.len() == 1
+        )),
+        "{changed:#?}"
+    );
+}
+
+/// `argonauts -c` carries the newest conversation on and, like a plain start, leaves the runs
+/// where they are, as panel rows. A run opens only from its row or /resume.
+#[tokio::test]
+async fn continuing_leaves_the_runs_as_panel_rows() {
+    let mut rig = Rig::new();
+    rig.conductor.set_runs(vec![
+        waiting_on_you("run-009"),
+        summary("run-008", RunState::Merged, false),
+        summary("run-007", RunState::Pausing, true),
+        summary("run-006", RunState::Crashed, false),
+    ]);
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Continue)
+        .await
+        .expect("the app opens");
+    assert_eq!(attached(&rig.runs), None);
+    assert_eq!(rig.conductor.calls(), [Call::List]);
+    let events = rig.settle().await;
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            AppEvent::Attached { .. } | AppEvent::Mode { .. } | AppEvent::Run { .. }
+        )),
+        "{events:#?}"
+    );
+    let texts = notices(&events);
+    assert!(
+        texts.iter().any(|text| text.contains("run-006 crashed")),
+        "{texts:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::BackgroundRuns { runs }
+                if runs.iter().map(|run| run.run.as_str()).eq(["run-009", "run-007"])
+        )),
+        "{events:#?}"
+    );
+}
+
+/// The header counts only the runs the agent panel shows rows for: a run parked with nothing
+/// for you has no row, so it isn't counted as going.
+#[tokio::test]
+async fn the_header_counts_only_the_runs_the_panel_shows() {
+    let rig = Rig::new();
+    rig.conductor.set_runs(vec![
+        waiting_on_you("run-009"),
+        summary("run-008", RunState::Parked, false),
+        summary("run-007", RunState::Running, true),
+        summary("run-006", RunState::Merged, false),
+    ]);
+    let counts = crate::startup::run_counts(rig.conductor.as_ref()).await;
+    assert_eq!(
+        counts,
+        crate::startup::RunCounts {
+            going: 1,
+            need_you: 1,
+        }
+    );
+}
+
+/// A run off screen that starts waiting on you, or finishes, says so once in the transcript,
+/// and its row changes with it.
+#[tokio::test]
+async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
+    let mut rig = Rig::new();
+    rig.conductor.set_runs(vec![
+        summary("run-009", RunState::Running, true),
+        summary("run-008", RunState::Running, true),
+    ]);
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+        .await
+        .expect("the app opens");
+    rig.settle().await;
+
+    rig.conductor.set_runs(vec![
+        waiting_on_you("run-009"),
+        summary("run-008", RunState::Merged, false),
+    ]);
+    super::refresh_background(&rig.ctx);
+    let events = rig.settle().await;
+    assert_eq!(
+        notices(&events),
+        [
+            "run-009 needs you · /resume run-009",
+            "run-008 is merged. /resume run-008 shows it."
+        ]
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::BackgroundRuns { runs }
+                if runs.iter().map(|run| run.run.as_str()).eq(["run-009"])
+        )),
+        "{events:#?}"
+    );
+
+    // Said once: the same list again says nothing.
+    super::refresh_background(&rig.ctx);
+    assert!(notices(&rig.settle().await).is_empty());
+}
+
+/// A run parked on a question at start waits while you chat: what you type goes to the new
+/// conversation, and only opening the run brings its card back.
+#[tokio::test]
+async fn a_question_parked_at_start_waits_while_you_chat() {
+    let mut harness = Harness::start_with(HarnessOptions {
+        runs: vec![waiting_on_you("run-009")],
+        ..HarnessOptions::default()
+    })
+    .await;
+    harness
+        .until(|event| matches!(event, AppEvent::BackgroundRuns { .. }))
+        .await;
+    harness.agent.push(FakeSession::structured(
+        json!({"kind": "answer", "answer_markdown": "Hi.", "estimate": null}),
+    ));
+    harness.submit("hi").await;
+    let mode = harness
+        .until(|event| matches!(event, AppEvent::Mode { .. }))
+        .await;
+    assert!(
+        matches!(
+            mode,
+            AppEvent::Mode {
+                mode: AppMode::Answering { .. }
+            }
+        ),
+        "{mode:?}"
+    );
+    harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Mode {
+                    mode: AppMode::Idle
+                }
+            )
+        })
+        .await;
+    let calls = harness.conductor.calls();
+    assert!(
+        calls.iter().all(|call| *call == Call::List),
+        "the parked run was touched: {calls:?}"
+    );
+    assert!(harness.approvals.calls().is_empty());
+    assert!(
+        !harness
+            .seen()
+            .iter()
+            .any(|event| matches!(event, AppEvent::Attached { .. })),
+        "{:#?}",
+        harness.seen()
+    );
+
+    // Enter on its panel row, or `/resume run-009`, opens it.
+    harness
+        .send(UiCommand::Resume {
+            run: Some(run_id("run-009")),
+        })
+        .await;
+    harness
+        .until(|event| matches!(event, AppEvent::Attached { summary, .. } if summary.run == run_id("run-009")))
+        .await;
+    assert!(
+        harness
+            .conductor
+            .calls()
+            .contains(&Call::Resume(run_id("run-009")))
+    );
+    harness.exit().await;
 }
 
 #[tokio::test]
@@ -555,7 +885,7 @@ async fn resume_recap_code_built_from_digest() {
         ..StatusSummary::default()
     };
     rig.conductor.set_status(digest.clone());
-    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Resume(run.clone()))
         .await
         .expect("the app opens");
     assert_eq!(attached(&rig.runs), Some(&run));
@@ -704,4 +1034,25 @@ async fn resume_replay_condensed_from_events() {
         "{:#?}",
         rig.seen()
     );
+}
+
+/// A run that won't resume says why in plain words, without its id or the error's own prefix.
+#[test]
+fn a_run_that_wont_resume_says_why_without_its_id() {
+    use argonauts_core::api::ApiError;
+
+    let run = argonauts_core::RunId::new("run-20261004-043029-d8bb").unwrap();
+    let merged = super::resume_error(ApiError::Merged(run.clone())).to_string();
+    assert!(
+        merged.starts_with("That run already merged, so it can't resume."),
+        "{merged}"
+    );
+    let refused =
+        super::resume_error(ApiError::Refused("the run's log can't be read".into())).to_string();
+    assert_eq!(
+        refused,
+        "Couldn't resume that run: the run's log can't be read."
+    );
+    let gone = super::resume_error(ApiError::NoRun(run.clone())).to_string();
+    assert!(!gone.contains(run.as_str()), "{gone}");
 }

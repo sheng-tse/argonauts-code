@@ -9,7 +9,7 @@ use argonauts_core::events::card::{CardBudget, CardKind, CardSpec, CardState};
 use argonauts_core::events::checkpoint::{
     AnswerAction, AnswerOption, BudgetPacket, CheckpointDecided, CheckpointKind, CheckpointOpened,
     CheckpointPacket, EscalationPacket, FreeText, GoalPacket, MergePacket, MergeRow,
-    OriginalReturnedPacket, PausedCard, PlanPacket, VendorDownPacket,
+    OriginalReturnedPacket, PausedCard, PlanPacket, QuestionPacket, VendorDownPacket,
 };
 use argonauts_core::events::goal::{
     Assumption, ChoiceOption, Criterion, GoalFile, GoalQuestion, GoalSource,
@@ -21,11 +21,14 @@ use argonauts_core::events::run::Party;
 use argonauts_core::events::vendor::HandoffPlan;
 use argonauts_core::handoff::QualityDebt;
 use argonauts_core::limits::{Candidate, CostEstimate, TrackRecord};
-use argonauts_core::names::{CheckpointId, ChoiceId, DecisionId, RoleName, VendorId, WorkerRef};
+use argonauts_core::names::{
+    CheckpointId, ChoiceId, DecisionId, RoleName, SessionKey, VendorId, WorkerRef,
+};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::budget::{BudgetAmount, BudgetLineKind, BudgetUnit};
 use argonauts_core::settings::handoff::{HandoffMode, HandoffStrategy};
 use argonauts_core::settings::protocol::JudgingMethod;
+use argonauts_core::steps::StepName;
 use argonauts_core::steps::goal::DiffTag;
 use argonauts_core::steps::judgment::ReviewVerdict;
 use argonauts_core::{BudgetDimension, BudgetStatus, CardId, DiffStat, RunId, Spend};
@@ -36,7 +39,7 @@ use argonauts_tui::cards::{
 };
 use argonauts_tui::model::CardPrompt;
 use argonauts_tui::stability::{self, WIDTHS, samples};
-use argonauts_tui::state::{CardRow, RunState};
+use argonauts_tui::state::{CardRow, RunState, SessionState};
 use common::{assert_fits, still, text, theme};
 use ratatui::text::Line;
 use time::macros::datetime;
@@ -124,9 +127,10 @@ fn checkpoint(
 /// A run whose cards have owners, for the `Agent:` line.
 fn run_state() -> RunState {
     let mut run = RunState::new(run_id());
-    for (n, title, owner) in [
-        (2, "Redis store", "codex/gpt-5.6"),
-        (4, "Parser", "codex/gpt-5.6"),
+    // Each card's item is the name its plan gave it, which its owner's label uses.
+    for (n, title, item, owner) in [
+        (2, "Redis store", "redis-store", "codex/gpt-5.6"),
+        (4, "Parser", "parser", "codex/gpt-5.6"),
     ] {
         run.cards.insert(
             card(n),
@@ -144,7 +148,7 @@ fn run_state() -> RunState {
                 last_gate: None,
                 reviews: 0,
                 waiting_on_vendor: None,
-                item: None,
+                item: Some(item.into()),
             },
         );
     }
@@ -897,6 +901,77 @@ fn goal_card() {
     checkpoint_case("goal_approval", goal_approval(), None);
 }
 
+/// The bottom region with a goal question in it, under an input labeled with your preset.
+fn bottom_with(card: CardPrompt) -> argonauts_tui::bottom::BottomState {
+    let mut bottom = argonauts_tui::bottom::BottomState::new();
+    bottom.composer.label = Some("peer-crew · all hands".into());
+    bottom.card = Some(card);
+    bottom
+}
+
+fn bottom_lines(bottom: &argonauts_tui::bottom::BottomState, width: u16) -> Vec<Line<'static>> {
+    let theme = theme();
+    bottom.render(&still(&theme, width)).lines
+}
+
+/// While a goal question holds the keys it stands in for the input, as Claude Code's
+/// permission prompts do: the input's rules and prompt line go, and nothing else moves. Set
+/// aside, it shrinks to one line and the input comes back.
+#[test]
+fn a_goal_question_holding_the_keys_stands_in_for_the_input() {
+    let opened = goal_question();
+    let holding = bottom_with(focused(checkpoint_card(1, &opened, None)));
+    let waiting = bottom_with(checkpoint_card(1, &opened, None));
+    let mut aside = focused(checkpoint_card(1, &opened, None));
+    let esc = crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Esc);
+    aside.handle_key(esc);
+    assert!(aside.pinned);
+    let aside = bottom_with(aside);
+    for width in WIDTHS {
+        for bottom in [&holding, &waiting, &aside] {
+            let lines = bottom_lines(bottom, width);
+            stability::assert_lines(&lines, width);
+            assert_fits(&lines, width);
+        }
+        let held = text(&bottom_lines(&holding, width));
+        let input = text(&bottom_lines(&waiting, width));
+        assert!(!held.contains("peer-crew · all hands ─"), "{held}");
+        assert!(input.contains("peer-crew · all hands ─"), "{input}");
+        // Only the input's rows go: its two rules and its prompt line.
+        assert_eq!(
+            input.lines().count() - held.lines().count(),
+            3,
+            "{input}\n---\n{held}"
+        );
+    }
+    for width in [80, 100, 120] {
+        insta::assert_snapshot!(
+            format!("goal_question_holds_the_keys_{width}"),
+            text(&bottom_lines(&holding, width))
+        );
+        insta::assert_snapshot!(
+            format!("goal_question_set_aside_{width}"),
+            text(&bottom_lines(&aside, width))
+        );
+    }
+}
+
+/// With vim keys on, the input's `-- INSERT --` goes with the input while a card holds the
+/// keys, since nothing there is typed into.
+#[test]
+fn a_card_holding_the_keys_leaves_the_vim_mode_off() {
+    let mut holding = bottom_with(focused(checkpoint_card(1, &goal_question(), None)));
+    holding.mode.vim = Some(argonauts_tui::model::VimMode::Insert);
+    for width in [80, 100, 120] {
+        let lines = bottom_lines(&holding, width);
+        stability::assert_lines(&lines, width);
+        assert_fits(&lines, width);
+        let shown = text(&lines);
+        assert!(!shown.contains("-- INSERT --"), "{shown}");
+        insta::assert_snapshot!(format!("goal_question_holds_the_keys_vim_{width}"), shown);
+    }
+}
+
 /// Three scope questions whose recommended answer the differ listed last, as a live run had
 /// them: the card letters its answers again with the recommended one first.
 fn scope_questions() -> CheckpointOpened {
@@ -1247,4 +1322,117 @@ fn direct_turn_cards() {
     for choice in cards {
         holds_its_shape(|width| card_lines(&focused(choice_card(1, &choice)), width));
     }
+}
+
+/// A run whose card-001, `Fix money rounding`, Haiku 4.5 on Claude Code owns. The event names
+/// the CLI alone, as a solo run's question does, and the session says the model.
+fn money_run() -> RunState {
+    let mut run = RunState::new(run_id());
+    let mut row = CardRow::new(card(1), "Fix money rounding");
+    row.owner = Some(worker("claude-code"));
+    run.cards.insert(card(1), row);
+    let key = SessionKey::numbered(1);
+    let mut session = SessionState::new(
+        key.clone(),
+        worker("claude-code/claude-haiku-4-5"),
+        "claude-code",
+        RoleName::Owner,
+        datetime!(2026-10-04 9:00 UTC),
+    );
+    session.card = Some(card(1));
+    // The owner's label, as the crew names its build session.
+    session.step = Some(StepName::Build);
+    session.label = Some("build:fix-money".into());
+    run.sessions.insert(key.clone(), session);
+    run.session_order.push(key);
+    run
+}
+
+/// An agent's question as the crew opens it, titled by its card.
+fn agent_question(choices: &[&str], own_answer: bool) -> CheckpointOpened {
+    let mut options: Vec<AnswerOption> = choices
+        .iter()
+        .zip('a'..)
+        .map(|(label, key)| choose(key, label, label))
+        .collect();
+    if own_answer {
+        let key = char::from(b'a' + options.len() as u8);
+        options.push(option(key, "Type my own answer", AnswerAction::Answer));
+    }
+    let mut opened = checkpoint(
+        CheckpointKind::Question,
+        "Question from card-001",
+        CheckpointPacket::Question(QuestionPacket {
+            from: worker("claude-code"),
+            card: card(1),
+            text: "Should totals round half to even, as the ledger does, or half up?".into(),
+            options: choices.iter().map(ToString::to_string).collect(),
+        }),
+        options,
+    );
+    opened.card = Some(card(1));
+    opened.free_text = if own_answer {
+        FreeText::Answer
+    } else {
+        FreeText::None
+    };
+    opened
+}
+
+/// A question shows only what answers it: its field open when it's free text, its numbered
+/// choices, or its choices with your own answer last. It names the agent by label and model,
+/// never the card's id, and holds the keys with the input hidden.
+#[test]
+fn an_agent_question_shows_only_what_answers_it() {
+    let run = money_run();
+    let cases = [
+        ("agent_question_free_text", agent_question(&[], true)),
+        (
+            "agent_question_choices",
+            agent_question(&["Half to even", "Half up"], false),
+        ),
+        (
+            "agent_question_choices_and_own_answer",
+            agent_question(&["Half to even", "Half up"], true),
+        ),
+    ];
+    for (name, opened) in &cases {
+        let holding = bottom_with(focused(checkpoint_card(1, opened, Some(&run))));
+        for width in WIDTHS {
+            let lines = bottom_lines(&holding, width);
+            stability::assert_lines(&lines, width);
+            assert_fits(&lines, width);
+        }
+        for width in [80, 100, 120] {
+            let shown = text(&bottom_lines(&holding, width));
+            assert!(!shown.contains("card-001"), "{shown}");
+            assert!(!shown.contains("peer-crew · all hands"), "{shown}");
+            insta::assert_snapshot!(format!("{name}_{width}"), shown);
+        }
+    }
+    let free_text = text(&bottom_lines(
+        &bottom_with(focused(checkpoint_card(1, &cases[0].1, Some(&run)))),
+        100,
+    ));
+    assert!(
+        free_text.contains("◆ Question from build:fix-money"),
+        "{free_text}"
+    );
+    assert!(
+        free_text.contains("Agent: build:fix-money · Haiku 4.5 on Claude Code"),
+        "{free_text}"
+    );
+    assert!(!free_text.contains("Type my own answer"), "{free_text}");
+    assert!(!free_text.contains("Enter to type"), "{free_text}");
+
+    let mut hostile = agent_question(&[], true);
+    if let CheckpointPacket::Question(question) = &mut hostile.packet {
+        question.text = long_title();
+    }
+    holds_its_shape(|width| {
+        bottom_lines(
+            &bottom_with(focused(checkpoint_card(1, &hostile, Some(&run)))),
+            width,
+        )
+    });
 }

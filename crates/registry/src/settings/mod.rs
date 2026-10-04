@@ -2,6 +2,7 @@
 //! top-level `[handoff]` merged into each role, and the checks serde can't make.
 
 pub(crate) mod budget_units;
+pub(crate) mod full_auto;
 pub(crate) mod handoff;
 pub(crate) mod plain;
 pub(crate) mod preset_layer;

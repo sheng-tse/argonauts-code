@@ -398,7 +398,7 @@ fn a_long_note_wraps_under_the_option_and_grows_the_card() {
 fn a_note_edits_at_its_end_and_keeps_its_keys() {
     let mut card = focused(merge_card());
     let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
-    let text = |card: &CardPrompt| card.note.as_ref().unwrap().text.clone();
+    let text = |card: &CardPrompt| card.note.as_ref().unwrap().text();
     card.handle_key(key(KeyCode::Tab));
     for c in "squash the commits".chars() {
         card.handle_key(key(KeyCode::Char(c)));
@@ -427,7 +427,7 @@ fn esc_closes_the_note_before_pinning() {
     let mut card = focused(merge_card());
     card.handle_key(key(KeyCode::Tab));
     card.handle_key(key(KeyCode::Char('y')));
-    assert_eq!(card.note.as_ref().unwrap().text, "y");
+    assert_eq!(card.note.as_ref().unwrap().text(), "y");
     assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Moved);
     assert!(!card.pinned);
     assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
@@ -888,35 +888,30 @@ fn letters_typed_at_a_card_never_confirm_it() {
     assert_eq!(card.handle_key(key(KeyCode::Enter)), answered(1));
 }
 
+/// The input hides while a card has the keys, so the card's own key line names them.
 #[test]
-fn the_input_names_the_keys_while_a_card_has_them() {
+fn the_key_line_names_the_keys_while_a_card_has_them() {
+    let theme = theme();
+    let ctx = ctx(120, &theme);
     let mut card = focused(merge_card());
+    let first = last_row(&card, &ctx);
+    assert!(first.ends_with("Esc to set aside"), "{first}");
+    card.handle_key(key(KeyCode::Char('5')));
+    assert!(last_row(&card, &ctx).ends_with("· Esc to cancel"));
+    card.handle_key(key(KeyCode::Char('y')));
     assert_eq!(
-        card.input_hint(),
-        "↑↓ to move · Enter or a number to answer · Esc to set aside"
+        last_row(&card, &ctx),
+        "  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
     );
     card.esc_hint = "Esc to cancel".into();
     assert_eq!(
-        card.input_hint(),
-        "↑↓ to move · Enter or a number to answer · Esc to cancel"
+        last_row(&card, &ctx),
+        "  Typing waits while the card has the keys · ↑↓ to choose · Esc to cancel"
     );
+    // A deliberate key clears the stray letters, and the line names the card's keys again.
     card.esc_hint = ESC_HINT.into();
-    card.handle_key(key(KeyCode::Char('5')));
-    assert_eq!(
-        card.input_hint(),
-        "Enter or the same number to confirm · Esc to cancel"
-    );
-    card.handle_key(key(KeyCode::Char('y')));
-    assert_eq!(
-        card.input_hint(),
-        "Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
-    );
-    card.handle_key(key(KeyCode::Enter));
-    card.handle_key(key(KeyCode::Tab));
-    assert_eq!(card.input_hint(), "Typing goes into the card");
-    card.handle_key(key(KeyCode::Esc));
-    card.handle_key(key(KeyCode::Char('3')));
-    assert_eq!(card.input_hint(), "Space to tick the card's rows");
+    card.handle_key(key(KeyCode::Up));
+    assert_eq!(last_row(&card, &ctx), first);
 }
 
 /// A card that took the keys by itself, as one work waits on does from a quiet input.
@@ -957,9 +952,10 @@ fn a_paste_and_the_enter_after_it_never_answer() {
         CardEvent::Unhandled
     );
     assert!(card.focused && card.armed.is_none());
+    let theme = theme();
     assert_eq!(
-        card.input_hint(),
-        "Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+        last_row(&card, &ctx(120, &theme)),
+        "  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
     );
 }
 
@@ -1008,5 +1004,209 @@ fn the_unclear_request_leaves_the_keys_to_you_once_you_type() {
     assert!(
         card.take_keys(true),
         "a run's card takes them once it's quiet"
+    );
+}
+
+/// A question an agent asks in its own words, with nothing to pick from.
+fn free_text_question() -> CardPrompt {
+    let mut card = CardPrompt::new(
+        3,
+        "Question from build:greet",
+        "Question from build:greet",
+        vec![CardOption::free_text("Type my own answer")],
+    );
+    card.question = Some("Should greet.py say hello or hi?".into());
+    card.needs_you = true;
+    card
+}
+
+fn typed(card: &mut CardPrompt, text: &str) {
+    for c in text.chars() {
+        assert_eq!(card.handle_key(key(KeyCode::Char(c))), CardEvent::Moved);
+    }
+}
+
+/// A free-text question is its answer field, open from the start: no list of one, and no
+/// Enter to open it.
+#[test]
+fn a_free_text_question_shows_its_answer_field_open() {
+    let theme = theme();
+    let ctx = ctx(80, &theme);
+    let card = focused(free_text_question());
+    assert!(card.is_answer_field() && card.has_open_note());
+    let view = card.layout(&ctx);
+    let text = plain_text(&view.lines);
+    assert!(text.contains("\n  ❯ Type your answer\n"), "{text}");
+    assert!(!text.contains("1."), "{text}");
+    assert!(!text.contains("Type my own answer"), "{text}");
+    assert_eq!(last_row(&card, &ctx), "  Enter to send · Esc to set aside");
+    let row = view
+        .lines
+        .iter()
+        .position(|line| plain_text(std::slice::from_ref(line)).contains("Type your answer"))
+        .unwrap();
+    assert_eq!(
+        view.cursor,
+        Some((4, row as u16)),
+        "on the placeholder's first letter"
+    );
+
+    let waiting = free_text_question().layout(&ctx);
+    let text = plain_text(&waiting.lines);
+    assert!(text.contains("\n    Type your answer\n"), "{text}");
+    assert_eq!(waiting.cursor, None, "the input under it has the cursor");
+}
+
+#[test]
+fn the_answer_field_takes_every_key_and_enter_sends_it() {
+    let mut card = free_text_question();
+    assert!(card.take_keys(true));
+    assert_eq!(
+        card.handle_key(key(KeyCode::Enter)),
+        CardEvent::Moved,
+        "an empty answer sends nothing"
+    );
+    typed(&mut card, "1 hi, then j k");
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Tab] {
+        assert_eq!(card.handle_key(key(code)), CardEvent::Moved);
+    }
+    assert_eq!(card.note.as_ref().unwrap().text(), "1 hi, then j k");
+    assert_eq!(
+        card.handle_key(key(KeyCode::Enter)),
+        CardEvent::Answered {
+            index: 0,
+            note: Some("1 hi, then j k".into()),
+            checked: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn esc_sets_the_answer_field_aside_and_keeps_what_you_typed() {
+    let theme = theme();
+    let ctx = ctx(80, &theme);
+    let mut card = focused(free_text_question());
+    typed(&mut card, "hi");
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
+    assert!(card.pinned && !card.focused);
+    assert_eq!(card.lines(&ctx).len(), 1);
+    card.focus();
+    assert_eq!(card.note.as_ref().unwrap().text(), "hi");
+    assert!(plain_text(&card.lines(&ctx)).contains("  ❯ hi"));
+}
+
+#[test]
+fn down_hands_the_keys_back_from_an_answer_field_that_waits() {
+    let mut card = free_text_question();
+    card.needs_you = false;
+    card.focus();
+    assert_eq!(card.handle_key(key(KeyCode::Down)), CardEvent::BackToInput);
+    assert!(!card.focused && card.has_open_note());
+}
+
+/// The answer field is the input's own editor: Shift+Enter, Alt+Enter, and Ctrl+J start a new
+/// line, a paste keeps its line breaks, and the arrows, Home, and End move the cursor. Only
+/// Enter alone sends, and it sends every line.
+#[test]
+fn the_answer_field_edits_like_the_input() {
+    let theme = theme();
+    let ctx = ctx(80, &theme);
+    let mut card = focused(free_text_question());
+    typed(&mut card, "line one");
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+        let event = card.handle_key(KeyEvent::new(KeyCode::Enter, modifiers));
+        assert_eq!(event, CardEvent::Moved, "{modifiers:?} starts a new line");
+    }
+    let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+    assert_eq!(card.handle_key(ctrl_j), CardEvent::Moved);
+    assert_eq!(card.note.as_ref().unwrap().text(), "line one\n\n\n");
+
+    assert!(card.handle_paste("line two\n\n  line three"));
+    assert_eq!(
+        card.note.as_ref().unwrap().text(),
+        "line one\n\n\nline two\n\n  line three"
+    );
+    let text = plain_text(&card.layout(&ctx).lines);
+    assert!(text.contains("  ❯ line one\n"), "{text}");
+    assert!(text.contains("\n    line two\n"), "{text}");
+    assert!(text.contains("\n      line three"), "{text}");
+
+    // Home goes to the line's start, and ↑ to the row above, without leaving the card. Keys
+    // that have nowhere to go stay in the field too.
+    for code in [KeyCode::Home, KeyCode::Home, KeyCode::Up, KeyCode::Up] {
+        assert_eq!(card.handle_key(key(code)), CardEvent::Moved, "{code:?}");
+    }
+    typed(&mut card, "and ");
+    assert_eq!(card.handle_key(key(KeyCode::End)), CardEvent::Moved);
+    assert_eq!(card.handle_key(key(KeyCode::End)), CardEvent::Moved);
+    assert_eq!(card.handle_key(key(KeyCode::Left)), CardEvent::Moved);
+    assert_eq!(card.handle_key(key(KeyCode::Right)), CardEvent::Moved);
+    typed(&mut card, "!");
+    assert_eq!(
+        card.note.as_ref().unwrap().text(),
+        "line one\n\n\nand line two!\n\n  line three"
+    );
+    assert!(card.focused, "the arrows stayed in the field");
+
+    assert_eq!(
+        card.handle_key(key(KeyCode::Enter)),
+        CardEvent::Answered {
+            index: 0,
+            note: Some("line one\n\n\nand line two!\n\n  line three".into()),
+            checked: Vec::new(),
+        }
+    );
+}
+
+/// The own answer under a question's choices edits the same way, and `!` is a letter there,
+/// never the input's shell mode.
+#[test]
+fn an_own_answer_under_choices_edits_like_the_input_too() {
+    let mut card = CardPrompt::new(
+        4,
+        "Question from build:greet",
+        "Question from build:greet",
+        vec![
+            CardOption::new("hello"),
+            CardOption::free_text("Type my own answer"),
+        ],
+    );
+    card.focus();
+    assert_eq!(card.handle_key(key(KeyCode::Char('2'))), CardEvent::Moved);
+    typed(&mut card, "!both");
+    let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+    assert_eq!(card.handle_key(shift_enter), CardEvent::Moved);
+    typed(&mut card, "said once");
+    assert_eq!(
+        card.handle_key(key(KeyCode::Enter)),
+        CardEvent::Answered {
+            index: 1,
+            note: Some("!both\nsaid once".into()),
+            checked: Vec::new(),
+        }
+    );
+}
+
+/// With choices, the own answer stays their last option and opens its field in the card.
+#[test]
+fn choices_with_an_own_answer_keep_it_as_an_option() {
+    let mut card = CardPrompt::new(
+        4,
+        "Question from build:greet",
+        "Question from build:greet",
+        vec![
+            CardOption::new("hello"),
+            CardOption::new("hi"),
+            CardOption::free_text("Type my own answer"),
+        ],
+    );
+    assert!(!card.is_answer_field() && !card.has_open_note());
+    card.focus();
+    assert_eq!(card.handle_key(key(KeyCode::Char('3'))), CardEvent::Moved);
+    assert!(card.has_open_note());
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Moved);
+    assert!(
+        !card.has_open_note() && card.focused,
+        "Esc closes the field first"
     );
 }

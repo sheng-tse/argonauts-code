@@ -25,6 +25,7 @@ use argonauts_core::log::NoteLevel;
 use argonauts_core::names::{CheckpointId, WorkerRef, WorkflowId};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::protocol::UnderstandWhen;
+use argonauts_core::settings::workflows::LeadDesigns;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::Worker;
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
@@ -174,7 +175,7 @@ fn designing_crew(answers: Vec<Value>) -> anyhow::Result<(Crew, Arc<FakeWorker>)
         Vec::new(),
     );
     crew.settings.workflow = WorkflowRef::new("look-then-look");
-    crew.settings.workflows.lead_designs = true;
+    crew.settings.workflows.lead_designs = LeadDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.understand.when = UnderstandWhen::Lead;
     crew.repo
@@ -280,7 +281,7 @@ async fn two_invalid_designs_fall_back_with_a_note() -> anyhow::Result<()> {
 #[tokio::test]
 async fn lead_designs_off_asks_nothing() -> anyhow::Result<()> {
     let (mut crew, lead) = designing_crew(Vec::new())?;
-    crew.settings.workflows.lead_designs = false;
+    crew.settings.workflows.lead_designs = false.into();
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
     assert_eq!(designs(&lead), 0);
     let started = workflows_started(&outcome.events);
@@ -317,7 +318,7 @@ async fn solo_run_never_adapts() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     let lead = crew.answering_worker("claude-code/opus", "anthropic");
     crew.settings.workflows.adapt_at_phase_ends = true;
-    crew.settings.workflows.lead_designs = true;
+    crew.settings.workflows.lead_designs = true.into();
     let outcome = crew.start(RunMode::Solo, "fix the typo").await?;
     // It got past a phase end, where a crew run would have asked.
     assert!(
@@ -338,7 +339,7 @@ async fn crew_run_in_a_solo_workflow_never_adapts() -> anyhow::Result<()> {
     let lead = crew.answering_worker("claude-code/opus", "anthropic");
     crew.settings.workflow = WorkflowRef::new("solo");
     crew.settings.workflows.adapt_at_phase_ends = true;
-    crew.settings.workflows.lead_designs = false;
+    crew.settings.workflows.lead_designs = false.into();
     let outcome = crew.start(RunMode::Crew, "fix the typo").await?;
     // A crew run asks the go-ahead before it builds, here with nothing read.
     let (go_ahead, _reply) = support::recommended(&outcome.events)
@@ -931,7 +932,7 @@ async fn the_lead_designs_first_and_understand_opens_the_run() -> anyhow::Result
     let lead = responder(&mut crew, "claude-code/opus", "anthropic", picks, goal());
     responder(&mut crew, "codex", "openai", Vec::new(), goal());
     crew.settings.workflow = WorkflowRef::new("goal-then-look");
-    crew.settings.workflows.lead_designs = true;
+    crew.settings.workflows.lead_designs = LeadDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.repo
         .write(".argonauts/workflows/one-look.yaml", ONE_LOOK)?;

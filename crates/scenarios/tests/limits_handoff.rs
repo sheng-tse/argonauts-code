@@ -40,7 +40,7 @@ fn limits_usage_limit_handoff_card() -> anyhow::Result<()> {
     assert_eq!(candidate_workers(&card), ["codex", "antigravity-cli"]);
     let keys = option_keys(&card);
     assert!(in_order(&keys, &['a', 'b', 't', 'w', 'o', 'd']), "{keys:?}");
-    pty.wait_for("Agent: (?:\\S.* on )?Claude Code · owner · card-\\d+", WAIT)?;
+    pty.wait_for("Agent: build:\\S+ · (?:\\S.* on )?Claude Code", WAIT)?;
     for option in &card.options {
         pty.wait_for(&regex::escape(&option.label), WAIT)?;
     }

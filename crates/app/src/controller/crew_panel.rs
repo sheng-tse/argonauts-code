@@ -120,7 +120,8 @@ pub(crate) fn run_row(run: &RunSummary, repo: &str) -> CrewRow {
 }
 
 /// A parked or crashed run takes more once resumed, so it's ready; one that waits on a card
-/// needs you.
+/// needs you. A stopped run resumes; an abandoned one is over, as a merged one is, and only a
+/// follow-up builds on it.
 fn run_state(run: &RunSummary) -> CrewState {
     if !run.waiting.is_empty() {
         return CrewState::NeedsYou;
@@ -130,8 +131,10 @@ fn run_state(run: &RunSummary) -> CrewState {
         RunState::Running | RunState::Pausing | RunState::Parked | RunState::Crashed => {
             CrewState::Ready
         }
-        RunState::Merged | RunState::PullRequest | RunState::BranchLeft => CrewState::Done,
-        RunState::Stopped | RunState::Abandoned => CrewState::Stopped,
+        RunState::Merged | RunState::PullRequest | RunState::BranchLeft | RunState::Abandoned => {
+            CrewState::Done
+        }
+        RunState::Stopped => CrewState::Stopped,
         RunState::Failed => CrewState::Failed,
     }
 }
@@ -172,6 +175,7 @@ mod tests {
             },
             live,
             remind: false,
+            name: None,
         }
     }
 
@@ -184,7 +188,8 @@ mod tests {
         assert_eq!(state(RunState::Parked, false, false), CrewState::Ready);
         assert_eq!(state(RunState::Crashed, false, false), CrewState::Ready);
         assert_eq!(state(RunState::Merged, false, false), CrewState::Done);
-        assert_eq!(state(RunState::Abandoned, false, false), CrewState::Stopped);
+        assert_eq!(state(RunState::Abandoned, false, false), CrewState::Done);
+        assert_eq!(state(RunState::Stopped, false, false), CrewState::Stopped);
         assert_eq!(state(RunState::Failed, false, false), CrewState::Failed);
 
         let row = run_row(&summary(RunState::Parked, false, true), "~/web");

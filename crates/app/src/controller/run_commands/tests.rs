@@ -607,6 +607,7 @@ fn listed(run: &str, live: bool) -> RunSummary {
         waiting: Vec::new(),
         live,
         remind: false,
+        name: None,
     }
 }
 
@@ -1058,4 +1059,75 @@ async fn the_workflow_view_before_a_workflow_starts_says_so_plainly() {
         "This run hasn't started a workflow yet. Ctrl+T shows it once one starts."
     );
     assert!(!text.contains(run.as_str()), "{text}");
+}
+
+/// Refusals you meet by acting on a run that ended read as what happened and what you can do,
+/// never as an internal error line.
+#[test]
+fn refusals_from_an_ended_run_read_in_plain_words() {
+    use argonauts_core::api::ApiError;
+
+    let run = RunId::new("run-20261004-043029-d8bb").unwrap();
+    let merged = super::plain_refusal(&ApiError::Merged(run.clone())).unwrap();
+    assert_eq!(
+        merged,
+        "That run already merged, so its agents are done. To build on its result, type \
+         /follow-up and what you want next."
+    );
+    let gone = super::plain_refusal(&ApiError::NoRun(run.clone())).unwrap();
+    assert!(!gone.contains(run.as_str()), "{gone}");
+    assert_eq!(
+        super::plain_refusal(&ApiError::NotNow("the run isn't running".into())).as_deref(),
+        Some("The run isn't running.")
+    );
+    // A supervisor's own failure keeps its detail, under a plain verb at the call.
+    assert_eq!(
+        super::plain_refusal(&ApiError::Supervisor("socket closed".into())),
+        None
+    );
+}
+
+/// `/stop` on a run that merged and isn't on screen says so plainly, as `t` on its agent does,
+/// never `stopping run-…: run run-… is merged`.
+#[tokio::test]
+async fn stopping_a_merged_run_says_so_plainly() {
+    let mut rig = Rig::new();
+    let run = RunId::new("run-20261004-043029-d8bb").unwrap();
+    rig.conductor.merged(&run);
+    super::control::stop(&mut rig.ctx, &mut rig.runs, Some(run.clone()))
+        .await
+        .expect("a refusal is a notice");
+    let AppEvent::Notice { text, .. } = rig
+        .until(|event| matches!(event, AppEvent::Notice { .. }))
+        .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        text,
+        "That run already merged, so its agents are done. To build on its result, type \
+         /follow-up and what you want next."
+    );
+}
+
+/// A failure the run explains reads as what you were doing and why, without "refused:" or the
+/// run's id, and a run that won't resume says why the same way.
+#[test]
+fn failures_read_as_one_plain_line() {
+    use argonauts_core::api::ApiError;
+
+    let refused = ApiError::Refused("card-001 has no session to steer".into());
+    assert_eq!(
+        super::failure(&refused, "Couldn't steer card-001"),
+        "Couldn't steer card-001: card-001 has no session to steer."
+    );
+    let down = ApiError::Supervisor("socket closed".into());
+    assert_eq!(
+        super::failure(&down, "Couldn't pause the run"),
+        "Couldn't pause the run: its run didn't answer (socket closed)."
+    );
+    let run = RunId::new("run-20261004-043029-d8bb").unwrap();
+    let gone = super::failure(&ApiError::NoRun(run.clone()), "Couldn't resume that run");
+    assert!(!gone.contains(run.as_str()), "{gone}");
+    assert!(!gone.contains("refused:"), "{gone}");
 }

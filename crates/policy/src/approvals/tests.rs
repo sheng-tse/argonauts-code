@@ -228,6 +228,7 @@ fn point(kind: CheckpointKind) -> DecisionPoint {
         recipe: None,
         authors: Vec::new(),
         mode_override: None,
+        lead: None,
     }
 }
 
@@ -482,6 +483,53 @@ async fn auto_approval_reports_the_spot_check_and_asks_when_it_cannot_reserve() 
         h.autonomy.log(),
         ["note_shadow"],
         "a paused auto reserves nothing"
+    );
+}
+
+/// Nobody answers spot checks in full auto, so neither waiting ones nor a kind demoted to
+/// shadow stop an approval there; `auto-off` still does, and a plan or merge you keep for
+/// yourself with `presence = required` says so.
+#[tokio::test]
+async fn full_auto_goes_on_where_auto_would_pause_or_be_demoted() {
+    let mut full_auto = point(CheckpointKind::Merge);
+    full_auto.mode_override = Some(ApprovalMode::FullAuto);
+
+    let h = harness(auto_merge());
+    *h.autonomy.paused.lock().unwrap() = Some("5 spot checks waiting".to_owned());
+    let outcome = h
+        .policy
+        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .await;
+    assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "paused");
+    assert_eq!(h.autonomy.log(), ["reserve"]);
+
+    let h = harness(auto_merge());
+    *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::Shadow);
+    let outcome = h
+        .policy
+        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .await;
+    assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "demoted");
+
+    let h = harness(auto_merge());
+    *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::Supervised);
+    *h.autonomy.paused.lock().unwrap() = Some("auto is off".to_owned());
+    let outcome = h
+        .policy
+        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .await;
+    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "auto-off");
+
+    let mut settings = auto_merge();
+    settings.approvals.presence = Presence::Required;
+    let outcome = harness(settings)
+        .policy
+        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .await;
+    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "presence");
+    assert_eq!(
+        last_reason(&outcome),
+        Some("approvals.presence = required keeps it for you at the terminal".to_owned())
     );
 }
 
@@ -965,7 +1013,11 @@ fn auto_kind(kind: CheckpointKind, decide_with: DecideWith) -> Settings {
         CheckpointKind::Budget => set(&mut approvals.budget, decide_with),
         CheckpointKind::Escalation => set(&mut approvals.escalation, decide_with),
         CheckpointKind::ChangeRequest => set(&mut approvals.change_request, decide_with),
-        CheckpointKind::RecipePromotion => set(&mut approvals.recipe_promotion, decide_with),
+        CheckpointKind::RecipePromotion => {
+            let mut table = approvals.recipe_promotion.as_checkpoint();
+            set(&mut table, decide_with);
+            approvals.recipe_promotion = table.into();
+        }
         other => panic!("no table for {other:?}"),
     }
     settings
@@ -1296,6 +1348,53 @@ fn who_answers_takes_the_stricter_side() {
     assert_eq!(pick(Some(Lead), None), None);
     assert_eq!(pick(Some(Lead), Some(Lead)), Some(Lead));
     assert_eq!(pick(None, None), None);
+    // A model you picked holds while both name it; two different ones follow the mode.
+    let glm = Answerer::Model("openrouter/z-ai/glm-5".parse().expect("a worker"));
+    let gpt = Answerer::Model("codex/gpt-x".parse().expect("a worker"));
+    assert_eq!(
+        pick(Some(glm.clone()), Some(glm.clone())),
+        Some(glm.clone())
+    );
+    assert_eq!(pick(Some(glm.clone()), Some(gpt)), None);
+    assert_eq!(pick(Some(glm.clone()), Some(Lead)), None);
+    assert_eq!(pick(Some(glm), Some(You)), Some(You));
+}
+
+/// Full auto everywhere holds only while both say so, and two different hard-limit choices
+/// stop safely, or park when either side parks.
+#[test]
+fn the_full_auto_switch_and_hard_limits_take_the_stricter_side() {
+    use argonauts_core::settings::approvals::AtHardLimit;
+    let mut a = Settings::default();
+    let mut b = Settings::default();
+    a.approvals.full_auto = true;
+    assert!(!stricter(&a, &b).approvals.full_auto);
+    b.approvals.full_auto = true;
+    assert!(stricter(&a, &b).approvals.full_auto);
+
+    a.approvals.merge.at_hard_limit = AtHardLimit::OpenPullRequest;
+    b.approvals.merge.at_hard_limit = AtHardLimit::OpenPullRequest;
+    assert_eq!(
+        stricter(&a, &b).approvals.merge.at_hard_limit,
+        AtHardLimit::OpenPullRequest
+    );
+    // Changed mid-run, the run stops safely at a hard limit rather than wait for you, unless
+    // either side leaves it to you.
+    b.approvals.merge.at_hard_limit = AtHardLimit::SendBack;
+    assert_eq!(
+        stricter(&a, &b).approvals.merge.at_hard_limit,
+        AtHardLimit::Stop
+    );
+    a.approvals.merge.at_hard_limit = AtHardLimit::Stop;
+    assert_eq!(
+        stricter(&a, &b).approvals.merge.at_hard_limit,
+        AtHardLimit::Stop
+    );
+    b.approvals.merge.at_hard_limit = AtHardLimit::Park;
+    assert_eq!(
+        stricter(&a, &b).approvals.merge.at_hard_limit,
+        AtHardLimit::Park
+    );
 }
 
 #[test]

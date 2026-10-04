@@ -1014,6 +1014,7 @@ mod tests {
             preset: "peer-crew".into(),
             agents: Vec::new(),
             runs_going: 0,
+            runs_need_you: 0,
             example_prompt: example.map(str::to_owned),
             default_agent: None,
             effort: None,

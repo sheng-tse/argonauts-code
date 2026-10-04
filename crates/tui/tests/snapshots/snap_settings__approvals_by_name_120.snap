@@ -6,31 +6,31 @@ Approvals
 Who decides each checkpoint, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Full auto                                                                    off: each checkpoint keeps its own mode │
+│ ❯ For every checkpoint        off                      built-in             Full auto for every checkpoint a run op… │
+│   Who answers questions       GPT 5.6 on Codex         everywhere (global)  Who answers the crew's questions in you… │
+│     In full auto only; elsewhere you or the lead, by mode                                                            │
+│                                                                                                                      │
+│ Who checks                                                                   the cheapest model from another company │
+│   Approver model              cheapest, other company  built-in             The approver model, any model in the re… │
+│   Second approver             none, one approver       built-in             A second approver, from another vendor,… │
+│                                                                                                                      │
 │ Plan · auto · rules and approver both agree                                            0 matches in a row · 0 misses │
-│ ❯ How it's decided            auto                     everywhere (global)  The plan checkpoint: supervised waits f… │
+│   How it's decided            auto                     everywhere (global)  The plan checkpoint: supervised waits f… │
 │   Who decides in auto         both agree               built-in             The plan checkpoint: who decides in aut… │
 │   When auto doesn't approve   ask you                  built-in             The plan checkpoint: what happens when … │
+│   Hard limit in full auto     stop safely              built-in             The plan checkpoint: what a hard limit … │
 │   Judge's widest score gap    1.0                      built-in             Plan rules: the largest gap between one… │
 │                                                                                                                      │
 │ Merge · auto · your rules decide                                                       0 matches in a row · 0 misses │
 │   How it's decided            auto                     everywhere (global)  The merge checkpoint: supervised waits … │
 │   Who decides in auto         your rules               built-in             The merge checkpoint: who decides in au… │
 │   When auto doesn't approve   ask you                  built-in             The merge checkpoint: what happens when… │
+│   Hard limit in full auto     stop safely              built-in             The merge checkpoint: what a hard limit… │
 │   Merge with unreviewed debt  no                       built-in             Merge rules: whether auto may merge a c… │
-│                                                                                                                      │
-│ Approver                                                                     the cheapest model from another company │
-│   Model                       cheapest, other company  built-in             The approver model, any model in the re… │
 │                                                                                                                      │
 │ Spot checks                                                                                                          │
 │   None waiting                                                                                                       │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ↑↓ select · ⏎ edit · esc back

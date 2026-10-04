@@ -40,6 +40,7 @@ pub(super) fn party_words(party: &Party, names: &DisplayNames) -> Option<String>
         Party::User => Some("you".to_owned()),
         Party::Rules => Some("your rules".to_owned()),
         Party::Config => Some("your settings".to_owned()),
+        Party::FullAuto => Some("full auto".to_owned()),
         Party::Approver { model } | Party::Agent { worker: model, .. } => Some(names.worker(model)),
         Party::FrontEnd { client } => Some(client.clone()),
         Party::Conductor => None,

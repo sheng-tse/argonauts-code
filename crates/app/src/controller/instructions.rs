@@ -757,7 +757,7 @@ impl Checker<'_> {
     fn approvals(&self, instruction: &Instruction) -> Result<Effect, String> {
         if !plainly_asks_you(&instruction.says) {
             return Err(
-                "approvals are safety settings, /permissions and Shift+Tab change them".to_owned(),
+                "approvals are safety settings, /approvals and Shift+Tab change them".to_owned(),
             );
         }
         let mut effect = Effect {
@@ -778,7 +778,7 @@ impl Checker<'_> {
     fn merge(&self, instruction: &Instruction) -> Result<Effect, String> {
         if !plainly_asks_you(&instruction.says) {
             return Err(
-                "approvals.merge.mode is a safety setting, /permissions changes it".to_owned(),
+                "approvals.merge.mode is a safety setting, /approvals changes it".to_owned(),
             );
         }
         let mut effect = Effect {
@@ -1271,7 +1271,7 @@ fn for_the_lead(instruction: &Instruction) -> Result<Effect, String> {
             "asking",
         ])
     {
-        Some("approvals are safety settings, /permissions and Shift+Tab change them")
+        Some("approvals are safety settings, /approvals and Shift+Tab change them")
     } else if has(&["gate", "gates"]) || (has(&["test", "tests", "checks"]) && loosens) {
         Some("gates.run is a safety setting, /config changes the tests a change must pass")
     } else if has(&[

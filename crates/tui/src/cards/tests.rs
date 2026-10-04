@@ -1652,6 +1652,40 @@ fn a_card_that_shows_while_you_type_waits_for_the_draft() {
     );
 }
 
+/// An answered question's record goes by its title, which names the asking agent's label, so
+/// no card id shows around the card.
+#[test]
+fn an_answered_question_goes_by_its_label() {
+    let question = opened(
+        CheckpointKind::Question,
+        "Question from build:fix-money",
+        CheckpointPacket::Question(QuestionPacket {
+            from: worker("claude-code/opus"),
+            card: card_id(2),
+            text: "Round half up?".into(),
+            options: Vec::new(),
+        }),
+        vec![option(' ', "Type my own answer", AnswerAction::Answer)],
+    );
+    let mut answer = decided(AnswerAction::Answer, Party::User);
+    answer.text = Some("Yes, half up.".into());
+    let names = DisplayNames::default();
+    assert_eq!(
+        records::outcome(&question, &answer, None, &names),
+        "Question from build:fix-money answered · Yes, half up."
+    );
+    let chosen = decided(
+        AnswerAction::Choose {
+            value: "half up".into(),
+        },
+        Party::User,
+    );
+    assert_eq!(
+        records::outcome(&question, &chosen, None, &names),
+        "Question from build:fix-money answered · half up"
+    );
+}
+
 /// The goal's own-answer option opens a line inside the card, and only that answer goes out.
 #[test]
 fn a_goal_question_takes_your_own_answer_inside_the_card() {
@@ -1688,7 +1722,6 @@ fn a_goal_question_takes_your_own_answer_inside_the_card() {
     assert_eq!(own.kind, OptionKind::FreeText);
     screen.keys(&[KeyCode::Char('3')]);
     assert!(screen.card().has_open_note());
-    assert_eq!(screen.card().input_hint(), "Typing goes into the card");
     let typed: Vec<KeyCode> = "only behind a flag".chars().map(KeyCode::Char).collect();
     screen.keys(&typed);
     assert!(

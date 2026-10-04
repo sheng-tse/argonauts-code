@@ -160,7 +160,7 @@ async fn a_scripted_session_runs_end_to_end() {
         assert_eq!(
             script.command().await,
             UiCommand::ApprovalMode {
-                mode: ApprovalMode::Shadow
+                mode: ApprovalMode::Auto
             }
         );
         script.send_key(Event::FocusLost);

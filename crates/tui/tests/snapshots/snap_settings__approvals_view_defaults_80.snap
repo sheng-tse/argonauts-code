@@ -6,8 +6,11 @@ Approvals
 Who decides each checkpoint, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
+│ Who checks                           the cheapest model from another company │
+│ ❯ Approver model             cheapest, other company  built-in               │
+│                                                                              │
 │ Goal · auto · rules and approver both agree    0 matches in a row · 0 misses │
-│ ❯ How it's decided           auto                     built-in               │
+│   How it's decided           auto                     built-in               │
 │   Who decides in auto        both agree               built-in               │
 │   When auto doesn't approve  ask you                  built-in               │
 │                                                                              │
@@ -15,9 +18,6 @@ Who decides each checkpoint, and how auto matched you
 │   How it's decided           auto                     built-in               │
 │   Who decides in auto        your rules               built-in               │
 │   When auto doesn't approve  ask you                  built-in               │
-│                                                                              │
-│ Approver                             the cheapest model from another company │
-│   Model                      cheapest, other company  built-in               │
 │                                                                              │
 │ Spot checks                                                                  │
 │   None waiting                                                               │

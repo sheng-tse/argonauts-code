@@ -85,6 +85,7 @@ mod tests {
                 }],
                 spot_checks_waiting: 2,
                 approver: None,
+                warnings: Vec::new(),
             },
             notes: vec!["CI failures wait for a CI integration.".to_owned()],
         };

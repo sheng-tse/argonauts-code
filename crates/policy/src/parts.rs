@@ -47,7 +47,8 @@ pub struct ModelVerdict {
 /// and `~/.argonauts`.
 pub trait Autonomy: Send + Sync {
     /// `configured`, lowered to supervised by `auto-off`, and from auto to shadow for a kind
-    /// that lost its autonomy. Never more autonomous than `configured`.
+    /// that lost its autonomy. Full auto is never lowered to shadow. Never more autonomous than
+    /// `configured`.
     fn effective_mode(&self, point: &DecisionPoint, configured: ApprovalMode) -> ApprovalMode;
     /// Why new auto-approvals ask right now, such as too many spot checks waiting.
     fn auto_paused(&self, settings: &Settings) -> Option<String>;

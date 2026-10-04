@@ -289,6 +289,7 @@ mod tests {
                     note: Some(long.into()),
                 }],
                 runs_going: 3,
+                runs_need_you: 0,
             }
             .into(),
             UserMessage::new(long).into(),

@@ -3,13 +3,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, StatusLine};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::protocol::TriageSettings;
+use argonauts_core::{Note, NoteLevel};
 
 use crate::cell::{AgentReady, Cell, Notice, Recap, ResultLine, SessionHeader, Tone};
 use crate::format;
@@ -47,6 +47,7 @@ impl Items {
             preset,
             agents,
             runs_going,
+            runs_need_you,
             default_agent,
             effort,
             ..
@@ -81,6 +82,7 @@ impl Items {
                 })
                 .collect(),
             runs_going: *runs_going,
+            runs_need_you: *runs_need_you,
         };
         match self.header {
             Header::NotYet if default_agent.is_none() => {
@@ -135,8 +137,24 @@ impl Items {
         }
     }
 
-    /// `AppEvent::Notice` and a run's `Note`: dim, or in the warning or error color.
+    /// `AppEvent::Notice`: dim, or in the warning or error color.
     pub(super) fn notice(&mut self, level: NoteLevel, text: &str, cx: &mut Cx<'_>) {
+        self.notice_with_more(level, text, None, cx);
+    }
+
+    /// A run's `Note`: its first line as a notice, and the lines after it, such as a
+    /// validator's errors, kept for Ctrl+O.
+    pub(super) fn note(&mut self, note: &Note, cx: &mut Cx<'_>) {
+        self.notice_with_more(note.level, note.line(), note.detail(), cx);
+    }
+
+    fn notice_with_more(
+        &mut self,
+        level: NoteLevel,
+        text: &str,
+        more: Option<&str>,
+        cx: &mut Cx<'_>,
+    ) {
         let text = text.trim();
         if text.is_empty() {
             return;
@@ -152,7 +170,11 @@ impl Items {
             }
             NoteLevel::Error => Tone::Error,
         };
-        emit(cx, Notice::new(tone, text));
+        let mut notice = Notice::new(tone, text);
+        for line in more.into_iter().flat_map(str::lines) {
+            notice = notice.with_more(line.trim_end());
+        }
+        emit(cx, notice);
     }
 }
 

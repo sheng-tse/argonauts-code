@@ -52,6 +52,9 @@ pub struct WorkflowRow {
     pub elapsed_ms: u64,
     /// While the run goes on, when `elapsed_ms` was measured, so the time keeps counting.
     pub measured_at: Option<Instant>,
+    /// False for a run this screen doesn't hold, whose time it doesn't know, so its row shows
+    /// none.
+    pub timed: bool,
     pub tokens: u64,
     /// Such as `$1.20`.
     pub spend: Option<String>,
@@ -73,6 +76,7 @@ impl WorkflowRow {
             agents_total: 0,
             elapsed_ms: 0,
             measured_at: None,
+            timed: true,
             tokens: 0,
             spend: None,
             notice: None,
@@ -500,7 +504,9 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
     {
         push(sanitize_line(phase).into_owned(), dim, 3);
     }
-    push(format::duration_compact(row.elapsed(ctx.clock.now)), dim, 3);
+    if row.timed {
+        push(format::duration_compact(row.elapsed(ctx.clock.now)), dim, 3);
+    }
     if row.tokens > 0 {
         push(
             format!(

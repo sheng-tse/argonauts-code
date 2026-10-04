@@ -15,6 +15,8 @@ use argonauts_core::settings::approvals::ApprovalMode;
 
 use crate::parts::PolicyParts;
 
+pub(crate) use evaluate::in_full_auto;
+
 pub struct ApprovalsPolicy {
     parts: PolicyParts,
 }

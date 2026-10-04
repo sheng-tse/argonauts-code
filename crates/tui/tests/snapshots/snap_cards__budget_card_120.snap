@@ -4,7 +4,7 @@ expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ card-002 reached its budget
-  Agent: GPT 5.6 on Codex · owner · card-002
+  Agent: build:redis-store · GPT 5.6 on Codex
   card-002 hit its spend limit: $2.10 of $2.00 · reserve left $1.00
 
   ❯ 1. More budget
@@ -13,4 +13,4 @@ expression: text(&lines)
     4. Stop and escalate
     5. Show the details
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Enter to choose · Tab to add a note · Esc to set aside · shift+tab to cycle modes

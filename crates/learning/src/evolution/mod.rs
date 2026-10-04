@@ -55,7 +55,7 @@ pub fn stage(settings: &Settings) -> Stage {
         EvolutionStage::Record => Stage::Record,
         EvolutionStage::Suggest => Stage::Suggest,
         EvolutionStage::Evolve => match settings.approvals.recipe_promotion.mode {
-            ApprovalMode::Auto => Stage::Auto,
+            ApprovalMode::Auto | ApprovalMode::FullAuto => Stage::Auto,
             ApprovalMode::Supervised | ApprovalMode::Shadow => Stage::Evolve,
         },
     }

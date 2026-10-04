@@ -1,6 +1,9 @@
 //! Approvals, hard limits, and the sandbox. Every key here is a safety key.
 
-use schemars::JsonSchema;
+use std::borrow::Cow;
+use std::fmt;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::names::WorkerRef;
@@ -8,12 +11,19 @@ use crate::names::WorkerRef;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ApprovalSettings {
+    /// Full auto for every checkpoint a run opens that its own mode leaves to auto. One you
+    /// keep supervised, or in shadow, stays yours. Off, each checkpoint keeps its own mode.
+    pub full_auto: bool,
     /// Who answers the crew's questions: the open questions from Understand, the go-ahead,
-    /// a stuck goal, and "keep going as a goal". Unset follows the mode, so the lead answers in
-    /// auto mode and you do otherwise. Set to the lead, it answers in every mode.
+    /// a stuck goal, "keep going as a goal", and in full auto the agents' questions meant for
+    /// you. `you`, `lead`, or a model such as `codex/gpt-5.6`. Unset follows the mode, so the
+    /// lead answers in auto mode and you do otherwise. Set to the lead, it answers in every
+    /// mode. A model answers in the lead's place in full auto only, where nothing waits for
+    /// you; elsewhere the mode decides, as when it's unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_by: Option<Answerer>,
-    /// Topics that come to you even when the lead answers, such as `security`.
+    /// Topics that come to you even when the lead answers, such as `security`. Full auto
+    /// answers them too, since nothing waits for you there.
     pub ask_you_about: Vec<String>,
     pub goal_changes: GoalChanges,
     /// Share of auto-approvals queued for your spot check.
@@ -24,7 +34,7 @@ pub struct ApprovalSettings {
     pub goal: CheckpointSettings<GoalRules>,
     pub plan: CheckpointSettings<PlanRules>,
     pub merge: CheckpointSettings<MergeRules>,
-    pub recipe_promotion: CheckpointSettings<PromotionRules>,
+    pub recipe_promotion: PromotionSettings,
     pub escalation: CheckpointSettings<EscalationRules>,
     /// Budget increases from the run's reserve.
     pub budget: CheckpointSettings<BudgetRules>,
@@ -43,6 +53,7 @@ pub struct ApprovalSettings {
 impl Default for ApprovalSettings {
     fn default() -> Self {
         Self {
+            full_auto: false,
             answered_by: None,
             ask_you_about: Vec::new(),
             goal_changes: GoalChanges::Ask,
@@ -54,7 +65,7 @@ impl Default for ApprovalSettings {
             merge: CheckpointSettings::auto(DecideWith::Rules),
             // The evolution loop is autonomous by default: replay and holdout checks pass first,
             // and the canary watches what's promoted.
-            recipe_promotion: CheckpointSettings::auto(DecideWith::Rules),
+            recipe_promotion: PromotionSettings::default(),
             escalation: CheckpointSettings::auto(DecideWith::RulesAndModel),
             budget: CheckpointSettings::auto(DecideWith::RulesAndModel),
             change_request: CheckpointSettings::auto(DecideWith::RulesAndModel),
@@ -67,24 +78,126 @@ impl Default for ApprovalSettings {
 }
 
 impl ApprovalSettings {
-    /// Who answers the crew's questions at a decision point running in `mode`.
+    /// Who answers the crew's questions at a decision point running in `mode`. Full auto
+    /// never has you answer, so there the model you picked answers, else the lead. A model
+    /// you picked answers in full auto only, so elsewhere the mode decides, as when unset.
     pub fn answerer(&self, mode: ApprovalMode) -> Answerer {
-        self.answered_by.unwrap_or(match mode {
-            ApprovalMode::Auto => Answerer::Lead,
-            ApprovalMode::Supervised | ApprovalMode::Shadow => Answerer::You,
-        })
+        match (mode, &self.answered_by) {
+            (ApprovalMode::FullAuto, Some(Answerer::Model(model))) => {
+                Answerer::Model(model.clone())
+            }
+            (ApprovalMode::FullAuto, _) => Answerer::Lead,
+            (_, Some(Answerer::You)) => Answerer::You,
+            (_, Some(Answerer::Lead)) => Answerer::Lead,
+            (ApprovalMode::Auto, Some(Answerer::Model(_)) | None) => Answerer::Lead,
+            (ApprovalMode::Supervised | ApprovalMode::Shadow, Some(Answerer::Model(_)) | None) => {
+                Answerer::You
+            }
+        }
+    }
+
+    /// A run checkpoint's mode once the `full_auto` switch applies: full auto while it's on,
+    /// unless the checkpoint's `own` mode keeps it for you (supervised or shadow), which no
+    /// switch takes away. Off, its own. A recipe promotion is decided outside runs, so it
+    /// keeps its own.
+    pub fn run_mode(&self, own: ApprovalMode) -> ApprovalMode {
+        if self.full_auto && own.goes_ahead() {
+            ApprovalMode::FullAuto
+        } else {
+            own
+        }
+    }
+
+    /// One mode for a run's checkpoints: theirs when they agree, else the least autonomous of
+    /// them, since that one still waits for you. The kinds without settings of their own, such
+    /// as an agent's question, follow it. A recipe promotion is decided outside runs, so it
+    /// isn't one of them.
+    pub fn mode(&self) -> ApprovalMode {
+        [
+            self.goal.mode,
+            self.plan.mode,
+            self.merge.mode,
+            self.escalation.mode,
+            self.budget.mode,
+            self.change_request.mode,
+        ]
+        .into_iter()
+        .map(|own| self.run_mode(own))
+        .min_by_key(|mode| mode.autonomy())
+        .unwrap_or_default()
     }
 }
 
-/// Who answers the crew's questions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+/// Who answers the crew's questions. Written as `you`, `lead`, or a model such as
+/// `codex/gpt-5.6`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub enum Answerer {
     You,
     /// The lead answers, and its answers become assumptions you can review. The approvals
     /// after them still follow their mode and rules, so in auto the approver model checks
     /// them, and a question it can't answer comes to you.
     Lead,
+    /// A model you picked answers in the lead's place, the same way: its answers become
+    /// assumptions, and the approvals after them check them.
+    Model(WorkerRef),
+}
+
+impl Answerer {
+    /// Whether someone other than you answers, so the question never waits for you.
+    pub fn answers_for_you(&self) -> bool {
+        !matches!(self, Answerer::You)
+    }
+
+    /// The model you picked to answer, when you picked one.
+    pub fn model(&self) -> Option<&WorkerRef> {
+        match self {
+            Answerer::Model(model) => Some(model),
+            Answerer::You | Answerer::Lead => None,
+        }
+    }
+}
+
+impl fmt::Display for Answerer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Answerer::You => f.write_str("you"),
+            Answerer::Lead => f.write_str("lead"),
+            Answerer::Model(model) => fmt::Display::fmt(model, f),
+        }
+    }
+}
+
+impl TryFrom<String> for Answerer {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("you") {
+            return Ok(Answerer::You);
+        }
+        if value.eq_ignore_ascii_case("lead") {
+            return Ok(Answerer::Lead);
+        }
+        value.parse().map(Answerer::Model).map_err(|_| {
+            format!("expected `you`, `lead`, or a model such as `codex/gpt-5.6`, not {value:?}")
+        })
+    }
+}
+
+impl From<Answerer> for String {
+    fn from(value: Answerer) -> String {
+        value.to_string()
+    }
+}
+
+impl JsonSchema for Answerer {
+    fn schema_name() -> Cow<'static, str> {
+        "Answerer".into()
+    }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        String::json_schema(generator)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
@@ -94,6 +207,8 @@ pub struct CheckpointSettings<R: Default> {
     pub decide_with: DecideWith,
     pub rules: R,
     pub otherwise: Otherwise,
+    /// In full auto, what a hard limit at this checkpoint does, since no one is there to ask.
+    pub at_hard_limit: AtHardLimit,
 }
 
 impl<R: Default> CheckpointSettings<R> {
@@ -116,6 +231,38 @@ pub enum ApprovalMode {
     Shadow,
     /// Your settings decide; what they can't settle waits for you.
     Auto,
+    /// Nothing waits for you. The lead answers every question, the topics
+    /// `approvals.ask_you_about` names too, and your rules and the approver decide as in auto.
+    /// What they can't approve, or a hard limit, ends that part safely, keeps the work, and is
+    /// reported instead of asking.
+    FullAuto,
+}
+
+impl ApprovalMode {
+    /// Auto and full auto decide without you; supervised and shadow wait.
+    pub fn goes_ahead(self) -> bool {
+        matches!(self, ApprovalMode::Auto | ApprovalMode::FullAuto)
+    }
+
+    /// Higher decides more without you.
+    pub fn autonomy(self) -> u8 {
+        match self {
+            ApprovalMode::Supervised => 0,
+            ApprovalMode::Shadow => 1,
+            ApprovalMode::Auto => 2,
+            ApprovalMode::FullAuto => 3,
+        }
+    }
+
+    /// The mode in words, as the mode line and the transcript say it.
+    pub fn label(self) -> &'static str {
+        match self {
+            ApprovalMode::Supervised => "supervised",
+            ApprovalMode::Shadow => "shadow",
+            ApprovalMode::Auto => "auto",
+            ApprovalMode::FullAuto => "full auto",
+        }
+    }
 }
 
 /// Who decides in auto mode.
@@ -143,6 +290,22 @@ pub enum Otherwise {
     Stop,
     /// Merge only: open a pull request and wait.
     OpenPullRequest,
+}
+
+/// What a hard limit does in full auto, where no one is there to ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AtHardLimit {
+    /// Ends that part safely and keeps its work: a merge keeps its branch, a stuck card is
+    /// deferred, a budget stops. A goal or a plan with nothing safe to end parks for you.
+    #[default]
+    Stop,
+    /// Sends it back for another round, or declines the change.
+    SendBack,
+    /// Merge only: opens a pull request for you to review.
+    OpenPullRequest,
+    /// Leaves the card for you, and the run parks until you answer it.
+    Park,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -207,6 +370,47 @@ impl Default for MergeRules {
             min_changed_line_coverage: 0.8,
             max_combined_diff_lines: 400,
             allow_debt: false,
+        }
+    }
+}
+
+/// Promoting a recipe change. It's decided outside runs, so the `full_auto` switch and what a
+/// hard limit does there never reach it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct PromotionSettings {
+    pub mode: ApprovalMode,
+    pub decide_with: DecideWith,
+    pub rules: PromotionRules,
+    pub otherwise: Otherwise,
+}
+
+impl Default for PromotionSettings {
+    fn default() -> Self {
+        CheckpointSettings::auto(DecideWith::Rules).into()
+    }
+}
+
+impl PromotionSettings {
+    /// As the table every checkpoint shares, for what reads them all alike.
+    pub fn as_checkpoint(&self) -> CheckpointSettings<PromotionRules> {
+        CheckpointSettings {
+            mode: self.mode,
+            decide_with: self.decide_with,
+            rules: self.rules.clone(),
+            otherwise: self.otherwise,
+            at_hard_limit: AtHardLimit::default(),
+        }
+    }
+}
+
+impl From<CheckpointSettings<PromotionRules>> for PromotionSettings {
+    fn from(table: CheckpointSettings<PromotionRules>) -> Self {
+        Self {
+            mode: table.mode,
+            decide_with: table.decide_with,
+            rules: table.rules,
+            otherwise: table.otherwise,
         }
     }
 }
@@ -461,4 +665,145 @@ pub enum UserHooks {
     Inherit,
     /// Turned off for Argonauts sessions where the harness allows it; `doctor` says where not.
     Disable,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_auto_has_the_lead_answer_and_is_the_most_autonomous() {
+        let mut approvals = ApprovalSettings {
+            answered_by: Some(Answerer::You),
+            ..ApprovalSettings::default()
+        };
+        assert_eq!(approvals.answerer(ApprovalMode::Auto), Answerer::You);
+        assert_eq!(approvals.answerer(ApprovalMode::FullAuto), Answerer::Lead);
+        approvals.answered_by = None;
+        assert_eq!(approvals.answerer(ApprovalMode::Shadow), Answerer::You);
+
+        assert_eq!(approvals.mode(), ApprovalMode::Auto);
+        approvals.goal.mode = ApprovalMode::FullAuto;
+        assert_eq!(
+            approvals.mode(),
+            ApprovalMode::Auto,
+            "the others still stop at auto"
+        );
+        // The six a run opens decide it; the setup's answer sets them all.
+        approvals.plan.mode = ApprovalMode::FullAuto;
+        approvals.merge.mode = ApprovalMode::FullAuto;
+        approvals.escalation.mode = ApprovalMode::FullAuto;
+        approvals.budget.mode = ApprovalMode::FullAuto;
+        approvals.change_request.mode = ApprovalMode::FullAuto;
+        approvals.recipe_promotion.mode = ApprovalMode::Supervised;
+        assert_eq!(approvals.mode(), ApprovalMode::FullAuto);
+        approvals.merge.mode = ApprovalMode::Supervised;
+        assert_eq!(approvals.mode(), ApprovalMode::Supervised);
+
+        let written: toml::Value = toml::Value::try_from(&approvals).expect("written");
+        assert_eq!(written["goal"]["mode"].as_str(), Some("full_auto"));
+    }
+
+    /// A picked model answers in full auto only; in supervised and auto the mode decides, as
+    /// when nothing is picked, so `approvals.ask_you_about` topics stay yours there.
+    #[test]
+    fn a_picked_model_answers_in_full_auto_only() {
+        let model: WorkerRef = "openrouter/z-ai/glm-5".parse().expect("a worker");
+        let approvals = ApprovalSettings {
+            answered_by: Some(Answerer::Model(model.clone())),
+            ..ApprovalSettings::default()
+        };
+        assert_eq!(
+            approvals.answerer(ApprovalMode::FullAuto),
+            Answerer::Model(model.clone())
+        );
+        assert_eq!(approvals.answerer(ApprovalMode::Auto), Answerer::Lead);
+        assert_eq!(approvals.answerer(ApprovalMode::Supervised), Answerer::You);
+        assert_eq!(approvals.answerer(ApprovalMode::Shadow), Answerer::You);
+        assert!(Answerer::Lead.answers_for_you());
+        assert!(!Answerer::You.answers_for_you());
+    }
+
+    /// `you` and `lead` read in any case, so `You` never becomes a model's name.
+    #[test]
+    fn you_and_the_lead_read_in_any_case() {
+        for (word, answerer) in [
+            ("You", Answerer::You),
+            (" YOU ", Answerer::You),
+            ("Lead", Answerer::Lead),
+            ("LEAD", Answerer::Lead),
+        ] {
+            assert_eq!(Answerer::try_from(word.to_owned()), Ok(answerer), "{word}");
+        }
+    }
+
+    /// `answered_by`, `full_auto`, and each checkpoint's `at_hard_limit` read back as written.
+    #[test]
+    fn full_auto_settings_round_trip() {
+        let file = r#"
+            full_auto = true
+            answered_by = "openrouter/z-ai/glm-5"
+
+            [merge]
+            at_hard_limit = "open_pull_request"
+
+            [plan]
+            at_hard_limit = "park"
+        "#;
+        let approvals: ApprovalSettings = toml::from_str(file).expect("read");
+        assert!(approvals.full_auto);
+        assert_eq!(
+            approvals.answered_by,
+            Some(Answerer::Model(WorkerRef::new(
+                "openrouter",
+                Some("z-ai/glm-5".to_owned())
+            )))
+        );
+        assert_eq!(approvals.merge.at_hard_limit, AtHardLimit::OpenPullRequest);
+        assert_eq!(approvals.plan.at_hard_limit, AtHardLimit::Park);
+        assert_eq!(approvals.goal.at_hard_limit, AtHardLimit::Stop);
+
+        let written = toml::to_string(&approvals).expect("written");
+        let again: ApprovalSettings = toml::from_str(&written).expect("read again");
+        assert_eq!(again, approvals);
+
+        for word in ["you", "lead"] {
+            let file = format!("answered_by = {word:?}");
+            let read: ApprovalSettings = toml::from_str(&file).expect("read");
+            let answerer = read.answered_by.expect("set");
+            assert_eq!(answerer.to_string(), word);
+            assert_eq!(answerer.model(), None);
+        }
+        assert!(toml::from_str::<ApprovalSettings>("answered_by = \"the lead\"").is_err());
+        assert!(toml::from_str::<ApprovalSettings>("[goal]\nat_hard_limit = \"ask\"").is_err());
+    }
+
+    /// The switch puts every checkpoint a run opens in full auto, except one you keep
+    /// supervised or in shadow, and off each keeps its own.
+    #[test]
+    fn the_full_auto_switch_covers_every_run_checkpoint_you_dont_keep() {
+        let mut approvals = ApprovalSettings {
+            full_auto: true,
+            ..ApprovalSettings::default()
+        };
+        assert_eq!(approvals.mode(), ApprovalMode::FullAuto);
+        assert_eq!(approvals.answerer(approvals.mode()), Answerer::Lead);
+        assert_eq!(
+            approvals.run_mode(ApprovalMode::Auto),
+            ApprovalMode::FullAuto
+        );
+
+        approvals.merge.mode = ApprovalMode::Supervised;
+        assert_eq!(
+            approvals.run_mode(approvals.merge.mode),
+            ApprovalMode::Supervised
+        );
+        assert_eq!(approvals.mode(), ApprovalMode::Supervised);
+        assert_eq!(
+            approvals.run_mode(ApprovalMode::Shadow),
+            ApprovalMode::Shadow
+        );
+        approvals.full_auto = false;
+        assert_eq!(approvals.run_mode(ApprovalMode::Auto), ApprovalMode::Auto);
+    }
 }

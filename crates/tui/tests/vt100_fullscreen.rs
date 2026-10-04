@@ -233,6 +233,7 @@ fn header() -> SessionHeader {
         folder: "~/github/argonauts".into(),
         agents: vec![ready("Claude Code", "2.1.284"), ready("Codex", "0.158.0")],
         runs_going: 0,
+        runs_need_you: 0,
     }
 }
 

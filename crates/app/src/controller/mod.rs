@@ -164,6 +164,7 @@ impl Controller {
                 }
                 _ = wake.tick() => {
                     self.kick_replays();
+                    runs::refresh_background(&self.ctx);
                     let result = runs::wake_parked(&mut self.ctx, &mut self.runs).await;
                     self.settle(result.map(|()| Vec::new()))
                 }
@@ -246,7 +247,8 @@ impl Controller {
         Ok(effects)
     }
 
-    /// Reattaches to a run, or opens what `argonauts resume` asked for, the first time only.
+    /// Opens what `argonauts -c` or `argonauts resume` asked for, the first time only. A plain
+    /// start opens a new conversation and leaves runs where they are.
     async fn after_setup(&mut self) -> anyhow::Result<Vec<Effect>> {
         let mut effects = vec![Effect::Status];
         if let Some(first) = self.first.take() {
@@ -346,7 +348,7 @@ impl Controller {
         // A direct turn asks by the mode on screen when it starts.
         let shown = runs::status_parts(&self.runs)
             .approval_mode
-            .unwrap_or_else(|| status_line::settings_mode(&self.ctx.settings().approvals));
+            .unwrap_or_else(|| self.ctx.settings().approvals.mode());
         chat::set_approval(&mut self.chat, shown);
         let ctx = &mut self.ctx;
         let runs = &mut self.runs;

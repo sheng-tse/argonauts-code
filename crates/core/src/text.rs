@@ -15,6 +15,21 @@ pub fn sentence_case(text: &str) -> String {
     }
 }
 
+/// Starts `text` in lowercase, for a reason that follows "since" or "because" mid-sentence,
+/// unless its first word is code or a name in capitals, such as `README` or `API`.
+pub fn clause_case(text: &str) -> String {
+    let first_word = text.split_whitespace().next().unwrap_or_default();
+    let capitals = first_word.chars().filter(|c| c.is_uppercase()).count() > 1;
+    if is_code(first_word) || capitals {
+        return text.to_owned();
+    }
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// Whether a word is a name to keep as written rather than an English word. Closing
 /// punctuation and a possessive don't count, so "done," and "it's" read as words.
 fn is_code(word: &str) -> bool {
@@ -35,6 +50,20 @@ fn is_code(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clause_starts_in_lowercase_unless_it_names_something() {
+        assert_eq!(
+            clause_case("One card needs no debate"),
+            "one card needs no debate"
+        );
+        assert_eq!(clause_case("README says so"), "README says so");
+        assert_eq!(
+            clause_case("budget.run_usd is spent"),
+            "budget.run_usd is spent"
+        );
+        assert_eq!(clause_case(""), "");
+    }
 
     #[test]
     fn words_start_with_a_capital() {

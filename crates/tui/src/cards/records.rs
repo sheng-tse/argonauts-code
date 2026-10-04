@@ -90,10 +90,11 @@ pub fn outcome(
         (A::SendBack, _) => format!("{title} · sent back"),
         (A::Stop, _) => format!("Stopped {subject}"),
         (A::Choose { value }, K::Goal) => format!("Goal question answered · {value}"),
-        (A::Choose { value }, K::Question) => format!("Question on {card} answered · {value}"),
+        // A question is titled by the asking agent's label, never its card id.
+        (A::Choose { value }, K::Question) => format!("{title} answered · {value}"),
         (A::Choose { value }, _) => format!("{title} · {value}"),
         (A::Answer, K::Goal) => format!("Goal question answered · {text}"),
-        (A::Answer, _) => format!("Question on {card} answered · {text}"),
+        (A::Answer, _) => format!("{title} answered · {text}"),
         (A::Candidate { worker }, _) => format!("{card} handed to {}", names.worker(worker)),
         (A::OtherCandidates, _) => format!("Listing every agent for {card}"),
         (A::TakeOver, K::TakeOverReturn) => format!("You keep {card}"),

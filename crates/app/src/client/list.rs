@@ -88,6 +88,7 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
             waiting: Vec::new(),
             live,
             remind: false,
+            name: None,
         });
     };
     let recent = journal::read_since_snapshot(&events_path)
@@ -133,6 +134,7 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
         waiting,
         live,
         remind,
+        name: tally.name.filter(|name| !name.trim().is_empty()),
     })
 }
 
@@ -148,6 +150,8 @@ struct Tally {
     session_spend: Spend,
     /// Your files in the way while the run waits to merge.
     waiting_to_merge: Vec<String>,
+    /// The run's newest name, such as `fix-slugify-median`.
+    name: Option<String>,
 }
 
 impl Tally {
@@ -185,8 +189,19 @@ impl Tally {
                     if let Some(waiting) = waiting {
                         tally.waiting_to_merge = waiting;
                     }
+                    // The engine's state keeps the name a run took before the snapshot.
+                    if let Some(name) = snapshot
+                        .engine
+                        .pointer("/state/run/named/name")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        tally.name = Some(name.to_owned());
+                    }
                 }
                 RunEventKind::Run(lifecycle) => {
+                    if let RunLifecycle::Named(named) = lifecycle {
+                        tally.name = Some(named.name.clone());
+                    }
                     tally.last_lifecycle = Some((event.ts, lifecycle.clone()));
                 }
                 RunEventKind::Phase(change) => {
@@ -441,5 +456,48 @@ mod tests {
             }),
         );
         assert!(Tally::of(&[waiting, landed]).waiting_to_merge.is_empty());
+    }
+
+    /// A run goes by its newest name, from a `Named` or the engine's snapshot, so the panel
+    /// names a run it doesn't hold as the run is named once it's open.
+    #[test]
+    fn a_run_goes_by_its_newest_name() {
+        use argonauts_core::api::StatusSummary;
+        use argonauts_core::events::run::{RunNamed, RunSnapshot};
+        use argonauts_core::settings::workflows::RunStyle;
+
+        let named = |seq, name: &str| {
+            event(
+                seq,
+                RunEventKind::Run(RunLifecycle::Named(RunNamed {
+                    name: name.to_owned(),
+                    description: String::new(),
+                    style: RunStyle::Workflow,
+                    based_on: None,
+                    done_when: Vec::new(),
+                })),
+            )
+        };
+        let tally = Tally::of(&[named(1, "greet-visitors"), named(2, "greet-by-name")]);
+        assert_eq!(tally.name.as_deref(), Some("greet-by-name"));
+
+        let snapshot = event(
+            3,
+            RunEventKind::Run(RunLifecycle::Snapshot(Box::new(RunSnapshot {
+                upto: 2,
+                engine: serde_json::json!({
+                    "version": 1,
+                    "state": { "run": { "named": { "name": "fix-slugify-median" } } }
+                }),
+                summary: StatusSummary::default(),
+                open_checkpoints: Vec::new(),
+                running: Vec::new(),
+            }))),
+        );
+        assert_eq!(
+            Tally::of(&[snapshot]).name.as_deref(),
+            Some("fix-slugify-median")
+        );
+        assert_eq!(Tally::of(&[]).name, None);
     }
 }

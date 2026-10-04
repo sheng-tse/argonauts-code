@@ -350,7 +350,7 @@ fn stop_signals_give_the_inline_screen_the_terminal_back() {
         assert!(text.contains("note 03"), "{signal}: {text}");
         for line in [
             "run-01 keeps going · 1 agent working",
-            "Reattach with: argonauts",
+            "Reattach with: argonauts resume run-01",
         ] {
             assert!(text.contains(line), "{signal}: {text}");
         }

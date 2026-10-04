@@ -422,6 +422,7 @@ fn queued_point(run: &RunId, id: &CheckpointId, events: &[RunEvent]) -> Option<D
         recipe: None,
         authors: Vec::new(),
         mode_override: None,
+        lead: None,
     })
 }
 

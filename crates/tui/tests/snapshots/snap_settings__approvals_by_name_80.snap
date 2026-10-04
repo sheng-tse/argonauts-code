@@ -6,31 +6,31 @@ Approvals
 Who decides each checkpoint, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
+│ Full auto                            off: each checkpoint keeps its own mode │
+│ ❯ For every checkpoint        off                      built-in              │
+│   Who answers questions       GPT 5.6 on Codex         everywhere (global)   │
+│     In full auto only; elsewhere you or the lead, by mode                    │
+│                                                                              │
+│ Who checks                           the cheapest model from another company │
+│   Approver model              cheapest, other company  built-in              │
+│   Second approver             none, one approver       built-in              │
+│                                                                              │
 │ Plan · auto · rules and approver both agree    0 matches in a row · 0 misses │
-│ ❯ How it's decided            auto                     everywhere (global)   │
+│   How it's decided            auto                     everywhere (global)   │
 │   Who decides in auto         both agree               built-in              │
 │   When auto doesn't approve   ask you                  built-in              │
+│   Hard limit in full auto     stop safely              built-in              │
 │   Judge's widest score gap    1.0                      built-in              │
 │                                                                              │
 │ Merge · auto · your rules decide               0 matches in a row · 0 misses │
 │   How it's decided            auto                     everywhere (global)   │
 │   Who decides in auto         your rules               built-in              │
 │   When auto doesn't approve   ask you                  built-in              │
+│   Hard limit in full auto     stop safely              built-in              │
 │   Merge with unreviewed debt  no                       built-in              │
-│                                                                              │
-│ Approver                             the cheapest model from another company │
-│   Model                       cheapest, other company  built-in              │
 │                                                                              │
 │ Spot checks                                                                  │
 │   None waiting                                                               │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ↑↓ select · ⏎ edit · esc back

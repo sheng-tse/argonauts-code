@@ -2,15 +2,18 @@
 //! read-only session. Each answer becomes an assumption in the goal, which the approval after
 //! it checks. A question it can't answer goes to you, never to a stand-in answer: one that
 //! turns on a fact no agent can find out, with that fact named on its card, one it left out,
-//! and every one when its session fails.
+//! and every one when its session fails. Only full auto, where nothing waits for you, takes
+//! the crew's recommended answer for those, as an assumption that says so.
 
 use argonauts_core::NoteLevel;
+use argonauts_core::events::checkpoint::CheckpointKind;
 use argonauts_core::events::goal::{Assumption, Decider, GoalFile, GoalQuestion, LEAD_ANSWER};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::steps::goal::{
     AnswerQuestions, AnswerQuestionsInput, LeadAnswer, OpenQuestion,
 };
 
+use crate::checkpoints;
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
 use crate::prompts;
@@ -47,8 +50,10 @@ impl LeadAnswers {
     }
 }
 
-/// The lead's answers to `questions`. A re-entered step gets the recorded answers back from
-/// the host. When the session fails, the questions go to you.
+/// The lead's answers to `questions`, or in full auto the model you picked in its place. A
+/// re-entered step gets the recorded answers back from the host. When the picked model can't
+/// answer, the lead does, after one line that says so; when the lead's session fails, the
+/// questions go to you.
 pub async fn answer(
     host: &Host,
     call: &StepCall,
@@ -59,7 +64,7 @@ pub async fn answer(
 }
 
 /// [`answer`] as a later ask of the same step, such as the questions you handed to the lead
-/// after it answered its own.
+/// after it answered its own. In full auto the model you picked answers in the lead's place.
 pub async fn answer_in_slot(
     host: &Host,
     call: &StepCall,
@@ -67,38 +72,61 @@ pub async fn answer_in_slot(
     questions: &[GoalQuestion],
     slot: u32,
 ) -> EngineResult<LeadAnswers> {
-    let lead = host
-        .read(|state| crate::lead::phase_lead(state, host.settings()))
-        .unwrap_or_else(|| host.settings().default_agent.clone());
+    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
+    let picked = host.read(|state| crate::lead::answering(state, host.settings(), full_auto));
     let input = AnswerQuestionsInput {
         request: host.read(round::request)?,
         goal: file::render(&as_settled(drafted)),
         questions: questions.iter().map(open_question).collect(),
     };
-    let ask = Ask {
+    let ask = |worker: &WorkerRef| Ask {
         slot,
         ..Ask::new(
             Some(call.at.clone()),
             RoleName::PhaseLead,
-            lead.clone(),
+            worker.clone(),
             prompts::goal::ANSWER,
-            input,
+            input.clone(),
         )
     };
-    let output = match host.ask::<AnswerQuestions>(ask).await {
+    let mut lead = picked.clone();
+    let mut answered = host.ask::<AnswerQuestions>(ask(&lead)).await;
+    let the_lead = host.read(|state| crate::lead::answering(state, host.settings(), false));
+    if let Err(err) = &answered
+        && !matches!(err, EngineError::Interrupted)
+        && the_lead != picked
+    {
+        round::note(
+            host,
+            NoteLevel::Warn,
+            format!(
+                "{} couldn't answer the goal's questions, so the lead answers them: {err}",
+                crate::roles::display_name(&picked)
+            ),
+        )?;
+        lead = the_lead;
+        answered = host.ask::<AnswerQuestions>(ask(&lead)).await;
+    }
+    let output = match answered {
         Ok(answered) => answered.output,
         Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
         Err(err) => {
+            let whose = if full_auto {
+                "full auto takes the crew's recommended answers"
+            } else {
+                "they come to you"
+            };
             round::note(
                 host,
                 NoteLevel::Warn,
-                format!(
-                    "The lead couldn't answer the goal's questions, so they come to you: {err}"
-                ),
+                format!("The lead couldn't answer the goal's questions, so {whose}: {err}"),
             )?;
             let picks = questions
                 .iter()
-                .map(|_| Pick::Yours("the lead couldn't answer it".to_owned()))
+                .map(|question| {
+                    let yours = Pick::Yours("the lead couldn't answer it".to_owned());
+                    in_full_auto(question, yours, full_auto)
+                })
                 .collect();
             return Ok(LeadAnswers { lead, picks });
         }
@@ -107,10 +135,37 @@ pub async fn answer_in_slot(
         .iter()
         .map(|question| {
             let answer = output.answers.iter().find(|answer| answer.n == question.n);
-            pick(question, answer)
+            in_full_auto(question, pick(question, answer), full_auto)
         })
         .collect();
     Ok(LeadAnswers { lead, picks })
+}
+
+/// In full auto a question the lead couldn't answer takes the crew's recommended answer, else
+/// its first, as an assumption whose basis says why. Nothing waits for you there.
+fn in_full_auto(question: &GoalQuestion, pick: Pick, full_auto: bool) -> Pick {
+    let Pick::Yours(why) = &pick else {
+        return pick;
+    };
+    let option = question
+        .options
+        .iter()
+        .find(|option| option.recommended)
+        .or_else(|| question.options.first());
+    match option {
+        Some(option) if full_auto => Pick::Answered(Assumption {
+            text: format!(
+                "{}: {}",
+                one_line(&question.text).trim_end_matches(['?', '.', ':']),
+                one_line(&option.label)
+            ),
+            basis: format!(
+                "{LEAD_ANSWER}: full auto took the crew's recommended answer, since {why}"
+            ),
+            by: Some(Decider::Lead),
+        }),
+        _ => pick,
+    }
 }
 
 /// The draft as it was before anyone answered, so a re-entered step asks the same thing.
@@ -219,14 +274,16 @@ pub fn without_answers(goal: &GoalFile) -> Option<GoalFile> {
     Some(file::hashed(yours))
 }
 
-/// The line the transcript shows once the lead has answered.
-pub fn answered_line(answered: usize, yours: usize) -> String {
+/// The line the transcript shows once the lead, or the model you `picked` in its place, has
+/// answered.
+pub fn answered_line(picked: Option<&WorkerRef>, answered: usize, yours: usize) -> String {
     let questions = match answered {
         1 => "1 of the goal's questions".to_owned(),
         n => format!("{n} of the goal's questions"),
     };
+    let who = picked.map_or_else(|| "The lead".to_owned(), crate::roles::display_name);
     let mut line = format!(
-        "The lead answered {questions} for you. Its answers are assumptions in the goal, which \
+        "{who} answered {questions} for you. Its answers are assumptions in the goal, which \
          Ctrl+O and /status show"
     );
     match yours {
@@ -316,10 +373,12 @@ mod tests {
     #[test]
     fn the_transcript_line_says_who_answered_and_what_is_left() {
         assert_eq!(
-            answered_line(2, 1),
+            answered_line(None, 2, 1),
             "The lead answered 2 of the goal's questions for you. Its answers are assumptions in \
              the goal, which Ctrl+O and /status show. 1 question is still yours"
         );
-        assert!(answered_line(1, 0).ends_with("Ctrl+O and /status show"));
+        assert!(answered_line(None, 1, 0).ends_with("Ctrl+O and /status show"));
+        let picked: WorkerRef = "codex/gpt-x".parse().expect("a worker");
+        assert!(answered_line(Some(&picked), 1, 0).starts_with("GPT X on Codex answered 1 of"));
     }
 }

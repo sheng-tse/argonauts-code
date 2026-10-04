@@ -40,7 +40,7 @@ use sessions::{
     SupervisorSettings,
 };
 use ui::{NarratorSettings, NotificationSettings, UiSettings};
-use workflows::WorkflowSettings;
+use workflows::{LeadDesign, WorkflowSettings};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -49,7 +49,7 @@ pub struct Settings {
     /// `best-of-n`, `draft-and-vote`, or an `ablate-*` preset.
     pub preset: String,
     /// The workflow a run starts from, which each preset sets. With `workflows.lead_designs`
-    /// the lead may pick another or compose one.
+    /// the lead sizes it for the task, and with `"any"` it may pick another or compose one.
     pub workflow: WorkflowRef,
     /// Used for chat, the triage estimate, solo work, and as the last fallback.
     pub default_agent: WorkerRef,
@@ -176,9 +176,14 @@ impl Settings {
         self.sandbox.applied(own)
     }
 
-    /// Whether the lead designs a crew run's workflow. All hands always has it design one.
-    pub fn lead_designs(&self) -> bool {
-        self.workflows.lead_designs || self.triage.all_hands
+    /// How far the lead may change a crew run's workflow. All hands always has it size one.
+    pub fn lead_designs(&self) -> LeadDesign {
+        let design = self.workflows.lead_designs.design();
+        if self.triage.all_hands {
+            design.max(LeadDesign::Size)
+        } else {
+            design
+        }
     }
 }
 

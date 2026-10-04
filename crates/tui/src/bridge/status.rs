@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use argonauts_core::app::{AppMode, ChoiceKind, QuotaChip};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::card::CardState;
-use argonauts_core::events::run::{Party, RunMode, RunPhase};
+use argonauts_core::events::run::{Party, RunPhase};
 use argonauts_core::events::session::{Delivery, QueuedMessage};
 use argonauts_core::input::MentionTarget;
 use argonauts_core::limits::{HealthState, QuotaStatus};
@@ -69,7 +69,8 @@ pub fn sync(cx: &mut Cx<'_>) {
     }
     bottom.mode.background_agents = state.agents_running();
     let on_screen = usize::from(bottom.card.is_some());
-    bottom.mode.needs_you = state.needs_you().len().saturating_sub(on_screen);
+    bottom.mode.needs_you =
+        state.needs_you().len().saturating_sub(on_screen) + state.background_waiting();
 
     let wall = OffsetDateTime::now_utc();
     bottom.status_line = status_parts(state, wall);
@@ -378,10 +379,10 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
     Some(format!("to {to}, {when}"))
 }
 
-/// The run's workflow as its panel row names it, `solo` for a solo run, or the preset a new
-/// run would use, with `all hands` after it while that's on.
+/// Your preset, what your next message would use, with `all hands` after it while that's on.
+/// A run's own workflow shows on its panel row, never here.
 fn composer_label(state: &AppState) -> Option<String> {
-    let label = workflow_label(state);
+    let label = preset_label(state);
     let all_hands = state.status.as_ref().is_some_and(|status| status.all_hands);
     match label {
         Some(label) if all_hands => Some(format!("{label} · {ALL_HANDS_LABEL}")),
@@ -393,15 +394,7 @@ fn composer_label(state: &AppState) -> Option<String> {
 /// All hands on the input rule, lowercase like the preset beside it.
 const ALL_HANDS_LABEL: &str = "all hands";
 
-fn workflow_label(state: &AppState) -> Option<String> {
-    if let Some(run) = focus_run(state) {
-        if run.mode == Some(RunMode::Solo) {
-            return Some("solo".to_owned());
-        }
-        if let Some(workflow) = super::panel::workflow_name(run) {
-            return Some(workflow.to_owned());
-        }
-    }
+fn preset_label(state: &AppState) -> Option<String> {
     state
         .status
         .as_ref()
@@ -431,6 +424,7 @@ fn controller_approval(state: &AppState) -> Option<ApprovalMode> {
         CoreApproval::Supervised => ApprovalMode::Supervised,
         CoreApproval::Shadow => ApprovalMode::Shadow,
         CoreApproval::Auto => ApprovalMode::Auto,
+        CoreApproval::FullAuto => ApprovalMode::FullAuto,
     })
 }
 
@@ -819,7 +813,7 @@ fn exit_note(state: &AppState) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use argonauts_core::app::{AppEvent, ChatEvent};
-    use argonauts_core::events::run::{ParkReason, RunPhase};
+    use argonauts_core::events::run::{ParkReason, RunMode, RunPhase};
     use argonauts_core::events::workflow::StepEnd;
     use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
     use argonauts_core::names::{TurnId, VendorId, WorkflowId};
@@ -857,30 +851,42 @@ mod tests {
         }
     }
 
-    /// The input's rule names the workflow the run follows, as the panel row does: the preset
-    /// until the lead picks, then the pick.
+    /// The input's rule names your preset, what your next message would use, so it keeps
+    /// its name while a run follows a workflow the lead picked, or runs solo.
     #[test]
-    fn the_input_rule_names_the_workflow_the_lead_picked() {
+    fn the_input_rule_keeps_your_preset_whatever_the_run_follows() {
         let id = RunId::new("run-20260930-100000-a1b2").unwrap();
         let mut state = AppState::default();
+        state.status = Some(argonauts_core::app::StatusLine {
+            title: String::new(),
+            repo: "~/code".into(),
+            preset: "peer-crew".into(),
+            all_hands: true,
+            run: None,
+            default_agent: "claude-code".parse().unwrap(),
+            quotas: Vec::new(),
+            spent: None,
+            limit: None,
+            narrator: NarratorMode::Off,
+            approval_mode: CoreApproval::Supervised,
+        });
         let mut run = crate::state::RunState::new(id.clone());
         run.mode = Some(RunMode::Crew);
         run.preset = Some("peer-crew".into());
-        let under_own = StepRef {
-            workflow: WorkflowId::numbered(1),
-            phase: 0,
-            path: vec![0],
-        };
         run.workflows
-            .push(workflow(2, "goal", &["Goal"], Some(under_own)));
+            .push(workflow(1, "solo-reviewed", &["Build"], None));
         state.runs.insert(id.clone(), run);
         state.mode = Some(AppMode::Working { run: id.clone() });
-        assert_eq!(composer_label(&state).as_deref(), Some("peer-crew"));
+        assert_eq!(
+            composer_label(&state).as_deref(),
+            Some("peer-crew · all hands")
+        );
 
-        let run = state.runs.get_mut(&id).unwrap();
-        run.workflows
-            .insert(0, workflow(1, "solo-reviewed", &["Build"], None));
-        assert_eq!(composer_label(&state).as_deref(), Some("solo-reviewed"));
+        state.runs.get_mut(&id).unwrap().mode = Some(RunMode::Solo);
+        assert_eq!(
+            composer_label(&state).as_deref(),
+            Some("peer-crew · all hands")
+        );
     }
 
     #[test]
@@ -906,14 +912,6 @@ mod tests {
             composer_label(&state).as_deref(),
             Some("peer-crew · all hands")
         );
-
-        // A solo run started with /solo still says so.
-        let id = RunId::new("run-20260930-100000-a1b2").unwrap();
-        let mut run = crate::state::RunState::new(id.clone());
-        run.mode = Some(RunMode::Solo);
-        state.runs.insert(id.clone(), run);
-        state.mode = Some(AppMode::Working { run: id });
-        assert_eq!(composer_label(&state).as_deref(), Some("solo · all hands"));
     }
 
     fn workflow(id: u32, name: &str, phases: &[&str], parent: Option<StepRef>) -> WorkflowState {

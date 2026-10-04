@@ -21,7 +21,7 @@ pub struct Cli {
     #[arg(short = 'c', long = "continue")]
     pub continue_chat: bool,
 
-    /// What to do. With none, the chat opens.
+    /// What to do. With none, a new conversation opens.
     #[command(subcommand)]
     pub command: Option<Command>,
 }

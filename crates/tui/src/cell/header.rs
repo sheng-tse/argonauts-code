@@ -28,6 +28,9 @@ pub struct SessionHeader {
     pub agents: Vec<AgentReady>,
     /// From an earlier session, for `/resume` to reattach to.
     pub runs_going: u32,
+    /// Runs whose cards wait on you. The app opens a new conversation all the same, and
+    /// `/resume` opens one of them.
+    pub runs_need_you: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,15 +144,32 @@ impl SessionHeader {
                 .unwrap_or_else(|| "not ready".to_owned());
             notes.push(vec![Span::styled(format!("{name}: {note}"), dim)]);
         }
+        let mut runs = Vec::new();
         if self.runs_going > 0 {
-            let unit = if self.runs_going == 1 { "run" } else { "runs" };
+            runs.push(format!("{} going", runs_of(self.runs_going)));
+        }
+        if self.runs_need_you > 0 {
+            let verb = if self.runs_need_you == 1 {
+                "needs"
+            } else {
+                "need"
+            };
+            runs.push(format!("{} {verb} you", runs_of(self.runs_need_you)));
+        }
+        if !runs.is_empty() {
             notes.push(vec![
-                Span::styled(format!("{} {unit} going · ", self.runs_going), dim),
+                Span::styled(format!("{} · ", runs.join(" · ")), dim),
                 Span::styled("/resume", theme.style(Role::Code)),
             ]);
         }
         notes
     }
+}
+
+/// `1 run` or `3 runs`.
+fn runs_of(count: u32) -> String {
+    let unit = if count == 1 { "run" } else { "runs" };
+    format!("{count} {unit}")
 }
 
 /// Cuts from the left as `/…/<last parts>`, or to the end of the last part when even that
@@ -210,6 +230,7 @@ mod tests {
                 },
             ],
             runs_going: 2,
+            runs_need_you: 0,
         }
     }
 
@@ -242,6 +263,24 @@ mod tests {
         );
         assert_eq!(lines[1].spans[4].style, theme.style(Role::Dim));
         assert_eq!(lines[6].spans[2].style, theme.style(Role::Code));
+    }
+
+    #[test]
+    fn runs_that_need_you_get_a_line_under_the_header() {
+        let theme = theme();
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let note = |going: u32, need_you: u32| {
+            let mut header = header();
+            header.agents.clear();
+            header.runs_going = going;
+            header.runs_need_you = need_you;
+            let lines = header.lines(&ctx);
+            plain_text(&lines[5..]).trim_end().to_owned()
+        };
+        assert_eq!(note(0, 1), "  1 run needs you · /resume");
+        assert_eq!(note(0, 2), "  2 runs need you · /resume");
+        assert_eq!(note(1, 1), "  1 run going · 1 run needs you · /resume");
+        assert_eq!(note(0, 0), "");
     }
 
     #[test]

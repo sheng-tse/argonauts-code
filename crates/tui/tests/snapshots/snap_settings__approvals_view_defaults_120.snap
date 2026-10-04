@@ -6,8 +6,11 @@ Approvals
 Who decides each checkpoint, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Who checks                                                                   the cheapest model from another company │
+│ ❯ Approver model             cheapest, other company  built-in  The approver model. Unset picks the cheapest model … │
+│                                                                                                                      │
 │ Goal · auto · rules and approver both agree                                            0 matches in a row · 0 misses │
-│ ❯ How it's decided           auto                     built-in  Goal: who approves                                   │
+│   How it's decided           auto                     built-in  Goal: who approves                                   │
 │   Who decides in auto        both agree               built-in  Goal: who decides in auto mode                       │
 │   When auto doesn't approve  ask you                  built-in  Goal: what happens when auto doesn't approve         │
 │                                                                                                                      │
@@ -15,9 +18,6 @@ Who decides each checkpoint, and how auto matched you
 │   How it's decided           auto                     built-in  Merge: who approves                                  │
 │   Who decides in auto        your rules               built-in  Merge: who decides in auto mode                      │
 │   When auto doesn't approve  ask you                  built-in  Merge: what happens when auto doesn't approve        │
-│                                                                                                                      │
-│ Approver                                                                     the cheapest model from another company │
-│   Model                      cheapest, other company  built-in  The approver model. Unset picks the cheapest model … │
 │                                                                                                                      │
 │ Spot checks                                                                                                          │
 │   None waiting                                                                                                       │

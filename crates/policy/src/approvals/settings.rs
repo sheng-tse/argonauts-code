@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    Answerer, ApprovalMode, ApprovalSettings, ApproverSettings, BudgetRules, CheckpointSettings,
-    DecideWith, EscalationRules, GoalChanges, GoalRules, HardLimitSettings, MergeRules, NoRules,
-    Otherwise, PlanRules, Presence, PromotionRules, SandboxChoice, SandboxSettings, UntrustedRepos,
-    UserHooks,
+    Answerer, ApprovalMode, ApprovalSettings, ApproverSettings, AtHardLimit, BudgetRules,
+    CheckpointSettings, DecideWith, EscalationRules, GoalChanges, GoalRules, HardLimitSettings,
+    MergeRules, NoRules, Otherwise, PlanRules, Presence, PromotionRules, SandboxChoice,
+    SandboxSettings, UntrustedRepos, UserHooks,
 };
 
 use crate::SettingsReloader;
@@ -52,7 +52,9 @@ pub fn stricter(run_start: &Settings, reloaded: &Settings) -> Settings {
 
 fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     ApprovalSettings {
-        answered_by: answered_by(a.answered_by, b.answered_by),
+        // Full auto everywhere only while both say so.
+        full_auto: a.full_auto && b.full_auto,
+        answered_by: answered_by(a.answered_by.as_ref(), b.answered_by.as_ref()),
         // Topics that come back to you add up, so a reload can't drop one mid-run.
         ask_you_about: union(&a.ask_you_about, &b.ask_you_about),
         goal_changes: goal_changes(a.goal_changes, b.goal_changes),
@@ -67,7 +69,12 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
         goal: checkpoint(&a.goal, &b.goal, |_, _| GoalRules {}),
         plan: checkpoint(&a.plan, &b.plan, plan_rules),
         merge: checkpoint(&a.merge, &b.merge, merge_rules),
-        recipe_promotion: checkpoint(&a.recipe_promotion, &b.recipe_promotion, promotion_rules),
+        recipe_promotion: checkpoint(
+            &a.recipe_promotion.as_checkpoint(),
+            &b.recipe_promotion.as_checkpoint(),
+            promotion_rules,
+        )
+        .into(),
         escalation: checkpoint(&a.escalation, &b.escalation, |a, b| EscalationRules {
             max_extra_attempts: a.max_extra_attempts.min(b.max_extra_attempts),
         }),
@@ -88,11 +95,12 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     }
 }
 
-/// You answering is the strictest, then following the mode, then the lead in every mode.
-fn answered_by(a: Option<Answerer>, b: Option<Answerer>) -> Option<Answerer> {
+/// You answering is the strictest, then following the mode, then the lead, or a model you
+/// picked for full auto, which both must name.
+fn answered_by(a: Option<&Answerer>, b: Option<&Answerer>) -> Option<Answerer> {
     match (a, b) {
         (Some(Answerer::You), _) | (_, Some(Answerer::You)) => Some(Answerer::You),
-        (Some(Answerer::Lead), Some(Answerer::Lead)) => Some(Answerer::Lead),
+        (Some(a), Some(b)) if a == b => Some(a.clone()),
         _ => None,
     }
 }
@@ -107,18 +115,12 @@ fn checkpoint<R: Default>(
         decide_with: decide_with(a.decide_with, b.decide_with),
         rules: rules(&a.rules, &b.rules),
         otherwise: otherwise(a.otherwise, b.otherwise),
+        at_hard_limit: at_hard_limit(a.at_hard_limit, b.at_hard_limit),
     }
 }
 
 pub(crate) fn less_autonomous(a: ApprovalMode, b: ApprovalMode) -> ApprovalMode {
-    fn rank(mode: ApprovalMode) -> u8 {
-        match mode {
-            ApprovalMode::Supervised => 0,
-            ApprovalMode::Shadow => 1,
-            ApprovalMode::Auto => 2,
-        }
-    }
-    if rank(a) <= rank(b) { a } else { b }
+    if a.autonomy() <= b.autonomy() { a } else { b }
 }
 
 /// Approving under both settings means passing both conditions: `rules_or_model` with
@@ -143,6 +145,16 @@ fn pause_limit(a: u32, b: u32) -> u32 {
 /// When the two disagree, you decide.
 fn otherwise(a: Otherwise, b: Otherwise) -> Otherwise {
     if a == b { a } else { Otherwise::Ask }
+}
+
+/// When the two disagree: park when either says so, else stop, which ends that part safely,
+/// so a run never waits for you at a hard limit that neither file left to you.
+fn at_hard_limit(a: AtHardLimit, b: AtHardLimit) -> AtHardLimit {
+    match (a, b) {
+        _ if a == b => a,
+        (AtHardLimit::Park, _) | (_, AtHardLimit::Park) => AtHardLimit::Park,
+        _ => AtHardLimit::Stop,
+    }
 }
 
 fn goal_changes(a: GoalChanges, b: GoalChanges) -> GoalChanges {

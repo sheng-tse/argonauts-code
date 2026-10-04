@@ -48,21 +48,25 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::Status => return status(ctx, runs).await,
         ViewRequest::Context => return context(ctx, runs, None).await,
         ViewRequest::Diff { run, card, scope } => {
-            let diff = ctx
-                .services
-                .conductor
-                .diff(&run, &card, scope)
-                .await
-                .with_context(|| format!("the diff of {card} in {run}"))?;
+            let diff = match ctx.services.conductor.diff(&run, &card, scope).await {
+                Ok(diff) => diff,
+                Err(err) => {
+                    return super::refused(ctx, err, || {
+                        format!("Couldn't show the diff of {card}")
+                    });
+                }
+            };
             show(ctx, ViewData::Diff { diff });
         }
         ViewRequest::Raw { run, session } => {
-            let raw = ctx
-                .services
-                .conductor
-                .raw(&run, &session)
-                .await
-                .with_context(|| format!("the raw log of {session} in {run}"))?;
+            let raw = match ctx.services.conductor.raw(&run, &session).await {
+                Ok(raw) => raw,
+                Err(err) => {
+                    return super::refused(ctx, err, || {
+                        format!("Couldn't show the raw log of {session}")
+                    });
+                }
+            };
             show(ctx, ViewData::Raw { raw });
         }
         ViewRequest::Workflow { run, workflow } => {
@@ -134,12 +138,12 @@ pub(crate) async fn status(ctx: &mut Ctx, runs: &mut RunsState) -> Handled {
             newest.run
         }
     };
-    let summary = ctx
-        .services
-        .conductor
-        .status(&run)
-        .await
-        .with_context(|| format!("the status of {run}"))?;
+    let summary = match ctx.services.conductor.status(&run).await {
+        Ok(summary) => summary,
+        Err(err) => {
+            return super::refused(ctx, err, || "Couldn't read the run's status".to_owned());
+        }
+    };
     show(ctx, ViewData::Status { summary });
     Ok(Vec::new())
 }

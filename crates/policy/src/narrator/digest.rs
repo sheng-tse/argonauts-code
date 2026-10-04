@@ -457,6 +457,7 @@ fn party(party: &Party) -> String {
         Party::Rules => "your rules".to_owned(),
         Party::Approver { model } => format!("the approver {model}"),
         Party::Config => "a setting".to_owned(),
+        Party::FullAuto => "full auto".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         // The name is the client's own, so code says it's a front end: a client calling

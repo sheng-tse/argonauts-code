@@ -48,7 +48,7 @@ fn agents_work_on_their_own_by_default_and_ask_when_a_rule_fails() {
     assert_eq!(settings.limits.auto_merges_per_day, 3);
     // Promoting a recipe change is automatic too: its replays pass first, and a canary watches it.
     assert_eq!(
-        rule(&approvals.recipe_promotion),
+        rule(&approvals.recipe_promotion.as_checkpoint()),
         (ApprovalMode::Auto, DecideWith::Rules, Otherwise::Ask)
     );
     // Unset, so the policy builder picks the cheapest model from another company.

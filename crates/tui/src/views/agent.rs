@@ -1127,21 +1127,16 @@ impl View for AgentView {
                 ViewOutcome::Consumed
             }
             KeyCode::Char('i') if plain && self.loaded() => {
-                self.steer = Some(String::new());
-                ViewOutcome::Consumed
+                match super::steer_refusal(ctx.state, &self.data.run, &self.data.row.session) {
+                    Some(why) => ViewOutcome::Notice(why),
+                    None => {
+                        self.steer = Some(String::new());
+                        ViewOutcome::Consumed
+                    }
+                }
             }
             KeyCode::Char('t') if plain && self.loaded() => {
-                let card = ctx
-                    .state
-                    .session(&self.data.run, &self.data.row.session)
-                    .and_then(|session| session.card.clone());
-                match card {
-                    Some(card) => ViewOutcome::ConfirmTakeOver {
-                        run: self.data.run.clone(),
-                        card,
-                    },
-                    None => ViewOutcome::Notice("This agent has no card to take over".to_owned()),
-                }
+                super::take_over(ctx.state, &self.data.run, &self.data.row.session)
             }
             KeyCode::Char('c') if plain && self.loaded() => super::carry_on(
                 ctx.state,
@@ -1151,6 +1146,10 @@ impl View for AgentView {
             ),
             KeyCode::Char('d') if plain && self.loaded() => self.open_diff(ctx),
             KeyCode::Char('x') if plain && self.loaded() => {
+                if !self.running() {
+                    let label = sanitize_line(&self.data.row.label).trim().to_owned();
+                    return ViewOutcome::Notice(format!("{label} already finished"));
+                }
                 self.confirm_stop = true;
                 ViewOutcome::Consumed
             }
@@ -1363,6 +1362,23 @@ mod tests {
             assert!(!shown.contains(gone), "{gone}: {shown}");
         }
         assert!(shown.contains("⏎ open"), "{shown}");
+        // Pressed anyway, they say what happened and what to do instead.
+        for c in ['t', 'i'] {
+            let ViewOutcome::Notice(why) =
+                key_in(&mut view, KeyCode::Char(c), KeyModifiers::NONE, &finished)
+            else {
+                panic!("{c} says why");
+            };
+            assert!(why.starts_with("That run already merged"), "{why}");
+            assert!(why.contains("type /follow-up"), "{why}");
+        }
+        let ViewOutcome::Notice(why) =
+            key_in(&mut view, KeyCode::Char('x'), KeyModifiers::NONE, &finished)
+        else {
+            panic!("x says why");
+        };
+        assert!(why.ends_with("already finished"), "{why}");
+        assert!(view.steer.is_none() && !view.confirm_stop);
 
         key_in(&mut view, KeyCode::Tab, KeyModifiers::NONE, &finished);
         let text = draw_in(&mut view, 120, &finished);
