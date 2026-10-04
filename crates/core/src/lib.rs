@@ -23,6 +23,7 @@ pub mod hash;
 pub mod ids;
 pub mod input;
 pub mod journal;
+pub mod labels;
 pub mod layout;
 pub mod limits;
 pub mod log;

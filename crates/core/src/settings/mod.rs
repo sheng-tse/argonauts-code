@@ -32,7 +32,7 @@ use learning::{MemorySettings, OutcomeSettings, PromptSettings, SkillSettings};
 use protocol::{
     CritiqueSettings, DivideSettings, DraftingSettings, GateSettings, GoalSettings, IntakeSettings,
     JudgingSettings, MappingSettings, MergeSettings, ReviewSettings, RoutingSettings, SoloSettings,
-    SpikeSettings, TriageSettings, VisibilitySettings,
+    SpikeSettings, TriageSettings, UnderstandSettings, VisibilitySettings,
 };
 use roles::RoleSettings;
 use sessions::{
@@ -64,6 +64,8 @@ pub struct Settings {
     pub intake: IntakeSettings,
     pub triage: TriageSettings,
     pub solo: SoloSettings,
+    pub understand: UnderstandSettings,
+    /// The goal style's limits.
     pub goal: GoalSettings,
     pub drafting: DraftingSettings,
     pub mapping: MappingSettings,
@@ -127,6 +129,7 @@ impl Default for Settings {
             intake: IntakeSettings::default(),
             triage: TriageSettings::default(),
             solo: SoloSettings::default(),
+            understand: UnderstandSettings::default(),
             goal: GoalSettings::default(),
             drafting: DraftingSettings::default(),
             mapping: MappingSettings::default(),

@@ -20,7 +20,7 @@ use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::plan::{decisions, drafts};
 use crate::state::plan::SealedDraft;
-use crate::workflow::{StepCall, align};
+use crate::workflow::StepCall;
 
 /// Opens the pick card when the plans were judged without a winner, and records your pick.
 /// Nothing to do when a plan is already chosen.
@@ -155,7 +155,7 @@ fn request(
         budget: super::empty_budget(),
         new_dependencies: Vec::new(),
         flags: review.flags(),
-        workflow: host.read(align::plan_workflow),
+        workflow: host.read(super::workflow_plan::plan_workflow),
     };
     Ok(CheckpointRequest {
         at: Some(call.at.clone()),

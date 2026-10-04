@@ -99,6 +99,7 @@ impl Crew {
                 last_gate: None,
                 reviews: 0,
                 waiting_on_vendor: None,
+                item: None,
             },
         );
     }
@@ -168,6 +169,7 @@ impl Crew {
             resumed_from: None,
             follow_key: None,
             workflow_step: None,
+            label: None,
         };
         self.send(
             session,
@@ -292,6 +294,7 @@ fn session_state(
         step: None,
         card,
         workflow_step: None,
+        label: None,
         status: SessionStatus::Working,
         started: at,
         ended: None,
@@ -317,6 +320,7 @@ fn session_state(
         doing: Doing::Nothing,
         stalled: false,
         vendor_session: None,
+        workflows: Vec::new(),
     }
 }
 

@@ -646,6 +646,7 @@ fn describe(request: &ControlRequest) -> String {
         ControlRequest::Stop => "Stopping the run".to_owned(),
         ControlRequest::StopSession { session } => format!("Stopping {session}"),
         ControlRequest::SpotCheck { id, .. } => format!("Your spot check of {id}"),
+        ControlRequest::Goal { .. } => "Your change to the goal".to_owned(),
         _ => "A request".to_owned(),
     }
 }

@@ -68,7 +68,7 @@ async fn diff_view(host: &Host, card: &CardId, scope: DiffScope) -> EngineResult
 }
 
 /// At most `max` bytes, cut at a line end where there is one, and never inside a character.
-fn cut(mut text: String, max: usize) -> String {
+pub(crate) fn cut(mut text: String, max: usize) -> String {
     if text.len() <= max {
         return text;
     }

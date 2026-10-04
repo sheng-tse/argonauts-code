@@ -1,6 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use argonauts_core::ids::RepoId;
 use argonauts_core::settings::ui::{ColorChoice, UiSettings};
 use argonauts_core::{KeyScheme, Verbosity};
 
@@ -22,8 +21,8 @@ pub struct UiOptions {
     pub settings: UiSettings,
     /// `--screen-reader`, `ui.screen_reader`, or `ARGONAUTS_SCREEN_READER=1`.
     pub screen_reader: bool,
-    /// This repo's prompt history, `~/.argonauts/state/<repo>/history.jsonl`. `None` when the
-    /// home or the repo can't be found, and the composer then keeps history in memory only.
+    /// This repo's prompt history, `~/.argonauts/state/<repo>/history.jsonl`, which the app
+    /// sets. `None` keeps history in memory only, as every test does.
     pub history_file: Option<PathBuf>,
 }
 
@@ -42,7 +41,7 @@ impl UiOptions {
             home_dir: dirs::home_dir(),
             screen_reader: ui.screen_reader || screen_reader_from_env(),
             settings: ui.clone(),
-            history_file: history_file_for_cwd(),
+            history_file: None,
         }
     }
 }
@@ -58,12 +57,12 @@ fn screen_reader_from_env() -> bool {
     std::env::var_os("ARGONAUTS_SCREEN_READER").is_some_and(|v| v == "1")
 }
 
-fn history_file_for_cwd() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-    let repo = RepoId::for_repo(&cwd).ok()?;
-    let dir = argonauts_core::paths::state_dir(&repo).ok()?;
-    Some(dir.join("history.jsonl"))
+/// The prompt history of the repo in `state_dir`, the folder [`argonauts_core::paths`] gives it.
+pub fn history_file_in(state_dir: &Path) -> PathBuf {
+    state_dir.join(HISTORY_FILE)
 }
+
+const HISTORY_FILE: &str = "history.jsonl";
 
 #[cfg(test)]
 mod tests {
@@ -74,6 +73,10 @@ mod tests {
         let options = UiOptions::default();
         assert_eq!(options.verbosity, Verbosity::Full);
         assert_eq!(options.settings, UiSettings::default());
+        assert_eq!(
+            options.history_file, None,
+            "only the app keeps history on disk"
+        );
     }
 
     #[test]

@@ -433,8 +433,5 @@ fn workflow_library() {
     vim.press(&mut view, 'G');
     assert_eq!(view.library.list.selected, 1);
     assert!(matches!(vim.press(&mut view, 'l'), ViewOutcome::Open(_)));
-    // `l` shows the file, so `L` is the key for the Run tab.
-    assert!(matches!(vim.press(&mut view, 'L'), ViewOutcome::Consumed));
-    assert_eq!(view.library.said.as_deref(), Some("No run to show yet"));
     assert!(matches!(vim.press(&mut view, 'h'), ViewOutcome::Close));
 }

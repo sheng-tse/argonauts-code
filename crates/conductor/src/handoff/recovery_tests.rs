@@ -660,6 +660,7 @@ fn started(seq: u64, stopped: &str) -> RunEvent {
                 resumed_from: None,
                 follow_key: None,
                 workflow_step: None,
+                label: None,
             }))),
         )
     }

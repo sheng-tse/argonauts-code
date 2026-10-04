@@ -79,11 +79,17 @@ fn lifecycle_lines(lifecycle: &RunLifecycle, normal: bool) -> Vec<String> {
             }
             line
         }
+        RunLifecycle::ClosingAnswer(answer) => format!("answer: {}", one_line(&answer.text)),
         _ if !normal => return Vec::new(),
         RunLifecycle::Started(started) => format!(
             "run: {}, a {} run, started",
             one_line(&started.title),
             word(&started.mode)
+        ),
+        RunLifecycle::Named(named) => format!(
+            "run: named {}, {}",
+            one_line(&named.name),
+            one_line(&named.description)
         ),
         RunLifecycle::Resumed(_) => "run: resumed".to_owned(),
         RunLifecycle::PauseRequested { now: true, .. } => {

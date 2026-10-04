@@ -470,10 +470,7 @@ fn approved_goal() -> anyhow::Result<RunEvent> {
         run: RunId::new("run-01")?,
         version: 1,
         summary: "Rate limit the API".to_owned(),
-        criteria: vec![Criterion {
-            id: "G1".to_owned(),
-            text: "The 101st call in a minute gets 429".to_owned(),
-        }],
+        criteria: vec![Criterion::new("G1", "The 101st call in a minute gets 429")],
         in_scope: Vec::new(),
         out_of_scope: Vec::new(),
         assumptions: Vec::new(),
@@ -1075,6 +1072,7 @@ async fn phase_lead_rotates_by_phase() -> anyhow::Result<()> {
         reviewers: Vec::new(),
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     };
     let specs = [
         spec("card-001", CardKind::Interface, &[]),

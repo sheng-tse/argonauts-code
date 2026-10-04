@@ -44,6 +44,7 @@ use argonauts_core::event::AgentEvent;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::names::{ChatId, ChoiceId, TurnId, WorkerRef};
+use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::ChangeEstimate;
 use argonauts_core::steps::{StepError, StepOutcome};
 use argonauts_core::vendor_commands::VendorCommand;
@@ -702,6 +703,37 @@ fn planned(mut request: StartRun) -> StartRun {
 
 /// The plan checkpoint's mode, which `/plan` sets for one run.
 const PLAN_MODE_KEY: &str = "approvals.plan.mode";
+
+/// The same run as a workflow or a goal, whatever `workflows.style` says: the run's own command
+/// wins over every setting, and the run keeps the style it starts with.
+pub(super) fn styled(mut request: StartRun, style: RunStyle) -> StartRun {
+    request.mode = RunMode::Crew;
+    request
+        .overrides
+        .push(format!("{STYLE_KEY}=\"{}\"", style.as_str()));
+    request
+}
+
+const STYLE_KEY: &str = "workflows.style";
+
+/// `/workflow <task>`: a crew run that's a workflow.
+pub(crate) async fn start_workflow(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    task: String,
+) -> anyhow::Result<Vec<Effect>> {
+    let task = task.trim().to_owned();
+    let mut effects = name_the_chat(chat, &task);
+    let mut request = styled(
+        run_request(ctx, task, RunMode::Crew, None, None),
+        RunStyle::Workflow,
+    );
+    if chat.prefs.plan_first {
+        request = planned(request);
+    }
+    effects.push(Effect::StartRun(Box::new(request)));
+    Ok(effects)
+}
 
 /// The run on screen's zero-token summary, for `/ask` during a run.
 async fn run_status(ctx: &Ctx) -> Option<String> {

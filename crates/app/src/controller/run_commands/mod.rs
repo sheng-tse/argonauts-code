@@ -15,6 +15,7 @@ use anyhow::Context;
 use argonauts_core::api::{Approvals, CheckpointAnswer, DiffScope};
 use argonauts_core::app::{AppEvent, NOT_CHANGED, ViewData};
 use argonauts_core::events::checkpoint::AnswerAction;
+use argonauts_core::events::goal::{GoalAction, LET_THE_LEAD_ANSWER};
 use argonauts_core::names::{CheckpointId, ChoiceId};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{CardId, NoteLevel, RunId};
@@ -28,7 +29,9 @@ pub(crate) use control::{
     cancel_pause, continue_run, guidance, mention, pause, resume, steer, stop, stop_agent,
     take_back,
 };
-pub(crate) use views::{all_repos, ask_narrator, context, status, summary, view, workflow_view};
+pub(crate) use views::{
+    all_repos, ask_narrator, context, save_workflow, status, summary, view, workflow_view,
+};
 
 /// Why nothing that decides or raises autonomy can leave this app.
 pub(super) const NO_APPROVALS: &str = "This app can't approve anything or change autonomy: it \
@@ -92,6 +95,10 @@ pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: Checkpoin
         AnswerAction::Candidate { worker } => Some(worker.clone()),
         _ => None,
     };
+    let lead_answers = matches!(
+        &reply.action,
+        AnswerAction::Choose { value } if value == LET_THE_LEAD_ANSWER
+    );
     let answer = CheckpointAnswer {
         id: reply.id.clone(),
         action: reply.action,
@@ -103,6 +110,9 @@ pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: Checkpoin
         .answer(&reply.run, answer)
         .await
         .with_context(|| format!("answering {} of {}", reply.id, reply.run))?;
+    if lead_answers {
+        return super::settings::let_the_lead_answer(ctx);
+    }
     if reply.remember {
         return cards::remember(ctx, runs, &reply.run, &reply.id, pick);
     }
@@ -288,6 +298,45 @@ pub(crate) async fn approval_mode(
 
 /// Your verdict on an auto-approval. A right one can raise autonomy, so it needs you at the
 /// terminal, as an approval does.
+/// The goal view's keys: clear the goal, turn the run into one, or change an assumption. Only
+/// you do these, so an app that can't approve can't either.
+pub(crate) async fn goal(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    run: Option<RunId>,
+    action: GoalAction,
+) -> Handled {
+    if approvals(ctx).is_none() {
+        return Ok(Vec::new());
+    }
+    let Some(run) = run.or_else(|| on_screen(ctx, runs)) else {
+        return Ok(Vec::new());
+    };
+    let done = match &action {
+        GoalAction::Clear { land: true } => {
+            "Stopped pursuing the goal. Merge lands what holds once every check passes."
+        }
+        GoalAction::Clear { land: false } => {
+            "Stopped pursuing the goal. The run stops and keeps its branch."
+        }
+        GoalAction::TurnIntoGoal => {
+            "The run becomes a goal: its check judges this workflow when it ends, and the crew \
+             keeps attempting what's unmet."
+        }
+        GoalAction::ChangeAssumption { .. } => {
+            "Changed the assumption. The agents working now are told, and the next attempt \
+             plans with it."
+        }
+    };
+    ctx.services
+        .conductor
+        .goal(&run, action)
+        .await
+        .with_context(|| format!("changing {run}'s goal"))?;
+    ctx.notice(NoteLevel::Info, done);
+    Ok(Vec::new())
+}
+
 pub(crate) async fn spot_check(
     ctx: &mut Ctx,
     run: RunId,

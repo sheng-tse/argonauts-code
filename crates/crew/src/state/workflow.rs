@@ -1,7 +1,7 @@
 //! Every workflow the run started (its own, and nested ones), their current definition after
 //! approved changes, and each step's rounds.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,16 @@ pub struct WorkflowRecord {
     /// The `change_request` checkpoints whose changes were recorded, oldest first.
     #[serde(default)]
     pub changes: Vec<CheckpointId>,
+    /// The version its last `Declared` described, so a change declares it again.
+    #[serde(default)]
+    pub declared: Option<String>,
+    /// Phases by index whose `PhaseStarted`, `PhaseEnded`, or `PhaseSkipped` is recorded.
+    #[serde(default)]
+    pub phases_started: BTreeSet<u32>,
+    #[serde(default)]
+    pub phases_ended: BTreeSet<u32>,
+    #[serde(default)]
+    pub phases_skipped: BTreeSet<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -163,9 +173,36 @@ impl Workflows {
                         changed_from_phase: None,
                         since: envelope.seq,
                         changes: Vec::new(),
+                        declared: None,
+                        phases_started: BTreeSet::new(),
+                        phases_ended: BTreeSet::new(),
+                        phases_skipped: BTreeSet::new(),
                     },
                 );
             }
+            WorkflowEvent::Declared(declared) => {
+                if let Some(record) = self.by_id.get_mut(&declared.id) {
+                    record.declared = Some(record.version.clone());
+                }
+            }
+            WorkflowEvent::PhaseStarted(mark) => {
+                if let Some(record) = self.by_id.get_mut(&mark.id) {
+                    record.phases_started.insert(mark.index);
+                }
+            }
+            WorkflowEvent::PhaseEnded { phase, .. } => {
+                if let Some(record) = self.by_id.get_mut(&phase.id) {
+                    record.phases_ended.insert(phase.index);
+                }
+            }
+            WorkflowEvent::PhaseSkipped { phase, .. } => {
+                if let Some(record) = self.by_id.get_mut(&phase.id) {
+                    record.phases_skipped.insert(phase.index);
+                }
+            }
+            // The lead adds a phase through a change, which redefines the workflow, so the
+            // record already holds it.
+            WorkflowEvent::PhaseAdded { .. } | WorkflowEvent::Note(_) => {}
             WorkflowEvent::StepStarted(started) => {
                 if let Some(record) = self.by_id.get_mut(&started.step.workflow) {
                     record.steps.push(StepProgress {
@@ -225,7 +262,7 @@ impl Workflows {
                     record.version = changed.version.clone();
                     record.workflow = changed.workflow.clone();
                     record.finished = false;
-                    record.changes.push(changed.checkpoint.clone());
+                    record.changes.extend(changed.checkpoint.clone());
                 }
             }
         }
@@ -402,7 +439,7 @@ mod tests {
             id: id.clone(),
             version: "v2".to_owned(),
             workflow: workflow("Rebuild"),
-            checkpoint: CheckpointId::numbered(1),
+            checkpoint: Some(CheckpointId::numbered(1)),
             reason: "one more check".to_owned(),
         }));
         workflows.apply(&change, &envelope(6, &change));

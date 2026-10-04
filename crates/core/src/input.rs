@@ -59,6 +59,15 @@ pub enum SlashCommand {
     Crew {
         task: String,
     },
+    /// The crew does it as a workflow, the lead's phases, whatever `workflows.style` says. No
+    /// task opens the workflow view, as `/workflows` does.
+    Workflow {
+        task: Option<String>,
+    },
+    /// How crew runs work: `follow_lead`, `workflow`, or `goal`. No value opens its picker.
+    Style {
+        style: Option<String>,
+    },
     /// A new run that builds on a finished one.
     FollowUp {
         /// The latest merged run when omitted.
@@ -418,6 +427,7 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "ask", args: "<question>", help: "Answer only, never a run", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "solo", args: "<task>", help: "One agent does it", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "crew", args: "<task>", help: "The crew does it", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "workflow", args: "[task]", help: "The crew does it as a workflow, phases that end when they finish. No task shows the workflow view", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "follow-up", args: "[run] <request>", help: "Follow up on a finished run", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "status", args: "", help: "Where each run stands: goal, plan, cards, budget, quotas. Costs nothing. s in it asks the narrator for a summary", handler: Handler::App, category: CommandCategory::Runs },
     SlashSpec { name: "workflows", args: "", help: "The workflow view (Ctrl+T). Its Library tab shows, copies, and diffs workflow files", handler: Handler::Ui, category: CommandCategory::Runs },
@@ -429,6 +439,7 @@ pub const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "effort", args: "[role] [level]", help: "Reasoning effort, from the levels that model supports", handler: Handler::App, category: CommandCategory::Crew },
     SlashSpec { name: "agents", args: "[add <name>]", help: "The agents Argonauts can use (CLIs, endpoints, ACP agents): add one (Hermes, OpenClaw, OpenCode, Ollama, your own CLI), turn one on or off, check its login", handler: Handler::App, category: CommandCategory::Crew },
     SlashSpec { name: "preset", args: "[name]", help: "How the crew works", handler: Handler::App, category: CommandCategory::Crew },
+    SlashSpec { name: "style", args: "[follow_lead|workflow|goal]", help: "How crew runs work: as a workflow, as a goal, or as the lead's CLI does", handler: Handler::App, category: CommandCategory::Crew },
     SlashSpec { name: "handoff", args: "", help: "Who takes over when an agent stops, and what it's told", handler: Handler::App, category: CommandCategory::Crew },
     SlashSpec { name: "approvals", args: "", help: "Each checkpoint's mode, and what waits for you", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
     SlashSpec { name: "budget", args: "", help: "Run and card budgets", handler: Handler::App, category: CommandCategory::ApprovalsAndLimits },
@@ -606,6 +617,10 @@ fn parse_slash(name: &str, args: &str) -> Result<SlashCommand, InputError> {
         "crew" => Ok(SlashCommand::Crew {
             task: text_arg("a task")?,
         }),
+        "workflow" => Ok(SlashCommand::Workflow {
+            task: (!args.is_empty()).then(|| args.to_owned()),
+        }),
+        "style" => parse_style(name, args),
         "follow-up" => parse_follow_up(name, args),
         "status" => no_args(SlashCommand::Status),
         "workflows" => no_args(SlashCommand::Workflows),
@@ -936,6 +951,20 @@ fn parse_connect(name: &str, args: &str) -> Result<SlashCommand, InputError> {
     Ok(SlashCommand::Connect { front_end })
 }
 
+/// `/style`, `/style goal`. "follow-lead" and "lead" read as `follow_lead`.
+fn parse_style(name: &str, args: &str) -> Result<SlashCommand, InputError> {
+    let style = match args.trim().to_lowercase().as_str() {
+        "" => None,
+        "follow_lead" | "follow-lead" | "lead" | "follow the lead" => Some("follow_lead"),
+        "workflow" => Some("workflow"),
+        "goal" => Some("goal"),
+        _ => return Err(bad(name, "use /style follow_lead, workflow, or goal")),
+    };
+    Ok(SlashCommand::Style {
+        style: style.map(str::to_owned),
+    })
+}
+
 fn parse_one_word(name: &str, args: &str) -> Result<Option<String>, InputError> {
     let words: Vec<&str> = args.split_whitespace().collect();
     match words.as_slice() {
@@ -1129,6 +1158,12 @@ mod tests {
             ("/solo fix the typo", slash(SlashCommand::Solo { task: "fix the typo".into() })),
             ("  /crew add per-key rate limiting", slash(SlashCommand::Crew { task: "add per-key rate limiting".into() })),
             ("/crew", bad_args("crew")),
+            ("/workflow fix slugify", slash(SlashCommand::Workflow { task: Some("fix slugify".into()) })),
+            ("/workflow", slash(SlashCommand::Workflow { task: None })),
+            ("/style", slash(SlashCommand::Style { style: None })),
+            ("/style goal", slash(SlashCommand::Style { style: Some("goal".into()) })),
+            ("/style follow-lead", slash(SlashCommand::Style { style: Some("follow_lead".into()) })),
+            ("/style sometimes", bad_args("style")),
             ("/follow-up run-01 add tests", slash(SlashCommand::FollowUp { run: Some(run("run-01")), request: "add tests".into() })),
             ("/follow-up add tests", slash(SlashCommand::FollowUp { run: None, request: "add tests".into() })),
             ("/follow-up running the linter too", slash(SlashCommand::FollowUp { run: None, request: "running the linter too".into() })),
@@ -1274,7 +1309,6 @@ mod tests {
             "continue",
             "summary",
             "tree",
-            "workflow",
             "checkpoints",
             "revert",
             "agent",
@@ -1303,7 +1337,7 @@ mod tests {
                 spec.name
             );
         }
-        assert_eq!(SLASH_COMMANDS.len(), 34);
+        assert_eq!(SLASH_COMMANDS.len(), 36);
         let mut names: Vec<&str> = SLASH_COMMANDS.iter().map(|spec| spec.name).collect();
         names.sort_unstable();
         names.dedup();
@@ -1328,7 +1362,7 @@ mod tests {
             groups,
             [
                 ("Session", vec!["clear", "resume", "exit"]),
-                ("Work", vec!["ask", "solo", "crew", "follow-up"]),
+                ("Work", vec!["ask", "solo", "crew", "workflow", "follow-up"]),
                 (
                     "Runs",
                     vec![
@@ -1342,7 +1376,7 @@ mod tests {
                 ),
                 (
                     "Crew",
-                    vec!["model", "effort", "agents", "preset", "handoff"]
+                    vec!["model", "effort", "agents", "preset", "style", "handoff"]
                 ),
                 (
                     "Approvals and limits",
@@ -1388,6 +1422,8 @@ mod tests {
             "model",
             "effort",
             "preset",
+            "style",
+            "workflow",
             "agents",
             "budget",
             "handoff",

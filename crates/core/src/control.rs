@@ -11,6 +11,7 @@ use crate::api::{
     CheckpointAnswer, DiffScope, DiffView, RawView, StatusSummary, SteerAck, TakeOverTicket,
 };
 use crate::events::RunEvent;
+use crate::events::goal::GoalAction;
 use crate::events::session::QueuedMessage;
 use crate::input::MentionTarget;
 use crate::names::{CheckpointId, MessageId, SessionKey, WorkerRef};
@@ -124,6 +125,10 @@ pub enum ControlRequest {
     SpotCheck {
         id: CheckpointId,
         correct: bool,
+    },
+    /// Clear the goal, turn the workflow into one, or change an assumption.
+    Goal {
+        action: GoalAction,
     },
 }
 

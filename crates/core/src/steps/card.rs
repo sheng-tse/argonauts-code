@@ -1,4 +1,5 @@
-//! Card steps: predictions, builds, acceptance tests, merge conflicts, and the retro.
+//! Card steps: predictions, builds, acceptance tests, merge conflicts, the retro, and the
+//! closing answer.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -78,6 +79,10 @@ pub struct CardReport {
     /// Notes worth keeping for later sessions, checked by the safety scan.
     #[serde(default)]
     pub memory_proposals: Vec<MemoryProposal>,
+    /// What you'd tell the person who asked, ending the task as your own CLI would: what you
+    /// changed, how you checked it, and anything left. A few short sentences of plain prose.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub answer: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -157,6 +162,50 @@ pub struct RetroInput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RetroOutput {
     pub change: Option<ProcessChange>,
+}
+
+/// The run's closing answer, written by the lead from the cards' reports once a crew run ends.
+pub struct CloseRun;
+
+impl Step for CloseRun {
+    const NAME: StepName = StepName::CloseRun;
+    type Input = CloseRunInput;
+    type Output = CloseRunOutput;
+}
+
+/// What the run did, written by code.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CloseRunInput {
+    /// What the person asked for.
+    pub request: String,
+    /// How the run ended, such as "merged into main".
+    pub ending: String,
+    /// Each card's report, the ones whose work landed first. Only those are what changed; the
+    /// others are what's left.
+    pub cards: Vec<CardDigest>,
+    /// The changed files with their line counts.
+    pub files: Vec<String>,
+    /// The checks Argonauts ran and their results.
+    pub checks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CardDigest {
+    pub title: String,
+    /// `landed` when its work is in what the run delivers, else how it ended, such as
+    /// `failed` or `cancelled`.
+    #[serde(default)]
+    pub state: String,
+    pub summary: String,
+    pub tests_run: Vec<String>,
+    pub concerns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CloseRunOutput {
+    /// The closing answer: what changed, how it was checked, and anything left, in a few
+    /// short sentences of plain prose.
+    pub answer: String,
 }
 
 /// One setting change for a recipe candidate.

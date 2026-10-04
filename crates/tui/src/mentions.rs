@@ -351,6 +351,7 @@ pub(crate) mod fixture {
             step: None,
             card: card.map(|card| CardId::new(card).unwrap()),
             workflow_step: None,
+            label: None,
             status: SessionStatus::Working,
             started: OffsetDateTime::UNIX_EPOCH,
             ended: None,
@@ -367,6 +368,7 @@ pub(crate) mod fixture {
             streaming: String::new(),
             diffs: Vec::new(),
             subagents: Vec::new(),
+            workflows: Vec::new(),
             inputs: Vec::new(),
             queued: Vec::new(),
             retry: None,
@@ -394,6 +396,7 @@ pub(crate) mod fixture {
             last_gate: None,
             reviews: 0,
             waiting_on_vendor: None,
+            item: None,
         }
     }
 

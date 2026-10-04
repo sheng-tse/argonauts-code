@@ -1,11 +1,17 @@
 use std::collections::{BTreeMap, HashMap};
 
-use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
+use argonauts_core::events::checkpoint::CheckpointEvent;
+use argonauts_core::events::run::{ParkReason, RunLifecycle, RunNamed, RunOutcome};
+use argonauts_core::events::session::{SessionEvent, VendorWorkflow};
+use argonauts_core::events::workflow::{StepEnd, WorkflowDeclared, WorkflowEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{WorkerRef, WorkflowId};
-use argonauts_core::views::{NestedWorkflowRow, PhaseRow, RowStatus, WorkflowRow, WorkflowView};
+use argonauts_core::names::{CheckpointId, SessionKey, WorkerRef, WorkflowId};
+use argonauts_core::views::{
+    NestedWorkflowRow, PhaseCount, PhaseRow, RowStatus, StatusKind, StatusLine, WorkflowRow,
+    WorkflowView, is_workflow_agent, vendor_workflow_id,
+};
 use argonauts_core::workflow::{StepRef, Workflow};
-use argonauts_core::{RunId, Spend};
+use argonauts_core::{AgentEvent, RunId, Spend};
 use time::OffsetDateTime;
 
 use super::sessions::{RunFacts, add_spend};
@@ -13,15 +19,21 @@ use super::sessions::{RunFacts, add_spend};
 /// Nesting stops at depth 2; a deeper chain can only come from a damaged log.
 const MAX_DEPTH: usize = 4;
 
-/// The run's own workflow when `workflow` is `None`, else that nested one with its breadcrumb.
-/// Before the lead picks the run's own workflow, `None` gives the one that runs first, the goal's
-/// alignment. `None` when the events hold no such workflow.
+/// The run's own workflow when `workflow` is `None`, else that nested one with its breadcrumb,
+/// or a workflow an agent's own CLI runs. Before the lead picks the run's own workflow, `None`
+/// gives the one that runs first, the goal's alignment. `None` when the events hold no such
+/// workflow.
 pub(crate) fn workflow_view(
     events: &[RunEvent],
     run: &RunId,
     workflow: Option<&WorkflowId>,
 ) -> Option<WorkflowView> {
     let log = WorkflowLog::of(events);
+    if let Some(id) = workflow
+        && let Some(view) = log.vendor_view(run, id)
+    {
+        return Some(view);
+    }
     let id = match workflow {
         Some(id) => id.clone(),
         None => log
@@ -36,17 +48,34 @@ pub(crate) fn workflow_view(
             .clone(),
     };
     let facts = log.workflows.get(&id)?;
-    let breadcrumb = if facts.parent.is_some() {
-        log.breadcrumb(&id)
-    } else {
-        Vec::new()
-    };
+    // The top of the log, the run's own workflow or the goal alignment ahead of it, goes by
+    // the run's name with no crumbs; a nested one names its parents.
+    let top = log.is_top(facts);
+    let breadcrumb = if top { Vec::new() } else { log.breadcrumb(&id) };
     let built = log.build(&id, 0)?;
+    // The run's own workflow goes by the run's name, the one its panel row shows, and never
+    // by the template it started from.
+    let (name, description) = match (&log.named, top) {
+        (Some(named), true) => (named.name.clone(), named.description.clone()),
+        _ => match log.declared.get(&id) {
+            Some(declared) => (declared.name.clone(), declared.description.clone()),
+            None => (
+                facts.definition.name.clone(),
+                facts.definition.description.clone(),
+            ),
+        },
+    };
+    let mut status_lines = log.status_lines(&id, top);
+    if top && let Some(goal) = super::goal::goal_view(events, run) {
+        status_lines.insert(0, goal_line(&goal));
+    }
     Some(WorkflowView {
         run: run.clone(),
+        status_lines,
+        style: log.named.as_ref().filter(|_| top).map(|named| named.style),
         id,
-        name: facts.definition.name.clone(),
-        description: facts.definition.description.clone(),
+        name,
+        description,
         breadcrumb,
         agents_done: built.agents_done,
         agents_total: built.agents_total,
@@ -56,12 +85,119 @@ pub(crate) fn workflow_view(
     })
 }
 
+/// The run's workflow, or the nested one named, as it is now, with the name it's saved under:
+/// the run's own name for the run's workflow, made safe for a file name.
+pub(crate) fn saved_workflow(
+    events: &[RunEvent],
+    workflow: Option<&WorkflowId>,
+) -> Option<(String, Workflow)> {
+    let log = WorkflowLog::of(events);
+    let (id, facts) = match workflow {
+        Some(id) => (id, log.workflows.get(id)?),
+        None => log
+            .workflows
+            .iter()
+            .find(|(_, facts)| facts.parent.is_none())?,
+    };
+    let name = match (&log.named, facts.parent.is_none()) {
+        (Some(named), true) => named.name.clone(),
+        _ => log
+            .declared
+            .get(id)
+            .map_or_else(|| facts.definition.name.clone(), |d| d.name.clone()),
+    };
+    let safe: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let safe = safe.trim_matches('-').to_owned();
+    let safe = if safe.is_empty() {
+        "workflow".to_owned()
+    } else {
+        safe
+    };
+    Some((safe, facts.definition.clone()))
+}
+
+/// `Goal · 3 of 4 met · attempt 2 of up to 5 · not yet: median([]) raises ValueError`, the
+/// line a goal run's workflow view keeps under its description.
+fn goal_line(goal: &argonauts_core::views::GoalView) -> StatusLine {
+    use argonauts_core::events::goal::CriterionState;
+    let met = goal
+        .criteria
+        .iter()
+        .filter(|row| row.state == Some(CriterionState::Met))
+        .count();
+    let mut text = format!("Goal · {met} of {} met", goal.criteria.len());
+    if let Some(attempt) = goal.attempts.last() {
+        text.push_str(&format!(
+            " · attempt {} of up to {}",
+            attempt.n, goal.max_attempts
+        ));
+    }
+    if let Some(unmet) = goal
+        .criteria
+        .iter()
+        .find(|row| row.state.is_some() && row.state != Some(CriterionState::Met))
+    {
+        text.push_str(&format!(" · not yet: {}", unmet.criterion.text.trim()));
+    }
+    StatusLine {
+        kind: StatusKind::Goal,
+        text,
+    }
+}
+
+/// Every workflow the agents' own CLIs run in this run, newest state of each, with the session
+/// that runs it, in the order they started.
+fn vendor_workflows(events: &[RunEvent]) -> Vec<(SessionKey, VendorWorkflow)> {
+    let mut found: Vec<(SessionKey, VendorWorkflow)> = Vec::new();
+    for event in events {
+        let Some(session) = &event.session else {
+            continue;
+        };
+        match &event.kind {
+            RunEventKind::Agent(AgentEvent::Workflow { workflow }) => {
+                let mut workflow = (**workflow).clone();
+                let seen = epoch_ms(event.ts);
+                match found.iter_mut().find(|(_, known)| known.id == workflow.id) {
+                    Some((_, known)) => {
+                        workflow.started_at_ms = known.started_at_ms.or(seen);
+                        *known = workflow;
+                    }
+                    None => {
+                        workflow.started_at_ms = seen;
+                        found.push((session.clone(), workflow));
+                    }
+                }
+            }
+            // A workflow its CLI ran ends with it, whether or not the stream said so.
+            RunEventKind::Session(SessionEvent::Ended(_)) => {
+                for (_, workflow) in found.iter_mut().filter(|(key, _)| key == session) {
+                    workflow.end_with_session("its session ended before the workflow did");
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+fn epoch_ms(at: OffsetDateTime) -> Option<u64> {
+    u64::try_from((at - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).ok()
+}
+
 struct WorkflowFacts {
     /// The latest definition, after any approved change.
     definition: Workflow,
     parent: Option<StepRef>,
-    /// The template it came from, such as the preset a goal alignment runs ahead of.
-    from: Option<String>,
     started_at: OffsetDateTime,
 }
 
@@ -72,12 +208,32 @@ enum StepProgress {
     Ended(StepEnd, OffsetDateTime),
 }
 
+/// Where a declared phase is, as the workflow reported it.
+#[derive(Clone)]
+enum PhaseState {
+    Started,
+    Ended(StepEnd),
+    Skipped,
+}
+
 struct WorkflowLog {
     order: Vec<WorkflowId>,
     workflows: BTreeMap<WorkflowId, WorkflowFacts>,
     steps: HashMap<StepRef, StepProgress>,
-    /// When each phase's first step started.
-    phase_starts: HashMap<(WorkflowId, u32), OffsetDateTime>,
+    /// The latest declaration of each workflow: the phases it says it has.
+    declared: HashMap<WorkflowId, WorkflowDeclared>,
+    phases: HashMap<(WorkflowId, u32), PhaseState>,
+    named: Option<RunNamed>,
+    /// The latest note, and the workflow it's about when it's about one. A skipped phase's
+    /// reason is one, since the phase leaves the list.
+    note: Option<(Option<WorkflowId>, String)>,
+    /// Open checkpoints that wait for you, by title, oldest first.
+    asking: Vec<(CheckpointId, String)>,
+    /// Every open checkpoint, by title, oldest first: one auto couldn't settle, or any the run
+    /// parked on, waits for you too.
+    open: Vec<(CheckpointId, String)>,
+    finished: Option<(RunOutcome, Option<String>)>,
+    vendors: Vec<(SessionKey, VendorWorkflow)>,
     sessions: RunFacts,
 }
 
@@ -94,49 +250,183 @@ struct Built {
 
 impl WorkflowLog {
     fn of(events: &[RunEvent]) -> Self {
-        let mut order = Vec::new();
-        let mut workflows = BTreeMap::new();
-        let mut steps = HashMap::new();
-        let mut phase_starts = HashMap::new();
+        let mut log = Self {
+            order: Vec::new(),
+            workflows: BTreeMap::new(),
+            steps: HashMap::new(),
+            declared: HashMap::new(),
+            phases: HashMap::new(),
+            named: None,
+            note: None,
+            asking: Vec::new(),
+            open: Vec::new(),
+            finished: None,
+            vendors: vendor_workflows(events),
+            sessions: RunFacts::of(events),
+        };
         for event in events {
-            let RunEventKind::Workflow(workflow) = &event.kind else {
-                continue;
-            };
-            match workflow {
-                WorkflowEvent::Started(started) => {
-                    order.push(started.id.clone());
-                    workflows.insert(
-                        started.id.clone(),
-                        WorkflowFacts {
-                            definition: started.workflow.clone(),
-                            parent: started.parent.clone(),
-                            from: started.from.as_ref().map(|from| from.as_str().to_owned()),
-                            started_at: event.ts,
-                        },
-                    );
+            match &event.kind {
+                RunEventKind::Workflow(workflow) => log.note_workflow(workflow, event.ts),
+                RunEventKind::Run(RunLifecycle::Named(named)) => log.named = Some(named.clone()),
+                RunEventKind::Run(RunLifecycle::Finished { outcome, detail }) => {
+                    log.finished = Some((*outcome, detail.clone()));
                 }
-                WorkflowEvent::Changed(changed) => {
-                    if let Some(facts) = workflows.get_mut(&changed.id) {
-                        facts.definition = changed.workflow.clone();
+                RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
+                    log.open.push((opened.id.clone(), opened.title.clone()));
+                    if opened.needs_you {
+                        log.ask(&opened.id);
                     }
                 }
-                WorkflowEvent::StepStarted(step) => {
-                    steps.insert(step.step.clone(), StepProgress::Running);
-                    phase_starts
-                        .entry((step.step.workflow.clone(), step.step.phase))
-                        .or_insert(event.ts);
+                // Auto couldn't settle it, so it's yours.
+                RunEventKind::Checkpoint(CheckpointEvent::Checked(check))
+                    if !check.violations.is_empty() =>
+                {
+                    log.ask(&check.id);
                 }
-                WorkflowEvent::StepFinished(step) => {
-                    steps.insert(step.step.clone(), StepProgress::Ended(step.end, event.ts));
+                RunEventKind::Run(RunLifecycle::Parked {
+                    reason: ParkReason::Checkpoint,
+                    waiting_on,
+                }) => {
+                    let waiting: Vec<CheckpointId> = if waiting_on.is_empty() {
+                        log.open.iter().map(|(id, _)| id.clone()).collect()
+                    } else {
+                        waiting_on.clone()
+                    };
+                    for id in &waiting {
+                        log.ask(id);
+                    }
                 }
+                RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
+                    log.asking.retain(|(id, _)| *id != decided.id);
+                    log.open.retain(|(id, _)| *id != decided.id);
+                }
+                RunEventKind::Checkpoint(CheckpointEvent::Withdrawn { id, .. }) => {
+                    log.asking.retain(|(open, _)| open != id);
+                    log.open.retain(|(open, _)| open != id);
+                }
+                _ => {}
             }
         }
-        Self {
-            order,
-            workflows,
-            steps,
-            phase_starts,
-            sessions: RunFacts::of(events),
+        log
+    }
+
+    /// The open checkpoint `id` waits for you, once.
+    fn ask(&mut self, id: &CheckpointId) {
+        if self.asking.iter().any(|(asking, _)| asking == id) {
+            return;
+        }
+        if let Some(card) = self.open.iter().find(|(open, _)| open == id) {
+            self.asking.push(card.clone());
+        }
+    }
+
+    fn note_workflow(&mut self, workflow: &WorkflowEvent, at: OffsetDateTime) {
+        match workflow {
+            WorkflowEvent::Started(started) => {
+                self.order.push(started.id.clone());
+                self.workflows.insert(
+                    started.id.clone(),
+                    WorkflowFacts {
+                        definition: started.workflow.clone(),
+                        parent: started.parent.clone(),
+                        started_at: at,
+                    },
+                );
+            }
+            WorkflowEvent::Changed(changed) => {
+                if let Some(facts) = self.workflows.get_mut(&changed.id) {
+                    facts.definition = changed.workflow.clone();
+                }
+            }
+            WorkflowEvent::StepStarted(step) => {
+                self.steps.insert(step.step.clone(), StepProgress::Running);
+            }
+            WorkflowEvent::StepFinished(step) => {
+                self.steps
+                    .insert(step.step.clone(), StepProgress::Ended(step.end, at));
+            }
+            WorkflowEvent::Declared(declared) => {
+                self.declared
+                    .insert(declared.id.clone(), (**declared).clone());
+            }
+            WorkflowEvent::PhaseStarted(mark) => {
+                self.phases
+                    .insert((mark.id.clone(), mark.index), PhaseState::Started);
+            }
+            WorkflowEvent::PhaseEnded { phase, end } => {
+                self.phases
+                    .insert((phase.id.clone(), phase.index), PhaseState::Ended(*end));
+            }
+            WorkflowEvent::PhaseSkipped { phase, why } => {
+                self.phases
+                    .insert((phase.id.clone(), phase.index), PhaseState::Skipped);
+                let why = why.trim();
+                let text = if why.is_empty() {
+                    format!("{} skipped", phase.title.trim())
+                } else {
+                    format!("{} skipped · {why}", phase.title.trim())
+                };
+                self.note = Some((Some(phase.id.clone()), text));
+            }
+            WorkflowEvent::PhaseAdded { .. } => {}
+            WorkflowEvent::Note(note) => {
+                self.note = Some((note.workflow.clone(), note.text.trim().to_owned()));
+            }
+        }
+    }
+
+    /// A workflow an agent's own CLI runs, by the id the views give it.
+    fn vendor_view(&self, run: &RunId, id: &WorkflowId) -> Option<WorkflowView> {
+        let (host, workflow) = self
+            .vendors
+            .iter()
+            .find(|(_, workflow)| vendor_workflow_id(&workflow.id) == *id)?;
+        let host = self.sessions.agent_row(self.sessions.session(host)?);
+        let now = self.sessions.last_ts.and_then(epoch_ms);
+        Some(WorkflowView::of_vendor(run, &host, workflow, now))
+    }
+
+    /// What the view says under its header: what waits for you, else how the run ended, else
+    /// the latest note about this workflow.
+    fn status_lines(&self, id: &WorkflowId, top: bool) -> Vec<StatusLine> {
+        let line = |kind: StatusKind, text: String| StatusLine { kind, text };
+        if self.finished.is_none()
+            && let Some((_, title)) = self.asking.last()
+        {
+            let more = match self.asking.len() {
+                1 => String::new(),
+                n => format!(" and {} more", n - 1),
+            };
+            return vec![line(
+                StatusKind::NeedsYou,
+                format!(
+                    "Needs you · {}{more} · the card is in the chat, esc goes to it",
+                    title.trim()
+                ),
+            )];
+        }
+        if let Some((outcome, detail)) = &self.finished
+            && top
+        {
+            let how = match outcome {
+                RunOutcome::Merged => "Merged",
+                RunOutcome::PullRequest => "A pull request is open",
+                RunOutcome::BranchLeft => "The branch was kept",
+                RunOutcome::Abandoned => "Abandoned",
+                RunOutcome::Stopped => "Stopped",
+                RunOutcome::Failed => "Failed",
+            };
+            let text = match detail.as_deref().map(str::trim) {
+                Some(detail) if !detail.is_empty() => format!("{how} · {detail}"),
+                _ => how.to_owned(),
+            };
+            return vec![line(StatusKind::Ended, text)];
+        }
+        match &self.note {
+            Some((about, text)) if about.as_ref().is_none_or(|about| about == id) => {
+                vec![line(StatusKind::Note, text.clone())]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -149,20 +439,8 @@ impl WorkflowLog {
             .is_none_or(|parent| !self.workflows.contains_key(&parent.workflow))
     }
 
-    /// The phase of `id` going on at `at`: the last one begun by then, else the first.
-    fn phase_at(&self, id: &WorkflowId, phases: usize, at: OffsetDateTime) -> u32 {
-        (0..u32::try_from(phases).unwrap_or(u32::MAX))
-            .rev()
-            .find(|phase| {
-                self.phase_starts
-                    .get(&(id.clone(), *phase))
-                    .is_some_and(|started| *started <= at)
-            })
-            .unwrap_or(0)
-    }
-
-    /// Names from the run's workflow down to `id`. Before the run's own workflow starts, the
-    /// one a goal alignment came from heads it, as the panel row names it.
+    /// Names from the top of the log down to `id`, the top by the run's own name, never a
+    /// template's.
     fn breadcrumb(&self, id: &WorkflowId) -> Vec<String> {
         let mut names = Vec::new();
         let mut at = Some(id.clone());
@@ -170,21 +448,31 @@ impl WorkflowLog {
             let Some(facts) = self.workflows.get(&id) else {
                 break;
             };
-            names.push(facts.definition.name.clone());
-            if names.len() > MAX_DEPTH {
-                break;
-            }
-            if facts.parent.is_some()
-                && self.is_top(facts)
-                && let Some(from) = facts.from.as_ref().filter(|from| !from.is_empty())
-            {
-                names.push(from.clone());
+            let top = self.is_top(facts);
+            let name = match (&self.named, top) {
+                (Some(named), true) => named.name.clone(),
+                _ => self
+                    .declared
+                    .get(&id)
+                    .map_or_else(|| facts.definition.name.clone(), |d| d.name.clone()),
+            };
+            names.push(name);
+            if names.len() > MAX_DEPTH || top {
                 break;
             }
             at = facts.parent.as_ref().map(|parent| parent.workflow.clone());
         }
         names.reverse();
         names
+    }
+
+    /// Whether the workflow is over: the run finished, or the step that started a nested one
+    /// ended.
+    fn ended(&self, facts: &WorkflowFacts) -> bool {
+        match &facts.parent {
+            Some(parent) => matches!(self.steps.get(parent), Some(StepProgress::Ended(..))),
+            None => self.sessions.finished_at.is_some(),
+        }
     }
 
     fn build(&self, id: &WorkflowId, depth: usize) -> Option<Built> {
@@ -198,20 +486,24 @@ impl WorkflowLog {
             workers: Vec::new(),
             status: RowStatus::Waiting,
         };
-        let top = self.is_top(facts);
-        let phase_count = facts.definition.phases.len();
+        let ended = self.ended(facts);
         for (index, phase) in facts.definition.phases.iter().enumerate() {
             let index = u32::try_from(index).unwrap_or(u32::MAX);
+            let mark = self.phases.get(&(id.clone(), index));
+            // A skipped phase leaves the list, and its reason shows as the note.
+            if matches!(mark, Some(PhaseState::Skipped)) {
+                continue;
+            }
             let mut rows: Vec<(OffsetDateTime, WorkflowRow)> = Vec::new();
+            // Only the agents the workflow ran are its rows: an estimate or the retro, which
+            // no step started, isn't one.
             for session in &self.sessions.sessions {
-                let here = match &session.started.workflow_step {
-                    Some(step) => &step.workflow == id && step.phase == index,
-                    // A session no step started, such as the retro or an estimate, shows in
-                    // the phase going on when it started, so the phases add up to the run's
-                    // agents.
-                    None => top && self.phase_at(id, phase_count, session.started_at) == index,
-                };
-                if !here {
+                let started = &session.started;
+                let here = started
+                    .workflow_step
+                    .as_ref()
+                    .is_some_and(|step| &step.workflow == id && step.phase == index);
+                if !here || !is_workflow_agent(started.step, started.workflow_step.as_ref()) {
                     continue;
                 }
                 let row = self.sessions.agent_row(session);
@@ -241,9 +533,13 @@ impl WorkflowLog {
                     for worker in &nested.workers {
                         remember(&mut built.workers, worker);
                     }
+                    let name = self
+                        .declared
+                        .get(child_id)
+                        .map_or_else(|| child.definition.name.clone(), |d| d.name.clone());
                     let row = NestedWorkflowRow {
                         id: child_id.clone(),
-                        name: child.definition.name.clone(),
+                        name,
                         status: nested.status,
                         agents_done: nested.agents_done,
                         agents_total: nested.agents_total,
@@ -267,17 +563,39 @@ impl WorkflowLog {
                         .copied()
                 })
                 .collect();
-            let not_started = steps.iter().filter(|step| step.is_none()).count();
+            let ran = mark.is_some() || !rows.is_empty() || steps.iter().any(Option::is_some);
+            // Once the workflow is over, a phase that never ran leaves the list.
+            if ended && !ran {
+                continue;
+            }
             let done = rows
                 .iter()
                 .filter(|row| row_status(row) == RowStatus::Done)
                 .count();
+            // Done of the agents started so far, and nothing before the first one, so a phase
+            // that hasn't started never reads 0/0.
+            let count = PhaseCount::of(
+                u32::try_from(done).unwrap_or(u32::MAX),
+                u32::try_from(rows.len()).unwrap_or(u32::MAX),
+            );
+            let status = match mark {
+                Some(PhaseState::Ended(StepEnd::Failed)) => RowStatus::Failed,
+                Some(PhaseState::Ended(_)) if !has_status(&rows, RowStatus::NeedsYou) => {
+                    RowStatus::Done
+                }
+                _ => phase_status(&rows, &steps),
+            };
+            let title = self
+                .declared
+                .get(id)
+                .and_then(|declared| declared.phases.iter().find(|p| p.index == index));
             built.phases.push(PhaseRow {
-                name: phase.name.clone(),
+                name: title.map_or_else(|| phase.name.clone(), |title| title.title.clone()),
+                detail: title.map_or_else(|| phase.detail.clone(), |title| title.detail.clone()),
                 standard: phase.standard,
-                status: phase_status(&rows, &steps),
-                done: u32::try_from(done).unwrap_or(u32::MAX),
-                total: u32::try_from(rows.len() + not_started).unwrap_or(u32::MAX),
+                status,
+                attempt: None,
+                count,
                 rows,
             });
         }
@@ -314,7 +632,12 @@ fn row_status(row: &WorkflowRow) -> RowStatus {
     match row {
         WorkflowRow::Agent(agent) => agent.status,
         WorkflowRow::Workflow(nested) => nested.status,
+        WorkflowRow::Command(command) => command.status,
     }
+}
+
+fn has_status(rows: &[WorkflowRow], status: RowStatus) -> bool {
+    rows.iter().any(|row| row_status(row) == status)
 }
 
 fn phase_status(rows: &[WorkflowRow], steps: &[Option<StepProgress>]) -> RowStatus {
@@ -368,8 +691,10 @@ mod tests {
     use super::*;
     use crate::client::test_support::{event, run_id, session_ended, session_started, usage};
     use argonauts_core::events::session::{EndReason, SessionEvent};
+    use argonauts_core::events::workflow::PhaseMark;
     use argonauts_core::events::workflow::{StepFinished, StepStarted, WorkflowStarted};
     use argonauts_core::names::{RoleName, SessionKey};
+    use argonauts_core::settings::workflows::RunStyle;
     use argonauts_core::workflow::{StandardPhase, StepKind};
 
     fn definition(value: serde_json::Value) -> Workflow {
@@ -511,7 +836,7 @@ mod tests {
 
         let look = &view.phases[0];
         assert_eq!(look.status, RowStatus::Running);
-        assert_eq!((look.done, look.total), (2, 3));
+        assert_eq!(look.count, PhaseCount::of(2, 3));
         let WorkflowRow::Workflow(nested) = &look.rows[2] else {
             panic!("the nested workflow is the last row");
         };
@@ -523,7 +848,7 @@ mod tests {
 
         let build = &view.phases[1];
         assert_eq!(build.status, RowStatus::Waiting);
-        assert_eq!((build.done, build.total, build.rows.len()), (0, 1, 0));
+        assert_eq!((build.count, build.rows.len()), (None, 0));
 
         let inner = workflow_view(&events, &run_id(), Some(&review)).unwrap();
         assert_eq!(inner.breadcrumb, ["peer-crew", "review"]);
@@ -532,26 +857,40 @@ mod tests {
         assert!(workflow_view(&[], &run_id(), None).is_none());
     }
 
-    /// A session no step started, such as the retro after the merge, shows in the phase going
-    /// on when it started, so the phases add up to every agent the run counts.
+    fn solo() -> Workflow {
+        definition(serde_json::json!({
+            "name": "solo",
+            "description": "The default agent alone",
+            "phases": [
+                {"name": "Understand", "standard": "understand", "steps": [{"kind": "restate"}]},
+                {"name": "Build", "standard": "do", "steps": [{"kind": "build"}]},
+                {"name": "Review", "standard": "check", "steps": [{"kind": "review"}]},
+                {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
+            ]
+        }))
+    }
+
+    fn workflow_event(seq: u64, workflow: WorkflowEvent) -> RunEvent {
+        event(seq, RunEventKind::Workflow(workflow))
+    }
+
+    fn mark(id: &WorkflowId, index: u32, title: &str) -> PhaseMark {
+        PhaseMark {
+            id: id.clone(),
+            index,
+            title: title.to_owned(),
+        }
+    }
+
+    /// Only the agents the workflow ran are rows: the retro, which no step
+    /// started, isn't one, and a phase never counts what hasn't started.
     #[test]
-    fn a_session_outside_the_steps_shows_in_the_phase_it_ran_in() {
+    fn only_the_agents_the_workflow_ran_are_rows() {
         let top = WorkflowId::numbered(1);
-        let (build, merge) = (step(&top, 0, 0), step(&top, 1, 0));
+        let (build, merge) = (step(&top, 1, 0), step(&top, 3, 0));
         let (owner, retro) = (SessionKey::numbered(1), SessionKey::numbered(2));
         let events = vec![
-            started(
-                0,
-                &top,
-                None,
-                definition(serde_json::json!({
-                    "name": "solo",
-                    "phases": [
-                        {"name": "Build", "standard": "do", "steps": [{"kind": "build"}]},
-                        {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
-                    ]
-                })),
-            ),
+            started(0, &top, None, solo()),
             step_started(1, build.clone(), StepKind::Build, StandardPhase::Do),
             placed(2, &owner, RoleName::Owner, "claude-code", build.clone()),
             session_ended(3, &owner, EndReason::Completed, 1_000),
@@ -562,14 +901,171 @@ mod tests {
             session_ended(8, &retro, EndReason::Completed, 1_000),
         ];
         let view = workflow_view(&events, &run_id(), None).unwrap();
-        assert_eq!((view.agents_done, view.agents_total), (2, 2));
-        let counts: Vec<(u32, u32)> = view
+        assert_eq!((view.agents_done, view.agents_total), (1, 1));
+        let shown: Vec<(&str, Option<PhaseCount>)> = view
             .phases
             .iter()
-            .map(|phase| (phase.done, phase.total))
+            .map(|phase| (phase.name.as_str(), phase.count))
             .collect();
-        assert_eq!(counts, [(1, 1), (1, 1)]);
-        assert!(matches!(&view.phases[1].rows[0], WorkflowRow::Agent(row) if row.label == "retro"));
+        assert_eq!(
+            shown,
+            [
+                ("Understand", None),
+                ("Build", PhaseCount::of(1, 1)),
+                ("Review", None),
+                ("Merge", None)
+            ]
+        );
+        assert!(view.phases.iter().all(|phase| phase.rows.len() <= 1));
+    }
+
+    /// The run's own name heads its workflow, never the template's. A skipped phase leaves the
+    /// list with its reason as the note, and once the run ends, so does a phase that never ran.
+    #[test]
+    fn the_view_draws_only_what_the_workflow_declares() {
+        let top = WorkflowId::numbered(1);
+        let build = step(&top, 1, 0);
+        let owner = SessionKey::numbered(1);
+        let mut events = vec![
+            started(0, &top, None, solo()),
+            event(
+                1,
+                RunEventKind::Run(RunLifecycle::Named(RunNamed {
+                    name: "fix-money-rounding".to_owned(),
+                    description: "Round invoice totals half up, with tests".to_owned(),
+                    style: RunStyle::Workflow,
+                    based_on: Some("solo".to_owned()),
+                    done_when: Vec::new(),
+                })),
+            ),
+            workflow_event(
+                2,
+                WorkflowEvent::PhaseSkipped {
+                    phase: mark(&top, 0, "Understand"),
+                    why: "Your prompt is the goal".to_owned(),
+                },
+            ),
+            workflow_event(3, WorkflowEvent::PhaseStarted(mark(&top, 1, "Build"))),
+            step_started(4, build.clone(), StepKind::Build, StandardPhase::Do),
+            placed(5, &owner, RoleName::Owner, "claude-code", build.clone()),
+        ];
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        assert_eq!(view.name, "fix-money-rounding");
+        assert_eq!(view.description, "Round invoice totals half up, with tests");
+        let names: Vec<&str> = view.phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Build", "Review", "Merge"]);
+        assert_eq!(
+            view.status_lines,
+            [StatusLine {
+                kind: StatusKind::Note,
+                text: "Understand skipped · Your prompt is the goal".to_owned()
+            }]
+        );
+
+        events.extend([
+            session_ended(6, &owner, EndReason::Completed, 1_000),
+            step_finished(7, build, StepKind::Build, StandardPhase::Do),
+            workflow_event(
+                8,
+                WorkflowEvent::PhaseEnded {
+                    phase: mark(&top, 1, "Build"),
+                    end: StepEnd::Done,
+                },
+            ),
+            event(
+                9,
+                RunEventKind::Run(RunLifecycle::Finished {
+                    outcome: RunOutcome::Merged,
+                    detail: None,
+                }),
+            ),
+        ]);
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        let names: Vec<&str> = view.phases.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Build"]);
+        assert_eq!(view.phases[0].status, RowStatus::Done);
+        assert_eq!(view.status_lines[0].kind, StatusKind::Ended);
+    }
+
+    /// A workflow Claude Code runs itself draws from its own reports, with its own names.
+    #[test]
+    fn a_vendors_own_workflow_is_drawn_from_its_reports() {
+        use argonauts_core::events::session::{
+            SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+        };
+        let host = SessionKey::numbered(1);
+        let agent = |index: u32, label: &str, phase: u32, state: VendorAgentState| VendorAgent {
+            index,
+            label: label.to_owned(),
+            phase: Some(phase),
+            model: Some("claude-haiku-4-5-20251001".to_owned()),
+            state,
+            tokens: 10_311,
+            tool_calls: 0,
+            duration_ms: 3_266,
+            started_at_ms: None,
+            attempt: 1,
+            prompt: None,
+            result: None,
+        };
+        let workflow = VendorWorkflow {
+            id: "w4d273qmn".to_owned(),
+            call: None,
+            name: "probe".to_owned(),
+            description: "Two-phase workflow".to_owned(),
+            phases: ["Ask", "Answer", "Wrap"]
+                .iter()
+                .zip(1..)
+                .map(|(title, index)| VendorPhase {
+                    index,
+                    title: (*title).to_owned(),
+                    detail: String::new(),
+                })
+                .collect(),
+            agents: vec![
+                agent(1, "ask:one", 1, VendorAgentState::Done),
+                agent(2, "answer:one", 2, VendorAgentState::Running),
+            ],
+            status: SubagentStatus::Running,
+            tokens: 20_626,
+            tool_calls: 0,
+            duration_ms: 6_661,
+            summary: None,
+            started_at_ms: None,
+        };
+        let mut events = vec![
+            session_started(0, &host, None, RoleName::Owner, "claude-code"),
+            event(
+                1,
+                RunEventKind::Agent(AgentEvent::Workflow {
+                    workflow: Box::new(workflow.clone()),
+                }),
+            ),
+        ];
+        events[1].session = Some(host.clone());
+        let id = vendor_workflow_id("w4d273qmn");
+        let view = workflow_view(&events, &run_id(), Some(&id)).unwrap();
+        assert_eq!((view.name.as_str(), view.id.clone()), ("probe", id.clone()));
+        let shown: Vec<(&str, Option<PhaseCount>, RowStatus)> = view
+            .phases
+            .iter()
+            .map(|phase| (phase.name.as_str(), phase.count, phase.status))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Ask", PhaseCount::of(1, 1), RowStatus::Done),
+                ("Answer", PhaseCount::of(0, 1), RowStatus::Running),
+                ("Wrap", None, RowStatus::Waiting),
+            ]
+        );
+        let WorkflowRow::Agent(row) = &view.phases[1].rows[0] else {
+            panic!("an agent row");
+        };
+        assert_eq!(row.label, "answer:one");
+        assert_eq!(row.session, host);
+        assert_eq!((view.agents_done, view.agents_total), (1, 2));
+        assert_eq!(vendor_workflows(&events).len(), 1);
     }
 
     /// Before the lead picks the run's workflow, the goal's alignment runs nested under the
@@ -604,15 +1100,24 @@ mod tests {
         assert_eq!((view.name.as_str(), &view.id), ("goal", &alignment));
         assert_eq!(view.phases[0].name, "Goal");
         assert_eq!(view.agents_total, 1);
-        // The workflow it came from heads it, as the panel row names the run's workflow.
-        if let RunEventKind::Workflow(WorkflowEvent::Started(started)) = &mut events[0].kind {
-            started.from = Some(argonauts_core::workflow::WorkflowRef::new("peer-crew"));
-        }
+        assert!(view.breadcrumb.is_empty());
+        // Once the run has its name, the alignment goes by it, never by a template's.
+        events.push(event(
+            3,
+            RunEventKind::Run(RunLifecycle::Named(RunNamed {
+                name: "per-key-rate-limits".to_owned(),
+                description: "Limit requests per API key".to_owned(),
+                style: RunStyle::Workflow,
+                based_on: Some("peer-crew".to_owned()),
+                done_when: Vec::new(),
+            })),
+        ));
         let view = workflow_view(&events, &run_id(), None).unwrap();
-        assert_eq!(view.breadcrumb, ["peer-crew", "goal"]);
+        assert_eq!(view.name, "per-key-rate-limits");
+        assert!(view.breadcrumb.is_empty());
 
         events.push(started(
-            3,
+            4,
             &own,
             None,
             definition(serde_json::json!({
@@ -622,7 +1127,94 @@ mod tests {
             })),
         ));
         let view = workflow_view(&events, &run_id(), None).unwrap();
-        assert_eq!((view.name.as_str(), &view.id), ("peer-crew", &own));
+        assert_eq!(
+            (view.name.as_str(), &view.id),
+            ("per-key-rate-limits", &own)
+        );
         assert!(view.breadcrumb.is_empty());
+    }
+
+    /// A default crew run as the engine records it (`crates/crew/tests/engine_goals.rs`
+    /// writes it with `ARGONAUTS_RECORD_FIXTURES=1`).
+    const DEFAULT_CREW_RUN: &str = include_str!("../../tests/fixtures/runs/default-crew-run.jsonl");
+
+    #[test]
+    fn a_default_crew_runs_build_phase_holds_its_build_and_its_review() {
+        let events: Vec<RunEvent> = DEFAULT_CREW_RUN
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let run = events[0].run_id.clone();
+        let view = workflow_view(&events, &run, None).unwrap();
+        let labels = |phase: &PhaseRow| -> Vec<String> {
+            phase
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    WorkflowRow::Agent(agent) => Some(agent.label.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let build = view
+            .phases
+            .iter()
+            .find(|phase| phase.name == "Build")
+            .unwrap();
+        assert_eq!(labels(build), ["build:flag", "review:flag"]);
+        assert_eq!(build.count, PhaseCount::of(2, 2));
+        // The lead's own asks beside the workflow are notes, never rows or counts.
+        let all: Vec<String> = view.phases.iter().flat_map(labels).collect();
+        assert!(
+            all.iter().all(|label| !label.starts_with("lead:")),
+            "{all:?}"
+        );
+        assert_eq!(view.agents_total as usize, all.len(), "{all:?}");
+        assert_eq!(view.agents_done, view.agents_total);
+        assert!(all.iter().all(|label| !label.contains("card-")), "{all:?}");
+    }
+
+    #[test]
+    fn a_card_auto_left_to_you_says_so_under_the_header() {
+        let mut events: Vec<RunEvent> = DEFAULT_CREW_RUN
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        // Cut the run where its first card opened, before auto settled it, and park there.
+        let opened = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event.kind,
+                    RunEventKind::Checkpoint(CheckpointEvent::Opened(_))
+                )
+            })
+            .unwrap();
+        events.truncate(opened + 1);
+        let RunEventKind::Checkpoint(CheckpointEvent::Opened(card)) = &events[opened].kind else {
+            unreachable!();
+        };
+        assert!(!card.needs_you, "auto may settle it when it opens");
+        let (id, title) = (card.id.clone(), card.title.clone());
+        let mut parked = events[opened].clone();
+        parked.seq += 1;
+        parked.kind = RunEventKind::Run(RunLifecycle::Parked {
+            reason: ParkReason::Checkpoint,
+            waiting_on: vec![id],
+        });
+        events.push(parked);
+        let run = events[0].run_id.clone();
+        let view = workflow_view(&events, &run, None).unwrap();
+        let lines: Vec<&str> = view
+            .status_lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(
+            lines,
+            [format!(
+                "Needs you · {title} · the card is in the chat, esc goes to it"
+            )]
+        );
     }
 }

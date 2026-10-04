@@ -8,11 +8,13 @@ use crate::names::WorkerRef;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ApprovalSettings {
-    /// Who answers the crew's questions: the goal's open questions and the plan approval.
-    /// Unset follows the mode, so the lead answers in auto mode and you do otherwise, and the
-    /// questions `goal.always_ask` names stay yours. Set to the lead, it answers those too.
+    /// Who answers the crew's questions: the open questions from Understand, the go-ahead,
+    /// a stuck goal, and "keep going as a goal". Unset follows the mode, so the lead answers in
+    /// auto mode and you do otherwise. Set to the lead, it answers in every mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_by: Option<Answerer>,
+    /// Topics that come to you even when the lead answers, such as `security`.
+    pub ask_you_about: Vec<String>,
     pub goal_changes: GoalChanges,
     /// Share of auto-approvals queued for your spot check.
     pub spot_check_sample: f64,
@@ -39,6 +41,7 @@ impl Default for ApprovalSettings {
     fn default() -> Self {
         Self {
             answered_by: None,
+            ask_you_about: Vec::new(),
             goal_changes: GoalChanges::Ask,
             spot_check_sample: 0.1,
             pause_auto_when_spot_checks_waiting: 5,

@@ -3,6 +3,7 @@
 //! never loosens what the file sets more finely than a question asks, such as a model or one
 //! checkpoint's approval mode.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use argonauts_core::app::ChoiceKind;
@@ -13,6 +14,7 @@ use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_registry::TERMS_NOTE;
 
 use super::probe::{FoundAgent, LocalServer, LoginState};
+use super::roles::{self, ModelOption};
 use super::steps::{
     APPROVAL_POINTS, Answers, COORDINATED_CREW, PEER_CREW, ReviewerPick, SOLO, approval_mode_from,
     approval_mode_name, built_in_mode,
@@ -45,6 +47,12 @@ pub(crate) enum Step {
     DefaultAgent,
     Preset,
     Coordinator,
+    /// Every role with who fills it now; Enter keeps them all.
+    WhoDoesWhat,
+    /// Which agent fills the role at this `/model` key.
+    RoleAgent(String),
+    /// Which of its agent's models fills the role at this key.
+    RoleModel(String),
     Approvals,
     Trust,
     ProjectFolder,
@@ -63,11 +71,21 @@ pub(crate) struct SetupView {
     /// This repo's settings files that exist and aren't trusted yet.
     pub untrusted: Vec<PathBuf>,
     pub project_dir_exists: bool,
+    /// The keys `/model` lists, one row of "Who does what" each.
+    pub role_keys: Vec<String>,
+    /// Each agent's models, by its id, its default first.
+    pub models: BTreeMap<String, Vec<ModelOption>>,
 }
 
 impl SetupView {
     pub(crate) fn ready(&self) -> impl Iterator<Item = &FoundAgent> {
         self.agents.iter().filter(|agent| agent.ready())
+    }
+
+    /// `Claude Code` for `claude-code`, or the id of an agent the probe didn't find.
+    pub(crate) fn agent_name(&self, id: &str) -> String {
+        self.agent(id)
+            .map_or_else(|| id.to_owned(), |agent| agent.name.clone())
     }
 
     fn agent(&self, id: &str) -> Option<&FoundAgent> {
@@ -95,7 +113,7 @@ impl SetupView {
         Some(value)
     }
 
-    fn current_str(&self, key: &str) -> Option<&str> {
+    pub(crate) fn current_str(&self, key: &str) -> Option<&str> {
         self.current_value(key)?.as_str()
     }
 
@@ -132,7 +150,7 @@ impl SetupView {
     }
 
     /// The strings in an array at a dotted key of your global file.
-    fn current_list(&self, key: &str) -> Vec<String> {
+    pub(crate) fn current_list(&self, key: &str) -> Vec<String> {
         let (table, last) = match key.rsplit_once('.') {
             Some((path, last)) => {
                 let mut table = &self.current;
@@ -161,9 +179,13 @@ impl SetupView {
     /// Whether the step can be asked yet, or waits for a probe.
     pub(crate) fn can_ask(&self, step: &Step) -> bool {
         match step {
-            Step::Agents | Step::DefaultAgent | Step::Preset | Step::Coordinator => {
-                self.logins_known
-            }
+            Step::Agents
+            | Step::DefaultAgent
+            | Step::Preset
+            | Step::Coordinator
+            | Step::WhoDoesWhat
+            | Step::RoleAgent(_)
+            | Step::RoleModel(_) => self.logins_known,
             Step::Servers => self.servers.is_some(),
             _ => true,
         }
@@ -216,6 +238,9 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
         Step::DefaultAgent => default_agent_question(view),
         Step::Preset => Some(preset_question(view)),
         Step::Coordinator => coordinator_question(view, answers),
+        Step::WhoDoesWhat => Some(roles::who_does_what(view, answers)),
+        Step::RoleAgent(key) => roles::agent_question(view, answers, key),
+        Step::RoleModel(key) => roles::model_question(view, answers, key),
         Step::Approvals => Some(approvals_question(view)),
         Step::Trust => trust_question(view),
         Step::ProjectFolder => folder_question(view),
@@ -334,7 +359,7 @@ fn recommended_agent(view: &SetupView) -> Option<String> {
 }
 
 /// Every ready agent, `first` leading. The one `current` names shows the model it keeps.
-fn agent_answers(
+pub(super) fn agent_answers(
     view: &SetupView,
     first: Option<&str>,
     current: Option<&WorkerRef>,
@@ -359,7 +384,7 @@ fn agent_answers(
 }
 
 /// The harness you picked, keeping the model your file sets when the harness is the same.
-fn kept_or_new(current: Option<WorkerRef>, picked: &str) -> WorkerRef {
+pub(super) fn kept_or_new(current: Option<WorkerRef>, picked: &str) -> WorkerRef {
     current
         .filter(|worker| worker.worker == picked)
         .unwrap_or_else(|| WorkerRef::new(picked, None))
@@ -397,7 +422,7 @@ fn preset_question(view: &SetupView) -> Question {
     }
 }
 
-fn described(value: &str, label: &str, detail: &str) -> InitAnswer {
+pub(super) fn described(value: &str, label: &str, detail: &str) -> InitAnswer {
     InitAnswer {
         label: label.to_owned(),
         value: value.to_owned(),
@@ -570,6 +595,9 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
             answers.coordinator = Some(agent);
             line
         }
+        Step::WhoDoesWhat => roles::chose_row(value),
+        Step::RoleAgent(key) => roles::chose_agent(view, answers, key, value),
+        Step::RoleModel(key) => roles::chose_model(view, answers, key, value),
         Step::Approvals => {
             // The question offers the three modes and, when they differ now, Keep.
             answers.approvals = approval_mode_from(value);

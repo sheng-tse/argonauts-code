@@ -249,6 +249,7 @@ pub(crate) mod tests {
             resumed_from: None,
             follow_key: None,
             workflow_step: None,
+            label: None,
         }
     }
 

@@ -369,6 +369,27 @@ impl Git {
         Ok(parse_numstat(&out))
     }
 
+    /// Each changed path with its lines added and removed, as `git diff --numstat` lists them.
+    /// A binary file counts no lines.
+    pub async fn diff_files(
+        &self,
+        dir: &Path,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<(String, u32, u32)>, GitError> {
+        let args = [
+            "diff",
+            "--numstat",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            from,
+            to,
+        ];
+        let out = self.run(dir, &args).await?;
+        Ok(numstat_files(&out))
+    }
+
     /// [`Git::diff_stat`] over `paths` alone, taken literally. No paths count nothing.
     pub async fn diff_stat_of(
         &self,
@@ -609,6 +630,20 @@ fn parse_log(out: &str) -> Vec<(String, String)> {
         .filter_map(|entry| {
             let (sha, message) = entry.trim_start_matches('\n').split_once('\0')?;
             Some((sha.to_owned(), message.trim_end().to_owned()))
+        })
+        .collect()
+}
+
+/// `git diff --numstat` output, line by line: `added<TAB>removed<TAB>path`, with `-` for a
+/// binary file's counts.
+fn numstat_files(text: &str) -> Vec<(String, u32, u32)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let added = fields.next()?.parse().unwrap_or(0);
+            let removed = fields.next()?.parse().unwrap_or(0);
+            let path = fields.next()?.trim();
+            (!path.is_empty()).then(|| (path.to_owned(), added, removed))
         })
         .collect()
 }
@@ -1145,6 +1180,20 @@ mod tests {
 
     fn git() -> Git {
         Git::with_env(git_test_env())
+    }
+
+    #[test]
+    fn numstat_lists_each_file_with_its_lines() {
+        let text = "19\t3\tinvoice/money.py\n-\t-\tlogo.png\n0\t4\tdocs/old notes.md\n";
+        assert_eq!(
+            numstat_files(text),
+            vec![
+                ("invoice/money.py".to_owned(), 19, 3),
+                ("logo.png".to_owned(), 0, 0),
+                ("docs/old notes.md".to_owned(), 0, 4),
+            ]
+        );
+        assert!(numstat_files("").is_empty());
     }
 
     #[test]

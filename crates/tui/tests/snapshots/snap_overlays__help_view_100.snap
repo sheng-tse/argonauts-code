@@ -3,7 +3,7 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 Help
-The keys in effect, and every command by category                                        56 commands
+The keys in effect, and every command by category                                        58 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                                             │
@@ -33,4 +33,4 @@ The keys in effect, and every command by category                               
 │ /branch [name]                Start a new conversation from here and keep this one               │
 │ /fork [prompt]                Copy the conversation into a new background session                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                                                   1-26 of 101 ↓
+↑↓ scroll · esc back                                                                   1-26 of 107 ↓

@@ -119,10 +119,7 @@ pub fn with_edits(goal: &GoalFile, note: &str) -> GoalFile {
     for line in &note_lines {
         if let Some(added) = addition(line) {
             let id = next_criterion_id(&edited.criteria);
-            edited.criteria.push(Criterion {
-                id,
-                text: added.to_owned(),
-            });
+            edited.criteria.push(Criterion::new(id, added));
         } else if let Some((id, text)) = rewrite(line)
             && let Some(criterion) = edited
                 .criteria
@@ -213,20 +210,15 @@ mod tests {
             version: 1,
             summary: "Add a rate limit to the API.".to_owned(),
             criteria: vec![
-                Criterion {
-                    id: "G1".to_owned(),
-                    text: "Requests over the limit get 429".to_owned(),
-                },
-                Criterion {
-                    id: "G2".to_owned(),
-                    text: "The limit is configurable".to_owned(),
-                },
+                Criterion::new("G1", "Requests over the limit get 429"),
+                Criterion::new("G2", "The limit is configurable"),
             ],
             in_scope: vec!["the HTTP API".to_owned()],
             out_of_scope: Vec::new(),
             assumptions: vec![Assumption {
                 text: "limit: per user".to_owned(),
                 basis: "a detail, and 2 of 3 read it that way".to_owned(),
+                by: None,
             }],
             answers: Vec::new(),
             source: GoalSource::Restatements,

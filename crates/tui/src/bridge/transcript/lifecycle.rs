@@ -3,13 +3,13 @@
 use std::time::Duration;
 
 use argonauts_core::events::RunEvent;
-use argonauts_core::events::run::{ParkReason, ResumeCause, RunOutcome, RunResumed};
+use argonauts_core::events::run::{ClosingAnswer, ParkReason, ResumeCause, RunOutcome, RunResumed};
 use argonauts_core::settings::ui::VerbTheme;
-use argonauts_core::{CardId, RunId};
+use argonauts_core::{CardId, RunId, Verbosity};
 use time::OffsetDateTime;
 
 use crate::bottom::verbs::VerbStyle;
-use crate::cell::{Notice, Tone, ToolState, TurnEnd};
+use crate::cell::{AssistantMessage, Notice, Tone, ToolState, TurnEnd};
 use crate::format::{self, WallClock};
 use crate::state::RunState;
 
@@ -19,6 +19,10 @@ use super::{Cx, emit, quiet, run_name};
 
 /// The glyph of a run that stopped moving, paused or parked.
 const STOPPED: &str = "■";
+/// At normal verbosity the closing answer names this many files, then counts the rest.
+const FILES_NAMED: usize = 4;
+/// And keeps this many of what's left.
+const LEFT_NAMED: usize = 2;
 
 /// `● Resume(Add a --json flag)` and what changed while it waited. A run that waited on a card
 /// prints nothing when it stops, so it prints nothing when your answer moves it on either,
@@ -214,6 +218,10 @@ pub(super) fn run_end(
         finished.push_str(" · retro saved");
     }
     emit(cx, notice.with_detail(finished));
+    if let Some(answer) = &story.closing {
+        let markdown = closing_markdown(answer, cx.verbosity());
+        emit(cx, AssistantMessage::new(markdown));
+    }
     if let Some(elapsed) = elapsed
         && cx.settings.turn_duration
     {
@@ -227,6 +235,69 @@ pub(super) fn run_end(
             TurnEnd::new(label, elapsed, Some(clock.clock(event.ts))),
         );
     }
+}
+
+/// The run's last word, as a message in the main agent's voice: its own words, then what
+/// changed, how it was checked, and what's left. Quiet keeps the words alone, and normal
+/// keeps the lists short.
+fn closing_markdown(answer: &ClosingAnswer, verbosity: Verbosity) -> String {
+    let mut markdown = answer.text.trim().to_owned();
+    if verbosity == Verbosity::Quiet {
+        return markdown;
+    }
+    let full = verbosity == Verbosity::Full;
+    let mut items = Vec::new();
+    if !answer.files.is_empty() {
+        let named = if full {
+            answer.files.len()
+        } else {
+            FILES_NAMED
+        };
+        let mut files: Vec<String> = answer
+            .files
+            .iter()
+            .take(named)
+            .map(|file| format!("`{}` +{} -{}", file.path, file.insertions, file.deletions))
+            .collect();
+        let more = answer.files.len().saturating_sub(named);
+        if more > 0 {
+            files.push(format!("and {more} more"));
+        }
+        items.push(format!("**Changed** {}", files.join(", ")));
+    }
+    if !answer.checks.is_empty() {
+        let checks: Vec<String> = answer
+            .checks
+            .iter()
+            .map(|check| match (check.passed, check.result.as_str()) {
+                (true, "") => format!("{} passed", check.what),
+                (true, result) => format!("{}: {result}", check.what),
+                (false, "") => format!("{} failed", check.what),
+                (false, result) => format!("{} failed: {result}", check.what),
+            })
+            .collect();
+        items.push(format!("**Checked** {}", checks.join(" · ")));
+    }
+    if full && !answer.tests.is_empty() {
+        items.push(format!("**Tests run** {}", answer.tests.join(" · ")));
+    }
+    if !answer.left.is_empty() {
+        let named = if full { answer.left.len() } else { LEFT_NAMED };
+        let left: Vec<&str> = answer
+            .left
+            .iter()
+            .take(named)
+            .map(|line| line.trim().trim_end_matches('.'))
+            .collect();
+        items.push(format!("**Left** {}", left.join("; ")));
+    }
+    if !items.is_empty() {
+        markdown.push_str("\n\n");
+        for item in items {
+            markdown.push_str(&format!("- {item}\n"));
+        }
+    }
+    markdown.trim_end().to_owned()
 }
 
 /// ` (4 cards, 7 files, +120 -18)`: what the merge card put up, or without one, the cards'

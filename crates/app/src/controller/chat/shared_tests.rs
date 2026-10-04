@@ -5,6 +5,7 @@ use argonauts_core::NoteLevel;
 use argonauts_core::app::{
     AppEvent, AppMode, ChatEvent, ChoiceKind, TurnReply, UiCommand, ViewData,
 };
+use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::names::ChatId;
@@ -483,6 +484,14 @@ async fn a_goal_starts_a_crew_run_that_pause_and_resume_hold() {
     let started = harness.conductor.starts();
     assert_eq!(started[0].mode, RunMode::Crew);
     assert_eq!(started[0].request, "every test passes");
+    // A goal whoever leads: the run's own command wins over workflows.style.
+    assert!(
+        started[0]
+            .overrides
+            .contains(&"workflows.style=\"goal\"".to_owned()),
+        "{:?}",
+        started[0].overrides
+    );
     slash(&harness, SlashCommand::Goal { text: None }).await;
     notice(&mut harness, "run-001 works toward it").await;
     slash(
@@ -499,13 +508,49 @@ async fn a_goal_starts_a_crew_run_that_pause_and_resume_hold() {
         },
     )
     .await;
-    notice(&mut harness, "Dropped the goal. run-001 keeps going").await;
+    notice(&mut harness, "Stopped pursuing the goal").await;
     let calls = harness.conductor.calls();
     assert!(
         calls
             .iter()
             .any(|call| matches!(call, Call::Pause { now: false, .. })),
         "{calls:?}"
+    );
+    assert!(
+        calls.iter().any(|call| matches!(
+            call,
+            Call::Goal {
+                action: GoalAction::Clear { land: true },
+                ..
+            }
+        )),
+        "{calls:?}"
+    );
+    harness.exit().await;
+}
+
+#[tokio::test]
+async fn workflow_starts_a_crew_run_that_is_a_workflow_whoever_leads() {
+    let mut harness = Harness::start().await;
+    slash(
+        &harness,
+        SlashCommand::Workflow {
+            task: Some("fix slugify".into()),
+        },
+    )
+    .await;
+    harness
+        .until(|event| matches!(event, AppEvent::Attached { .. }))
+        .await;
+    let started = harness.conductor.starts();
+    assert_eq!(started[0].mode, RunMode::Crew);
+    assert_eq!(started[0].request, "fix slugify");
+    assert!(
+        started[0]
+            .overrides
+            .contains(&"workflows.style=\"workflow\"".to_owned()),
+        "{:?}",
+        started[0].overrides
     );
     harness.exit().await;
 }

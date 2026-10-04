@@ -189,5 +189,6 @@ pub fn card(id: &str) -> CardSpec {
         reviewers: Vec::new(),
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }

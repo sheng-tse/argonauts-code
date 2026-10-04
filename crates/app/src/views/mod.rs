@@ -4,6 +4,7 @@
 mod agent;
 mod checkpoints;
 mod context;
+mod goal;
 mod replay;
 mod sessions;
 mod workflow;
@@ -11,6 +12,7 @@ mod workflow;
 pub(crate) use agent::agent_view;
 pub(crate) use checkpoints::checkpoint_rows;
 pub(crate) use context::context_rows;
+pub(crate) use goal::goal_view;
 pub(crate) use replay::condensed_replay;
 pub(crate) use sessions::add_spend;
-pub(crate) use workflow::workflow_view;
+pub(crate) use workflow::{saved_workflow, workflow_view};

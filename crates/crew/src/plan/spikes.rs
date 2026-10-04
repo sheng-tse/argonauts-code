@@ -277,6 +277,8 @@ async fn prepare(
                 ..CardBudget::default()
             },
             predictions: None,
+            item: Some(argonauts_core::labels::slug(&option.label, 3))
+                .filter(|item| !item.is_empty()),
         };
         host.record(
             Some(card),

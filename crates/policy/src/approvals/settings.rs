@@ -53,6 +53,8 @@ pub fn stricter(run_start: &Settings, reloaded: &Settings) -> Settings {
 fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     ApprovalSettings {
         answered_by: answered_by(a.answered_by, b.answered_by),
+        // Topics that come back to you add up, so a reload can't drop one mid-run.
+        ask_you_about: union(&a.ask_you_about, &b.ask_you_about),
         goal_changes: goal_changes(a.goal_changes, b.goal_changes),
         spot_check_sample: a.spot_check_sample.max(b.spot_check_sample),
         pause_auto_when_spot_checks_waiting: pause_limit(

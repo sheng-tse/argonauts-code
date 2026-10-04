@@ -146,8 +146,21 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
+        let hermes_seen = |found: &[AlwaysOnAgent]| {
+            found
+                .iter()
+                .any(|agent| agent.evidence == format!("process {pid}"))
+        };
 
-        let found = always_on_agents().await;
+        // A process just started may not show its command line yet on a busy machine.
+        let mut found = always_on_agents().await;
+        for _ in 0..30 {
+            if hermes_seen(&found) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            found = always_on_agents().await;
+        }
         child.kill().unwrap();
         child.wait().unwrap();
         drop(listener);

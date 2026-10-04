@@ -16,6 +16,7 @@ use argonauts_core::api::{
 use argonauts_core::app::{AppEvent, UiCommand};
 use argonauts_core::clock::SystemClock;
 use argonauts_core::events::RunEvent;
+use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::input::MentionTarget;
@@ -103,6 +104,10 @@ pub(crate) enum Call {
         run: RunId,
         id: CheckpointId,
         correct: bool,
+    },
+    Goal {
+        run: RunId,
+        action: GoalAction,
     },
 }
 
@@ -401,6 +406,14 @@ impl ConductorApi for FakeConductor {
             run: run.clone(),
             id: id.clone(),
             correct,
+        });
+        ready(Ok(()))
+    }
+
+    fn goal(&self, run: &RunId, action: GoalAction) -> BoxFuture<'_, Result<(), ApiError>> {
+        self.record(Call::Goal {
+            run: run.clone(),
+            action,
         });
         ready(Ok(()))
     }

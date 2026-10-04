@@ -483,7 +483,8 @@ async fn finished(ctx: &mut Ctx, runs: &mut RunsState, run: &RunId, outcome: Run
     let spent = attached.spent;
     if ctx.settings().ui.recaps {
         let summary = attach::status_summary(ctx, run, &attached.events).await;
-        let mut text = recap::recap_from_summary(&summary, Some(outcome));
+        let closing = recap::closing_in(&attached.events);
+        let mut text = recap::recap_from_summary(&summary, Some(outcome), closing);
         if text.trim().is_empty() {
             text = format!(
                 "{} Ask for another change, or /resume an older run.",

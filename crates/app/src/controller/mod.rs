@@ -379,6 +379,9 @@ impl Controller {
             UiCommand::Summary => run_commands::summary(ctx, runs).await,
             UiCommand::Learning { area, command } => self.learning(area, command).await,
             UiCommand::WorkflowFile { name, action } => files::workflow(ctx, name, action).await,
+            UiCommand::SaveWorkflow { run, workflow } => {
+                run_commands::save_workflow(ctx, runs, run, workflow).await
+            }
             UiCommand::TakeBack { run, messages } => {
                 run_commands::take_back(ctx, runs, run, messages).await
             }
@@ -398,6 +401,7 @@ impl Controller {
             UiCommand::SpotCheck { run, id, correct } => {
                 run_commands::spot_check(ctx, run, id, correct).await
             }
+            UiCommand::Goal { run, action } => run_commands::goal(ctx, runs, run, action).await,
             UiCommand::Request { view } => self.view(view).await,
             UiCommand::SetSetting { key, value, scope } => {
                 settings::set(ctx, &mut self.settings, key, value, scope).await
@@ -483,6 +487,16 @@ impl Controller {
             }
             SlashCommand::Solo { task } => chat::start_forced(ctx, chat, RunMode::Solo, task).await,
             SlashCommand::Crew { task } => chat::start_forced(ctx, chat, RunMode::Crew, task).await,
+            SlashCommand::Workflow { task: Some(task) } if !task.trim().is_empty() => {
+                chat::start_workflow(ctx, chat, task).await
+            }
+            SlashCommand::Workflow { .. } if runs::attached(runs).is_some() => {
+                run_commands::workflow_view(ctx, runs, None).await
+            }
+            SlashCommand::Workflow { .. } => {
+                files::library(ctx, false);
+                Ok(Vec::new())
+            }
             SlashCommand::FollowUp { run, request } => {
                 run_commands::continue_run(ctx, runs, run, request).await
             }
@@ -538,6 +552,7 @@ impl Controller {
             | SlashCommand::Verbosity { .. }
             | SlashCommand::Narrator { .. }
             | SlashCommand::Theme { .. }
+            | SlashCommand::Style { .. }
             | SlashCommand::Config { .. }
             | SlashCommand::Records { .. }
             | SlashCommand::Recipes { .. }

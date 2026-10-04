@@ -508,10 +508,7 @@ fn history(crew: &Crew, base: &str, cards: &[CardSpec]) -> anyhow::Result<Vec<Ru
         run: run.clone(),
         version: 1,
         summary: "Build it".into(),
-        criteria: vec![Criterion {
-            id: "G1".into(),
-            text: "It works.".into(),
-        }],
+        criteria: vec![Criterion::new("G1", "It works.")],
         in_scope: Vec::new(),
         out_of_scope: Vec::new(),
         assumptions: Vec::new(),
@@ -632,6 +629,7 @@ fn spec(id: &str, kind: CardKind, deps: &[&str], owner: &str) -> CardSpec {
         reviewers: vec![worker(REVIEWER)],
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 

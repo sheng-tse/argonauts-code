@@ -13,6 +13,14 @@ pub const HOME_ENV: &str = "ARGONAUTS_HOME";
 
 pub const EVENT_LOG_FILE: &str = "events.jsonl";
 
+/// Set for everything cargo runs in this workspace, by its `.cargo/config.toml`: the tests, the
+/// programs they start, and `cargo run`. None of them may touch your own `~/.argonauts`.
+pub const TESTING_ENV: &str = "ARGONAUTS_TESTING";
+
+/// The home tests share when they don't set `ARGONAUTS_HOME`, in the temp folder. Shared, so a
+/// test and the supervisor it starts find the same runs.
+const SCRATCH_HOME: &str = "argonauts-test-home";
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("could not find the home directory; set {HOME_ENV}")]
 pub struct NoHomeDir;
@@ -27,9 +35,15 @@ impl Paths {
         Self { home: home.into() }
     }
 
-    /// Paths rooted at `ARGONAUTS_HOME`, or `~/.argonauts` when it is unset or empty.
+    /// Paths rooted at `ARGONAUTS_HOME`, or `~/.argonauts` when it is unset or empty. Under
+    /// test, never your own: see [`test_home`].
     pub fn from_env() -> Result<Self, NoHomeDir> {
-        Self::resolve(std::env::var_os(HOME_ENV), dirs::home_dir())
+        let env_home = std::env::var_os(HOME_ENV);
+        if testing() {
+            let home = test_home(env_home, &std::env::temp_dir(), account_home().as_deref());
+            return Ok(Self { home });
+        }
+        Self::resolve(env_home, dirs::home_dir())
     }
 
     fn resolve(env_home: Option<OsString>, user_home: Option<PathBuf>) -> Result<Self, NoHomeDir> {
@@ -115,6 +129,37 @@ pub fn write_private_file(path: &Path, contents: &[u8]) -> io::Result<()> {
         .mode(0o600)
         .open(path)?;
     file.write_all(contents)
+}
+
+fn testing() -> bool {
+    cfg!(test) || std::env::var_os(TESTING_ENV).is_some_and(|value| !value.is_empty())
+}
+
+/// A test's home: `ARGONAUTS_HOME` when the test set one, else the scratch home in `temp`. One
+/// inside your own `~/.argonauts` (under `account`, your home whatever `HOME` says) stops the
+/// test with a panic, since it would write there. Prompt history from tests once piled up in
+/// the real `state` folder this way.
+fn test_home(env_home: Option<OsString>, temp: &Path, account: Option<&Path>) -> PathBuf {
+    let Some(home) = env_home.filter(|home| !home.is_empty()) else {
+        return temp.join(SCRATCH_HOME);
+    };
+    let home = absolute(PathBuf::from(home));
+    if let Some(yours) = account.map(|account| account.join(".argonauts"))
+        && home.starts_with(&yours)
+    {
+        panic!(
+            "a test set {HOME_ENV} to {}, inside your own {}; tests must use a home of their own",
+            home.display(),
+            yours.display()
+        );
+    }
+    home
+}
+
+/// Your home folder from the account database, which a test's `HOME` doesn't change.
+fn account_home() -> Option<PathBuf> {
+    let user = nix::unistd::User::from_uid(nix::unistd::getuid()).ok()??;
+    Some(user.dir)
 }
 
 fn absolute(path: PathBuf) -> PathBuf {
@@ -292,6 +337,44 @@ mod tests {
         // The value depends on the machine, so only check that it is absolute.
         if let Ok(home) = argonauts_home() {
             assert!(home.is_absolute());
+        }
+    }
+
+    #[test]
+    fn tests_never_get_your_own_home() {
+        let temp = Path::new("/tmp/t");
+        let account = Some(Path::new("/Users/me"));
+        assert_eq!(
+            test_home(None, temp, account),
+            temp.join("argonauts-test-home")
+        );
+        assert_eq!(
+            test_home(Some("".into()), temp, account),
+            temp.join("argonauts-test-home")
+        );
+        assert_eq!(
+            test_home(Some("/tmp/x/.argonauts".into()), temp, account),
+            PathBuf::from("/tmp/x/.argonauts")
+        );
+        let yours = std::panic::catch_unwind(|| {
+            test_home(Some("/Users/me/.argonauts".into()), temp, account)
+        });
+        assert!(yours.is_err(), "your own home stops the test");
+        let inside = std::panic::catch_unwind(|| {
+            test_home(Some("/Users/me/.argonauts/state".into()), temp, account)
+        });
+        assert!(inside.is_err());
+    }
+
+    #[test]
+    fn this_test_runs_in_a_scratch_home() {
+        let home = argonauts_home().unwrap();
+        if let Some(account) = account_home() {
+            assert!(
+                !home.starts_with(account.join(".argonauts")),
+                "{}",
+                home.display()
+            );
         }
     }
 

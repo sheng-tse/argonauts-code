@@ -97,30 +97,87 @@ impl Default for SoloSettings {
     }
 }
 
+/// `[understand]`: models from several companies read your request before anything runs, and
+/// what they leave open becomes an assumption or a question. It was `[goal]`, and the old keys
+/// still read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
-pub struct GoalSettings {
-    /// Restaters; `None` means every crew member.
-    pub restaters: Option<u32>,
-    /// Differs, from different model families. One listing is enough to proceed.
-    pub differs: u32,
+pub struct UnderstandSettings {
+    /// In every crew run, only when the lead decides, or never. Solo runs skip it.
+    pub when: UnderstandWhen,
+    /// Readers; `None` means every crew member.
+    pub readers: Option<u32>,
+    /// Comparers, from other model families than the readings they compare. One listing is
+    /// enough to proceed.
+    pub comparers: u32,
     pub max_questions: u32,
-    /// Tags that always become questions, never assumptions.
+    /// Topics that are always a question, never a majority's silent assumption. Who answers
+    /// them is `approvals.answered_by`.
     pub always_ask: Vec<String>,
     /// Adopt a two-of-three reading outside `always_ask` as a stated assumption.
     pub majority_assumptions: bool,
 }
 
-impl Default for GoalSettings {
+impl Default for UnderstandSettings {
     fn default() -> Self {
         Self {
-            restaters: None,
-            differs: 2,
+            when: UnderstandWhen::Crew,
+            readers: None,
+            comparers: 2,
             max_questions: 3,
             always_ask: ["scope", "security", "data", "cost"]
                 .map(str::to_owned)
                 .to_vec(),
             majority_assumptions: true,
+        }
+    }
+}
+
+/// `understand.when`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnderstandWhen {
+    /// Every crew run opens with Understand, the original design.
+    Crew,
+    /// The lead decides, as Claude Code's orchestrator decides whether to scout first.
+    Lead,
+    Off,
+}
+
+/// The keys `[understand]` took over from `[goal]`, as `(old, new)`. They still read, with a
+/// notice that names the new key.
+pub const UNDERSTAND_RENAMES: &[(&str, &str)] = &[
+    ("goal.restaters", "understand.readers"),
+    ("goal.differs", "understand.comparers"),
+    ("goal.max_questions", "understand.max_questions"),
+    ("goal.always_ask", "understand.always_ask"),
+    (
+        "goal.majority_assumptions",
+        "understand.majority_assumptions",
+    ),
+];
+
+/// `[goal]`: the goal style, pursued in attempts until a check from another company finds
+/// every criterion met. The run's budget still caps it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct GoalSettings {
+    pub max_attempts: u32,
+    /// Attempts in a row that end on the same blocker before the goal is stuck.
+    pub stuck_after: u32,
+    /// Attempts in a row that meet no new criterion and change no file before it's stuck.
+    pub idle_after: u32,
+    /// Who checks: `other_company`, or a worker by name.
+    pub checker: String,
+}
+
+impl Default for GoalSettings {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            stuck_after: 3,
+            idle_after: 2,
+            checker: "other_company".to_owned(),
         }
     }
 }

@@ -10,6 +10,7 @@ use argonauts_core::workflow::{Count, Step, StepKind};
 
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
+use crate::goal::pursue;
 use crate::workflow::runner;
 use crate::workflow::{Flow, StepCall, StepDone};
 use crate::{roles, solo};
@@ -59,9 +60,14 @@ pub fn builds_goal(step: &Step) -> bool {
 }
 
 async fn build_goal(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
+    // In a goal, each attempt builds its own card on what the earlier ones integrated.
     let mut spec = {
         let snapshot = host.read(Clone::clone);
-        solo::card(&snapshot, host)?
+        if pursue::pursuing(&snapshot) {
+            pursue::attempt_card(&snapshot, host)?
+        } else {
+            solo::card(&snapshot, host)?
+        }
     };
     // `solo.review` may already have given the card its reviewer, and a workflow never takes
     // a review away.

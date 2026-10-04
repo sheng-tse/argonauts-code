@@ -319,6 +319,19 @@ pub trait ConductorApi: Send + Sync {
             ))
         })
     }
+    /// Clears the run's goal, turns its workflow into one, or changes an assumption.
+    fn goal(
+        &self,
+        run: &RunId,
+        action: crate::events::goal::GoalAction,
+    ) -> BoxFuture<'_, Result<(), ApiError>> {
+        let _ = (run, action);
+        Box::pin(async {
+            Err(ApiError::NotNow(
+                "this conductor can't change a goal".to_owned(),
+            ))
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -56,6 +56,9 @@ pub struct Workflow {
     /// One line, shown under the name in the workflow view.
     #[serde(default)]
     pub description: String,
+    /// The example it started from, such as `peer-crew`, when the lead wrote it from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub based_on: Option<String>,
     /// Defaults that the lead fills in per task.
     #[serde(default, skip_serializing_if = "WorkflowParams::is_empty")]
     pub params: WorkflowParams,
@@ -65,8 +68,13 @@ pub struct Workflow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Phase {
-    /// Any name, such as "Scaffold" or "Look".
+    /// Any name, such as "Fix" or "Review". Files may call it `title`, as Claude Code's
+    /// workflow scripts do.
+    #[serde(alias = "title")]
     pub name: String,
+    /// One line on who does what, shown under the title until the phase starts.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
     pub standard: StandardPhase,
     pub steps: Vec<Step>,
 }
@@ -94,9 +102,18 @@ pub enum StandardPhase {
 #[serde(deny_unknown_fields)]
 pub struct Step {
     pub kind: StepKind,
-    /// Names the step for the views, and for later steps that take its output.
+    /// Names the step for later steps that take its output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// What its agents are called in the views, as a pattern such as `fix:{item}` or
+    /// `read:{family}` (see [`crate::labels`]). Code fills one in from the phase and the item
+    /// when it's left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// For a `build`: the later phase that shows its review rows, so one card's owner, gates,
+    /// and review run as a pipeline across two phases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_in: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<RoleName>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -172,6 +189,9 @@ pub enum StepKind {
     Gate,
     LoopUntil,
     Checkpoint,
+    /// A fresh read-only agent from another company judges the done-when list against
+    /// evidence, after the gates.
+    Check,
     /// Integration and the merge checkpoint.
     Merge,
     /// Another workflow run as one step. Nesting stops at depth 2.

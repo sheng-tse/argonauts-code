@@ -553,7 +553,7 @@ async fn resume_recap_code_built_from_digest() {
     else {
         panic!("{:#?}", rig.seen());
     };
-    assert_eq!(*recap, recap_from_summary(&digest, None));
+    assert_eq!(*recap, recap_from_summary(&digest, None, None));
     assert_eq!(*recap_model, None);
     assert!(!recap.contains("Which store?"), "{recap}");
     assert_eq!(

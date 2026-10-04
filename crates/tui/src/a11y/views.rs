@@ -163,6 +163,23 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             }
             lines
         }
+        ViewData::Goal { view } => {
+            let mut lines = vec![format!(
+                "goal: {}, {}",
+                one(&view.objective),
+                word(&view.status)
+            )];
+            lines.extend(view.criteria.iter().map(|row| {
+                let state = row.state.as_ref().map(word).unwrap_or_default();
+                format!(
+                    "  {} {}: {}",
+                    row.criterion.id,
+                    one(&row.criterion.text),
+                    state
+                )
+            }));
+            lines
+        }
         ViewData::Diff { diff } => {
             let mut lines = vec![format!(
                 "diff: {}, {} files, {} added, {} removed",
@@ -192,13 +209,16 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                 format::spend(&view.spent)
             )];
             for phase in &view.phases {
-                lines.push(format!(
-                    "phase {}: {}, {} of {} done",
-                    one(&phase.name),
-                    word(&phase.status),
-                    phase.done,
-                    phase.total
-                ));
+                lines.push(match phase.count {
+                    Some(count) => format!(
+                        "phase {}: {}, {} of {} done",
+                        one(&phase.name),
+                        word(&phase.status),
+                        count.done,
+                        count.total
+                    ),
+                    None => format!("phase {}: {}", one(&phase.name), word(&phase.status)),
+                });
                 lines.extend(phase.rows.iter().map(|row| match row {
                     WorkflowRow::Agent(agent) => format!("  {}", agent_row(agent, names)),
                     WorkflowRow::Workflow(nested) => format!(
@@ -207,6 +227,12 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                         word(&nested.status),
                         nested.agents_done,
                         nested.agents_total
+                    ),
+                    WorkflowRow::Command(command) => format!(
+                        "  {}: {}, {}",
+                        one(&command.label),
+                        word(&command.status),
+                        one(command.result.as_deref().unwrap_or(&command.command))
                     ),
                 }));
             }

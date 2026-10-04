@@ -77,7 +77,9 @@ impl Counters {
             }
             RunEventKind::Workflow(WorkflowEvent::Changed(changed)) => {
                 self.see(IdKind::Workflow, changed.id.as_str());
-                self.see(IdKind::Checkpoint, changed.checkpoint.as_str());
+                if let Some(checkpoint) = &changed.checkpoint {
+                    self.see(IdKind::Checkpoint, checkpoint.as_str());
+                }
             }
             RunEventKind::Run(RunLifecycle::Parked { waiting_on, .. }) => {
                 for id in waiting_on {

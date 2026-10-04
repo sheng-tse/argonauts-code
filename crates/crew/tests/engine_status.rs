@@ -60,6 +60,7 @@ fn spec(id: &str, depends_on: &[&str]) -> CardSpec {
         reviewers: Vec::new(),
         budget: Default::default(),
         predictions: None,
+        item: None,
     }
 }
 
@@ -82,10 +83,7 @@ fn log() -> Vec<RunEvent> {
                     run: RunId::new("run-01").unwrap(),
                     version: 1,
                     summary: "Per-key rate limiting on the public API".to_owned(),
-                    criteria: vec![Criterion {
-                        id: "G1".to_owned(),
-                        text: "A key past its limit gets 429".to_owned(),
-                    }],
+                    criteria: vec![Criterion::new("G1", "A key past its limit gets 429")],
                     in_scope: Vec::new(),
                     out_of_scope: Vec::new(),
                     assumptions: Vec::new(),

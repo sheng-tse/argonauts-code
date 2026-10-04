@@ -27,6 +27,15 @@ fn agent_request(value: &Value) -> bool {
 
 const VIEW_HEADER: &str = "Goal, plans, build, review, and merge";
 
+/// The view takes about half the screen, as Claude Code's does, so a tall one shows an
+/// agent's sections whole.
+fn taller(harness: &mut Harness) {
+    harness.resize(64, COLS);
+    harness.wait_until("the prompt at the foot of a taller screen", |screen| {
+        row_of(screen, TOP_RULE).is_some_and(|row| row > 40)
+    });
+}
+
 /// The left pane's pointer row.
 fn selected_phase(screen: &Screen) -> Option<String> {
     let phases = ["Goal", "Plan", "Build", "Merge"];
@@ -58,16 +67,17 @@ fn run_tree_opens_with_slash_workflows_and_ctrl_t() {
         json!({"view": "workflow", "run": RUN, "workflow": null})
     );
     let view = harness.wait_visible(VIEW_HEADER);
+    // The view takes the input's place under the conversation, as Claude Code's does.
     assert!(
         row_of(&view, TOP_RULE).is_none(),
-        "the view takes the screen"
+        "the input gives way to the view:\n{}",
+        view.visible_text()
     );
-    // The header counts the run as its panel row does, not as the view's data does.
     for part in [
         "Phases",
         "Build · 3 agents",
-        "\\d+/3 agents · \\d+(h\\d+m|m\\d+s|s)",
-        "✓ Goal",
+        "\\d+/\\d+ agents · \\d+(h\\d+m|m\\d+s|s)",
+        "✔ Goal",
     ] {
         assert!(
             row_of(&view, part).is_some(),
@@ -120,11 +130,16 @@ fn run_tree_navigation() {
     harness.wait_until("the pointer on Build", |s| {
         selected_phase(s).as_deref() == Some("Build")
     });
-    harness.press(Key::Tab);
-    let agents = harness.wait_visible("❯.*owner · card-002");
+    harness.press(Key::Right);
+    let agents = harness.wait_visible("❯.*build:add-json");
     harness.press(Key::Down);
-    let moved = harness.wait_visible("❯.*owner · card-003");
+    let moved = harness.wait_visible("❯.*build:wire-json");
     assert_ne!(agents.visible_text(), moved.visible_text());
+    // Esc goes back a level, as ← does: to the phases, then out of the view.
+    harness.press(Key::Esc);
+    harness.wait_until("the pointer back on Build", |s| {
+        selected_phase(s).as_deref() == Some("Build")
+    });
     harness.press(Key::Esc);
     harness.wait_visible(TOP_RULE);
 }
@@ -176,28 +191,20 @@ fn open_collapsed_step_from_tree() {
         .at(0, agent_view(&goal[0]));
     let mut harness = Harness::start(script);
     harness.wait_visible("esc to interrupt");
+    taller(&mut harness);
     harness.press(Key::Ctrl('t'));
     harness.wait_visible(VIEW_HEADER);
     for _ in 0..3 {
         harness.press(Key::Up);
     }
     let step = harness.wait_visible("Goal · 3 agents");
-    assert_eq!(
-        count_rows(&step, "restater · goal"),
-        3,
-        "{}",
-        step.visible_text()
-    );
-    harness.press(Key::Tab);
+    assert_eq!(count_rows(&step, "read:"), 3, "{}", step.visible_text());
+    harness.press(Key::Right);
     harness.press(Key::Enter);
     let request = harness.wait_command_where("request", agent_request);
     assert_eq!(request["view"]["session"], goal[0].session);
     let agent = harness.wait_visible("Prompt ·");
-    for part in [
-        "restater · goal",
-        "Activity ·",
-        "Diff · 4 files · \\+120 -18",
-    ] {
+    for part in ["read:add-json", "Activity ·", "Diff · 4 files · \\+120 -18"] {
         assert!(
             row_of(&agent, part).is_some(),
             "{part}:\n{}",
@@ -220,6 +227,7 @@ fn enter_on_workflow_row_opens_agent_view() {
         .at(0, agent_view(&crew[0]));
     let mut harness = Harness::start(script);
     harness.wait_visible("esc to interrupt");
+    taller(&mut harness);
     harness.press(Key::Ctrl('t'));
     let view = harness.wait_visible(VIEW_HEADER);
     assert!(
@@ -227,7 +235,7 @@ fn enter_on_workflow_row_opens_agent_view() {
         "a nested workflow is a row among the agents:\n{}",
         view.visible_text()
     );
-    harness.press(Key::Tab);
+    harness.press(Key::Right);
     harness.press(Key::Enter);
     let request = harness.wait_command_where("request", agent_request);
     assert_eq!(
@@ -236,7 +244,7 @@ fn enter_on_workflow_row_opens_agent_view() {
     );
     let agent = harness.wait_visible("Prompt ·");
     assert_order(&agent, &["Prompt ·", "Activity ·", "Diff · 4 files"]);
-    harness.wait_visible("● Running|✓ Completed");
+    harness.wait_visible("● Running|✔ Completed");
     harness.press(Key::Esc);
     harness.wait_visible(VIEW_HEADER);
 }

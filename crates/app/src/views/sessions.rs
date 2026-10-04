@@ -104,9 +104,13 @@ impl SessionFacts {
         counted.max(reported)
     }
 
-    /// Such as `owner · card-001`, and `owner · card-001 · attempt 2` for a retry, so the
-    /// card's sessions read apart wherever their agents' names are cut.
+    /// The label the run gave it, such as `fix:slugify`. A log from before labels has none, so
+    /// the role and the card stand in: `owner · card-001`, and `owner · card-001 · attempt 2`
+    /// for a retry, so the card's sessions read apart wherever their agents' names are cut.
     pub fn label(&self) -> String {
+        if let Some(label) = &self.started.label {
+            return label.clone();
+        }
         let role = self.started.role.as_str();
         match (&self.card, self.attempt) {
             (Some(card), Some(attempt)) if attempt > 1 => {

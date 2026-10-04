@@ -5,9 +5,10 @@
 mod finish;
 pub(crate) mod probe;
 mod questions;
+mod roles;
 mod steps;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::bail;
 use argonauts_conductor::{DoctorReport, doctor};
@@ -15,6 +16,7 @@ use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
 use argonauts_core::events::checkpoint::AnswerAction;
 use argonauts_core::layout::user_files;
+use argonauts_core::model_catalog::display_name_from_id;
 use argonauts_core::names::{ChoiceId, WorkerRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 
@@ -94,6 +96,8 @@ impl Setup {
             current,
             untrusted,
             project_dir_exists: finish::project_dir(&ctx.env).is_dir(),
+            role_keys: crate::controller::settings::model_keys(),
+            models: models_by_agent(ctx),
         };
         let mut steps = VecDeque::new();
         if !terms_shown(ctx) {
@@ -274,8 +278,26 @@ impl Setup {
                     ctx.error(&err);
                 }
             }
-            Step::Preset if self.answers.preset == steps::COORDINATED_CREW => {
-                self.steps.push_front(Step::Coordinator);
+            Step::Preset => {
+                // A crew's roles come after who coordinates it.
+                if self.answers.preset != steps::SOLO {
+                    self.steps.push_front(Step::WhoDoesWhat);
+                }
+                if self.answers.preset == steps::COORDINATED_CREW {
+                    self.steps.push_front(Step::Coordinator);
+                }
+            }
+            Step::Coordinator => {
+                let key = roles::COORDINATOR_KEY.to_owned();
+                self.steps.push_front(Step::RoleModel(key));
+            }
+            // The list comes back after each role you change, until you keep them all.
+            Step::WhoDoesWhat if value != roles::KEEP => {
+                self.steps.push_front(Step::WhoDoesWhat);
+                self.steps.push_front(Step::RoleAgent(value.to_owned()));
+            }
+            Step::RoleAgent(key) if value != roles::KEEP => {
+                self.steps.push_front(Step::RoleModel(key.clone()));
             }
             _ => {}
         }
@@ -398,6 +420,30 @@ impl Setup {
 }
 
 /// A missing or unreadable file reads as empty, so nothing is preselected.
+/// Each agent's models the registry knows, as `/model` lists them, without the older ones.
+fn models_by_agent(ctx: &Ctx) -> BTreeMap<String, Vec<roles::ModelOption>> {
+    let mut models: BTreeMap<String, Vec<roles::ModelOption>> = BTreeMap::new();
+    for choice in crate::controller::settings::model_choices(ctx, None) {
+        if choice.older {
+            continue;
+        }
+        let name = match &choice.worker.model {
+            None => "Default".to_owned(),
+            Some(model) if choice.name.is_empty() => display_name_from_id(model),
+            Some(_) => choice.name.clone(),
+        };
+        models
+            .entry(choice.worker.worker.clone())
+            .or_default()
+            .push(roles::ModelOption {
+                model: choice.worker.model.clone(),
+                name,
+                note: choice.note.or(choice.description),
+            });
+    }
+    models
+}
+
 fn read_table(path: &std::path::Path) -> toml::Table {
     std::fs::read_to_string(path)
         .ok()

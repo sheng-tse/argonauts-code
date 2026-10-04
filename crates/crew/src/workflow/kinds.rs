@@ -5,9 +5,10 @@ use futures::future::join_all;
 use serde_json::Value;
 
 use argonauts_core::CardId;
+use argonauts_core::events::RunEventKind;
 use argonauts_core::events::checkpoint::CheckpointKind;
 use argonauts_core::events::run::RunOutcome;
-use argonauts_core::events::workflow::StepEnd;
+use argonauts_core::events::workflow::{RunNote, StepEnd, WorkflowEvent};
 use argonauts_core::future::BoxFuture;
 use argonauts_core::names::{RoleName, WorkflowId};
 use argonauts_core::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
@@ -58,6 +59,7 @@ pub fn execute<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineRe
             StepKind::LoopUntil => loop_until(host, call).await,
             StepKind::Gate => gate(host, call).await,
             StepKind::Workflow => nested(host, call).await,
+            StepKind::Check => goal::pursue::check_step(host, call).await,
         }
     })
 }
@@ -215,6 +217,29 @@ async fn for_each(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
 /// Repeats the inner steps until `until` holds, never past `max` rounds. `until` is asked
 /// before each round, so a loop whose condition already holds runs no round at all. A loop
 /// that uses up its rounds without `until` fails, since what comes after it needs `until`.
+/// A `›` note on why the plan moved: a loop runs again because its condition doesn't hold yet.
+fn note_round(host: &Host, call: &StepCall, round: usize, until: &str) -> EngineResult<()> {
+    let phase = host.read(|state| {
+        let record = state.workflows.by_id.get(call.workflow())?;
+        Some(record.phase_definition(call.at.step.phase)?.name.clone())
+    });
+    let what = call
+        .step
+        .name
+        .clone()
+        .or(phase)
+        .unwrap_or_else(|| "the loop".to_owned());
+    host.record(
+        None,
+        None,
+        RunEventKind::Workflow(WorkflowEvent::Note(RunNote {
+            text: format!("{what} runs round {round}, since {until} doesn't hold yet"),
+            workflow: Some(call.workflow().clone()),
+        })),
+    )?;
+    Ok(())
+}
+
 async fn loop_until(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let until = call.step.until.as_deref().unwrap_or_default();
     let max = call.step.max.unwrap_or(1).max(1);
@@ -238,6 +263,9 @@ async fn loop_until(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                     1 => format!("{until} after 1 round"),
                     rounds => format!("{until} after {rounds} rounds"),
                 }));
+            }
+            if iteration > 1 {
+                note_round(host, call, iteration, until)?;
             }
         }
         for (index, step) in call.step.steps.iter().enumerate() {
@@ -714,6 +742,10 @@ mod tests {
                 changed_from_phase: None,
                 since: 0,
                 changes: Vec::new(),
+                declared: None,
+                phases_started: Default::default(),
+                phases_ended: Default::default(),
+                phases_skipped: Default::default(),
             },
         );
         state

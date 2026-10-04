@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::events::card::{CardBudget, CardKind, CardSpec};
+use argonauts_core::labels;
 use argonauts_core::settings::Settings;
 use argonauts_core::steps::plan::{ProposedKind, TaskGraphProposal};
 use argonauts_core::{CardId, RunId};
@@ -91,6 +92,7 @@ pub fn convert(proposal: &TaskGraphProposal) -> (Vec<CardSpec>, Vec<String>) {
                 reviewers: Vec::new(),
                 budget: CardBudget::default(),
                 predictions: None,
+                item: Some(labels::slug(&card.key, 3)).filter(|item| !item.is_empty()),
             }
         })
         .collect();

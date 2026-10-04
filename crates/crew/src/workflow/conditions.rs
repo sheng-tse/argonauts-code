@@ -162,6 +162,10 @@ mod tests {
                 changed_from_phase: None,
                 since: 0,
                 changes: Vec::new(),
+                declared: None,
+                phases_started: Default::default(),
+                phases_ended: Default::default(),
+                phases_skipped: Default::default(),
             });
         record.steps.push(StepProgress {
             step: review_step(),

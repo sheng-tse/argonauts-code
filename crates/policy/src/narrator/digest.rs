@@ -126,6 +126,7 @@ pub fn phase_end(event: &RunEvent) -> Option<RunPhase> {
 fn run_line(lifecycle: &RunLifecycle) -> Option<String> {
     Some(match lifecycle {
         RunLifecycle::Started(_) => "the run started".to_owned(),
+        RunLifecycle::Named(named) => format!("the run is {}", named.name),
         RunLifecycle::Resumed(_) => "the run resumed".to_owned(),
         RunLifecycle::PauseRequested { by, .. } => format!("{} asked to pause", party(by)),
         RunLifecycle::Paused { .. } => "the run paused".to_owned(),
@@ -135,7 +136,9 @@ fn run_line(lifecycle: &RunLifecycle) -> Option<String> {
         }
         RunLifecycle::Parked { reason, .. } => format!("the run parked: {}", name(reason)),
         RunLifecycle::Finished { outcome, .. } => format!("the run finished: {}", name(outcome)),
-        RunLifecycle::PauseCancelled | RunLifecycle::Snapshot(_) => return None,
+        RunLifecycle::PauseCancelled
+        | RunLifecycle::Snapshot(_)
+        | RunLifecycle::ClosingAnswer(_) => return None,
     })
 }
 

@@ -202,6 +202,7 @@ pub(crate) fn deferrable(request: &ControlRequest) -> bool {
             | ControlRequest::ApprovalMode { .. }
             | ControlRequest::TakeOverEnded { .. }
             | ControlRequest::SpotCheck { .. }
+            | ControlRequest::Goal { .. }
     )
 }
 

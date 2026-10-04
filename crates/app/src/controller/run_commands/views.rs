@@ -80,6 +80,21 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
                 None => ctx.notice(NoteLevel::Info, format!("{run} has no session {session}.")),
             }
         }
+        ViewRequest::Goal { run } => {
+            let events = run_events(ctx, runs, &run);
+            match views::goal_view(&events, &run) {
+                Some(view) => show(
+                    ctx,
+                    ViewData::Goal {
+                        view: Box::new(view),
+                    },
+                ),
+                None => ctx.notice(
+                    NoteLevel::Info,
+                    format!("{run} is a workflow, so it has no goal view."),
+                ),
+            }
+        }
         ViewRequest::AllRepos => {
             let repos = all_repos(ctx).await?;
             show(ctx, ViewData::AllRepos { repos });
@@ -234,6 +249,56 @@ fn capped_rows(events: &[RunEvent], run: &RunId, rotate_at: &RotateAt) -> Vec<Co
             ..row
         })
         .collect()
+}
+
+/// `s` in the workflow view: the run's workflow as it is now, after any approved change, goes
+/// to your own library under the run's name, so it runs again by that name.
+pub(crate) async fn save_workflow(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    run: RunId,
+    workflow: Option<WorkflowId>,
+) -> Handled {
+    let events = run_events(ctx, runs, &run);
+    let Some((name, definition)) = views::saved_workflow(&events, workflow.as_ref()) else {
+        ctx.notice(
+            NoteLevel::Info,
+            "This run has no workflow to save yet.".to_owned(),
+        );
+        return Ok(Vec::new());
+    };
+    let dir = ctx
+        .env
+        .paths
+        .home()
+        .join(argonauts_core::layout::user_files::WORKFLOWS);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", ctx.env.display(&dir)))?;
+    // An earlier save keeps its name; this one takes the next free one.
+    let path = (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("{name}.yaml")),
+            n => dir.join(format!("{name}-{n}.yaml")),
+        })
+        .find(|path| !path.exists())
+        .context("finding a free file name")?;
+    let saved_name = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(&name)
+        .to_owned();
+    let mut definition = definition;
+    definition.name.clone_from(&saved_name);
+    let text = argonauts_crew::workflow::yaml::print(&definition)
+        .map_err(|err| anyhow::anyhow!("writing the workflow as YAML: {err}"))?;
+    std::fs::write(&path, text).with_context(|| format!("writing {}", ctx.env.display(&path)))?;
+    ctx.notice(
+        NoteLevel::Info,
+        format!(
+            "Saved the workflow as {saved_name} in {}. It's in the Library of /workflows.",
+            ctx.env.display(&path)
+        ),
+    );
+    Ok(Vec::new())
 }
 
 /// The run's own workflow when `workflow` is `None`.

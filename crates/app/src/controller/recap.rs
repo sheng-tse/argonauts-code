@@ -3,15 +3,24 @@
 use argonauts_core::api::StatusSummary;
 use argonauts_core::app::TurnReply;
 use argonauts_core::events::card::CardState;
-use argonauts_core::events::run::{RunMode, RunOutcome};
+use argonauts_core::events::run::{ClosingAnswer, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::events::{RunEvent, RunEventKind};
 
 /// Longest title, in characters. The terminal cuts the rest anyway.
 const TITLE_MAX: usize = 60;
 
 /// Such as "Export now takes --json. All 4 cards merged, and the checks pass. Ask for another
-/// change, or /resume an older run."
-pub(crate) fn recap_from_summary(summary: &StatusSummary, outcome: Option<RunOutcome>) -> String {
-    let goal = goal_line(summary);
+/// change, or /resume an older run." A run that ended starts with what changed, from its
+/// closing answer, rather than its goal, which only restates what you asked.
+pub(crate) fn recap_from_summary(
+    summary: &StatusSummary,
+    outcome: Option<RunOutcome>,
+    closing: Option<&ClosingAnswer>,
+) -> String {
+    let lead = match outcome {
+        Some(_) => closing.and_then(what_changed),
+        None => Some(goal_line(summary)),
+    };
     let cards = Cards::count(summary);
     let run = summary
         .run
@@ -48,7 +57,44 @@ pub(crate) fn recap_from_summary(summary: &StatusSummary, outcome: Option<RunOut
         },
         None => in_progress(summary, &cards),
     };
-    format!("{goal}. {rest}")
+    match lead {
+        Some(lead) => format!("{}. {rest}", lead.trim_end_matches('.')),
+        None => rest,
+    }
+}
+
+/// The newest closing answer in a run's events.
+pub(crate) fn closing_in(events: &[RunEvent]) -> Option<&ClosingAnswer> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        RunEventKind::Run(RunLifecycle::ClosingAnswer(answer)) => Some(answer.as_ref()),
+        _ => None,
+    })
+}
+
+/// The agent's first sentence, or without an agent's words, the files that changed.
+fn what_changed(closing: &ClosingAnswer) -> Option<String> {
+    if closing.by.is_some() {
+        let text = closing.text.trim();
+        let first = match text.find(". ") {
+            Some(end) => &text[..end],
+            None => text,
+        };
+        if !first.is_empty() {
+            return Some(first.to_owned());
+        }
+    }
+    let paths: Vec<&str> = closing
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    match paths.as_slice() {
+        [] => None,
+        [one] => Some(format!("Changed {one}")),
+        [first, second] => Some(format!("Changed {first} and {second}")),
+        [first, second, third] => Some(format!("Changed {first}, {second}, and {third}")),
+        more => Some(format!("Changed {} files", more.len())),
+    }
 }
 
 /// After a long chat turn.
@@ -214,7 +260,7 @@ fn capitalized(text: &str) -> String {
 mod tests {
     use super::*;
     use argonauts_core::api::CardBrief;
-    use argonauts_core::events::run::TriageDecision;
+    use argonauts_core::events::run::{ChangedFile, TriageDecision};
     use argonauts_core::{CardId, RunId};
 
     fn card(n: u32, state: CardState) -> CardBrief {
@@ -240,9 +286,9 @@ mod tests {
     fn recap_from_status_summary() {
         let merged = summary((1..=4).map(|n| card(n, CardState::Integrated)).collect());
         assert_eq!(
-            recap_from_summary(&merged, Some(RunOutcome::Merged)),
-            "Export now takes --json. All 4 cards merged, and the checks pass. Ask for another \
-             change, or /resume an older run."
+            recap_from_summary(&merged, Some(RunOutcome::Merged), None),
+            "All 4 cards merged, and the checks pass. Ask for another change, or /resume an \
+             older run."
         );
         let stopped = summary(vec![
             card(1, CardState::Integrated),
@@ -250,34 +296,61 @@ mod tests {
             card(3, CardState::Cancelled),
         ]);
         assert_eq!(
-            recap_from_summary(&stopped, Some(RunOutcome::Stopped)),
-            "Export now takes --json. The run stopped with 1 of 2 cards merged. /resume run-007 \
-             goes on from there."
+            recap_from_summary(&stopped, Some(RunOutcome::Stopped), None),
+            "The run stopped with 1 of 2 cards merged. /resume run-007 goes on from there."
         );
         let mut going = stopped.clone();
         going.waiting = vec!["the merge checkpoint".to_owned()];
         assert_eq!(
-            recap_from_summary(&going, None),
+            recap_from_summary(&going, None, None),
             "Export now takes --json. 1 of 2 cards merged, 1 working. Waiting on the merge \
              checkpoint."
         );
         let mut escalated = summary(vec![card(1, CardState::Escalated)]);
         escalated.waiting = vec!["card-001 escalated · Fix add so it returns a + b.".to_owned()];
         assert_eq!(
-            recap_from_summary(&escalated, None),
+            recap_from_summary(&escalated, None, None),
             "Export now takes --json. The card isn't merged. Waiting on card-001 escalated · Fix \
              add so it returns a + b."
         );
         let empty = StatusSummary::default();
         assert_eq!(
-            recap_from_summary(&empty, Some(RunOutcome::Abandoned)),
-            "The run. You abandoned the run, so nothing merged."
+            recap_from_summary(&empty, Some(RunOutcome::Abandoned), None),
+            "You abandoned the run, so nothing merged."
         );
         let one = summary(vec![card(1, CardState::Integrated)]);
         assert_eq!(
-            recap_from_summary(&one, Some(RunOutcome::PullRequest)),
-            "Export now takes --json. The card merged, and the work waits in a pull request \
-             for review."
+            recap_from_summary(&one, Some(RunOutcome::PullRequest), None),
+            "The card merged, and the work waits in a pull request for review."
+        );
+    }
+
+    #[test]
+    fn a_finished_runs_recap_says_what_changed_not_what_you_asked() {
+        let one = summary(vec![card(1, CardState::Integrated)]);
+        let mut closing = ClosingAnswer {
+            text: "Fixed parse() and format_cents() in invoice/money.py. All six tests pass."
+                .to_owned(),
+            by: Some("claude-code/haiku".parse().unwrap()),
+            files: vec![ChangedFile {
+                path: "invoice/money.py".to_owned(),
+                insertions: 19,
+                deletions: 3,
+            }],
+            checks: Vec::new(),
+            tests: Vec::new(),
+            left: Vec::new(),
+        };
+        assert_eq!(
+            recap_from_summary(&one, Some(RunOutcome::Merged), Some(&closing)),
+            "Fixed parse() and format_cents() in invoice/money.py. The card merged, and the \
+             checks pass. Ask for another change, or /resume an older run."
+        );
+        closing.by = None;
+        assert_eq!(
+            recap_from_summary(&one, Some(RunOutcome::Merged), Some(&closing)),
+            "Changed invoice/money.py. The card merged, and the checks pass. Ask for another \
+             change, or /resume an older run."
         );
     }
 

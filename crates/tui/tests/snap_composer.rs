@@ -98,7 +98,7 @@ fn slash_menu_under_input() {
         .filter_map(|row| row.strip_prefix("  /"))
         .filter_map(|row| row.split_whitespace().next())
         .collect();
-    assert_eq!(names, ["workflows"], "{narrowed}");
+    assert_eq!(names, ["workflow", "workflows"], "{narrowed}");
 }
 
 #[test]

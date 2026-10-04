@@ -7,8 +7,8 @@ use argonauts_core::names::{RoleName, SessionKey, WorkerRef, WorkflowId};
 use argonauts_core::settings::ui::{UiSettings, VendorInternals};
 use argonauts_core::views::{
     ActivityLine, AgentRow, AgentView as AgentData, ContextRow, ContextUse,
-    ContextView as ContextData, NestedWorkflowRow, PhaseRow, RowStatus, SubagentsSection,
-    WorkflowRow, WorkflowView as WorkflowData,
+    ContextView as ContextData, NestedWorkflowRow, PhaseCount, PhaseRow, RowStatus,
+    SubagentsSection, WorkflowRow, WorkflowView as WorkflowData,
 };
 use argonauts_core::workflow::StandardPhase;
 use argonauts_core::{CardId, DiffStat, RunId, Spend};
@@ -89,8 +89,12 @@ fn phase(
         name: name.into(),
         standard,
         status,
-        done,
-        total: rows.len().max(1) as u32,
+        detail: String::new(),
+        attempt: None,
+        count: Some(PhaseCount {
+            done,
+            total: rows.len().max(1) as u32,
+        }),
         rows,
     }
 }
@@ -197,6 +201,8 @@ fn ui_kit() -> WorkflowData {
                 Vec::new(),
             ),
         ],
+        style: None,
+        status_lines: Vec::new(),
     }
 }
 
@@ -266,6 +272,8 @@ fn demo_tests() -> WorkflowData {
                 ],
             ),
         ],
+        style: None,
+        status_lines: Vec::new(),
     }
 }
 
@@ -494,20 +502,30 @@ fn workflow_view() {
     }
     let mut view = WorkflowView::new(ui_kit());
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("8/12 agents · 2h44m · $4.10"), "{text}");
+    assert!(text.contains("8/12 agents · 2h44m"), "{text}");
+    assert!(!text.contains("$4.10"), "{text}");
     assert!(text.contains("❯ 2 Build"), "{text}");
     assert!(text.contains("Build · 7 agents"), "{text}");
-    assert!(text.contains(
-        "↑↓ select · tab switch pane · → open · x stop · p pause · l library · esc back"
-    ));
     assert!(
-        text.lines().next().unwrap().ends_with("[ Run ]  Library"),
+        text.contains("↑↓ select · x stop workflow · p pause · esc back · s save"),
         "{text}"
     );
+    assert!(!text.contains("Library"), "{text}");
 
-    // Tab moves to the rows, x asks, and the second x stops that agent.
-    press(&mut view, KeyCode::Tab, &state);
+    // → moves to the rows, x asks, and the second x stops that agent.
+    press(&mut view, KeyCode::Right, &state);
     press(&mut view, KeyCode::Down, &state);
+    let mut running = ui_kit();
+    for row in running.phases.iter_mut().flat_map(|phase| &mut phase.rows) {
+        if let WorkflowRow::Agent(agent) = row
+            && agent.session.as_str() == "s-003"
+        {
+            agent.status = RowStatus::Running;
+        }
+    }
+    view.accept(&ViewData::Workflow {
+        view: Box::new(running),
+    });
     assert!(matches!(
         press(&mut view, KeyCode::Char('x'), &state),
         ViewOutcome::Consumed
@@ -577,6 +595,8 @@ fn long_model_names_stay_visible_at_80_columns() {
                 )),
             ],
         )],
+        style: None,
+        status_lines: Vec::new(),
     };
     for (name, label) in [
         ("long_model_80", "owner · card-001"),
@@ -594,7 +614,7 @@ fn long_model_names_stay_visible_at_80_columns() {
                 .unwrap_or_else(|| panic!("no {needle:?} row:\n{text}"))
                 .to_owned()
         };
-        assert!(row("reviewer").contains("GPT 5.6 on"), "{text}");
+        assert!(row("reviewer").contains("GPT 5.6"), "{text}");
         assert!(row("1m01s").contains("Qwen3 Coder"), "{text}");
     }
 }
@@ -629,14 +649,15 @@ fn agent_view() {
     assert!(view.accept(&answer));
     let text = screen(&mut view, 100, 32, &state);
     assert!(text.contains("build:b-history-cells ─"), "{text}");
+    assert!(text.contains("GPT 5.6 on Codex · 1h21m"), "{text}");
     assert!(
-        text.contains("GPT 5.6 on Codex · 747k tok · $1.12 · 1h21m"),
+        text.contains("codex/gpt-5.6 · run-01 · 747k tok · $1.12"),
         "{text}"
     );
 
-    // s steers, t asks to take over the agent's card, and Esc goes back to the workflow.
+    // i steers, t asks to take over the agent's card, and Esc goes back to the workflow.
     assert!(matches!(
-        press(&mut view, KeyCode::Char('s'), &state),
+        press(&mut view, KeyCode::Char('i'), &state),
         ViewOutcome::Consumed
     ));
     for c in "use the new layout".chars() {
@@ -675,14 +696,11 @@ fn agent_view_names_the_agent_and_its_run_and_tells_alike_steps_apart() {
         let text = screen(&mut view, width, 32, &state);
         insta::assert_snapshot!(format!("agent_view_identity_{width}"), &text);
         if width >= 120 {
-            // Under the title, the agent's name with its id and the run, as a detail view has it.
-            assert!(
-                text.contains("Opus on Claude Code (claude-code/opus) · run-01"),
-                "{text}"
-            );
+            // Under the status, the agent's id and the run, as a detail view has it.
+            assert!(text.contains("claude-code/opus · run-01"), "{text}");
         }
         if width == 200 {
-            // The agents' names sit in a column of their own, whole on a wide screen.
+            // A label two agents share reads with the agent's name after it.
             assert!(text.contains("restater  Opus on Claude Code"), "{text}");
             assert!(text.contains("restater  GPT 5.6 on Codex"), "{text}");
         }
@@ -791,9 +809,7 @@ fn nested_workflow_breadcrumb() {
     // The parent phase counts the nested workflow as one row.
     assert!(text.contains("❯ 2 Build    2/4"), "{text}");
     assert!(
-        text.contains(
-            "◇ build:c-demo-tests       workflow · 2/4 agents · Opus on Claude …  12m00s"
-        ),
+        text.contains("◇ build:c-demo-tests      workflow          · 2/4 agents      12m00s"),
         "{text}"
     );
 
@@ -811,11 +827,15 @@ fn nested_workflow_breadcrumb() {
     assert_eq!(view.depth(), 2);
     let text = screen(&mut view, 100, 32, &state);
     assert!(
-        text.starts_with("argonauts-ui-kit › build:c-demo-tests"),
+        text.lines()
+            .nth(1)
+            .unwrap_or_default()
+            .starts_with(" argonauts-ui-kit › build:c-demo-tests"),
         "{text}"
     );
     assert!(text.contains("Demo scenes and snapshot tests"), "{text}");
-    assert!(text.contains("2/4 agents · 12m0s · $0.92"), "{text}");
+    assert!(text.contains("2/4 agents · 12m00s"), "{text}");
+    assert!(!text.contains("$0.92"), "{text}");
     let buf = draw(&mut view, 100, 32, &state);
     let theme = theme();
     assert_eq!(
@@ -824,7 +844,7 @@ fn nested_workflow_breadcrumb() {
     );
     assert_eq!(
         style_at(&buf, "build:c-demo-tests").and_then(|s| s.fg),
-        fg(&theme, Role::Label)
+        fg(&theme, Role::Card)
     );
 
     // A refresh of a level already open updates it in place.
@@ -844,14 +864,16 @@ fn nested_workflow_breadcrumb() {
         "{outcome:?}"
     );
 
+    // Esc goes back a level at a time: to the phases, then out of the nested workflow.
+    press(&mut view, KeyCode::Esc, &state);
     assert!(matches!(
         press(&mut view, KeyCode::Esc, &state),
         ViewOutcome::Consumed
     ));
     assert_eq!(view.depth(), 1);
     let top = screen(&mut view, 100, 32, &state);
-    let name_row = top.lines().next().unwrap_or_default();
-    assert!(name_row.starts_with("argonauts-ui-kit "), "{top}");
+    let name_row = top.lines().nth(1).unwrap_or_default();
+    assert!(name_row.starts_with(" argonauts-ui-kit"), "{top}");
     assert!(!name_row.contains('›'), "{top}");
 }
 
@@ -978,6 +1000,8 @@ fn crew_run() -> WorkflowData {
                 ],
             ),
         ],
+        style: None,
+        status_lines: Vec::new(),
     }
 }
 
@@ -1002,7 +1026,7 @@ fn run_tree_subagents_and_threads() {
     assert!(text.contains("+3 subagents"), "{text}");
     assert!(text.contains("+2 subagents"), "{text}");
     assert!(text.contains("+1 subagent "), "{text}");
-    assert!(text.contains("↺ for Opus on Claude Code"), "{text}");
+    assert!(text.contains("↺ GPT 5.6"), "{text}");
 
     let child = |id: &str,
                  kind: SubagentKind,
@@ -1121,6 +1145,7 @@ fn session(
         step: None,
         card,
         workflow_step: None,
+        label: None,
         status,
         started,
         ended: None,
@@ -1146,6 +1171,7 @@ fn session(
         doing: Doing::Nothing,
         stalled: false,
         vendor_session: None,
+        workflows: Vec::new(),
     }
 }
 
@@ -1164,6 +1190,7 @@ fn card(n: u32) -> CardRow {
         last_gate: None,
         reviews: 0,
         waiting_on_vendor: None,
+        item: None,
     }
 }
 
@@ -1224,7 +1251,14 @@ fn crew_state(wall: OffsetDateTime) -> AppState {
         by: worker("codex/gpt-5.6"),
         needs: worker("claude-code/opus"),
     }];
-    for session in [done, claude, codex] {
+    for (index, mut session) in [done, claude, codex].into_iter().enumerate() {
+        // The workflow ran them, a drafter in its first phase and the owners in its second,
+        // so they're the run's agents.
+        session.workflow_step = Some(argonauts_core::workflow::StepRef {
+            workflow: argonauts_core::names::WorkflowId::numbered(1),
+            phase: u32::from(index > 0),
+            path: vec![0],
+        });
         run_state.session_order.push(session.key.clone());
         run_state.sessions.insert(session.key.clone(), session);
     }
@@ -1415,7 +1449,7 @@ fn debt_markers_on_rows() {
         .lines()
         .find(|row| row.contains("owner · card-002"))
         .unwrap();
-    assert!(row.contains("↺ for Opus on Claude Code"), "{text}");
+    assert!(row.contains("↺ GPT 5.6"), "{text}");
     assert!(row.contains("◌ needs review"), "{text}");
     let theme = theme();
     assert_eq!(
@@ -1458,7 +1492,7 @@ fn state_glyph_word_color() {
     let state = AppState::default();
     let data = ui_kit();
     for (session, words, role) in [
-        ("s-002", "✓ Completed", Role::Success),
+        ("s-002", "✔ Completed", Role::Success),
         ("s-005", "✗ Failed", Role::Error),
         ("s-006", "○ Waiting", Role::Dim),
     ] {
@@ -1478,14 +1512,14 @@ fn state_glyph_word_color() {
     let buf = draw(&mut view, 100, 32, &state);
     assert_eq!(
         style_at(&buf, "● Running").and_then(|s| s.fg),
-        fg(&theme, Role::Dim)
+        fg(&theme, Role::Faint)
     );
 
-    // The workflow view's rows: green ✓, grey ●, red ✗, and the nested ◇.
+    // The workflow view's rows: green ✔, grey ●, red ✗, and the nested ◇.
     let mut view = WorkflowView::new(data);
     let buf = draw(&mut view, 100, 32, &state);
     assert_eq!(
-        style_at(&buf, "✓ build:a").and_then(|s| s.fg),
+        style_at(&buf, "✔ build:a").and_then(|s| s.fg),
         fg(&theme, Role::Success)
     );
     assert_eq!(
@@ -1663,6 +1697,7 @@ fn with_sample(sample: &str) -> (WorkflowData, AgentData, ContextData) {
             match row {
                 WorkflowRow::Agent(agent) => agent.label = format!("{}{sample}", agent.label),
                 WorkflowRow::Workflow(nested) => nested.name = sample.into(),
+                WorkflowRow::Command(command) => command.label = sample.into(),
             }
         }
     }
@@ -1758,35 +1793,27 @@ fn library_files() -> Vec<argonauts_core::views::WorkflowFile> {
     ]
 }
 
+/// The workflow view has no Library tab now, as Claude Code's has none: `l` does nothing
+/// there, and the library is its own view, opened from `/workflows`.
 #[test]
-fn library_tab() {
+fn library_view() {
+    use argonauts_tui::views::library::LibraryView;
     let state = AppState::default();
-    let mut view = WorkflowView::new(ui_kit());
-    // The tab asks for the files as it opens.
-    let outcome = press(&mut view, KeyCode::Char('l'), &state);
-    assert!(
-        matches!(outcome, ViewOutcome::Request(ViewRequest::WorkflowLibrary)),
-        "{outcome:?}"
-    );
-    let loading = screen(&mut view, 100, 32, &state);
-    assert!(loading.contains("Looking for workflow files"), "{loading}");
-    assert!(view.accept(&ViewData::WorkflowLibrary {
-        workflows: library_files(),
-        refresh: false,
-    }));
+    let mut run = WorkflowView::new(ui_kit());
+    assert!(matches!(
+        press(&mut run, KeyCode::Char('l'), &state),
+        ViewOutcome::Ignored
+    ));
+    let mut view = LibraryView::new(library_files());
     for (width, height) in SIZES {
         insta::assert_snapshot!(
-            format!("library_tab_{width}"),
+            format!("library_view_{width}"),
             screen(&mut view, width, height, &state)
         );
     }
+    // It opens on the workflow in use.
     let text = screen(&mut view, 100, 32, &state);
-    assert!(
-        text.lines().next().unwrap().ends_with("  Run  [ Library ]"),
-        "{text}"
-    );
     assert!(text.contains("❯ coordinated-crew"), "{text}");
-
     let outcome = press(&mut view, KeyCode::Char('c'), &state);
     assert!(
         matches!(
@@ -1797,18 +1824,6 @@ fn library_tab() {
         ),
         "{outcome:?}"
     );
-    // Back on the Run tab; the next visit asks again, since a file may have changed, and
-    // shows the last list until the answer comes.
-    assert!(matches!(
-        press(&mut view, KeyCode::Char('l'), &state),
-        ViewOutcome::Consumed
-    ));
-    assert!(screen(&mut view, 100, 32, &state).contains("Build · 7 agents"));
-    assert!(matches!(
-        press(&mut view, KeyCode::Char('l'), &state),
-        ViewOutcome::Request(ViewRequest::WorkflowLibrary)
-    ));
-    assert!(screen(&mut view, 100, 32, &state).contains("coordinated-crew"));
 }
 
 #[test]

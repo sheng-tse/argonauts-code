@@ -58,6 +58,10 @@ pub struct SessionStarted {
     /// The workflow step it works for, which places it in the workflow view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_step: Option<StepRef>,
+    /// Its name in the chat, the panel, and the workflow view, such as `fix:slugify`, unique
+    /// in the run. Card ids stay in Ctrl+O and commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -333,6 +337,158 @@ pub enum SubagentStatus {
     Failed,
     /// The vendor didn't say.
     Unknown,
+}
+
+/// A workflow an agent's own CLI runs, as its stream reports it: Claude Code's dynamic
+/// workflows (`task_type: local_workflow`). Each update carries the whole state, replacing the
+/// last one of the same id, so the views can draw it like one of Argonauts' own, with whatever
+/// names it uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VendorWorkflow {
+    /// The vendor's task id.
+    pub id: String,
+    /// The tool call that started it, which is also its subagent id.
+    pub call: Option<String>,
+    /// The script's `meta.name`, such as `fix-slugify-median`.
+    pub name: String,
+    /// The script's `meta.description`.
+    pub description: String,
+    /// In the order declared, from the script's `meta.phases` and then the progress reports.
+    pub phases: Vec<VendorPhase>,
+    /// In the order they started.
+    pub agents: Vec<VendorAgent>,
+    pub status: SubagentStatus,
+    /// The whole workflow's totals, as last reported.
+    pub tokens: u64,
+    pub tool_calls: u32,
+    pub duration_ms: u64,
+    /// What it's doing now, or how it ended.
+    pub summary: Option<String>,
+    /// When Argonauts first saw it, in milliseconds since the epoch. Its time counts from here
+    /// while it runs, on Argonauts' own clock, so a replayed stream reads right too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VendorPhase {
+    /// From 1, as the vendor numbers them.
+    pub index: u32,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VendorAgent {
+    /// From 1, in the order the vendor started them.
+    pub index: u32,
+    /// The script's label, such as `fix:slugify`.
+    pub label: String,
+    /// The phase it belongs to, by the vendor's index.
+    pub phase: Option<u32>,
+    pub model: Option<String>,
+    pub state: VendorAgentState,
+    pub tokens: u64,
+    pub tool_calls: u32,
+    pub duration_ms: u64,
+    /// Unix milliseconds.
+    pub started_at_ms: Option<u64>,
+    /// 1 the first time.
+    pub attempt: u32,
+    /// Shortened.
+    pub prompt: Option<String>,
+    /// The start of its answer, once done.
+    pub result: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VendorAgentState {
+    Queued,
+    Running,
+    Done,
+    Failed,
+    /// A state this version of Argonauts doesn't know yet.
+    Other,
+}
+
+impl VendorWorkflow {
+    /// The agents of one phase, by the vendor's index.
+    pub fn agents_in(&self, phase: u32) -> impl Iterator<Item = &VendorAgent> {
+        self.agents
+            .iter()
+            .filter(move |agent| agent.phase == Some(phase))
+    }
+
+    /// Done of all, for a phase with agents. `None` for one that hasn't started.
+    pub fn count(&self, phase: u32) -> Option<(u32, u32)> {
+        let (done, total) = self.agents_in(phase).fold((0, 0), |(done, total), agent| {
+            let finished = matches!(agent.state, VendorAgentState::Done);
+            (done + u32::from(finished), total + 1)
+        });
+        (total > 0).then_some((done, total))
+    }
+
+    /// Whether it's over, done or failed.
+    pub fn ended(&self) -> bool {
+        matches!(self.status, SubagentStatus::Done | SubagentStatus::Failed)
+    }
+
+    /// Ends it with its session, which stopped before the workflow said it ended: it and every
+    /// agent still going count as failed, and `why` says so.
+    pub fn end_with_session(&mut self, why: &str) {
+        if self.ended() {
+            return;
+        }
+        self.status = SubagentStatus::Failed;
+        self.summary = Some(why.to_owned());
+        for agent in &mut self.agents {
+            if !matches!(
+                agent.state,
+                VendorAgentState::Done | VendorAgentState::Failed
+            ) {
+                agent.state = VendorAgentState::Failed;
+            }
+        }
+    }
+
+    /// How long it has run by `now_ms` (milliseconds since the epoch): from its start while it
+    /// runs, else its own total.
+    pub fn elapsed_ms(&self, now_ms: Option<u64>) -> u64 {
+        match (self.ended(), self.started_at_ms, now_ms) {
+            (false, Some(started), Some(now)) => now.saturating_sub(started).max(self.duration_ms),
+            _ => self.duration_ms,
+        }
+    }
+
+    /// How long `agent` has run by `now_ms`: its own total once it ends, which is all the
+    /// stream reports. While it runs, from the workflow's start here plus how much later than
+    /// the first agent the stream says it began, so the vendor's clock never has to agree with
+    /// ours.
+    pub fn agent_elapsed_ms(&self, agent: &VendorAgent, now_ms: Option<u64>) -> u64 {
+        let running = matches!(
+            agent.state,
+            VendorAgentState::Running | VendorAgentState::Other
+        );
+        let first = self
+            .agents
+            .iter()
+            .filter_map(|agent| agent.started_at_ms)
+            .min();
+        match (
+            running,
+            self.started_at_ms,
+            agent.started_at_ms,
+            first,
+            now_ms,
+        ) {
+            (true, Some(start), Some(began), Some(first), Some(now)) => now
+                .saturating_sub(start + began.saturating_sub(first))
+                .max(agent.duration_ms),
+            _ => agent.duration_ms,
+        }
+    }
 }
 
 /// A normalized quota reading, added to `AgentEvent` as `Quota { reading }`.

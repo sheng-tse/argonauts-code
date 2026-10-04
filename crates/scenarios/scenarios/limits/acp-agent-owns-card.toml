@@ -31,4 +31,4 @@ write = { path = "hello.txt", content = "hi\n" }
 [[acp.turn.step]]
 update = { sessionUpdate = "tool_call_update", toolCallId = "t-write", status = "completed" }
 [[acp.turn.step]]
-report = { status = "done", summary = "Created hello.txt containing the word hi.", files_changed = ["hello.txt"], tests_run = [], concerns = [], questions = [], change_requests = [], memory_proposals = [] }
+report = { status = "done", summary = "Created hello.txt containing the word hi.", files_changed = ["hello.txt"], tests_run = [], concerns = [], questions = [], change_requests = [], memory_proposals = [], answer = "I created hello.txt with the word hi in it." }

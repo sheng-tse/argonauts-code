@@ -31,11 +31,39 @@ pub fn compose_live(
     ctx: &RenderCtx<'_>,
     max_height: u16,
 ) -> LiveView {
-    let max = usize::from(max_height);
-    let text_streaming = history
+    let bottom_view = bottom.render_live(ctx, usize::from(max_height), text_streaming(history));
+    compose(blocks, history, bottom_view, ctx, max_height)
+}
+
+/// As [`compose_live`], with a docked view's rows where the input, the mode line, and the
+/// panel go. The working line stays above it.
+pub fn compose_docked(
+    blocks: &[LiveBlock],
+    history: &History,
+    bottom: &BottomState,
+    ctx: &RenderCtx<'_>,
+    max_height: u16,
+    view: Vec<Line<'static>>,
+) -> LiveView {
+    let bottom_view =
+        bottom.render_docked(ctx, usize::from(max_height), text_streaming(history), view);
+    compose(blocks, history, bottom_view, ctx, max_height)
+}
+
+fn text_streaming(history: &History) -> bool {
+    history
         .stream_source()
-        .is_some_and(|source| !source.trim().is_empty());
-    let bottom_view = bottom.render_live(ctx, max, text_streaming);
+        .is_some_and(|source| !source.trim().is_empty())
+}
+
+fn compose(
+    blocks: &[LiveBlock],
+    history: &History,
+    bottom_view: crate::bottom::BottomView,
+    ctx: &RenderCtx<'_>,
+    max_height: u16,
+) -> LiveView {
+    let max = usize::from(max_height);
     let blocks: Vec<&LiveBlock> = blocks.iter().filter(|b| !b.lines.is_empty()).collect();
     let above = !blocks.is_empty() || history.printed_any();
     let separator = usize::from(above && bottom_view.lines.len() < max);

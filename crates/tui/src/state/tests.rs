@@ -160,6 +160,7 @@ fn session_started(who: WorkerRef, follow: u8) -> SessionEvent {
         resumed_from: None,
         follow_key: Some(follow),
         workflow_step: None,
+        label: None,
     }))
 }
 
@@ -184,6 +185,7 @@ fn spec(n: u32, title: &str) -> CardSpec {
             inactivity_min: None,
         },
         predictions: None,
+        item: None,
     }
 }
 
@@ -925,6 +927,7 @@ fn state_folds_workflow() {
         description: "Build and review".into(),
         params: Default::default(),
         phases: Vec::new(),
+        based_on: None,
     };
     state.apply(
         &log.event(RunEventKind::Workflow(WorkflowEvent::Started(Box::new(
@@ -1766,4 +1769,93 @@ fn a_run_keeps_its_end_and_its_merge_totals() {
     assert!(run(&state).ended.is_some());
     let totals = run(&state).totals(T0 + time::Duration::hours(1));
     assert_eq!(totals.elapsed, run(&state).elapsed(T0));
+}
+
+/// A workflow an agent's own CLI runs, still going, with one agent that started at `T0`.
+fn vendor_workflow(duration_ms: u64) -> AgentEvent {
+    use argonauts_core::events::session::{
+        SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+    };
+    let started = u64::try_from((T0 - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).unwrap();
+    AgentEvent::Workflow {
+        workflow: Box::new(VendorWorkflow {
+            id: "w1".into(),
+            call: None,
+            name: "probe".into(),
+            description: "Two phases".into(),
+            phases: vec![VendorPhase {
+                index: 1,
+                title: "Ask".into(),
+                detail: String::new(),
+            }],
+            agents: vec![VendorAgent {
+                index: 1,
+                label: "ask:one".into(),
+                phase: Some(1),
+                model: None,
+                state: VendorAgentState::Running,
+                tokens: 0,
+                tool_calls: 0,
+                duration_ms: 0,
+                started_at_ms: Some(started),
+                attempt: 1,
+                prompt: None,
+                result: None,
+            }],
+            status: SubagentStatus::Running,
+            tokens: 10,
+            tool_calls: 0,
+            duration_ms,
+            summary: None,
+            started_at_ms: None,
+        }),
+    }
+}
+
+#[test]
+fn a_vendor_workflow_leaves_the_panel_when_its_session_ends() {
+    let mut log = Log::new();
+    let mut state = fold(&crew(&mut log));
+    state.apply(&log.agent(1, vendor_workflow(27)));
+    let wall = T0 + Duration::seconds(90);
+    let now = std::time::Instant::now();
+    let rows = crate::bridge::panel::run_rows(&state, wall, now);
+    let probe = rows
+        .iter()
+        .find(|row| row.name == "probe")
+        .expect("the workflow's row");
+    // Its time counts from when it was first seen, three seconds in, not from the last
+    // report's 27 ms.
+    assert_eq!(probe.elapsed_ms, 87_000);
+    // A later report of its totals never sets the time back.
+    state.apply(&log.agent(1, vendor_workflow(3_300)));
+    let rows = crate::bridge::panel::run_rows(&state, wall, now);
+    let probe = rows.iter().find(|row| row.name == "probe").unwrap();
+    assert_eq!(probe.elapsed_ms, 87_000);
+
+    // Stopped before the workflow said it ended: the row goes, and so does its agent.
+    let end = SessionEnd {
+        vendor_session: None,
+        exit_code: None,
+        signal: None,
+        duration_ms: 1_000,
+        reason: EndReason::Stopped,
+        spend: Spend::default(),
+        tool_calls: 0,
+        result_text: None,
+        structured: None,
+        last_message: None,
+        raw_log: None,
+    };
+    state.apply(&log.session(1, None, SessionEvent::Ended(Box::new(end))));
+    let rows = crate::bridge::panel::run_rows(&state, wall, now);
+    assert!(rows.iter().all(|row| row.name != "probe"), "{rows:?}");
+    let workflow = &session(&state).workflows[0];
+    assert!(workflow.ended());
+    assert!(
+        workflow
+            .agents
+            .iter()
+            .all(|agent| agent.state != argonauts_core::events::session::VendorAgentState::Running)
+    );
 }

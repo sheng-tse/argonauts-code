@@ -127,6 +127,13 @@ pub enum UiCommand {
         area: LearningArea,
         command: LearningCommand,
     },
+    /// `s` in the workflow view: saves the run's workflow as it is now to your own library,
+    /// under the run's name, so it runs again by that name.
+    SaveWorkflow {
+        run: RunId,
+        /// The run's own when `None`.
+        workflow: Option<WorkflowId>,
+    },
     /// Shows, copies, or diffs a workflow file: the Library tab of the workflow view.
     WorkflowFile {
         name: String,
@@ -164,6 +171,12 @@ pub enum UiCommand {
         run: RunId,
         id: CheckpointId,
         correct: bool,
+    },
+    /// The goal view's keys and `/goal`'s: clear the goal, turn the run into one, or change an
+    /// assumption. `None` is the run on screen.
+    Goal {
+        run: Option<RunId>,
+        action: crate::events::goal::GoalAction,
     },
     Request {
         view: ViewRequest,
@@ -244,6 +257,10 @@ pub enum ViewRequest {
     Agent {
         run: RunId,
         session: SessionKey,
+    },
+    /// A goal-style run's goal: its criteria, attempts, last check, and assumptions.
+    Goal {
+        run: RunId,
     },
     /// Every live session's context, cap, tool calls, and spend.
     Context,
@@ -654,6 +671,10 @@ pub enum ViewData {
         /// rest under a Kind column.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sessions: Vec<VendorSession>,
+    },
+    /// A goal-style run's goal.
+    Goal {
+        view: Box<crate::views::GoalView>,
     },
     Status {
         summary: StatusSummary,

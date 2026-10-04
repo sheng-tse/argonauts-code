@@ -126,6 +126,48 @@ pub async fn open_and_wait_because(
     open_because(host, request, because)?.decided(host).await
 }
 
+/// [`open_and_wait`] for a checkpoint that comes to you whatever the mode, such as one about a
+/// topic `approvals.ask_you_about` names: neither your rules nor the approver decide it, and
+/// `because` says why on its card.
+pub async fn open_and_wait_yours(
+    host: &Host,
+    request: CheckpointRequest,
+    because: String,
+) -> EngineResult<CheckpointDecided> {
+    open_yours(host, request, because)?.decided(host).await
+}
+
+/// [`open_and_wait_yours`] without waiting.
+pub fn open_yours(
+    host: &Host,
+    request: CheckpointRequest,
+    because: String,
+) -> EngineResult<Opening> {
+    open_with(host, request, Some(because), false)
+}
+
+/// The go-ahead's topic in `approvals.ask_you_about`.
+pub const GO_AHEAD_TOPIC: &str = "go-ahead";
+/// A change to a running workflow's topic in `approvals.ask_you_about`.
+pub const CHANGE_TOPIC: &str = "workflow change";
+
+/// Whether `approvals.ask_you_about` names any of `topics`, matched without case: a question's
+/// tag or topic, the go-ahead, a workflow change, a stuck goal, or keeping going as a goal.
+pub fn asks_you_about(settings: &Settings, topics: &[&str]) -> bool {
+    settings.approvals.ask_you_about.iter().any(|asked| {
+        let asked = asked.trim();
+        !asked.is_empty()
+            && topics
+                .iter()
+                .any(|topic| topic.trim().eq_ignore_ascii_case(asked))
+    })
+}
+
+/// Why a card about `topic` waits for you though the lead answers.
+pub fn yours_because(topic: &str) -> String {
+    format!("approvals.ask_you_about keeps {topic} yours")
+}
+
 /// An opened checkpoint, or the decision it already has.
 pub enum Opening {
     Decided(Box<CheckpointDecided>),
@@ -198,6 +240,16 @@ fn open_because(
     request: CheckpointRequest,
     because: Option<String>,
 ) -> EngineResult<Opening> {
+    open_with(host, request, because, true)
+}
+
+/// Opens the checkpoint; with `policy` off only you decide it.
+fn open_with(
+    host: &Host,
+    request: CheckpointRequest,
+    because: Option<String>,
+    policy: bool,
+) -> EngineResult<Opening> {
     let evidence = evidence::packet(
         host,
         request.kind,
@@ -207,7 +259,7 @@ fn open_because(
     )?;
     let sha256 = evidence.sha256();
     let desk = &host.shared().desk;
-    let policy = !only_yours(&request.packet);
+    let policy = policy && !only_yours(&request.packet);
     let (id, receiver, evaluate) = {
         let _deciding = lock(&desk.deciding);
         match host.read(|state| find(state, &request, &sha256)) {
@@ -219,14 +271,14 @@ fn open_because(
             }
             Found::Stale(stale) => {
                 withdraw_locked(host, &stale, "the evidence changed")?;
-                let id = record_opened(host, &request, &evidence, &sha256)?;
+                let id = record_opened(host, &request, &evidence, &sha256, !policy)?;
                 if policy {
                     lock(&desk.evaluating).insert(id.clone());
                 }
                 (id.clone(), desk.wait(&id), policy)
             }
             Found::None => {
-                let id = record_opened(host, &request, &evidence, &sha256)?;
+                let id = record_opened(host, &request, &evidence, &sha256, !policy)?;
                 if policy {
                     lock(&desk.evaluating).insert(id.clone());
                 }
@@ -403,11 +455,13 @@ pub fn evidence_of(host: &Host, opened: &CheckpointOpened) -> EngineResult<Evide
     Ok(packet)
 }
 
+/// `yours` opens it for you alone, as a supervised checkpoint, whatever the mode.
 fn record_opened(
     host: &Host,
     request: &CheckpointRequest,
     evidence: &EvidencePacket,
     sha256: &str,
+    yours: bool,
 ) -> EngineResult<CheckpointId> {
     let id = CheckpointId::numbered(host.allocate(IdKind::Checkpoint)?);
     evidence::write(host, &id, evidence)?;
@@ -420,7 +474,7 @@ fn record_opened(
     });
     let configured = configured(host.settings(), request.kind);
     // Your records may lower the mode, such as back to shadow after a reverted auto-merge.
-    let mode = if only_yours(&request.packet) {
+    let mode = if yours {
         ApprovalMode::Supervised
     } else {
         effective_mode(
@@ -489,9 +543,13 @@ pub fn mode_now(host: &Host, kind: CheckpointKind) -> ApprovalMode {
     effective_mode(host, &point, mode_override, configured)
 }
 
-/// Who answers the crew's questions at a checkpoint of `kind` now: `approvals.answered_by`,
-/// else the lead in auto mode and you otherwise.
+/// Who answers the crew's questions at a checkpoint of `kind` now: the lead once you said
+/// "Yes, and let the lead answer" in this run, else `approvals.answered_by`, else the lead in
+/// auto mode and you otherwise.
 pub fn answerer(host: &Host, kind: CheckpointKind) -> Answerer {
+    if host.read(crate::goal::checkpoint::lead_answers_for_you) {
+        return Answerer::Lead;
+    }
     host.settings().approvals.answerer(mode_now(host, kind))
 }
 

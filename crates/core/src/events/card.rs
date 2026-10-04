@@ -38,6 +38,10 @@ pub struct CardSpec {
     pub reviewers: Vec<WorkerRef>,
     pub budget: CardBudget,
     pub predictions: Option<Predictions>,
+    /// The one-token name its labels use, such as `slugify` in `fix:slugify` and
+    /// `review:slugify`: the planner's key, or the lead's item for a card built from the goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

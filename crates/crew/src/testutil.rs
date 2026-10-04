@@ -82,6 +82,7 @@ pub(crate) fn card_spec(id: &str, depends_on: &[&str], owner: Option<&str>) -> C
         reviewers: Vec::new(),
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 

@@ -73,6 +73,9 @@ pub(crate) fn setting_write(
             name: Some(name),
             action: PresetAction::Use,
         } => ("preset".to_owned(), quoted(name), "preset"),
+        SlashCommand::Style { style: Some(style) } => {
+            ("workflows.style".to_owned(), quoted(style), "style")
+        }
         SlashCommand::Approvals {
             key: Some(key),
             value: Some(value),

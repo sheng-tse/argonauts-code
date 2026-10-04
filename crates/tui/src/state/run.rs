@@ -7,7 +7,7 @@ use argonauts_core::events::checkpoint::{
     CheckpointEvent, CheckpointOpened, CheckpointPacket, MergePacket,
 };
 use argonauts_core::events::run::{
-    ParkReason, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunSnapshot,
+    ParkReason, PhaseChange, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase, RunSnapshot,
 };
 use argonauts_core::events::session::{QueuedMessage, SessionEvent};
 use argonauts_core::events::shared::BlackboardEvent;
@@ -17,6 +17,8 @@ use argonauts_core::events::{DivideEvent, IntegrationEvent, ReviewEvent, RunEven
 use argonauts_core::handoff::QualityDebt;
 use argonauts_core::names::{CheckpointId, MessageId, RoleName, SessionKey, WorkerRef, WorkflowId};
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::steps::StepName;
+use argonauts_core::views::is_workflow_agent;
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{CardId, DiffStat, PhaseStatus, RunId, Spend};
 use time::OffsetDateTime;
@@ -60,6 +62,9 @@ pub struct RunState {
     pub queued: Vec<QueuedMessage>,
     /// The last event folded in.
     pub seq: u64,
+    /// The run's own name and description, from the lead's brief or intake, which the panel
+    /// row and the views show rather than a template's.
+    pub named: Option<RunNamed>,
     pub preset: Option<String>,
     /// Set by `Run::ApprovalModeChanged`; the status line's mode until then.
     pub approval: Option<ApprovalMode>,
@@ -99,6 +104,7 @@ impl RunState {
             queued: Vec::new(),
             seq: 0,
             preset: None,
+            named: None,
             approval: None,
             stopping: false,
             budget: None,
@@ -148,14 +154,19 @@ impl RunState {
     /// Agents done out of all of them, its time, and its spend: what the panel row and the
     /// workflow view's header both show. `wall` is now, for a run that still goes.
     pub fn totals(&self, wall: OffsetDateTime) -> RunTotals {
-        let done = self
+        // The agents its workflow ran, as the workflow view counts them.
+        let agents: Vec<&SessionState> = self
             .sessions
             .values()
+            .filter(|session| is_workflow_agent(session.step, session.workflow_step.as_ref()))
+            .collect();
+        let done = agents
+            .iter()
             .filter(|session| session.status == SessionStatus::Done)
             .count();
         RunTotals {
             agents_done: u32::try_from(done).unwrap_or(u32::MAX),
-            agents_total: u32::try_from(self.sessions.len()).unwrap_or(u32::MAX),
+            agents_total: u32::try_from(agents.len()).unwrap_or(u32::MAX),
             elapsed: self.elapsed(wall),
             spent: self.spend(),
         }
@@ -367,6 +378,7 @@ impl RunState {
                 self.preset = Some(started.preset.clone());
                 self.started = Some(at);
             }
+            RunLifecycle::Named(named) => self.named = Some(named.clone()),
             RunLifecycle::Resumed(_) => {
                 self.parked = None;
                 self.pausing = false;
@@ -384,6 +396,8 @@ impl RunState {
                 self.pausing = false;
             }
             RunLifecycle::Snapshot(snapshot) => return self.seed(snapshot, at, replaying),
+            // The transcript prints it with the run's end.
+            RunLifecycle::ClosingAnswer(_) => {}
             RunLifecycle::Finished { outcome, .. } => {
                 self.finished = Some(*outcome);
                 self.ended = Some(at);
@@ -476,9 +490,27 @@ impl RunState {
             .entry(spec.id.clone())
             .or_insert_with(|| CardRow::new(spec.id.clone(), &spec.title));
         card.title.clone_from(&spec.title);
+        card.item.clone_from(&spec.item);
         if spec.owner.is_some() {
             card.owner.clone_from(&spec.owner);
         }
+    }
+
+    /// What a card goes by in the chat and the panel: its owner's label, such as `build:flag`,
+    /// else `build:` and its item. Its id is for Ctrl+O, the agent view, and commands, and
+    /// shows only for a log from before labels.
+    pub fn card_label(&self, card: &CardId) -> String {
+        let owner = self
+            .sessions_in_order()
+            .filter(|session| session.card.as_ref() == Some(card))
+            .find(|session| session.step == Some(StepName::Build))
+            .and_then(|session| session.label.clone());
+        owner
+            .or_else(|| {
+                let item = self.cards.get(card)?.item.as_deref()?;
+                Some(format!("build:{item}"))
+            })
+            .unwrap_or_else(|| card.to_string())
     }
 
     fn apply_card(&mut self, id: &CardId, event: &CardEvent) {
@@ -718,6 +750,12 @@ impl RunState {
                         .clone_from(&changed.workflow.description);
                 }
             }
+            WorkflowEvent::Declared(_)
+            | WorkflowEvent::PhaseStarted(_)
+            | WorkflowEvent::PhaseEnded { .. }
+            | WorkflowEvent::PhaseAdded { .. }
+            | WorkflowEvent::PhaseSkipped { .. }
+            | WorkflowEvent::Note(_) => {}
         }
     }
 
@@ -748,11 +786,14 @@ pub struct CardRow {
     pub reviews: u32,
     /// Its vendor is out and the card waits for it (`Handoff::Waiting`).
     pub waiting_on_vendor: Option<VendorWait>,
+    /// The one-token name its labels use, such as `flag` in `build:flag`.
+    pub item: Option<String>,
 }
 
 impl CardRow {
     pub fn new(id: CardId, title: &str) -> Self {
         Self {
+            item: None,
             id,
             title: title.to_owned(),
             state: None,

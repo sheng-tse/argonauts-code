@@ -5,7 +5,7 @@
 //! and every one when its session fails.
 
 use argonauts_core::NoteLevel;
-use argonauts_core::events::goal::{Assumption, GoalFile, GoalQuestion, LEAD_ANSWER};
+use argonauts_core::events::goal::{Assumption, Decider, GoalFile, GoalQuestion, LEAD_ANSWER};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::steps::goal::{
     AnswerQuestions, AnswerQuestionsInput, LeadAnswer, OpenQuestion,
@@ -55,6 +55,18 @@ pub async fn answer(
     drafted: &GoalFile,
     questions: &[GoalQuestion],
 ) -> EngineResult<LeadAnswers> {
+    answer_in_slot(host, call, drafted, questions, 0).await
+}
+
+/// [`answer`] as a later ask of the same step, such as the questions you handed to the lead
+/// after it answered its own.
+pub async fn answer_in_slot(
+    host: &Host,
+    call: &StepCall,
+    drafted: &GoalFile,
+    questions: &[GoalQuestion],
+    slot: u32,
+) -> EngineResult<LeadAnswers> {
     let lead = host
         .read(|state| crate::lead::phase_lead(state, host.settings()))
         .unwrap_or_else(|| host.settings().default_agent.clone());
@@ -63,13 +75,16 @@ pub async fn answer(
         goal: file::render(&as_settled(drafted)),
         questions: questions.iter().map(open_question).collect(),
     };
-    let ask = Ask::new(
-        Some(call.at.clone()),
-        RoleName::PhaseLead,
-        lead.clone(),
-        prompts::goal::ANSWER,
-        input,
-    );
+    let ask = Ask {
+        slot,
+        ..Ask::new(
+            Some(call.at.clone()),
+            RoleName::PhaseLead,
+            lead.clone(),
+            prompts::goal::ANSWER,
+            input,
+        )
+    };
     let output = match host.ask::<AnswerQuestions>(ask).await {
         Ok(answered) => answered.output,
         Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
@@ -159,7 +174,27 @@ pub fn pick(question: &GoalQuestion, answer: Option<&LeadAnswer>) -> Pick {
             one_line(&option.label)
         ),
         basis,
+        by: Some(Decider::Lead),
     })
+}
+
+/// The recommended answer as the lead's, for a question you handed it that it couldn't settle.
+pub fn recommended(question: &GoalQuestion) -> Assumption {
+    let option = question
+        .options
+        .iter()
+        .find(|option| option.recommended)
+        .or_else(|| question.options.first());
+    let asked = one_line(&question.text);
+    Assumption {
+        text: format!(
+            "{}: {}",
+            asked.trim_end_matches(['?', '.', ':']),
+            option.map_or_else(String::new, |option| one_line(&option.label))
+        ),
+        basis: format!("{LEAD_ANSWER}: the recommended answer"),
+        by: Some(Decider::Lead),
+    }
 }
 
 /// The goal with the lead's answers among its assumptions, skipping ones it already holds.
@@ -222,6 +257,7 @@ mod tests {
             text: "Which log level does --verbose turn on?".to_owned(),
             options: vec![option('a', "debug", true), option('b', "trace", false)],
             tag: DiffTag::Scope,
+            topic: None,
         }
     }
 

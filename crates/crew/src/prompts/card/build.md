@@ -7,3 +7,4 @@ When your work is done, or you can't go on, end with a report that matches the s
 - `questions`: for another card's owner or for the user.
 - `change_requests`: changes outside your paths or the plan, each with the paths it touches.
 - `memory_proposals`: short notes worth keeping for later sessions.
+- `answer`: what you'd tell the person who asked, ending the task the way your own CLI does: what you changed, how you checked it, and anything left. Two to four short sentences of plain prose, with no headings or lists. It closes a solo run in the conversation.

@@ -10,6 +10,7 @@ mod runs;
 mod text;
 mod usage;
 
+use std::io::Write as _;
 use std::process::ExitCode;
 
 use argonauts_app::{FirstView, InteractiveOptions};
@@ -133,8 +134,10 @@ async fn dispatch(cli: Cli) -> ExitCode {
         }
     };
     result.unwrap_or_else(|err| {
-        // An error can quote a file you haven't trusted, before any screen cleans it up.
-        eprintln!("argonauts: {}", sanitize_for_terminal(&format!("{err:#}")));
+        // An error can quote a file you haven't trusted, before any screen cleans it up. When
+        // the terminal went away there's nowhere to write it, and that's no reason to panic.
+        let line = sanitize_for_terminal(&format!("{err:#}"));
+        let _ = writeln!(std::io::stderr(), "argonauts: {line}");
         if err.is::<usage::UsageError>() {
             ExitCode::from(usage::USAGE_EXIT)
         } else {

@@ -32,6 +32,7 @@ pub async fn predict(
     };
     let mut ask = Ask::new(at, RoleName::Owner, owner, prompts::divide::PREDICT, input);
     ask.card = Some(card.id.clone());
+    ask.item.clone_from(&card.item);
     ask.access = Access::NoTools;
     Ok(clamped(host.ask::<Predict>(ask).await?.output))
 }
@@ -139,6 +140,7 @@ mod tests {
             reviewers: Vec::new(),
             budget: CardBudget::default(),
             predictions: None,
+            item: None,
         };
         assert_eq!(
             time_cap_min(&card, &settings),

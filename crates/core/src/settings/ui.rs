@@ -42,10 +42,20 @@ pub struct UiSettings {
     pub accent: Option<String>,
     /// The panel under the mode line: one row per workflow run.
     pub panel: PanelSettings,
+    /// The workflow view.
+    pub workflow: WorkflowViewSettings,
     /// `ascii` for fonts that draw `●`, `◇`, `✔`, `⏎`, or `⏺` at the wrong width.
     pub glyphs: Glyphs,
     /// Cells for East Asian ambiguous-width characters, 1 or 2, like vim's `ambiwidth`.
     pub ambiguous_width: u8,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct WorkflowViewSettings {
+    /// A cost column on agent rows, before the time. Cost shows in the header, the panel row,
+    /// and the agent view either way.
+    pub row_cost: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -122,6 +132,7 @@ impl Default for UiSettings {
             theme: Theme::Auto,
             accent: None,
             panel: PanelSettings::default(),
+            workflow: WorkflowViewSettings::default(),
             glyphs: Glyphs::Unicode,
             ambiguous_width: 1,
         }

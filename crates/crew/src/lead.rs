@@ -169,6 +169,7 @@ mod tests {
             reviewers: Vec::new(),
             budget: CardBudget::default(),
             predictions: None,
+            item: None,
         }
     }
 

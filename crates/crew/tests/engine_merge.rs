@@ -431,10 +431,7 @@ fn goal_approved() -> anyhow::Result<RunEventKind> {
         run: RunId::new(TEST_RUN)?,
         version: 1,
         summary: "Add a Redis store".to_owned(),
-        criteria: vec![Criterion {
-            id: "G1".to_owned(),
-            text: "It stores.".to_owned(),
-        }],
+        criteria: vec![Criterion::new("G1", "It stores.")],
         in_scope: Vec::new(),
         out_of_scope: Vec::new(),
         assumptions: Vec::new(),
@@ -563,6 +560,7 @@ fn spec(card: &CardId) -> CardSpec {
         reviewers: vec![worker(AGY)],
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 
@@ -1532,6 +1530,7 @@ async fn retro_notes_land_as_part_of_the_merge() -> anyhow::Result<()> {
             topic: "store".to_owned(),
             text: "The store keeps keys for an hour.".to_owned(),
         }],
+        answer: String::new(),
     };
     bench.host.record(
         Some(&card),

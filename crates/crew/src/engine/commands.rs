@@ -18,7 +18,7 @@ use crate::engine::host::Host;
 use crate::engine::shared::{Admission, lock};
 use crate::error::EngineResult;
 use crate::status::Viewer;
-use crate::{blackboard, card, checkpoints, handoff, integrate, workflow};
+use crate::{blackboard, card, checkpoints, goal, handoff, integrate, workflow};
 
 pub async fn handle(host: &Host, command: EngineCommand) -> EngineResult<()> {
     match command {
@@ -97,6 +97,9 @@ pub async fn handle(host: &Host, command: EngineCommand) -> EngineResult<()> {
         EngineCommand::SpotCheck { id, correct, reply } => {
             let _ = reply.send(checkpoints::spot_check(host, &id, correct));
         }
+        EngineCommand::Goal { action, reply } => {
+            let _ = reply.send(goal::pursue::act(host, action).await);
+        }
     }
     Ok(())
 }
@@ -148,6 +151,9 @@ pub fn after_finish(host: &Host, command: EngineCommand) {
             let _ = reply.send(Err(FINISHED.to_owned()));
         }
         EngineCommand::ProposeWorkflowChange { reply, .. } => {
+            let _ = reply.send(Err(FINISHED.to_owned()));
+        }
+        EngineCommand::Goal { reply, .. } => {
             let _ = reply.send(Err(FINISHED.to_owned()));
         }
         // A spot check is about an approval already given, so a finished run still takes one.

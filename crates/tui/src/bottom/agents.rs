@@ -42,8 +42,8 @@ pub struct AgentRow {
     /// What the row calls its agent. Without one it shows the ids.
     pub label: Option<AgentLabel>,
     pub task: String,
-    /// The card it works on. Under a run's row it stands in for the task, so two agents on
-    /// the same harness and model read apart.
+    /// What it goes by under a run's row, its label such as `build:flag`, in place of the task,
+    /// so two agents on the same harness and model read apart.
     pub card: Option<String>,
     pub state: AgentState,
     /// Done and total.
@@ -342,8 +342,8 @@ impl AgentPanel {
             .collect()
     }
 
-    /// What row `index` draws in its columns. Under a run's row the task column holds the
-    /// card instead, since the run's row already says what the work is.
+    /// What row `index` draws in its columns. Under a run's row the task column holds its
+    /// label instead, since the run's row already says what the work is.
     pub(super) fn cells(&self, index: usize, under_run: bool, ctx: &RenderCtx<'_>) -> RowCells {
         let row = &self.rows[index];
         RowCells {

@@ -27,6 +27,8 @@ pub struct SubagentTracker {
 #[derive(Debug)]
 struct Child {
     parent: Option<String>,
+    /// A workflow the `Workflow` tool started, whose agents' own messages don't stream.
+    kind: SubagentKind,
     label: Option<String>,
     prompt: Option<String>,
     status: SubagentStatus,
@@ -37,6 +39,7 @@ impl Child {
     fn new(parent: Option<String>) -> Self {
         Self {
             parent,
+            kind: SubagentKind::Subagent,
             label: None,
             prompt: None,
             status: SubagentStatus::Started,
@@ -140,6 +143,12 @@ impl SubagentTracker {
                     .children
                     .entry(call.clone())
                     .or_insert_with(|| Child::new(None));
+                if str_at(line, "task_type") == Some("local_workflow") {
+                    child.kind = SubagentKind::Workflow;
+                    if let Some(name) = str_at(line, "workflow_name") {
+                        child.label = Some(name.to_owned());
+                    }
+                }
                 if child.label.is_none() {
                     child.label = label_in(line);
                 }
@@ -198,14 +207,15 @@ impl SubagentTracker {
             update: SubagentUpdate {
                 id: id.to_owned(),
                 parent: child.parent.clone(),
-                kind: SubagentKind::Subagent,
+                kind: child.kind,
                 label: child.label.clone(),
                 prompt: child.prompt.clone(),
                 status: child.status,
                 last_message: child.last_message.clone(),
                 log_uri: None,
-                // A subagent's tool calls and results stream with its id as their parent.
-                steps_visible: true,
+                // A subagent's tool calls and results stream with its id as their parent; a
+                // workflow's agents report only through its progress.
+                steps_visible: child.kind == SubagentKind::Subagent,
             },
         })
     }

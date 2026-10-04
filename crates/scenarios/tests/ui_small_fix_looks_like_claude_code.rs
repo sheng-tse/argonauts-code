@@ -60,10 +60,7 @@ fn ui_small_fix_looks_like_claude_code() -> anyhow::Result<()> {
     pty.send(FIX)?;
     pty.press(Key::Enter)?;
     pty.wait_for(r"(?m)^[●⏺] Triage\(solo\)", WAIT)?;
-    pty.wait_for(
-        r"(?m)^[●⏺] Haiku 4\.5 on Claude Code · owner · card-001",
-        WAIT,
-    )?;
+    pty.wait_for(r"(?m)^[●⏺] build:\S+ · Haiku 4\.5 on Claude Code", WAIT)?;
     scenario.shot(&pty, "small-fix-working")?;
 
     let card = pty.wait_for(r"(?m)^◆ Merge", WAIT)?;

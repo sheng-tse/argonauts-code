@@ -100,6 +100,7 @@ mod tests {
             questions: Vec::new(),
             change_requests: Vec::new(),
             memory_proposals: Vec::new(),
+            answer: String::new(),
         };
         assert_eq!(
             in_report(&report),

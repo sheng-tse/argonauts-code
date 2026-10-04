@@ -39,10 +39,7 @@ pub fn from_restatements(
     let criteria = distinct(&base.success_criteria)
         .into_iter()
         .enumerate()
-        .map(|(index, text)| Criterion {
-            id: format!("G{}", index + 1),
-            text,
-        })
+        .map(|(index, text)| Criterion::new(format!("G{}", index + 1), text))
         .collect();
     Some(hashed(GoalFile {
         run: run.clone(),
@@ -182,6 +179,7 @@ mod tests {
         let assumptions = vec![Assumption {
             text: "t: r".to_owned(),
             basis: "b".to_owned(),
+            by: None,
         }];
         let goal = from_restatements(&run, &restated, &assumptions).unwrap();
         assert_eq!(goal.summary, "Add a per user rate limiter to the API");

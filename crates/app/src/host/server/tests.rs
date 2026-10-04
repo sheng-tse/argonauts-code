@@ -49,6 +49,7 @@ pub(crate) fn command_name(command: &EngineCommand) -> &'static str {
         EngineCommand::Revert { .. } => "revert",
         EngineCommand::SpotCheck { .. } => "spot_check",
         EngineCommand::ProposeWorkflowChange { .. } => "propose_workflow_change",
+        EngineCommand::Goal { .. } => "goal",
     }
 }
 
@@ -61,7 +62,8 @@ pub(crate) fn answer_command(command: EngineCommand, log: &Log) {
         EngineCommand::Answer { reply, .. }
         | EngineCommand::Reassign { reply, .. }
         | EngineCommand::Revert { reply, .. }
-        | EngineCommand::SpotCheck { reply, .. } => {
+        | EngineCommand::SpotCheck { reply, .. }
+        | EngineCommand::Goal { reply, .. } => {
             let _ = reply.send(Ok(()));
         }
         EngineCommand::Mention { reply, .. } | EngineCommand::Guidance { reply, .. } => {

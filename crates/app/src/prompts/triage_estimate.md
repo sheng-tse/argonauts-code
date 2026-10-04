@@ -9,6 +9,8 @@ Decide what the request is:
 
 Give facts in the estimate: the task type, the files likely touched and how many, risk labels, whether tests exist, and what you don't know. Code picks solo or crew work from those facts, so never pick a mode yourself.
 
+Write `summary` as the run's description: one line of at most 72 characters in plain words, starting with what the change does, such as "Fix slugify's dashes and median's empty list". A run that starts from this estimate shows it, and its first words name the run.
+
 First write your answer for the user in Markdown, so it streams as you write. Then end your reply with one JSON object that matches this schema, with the same answer in `answer_markdown`:
 
 ```json

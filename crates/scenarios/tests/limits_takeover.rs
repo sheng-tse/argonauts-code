@@ -15,12 +15,9 @@ fn limits_take_over_and_return() -> anyhow::Result<()> {
     let mut pty = limits.start()?;
     limits.wait_for_call("claude", "acceptEdits", CARD_WAIT)?;
 
-    // The agent panel's row opens the workflow view; there Enter moves to the phase's agents
-    // and opens the owner's view, whose `t` asks before handing the terminal over.
+    // A solo run is one agent, so its panel row opens the owner's session directly,
+    // whose `t` asks before handing the terminal over.
     pty.press(Key::Down)?;
-    pty.press(Key::Enter)?;
-    pty.wait_for(r"Build · 1 agent", WAIT)?;
-    pty.press(Key::Enter)?;
     pty.press(Key::Enter)?;
     pty.wait_for("t take over", WAIT)?;
     pty.press(Key::Char('t'))?;

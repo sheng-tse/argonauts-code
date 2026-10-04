@@ -189,6 +189,7 @@ fn card(id: &str, kind: CardKind, owner: &str, reviewers: &[&str], owned: &[&str
             .collect(),
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 

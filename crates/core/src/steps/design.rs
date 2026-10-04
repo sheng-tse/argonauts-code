@@ -1,12 +1,14 @@
-//! The lead's workflow design: pick the closest template and fill in its parameters, or
-//! compose a workflow from the step kinds. Code validates the answer before anything runs, and
-//! sends the errors back when it fails. At a phase end the same step adapts the running
-//! workflow, given what it is and what its finished phases produced.
+//! The lead's brief: the run's name, description, phases, labels, and done-when list, written
+//! from the closest example or composed from the step kinds. Code validates the answer before
+//! anything runs, and sends the errors back when it fails. At a phase end the same step adapts
+//! the running workflow, given what it is and what its finished phases produced.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::pursue::AttemptPlan;
 use super::{Step, StepName};
+use crate::events::goal::Criterion;
 
 pub struct DesignWorkflow;
 
@@ -38,6 +40,10 @@ pub struct DesignInput {
     /// disagreed on the retry header".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub progress: Vec<String>,
+    /// `goal` when the run is a goal, so the brief plans its first attempt. A workflow leaves
+    /// it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<crate::settings::workflows::RunStyle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -51,15 +57,61 @@ pub struct WorkflowExample {
     pub passed: u32,
 }
 
+/// The run's brief, as Claude Code's orchestrator writes its script's `meta` and `agent()`
+/// options. Everything the views say about the run comes from here: its name and description,
+/// each phase's title and detail, every agent's label, and the done-when list. Code validates it
+/// like any workflow and sends the errors back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DesignOutput {
-    /// The template picked. `None` means `composed` holds a new workflow.
-    pub template: Option<String>,
-    pub params: Vec<ParamSetting>,
-    /// A workflow file in YAML, when no template fits.
-    pub composed: Option<String>,
-    /// One line for the plan checkpoint.
+    /// Two to four task words, lowercase, joined with `-`, at most 32 cells, such as
+    /// `fix-slugify-median`. Never an example's name.
+    pub name: String,
+    /// One line, the task in plain words, at most 72 cells. In a goal run, the objective.
+    pub description: String,
+    /// The example it started from, by name. `None` when composed from the step kinds.
+    pub based_on: Option<String>,
+    /// One line on why it differs from that example, for the start card.
     pub why: String,
+    /// Values for the example's `{{name}}` placeholders, when `workflow` is `None` and the
+    /// example runs as written.
+    #[serde(default)]
+    pub params: Vec<ParamSetting>,
+    /// The whole workflow file in YAML: the example filled in and changed, or composed. Each
+    /// phase has a `title` and a `detail`, and each step a `label`. `None` runs `based_on`.
+    pub workflow: Option<String>,
+    /// One to eight criteria, each one sentence a check can prove, and how.
+    #[serde(default)]
+    pub done_when: Vec<Criterion>,
+    /// When the workflow builds from the goal rather than a drafted plan, the one card it
+    /// builds, whose item names its labels. Empty when a phase drafts the plan.
+    #[serde(default)]
+    pub plan: Vec<BriefCard>,
+    /// With `understand.when = "lead"`: at most three open questions, each with a recommended
+    /// answer.
+    #[serde(default)]
+    pub questions: Vec<BriefQuestion>,
+    /// In a goal run, the first attempt, planned with the goal so the start card can estimate
+    /// it.
+    pub first_attempt: Option<AttemptPlan>,
+}
+
+/// One card of a brief's plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BriefCard {
+    /// The one-token name its labels use, such as `slugify` in `fix:slugify`.
+    pub item: String,
+    /// What the card's owner does, in one or two sentences.
+    pub task: String,
+}
+
+/// An open question the lead found itself, when it decides whether Understand runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BriefQuestion {
+    /// One or two words for its chip, such as `Accented letters`.
+    pub topic: String,
+    pub text: String,
+    /// Two to four answers, the recommended one first.
+    pub options: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

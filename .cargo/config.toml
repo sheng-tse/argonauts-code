@@ -1,0 +1,5 @@
+# Everything cargo runs here, tests above all, keeps off your own ~/.argonauts: with
+# ARGONAUTS_HOME unset it uses a scratch home in the temp folder, and a test that points
+# ARGONAUTS_HOME into yours fails (crates/core/src/paths.rs).
+[env]
+ARGONAUTS_TESTING = "1"

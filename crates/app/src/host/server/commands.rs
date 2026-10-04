@@ -187,6 +187,13 @@ pub(crate) fn command(request: ControlRequest) -> Result<(EngineCommand, EngineR
             let command = EngineCommand::SpotCheck { id, correct, reply };
             (command, EngineReply::Unit(wait))
         }
+        ControlRequest::Goal { action } => {
+            let (reply, wait) = oneshot::channel();
+            (
+                EngineCommand::Goal { action, reply },
+                EngineReply::Unit(wait),
+            )
+        }
     };
     Ok(made)
 }

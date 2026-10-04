@@ -260,6 +260,8 @@ mod tests {
                     elapsed_ms: 0,
                     spent: Default::default(),
                     phases: Vec::new(),
+                    style: None,
+                    status_lines: Vec::new(),
                 }),
             }),
         }

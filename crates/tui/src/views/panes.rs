@@ -366,6 +366,9 @@ pub fn put_lines(buf: &mut Buffer, area: Rect, lines: &[Line<'_>]) {
 #[derive(Debug, Clone, Copy)]
 pub struct Marks {
     pub done: &'static str,
+    /// Claude Code's heavy check, for a finished phase or agent in the workflow and agent
+    /// views.
+    pub finished: &'static str,
     pub running: &'static str,
     pub waiting: &'static str,
     pub failed: &'static str,
@@ -391,6 +394,7 @@ impl Marks {
         if is_ascii(theme) {
             Self {
                 done: "v",
+                finished: "v",
                 running: "*",
                 waiting: glyphs.agent_waiting,
                 failed: "x",
@@ -411,6 +415,7 @@ impl Marks {
         } else {
             Self {
                 done: "✓",
+                finished: "✔",
                 running: "●",
                 waiting: glyphs.agent_waiting,
                 failed: "✗",
@@ -452,6 +457,8 @@ impl Marks {
     pub fn status(&self, status: RowStatus) -> (&'static str, &'static str, Role) {
         match status {
             RowStatus::Waiting => (self.waiting, "waiting", Role::Dim),
+            RowStatus::Queued => (self.waiting, "queued", Role::Dim),
+            RowStatus::Skipped => (self.waiting, "skipped", Role::Dim),
             RowStatus::Running => (self.running, "running", Role::Dim),
             RowStatus::NeedsYou => (self.needs_you, "needs you", Role::Card),
             RowStatus::Done => (self.done, "done", Role::Success),

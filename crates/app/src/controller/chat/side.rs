@@ -203,7 +203,7 @@ pub(crate) async fn recap(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result
         match ctx.services.conductor.status(&run).await {
             Ok(summary) => {
                 ctx.send(AppEvent::Recap {
-                    text: recap_from_summary(&summary, None),
+                    text: recap_from_summary(&summary, None, None),
                     model: None,
                 });
                 return Ok(Vec::new());

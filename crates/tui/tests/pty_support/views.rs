@@ -11,9 +11,26 @@ pub fn view(data: Value) -> AppEvent {
     app(json!({"type": "view", "data": data}))
 }
 
+/// The label a workflow gives the agent, `phase:target`, such as `build:json-writer`.
+pub fn label(agent: &Agent) -> String {
+    let step = match agent.role.as_str() {
+        "owner" => "build",
+        "restater" => "read",
+        other => other,
+    };
+    let words: Vec<String> = agent
+        .title
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .filter(|word| !word.is_empty() && !["a", "an", "the"].contains(&word.as_str()))
+        .take(2)
+        .collect();
+    format!("{step}:{}", words.join("-"))
+}
+
 /// `status` is `waiting`, `running`, `needs_you`, `done`, or `failed`.
 pub fn agent_row(agent: &Agent, status: &str) -> Value {
-    json!({"session": agent.session, "label": format!("{} · {}", agent.role, agent.card),
+    json!({"session": agent.session, "label": label(agent),
            "worker": agent.worker, "status": status, "tokens": 381_000,
            "spent": spend(18_100, 0.84), "elapsed_ms": 362_000, "subagents": 0,
            "context": null, "standing_in_for": null})
@@ -58,8 +75,9 @@ pub fn workflow_view(agents: &[Agent], nested: Option<Value>) -> AppEvent {
         .map(|agent| tagged_agent(agent, "done"))
         .collect();
     let phase = |name: &str, standard: &str, status: &str, done: u32, total: u32, rows: Value| {
-        json!({"name": name, "standard": standard, "status": status, "done": done,
-               "total": total, "rows": rows})
+        let count = (total > 0).then(|| json!({"done": done, "total": total}));
+        json!({"name": name, "standard": standard, "status": status, "count": count,
+               "rows": rows})
     };
     view(
         json!({"data": "workflow", "view": {"run": RUN, "id": "wf-001",
@@ -68,9 +86,9 @@ pub fn workflow_view(agents: &[Agent], nested: Option<Value>) -> AppEvent {
         "elapsed_ms": 9_840_000, "spent": spend(747_000, 4.10),
         "phases": [
             phase("Goal", "understand", "done", 3, 3, json!(goal)),
-            phase("Plan", "plan", "done", 1, 1, json!([])),
+            phase("Plan", "plan", "done", 0, 0, json!([])),
             phase("Build", "do", "running", 1, total, json!(rows)),
-            phase("Merge", "decide", "waiting", 0, 1, json!([])),
+            phase("Merge", "decide", "waiting", 0, 0, json!([])),
         ]}}),
     )
 }

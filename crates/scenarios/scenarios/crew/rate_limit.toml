@@ -32,11 +32,11 @@ exit = 0
 # the lead's workflow design: the preset's own workflow
 [[rule]]
 argv0 = "claude"
-prompt_contains = '"composed"'
+prompt_contains = '"done_when"'
 [[rule.step]]
 emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-design\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-design\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"template\":\"peer-crew\",\"params\":[],\"composed\":null,\"why\":\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\"}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-design\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"peer-crew\",\"why\":\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_attempt\":null}}"
 [[rule.step]]
 exit = 0
 
@@ -61,6 +61,18 @@ prompt_contains = '"required_changes"'
 emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-adjudicate\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
 emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-adjudicate\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdict\":\"approve\",\"reasons\":[\"Both reviews hold\"],\"required_changes\":[]}}"
+[[rule.step]]
+exit = 0
+
+
+# the done-when check: every criterion met
+[[rule]]
+argv0 = "claude"
+prompt_contains = '"cant_tell"'
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-check\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
+[[rule.step]]
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-check\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdicts\":[{\"id\":\"G1\",\"verdict\":\"met\",\"evidence\":\"src/api/rate-limit.ts answers 429 with Retry-After\",\"missing\":\"\"}],\"overall\":\"met\",\"reason\":\"\"}}"
 [[rule.step]]
 exit = 0
 
@@ -370,14 +382,14 @@ exit = 0
 # the lead's workflow design: the preset's own workflow
 [[rule]]
 argv0 = "codex"
-prompt_contains = 'You design the workflow a coding crew follows'
+prompt_contains = 'You write the brief for one task a coding crew works on'
 stdin_prompt = "all"
 [[rule.step]]
 emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-design\"}"
 [[rule.step]]
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
-emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"template\\\":\\\"peer-crew\\\",\\\"params\\\":[],\\\"composed\\\":null,\\\"why\\\":\\\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\\\"}\"}}"
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"peer-crew\\\",\\\"why\\\":\\\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_attempt\\\":null}\"}}"
 [[rule.step]]
 emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
 [[rule.step]]
@@ -395,6 +407,23 @@ emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-adjudicate\"}"
 emit = "{\"type\":\"turn.started\"}"
 [[rule.step]]
 emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"verdict\\\":\\\"approve\\\",\\\"reasons\\\":[\\\"Both reviews hold\\\"],\\\"required_changes\\\":[]}\"}}"
+[[rule.step]]
+emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
+[[rule.step]]
+exit = 0
+
+
+# the done-when check: every criterion met
+[[rule]]
+argv0 = "codex"
+prompt_contains = "You check whether a crew's work meets its goal"
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"codex-check\"}"
+[[rule.step]]
+emit = "{\"type\":\"turn.started\"}"
+[[rule.step]]
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"verdicts\\\":[{\\\"id\\\":\\\"G1\\\",\\\"verdict\\\":\\\"met\\\",\\\"evidence\\\":\\\"src/api/rate-limit.ts answers 429 with Retry-After\\\",\\\"missing\\\":\\\"\\\"}],\\\"overall\\\":\\\"met\\\",\\\"reason\\\":\\\"\\\"}\"}}"
 [[rule.step]]
 emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":60,\"reasoning_output_tokens\":0}}"
 [[rule.step]]
@@ -805,15 +834,15 @@ exit = 0
 # the lead's workflow design: the preset's own workflow
 [[rule]]
 argv0 = "agy"
-prompt_contains = '"composed"'
+prompt_contains = '"done_when"'
 [[rule.step]]
 emit = "{\"event\":\"init\",\"conversation_id\":\"agy-design\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
 [[rule.step]]
-emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"template\":\"peer-crew\",\"params\":[],\"composed\":null,\"why\":\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\"}}}}"
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"name\":\"rate-limit-the-api\",\"description\":\"Add per-key rate limiting to the API\",\"based_on\":\"peer-crew\",\"why\":\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\",\"params\":[],\"workflow\":null,\"done_when\":[{\"id\":\"G1\",\"text\":\"Requests over the limit get 429 with Retry-After\",\"short\":\"Over the limit\",\"check\":\"review\"}],\"plan\":[],\"questions\":[],\"first_attempt\":null}}}}"
 [[rule.step]]
 emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-design\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
-emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-design\",\"status\":\"SUCCESS\",\"response\":\"{\\\"template\\\":\\\"peer-crew\\\",\\\"params\\\":[],\\\"composed\\\":null,\\\"why\\\":\\\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\\\"}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-design\",\"status\":\"SUCCESS\",\"response\":\"{\\\"name\\\":\\\"rate-limit-the-api\\\",\\\"description\\\":\\\"Add per-key rate limiting to the API\\\",\\\"based_on\\\":\\\"peer-crew\\\",\\\"why\\\":\\\"A security-labeled API feature: peer-crew's blind drafts and cross-judging fit it.\\\",\\\"params\\\":[],\\\"workflow\\\":null,\\\"done_when\\\":[{\\\"id\\\":\\\"G1\\\",\\\"text\\\":\\\"Requests over the limit get 429 with Retry-After\\\",\\\"short\\\":\\\"Over the limit\\\",\\\"check\\\":\\\"review\\\"}],\\\"plan\\\":[],\\\"questions\\\":[],\\\"first_attempt\\\":null}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 
@@ -830,6 +859,22 @@ emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-ad
 emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-adjudicate\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
 [[rule.step]]
 emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-adjudicate\",\"status\":\"SUCCESS\",\"response\":\"{\\\"verdict\\\":\\\"approve\\\",\\\"reasons\\\":[\\\"Both reviews hold\\\"],\\\"required_changes\\\":[]}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
+[[rule.step]]
+exit = 0
+
+
+# the done-when check: every criterion met
+[[rule]]
+argv0 = "agy"
+prompt_contains = '"cant_tell"'
+[[rule.step]]
+emit = "{\"event\":\"init\",\"conversation_id\":\"agy-check\",\"init\":{\"model\":\"gemini-3.6-flash-low\",\"cwd\":\"<workdir>\",\"tools\":[],\"permission_mode\":\"request-review\"}}"
+[[rule.step]]
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-check\",\"step_index\":1,\"state\":\"ACTIVE\",\"step_type\":\"tool\",\"tool_name\":\"finish\",\"tool_info\":{\"name\":\"finish\",\"parameters\":{\"verdicts\":[{\"id\":\"G1\",\"verdict\":\"met\",\"evidence\":\"src/api/rate-limit.ts answers 429 with Retry-After\",\"missing\":\"\"}],\"overall\":\"met\",\"reason\":\"\"}}}}"
+[[rule.step]]
+emit = "{\"event\":\"step_update\",\"step_update\":{\"conversation_id\":\"agy-check\",\"step_index\":1,\"state\":\"DONE\",\"step_type\":\"finish\",\"duration_seconds\":0.02}}"
+[[rule.step]]
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"agy-check\",\"status\":\"SUCCESS\",\"response\":\"{\\\"verdicts\\\":[{\\\"id\\\":\\\"G1\\\",\\\"verdict\\\":\\\"met\\\",\\\"evidence\\\":\\\"src/api/rate-limit.ts answers 429 with Retry-After\\\",\\\"missing\\\":\\\"\\\"}],\\\"overall\\\":\\\"met\\\",\\\"reason\\\":\\\"\\\"}\\n\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":120,\"output_tokens\":60,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":180}}}"
 [[rule.step]]
 exit = 0
 

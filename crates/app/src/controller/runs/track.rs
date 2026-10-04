@@ -35,6 +35,7 @@ pub(super) fn track(attached: &mut Attached, event: &RunEvent) -> Seen {
     let run = attached.run.clone();
     let mode = match &event.kind {
         RunEventKind::Run(lifecycle) => match lifecycle {
+            RunLifecycle::Named(_) => None,
             RunLifecycle::Started(_) | RunLifecycle::Resumed(_) | RunLifecycle::PauseCancelled => {
                 attached.stage = Stage::Going;
                 attached.crashed = false;
@@ -63,7 +64,8 @@ pub(super) fn track(attached: &mut Attached, event: &RunEvent) -> Seen {
             }
             RunLifecycle::Paused { .. }
             | RunLifecycle::StopRequested { .. }
-            | RunLifecycle::Snapshot(_) => None,
+            | RunLifecycle::Snapshot(_)
+            | RunLifecycle::ClosingAnswer(_) => None,
         },
         RunEventKind::Budget(BudgetEvent::Run(budget)) => {
             seen.status = attached.spent != Some(budget.spent) || attached.limit != budget.limit;

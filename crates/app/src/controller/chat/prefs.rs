@@ -5,10 +5,12 @@
 use argonauts_core::NoteLevel;
 use argonauts_core::RunId;
 use argonauts_core::app::{AppEvent, AppMode, UiCommand};
+use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::settings::workflows::RunStyle;
 
-use super::{ChatState, planned, request_planned, run_request};
+use super::{ChatState, planned, request_planned, run_request, styled};
 use crate::controller::turn::{self, fast_choice};
 use crate::controller::{Ctx, Effect};
 
@@ -196,8 +198,9 @@ pub(super) struct Goal {
     run: Option<RunId>,
 }
 
-/// `/goal <goal>` starts a crew run that works toward it until it's met. `/goal` shows it,
-/// `/goal pause` and `/goal resume` hold and release its run, and `/goal clear` drops it.
+/// `/goal <objective>` starts a crew run that's a goal, with your words as its objective. `/goal`
+/// shows it, `/goal pause` and `/goal resume` hold and release its run, and `/goal clear` stops
+/// pursuing it, landing what holds once every check passes.
 pub(crate) fn goal(
     ctx: &mut Ctx,
     chat: &mut ChatState,
@@ -220,8 +223,13 @@ pub(crate) fn goal(
         }
         "clear" => {
             let text = match chat.goal.take() {
+                // Its run stops pursuing it, and Merge lands what holds once every check passes.
                 Some(Goal { run: Some(run), .. }) => {
-                    format!("Dropped the goal. {run} keeps going; /stop {run} stops it.")
+                    let clear = UiCommand::Goal {
+                        run: Some(run),
+                        action: GoalAction::Clear { land: true },
+                    };
+                    return Ok(vec![Effect::Input(Box::new(clear))]);
                 }
                 Some(_) => "Dropped the goal.".to_owned(),
                 None => "No goal is set.".to_owned(),
@@ -236,7 +244,11 @@ pub(crate) fn goal(
                 text: text.clone(),
                 run: None,
             });
-            let mut request = run_request(ctx, text, RunMode::Crew, None, None);
+            // Your words are the objective, verbatim, and the run is a goal whoever leads.
+            let mut request = styled(
+                run_request(ctx, text, RunMode::Crew, None, None),
+                RunStyle::Goal,
+            );
             if chat.prefs.plan_first {
                 request = planned(request);
             }
@@ -248,8 +260,9 @@ pub(crate) fn goal(
             ctx.notice(
                 NoteLevel::Info,
                 format!(
-                    "{set}. A crew run works toward it until it's met; /goal shows it, /goal \
-                     pause and /goal resume hold it, and /goal clear drops it."
+                    "{set}. The crew pursues it in attempts until a check from another company \
+                     finds every criterion met; /goal shows it, /goal pause and /goal resume \
+                     hold it, and /goal clear drops it."
                 ),
             );
             Ok(vec![Effect::StartRun(Box::new(request))])

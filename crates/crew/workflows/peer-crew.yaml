@@ -1,7 +1,8 @@
 name: peer-crew
 description: Peers restate the goal, draft plans blind, debate only where the drafts disagree, and build cards reviewed by another family
 phases:
-  - name: Goal
+  - name: Understand
+    detail: models from several companies read the request, and others compare the readings
     standard: understand
     steps:
       - kind: loop_until
@@ -12,13 +13,16 @@ phases:
           - kind: restate
             name: restatements
             role: restater
+            label: "read:{family}"
           - kind: differ
             name: differences
             role: differ
             input: restatements
+            label: "compare:{n}"
           - kind: checkpoint
             checkpoint: goal
   - name: Plan
+    detail: blind drafts, a map of where they differ, critique, then one plan merged or judged
     standard: plan
     steps:
       - kind: loop_until
@@ -31,10 +35,12 @@ phases:
             role: drafter
             blind: true
             input: goal
+            label: "draft:{family}"
           - kind: map
             name: map
             role: mapper
             input: drafts
+            label: "map:{n}"
           - kind: loop_until
             name: critique
             until: critique_done
@@ -44,34 +50,43 @@ phases:
                 name: critiques
                 role: critic
                 input: map
+                label: "critique:{family}"
               - kind: draft
                 name: revisions
                 role: drafter
                 input: critiques
+                label: "revise:{family}"
               - kind: map
                 name: remap
                 role: mapper
                 input: revisions
+                label: "remap:{n}"
           - kind: synthesize
             name: merged
             role: drafter
             input: drafts
             when: drafts_agree
+            label: "synthesize:{family}"
           - kind: judge
             name: scores
             role: judge
             blind: true
             input: drafts
             when: drafts_disagree
+            label: "judge:{family}"
           - kind: checkpoint
             checkpoint: plan
   - name: Build
+    detail: one owner per card in its own worktree, its gates, then a review from another company
     standard: do
     steps:
       - kind: build
         role: owner
         input: plan
+        label: "build:{item}"
   - name: Merge
+    detail: the final check, then the merge into your branch
     standard: decide
     steps:
       - kind: merge
+        label: "merge:{branch}"

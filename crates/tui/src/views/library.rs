@@ -1,6 +1,7 @@
-//! The Library tab of the workflow view: every workflow Argonauts can run, from the built-ins,
-//! your files, and the repo's. It shows one, copies one out to edit, and diffs your file with
-//! the built-in. With no run to show, `/workflows` and Ctrl+T open it on its own.
+//! The workflow library: every workflow Argonauts can run, from the built-ins, your files, and
+//! the repo's. It shows one, copies one out to edit, and diffs your file with the built-in.
+//! With no run to show, `/workflows` and Ctrl+T open it. The workflow view has no tab for it,
+//! as Claude Code's has none.
 
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
 use argonauts_core::input::WorkflowAction;
@@ -8,10 +9,9 @@ use argonauts_core::views::{WorkflowFile, WorkflowOrigin};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-use crate::text::{sanitize_line, str_width};
+use crate::text::sanitize_line;
 use crate::theme::{Role, Theme};
 
 use super::list::{self, Column, ListState, fit_columns};
@@ -22,53 +22,7 @@ use super::{View, ViewCtx, ViewOutcome};
 /// Cells between columns.
 const GAP: usize = 2;
 
-/// The key that moves between the Run and Library tabs: `l`, or `L` with vim keys on, since
-/// there `l` opens as Enter does.
-pub fn tab_key(vim: bool) -> char {
-    if vim { 'L' } else { 'l' }
-}
-
-/// The two tabs of the workflow view, drawn at the right of its name row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkflowTab {
-    Run,
-    Library,
-}
-
-/// `[ Run ]  Library`, the shown tab bold in the label color, at the right of `area`'s top
-/// row. Left out when the name row has no room for it.
-pub fn draw_tabs(buf: &mut Buffer, area: Rect, shown: WorkflowTab, used: usize, theme: &Theme) {
-    let spans: Vec<Span<'static>> = [("Run", WorkflowTab::Run), ("Library", WorkflowTab::Library)]
-        .into_iter()
-        .map(|(label, tab)| {
-            if tab == shown {
-                Span::styled(
-                    format!("[ {label} ]"),
-                    theme.style(Role::Label).add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled(format!("  {label}  "), theme.style(Role::Dim))
-            }
-        })
-        .collect();
-    let width: usize = spans.iter().map(Span::width).sum();
-    let room = usize::from(area.width);
-    if area.height == 0 || used + 2 + width > room {
-        return;
-    }
-    let x = area.right() - width as u16;
-    panes::put(buf, x, area.y, width as u16, &Line::from(spans));
-}
-
-/// What a key in the Library tab asks of the view around it.
-#[derive(Debug)]
-pub enum LibraryKey {
-    Outcome(ViewOutcome),
-    /// Back to the Run tab.
-    ToRun,
-}
-
-/// The tab's rows and selection. `None` until the controller's list arrives.
+/// The library's rows and selection. `None` until the controller's list arrives.
 #[derive(Debug, Default)]
 pub struct Library {
     pub workflows: Option<Vec<WorkflowFile>>,
@@ -152,27 +106,25 @@ impl Library {
         lines
     }
 
-    fn footer(&self, theme: &Theme, vim: bool) -> Footer {
+    fn footer(&self, theme: &Theme) -> Footer {
         if let Some(said) = &self.said {
             return Footer::Line(Line::from(Span::styled(
                 sanitize_line(said).into_owned(),
                 theme.style(Role::Dim),
             )));
         }
-        let run = format!("{} run", tab_key(vim));
         Footer::hints(&[
             ("↑↓ select", 0),
             ("⏎ show", 5),
             ("c copy", 4),
             ("C copy to repo", 2),
             ("d diff", 3),
-            (&run, 1),
             (panes::ESC_BACK, 0),
         ])
     }
 
     /// The whole frame: header, tabs, the list, and the footer.
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme, vim: bool) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let title = "Workflow library";
         let header = Header {
             title: Line::from(Span::styled(title, theme.style(Role::Label))),
@@ -186,13 +138,6 @@ impl Library {
         };
         let panes = panes::split(area, 0);
         panes::draw_header(buf, panes.header, &header, theme);
-        draw_tabs(
-            buf,
-            panes.header,
-            WorkflowTab::Library,
-            str_width(title),
-            theme,
-        );
         panes::draw_box(buf, &panes, ["", ""], Side::Right, theme);
 
         let rows = self.rows().len();
@@ -206,40 +151,36 @@ impl Library {
 
         let marks = Marks::for_theme(theme);
         let mark = position_mark(self.list.offset, height, rows, marks.down);
-        panes::draw_footer(buf, panes.footer, self.footer(theme, vim), &mark, theme);
+        panes::draw_footer(buf, panes.footer, self.footer(theme), &mark, theme);
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> LibraryKey {
+    pub fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome {
         self.said = None;
         self.comparing = None;
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-        let outcome = |outcome| LibraryKey::Outcome(outcome);
         let vim = list::vim(ctx.state);
-        if plain && key.code == KeyCode::Char(tab_key(vim)) {
-            return LibraryKey::ToRun;
-        }
         let key = list::standard(key, vim, KeyCode::Esc);
         match key.code {
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('q') if plain => {
-                return outcome(ViewOutcome::Close);
+                return ViewOutcome::Close;
             }
-            KeyCode::Enter | KeyCode::Right => return outcome(self.show()),
-            KeyCode::Char('c') if plain => return outcome(self.file(WorkflowAction::Copy)),
+            KeyCode::Enter | KeyCode::Right => return self.show(),
+            KeyCode::Char('c') if plain => return self.file(WorkflowAction::Copy),
             KeyCode::Char('C') if plain => {
-                return outcome(self.file(WorkflowAction::CopyToProject));
+                return self.file(WorkflowAction::CopyToProject);
             }
-            KeyCode::Char('d') if plain => return outcome(self.diff()),
+            KeyCode::Char('d') if plain => return self.diff(),
             _ => {}
         }
         let len = self.rows().len();
         match list::nav_key(&key, self.page) {
             Some(nav) => {
                 self.list.apply(nav, len, self.page);
-                outcome(ViewOutcome::Consumed)
+                ViewOutcome::Consumed
             }
-            None => outcome(ViewOutcome::Ignored),
+            None => ViewOutcome::Ignored,
         }
     }
 
@@ -345,18 +286,11 @@ impl LibraryView {
 
 impl View for LibraryView {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
-        self.library
-            .render(area, buf, ctx.theme, list::vim(ctx.state));
+        self.library.render(area, buf, ctx.theme);
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome {
-        match self.library.handle_key(key, ctx) {
-            LibraryKey::Outcome(outcome) => outcome,
-            LibraryKey::ToRun => {
-                self.library.said = Some("No run to show yet".to_owned());
-                ViewOutcome::Consumed
-            }
-        }
+        self.library.handle_key(key, ctx)
     }
 
     fn accept(&mut self, data: &ViewData) -> bool {
@@ -486,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_list_keeps_the_selection_and_the_run_tab_says_there_is_none() {
+    fn a_fresh_list_keeps_the_selection() {
         let mut view = view();
         press(&mut view, KeyCode::Down);
         let mut fresh = vec![file("added", WorkflowOrigin::Yours, None)];
@@ -496,11 +430,6 @@ mod tests {
             refresh: true
         }));
         assert_eq!(view.library.selected().unwrap().name, "mine");
-        assert!(matches!(
-            press(&mut view, KeyCode::Char('l')),
-            ViewOutcome::Consumed
-        ));
-        assert_eq!(view.library.said.as_deref(), Some("No run to show yet"));
     }
 
     #[test]

@@ -41,7 +41,11 @@ fn same_token(given: &str, expected: &str) -> bool {
 }
 
 fn needs_a_person(request: &ControlRequest) -> bool {
-    needs_token(request) || matches!(request, ControlRequest::SpotCheck { .. })
+    needs_token(request)
+        || matches!(
+            request,
+            ControlRequest::SpotCheck { .. } | ControlRequest::Goal { .. }
+        )
 }
 
 pub(super) async fn admit(

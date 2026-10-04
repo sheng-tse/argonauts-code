@@ -3,7 +3,7 @@
 //! else, so the table lives here and only here.
 
 use argonauts_core::events::checkpoint::{AnswerAction, AnswerOption, CheckpointKind};
-use argonauts_core::events::goal::GoalQuestion;
+use argonauts_core::events::goal::{GoalQuestion, LET_THE_LEAD_ANSWER, LET_THE_LEAD_DECIDE};
 use argonauts_core::events::plan::JudgingResult;
 use argonauts_core::events::vendor::HandoffPlan;
 use argonauts_core::limits::{Candidate, CostEstimate};
@@ -35,12 +35,19 @@ fn letter(index: usize) -> char {
 pub fn standard(kind: CheckpointKind) -> Vec<AnswerOption> {
     use AnswerAction as A;
     match kind {
+        // Choose-only: your own words go in the chat, after Esc sets the card aside.
         CheckpointKind::Goal => vec![
-            option('y', "Approve the goal", A::Approve),
-            option('e', "Approve with edits", A::ApproveWithEdits),
+            option('y', "Yes, run it", A::Approve),
+            option(
+                'l',
+                LET_THE_LEAD_ANSWER,
+                A::Choose {
+                    value: LET_THE_LEAD_ANSWER.to_owned(),
+                },
+            ),
             option('b', "Send back for another round", A::SendBack),
-            option('x', "Abandon", A::Abandon),
-            option('d', "Show the details", A::ShowDiff),
+            option('d', "Show the goal", A::ShowDiff),
+            option('x', "No, stop here", A::Abandon),
         ],
         CheckpointKind::Plan => vec![
             option('y', "Approve the plan", A::Approve),
@@ -107,7 +114,7 @@ pub fn standard(kind: CheckpointKind) -> Vec<AnswerOption> {
 }
 
 /// One goal question: its answers `a`, `b`, `c`, the recommended one first and marked, then
-/// "Type my own answer" on the next letter.
+/// "Let the lead decide this and the rest" on the next letter. No answer is typed.
 pub fn goal_question(question: &GoalQuestion) -> Vec<AnswerOption> {
     let mut answers: Vec<_> = question.options.iter().collect();
     // Stable, so the others keep the order the differ gave them.
@@ -127,8 +134,10 @@ pub fn goal_question(question: &GoalQuestion) -> Vec<AnswerOption> {
         .collect();
     options.push(option(
         letter(options.len()),
-        TYPE_MY_OWN_ANSWER,
-        AnswerAction::Answer,
+        LET_THE_LEAD_DECIDE,
+        AnswerAction::Choose {
+            value: LET_THE_LEAD_DECIDE.to_owned(),
+        },
     ));
     options
 }
@@ -325,7 +334,7 @@ mod tests {
     #[test]
     fn card_options_keep_their_order_and_keys() {
         let table = [
-            (CheckpointKind::Goal, "yebxd"),
+            (CheckpointKind::Goal, "ylbdx"),
             (CheckpointKind::Plan, "yebsxd"),
             (CheckpointKind::Merge, "ypbkxd"),
             (CheckpointKind::Handoff, "twodm"),
@@ -414,14 +423,19 @@ mod tests {
                 answer('b', "Per API key", true),
             ],
             tag: DiffTag::Scope,
+            topic: None,
         };
         let options = goal_question(&question);
         assert_eq!(keys(&options), "abc");
         assert_eq!(options[0].label, "Per API key");
         assert!(options[0].recommended);
         assert!(!options[1].recommended);
-        assert_eq!(options[2].label, TYPE_MY_OWN_ANSWER);
-        assert_eq!(options[2].action, AnswerAction::Answer);
+        assert_eq!(options[2].label, LET_THE_LEAD_DECIDE);
+        assert!(
+            options
+                .iter()
+                .all(|option| option.action != AnswerAction::Answer)
+        );
     }
 
     #[test]

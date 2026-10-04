@@ -59,6 +59,8 @@ pub struct WorkflowRow {
     pub notice: Option<String>,
     /// The chat front end that started it, such as `via hermes`.
     pub front_end: Option<String>,
+    /// The phase going on, such as `Fix`, after the count.
+    pub phase: Option<String>,
 }
 
 impl WorkflowRow {
@@ -75,6 +77,7 @@ impl WorkflowRow {
             spend: None,
             notice: None,
             front_end: None,
+            phase: None,
         }
     }
 
@@ -489,6 +492,14 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
             4,
         );
     }
+    if let Some(phase) = row
+        .phase
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        push(sanitize_line(phase).into_owned(), dim, 3);
+    }
     push(format::duration_compact(row.elapsed(ctx.clock.now)), dim, 3);
     if row.tokens > 0 {
         push(
@@ -821,14 +832,14 @@ mod tests {
     }
 
     #[test]
-    fn agents_under_a_run_show_their_card() {
+    fn agents_under_a_run_show_their_label() {
         let mut theme = Theme::dark().with_level(ColorLevel::None);
         theme.glyphs = Glyphs::UNICODE;
         let t0 = Instant::now();
         let mut panel = runs(1);
         panel.show_agents = true;
         let mut agents = AgentPanel::default();
-        for card in ["card-001", "card-002"] {
+        for card in ["build:flag", "review:flag"] {
             let mut row =
                 AgentRow::new("claude-code", "owner", AgentState::Working).with_model("opus");
             row.run = Some("run-0".into());
@@ -842,30 +853,30 @@ mod tests {
         };
         let wide = at(100);
         assert!(
-            wide.contains("    ◐ claude-code/opus           card-001  ")
-                && wide.contains("    ◐ claude-code/opus           card-002  "),
+            wide.contains("    ◐ claude-code/opus        build:flag   ")
+                && wide.contains("    ◐ claude-code/opus        review:flag  "),
             "{wide}"
         );
         assert!(wide.contains("░  ↓ 18.1k tokens"), "{wide}");
-        // The card is dim, after the harness and model.
+        // The label is dim, after the harness and model.
         let colored = self::theme();
         let ctx = RenderCtx::new(100, &colored, Clock::still(t0));
         let lines = panel_lines(&panel, &agents, &ctx);
         let card = lines
             .iter()
             .flat_map(|line| &line.spans)
-            .find(|span| span.content.contains("card-001"))
-            .expect("the card shows");
+            .find(|span| span.content.contains("build:flag"))
+            .expect("the label shows");
         assert_eq!(card.style, colored.style(Role::Dim));
-        // The bar gives way first, and the card outlasts the model.
-        let narrow = at(44);
+        // The bar gives way first, and the label outlasts the model.
+        let narrow = at(48);
         let agent_rows: Vec<&str> = narrow.lines().filter(|row| row.contains('◐')).collect();
         assert!(
             agent_rows.iter().all(|row| !row.contains(['█', '░'])),
             "{narrow}"
         );
         assert!(
-            agent_rows[0].starts_with("    ◐ claude-code  card-001  ↓ 18.1k tokens"),
+            agent_rows[0].starts_with("    ◐ claude-code  build:flag   ↓ 18.1k tokens"),
             "{narrow}"
         );
     }

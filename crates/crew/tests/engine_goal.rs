@@ -9,9 +9,11 @@ use serde_json::{Value, json};
 
 use argonauts_core::engine::EngineExit;
 use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket,
+    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket, FreeText,
 };
-use argonauts_core::events::goal::{GoalChangeResolution, GoalEvent, GoalFile, GoalQuestion};
+use argonauts_core::events::goal::{
+    GoalChangeResolution, GoalEvent, GoalFile, GoalQuestion, LET_THE_LEAD_ANSWER,
+};
 use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::hash::sha256_hex;
@@ -400,8 +402,9 @@ async fn goal_approved_hash_frozen() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// With nothing to ask, Understand ends with the go-ahead: choose-only, with no typed edits.
 #[tokio::test]
-async fn goal_no_questions_opens_approval_card() -> anyhow::Result<()> {
+async fn goal_no_questions_opens_the_go_ahead() -> anyhow::Result<()> {
     let (crew, _) = crew(&listing(Vec::new()), 1)?;
     let outcome = crew.start(RunMode::Crew, REQUEST).await?;
     assert!(parked(&outcome), "{:?}", outcome.exit);
@@ -410,19 +413,22 @@ async fn goal_no_questions_opens_approval_card() -> anyhow::Result<()> {
     let cards = opened(&outcome.events, CheckpointKind::Goal);
     assert_eq!(cards.len(), 1);
     let card = cards[0];
-    assert_eq!(card.title, "Approve this goal?");
+    assert_eq!(card.title, "Run this workflow?");
+    assert_eq!(card.free_text, FreeText::None);
     assert!(questions_of(card).is_empty());
     let keys: Vec<char> = card.options.iter().map(|option| option.key).collect();
-    assert_eq!(keys, ['y', 'e', 'b', 'x', 'd']);
+    assert_eq!(keys, ['y', 'l', 'b', 'd', 'x']);
     let actions: Vec<&AnswerAction> = card.options.iter().map(|option| &option.action).collect();
     assert_eq!(
         actions,
         [
             &AnswerAction::Approve,
-            &AnswerAction::ApproveWithEdits,
+            &AnswerAction::Choose {
+                value: LET_THE_LEAD_ANSWER.to_owned()
+            },
             &AnswerAction::SendBack,
-            &AnswerAction::Abandon,
             &AnswerAction::ShowDiff,
+            &AnswerAction::Abandon,
         ]
     );
     // The draft is the consensus restatement, with its criteria numbered.
@@ -432,45 +438,21 @@ async fn goal_no_questions_opens_approval_card() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The go-ahead takes no typed edits: your own words go in the chat.
 #[tokio::test]
-async fn goal_approve_with_edits_rehashes() -> anyhow::Result<()> {
+async fn goal_go_ahead_refuses_typed_edits() -> anyhow::Result<()> {
     let (crew, _) = crew(&listing(Vec::new()), 1)?;
     let outcome = crew.start(RunMode::Crew, REQUEST).await?;
-    let first = drafts(&outcome.events)[0].clone();
-
-    let note = "+ Limits reset every minute\nG2: The limit is set per route";
-    let next = decide(
-        &crew,
-        &outcome,
+    let note = "+ Limits reset every minute";
+    let (command, reply) = answer(
+        &outcome.events,
         CheckpointKind::Goal,
         AnswerAction::ApproveWithEdits,
         Some(note),
-    )
-    .await?;
-    let approved = approvals(&next.events);
-    assert_eq!(approved.len(), 1);
-    let goal = approved[0].0;
-    assert_ne!(goal.sha256, first.sha256);
-    assert_eq!(goal.sha256, file::sha256(goal));
-    let criteria: Vec<(&str, &str)> = goal
-        .criteria
-        .iter()
-        .map(|c| (c.id.as_str(), c.text.as_str()))
-        .collect();
-    assert_eq!(
-        criteria,
-        [
-            ("G1", "Requests over the limit get a 429 response"),
-            ("G2", "The limit is set per route"),
-            ("G3", "Limits reset every minute"),
-        ]
-    );
-    assert_eq!(
-        goal.answers,
-        ["Your edits: + Limits reset every minute; G2: The limit is set per route"]
-    );
-    let committed = committed_goal(&crew, &next.events, goal)?;
-    assert!(committed.contains("G3: Limits reset every minute"));
+    )?;
+    let next = crew.resume(outcome.events.clone(), vec![command]).await?;
+    assert!(reply.await?.is_err());
+    assert!(approvals(&next.events).is_empty());
     Ok(())
 }
 
@@ -479,7 +461,7 @@ async fn goal_send_back_restates_again() -> anyhow::Result<()> {
     let (mut crew, workers) = crew(&listing(Vec::new()), 2)?;
     // Every worker also differs, so each one's scripted restatement and listing line up
     // round after round.
-    crew.settings.goal.differs = 3;
+    crew.settings.understand.comparers = 3;
     let outcome = crew.start(RunMode::Crew, REQUEST).await?;
     let note = "Limit per API key, not per user";
     let next = decide(
@@ -515,6 +497,21 @@ async fn goal_send_back_restates_again() -> anyhow::Result<()> {
     }
     let state = RunState::fold(&next.events);
     assert_eq!(state.goal.round, 2);
+    // A `›` note says why the plan moved: the loop runs again.
+    let notes: Vec<String> = next
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Note(note)) => {
+                Some(note.text.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notes,
+        ["Goal runs round 2, since goal_approved doesn't hold yet"]
+    );
     Ok(())
 }
 

@@ -28,6 +28,14 @@ pub(super) fn push(
     if !workflow.description.trim().is_empty() {
         name.push_str(&format!(" · {}", workflow.description.trim()));
     }
+    // The run goes by its own name; the example it started from shows here once.
+    if let Some(from) = shown
+        .from
+        .as_ref()
+        .filter(|from| from.as_str() != workflow.name)
+    {
+        name.push_str(&format!(" · started from {from}"));
+    }
     item.labeled("Workflow", name);
     if let Some(why) = shown.why.as_deref().map(str::trim)
         && !why.is_empty()

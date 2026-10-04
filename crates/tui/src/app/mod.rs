@@ -36,7 +36,7 @@ use crate::views::ViewCtx;
 
 pub use frames::{FrameScheduler, MIN_FRAME_INTERVAL};
 pub use fullscreen::Scrollback;
-pub use live::{LiveView, compose_live};
+pub use live::{LiveView, compose_docked, compose_live};
 pub use overlay::{OverlayEvent, OverlayView, TranscriptOverlay};
 pub use run::{Flow, Host, StdoutWriter, run};
 
@@ -334,7 +334,7 @@ impl<W: Write> Ui<W> {
                 self.terminal.enter_fullscreen()?;
             } else if wanted {
                 // History waiting to print belongs to the inline transcript, so it goes first.
-                self.draw_inline(now)?;
+                self.draw_inline(now, state)?;
                 self.terminal.enter_alternate_screen()?;
             } else {
                 self.terminal.leave_alternate_screen()?;
@@ -355,8 +355,11 @@ impl<W: Write> Ui<W> {
             if !self.dirty && !due && !printed {
                 return Ok(wrote);
             }
-            if self.scrollback.is_some() && self.views.is_empty() && self.overlay.is_none() {
-                self.draw_fullscreen(now)?;
+            if self.scrollback.is_some()
+                && (self.views.is_empty() || self.docked())
+                && self.overlay.is_none()
+            {
+                self.draw_fullscreen(now, state)?;
             } else {
                 self.draw_alternate(now, state)?;
             }
@@ -368,7 +371,7 @@ impl<W: Write> Ui<W> {
         if !self.dirty && !printed && !due && self.terminal.pending_history().is_empty() {
             return Ok(wrote);
         }
-        self.draw_inline(now)?;
+        self.draw_inline(now, state)?;
         self.frame_done(now);
         Ok(wrote || self.terminal.frame_bytes() != before)
     }
@@ -413,7 +416,42 @@ impl<W: Write> Ui<W> {
     }
 
     fn wants_alternate_screen(&self) -> bool {
-        self.scrollback.is_some() || self.overlay.is_some() || !self.views.is_empty()
+        self.scrollback.is_some()
+            || self.overlay.is_some()
+            || (!self.views.is_empty() && !self.docked())
+    }
+
+    /// Whether the top view draws in the bottom region rather than on its own screen.
+    fn docked(&self) -> bool {
+        self.views.last().is_some_and(|view| view.docked())
+    }
+
+    /// The docked view's rows at this screen's size, or `None` when no view docks.
+    fn dock_lines(&mut self, now: Instant, state: Option<&AppState>) -> Option<Vec<Line<'static>>> {
+        let screen = self.terminal.screen_size();
+        let view = self.views.last_mut().filter(|view| view.docked())?;
+        let empty;
+        let state = match state {
+            Some(state) => state,
+            None => {
+                empty = AppState::default();
+                &empty
+            }
+        };
+        let ctx = ViewCtx {
+            theme: &self.theme,
+            state,
+            now,
+        };
+        let area = Rect::new(
+            0,
+            0,
+            screen.width,
+            crate::views::dock::height(screen.height),
+        );
+        let mut buffer = Buffer::empty(area);
+        view.render(area, &mut buffer, &ctx);
+        Some(crate::views::dock::lines(&buffer))
     }
 
     /// When [`frame`](Self::frame) next has work, or `None` while the screen is still.
@@ -614,21 +652,32 @@ impl<W: Write> Ui<W> {
         true
     }
 
-    fn draw_inline(&mut self, now: Instant) -> io::Result<()> {
+    fn draw_inline(&mut self, now: Instant, state: Option<&AppState>) -> io::Result<()> {
         self.drain_history(now);
+        let dock = self.dock_lines(now, state);
         let screen = self.terminal.screen_size();
         let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
             .with_rows(screen.height);
         let blocks = self.model.history.live_blocks(&ctx);
         // Two rows stay above the live region, so some history always shows.
         let max_height = screen.height.saturating_sub(2);
-        let view = compose_live(
-            &blocks,
-            &self.model.history,
-            &self.model.bottom,
-            &ctx,
-            max_height,
-        );
+        let view = match dock {
+            Some(dock) => compose_docked(
+                &blocks,
+                &self.model.history,
+                &self.model.bottom,
+                &ctx,
+                max_height,
+                dock,
+            ),
+            None => compose_live(
+                &blocks,
+                &self.model.history,
+                &self.model.bottom,
+                &ctx,
+                max_height,
+            ),
+        };
         let (trailing, pinned) = view.lines.split_at(view.trailing.min(view.lines.len()));
         let rows = |lines: &[Line<'_>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
         self.terminal
@@ -656,7 +705,15 @@ impl<W: Write> Ui<W> {
         let clock = Clock::new(self.started, now);
         let ctx = RenderCtx::new(screen.width, &self.theme, clock);
         let mut next = if let Some(view) = self.views.last() {
-            view.next_change(now)
+            // A docked view's working line still moves above it.
+            let working = view
+                .docked()
+                .then(|| self.model.bottom.next_change(&ctx))
+                .flatten();
+            match (view.next_change(now), working) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
         } else if self.overlay.is_some() {
             None
         } else {

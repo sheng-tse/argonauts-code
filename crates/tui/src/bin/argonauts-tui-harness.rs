@@ -23,8 +23,9 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, UiCommand};
+use argonauts_core::ids::RepoId;
 use argonauts_core::settings::ui::UiSettings;
-use argonauts_tui::{AppIo, UiOptions, run_app, run_screen_reader};
+use argonauts_tui::{AppIo, UiOptions, history_file_in, run_app, run_screen_reader};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
@@ -43,17 +44,21 @@ fn main() -> anyhow::Result<()> {
     let steps = load_script(&script)?;
     let settings = ui_settings()?;
     let mut options = UiOptions::from_settings(&settings);
-    if std::env::var_os(argonauts_core::paths::HOME_ENV).is_none_or(|home| home.is_empty()) {
-        options.history_file = None;
+    // Only a test that gave the harness a home of its own keeps history on disk.
+    if std::env::var_os(argonauts_core::paths::HOME_ENV).is_some_and(|home| !home.is_empty()) {
+        options.history_file = history_here();
     }
     let recorder = Recorder::open(std::env::var_os(COMMANDS_ENV).map(PathBuf::from))?;
     let signals = std::env::var_os(SIGNALS_ENV).map(PathBuf::from);
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-        .context("starting the async runtime")?
-        .block_on(run(steps, options, recorder, signals))
+        .context("starting the async runtime")?;
+    let result = runtime.block_on(run(steps, options, recorder, signals));
+    // As in the app: a screen can be blocked reading stdin, and nothing is left to wait for.
+    runtime.shutdown_background();
+    result
 }
 
 async fn run(
@@ -99,6 +104,14 @@ enum Step {
     AwaitCommand(String),
     AwaitSignal(String),
     Panic(String),
+}
+
+/// The history file of the folder the harness runs in, as the app finds it.
+fn history_here() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let repo = RepoId::for_repo(&cwd).ok()?;
+    let state_dir = argonauts_core::paths::state_dir(&repo).ok()?;
+    Some(history_file_in(&state_dir))
 }
 
 fn load_script(path: &Path) -> anyhow::Result<Vec<Step>> {

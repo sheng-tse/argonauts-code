@@ -36,9 +36,8 @@ fn crew_with_a_change(mode: ApprovalMode) -> anyhow::Result<support::Crew> {
     let changed = format!(
         "{TWO_PHASES}  - name: Extra look\n    standard: check\n    steps:\n      - kind: gate\n"
     );
-    let change =
-        json!({"template": null, "params": [], "composed": changed, "why": "one more look"});
-    let unchanged = json!({"template": null, "params": [], "composed": null, "why": "it fits"});
+    let change = support::brief(None, json!([]), Some(&changed), "one more look");
+    let unchanged = support::brief(None, json!([]), None, "it fits");
     support::script(
         &lead,
         vec![
@@ -327,5 +326,20 @@ async fn user_answer_beats_slow_approver() -> anyhow::Result<()> {
         event.kind,
         RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Changed(_))
     )));
+    Ok(())
+}
+
+/// `approvals.ask_you_about` brings a workflow change to you even in auto, where the approver
+/// would otherwise decide it.
+#[tokio::test]
+async fn ask_you_about_keeps_a_workflow_change_yours_in_auto() -> anyhow::Result<()> {
+    let mut crew = crew_with_a_change(ApprovalMode::Auto)?;
+    crew.settings.approvals.ask_you_about = vec!["Workflow change".to_owned()];
+    let outcome = crew.start(RunMode::Crew, "look twice").await?;
+    assert_eq!(outcome.exit, EngineExit::Parked(ParkReason::Checkpoint));
+    let card = opened(&outcome.events).unwrap_or_else(|| panic!("no checkpoint opened"));
+    assert_eq!(card.kind, CheckpointKind::ChangeRequest);
+    assert_eq!(card.mode, ApprovalMode::Supervised);
+    assert!(card.needs_you);
     Ok(())
 }

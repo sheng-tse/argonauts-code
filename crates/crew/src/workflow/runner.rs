@@ -6,29 +6,35 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
+use argonauts_core::CardId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::events::workflow::{
-    StepEnd, StepFinished, StepStarted, WorkflowEvent, WorkflowStarted,
+    PhaseMark, StepEnd, StepFinished, StepStarted, WorkflowDeclared, WorkflowEvent, WorkflowStarted,
 };
 use argonauts_core::future::BoxFuture;
 use argonauts_core::names::{WorkerRef, WorkflowId};
 use argonauts_core::paths::Paths;
 use argonauts_core::settings::Settings;
-use argonauts_core::workflow::{Step, StepRef, Workflow, WorkflowParams, WorkflowRef};
+use argonauts_core::settings::protocol::UnderstandWhen;
+use argonauts_core::workflow::{
+    StandardPhase, Step, StepRef, Workflow, WorkflowParams, WorkflowRef,
+};
 use argonauts_core::{canonical_json, sha256_hex};
 
 use crate::card;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
+use crate::goal::pursue;
 use crate::roles;
 use crate::state::RunState;
 use crate::state::ids::IdKind;
 use crate::workflow::validate::{self, Context};
 use crate::workflow::{
-    Flow, StepAt, StepCall, StepDone, align, builtin, change, conditions, describe, kinds, params,
-    replay, yaml,
+    Flow, StepAt, StepCall, StepDone, builtin, change, conditions, describe, kinds, params, replay,
+    shape, yaml,
 };
+use argonauts_core::steps::StepName;
 
 /// The run's workflow from the settings: the preset's `workflow`, looked up like any other. A
 /// solo run keeps that workflow when it builds the solo card, and otherwise follows the solo
@@ -371,13 +377,13 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
             _ => {}
         }
         let depth = host.read(|state| state.workflows.depth(id));
-        let adapts =
-            host.settings().workflows.adapt_at_phase_ends && host.read(|state| crew_run(state, id));
+        // A goal's attempts are planned from its checks instead.
+        let adapts = host.settings().workflows.adapt_at_phase_ends
+            && host.read(|state| crew_run(state, id) && !pursue::pursuing(state));
         let mut adapted = BTreeSet::new();
-        if host.read(|state| align::aligned_before(state, id)) {
-            adapted.insert(1);
-        }
         loop {
+            // Declared before its first phase, and again after an approved change.
+            declare(host, id)?;
             let Some((workflow, next, started)) = host.read(|state| {
                 let record = state.workflows.by_id.get(id)?;
                 let next = record.next_phase();
@@ -390,6 +396,11 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
             let Some(phase) = workflow.phases.get(next as usize) else {
                 return Ok(Flow::Continue);
             };
+            let mark = PhaseMark {
+                id: id.clone(),
+                index: next,
+                title: phase.name.clone(),
+            };
             // Asked when the next phase is about to begin, so a recovered run that stopped
             // between two phases still gets the chance, and an approved change takes effect
             // from this phase.
@@ -397,6 +408,7 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
                 change::adapt_at_phase_end(host, id, next - 1).await?;
                 continue;
             }
+            pursue::begin_attempt(host, id, next)?;
             for (index, step) in phase.steps.iter().enumerate() {
                 let call = StepCall {
                     at: StepAt {
@@ -416,14 +428,245 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
                 // A failed step that ends the run itself, such as a goal never approved, says
                 // how.
                 if done.flow != Flow::Continue {
+                    end_phase(host, &mark, done.end)?;
+                    skip_the_rest(host, id, next + 1, &done.flow)?;
                     return Ok(done.flow);
                 }
                 if done.end == StepEnd::Failed {
+                    end_phase(host, &mark, StepEnd::Failed)?;
                     return Err(failed(&call.at.step, done.summary.as_deref()));
                 }
             }
+            end_phase(host, &mark, StepEnd::Done)?;
         }
     })
+}
+
+/// Records what the workflow declares, its name, description, and phases, unless the log
+/// already holds this version's declaration. Only declared phases exist in the views.
+fn declare(host: &Host, id: &WorkflowId) -> EngineResult<()> {
+    let Some(declared) = host.read(|state| {
+        let record = state.workflows.by_id.get(id)?;
+        (record.declared.as_ref() != Some(&record.version))
+            .then(|| WorkflowDeclared::of(id, &record.workflow))
+    }) else {
+        return Ok(());
+    };
+    host.record(
+        None,
+        None,
+        RunEventKind::Workflow(WorkflowEvent::Declared(Box::new(declared))),
+    )?;
+    Ok(())
+}
+
+/// A phase's first step is starting: says so once.
+fn start_phase(host: &Host, step: &StepRef) -> EngineResult<()> {
+    if step.path.len() != 1 {
+        return Ok(());
+    }
+    let Some(mark) = host.read(|state| {
+        let record = state.workflows.by_id.get(&step.workflow)?;
+        let phase = record.workflow.phases.get(step.phase as usize)?;
+        (!record.phases_started.contains(&step.phase)).then(|| PhaseMark {
+            id: step.workflow.clone(),
+            index: step.phase,
+            title: phase.name.clone(),
+        })
+    }) else {
+        return Ok(());
+    };
+    host.record(
+        None,
+        None,
+        RunEventKind::Workflow(WorkflowEvent::PhaseStarted(mark)),
+    )?;
+    Ok(())
+}
+
+/// The later phase a `build` names in `review_in`, when it has no steps of its own: it shows
+/// the build's reviews, so it starts with the first one, beside the build's phase, as a
+/// pipeline.
+fn review_phase(state: &RunState, step: &StepRef) -> Option<PhaseMark> {
+    let record = state.workflows.by_id.get(&step.workflow)?;
+    let target = record.step_definition(step)?.review_in.as_deref()?;
+    let index = record
+        .workflow
+        .phases
+        .iter()
+        .position(|phase| phase.name == target && phase.steps.is_empty())?;
+    let index = u32::try_from(index)
+        .ok()
+        .filter(|index| *index > step.phase)?;
+    Some(PhaseMark {
+        id: step.workflow.clone(),
+        index,
+        title: target.to_owned(),
+    })
+}
+
+/// The step that built `card`: where its owner's build sessions run. A prediction made while
+/// the plan was divided names the card too, from the planning step, so it isn't one.
+pub fn card_step(state: &RunState, card: &CardId) -> Option<StepRef> {
+    state.sessions.in_order().into_iter().find_map(|session| {
+        (session.card.as_ref() == Some(card) && session.started.step == Some(StepName::Build))
+            .then(|| session.started.workflow_step.clone())
+            .flatten()
+    })
+}
+
+/// Where a card's review shows in the workflow: the later phase its build's `review_in`
+/// names, else the build's own step, in the round the build is in.
+pub fn review_at(state: &RunState, card: &CardId) -> Option<StepAt> {
+    let step = card_step(state, card)?;
+    if let Some(mark) = review_phase(state, &step) {
+        return Some(StepAt {
+            step: StepRef {
+                workflow: mark.id,
+                phase: mark.index,
+                path: Vec::new(),
+            },
+            round: 1,
+        });
+    }
+    let round = state
+        .workflows
+        .by_id
+        .get(&step.workflow)?
+        .steps
+        .iter()
+        .filter(|progress| progress.step == step)
+        .map(|progress| progress.round)
+        .max()
+        .unwrap_or(1);
+    Some(StepAt { step, round })
+}
+
+/// A card's review is starting under `step`: the phase that shows it starts, once.
+pub fn review_started(host: &Host, step: &StepRef) -> EngineResult<()> {
+    let Some(mark) = host.read(|state| {
+        review_phase(state, step).filter(|mark| {
+            state
+                .workflows
+                .by_id
+                .get(&mark.id)
+                .is_some_and(|record| !record.phases_started.contains(&mark.index))
+        })
+    }) else {
+        return Ok(());
+    };
+    host.record(
+        None,
+        None,
+        RunEventKind::Workflow(WorkflowEvent::PhaseStarted(mark)),
+    )?;
+    Ok(())
+}
+
+/// The build is over, and with it the reviews its later phase showed.
+fn end_review_phase(host: &Host, step: &StepRef) -> EngineResult<()> {
+    let Some(mark) = host.read(|state| {
+        review_phase(state, step).filter(|mark| {
+            state.workflows.by_id.get(&mark.id).is_some_and(|record| {
+                record.phases_started.contains(&mark.index)
+                    && !record.phases_ended.contains(&mark.index)
+            })
+        })
+    }) else {
+        return Ok(());
+    };
+    host.record(
+        None,
+        None,
+        RunEventKind::Workflow(WorkflowEvent::PhaseEnded {
+            phase: mark,
+            end: StepEnd::Done,
+        }),
+    )?;
+    Ok(())
+}
+
+/// A phase's steps are over. One whose every step was skipped, such as solo's Understand when
+/// your prompt is the goal, never ran, so it's recorded as skipped with the first reason.
+fn end_phase(host: &Host, mark: &PhaseMark, end: StepEnd) -> EngineResult<()> {
+    let Some(skipped) = host.read(|state| {
+        let record = state.workflows.by_id.get(&mark.id)?;
+        if record.phases_ended.contains(&mark.index) || record.phases_skipped.contains(&mark.index)
+        {
+            return None;
+        }
+        let tops: Vec<_> = record
+            .steps
+            .iter()
+            .filter(|progress| progress.step.phase == mark.index && progress.step.path.len() == 1)
+            .collect();
+        let all_skipped = !tops.is_empty()
+            && tops
+                .iter()
+                .all(|progress| progress.end == Some(StepEnd::Skipped));
+        Some(all_skipped.then(|| {
+            tops.iter()
+                .find_map(|progress| progress.summary.clone())
+                .unwrap_or_else(|| "nothing in it had to run".to_owned())
+        }))
+    }) else {
+        return Ok(());
+    };
+    let event = match skipped {
+        Some(why) if end != StepEnd::Failed => WorkflowEvent::PhaseSkipped {
+            phase: mark.clone(),
+            why,
+        },
+        _ => WorkflowEvent::PhaseEnded {
+            phase: mark.clone(),
+            end,
+        },
+    };
+    host.record(None, None, RunEventKind::Workflow(event))?;
+    Ok(())
+}
+
+/// The phases after `from` that won't run now the run ended or switched, recorded as skipped
+/// so no view waits on them.
+fn skip_the_rest(host: &Host, id: &WorkflowId, from: u32, flow: &Flow) -> EngineResult<()> {
+    let why = match flow {
+        Flow::Switch(to) => format!("the run switched to {to}"),
+        Flow::Finish(_) | Flow::Continue => "the run ended before it".to_owned(),
+    };
+    let marks = host.read(|state| {
+        let Some(record) = state.workflows.by_id.get(id) else {
+            return Vec::new();
+        };
+        record
+            .workflow
+            .phases
+            .iter()
+            .enumerate()
+            .skip(from as usize)
+            .filter_map(|(index, phase)| {
+                let index = u32::try_from(index).ok()?;
+                let recorded = record.phases_started.contains(&index)
+                    || record.phases_ended.contains(&index)
+                    || record.phases_skipped.contains(&index);
+                (!recorded).then(|| PhaseMark {
+                    id: id.clone(),
+                    index,
+                    title: phase.name.clone(),
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    for mark in marks {
+        host.record(
+            None,
+            None,
+            RunEventKind::Workflow(WorkflowEvent::PhaseSkipped {
+                phase: mark,
+                why: why.clone(),
+            }),
+        )?;
+    }
+    Ok(())
 }
 
 /// A failed step ends the run, with its reason.
@@ -456,6 +699,10 @@ pub fn run_step<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineR
             // so this one's held.
             Some(None) => {}
             None => {
+                if let Some(done) = understand_off(host, call).await? {
+                    record_finished(host, call, &done)?;
+                    return Ok(done);
+                }
                 let holds = match &call.step.when {
                     Some(condition) => host
                         .read(|state| {
@@ -470,6 +717,7 @@ pub fn run_step<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineR
                     record_finished(host, call, &done)?;
                     return Ok(done);
                 }
+                start_phase(host, &call.at.step)?;
                 record_started(host, call)?;
             }
         }
@@ -477,8 +725,37 @@ pub fn run_step<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineR
         // when it resumes, and a run that fails on it never resumes.
         let done = kinds::execute(host, call).await?;
         record_finished(host, call, &done)?;
+        end_review_phase(host, &call.at.step)?;
         Ok(done)
     })
+}
+
+/// With `understand.when = "off"`, a crew run's Understand phase doesn't run: its steps skip,
+/// and your prompt is the goal. The goal checkpoint code put before the work takes it and asks
+/// the go-ahead; a workflow without one, which code didn't shape, takes it here.
+async fn understand_off(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> {
+    let off = host.settings().understand.when == UnderstandWhen::Off
+        && call.standard == StandardPhase::Understand
+        && call.at.step.path.len() == 1
+        && host.read(run_mode) == Some(RunMode::Crew);
+    if !off {
+        return Ok(None);
+    }
+    let asked_later = host.read(|state| {
+        state
+            .workflows
+            .by_id
+            .get(&call.at.step.workflow)
+            .is_some_and(|record| {
+                shape::goal_checkpoint_runs(&record.workflow, UnderstandWhen::Off)
+            })
+    });
+    if !asked_later {
+        crate::solo::prompt_is_the_goal(host).await?;
+    }
+    Ok(Some(StepDone::skipped(
+        "understand.when is off, so your prompt is the goal",
+    )))
 }
 
 fn record_started(host: &Host, call: &StepCall) -> EngineResult<()> {

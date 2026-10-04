@@ -277,6 +277,7 @@ fn card_row(n: u32, title: &str, owner: WorkerRef, diff: Option<DiffStat>) -> Ca
         last_gate: None,
         reviews: 0,
         waiting_on_vendor: None,
+        item: None,
     }
 }
 
@@ -537,6 +538,7 @@ fn card_spec(n: u32, title: &str) -> CardSpec {
         reviewers: vec![],
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 
@@ -547,6 +549,17 @@ fn finished_step_collapses_with_details() {
         let claude = worker("claude-code", "opus");
         let codex = worker("codex", "gpt-5.6");
         let agy = worker("agy", "gemini-3.6-pro");
+        // A card goes by its label in the chat, never its id.
+        let mut run = RunState::new(run_id());
+        for (n, title, item) in [
+            (2, "Add the flag", "json-flag"),
+            (3, "Write rows", "json-rows"),
+        ] {
+            let mut row = card_row(n, title, codex.clone(), None);
+            row.item = Some(item.into());
+            run.cards.insert(card(n), row);
+        }
+        harness.state.runs.insert(run_id(), run);
         harness.send_all([
             run_event(None, started(RunMode::Crew, goal)),
             run_event(None, restated("A", claude.clone())),
@@ -559,10 +572,7 @@ fn finished_step_collapses_with_details() {
                         run: run_id(),
                         version: 1,
                         summary: goal.into(),
-                        criteria: vec![Criterion {
-                            id: "G1".into(),
-                            text: "export --json writes JSON lines".into(),
-                        }],
+                        criteria: vec![Criterion::new("G1", "export --json writes JSON lines")],
                         in_scope: vec![],
                         out_of_scope: vec![],
                         assumptions: vec![],
@@ -688,7 +698,12 @@ fn handoff_and_return_transcript_lines() {
         let mut stand_in = card_row(2, "Redis store", codex.clone(), None);
         stand_in.state = Some(CardState::Running);
         stand_in.standing_in_for = Some(worker("claude-code", "opus"));
+        // Cards go by their labels in the chat; ids stay in commands.
+        stand_in.item = Some("redis-store".into());
         run.cards.insert(card(2), stand_in);
+        let mut limiter = card_row(3, "Middleware", worker("claude-code", "opus"), None);
+        limiter.item = Some("limiter".into());
+        run.cards.insert(card(3), limiter);
         harness.state.runs.insert(run_id(), run);
         let resets = Some(datetime!(2026-09-30 22:45 UTC));
         harness.send_all([
@@ -779,6 +794,7 @@ fn replayed_session(key: &str) -> [AppEvent; 2] {
         resumed_from: None,
         follow_key: None,
         workflow_step: None,
+        label: None,
     };
     let ended = SessionEnd {
         vendor_session: None,

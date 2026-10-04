@@ -93,6 +93,8 @@ pub struct Ask<I> {
     pub blind: bool,
     /// A drafter's own label while drafts are sealed, for what its status summary may show.
     pub label: Option<PlanLabel>,
+    /// The card's item for its label, when the card has no record yet.
+    pub item: Option<String>,
 }
 
 impl<I> Ask<I> {
@@ -118,6 +120,7 @@ impl<I> Ask<I> {
             slot: 0,
             blind: false,
             label: None,
+            item: None,
         }
     }
 }
@@ -185,6 +188,8 @@ struct Identity {
     worker: WorkerRef,
     step: Option<StepName>,
     slot: u32,
+    /// Only for the label, when the card has no record yet.
+    item: Option<String>,
 }
 
 impl Identity {
@@ -196,6 +201,7 @@ impl Identity {
             worker: plan.worker.clone(),
             step: plan.step,
             slot: plan.slot,
+            item: None,
         }
     }
 
@@ -215,7 +221,10 @@ impl Identity {
             .filter(move |session| {
                 session.since >= from
                     && until.is_none_or(|until| session.since < until)
-                    && session.started.workflow_step.as_ref() == step_ref
+                    && (session.started.workflow_step.as_ref() == step_ref
+                        // A review a run recorded before reviews had their place.
+                        || (self.role == RoleName::Reviewer
+                            && session.started.workflow_step.is_none()))
                     && session.started.role == self.role
                     && session.card == self.card
                     && session.started.worker == self.worker
@@ -421,6 +430,7 @@ impl Host {
             worker: ask.worker.clone(),
             step: Some(S::NAME),
             slot: ask.slot,
+            item: ask.item.clone(),
         };
         let earlier = self.earlier(&identity).await?;
         if let Some(record) = &earlier
@@ -579,10 +589,12 @@ impl Host {
         };
         let worker = self.shared.services.workers.get(&identity.worker)?;
         let key = SessionKey::numbered(self.allocate(IdKind::Session)?);
+        let family = worker.family();
+        let label = self.agent_label(&key, identity, &family);
         let started = SessionStarted {
             worker: identity.worker.clone(),
             vendor: worker.vendor(),
-            family: worker.family(),
+            family,
             kind: worker.kind(),
             role: identity.role,
             step: identity.step,
@@ -591,6 +603,7 @@ impl Host {
             resumed_from: None,
             follow_key: None,
             workflow_step: Some(at.step.clone()),
+            label: Some(label),
         };
         let card = identity.card.as_ref();
         self.record(
@@ -1022,6 +1035,26 @@ impl Host {
         Ok(())
     }
 
+    /// The session's label in the chat, the panel, and the views (`crate::labels`).
+    fn agent_label(&self, key: &SessionKey, identity: &Identity, family: &str) -> String {
+        self.read(|state| {
+            crate::labels::session_label(
+                state,
+                &crate::labels::Asking {
+                    key,
+                    step: identity.at.as_ref().map(|at| &at.step),
+                    round: identity.at.as_ref().map_or(1, |at| at.round),
+                    role: identity.role,
+                    step_name: identity.step,
+                    card: identity.card.as_ref(),
+                    item: identity.item.as_deref(),
+                    worker: &identity.worker,
+                    family,
+                },
+            )
+        })
+    }
+
     /// Picks the key and the vendor session, builds the prompt and the spec, and records
     /// `Session::Started`.
     fn launch(&self, launch: Launch) -> EngineResult<Launched> {
@@ -1113,10 +1146,12 @@ impl Host {
             )
         });
 
+        let family = worker.family();
+        let agent_label = self.agent_label(&key, &identity, &family);
         let started = SessionStarted {
             worker: identity.worker.clone(),
             vendor: worker.vendor(),
-            family: worker.family(),
+            family,
             kind: worker.kind(),
             role: identity.role,
             step: identity.step,
@@ -1125,12 +1160,22 @@ impl Host {
             resumed_from: resume.clone(),
             follow_key: None,
             workflow_step: identity.at.as_ref().map(|at| at.step.clone()),
+            label: Some(agent_label),
         };
         self.record(
             identity.card.as_ref(),
             Some(&key),
             RunEventKind::Session(SessionEvent::Started(Box::new(started))),
         )?;
+        if identity.role == RoleName::Reviewer
+            && let Some(card) = &identity.card
+        {
+            // A card's review runs beside its build, which may show it in a later phase.
+            let step = self.read(|state| crate::workflow::runner::card_step(state, card));
+            if let Some(step) = step {
+                crate::workflow::runner::review_started(self, &step)?;
+            }
+        }
         if let Some(lease) = lease {
             lock(&self.shared.leases).insert(key.clone(), lease);
         }

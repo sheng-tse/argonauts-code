@@ -70,6 +70,11 @@ impl TerminalModes {
         Ok(modes)
     }
 
+    /// For a terminal that went away: nothing is restored, now or on drop.
+    pub fn abandon(mut self) {
+        self.active = false;
+    }
+
     /// Safe to call twice.
     pub fn restore(&mut self) -> io::Result<()> {
         if !self.active {

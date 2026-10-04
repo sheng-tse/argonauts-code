@@ -192,7 +192,7 @@ async fn answered(
 /// The final check, run again only when the branch or the target moved since the last one.
 /// The run's notes and decisions are committed first, so the check and the checkpoint cover
 /// them.
-async fn checked(host: &Host) -> EngineResult<FinalCheck> {
+pub(crate) async fn checked(host: &Host) -> EngineResult<FinalCheck> {
     retro::notes_before_merge(host).await?;
     if let Some(check) = final_check::reusable(host).await? {
         return Ok(check);

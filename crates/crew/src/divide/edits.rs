@@ -330,6 +330,7 @@ mod tests {
             reviewers: vec![worker(reviewer)],
             budget: CardBudget::default(),
             predictions: None,
+            item: None,
         }
     }
 

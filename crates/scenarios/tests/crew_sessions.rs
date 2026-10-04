@@ -178,12 +178,9 @@ fn crew_steer_delivered_after_tool() -> anyhow::Result<()> {
     // The call shows as `Bash(npm test)`, or folded into a group naming `$ npm test`.
     pty.wait_for(r"Bash\(npm test\)|\$ npm test", WAIT)?;
 
-    // The agent panel's row opens the workflow view; there Enter moves to the phase's agents
-    // and opens the owner's view, where `s` steers it.
+    // A solo run is one agent, so its panel row opens the owner's session directly,
+    // where `s` steers it.
     pty.press(Key::Down)?;
-    pty.press(Key::Enter)?;
-    pty.wait_for(r"Build · 1 agent", WAIT)?;
-    pty.press(Key::Enter)?;
     pty.press(Key::Enter)?;
     pty.wait_for(r"s steer", WAIT)?;
     pty.press(Key::Char('s'))?;

@@ -25,10 +25,11 @@ use crate::engine::host::Host;
 use crate::engine::shared::{Admission, PolicyResult, Shared};
 use crate::error::{EngineError, EngineResult};
 use crate::git::GitError;
+use crate::goal::pursue;
 use crate::state::RunState;
 use crate::state::ids;
-use crate::workflow::{Flow, align, change, runner};
-use crate::{checkpoints, handoff, retro};
+use crate::workflow::{Flow, change, naming, runner, shape};
+use crate::{checkpoints, closing, handoff, retro};
 
 pub mod commands;
 pub mod host;
@@ -116,6 +117,7 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
     ensure_base_worktree(&host).await?;
     recover::recover(&host).await?;
     change::apply_decided(&host)?;
+    pursue::on_resume(&host)?;
 
     // A reset that passed before this process started was acted on then, or by recovery.
     let returned = host.read(|state| state.run.quota_reset_passed(host.now()));
@@ -158,8 +160,8 @@ async fn ensure_base_worktree(host: &Host) -> EngineResult<()> {
 }
 
 /// Runs the run's own workflow from where the log stopped, follows switches to another
-/// workflow, then runs the retro unless you stopped the run. A new run's workflow is the lead's
-/// design when `workflows.lead_designs` is on, made once the goal is aligned, else the
+/// workflow, then runs the retro and writes the closing answer unless you stopped the run. A
+/// new run's workflow is the lead's design when `workflows.lead_designs` is on, else the
 /// preset's. A failed retro leaves the outcome as it is.
 async fn root_workflow(host: Host) -> EngineResult<RunOutcome> {
     let first = match host.read(newest_top_level) {
@@ -175,37 +177,36 @@ async fn root_workflow(host: Host) -> EngineResult<RunOutcome> {
             Flow::Continue => break RunOutcome::BranchLeft,
             Flow::Finish(outcome) => break outcome,
             Flow::Switch(to) => {
-                let workflow = runner::lookup(&host, to.as_str())?;
+                let workflow =
+                    naming::as_run(&host, Some(&to), runner::lookup(&host, to.as_str())?);
+                let workflow = shape::as_written(&host, workflow);
                 let id = runner::start(&host, Some(to), workflow, None)?;
                 flow = runner::run(&host, &id).await?;
             }
         }
     };
+    // A stopped run's answer comes from code alone, when it finishes.
     if outcome != RunOutcome::Stopped {
         retro::run_or_note(&host).await?;
+        closing::record(&host, outcome, None).await?;
     }
     Ok(outcome)
 }
 
-/// Aligns the goal when the lead designs, then starts the lead's workflow, or the preset's.
-/// `Err` holds how the run ends when the goal never got approved.
+/// Starts the lead's workflow, or the preset's, as code shapes it for the run: Understand first
+/// when it runs, the checks, and a goal's attempts (`shape`). `Err` holds how the run ends
+/// before any workflow starts.
 async fn first_workflow(host: &Host) -> EngineResult<Result<WorkflowId, Flow>> {
-    let aligned = match align::align(host).await? {
-        Some((_, flow)) if flow != Flow::Continue => return Ok(Err(flow)),
-        Some((id, _)) => Some(id),
-        None => None,
-    };
+    naming::name_from_intake(host)?;
     let (from, workflow) = match change::design_for_task(host).await? {
         Some(designed) => designed,
         None => {
             let (from, workflow) = runner::workflow_for_run(host)?;
-            match aligned {
-                Some(_) => (from, align::frame_for_run(host, workflow)),
-                None => (from, workflow),
-            }
+            let workflow = naming::as_run(host, from.as_ref(), workflow);
+            (from, shape::as_written(host, workflow))
         }
     };
-    let id = runner::start_as(host, aligned, from, workflow, None)?;
+    let id = runner::start(host, from, workflow, None)?;
     note_reuse(host, &id)?;
     Ok(Ok(id))
 }
@@ -427,6 +428,7 @@ impl Loop {
         detail: Option<String>,
     ) -> EngineResult<EngineExit> {
         self.quiesce().await;
+        closing::record_unasked(&self.host, outcome, detail.as_deref()).await?;
         self.host.record(
             None,
             None,
@@ -439,6 +441,7 @@ impl Loop {
     /// next supervisor re-enters it from the log.
     async fn park(&mut self, reason: ParkReason) -> EngineResult<EngineExit> {
         self.quiesce().await;
+        pursue::on_park(&self.host, &reason)?;
         let waiting_on = self.host.read(park::waiting_on);
         self.host.record(
             None,

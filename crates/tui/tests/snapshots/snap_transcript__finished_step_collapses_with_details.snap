@@ -17,10 +17,10 @@ expression: text(&lines)
      │ Flag name  │ --json     │ --format json │            │
      └────────────┴────────────┴───────────────┴────────────┘
 
-● Gates(card-002 · tests, lint, link check)
+● Gates(build:json-flag · tests, lint, link check)
   ⎿  All 3 passed
 
-● Gates(card-003 · tests)
+● Gates(build:json-rows · tests)
   ⎿  tests failed · 41 passed, 1 failed
 
 ● Gates(card-004 · built-in checks)

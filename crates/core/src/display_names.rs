@@ -66,6 +66,24 @@ impl DisplayNames {
         self.agent(&worker.worker, worker.model.as_deref())
     }
 
+    /// The model alone where it runs on its own company's CLI (Claude models on Claude Code,
+    /// GPT on Codex, Gemini on Antigravity CLI), else `<model> on <cli>`. The workflow view's
+    /// rows name agents this way, since the pane is narrow and the agent view gives the rest.
+    pub fn short(&self, worker: &WorkerRef) -> String {
+        let cli = self.harness(&worker.worker);
+        let Some(model) = self.model(&worker.worker, worker.model.as_deref()) else {
+            return cli;
+        };
+        let at_home = home_cli(&model)
+            .and_then(builtin_harness_name)
+            .is_some_and(|home| home == cli);
+        if at_home {
+            model
+        } else {
+            format!("{model} on {cli}")
+        }
+    }
+
     /// The worker with the model a session of it runs: its own, else the one its CLI's
     /// settings give, else its CLI's default, so a session reads `GPT 5.6 on Codex` from its
     /// start to its end.
@@ -96,6 +114,21 @@ fn model_for<'a>(models: &'a BTreeMap<String, String>, cli: &str) -> Option<&'a 
         .get(cli)
         .map(|model| model.trim())
         .filter(|model| !model.is_empty())
+}
+
+/// The CLI made by the company that makes `model`, by the model's name.
+fn home_cli(model: &str) -> Option<&'static str> {
+    let model = model.trim().to_ascii_lowercase();
+    let starts = |prefixes: &[&str]| prefixes.iter().any(|prefix| model.starts_with(prefix));
+    if starts(&["claude", "opus", "sonnet", "haiku", "fable"]) {
+        Some("claude-code")
+    } else if starts(&["gpt", "o3", "o4", "codex"]) {
+        Some("codex")
+    } else if starts(&["gemini"]) {
+        Some("antigravity-cli")
+    } else {
+        None
+    }
 }
 
 /// The names of the CLIs and endpoints Argonauts knows without asking an adapter.
@@ -149,6 +182,23 @@ mod tests {
         assert_eq!(names.running(&id("codex/gpt-5.6")), id("codex/gpt-5.6"));
         assert_eq!(names.running(&id("claude-code")), id("claude-code"));
         assert!(!names.by_default(&id("codex")));
+    }
+
+    /// The workflow view's rows name a model alone on its own company's CLI.
+    #[test]
+    fn a_model_on_its_own_companys_cli_goes_by_its_name_alone() {
+        let names = names();
+        assert_eq!(names.short(&id("claude-code/claude-opus-5-5")), "Opus 5.5");
+        assert_eq!(names.short(&id("codex/gpt-6.1-sol")), "GPT-6.1 Sol");
+        assert_eq!(
+            names.short(&id("antigravity-cli/claude-opus-5-5")),
+            "Opus 5.5 on Antigravity CLI"
+        );
+        assert_eq!(
+            names.short(&id("my-cli/gpt-6.1-sol")),
+            "GPT 6.1 Sol on My CLI"
+        );
+        assert_eq!(names.short(&id("codex")), "Codex");
     }
 
     /// A CLI that names no model runs its default, so its sessions read as that model from

@@ -10,7 +10,8 @@ use argonauts_core::CardId;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::checkpoint::CheckpointEvent;
 use argonauts_core::events::run::{
-    ParkReason, PhaseChange, ResumeCause, RunLifecycle, RunMode, RunOutcome, RunPhase, RunStarted,
+    ParkReason, PhaseChange, ResumeCause, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase,
+    RunStarted,
 };
 use argonauts_core::events::vendor::{BudgetEvent, HandoffEvent, RunBudget, VendorEvent};
 use argonauts_core::limits::{HealthState, QuotaStatus};
@@ -20,6 +21,9 @@ use argonauts_core::settings::approvals::ApprovalMode;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunInfo {
     pub started: Option<Box<RunStarted>>,
+    /// The run's name and description, the newest `Named`.
+    #[serde(default)]
+    pub named: Option<RunNamed>,
     pub mode: Option<RunMode>,
     pub phase: Option<RunPhase>,
     /// `Some(now)` while a pause is asked for and not cancelled.
@@ -30,6 +34,9 @@ pub struct RunInfo {
     pub approval_mode: Option<ApprovalMode>,
     pub parked: Option<ParkReason>,
     pub finished: Option<RunOutcome>,
+    /// The run has its closing answer.
+    #[serde(default)]
+    pub closed: bool,
     pub budget: Option<RunBudget>,
     /// The seq of the newest `Run::Snapshot`.
     pub last_snapshot: Option<u64>,
@@ -61,11 +68,15 @@ impl RunInfo {
                 self.mode = Some(started.mode);
                 self.started = Some(started.clone());
             }
+            RunLifecycle::Named(named) => self.named = Some(named.clone()),
             RunLifecycle::Resumed(resumed) => {
                 self.resumes += 1;
                 // A crash that cut a pause short keeps the pause: only a parked run's resume
                 // ends it. Reopening a stopped run ends its stop.
                 let reopened = self.finished.take().is_some();
+                if reopened {
+                    self.closed = false;
+                }
                 if self.parked.is_some() || reopened {
                     self.paused = false;
                     self.pause_requested = None;
@@ -89,6 +100,7 @@ impl RunInfo {
             RunLifecycle::StopRequested { .. } => self.stop_requested = true,
             RunLifecycle::Parked { reason, .. } => self.parked = Some(reason.clone()),
             RunLifecycle::Snapshot(_) => self.last_snapshot = Some(envelope.seq),
+            RunLifecycle::ClosingAnswer(_) => self.closed = true,
             RunLifecycle::Finished { outcome, .. } => self.finished = Some(*outcome),
         }
     }

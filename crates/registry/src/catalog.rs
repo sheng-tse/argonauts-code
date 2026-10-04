@@ -301,12 +301,32 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "How long one gate command may run, such as \"30m\"",
     ),
     (
-        "goal.max_questions",
-        "Most questions a differ may ask you about the goal",
+        "understand.max_questions",
+        "Most questions Understand may ask you about your request",
     ),
     (
-        "goal.restaters",
-        "How many restaters. Unset means every crew member",
+        "understand.readers",
+        "How many models read your request. Unset means every crew member",
+    ),
+    (
+        "understand.comparers",
+        "How many models from other companies compare the readings",
+    ),
+    (
+        "understand.always_ask",
+        "Topics that are always a question, never a majority's silent assumption",
+    ),
+    (
+        "goal.max_attempts",
+        "Most attempts a goal run makes. The run's budget still caps it",
+    ),
+    (
+        "goal.stuck_after",
+        "Attempts in a row that end on the same blocker before a goal is stuck",
+    ),
+    (
+        "goal.idle_after",
+        "Attempts in a row that meet no new criterion and change no file before a goal is stuck",
     ),
     (
         "health.window",
@@ -673,11 +693,18 @@ fn named() -> Vec<SettingMeta> {
         // /approvals
         words(
             "approvals.answered_by",
-            "Who answers the crew's questions, the goal's open questions and the plan approval: \
+            "Who answers the crew's questions, Understand's open questions and the go-ahead: \
              you, or the lead, whose answers become assumptions you can review. Unset, the lead \
-             in auto mode, leaving you the questions goal.always_ask names, and you otherwise. \
-             Set to the lead, it answers those too",
+             in auto mode and you otherwise. Set to the lead, it answers in every mode",
             &["you", "lead"],
+        ),
+        meta(
+            "approvals.ask_you_about",
+            "Topics that come to you even when the lead answers, matched without case: a \
+             question's tag (scope, security, data, cost, detail) or its topic, such as \"log \
+             level\", and \"go-ahead\", \"workflow change\", \"stuck goal\", or \"keep \
+             going\". Over budget always comes to you",
+            &[],
         ),
         words(
             "approvals.goal_changes",
@@ -943,6 +970,39 @@ fn later_keys() -> Vec<SettingMeta> {
         meta(
             "workflows.adapt_at_phase_ends",
             "The lead may propose a change at a phase end, through the change request checkpoint",
+            BOOL,
+        ),
+        words(
+            "workflows.style",
+            "How a crew run works: as a workflow, phases that end when they finish; as a goal, \
+             attempts until a check from another company finds every criterion met; or as the \
+             lead's CLI does",
+            &["follow_lead", "workflow", "goal"],
+        ),
+        words(
+            "workflows.style_by_lead.*",
+            "What follow_lead picks for this CLI. Any CLI not listed leads a workflow",
+            &["workflow", "goal"],
+        ),
+        meta(
+            "workflows.final_check",
+            "A check from another company judges the done-when list before Merge",
+            BOOL,
+        ),
+        words(
+            "understand.when",
+            "When models from several companies read your request first: in every crew run, \
+             when the lead decides, or never",
+            &["crew", "lead", "off"],
+        ),
+        meta(
+            "goal.checker",
+            "Who checks a goal: other_company, or a worker by name",
+            &[],
+        ),
+        meta(
+            "ui.workflow.row_cost",
+            "A cost column on the workflow view's agent rows, before the time",
             BOOL,
         ),
         meta(
@@ -1291,6 +1351,8 @@ mod tests {
             "narrator.spend_cap" => "\"0.50 usd\"",
             "ui.accent" => "\"#d4a017\"",
             "ui.keymap.*" => "\"ctrl+left\"",
+            "goal.checker" => "\"codex\"",
+            "approvals.ask_you_about" | "understand.always_ask" => "[\"security\"]",
             "workflow" => "\"solo\"",
             "sessions.rotate_at" => "\"200k\"",
             _ => "0.5",

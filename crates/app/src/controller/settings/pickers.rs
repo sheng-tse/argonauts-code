@@ -47,6 +47,13 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
             )]
         }
         SlashCommand::Preset { .. } => vec![view(preset_rows(ctx), "preset", None)],
+        SlashCommand::Style { .. } => {
+            vec![view(
+                rows::rows(settings, Some("style"), None),
+                "style",
+                None,
+            )]
+        }
         SlashCommand::Workflows => vec![view(workflow_rows(ctx), "workflow", None)],
         SlashCommand::Agents { .. } => {
             vec![ViewData::Settings {

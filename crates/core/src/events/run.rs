@@ -9,6 +9,7 @@ use time::OffsetDateTime;
 
 use crate::names::{CheckpointId, SessionKey, TurnId, VendorId, WorkerRef};
 use crate::settings::approvals::ApprovalMode;
+use crate::settings::workflows::RunStyle;
 use crate::steps::intake::ChangeEstimate;
 use crate::{CardId, PhaseStatus, RunId};
 
@@ -17,6 +18,9 @@ use crate::{CardId, PhaseStatus, RunId};
 pub enum RunLifecycle {
     /// The first event of every run.
     Started(Box<RunStarted>),
+    /// The run's name and description, from the lead's brief, or from intake for a solo run
+    /// or a template that runs as written. Every view shows these, never a template's name.
+    Named(RunNamed),
     /// A new supervisor rebuilt the run from the log and carried on.
     Resumed(RunResumed),
     /// Esc at the top level. Cancelled by Enter until the safe point is reached. A second Esc
@@ -51,12 +55,31 @@ pub enum RunLifecycle {
     /// Everything a resume or a reattach needs, so it can start here instead of at `seq` 0.
     /// The engine writes one every `supervisor.snapshot_every` events.
     Snapshot(Box<RunSnapshot>),
+    /// How the run ends in the conversation, as an agent's own CLI ends a task: what changed,
+    /// how it was checked, and what's left. Just before `Finished`.
+    ClosingAnswer(Box<ClosingAnswer>),
     /// The last event of a run, unless it ended `Stopped` and you reopened it with `/resume`,
     /// when a `Resumed` follows.
     Finished {
         outcome: RunOutcome,
         detail: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunNamed {
+    /// Two to four task words joined with `-`, such as `fix-slugify-median`.
+    pub name: String,
+    /// One line, the task in plain words. In a goal run, the objective.
+    pub description: String,
+    pub style: RunStyle,
+    /// The example the workflow started from, shown once at the end of the start item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub based_on: Option<String>,
+    /// The lead's done-when list, which the final check judges. Empty when the lead wrote
+    /// none, and then the approved goal's criteria are judged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done_when: Vec<crate::events::goal::Criterion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,6 +128,46 @@ pub struct RunStarted {
     /// The MCP client that asked for the run, by the name it reported for itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub front_end: Option<String>,
+}
+
+/// A run's last word to you, in the main agent's voice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosingAnswer {
+    /// The agent's own words: a solo owner's answer, or the lead's from the cards' reports.
+    /// Code writes it when no agent could.
+    pub text: String,
+    /// Who wrote `text`. `None` when code did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<WorkerRef>,
+    /// What changed, with lines added and removed. The run's own records are left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ChangedFile>,
+    /// How it was checked: the gates Argonauts ran, each with its result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<CheckLine>,
+    /// The tests the agents say they ran, in their words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<String>,
+    /// Anything left or worth knowing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedFile {
+    pub path: String,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckLine {
+    /// The gate's name.
+    pub what: String,
+    pub passed: bool,
+    /// Such as "6 passed". Empty when there's nothing more to say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub result: String,
 }
 
 /// One setting that differs from the built-in default, and the layer that set it.

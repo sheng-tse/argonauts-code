@@ -18,12 +18,13 @@ argonauts-core.workspace = true
 crossterm = { workspace = true, features = ["event-stream"] }
 dirs.workspace = true
 futures.workspace = true
-nix = { workspace = true, features = ["term"] }
+nix = { workspace = true, features = ["poll", "term"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
+signal-hook.workspace = true
 similar = { workspace = true, features = ["inline"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 thiserror.workspace = true
@@ -38,6 +39,8 @@ unicode-width.workspace = true
 [dev-dependencies]
 argonauts-testkit.workspace = true
 insta.workspace = true
+# The hangup tests open their own pty and keep its side from the app.
+nix = { workspace = true, features = ["fs", "poll", "term"] }
 regex.workspace = true
 strip-ansi-escapes.workspace = true
 tempfile.workspace = true

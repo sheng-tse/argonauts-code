@@ -280,19 +280,24 @@ fn the_workflow_agent_and_context_views_keep_their_wire_format() {
     let view = |data: Value| json!({"type": "view", "data": data});
     let workflow = view(json!({"data": "workflow", "view": {
         "run": "run-01", "id": "wf-001", "name": "review-panel",
-        "description": "Two reviewers", "breadcrumb": [], "agents_done": 1,
+        "description": "Two reviewers", "style": "workflow",
+        "status_lines": [{"kind": "note", "text": "review:median found a bug, so a second round"}],
+        "breadcrumb": [], "agents_done": 1,
         "agents_total": 3, "elapsed_ms": 72000, "spent": spend(),
-        "phases": [{"name": "Review", "standard": "check", "status": "running", "done": 1,
-            "total": 3, "rows": [
+        "phases": [{"name": "Review", "detail": "two reviewers from other companies",
+            "standard": "check", "status": "running", "count": {"done": 1, "total": 3},
+            "rows": [
                 {"row": "agent", "session": "s-003", "label": "reviewer · card-002",
                  "worker": "codex/gpt-x", "status": "done", "tokens": 38000,
                  "spent": spend(), "elapsed_ms": 372000, "subagents": 0, "context": null,
                  "standing_in_for": null},
                 {"row": "workflow", "id": "wf-002", "name": "security-review",
                  "status": "waiting", "agents_done": 0, "agents_total": 2,
-                 "workers": ["antigravity-cli", "claude-code/opus"], "elapsed_ms": 0}]},
-            {"name": "Adjudicate", "standard": "decide", "status": "needs_you", "done": 0,
-             "total": 1, "rows": []}]}}));
+                 "workers": ["antigravity-cli", "claude-code/opus"], "elapsed_ms": 0},
+                {"row": "command", "label": "tests:slugify", "command": "pytest",
+                 "result": "6 passed", "status": "done", "elapsed_ms": 4000}]},
+            {"name": "Adjudicate", "detail": "", "standard": "decide", "status": "skipped",
+             "attempt": 2, "rows": []}]}}));
     let agent = view(json!({"data": "agent", "view": {
         "run": "run-01", "row": agent_row(), "prompt": "Review card-002's diff.",
         "activity": [{"tool": "Bash", "summary": "npm test", "ok": true},
@@ -383,12 +388,27 @@ where
 fn design_answers_pass_the_strict_schema_and_decode() {
     assert_eq!(DesignWorkflow::NAME, StepName::DesignWorkflow);
     round_trip::<StepName>(json!("design_workflow"));
-    check_step_output::<DesignWorkflow>(json!({"template": "review-panel",
+    check_step_output::<DesignWorkflow>(json!({"name": "review-rate-limits",
+        "description": "Review the rate limiter with three reviewers",
+        "based_on": "review-panel", "why": "A small diff; three reviewers are enough.",
         "params": [{"name": "reviewers", "value": "3"}, {"name": "target", "value": "diff"}],
-        "composed": null, "why": "A small diff; three reviewers are enough."}));
-    check_step_output::<DesignWorkflow>(json!({"template": null, "params": [],
-        "composed": "name: tight-fix\nphases:\n  - name: Fix\n    standard: do\n    steps:\n      - kind: build\n",
-        "why": "No template fits a one-line fix."}));
+        "workflow": null,
+        "done_when": [{"id": "G1", "text": "429 with Retry-After", "short": "Retry header",
+                       "check": {"test": "test_retry_after"}},
+                      {"id": "G2", "text": "The README says so", "short": "Docs",
+                       "check": "review"}],
+        "plan": [], "questions": [], "first_attempt": null}));
+    check_step_output::<DesignWorkflow>(json!({"name": "fix-slugify-median",
+        "description": "Fix slugify's dashes and median's empty list", "based_on": null,
+        "why": "No example fits a one-line fix.", "params": [],
+        "workflow": "name: tight-fix\nphases:\n  - title: Fix\n    detail: one owner\n    standard: do\n    steps:\n      - { kind: build, label: \"fix:{item}\" }\n",
+        "done_when": [{"id": "G1", "text": "median([]) raises", "short": "Empty list",
+                       "check": {"command": "pytest -k median"}}],
+        "plan": [{"item": "median", "task": "raise on an empty list"}],
+        "questions": [{"topic": "Accented letters", "text": "Keep accents?",
+                       "options": ["Keep them", "Strip them"]}],
+        "first_attempt": {"title": "Empty List", "detail": "one owner",
+                          "steps": "- { kind: build, label: \"fix:{item}\" }\n"}}));
     round_trip::<DesignInput>(json!({"request": "add per-key rate limiting",
         "goal": ["429 with Retry-After"],
         "examples": [{"name": "review-panel", "description": "Two reviewers",

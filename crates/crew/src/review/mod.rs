@@ -20,7 +20,7 @@ use crate::prompts::review::REVIEW;
 use crate::state::RunState;
 use crate::state::cards::CardRecord;
 use crate::workflow::kinds::item_card;
-use crate::workflow::{StepCall, StepDone, authors};
+use crate::workflow::{StepCall, StepDone, authors, runner};
 
 pub mod adjudicate;
 pub mod diff_cut;
@@ -206,12 +206,13 @@ async fn review_in(
         decisions,
         round,
     };
+    let at = host.read(|state| runner::review_at(state, card));
     let asks = reviewers
         .iter()
         .filter(|reviewer| !reviews.iter().any(|(r, _)| r == *reviewer))
         .map(|reviewer| {
             let mut ask = Ask::new(
-                None,
+                at.clone(),
                 RoleName::Reviewer,
                 reviewer.clone(),
                 REVIEW,

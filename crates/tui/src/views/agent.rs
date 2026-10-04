@@ -10,7 +10,9 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
 use argonauts_core::names::SessionKey;
 use argonauts_core::settings::ui::VendorInternals;
-use argonauts_core::views::{AgentRow, AgentView as AgentData, PhaseRow, RowStatus, WorkflowRow};
+use argonauts_core::views::{
+    AgentRow, AgentView as AgentData, PhaseRow, RowStatus, StatusLine, WorkflowRow,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -23,11 +25,11 @@ use crate::render::{Clock, RenderCtx};
 use crate::text::{KEEP, Part, fit_parts, sanitize, sanitize_line, str_width, wrap_text};
 use crate::theme::{Role, Theme};
 
-use super::columns::{self, Column, GAP, Give};
+use super::dock::{self, Heading};
 use super::follow::{Follower, Shown};
-use super::layout::{cut, left, right};
+use super::layout::{cut, left};
 use super::list;
-use super::panes::{self, ELAPSED_SLOT, Footer, Header, Marks, Side};
+use super::panes::{self, Footer, Marks};
 use super::workflow::agents_in_phase;
 use super::{View, ViewCtx, ViewOutcome};
 
@@ -40,9 +42,6 @@ const OUTCOME_PREVIEW: usize = 6;
 /// The left pane is never wider than this, or than three tenths of the screen, so the sections
 /// keep most of it.
 const MAX_LEFT: usize = 64;
-
-/// A repeated label's agent name is cut to no less than this before the label is.
-const MIN_SIBLING_WORKER: usize = 8;
 
 /// Longer subagent names are cut, so their states still line up.
 const MAX_CHILD_LABEL: usize = 24;
@@ -125,7 +124,7 @@ impl AgentView {
             .iter()
             .filter_map(|row| match row {
                 WorkflowRow::Agent(agent) => Some(agent.clone()),
-                WorkflowRow::Workflow(_) => None,
+                WorkflowRow::Workflow(_) | WorkflowRow::Command(_) => None,
             })
             .collect();
         let mut view = Self::new(data);
@@ -171,13 +170,16 @@ impl AgentView {
         self.data.row.session == *self.session()
     }
 
-    /// Draws the view under `header`, the workflow's own when it's shown in a workflow's frame.
+    /// Draws the view in the docked frame under `heading`, the workflow's own when it's shown
+    /// in a workflow's frame: the phase's agents on the left, as Claude Code lists them, and
+    /// this agent's detail on the right, with its position on the box's bottom edge.
     pub fn render_frame(
         &mut self,
         area: Rect,
         buf: &mut Buffer,
         ctx: &ViewCtx<'_>,
-        header: &Header,
+        heading: &Heading,
+        status: &[StatusLine],
     ) {
         let theme = ctx.theme;
         let seen_at = *self.seen_at.get_or_insert(ctx.now);
@@ -190,26 +192,42 @@ impl AgentView {
             ),
             None => String::new(),
         };
-        let siblings = self.sibling_cells(ctx, seen_at);
+        // A label two agents share reads with the agent's name after it.
+        let names: Vec<(String, bool)> = sibling_names(&self.siblings, &ctx.state.names)
+            .into_iter()
+            .zip(&self.siblings)
+            .map(|((label, repeated), row)| {
+                if repeated {
+                    let agent = sanitize_line(&ctx.state.names.worker(&row.worker)).into_owned();
+                    (format!("{label}  {agent}"), true)
+                } else {
+                    (label, false)
+                }
+            })
+            .collect();
         let left_width = if self.phase.is_some() {
             let most = MAX_LEFT.min(usize::from(area.width) * 3 / 10);
-            let lead = lead(marks.slot());
-            let fitted = SiblingColumns::fit(&siblings, most.saturating_sub(lead));
-            // The title sits on the border with a space each side, over the pane's padding.
-            (lead + fitted.width())
+            let longest = names
+                .iter()
+                .map(|(label, _)| str_width(label))
+                .max()
+                .unwrap_or(0);
+            (lead(marks.slot()) + longest)
                 .max(str_width(&phase_title))
                 .min(most) as u16
         } else {
             0
         };
-        let panes = panes::split(area, left_width);
-        panes::draw_header(buf, panes.header, header, theme);
+        let frame = dock::split(area, left_width, status.len() as u16);
+        dock::draw_rule(buf, &frame, theme);
+        dock::draw_heading(buf, &frame, heading, theme);
+        dock::draw_status(buf, &frame, status, theme);
+        let panes = frame.panes;
         let label = sanitize_line(&self.siblings[self.selected].label)
             .trim()
             .to_owned();
-        panes::draw_box(buf, &panes, [&phase_title, &label], Side::Left, theme);
         if panes.left.width > 0 {
-            let rows = self.sibling_lines(&siblings, panes.left, theme);
+            let rows = self.sibling_lines(&names, panes.left, theme);
             panes::put_lines(buf, panes.left, &rows);
         }
 
@@ -220,31 +238,16 @@ impl AgentView {
         self.drawn.page = page;
         self.drawn.width = panes.right.width;
         let shown = &lines[self.scroll.min(lines.len())..];
+        let mark = dock::position(self.scroll, page, lines.len(), theme);
+        dock::draw_box(buf, &frame, [&phase_title, &label], &mark, theme);
         panes::put_lines(buf, panes.right, shown);
-
-        let mark = if lines.len() > page && page > 0 {
-            let end = (self.scroll + page).min(lines.len());
-            let more = if end < lines.len() {
-                format!(" {}", marks.down)
-            } else {
-                String::new()
-            };
-            format!("{}-{end} of {}{more}", self.scroll + 1, lines.len())
-        } else {
-            String::new()
-        };
-        // The hints leave room for the mark beside them.
-        let room = match str_width(&mark) {
-            0 => usize::from(panes.footer.width),
-            mark => usize::from(panes.footer.width).saturating_sub(mark + 2),
-        };
-        let footer = self.footer(room, ctx);
-        panes::draw_footer(buf, panes.footer, footer, &mark, theme);
+        let footer = self.footer(usize::from(panes.footer.width), ctx);
+        dock::draw_footer(buf, &frame, footer, theme);
     }
 
-    /// The keys that act here and now: Enter names what it does to the section it's on, and
-    /// steering and stopping need the agent running, taking over and pausing the run going.
-    /// Lower numbers give way first when the row is short.
+    /// The keys that act here and now, as Claude Code's: `↑↓ agent · j/k scroll · ⏎expand ·
+    /// p pause · esc back · s save`. Ours join them only when they act: steering and stopping
+    /// a running agent, and taking over a card. Lower numbers give way first.
     fn footer(&self, width: usize, ctx: &ViewCtx<'_>) -> Footer {
         if let Some(text) = &self.steer {
             return Footer::Line(steer_line(text, width, ctx.theme));
@@ -255,12 +258,6 @@ impl AgentView {
             return Footer::hints(&[(&ask, 0), ("esc to keep", 0)]);
         }
         let internals = vendor_internals(ctx);
-        // `j` and `k` scroll with or without vim keys, but the hint names them only with.
-        let scroll = if list::vim(ctx.state) {
-            "j/k scroll"
-        } else {
-            "pgdn scroll"
-        };
         let enter = match self.current_section(internals) {
             Some(Section::Diff) => Some("⏎ open"),
             Some(section) if self.expanded.contains(&section) => Some("⏎ collapse"),
@@ -276,100 +273,70 @@ impl AgentView {
             .state
             .session(&self.data.run, &self.data.row.session)
             .is_some_and(|session| session.card.is_some());
-        let mut hints = vec![("↑↓ agent", 0), (scroll, 6)];
-        if self.expandable(internals).len() > 1 {
-            hints.push(("tab section", 2));
-        }
+        let mut hints = vec![("↑↓ agent", 0), ("j/k scroll", 6)];
         hints.extend(enter.map(|enter| (enter, 7)));
         if running {
-            hints.push(("s steer", 5));
+            hints.push(("i steer", 5));
         }
         if run_going && has_card {
-            hints.push(("t take over", 3));
+            hints.push(("t take over", 2));
         }
         if running {
             hints.push(("x stop", 4));
         }
         if run_going {
-            hints.push(("p pause", 1));
+            hints.push(("p pause", 3));
         }
         hints.push((panes::ESC_BACK, 0));
+        if self.phase.is_some() {
+            hints.push(("s save", 1));
+        }
         Footer::hints(&hints)
     }
 
-    /// Each agent of the phase in the left pane's columns, its time counting while it runs.
-    fn sibling_cells(&self, ctx: &ViewCtx<'_>, seen_at: Instant) -> Vec<SiblingCells> {
-        let ticking = millis(ctx.now.saturating_duration_since(seen_at));
-        let names = sibling_names(&self.siblings, &ctx.state.names);
-        self.siblings
-            .iter()
-            .zip(names)
-            .map(|(row, (label, repeated))| {
-                let running = self.loaded() && row.status == RowStatus::Running;
-                SiblingCells {
-                    label,
-                    repeated,
-                    worker: sanitize_line(&ctx.state.names.worker(&row.worker))
-                        .trim()
-                        .to_owned(),
-                    tokens: if row.tokens > 0 {
-                        panes::tokens(row.tokens)
-                    } else {
-                        String::new()
-                    },
-                    spend: panes::spend(&row.spent).unwrap_or_default(),
-                    elapsed: panes::elapsed(row.elapsed_ms + if running { ticking } else { 0 }),
-                }
-            })
-            .collect()
-    }
-
+    /// Each agent of the phase as Claude Code lists them beside an agent's detail: the cursor,
+    /// the state glyph, and the label.
     fn sibling_lines(
         &self,
-        siblings: &[SiblingCells],
+        names: &[(String, bool)],
         area: Rect,
         theme: &Theme,
     ) -> Vec<Line<'static>> {
         let marks = Marks::for_theme(theme);
         let slot = marks.slot();
         let width = usize::from(area.width);
-        let fitted = SiblingColumns::fit(siblings, width.saturating_sub(lead(slot)));
-        let dim = theme.style(Role::Dim);
+        let accent = theme.style(Role::Card);
         let height = usize::from(area.height);
         let skip = (self.selected + 1).saturating_sub(height);
         self.siblings
             .iter()
-            .zip(siblings)
+            .zip(names)
             .enumerate()
             .skip(skip)
-            .map(|(i, (row, cells))| {
-                let (glyph, _, role) = marks.status(row.status);
+            .map(|(i, (row, (label, _)))| {
+                let (glyph, role) = row_glyph(&marks, row.status);
                 let selected = i == self.selected;
-                let lead = vec![
+                let label_style = if selected {
+                    accent
+                } else if matches!(
+                    row.status,
+                    RowStatus::Done | RowStatus::Failed | RowStatus::NeedsYou
+                ) {
+                    theme.style(Role::Text)
+                } else {
+                    theme.style(Role::Dim)
+                };
+                let spans = vec![
                     if selected {
-                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
+                        Span::styled(marks.selected.to_owned(), accent)
                     } else {
-                        Span::raw("  ")
+                        Span::raw(" ")
                     },
                     Span::styled(panes::pad_glyph(glyph, slot), theme.style(role)),
                     Span::raw(" "),
+                    Span::styled(cut(label, width.saturating_sub(lead(slot))), label_style),
                 ];
-                let label_style = if selected {
-                    theme.style(Role::Label)
-                } else {
-                    theme.style(Role::Text)
-                };
-                let text = |text: &str| vec![Span::styled(text.to_owned(), dim)];
-                let row = [
-                    vec![Span::styled(cells.label.clone(), label_style)],
-                    text(&cells.worker),
-                    text(&cells.tokens),
-                    text(&cells.spend),
-                ];
-                let edge = fitted
-                    .time
-                    .then(|| text(&right(&cells.elapsed, ELAPSED_SLOT)));
-                columns::line(lead, &fitted.columns, &row, edge, width)
+                Line::from(spans)
             })
             .collect()
     }
@@ -384,8 +351,8 @@ impl AgentView {
         let theme = ctx.theme;
         let row = &self.siblings[self.selected];
         let mut lines = vec![
-            identity_line(row, &self.data.run, width, ctx),
             status_line(row, width, ctx, seen_at, self.loaded()),
+            identity_line(row, &self.data.run, width, ctx),
         ];
         self.drawn.sections.clear();
         if !self.loaded() {
@@ -874,116 +841,63 @@ fn sibling_names(siblings: &[AgentRow], names: &DisplayNames) -> Vec<(String, bo
         .collect()
 }
 
-/// The cells of one agent in the left pane, before padding.
-struct SiblingCells {
-    label: String,
-    /// Another agent has the same label.
-    repeated: bool,
-    worker: String,
-    tokens: String,
-    spend: String,
-    elapsed: String,
-}
-
-/// The left pane's columns: the label, the agent's name, tokens, and spend, each padded to its
-/// widest, and the time at the pane's edge.
-struct SiblingColumns {
-    columns: [Column; 4],
-    time: bool,
-}
-
-const LABEL: usize = 0;
-const WORKER: usize = 1;
-const TOKENS: usize = 2;
-const SPEND: usize = 3;
-
-impl SiblingColumns {
-    fn full(siblings: &[SiblingCells]) -> [Column; 4] {
-        let widest = |cell: fn(&SiblingCells) -> &str| {
-            siblings
-                .iter()
-                .map(|cells| str_width(cell(cells)))
-                .max()
-                .unwrap_or(0)
-        };
-        [
-            Column::left(widest(|c| &c.label)),
-            Column::left(widest(|c| &c.worker)),
-            Column::right(widest(|c| &c.tokens)),
-            Column::right(widest(|c| &c.spend)),
-        ]
-    }
-
-    /// The cells the fitted columns and the time take.
-    fn width(&self) -> usize {
-        columns::used(&self.columns) + if self.time { GAP + ELAPSED_SLOT } else { 0 }
-    }
-
-    /// Spend, then tokens, give way, then the agent's name unless a label repeats, when it's
-    /// cut instead. The time goes before the label, or a repeated label's agent, is cut, since
-    /// those tell the rows apart.
-    fn fit(siblings: &[SiblingCells], room: usize) -> Self {
-        let full = Self::full(siblings);
-        let repeated = siblings.iter().any(|cells| cells.repeated);
-        let worker = if repeated {
-            Give::Cut {
-                column: WORKER,
-                min: MIN_SIBLING_WORKER,
-            }
-        } else {
-            Give::Drop(WORKER)
-        };
-        let gives = [Give::Drop(SPEND), Give::Drop(TOKENS), worker];
-        let whole =
-            |columns: &[Column; 4], column: usize| columns[column].width >= full[column].width;
-        let mut columns = full;
-        columns::fit(
-            &mut columns,
-            room.saturating_sub(GAP + ELAPSED_SLOT),
-            &gives,
-        );
-        if whole(&columns, LABEL) && (!repeated || whole(&columns, WORKER)) {
-            return Self {
-                columns,
-                time: true,
-            };
-        }
-        let mut columns = full;
-        columns::fit(&mut columns, room, &gives);
-        Self {
-            columns,
-            time: false,
-        }
-    }
-}
-
-/// The selection mark, the glyph, and the space after it.
+/// The cursor slot, the glyph, and the space after it.
 fn lead(slot: usize) -> usize {
-    2 + slot + 1
+    1 + slot + 1
 }
 
-/// Under the title, since this is a detail view: the agent's name with its id, and the run,
-/// as `Opus 5.5 on Claude Code (claude-code/opus) · run-01`. The id stays for commands such
-/// as /reassign; the run gives way first.
+/// A row's glyph and its color, as the workflow view draws them.
+fn row_glyph(marks: &Marks, status: RowStatus) -> (&'static str, Role) {
+    match status {
+        RowStatus::Running => (marks.running, Role::Faint),
+        RowStatus::Done => (marks.finished, Role::Success),
+        RowStatus::Failed => (marks.failed, Role::Error),
+        RowStatus::NeedsYou => (marks.needs_you, Role::Card),
+        RowStatus::Queued | RowStatus::Waiting | RowStatus::Skipped => (marks.waiting, Role::Dim),
+    }
+}
+
+/// Under the status line, the ids and the numbers the row leaves out: `claude-code/opus ·
+/// run-01 · 381k tok · $0.84`, then the context it has used. The id stays for commands such as
+/// /reassign; the run and the context give way first.
 fn identity_line(row: &AgentRow, run: &RunId, width: u16, ctx: &ViewCtx<'_>) -> Line<'static> {
     let dim = ctx.theme.style(Role::Dim);
-    let name = format!("{} ({})", ctx.state.names.worker(&row.worker), row.worker);
-    let parts = [
-        Part::new(
-            vec![Span::styled(sanitize_line(&name).into_owned(), dim)],
-            KEEP,
-        ),
-        Part::joined(
+    let mut parts = vec![Part::new(
+        vec![Span::styled(
+            sanitize_line(&row.worker.to_string()).into_owned(),
+            dim,
+        )],
+        KEEP,
+    )];
+    let mut push = |text: String, rank: u16| {
+        parts.push(Part::joined(
             Span::styled(" · ", dim),
-            vec![Span::styled(sanitize_line(run.as_str()).into_owned(), dim)],
-            1,
-        ),
-    ];
+            vec![Span::styled(text, dim)],
+            rank,
+        ));
+    };
+    push(sanitize_line(run.as_str()).into_owned(), 1);
+    if row.tokens > 0 {
+        push(panes::tokens(row.tokens), 3);
+    }
+    if let Some(spend) = panes::spend(&row.spent) {
+        push(spend, 2);
+    }
+    if let Some(context) = row.context {
+        push(
+            format!(
+                "ctx {}/{}",
+                format::tokens(context.used),
+                format::tokens(context.cap)
+            ),
+            0,
+        );
+    }
     fit_parts(Vec::new(), &parts, usize::from(width))
 }
 
-/// `✔ Completed · Opus 5.5 on Claude Code · 381k tok · $0.84 · 6m02s`, then the handoff and context
-/// markers. The state never gives way.
+/// `✔ Completed · Opus 5.5 on Claude Code · 6m02s`, as Claude Code heads an agent's detail,
+/// then the handoff and review markers. The state never gives way.
 fn status_line(
     row: &AgentRow,
     width: u16,
@@ -994,16 +908,21 @@ fn status_line(
     let theme = ctx.theme;
     let marks = Marks::for_theme(theme);
     let dim = theme.style(Role::Dim);
-    let (glyph, _, role) = marks.status(row.status);
+    let (glyph, role) = row_glyph(&marks, row.status);
     let word = match row.status {
         RowStatus::Waiting => "Waiting",
+        RowStatus::Queued => "Queued",
+        RowStatus::Skipped => "Skipped",
         RowStatus::Running => "Running",
         RowStatus::NeedsYou => "Needs you",
         RowStatus::Done => "Completed",
         RowStatus::Failed => "Failed",
     };
     let mut parts = vec![Part::new(
-        vec![Span::styled(format!("{glyph} {word}"), theme.style(role))],
+        vec![
+            Span::styled(glyph.to_owned(), theme.style(role)),
+            Span::styled(format!(" {word}"), theme.style(Role::Text)),
+        ],
         KEEP,
     )];
     let mut push = |text: String, style: Style, rank: u16| {
@@ -1019,12 +938,6 @@ fn status_line(
         dim,
         5,
     );
-    if row.tokens > 0 {
-        push(panes::tokens(row.tokens), dim, 2);
-    }
-    if let Some(spend) = panes::spend(&row.spent) {
-        push(spend, dim, 1);
-    }
     let ticking = if loaded && row.status == RowStatus::Running {
         ctx.now.saturating_duration_since(seen_at)
     } else {
@@ -1035,17 +948,6 @@ fn status_line(
     if let Some(worker) = &row.standing_in_for {
         let original = sanitize_line(&names.worker(worker)).into_owned();
         push(format!("{} for {original}", marks.stands_in), dim, 4);
-    }
-    if let Some(context) = row.context {
-        push(
-            format!(
-                "ctx {}/{}",
-                format::tokens(context.used),
-                format::tokens(context.cap)
-            ),
-            dim,
-            0,
-        );
     }
     if needs_review(ctx, &row.session) {
         push(
@@ -1076,6 +978,10 @@ pub(super) fn needs_review(ctx: &ViewCtx<'_>, session: &SessionKey) -> bool {
 }
 
 impl View for AgentView {
+    fn docked(&self) -> bool {
+        true
+    }
+
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         if let Some(follow) = &self.follow {
             follow.show(Shown::Agent {
@@ -1083,12 +989,8 @@ impl View for AgentView {
                 session: self.session().clone(),
             });
         }
-        let row = &self.data.row;
-        let header = Header {
-            title: Line::from(Span::styled(
-                sanitize_line(&row.label).trim().to_owned(),
-                ctx.theme.style(Role::Label),
-            )),
+        let heading = Heading {
+            names: vec![self.data.row.label.clone()],
             // The pane names the agent and its run, so the header says what the run is for.
             description: ctx
                 .state
@@ -1096,9 +998,9 @@ impl View for AgentView {
                 .get(&self.data.run)
                 .map(|run| sanitize_line(&run.title).trim().to_owned())
                 .unwrap_or_default(),
-            summary: String::new(),
+            totals: String::new(),
         };
-        self.render_frame(area, buf, ctx, &header);
+        self.render_frame(area, buf, ctx, &heading, &[]);
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome {
@@ -1217,7 +1119,7 @@ impl View for AgentView {
                 }
                 ViewOutcome::Consumed
             }
-            KeyCode::Char('s') if plain && self.loaded() => {
+            KeyCode::Char('i') if plain && self.loaded() => {
                 self.steer = Some(String::new());
                 ViewOutcome::Consumed
             }
@@ -1355,8 +1257,12 @@ mod tests {
             name: "Build".into(),
             standard: argonauts_core::workflow::StandardPhase::Do,
             status: RowStatus::Running,
-            done: 0,
-            total: rows.len() as u32,
+            detail: String::new(),
+            attempt: None,
+            count: Some(argonauts_core::views::PhaseCount {
+                done: 0,
+                total: rows.len() as u32,
+            }),
             rows,
         }
     }
@@ -1369,7 +1275,7 @@ mod tests {
 
     /// The footer's last row, which a cut would end with `…`.
     fn footer(text: &str) -> &str {
-        text.lines().last().unwrap_or_default()
+        text.lines().last().unwrap_or_default().trim_start()
     }
 
     /// A run that's going, with the agent's session working on a card.
@@ -1404,12 +1310,16 @@ mod tests {
             let text = draw_in(&mut in_phase("Done."), width, &state);
             let footer = footer(&text);
             assert!(footer.starts_with("↑↓ agent"), "{footer}");
-            assert!(footer.trim_end().ends_with("esc back"), "{footer}");
+            let end = footer.trim_end();
+            assert!(
+                end.ends_with("esc back") || end.ends_with("s save"),
+                "{footer}"
+            );
             assert!(!footer.contains('…'), "{footer}");
         }
         let text = draw_in(&mut in_phase("Done."), 120, &state);
         let footer = footer(&text);
-        for hint in ["s steer", "t take over", "x stop", "p pause"] {
+        for hint in ["i steer", "t take over", "x stop", "p pause", "s save"] {
             assert!(footer.contains(hint), "{hint}: {footer}");
         }
     }
@@ -1429,10 +1339,16 @@ mod tests {
         }
         let text = draw_in(&mut view, 120, &finished);
         let shown = footer(&text);
-        for gone in ["s steer", "t take over", "x stop", "p pause", "d diff"] {
+        for gone in [
+            "i steer",
+            "t take over",
+            "x stop",
+            "p pause",
+            "d diff",
+            "tab",
+        ] {
             assert!(!shown.contains(gone), "{gone}: {shown}");
         }
-        assert!(shown.contains("tab section"), "{shown}");
         assert!(shown.contains("⏎ open"), "{shown}");
 
         key_in(&mut view, KeyCode::Tab, KeyModifiers::NONE, &finished);
@@ -1441,14 +1357,15 @@ mod tests {
         key_in(&mut view, KeyCode::Enter, KeyModifiers::NONE, &finished);
         let text = draw_in(&mut view, 120, &finished);
         assert!(footer(&text).contains("⏎ collapse"), "{text}");
-        assert!(footer(&text).contains("pgdn scroll"), "{text}");
+        assert!(footer(&text).contains("j/k scroll"), "{text}");
     }
 
+    /// `j` and `k` scroll with vim keys or without, so the footer names them as Claude Code's
+    /// does either way.
     #[test]
-    fn the_footer_names_j_and_k_only_with_vim_keys() {
+    fn the_footer_names_j_and_k_as_claude_code_does() {
         let text = draw(&mut in_phase("Done."), 120);
-        assert!(footer(&text).contains("pgdn scroll"), "{text}");
-        assert!(!footer(&text).contains("j/k"), "{text}");
+        assert!(footer(&text).contains("j/k scroll"), "{text}");
         let vim = crate::views::list::keys_state(true);
         let buf = render(&mut in_phase("Done."), 120, &theme(Glyphs::UNICODE), &vim);
         let text = buffer_text(&buf);
@@ -1458,7 +1375,7 @@ mod tests {
     #[test]
     fn the_steer_line_keeps_the_end_of_what_you_type() {
         let mut view = in_phase("Done.");
-        key(&mut view, KeyCode::Char('s'), KeyModifiers::NONE);
+        key(&mut view, KeyCode::Char('i'), KeyModifiers::NONE);
         for c in "use serde_json for the writer and keep the csv path as it is".chars() {
             key(&mut view, KeyCode::Char(c), KeyModifiers::NONE);
         }
@@ -1629,14 +1546,17 @@ mod tests {
         // the workflow's.
         let named = lines
             .iter()
-            .position(|line| line.contains('│') && line.contains("(claude-code/opus) · run-01"))
+            .position(|line| line.contains('│') && line.contains("claude-code/opus · run-01"))
             .unwrap_or_else(|| panic!("{text}"));
-        assert!(lines[named + 1].contains("Running"), "{text}");
+        assert!(
+            lines[named - 1].contains("● Running · Opus on Claude Code"),
+            "{text}"
+        );
 
         // On its own, the header already says it.
         let text = draw(&mut AgentView::new(data("done")), 100);
         assert_eq!(
-            text.matches("(claude-code/opus) · run-01").count(),
+            text.matches("claude-code/opus · run-01").count(),
             1,
             "{text}"
         );
@@ -1668,9 +1588,9 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle}: {text}"))
         };
         // The agents' names line up in a column of their own, whole while a label repeats.
-        assert_eq!(left("✓ drafter  Claude Code"), "✓ drafter  Claude Code");
-        assert!(left("❯ ✓ drafter").ends_with("drafter  Codex"), "{text}");
-        assert_eq!(left("✓ judge"), "✓ judge    Codex");
+        assert_eq!(left("✔ drafter  Claude Code"), "✔ drafter  Claude Code");
+        assert!(left("❯✔ drafter").ends_with("drafter  Codex"), "{text}");
+        assert_eq!(left("✔ judge"), "✔ judge");
     }
 
     /// Two judges on one agent still read alike by name, so their labels take a number.

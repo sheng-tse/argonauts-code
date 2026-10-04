@@ -16,6 +16,7 @@ mod status;
 mod steps;
 #[cfg(test)]
 mod tests;
+mod workflows;
 
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::{RunId, Verbosity};

@@ -360,6 +360,34 @@ impl BottomState {
         parts.assemble(max_rows)
     }
 
+    /// The region while a docked view is up: the narrator and the working line stay, then a
+    /// blank row, and the view takes the rows the input, the mode line, and the panel had.
+    /// The view keeps its rows when the screen is short; the working line goes first.
+    pub fn render_docked(
+        &self,
+        ctx: &RenderCtx<'_>,
+        max_rows: usize,
+        text_streaming: bool,
+        view: Vec<Line<'static>>,
+    ) -> BottomView {
+        let mut lines = narrator_lines(self.narrator.as_deref(), ctx);
+        match &self.working {
+            Some(line) if line.shows(text_streaming) => {
+                lines.extend([line.line(ctx), Line::default()]);
+            }
+            _ if !lines.is_empty() => lines.push(Line::default()),
+            _ => {}
+        }
+        if lines.len() + view.len() > max_rows {
+            lines.clear();
+        }
+        lines.extend(view);
+        BottomView {
+            lines,
+            cursor: None,
+        }
+    }
+
     /// When the region next changes on its own. `None` when nothing animates, so an idle
     /// screen never redraws.
     pub fn next_change(&self, ctx: &RenderCtx<'_>) -> Option<Instant> {

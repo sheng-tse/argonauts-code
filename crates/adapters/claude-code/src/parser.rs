@@ -12,6 +12,7 @@ use crate::settings::STATUS_SERVER;
 use crate::subagents::SubagentTracker;
 use crate::todo::TodoTracker;
 use crate::usage::UsageTracker;
+use crate::workflows::WorkflowTracker;
 
 const FILE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
@@ -25,6 +26,7 @@ pub struct ClaudeStreamParser {
     context: ContextTracker,
     todos: TodoTracker,
     subagents: SubagentTracker,
+    workflows: WorkflowTracker,
     open_tools: HashMap<String, OpenTool>,
     streaming_message_id: Option<String>,
     last_text: Option<String>,
@@ -91,11 +93,14 @@ impl ClaudeStreamParser {
             "status" | "thinking_tokens" | "background_tasks_changed" | "session_title_changed" => {
                 Vec::new()
             }
-            subtype => self
-                .subagents
-                .task_event(subtype, line)?
-                .into_iter()
-                .collect(),
+            // A workflow is a subagent too, so both trackers read its task events.
+            subtype => {
+                let child = self.subagents.task_event(subtype, line)?;
+                child
+                    .into_iter()
+                    .chain(self.workflows.task_event(subtype, line))
+                    .collect()
+            }
         };
         Some(events)
     }
@@ -503,13 +508,13 @@ impl StreamParser for ClaudeStreamParser {
         if std::mem::replace(&mut self.finished, true) {
             return Vec::new();
         }
+        let mut events = self
+            .workflows
+            .close("its session ended before the workflow did");
         if self.results_seen > 0 && !self.turn_open {
-            return self
-                .crash_after_error_result(exit_code)
-                .into_iter()
-                .collect();
+            events.extend(self.crash_after_error_result(exit_code));
+            return events;
         }
-        let mut events = Vec::new();
         if !self.error_reported {
             let (category, message) = missing_result_error(exit_code, self.stderr_error.as_deref());
             events.push(self.error(category, message));

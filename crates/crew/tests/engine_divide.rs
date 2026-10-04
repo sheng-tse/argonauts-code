@@ -539,14 +539,8 @@ fn history(
         version: 1,
         summary: "Rate-limit the API per key.".to_owned(),
         criteria: vec![
-            Criterion {
-                id: "G1".to_owned(),
-                text: "Counters survive restarts.".to_owned(),
-            },
-            Criterion {
-                id: "G2".to_owned(),
-                text: "Over the limit gets 429.".to_owned(),
-            },
+            Criterion::new("G1", "Counters survive restarts."),
+            Criterion::new("G2", "Over the limit gets 429."),
         ],
         in_scope: Vec::new(),
         out_of_scope: Vec::new(),

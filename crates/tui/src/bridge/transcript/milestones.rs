@@ -9,8 +9,9 @@ use argonauts_core::events::card::{
 };
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::plan::{DivideEvent, JudgingResult, MappedTopic, PlanEvent};
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunPhase};
+use argonauts_core::events::run::{ClosingAnswer, RunLifecycle, RunMode, RunPhase};
 use argonauts_core::events::vendor::{HandoffEvent, HandoffPlan, VendorEvent};
+use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::HealthState;
 use argonauts_core::log::RETRO_FAILED;
@@ -21,7 +22,7 @@ use time::OffsetDateTime;
 use crate::format::WallClock;
 
 use super::items::Items;
-use super::{Cx, gates, handoff, lifecycle, steps};
+use super::{Cx, gates, handoff, lifecycle, steps, workflows};
 
 #[derive(Debug, Default)]
 pub(super) struct Milestones {
@@ -54,6 +55,10 @@ pub(super) struct RunStory {
     /// Each card's latest checkpoint tag and why it was handed off.
     pub tags: BTreeMap<CardId, u32>,
     pub handoffs: BTreeMap<CardId, HandoffPlan>,
+    /// The run's own workflow, by the name its start item printed.
+    pub workflow: Option<String>,
+    /// Printed at the run's end, after the merge line.
+    pub closing: Option<ClosingAnswer>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,7 +91,13 @@ impl Milestones {
                     committed,
                 } => lifecycle::paused(story.pause_now, *sessions_stopped, committed, cx),
                 RunLifecycle::Parked { reason, .. } => lifecycle::parked(reason, clock, cx),
+                RunLifecycle::ClosingAnswer(answer) => story.closing = Some((**answer).clone()),
                 RunLifecycle::Finished { outcome, detail } => {
+                    let elapsed = story.started.map(|at| {
+                        let seconds = (event.ts - at).whole_seconds().max(0);
+                        std::time::Duration::from_secs(u64::try_from(seconds).unwrap_or(0))
+                    });
+                    workflows::done(&event.run_id, story, elapsed, cx);
                     lifecycle::run_end(event, story, *outcome, detail.as_deref(), clock, cx);
                     self.runs.remove(&event.run_id);
                 }
@@ -138,24 +149,33 @@ impl Milestones {
                         ..
                     } if *to != CardState::Gating => {
                         if let Some(gates) = story.gates.remove(&Some(card.clone())) {
-                            gates::report(Some(card), &gates, story.crew, cx);
+                            let label = card_label(cx, &event.run_id, card);
+                            gates::report(Some(&label), &gates, story.crew, cx);
                         }
                     }
                     CardEvent::CheckpointTagged { n, .. } => {
                         story.tags.insert(card.clone(), *n);
                     }
                     CardEvent::Reassigned { from, to, by, .. } => {
-                        handoff::reassigned(card, from.as_ref(), to, by, cx)
+                        let label = card_label(cx, &event.run_id, card);
+                        handoff::reassigned(&label, from.as_ref(), to, by, cx)
                     }
                     CardEvent::Reverted { to, kept_on } => {
-                        handoff::reverted(card, *to, kept_on, cx)
+                        let label = card_label(cx, &event.run_id, card);
+                        handoff::reverted(&label, *to, kept_on, cx)
                     }
-                    CardEvent::DebtCleared { by } => handoff::debt_cleared(card, by, cx),
+                    CardEvent::DebtCleared { by } => {
+                        let label = card_label(cx, &event.run_id, card);
+                        handoff::debt_cleared(&label, by, cx)
+                    }
                     CardEvent::Attempt {
                         worker,
                         cause: AttemptCause::Rotation,
                         ..
-                    } => handoff::rotated(card, worker, cx),
+                    } => {
+                        let label = card_label(cx, &event.run_id, card);
+                        handoff::rotated(&label, worker, cx)
+                    }
                     _ => {}
                 }
             }
@@ -175,7 +195,10 @@ impl Milestones {
                     card,
                     files,
                     assigned_to,
-                } => handoff::conflict(card, files.len(), assigned_to, cx),
+                } => {
+                    let label = card_label(cx, &event.run_id, card);
+                    handoff::conflict(&label, files.len(), assigned_to, cx)
+                }
                 IntegrationEvent::MainMoved { commits, .. } => lifecycle::main_moved(*commits, cx),
                 _ => {}
             },
@@ -191,7 +214,7 @@ impl Milestones {
                     ..
                 } => handoff::handed_off(
                     handoff::Handed {
-                        card,
+                        card: &card_label(cx, &event.run_id, card),
                         to,
                         mode: *mode,
                         context: *context,
@@ -205,7 +228,10 @@ impl Milestones {
                     card,
                     vendor,
                     until,
-                } => handoff::waiting(card, vendor, *until, clock, cx),
+                } => {
+                    let label = card_label(cx, &event.run_id, card);
+                    handoff::waiting(&label, vendor, *until, clock, cx)
+                }
                 HandoffEvent::Packet { .. } => {}
             },
             RunEventKind::Vendor(vendor) => match vendor {
@@ -223,6 +249,12 @@ impl Milestones {
                 ),
                 VendorEvent::Quota(_) => {}
             },
+            RunEventKind::Workflow(WorkflowEvent::Declared(declared)) => {
+                workflows::declared(&event.run_id, declared, story, cx);
+            }
+            RunEventKind::Workflow(WorkflowEvent::PhaseAdded { phase, why, .. }) => {
+                workflows::phase_added(&phase.title, why, story, cx);
+            }
             RunEventKind::Retro(_) => story.retro = true,
             // The engine's note repeats the line the failed phase printed, without the reason.
             RunEventKind::Note(note) if story.retro_failed && note.text == RETRO_FAILED => {}
@@ -230,4 +262,12 @@ impl Milestones {
             _ => {}
         }
     }
+}
+
+/// What a card goes by in the chat: its label, never its id (`RunState::card_label`).
+fn card_label(cx: &Cx<'_>, run: &RunId, card: &CardId) -> String {
+    cx.state
+        .runs
+        .get(run)
+        .map_or_else(|| card.to_string(), |state| state.card_label(card))
 }

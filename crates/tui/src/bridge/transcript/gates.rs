@@ -1,7 +1,6 @@
 //! `● Gates(tests, lint, link check)`: a card's gate results, printed together once it leaves
 //! gating.
 
-use argonauts_core::CardId;
 use argonauts_core::events::card::{GateKind, GateOutcome};
 
 use crate::cell::ToolState;
@@ -9,8 +8,9 @@ use crate::cell::ToolState;
 use super::steps::step;
 use super::{Cx, emit};
 
-/// `● Gates(tests, lint, link check)` then `⎿  All 3 passed` or what failed.
-pub(super) fn report(card: Option<&CardId>, gates: &[GateOutcome], label: bool, cx: &mut Cx<'_>) {
+/// `● Gates(tests, lint, link check)` then `⎿  All 3 passed` or what failed. In a crew run the
+/// card shows by its label, `Gates(build:flag · tests)`; `None` is the final check.
+pub(super) fn report(card: Option<&str>, gates: &[GateOutcome], label: bool, cx: &mut Cx<'_>) {
     if gates.is_empty() && card.is_none() {
         return;
     }

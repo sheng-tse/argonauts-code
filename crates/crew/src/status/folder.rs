@@ -938,6 +938,7 @@ mod tests {
         let assumption = |text: &str, basis: String| Assumption {
             text: text.to_owned(),
             basis,
+            by: None,
         };
         let file = GoalFile {
             run: RunId::new("run-01").unwrap(),

@@ -258,6 +258,7 @@ fn card_log() -> Log {
         questions: Vec::new(),
         change_requests: Vec::new(),
         memory_proposals: Vec::new(),
+        answer: String::new(),
     })));
     log.push(
         Some(CARD),

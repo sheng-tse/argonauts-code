@@ -418,15 +418,13 @@ mod tests {
             run: RunId::new("run-01").unwrap(),
             version: 1,
             summary: "Rate limit the API".to_owned(),
-            criteria: vec![Criterion {
-                id: "G1".to_owned(),
-                text: "429 after 100 calls".to_owned(),
-            }],
+            criteria: vec![Criterion::new("G1", "429 after 100 calls")],
             in_scope: Vec::new(),
             out_of_scope: Vec::new(),
             assumptions: vec![Assumption {
                 text: "per API key".to_owned(),
                 basis: "2 of 3".to_owned(),
+                by: None,
             }],
             answers: vec!["Redis is available".to_owned()],
             source: GoalSource::Restatements,

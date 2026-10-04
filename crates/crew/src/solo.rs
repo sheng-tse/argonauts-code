@@ -31,6 +31,15 @@ pub async fn goal_from_prompt(host: &Host) -> EngineResult<GoalFile> {
             "solo.restate_first is on, so the goal waits for your approval".to_owned(),
         ));
     }
+    prompt_is_the_goal(host).await
+}
+
+/// Records the prompt as the approved goal, as the configuration's approval: a solo run, or a
+/// crew run where Understand doesn't run.
+pub async fn prompt_is_the_goal(host: &Host) -> EngineResult<GoalFile> {
+    if let Some(approved) = host.read(|state| state.goal.approved.clone()) {
+        return Ok(approved);
+    }
     let request = host.read(round::request)?;
     round::begin(host)?;
     let goal = draft::from_prompt(host.run_id(), &request);
@@ -81,6 +90,7 @@ pub fn card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
         reviewers,
         budget: CardBudget::default(),
         predictions: None,
+        item: crate::workflow::brief::item(state),
     })
 }
 
@@ -191,6 +201,7 @@ mod tests {
                 reviewers: Vec::new(),
                 budget: CardBudget::default(),
                 predictions: None,
+                item: None,
             },
             state,
             attempts: tries,

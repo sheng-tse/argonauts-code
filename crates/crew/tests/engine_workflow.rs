@@ -555,7 +555,13 @@ async fn composed_workflow_runs() -> anyhow::Result<()> {
         panic!("no workflow started: {events:?}");
     };
     assert_eq!(started.from, Some(WorkflowRef::new("composed-checks")));
-    assert_eq!(started.workflow, parse(COMPOSED));
+    // It runs as written, under the run's own name; the file shows only as `based_on`.
+    assert_eq!(started.workflow.phases, parse(COMPOSED).phases);
+    assert_eq!(started.workflow.name, "check-the-repo");
+    assert_eq!(
+        started.workflow.based_on.as_deref(),
+        Some("composed-checks")
+    );
     let finished: Vec<(StepKind, StandardPhase, StepEnd)> = events
         .iter()
         .filter_map(|event| match event {
@@ -593,11 +599,11 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
     let changed = format!(
         "{TWO_PHASES}  - name: Extra look\n    standard: check\n    steps:\n      - kind: gate\n"
     );
-    let unchanged = json!({"template": null, "params": [], "composed": null, "why": "it fits"});
+    let unchanged = support::brief(None, json!([]), None, "it fits");
     support::script(
         &lead,
         vec![
-            json!({"template": null, "params": [], "composed": changed, "why": "one more look"}),
+            support::brief(None, json!([]), Some(&changed), "one more look"),
             unchanged.clone(),
             unchanged,
         ],
@@ -632,7 +638,7 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
         _ => None,
     });
     let change = change.unwrap_or_else(|| panic!("no Workflow::Changed in {events:?}"));
-    assert_eq!(change.checkpoint, opened.id);
+    assert_eq!(change.checkpoint, Some(opened.id));
     assert_eq!(change.workflow.phases.len(), 3);
     assert!(events.iter().any(|event| matches!(
         event,

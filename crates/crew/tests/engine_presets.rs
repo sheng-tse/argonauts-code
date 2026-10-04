@@ -16,7 +16,7 @@ use argonauts_core::events::checkpoint::{
     AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, FreeText,
 };
 use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::run::{Party, RunMode, RunOutcome};
+use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunOutcome};
 use argonauts_core::events::workflow::WorkflowEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{RoleName, WorkerRef};
@@ -314,6 +314,9 @@ fn scripted_worker(name: &str, family: &str) -> FakeWorker {
                 "criteria": []
             }]);
         }
+        if spec.step == Some(StepName::CloseRun) {
+            answer = json!({ "answer": "Rate limiting is in, and the checks pass." });
+        }
         if spec.step == Some(StepName::Coordinate) {
             answer["assignments"] = json!([{
                 "card": "limits",
@@ -567,6 +570,24 @@ async fn peer_crew_full_run() -> anyhow::Result<()> {
     let crew = crew_of_three("peer-crew")?;
     let (exit, events) = drive(&crew, "add per-key rate limiting to the public API").await?;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged));
+    // The lead closes the run in its own words, beside what changed.
+    let closing = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Run(RunLifecycle::ClosingAnswer(answer)) => Some(answer.clone()),
+            _ => None,
+        })
+        .expect("the run closes with an answer");
+    assert_eq!(closing.text, "Rate limiting is in, and the checks pass.");
+    assert_eq!(closing.by, Some(crew.settings.default_agent.clone()));
+    assert!(
+        closing.files.iter().any(|file| file.path.ends_with(".txt"))
+            && closing
+                .files
+                .iter()
+                .all(|file| !file.path.starts_with(".argonauts/")),
+        "{closing:?}"
+    );
     let standards: BTreeSet<StandardPhase> = started_kinds(&events)
         .into_iter()
         .map(|(_, standard)| standard)

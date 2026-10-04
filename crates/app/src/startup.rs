@@ -18,7 +18,7 @@ use argonauts_core::settings::handoff::FallbackEntry;
 use argonauts_core::steps::SchemaStepRunner;
 use argonauts_core::text::sentence_case;
 use argonauts_registry::{PresetUpgrade, PresetUpgradeOutcome, upgrade_presets};
-use argonauts_tui::{AppIo, UiOptions, run_app, run_screen_reader, stop_signal};
+use argonauts_tui::{AppIo, UiOptions, history_file_in, run_app, run_screen_reader, stop_signal};
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 
@@ -76,7 +76,8 @@ async fn run_once(
         &env.paths,
         &AgentMarkers::from_settings(settings.settings()),
     )?;
-    let ui = UiOptions::from_settings(&settings.settings().ui);
+    let mut ui = UiOptions::from_settings(&settings.settings().ui);
+    ui.history_file = Some(history_file_in(&env.state_dir));
     let screen_reader =
         options.screen_reader || settings.settings().ui.screen_reader || !env.interactive;
     // `argonauts run` attaches to the run it just started and never opens the setup.

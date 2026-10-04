@@ -17,6 +17,7 @@ use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, Checkpoi
 use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::paths::Paths;
+use argonauts_core::settings::workflows::StyleSetting;
 use argonauts_core::settings::{Settings, Span};
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{SessionSpec, Worker};
@@ -53,13 +54,15 @@ pub struct Outcome {
 impl Crew {
     /// The default preset's settings with an empty crew. A run with a checkpoint waiting parks
     /// at once instead of after the usual grace, so scenarios don't wait. The lead doesn't
-    /// design the workflow unless a scenario turns it on, so scripted answers go to the steps
-    /// they were written for.
+    /// design the workflow, runs are workflows whoever leads, and no final check runs, unless a
+    /// scenario turns them on, so scripted answers go to the steps they were written for.
     pub fn new() -> anyhow::Result<Self> {
         let mut settings = Settings::default();
         settings.crew.clear();
         settings.supervisor.park_grace = Span::new("0s");
         settings.workflows.lead_designs = false;
+        settings.workflows.style = StyleSetting::Workflow;
+        settings.workflows.final_check = false;
         Ok(Self {
             services: FakeServices::new(),
             repo: TempRepo::new()?,
@@ -456,6 +459,24 @@ fn fill_node(root: &Value, node: &Value, depth: usize) -> Value {
         "boolean" => Value::Bool(false),
         _ => Value::Null,
     }
+}
+
+/// The lead's brief for `DesignWorkflow`: an example by name with its params, or a workflow
+/// file of its own, with one criterion.
+pub fn brief(based_on: Option<&str>, params: Value, workflow: Option<&str>, why: &str) -> Value {
+    serde_json::json!({
+        "name": "look-at-it",
+        "description": "Look at the repository",
+        "based_on": based_on,
+        "why": why,
+        "params": params,
+        "workflow": workflow,
+        "done_when": [{"id": "G1", "text": "The gates pass", "short": "Gates",
+                       "check": "review"}],
+        "plan": [],
+        "questions": [],
+        "first_attempt": null,
+    })
 }
 
 /// Scripts one structured answer per value for the worker's next step sessions.

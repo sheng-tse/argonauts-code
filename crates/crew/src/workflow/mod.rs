@@ -11,15 +11,17 @@ use argonauts_core::events::workflow::StepEnd;
 use argonauts_core::names::WorkflowId;
 use argonauts_core::workflow::{StandardPhase, Step, StepRef, WorkflowRef};
 
-pub mod align;
 pub mod authors;
+pub mod brief;
 pub mod builtin;
 pub mod change;
 pub mod conditions;
 pub mod kinds;
+pub mod naming;
 pub mod params;
 pub mod replay;
 pub mod runner;
+pub mod shape;
 pub mod validate;
 pub mod yaml;
 

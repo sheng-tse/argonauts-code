@@ -438,6 +438,7 @@ fn spec(n: u32) -> CardSpec {
         reviewers: vec![worker(GPT_REVIEWER), worker(GEMINI_REVIEWER)],
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 

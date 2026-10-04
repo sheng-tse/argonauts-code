@@ -13,6 +13,7 @@ use crate::state::RunState;
 use crate::workflow::{StepCall, StepDone};
 
 pub mod changes;
+pub mod check;
 pub mod checkpoint;
 pub mod context;
 pub mod differ;
@@ -20,10 +21,11 @@ pub mod draft;
 pub mod file;
 pub mod lead;
 pub mod materiality;
+pub mod pursue;
 pub mod restate;
 pub mod round;
 
-/// `restate`: every restater (every crew member unless `goal.restaters`) in parallel, fresh,
+/// `restate`: every restater (every crew member unless `understand.readers`) in parallel, fresh,
 /// read-only, in the base worktree. In solo it records the prompt as the goal instead, unless
 /// `solo.restate_first`.
 pub async fn restate_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
@@ -37,9 +39,10 @@ pub async fn restate_step(host: &Host, call: &StepCall) -> EngineResult<StepDone
     if approved {
         return Ok(StepDone::done("The goal is already approved"));
     }
+    // Recorded, not restated: no agent reads it, so the phase reads as skipped.
     if mode == RunMode::Solo && !host.settings().solo.restate_first {
         solo::goal_from_prompt(host).await?;
-        return Ok(StepDone::done("Your prompt is the goal"));
+        return Ok(StepDone::skipped("Your prompt is the goal"));
     }
     round::begin(host)?;
 
@@ -55,7 +58,7 @@ pub async fn restate_step(host: &Host, call: &StepCall) -> EngineResult<StepDone
     }))
 }
 
-/// `differ`: `goal.differs` differs from different families compare the labeled restatements;
+/// `differ`: `understand.comparers` differs from different families compare the labeled restatements;
 /// code settles the differences and drafts the goal file.
 pub async fn differ_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let (approved, settled, restated, mode) = host.read(|state| {

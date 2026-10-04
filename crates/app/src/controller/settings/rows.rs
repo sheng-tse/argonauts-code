@@ -74,6 +74,7 @@ pub(crate) fn rows(
         "narrator" => NARRATOR_KEYS.iter().map(|key| (*key).to_owned()).collect(),
         "theme" => THEME_KEYS.iter().map(|key| (*key).to_owned()).collect(),
         "verbosity" => vec!["ui.verbosity".to_owned()],
+        "style" => vec!["workflows.style".to_owned()],
         _ => catalog_keys(settings, &[]),
     };
     keys.into_iter()
@@ -115,6 +116,8 @@ pub(crate) fn default_scope(command: &str, key: &str) -> SettingScope {
             "approvals.approver.model" => Project,
             _ => ProjectLocal,
         },
+        // How you like the crew to work in this project, as /model is.
+        "style" => ProjectLocal,
         "preset" | "workflow" | "approvals" | "budget" | "handoff" | "permissions" => {
             if key == "limits.usd_per_day" {
                 Global
@@ -144,8 +147,9 @@ pub(crate) fn in_section(key: &str, section: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.'))
 }
 
-/// `default_agent`, each role's workers, then the narrator's and the approver's model.
-fn model_keys() -> Vec<String> {
+/// `default_agent`, each role's workers, then the narrator's and the approver's model. The
+/// setup's "Who does what" lists the same.
+pub(crate) fn model_keys() -> Vec<String> {
     let mut keys = vec!["default_agent".to_owned()];
     keys.extend(
         ROLES

@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use argonauts_core::app::StatusLine;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::{ParkReason, RunOutcome};
+use argonauts_core::events::session::{VendorAgentState, VendorWorkflow};
 use argonauts_core::settings::budget::BudgetUnit;
+use argonauts_core::views::vendor_workflow_id;
 use argonauts_core::{Spend, TodoStatus};
 use time::OffsetDateTime;
 
@@ -37,17 +39,79 @@ pub fn sync(cx: &mut Cx<'_>) {
     bottom.workflows.reselect(&bottom.agents, keep.as_ref());
 }
 
-/// One row per run, oldest first.
+/// One row per run still going, oldest first, then one for each workflow an agent's own CLI
+/// runs in it. A finished run leaves the panel once nothing waits on you;
+/// its closing answer is at the end of the conversation.
 pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<WorkflowRow> {
-    let mut runs: Vec<&RunState> = state.runs.values().collect();
+    let mut runs: Vec<&RunState> = state
+        .runs
+        .values()
+        .filter(|run| run.finished.is_none() || !run.checkpoints.is_empty())
+        .collect();
     runs.sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.id.cmp(&b.id)));
     runs.into_iter()
-        .map(|run| run_row(run, state.status.as_ref(), wall, now))
+        .flat_map(|run| {
+            std::iter::once(run_row(run, state.status.as_ref(), wall, now))
+                .chain(vendor_rows(run, wall, now))
+        })
         .collect()
 }
 
-/// `peer-crew · add --json to export`: the run's workflow, then its title.
+/// The key of a panel row for a workflow an agent's own CLI runs: its run, `#`, and the id the
+/// views give it.
+pub(crate) fn vendor_key(run: &RunState, workflow: &VendorWorkflow) -> String {
+    format!("{}#{}", run.id, vendor_workflow_id(&workflow.id))
+}
+
+/// A row for each workflow an agent's own CLI is running, as Claude Code's panel lists its own.
+/// Its time counts from its start, so a report of its totals never sets it back.
+fn vendor_rows(run: &RunState, wall: OffsetDateTime, now: Instant) -> Vec<WorkflowRow> {
+    let wall_ms = u64::try_from((wall - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).ok();
+    run.sessions_in_order()
+        .flat_map(|session| &session.workflows)
+        .filter(|workflow| !workflow.ended())
+        .map(|workflow| {
+            let name = Some(workflow.name.trim())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("workflow");
+            let mut row =
+                WorkflowRow::new(vendor_key(run, workflow), name, WorkflowRowState::Running);
+            row.agents_total = u32::try_from(workflow.agents.len()).unwrap_or(u32::MAX);
+            row.agents_done = u32::try_from(
+                workflow
+                    .agents
+                    .iter()
+                    .filter(|agent| agent.state == VendorAgentState::Done)
+                    .count(),
+            )
+            .unwrap_or(u32::MAX);
+            row.elapsed_ms = workflow.elapsed_ms(wall_ms);
+            row.measured_at = Some(now);
+            row.tokens = workflow.tokens;
+            row.phase = workflow
+                .agents
+                .iter()
+                .rev()
+                .find(|agent| agent.state == VendorAgentState::Running)
+                .and_then(|agent| agent.phase)
+                .and_then(|index| workflow.phases.iter().find(|p| p.index == index))
+                .map(|phase| phase.title.clone());
+            row
+        })
+        .collect()
+}
+
+/// The run's own name, `fix-slugify-median`, or before it has one, its workflow and title,
+/// `peer-crew · add --json to export`.
 fn run_name(run: &RunState) -> String {
+    if let Some(named) = run
+        .named
+        .as_ref()
+        .map(|named| named.name.trim())
+        .filter(|name| !name.is_empty())
+    {
+        return named.to_owned();
+    }
     let title = run.title.trim();
     let workflow = workflow_name(run);
     match (workflow, title.is_empty()) {
@@ -102,6 +166,7 @@ fn run_row(
         .filter(|name| !name.is_empty())
         .map(|name| format!("via {name}"));
     row.elapsed_ms = totals.elapsed.map_or(0, millis);
+    row.phase = run.workflow_phase().map(str::to_owned);
     if run.finished.is_none() {
         row.measured_at = Some(now);
     }
@@ -214,7 +279,11 @@ fn agent_row(
     }
     row.key = Some(session.key.to_string());
     row.run = Some(run.id.to_string());
-    row.card = session.card.as_ref().map(ToString::to_string);
+    // Under its run's row an agent goes by its label, `build:flag`, as Claude Code's do.
+    row.card = session
+        .label
+        .clone()
+        .or_else(|| session.card.as_ref().map(|card| run.card_label(card)));
     row.markers.context = session.context.map(|context| (context.used, context.cap));
     row.markers.stands_in_for = session
         .standing_in_for

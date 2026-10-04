@@ -1,7 +1,6 @@
 //! Cards changing hands: handoffs with their checkpoint tags, waits, reverts, reassignments,
 //! rotations to a fresh session, cleared review debt, and an agent coming back.
 
-use argonauts_core::CardId;
 use argonauts_core::RunId;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::run::Party;
@@ -28,7 +27,8 @@ fn why(plan: &HandoffPlan, clock: &WallClock, names: &DisplayNames) -> String {
 
 /// A handoff as the log records it, with the card's newest checkpoint tag.
 pub(super) struct Handed<'a> {
-    pub card: &'a CardId,
+    /// The card's label, such as `build:flag`.
+    pub card: &'a str,
     pub to: &'a WorkerRef,
     pub mode: HandoffMode,
     /// What the new owner is told. Older logs don't say.
@@ -36,10 +36,10 @@ pub(super) struct Handed<'a> {
     pub tag: Option<u32>,
 }
 
-/// An auto handoff is a step, `● Handoff(card-003 Middleware · auto)` with who took it, what
-/// it was told, and why. One you picked on the handoff card is one line, `● card-002 handed to
-/// GPT-6.1 Sol on Codex · note + transcript · checkpoint handoff-1 · Claude Code out until
-/// 3:45 PM`.
+/// An auto handoff is a step, `● Handoff(build:limiter Middleware · auto)` with who took it,
+/// what it was told, and why. One you picked on the handoff card is one line, `● build:export
+/// handed to GPT-6.1 Sol on Codex · note + transcript · checkpoint handoff-1 · Claude Code out
+/// until 3:45 PM`.
 pub(super) fn handed_off(
     handed: Handed<'_>,
     plan: Option<&HandoffPlan>,
@@ -82,7 +82,7 @@ pub(super) fn handed_off(
 
 /// A card that waits for its agent to come back instead of changing hands.
 pub(super) fn waiting(
-    card: &CardId,
+    card: &str,
     vendor: &VendorId,
     until: Option<OffsetDateTime>,
     clock: &WallClock,
@@ -96,7 +96,7 @@ pub(super) fn waiting(
 }
 
 /// `/rewind`: the card went back to a checkpoint, and the work after it was kept aside.
-pub(super) fn reverted(card: &CardId, to: u32, kept_on: &str, cx: &mut Cx<'_>) {
+pub(super) fn reverted(card: &str, to: u32, kept_on: &str, cx: &mut Cx<'_>) {
     let mut notice = Notice::new(
         Tone::Success,
         format!("Reverted {card} to checkpoint handoff-{to}"),
@@ -108,7 +108,7 @@ pub(super) fn reverted(card: &CardId, to: u32, kept_on: &str, cx: &mut Cx<'_>) {
 }
 
 pub(super) fn reassigned(
-    card: &CardId,
+    card: &str,
     from: Option<&WorkerRef>,
     to: &WorkerRef,
     by: &Party,
@@ -131,7 +131,7 @@ pub(super) fn reassigned(
 }
 
 /// A full session gave way to a fresh one of the same agent, which goes on from a handoff note.
-pub(super) fn rotated(card: &CardId, worker: &WorkerRef, cx: &mut Cx<'_>) {
+pub(super) fn rotated(card: &str, worker: &WorkerRef, cx: &mut Cx<'_>) {
     let text = format!(
         "{card} rotated to a fresh {} session",
         cx.state.names.worker(worker)
@@ -141,7 +141,7 @@ pub(super) fn rotated(card: &CardId, worker: &WorkerRef, cx: &mut Cx<'_>) {
 }
 
 /// A review by the original, or a model at least as strong, cleared a replacement's debt.
-pub(super) fn debt_cleared(card: &CardId, by: &WorkerRef, cx: &mut Cx<'_>) {
+pub(super) fn debt_cleared(card: &str, by: &WorkerRef, cx: &mut Cx<'_>) {
     let text = format!(
         "{card} needs no more review · checked by {}",
         cx.state.names.worker(by)
@@ -149,7 +149,7 @@ pub(super) fn debt_cleared(card: &CardId, by: &WorkerRef, cx: &mut Cx<'_>) {
     emit(cx, Notice::new(Tone::Success, text));
 }
 
-pub(super) fn conflict(card: &CardId, files: usize, assigned_to: &WorkerRef, cx: &mut Cx<'_>) {
+pub(super) fn conflict(card: &str, files: usize, assigned_to: &WorkerRef, cx: &mut Cx<'_>) {
     let text = format!(
         "Merging {card} conflicted in {} · {} resolves it",
         plural(files, "file", "files"),
@@ -158,7 +158,7 @@ pub(super) fn conflict(card: &CardId, files: usize, assigned_to: &WorkerRef, cx:
     emit(cx, Notice::new(Tone::Warning, text));
 }
 
-/// `Claude Code is back · card-003 stays with GPT-6.1 Sol on Codex · /reassign card-003
+/// `Claude Code is back · build:limiter stays with GPT-6.1 Sol on Codex · /reassign card-003
 /// claude-code/opus moves it back`, for each card another agent still holds for it. The
 /// command keeps the id, since that's what you type.
 pub(super) fn vendor_back(run: &RunId, vendor: &VendorId, cx: &mut Cx<'_>) {
@@ -176,7 +176,8 @@ pub(super) fn vendor_back(run: &RunId, vendor: &VendorId, cx: &mut Cx<'_>) {
             let stands_in = original.vendor() == *vendor && owner != original;
             stands_in.then(|| {
                 format!(
-                    "{label} is back · {id} stays with {owner} · /reassign {id} {original} moves it back",
+                    "{label} is back · {card} stays with {owner} · /reassign {id} {original} moves it back",
+                    card = state.card_label(&card.id),
                     id = card.id,
                     owner = names.worker(owner),
                 )

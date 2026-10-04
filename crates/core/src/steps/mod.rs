@@ -9,6 +9,7 @@ pub mod intake;
 pub mod judgment;
 pub mod narrate;
 pub mod plan;
+pub mod pursue;
 mod runner;
 
 pub use runner::{SchemaStepRunner, last_json_object};
@@ -50,10 +51,16 @@ pub enum StepName {
     ResolveConflict,
     Coordinate,
     Retro,
+    /// The closing answer of a crew run.
+    CloseRun,
     ModelApprover,
     Narrate,
     DesignWorkflow,
     HandoffSummary,
+    /// The lead writes a goal's next attempt.
+    PlanAttempt,
+    /// A check from another company judges a goal's criteria.
+    CheckGoal,
 }
 
 pub trait Step {

@@ -192,7 +192,8 @@ pub(super) async fn finish_replay(ctx: &mut Ctx, attached: &mut Attached) {
             Stage::Finished(outcome) => Some(outcome),
             Stage::Going | Stage::Parked => None,
         };
-        let recap = recap::recap_from_summary(&summary, outcome);
+        let closing = recap::closing_in(&attached.events);
+        let recap = recap::recap_from_summary(&summary, outcome, closing);
         let journal = whole_history(ctx, attached).await;
         let history = journal.as_deref().unwrap_or(&attached.events);
         if let Some(replay) = views::condensed_replay(history, &run, recap) {

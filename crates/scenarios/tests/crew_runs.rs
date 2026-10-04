@@ -394,11 +394,11 @@ fn crew_example_question_card() -> anyhow::Result<()> {
     // restaters and two differs, the detail adopted as an assumption, then the question.
     pty.wait_for(r"(?m)^[●⏺] Triage\(crew\)", STEPS_WAIT)?;
     pty.wait_for(
-        r"(?m)^[●⏺] 3 agents started.*\n(?:\s+[├└] .* · restater\n){3}",
+        r"(?m)^[●⏺] 3 agents started.*\n(?:\s+[├└] read:\S+ · .*\n){3}",
         STEPS_WAIT,
     )?;
     pty.wait_for(
-        r"(?m)^[●⏺] 2 agents started.*\n(?:\s+[├└] .* · differ\n){2}",
+        r"(?m)^[●⏺] 2 agents started.*\n(?:\s+[├└] compare:\S+ · .*\n){2}",
         STEPS_WAIT,
     )?;
     pty.wait_for(r"Assumed\W+Retry-After format: seconds", WAIT)?;
@@ -410,7 +410,12 @@ fn crew_example_question_card() -> anyhow::Result<()> {
         text.contains("2 of 3 restatements read it this way"),
         "{text}"
     );
-    assert!(text.contains("Type my own answer"), "{text}");
+    // Choose-only: the last answer hands this and the rest to the lead.
+    assert!(
+        text.contains("Let the lead decide this and the rest"),
+        "{text}"
+    );
+    assert!(!text.contains("Type my own answer"), "{text}");
     scenario.shot(&pty, "crew-question-card")?;
 
     // No agent works while the card waits, so the run parks until you answer.

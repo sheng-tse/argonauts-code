@@ -20,7 +20,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 
 use super::selection::{Point, Selecting};
-use super::{Ui, UiAction, compose_live};
+use super::{Ui, UiAction, compose_docked, compose_live};
 use crate::render::{Clock, RenderCtx};
 use crate::state::AppState;
 use crate::terminal::paint_rows;
@@ -249,20 +249,35 @@ impl<W: Write> Ui<W> {
 
     /// The conversation from the top, scrolled where you left it, and the live region pinned
     /// to the bottom rows, laid out as the inline screen lays them.
-    pub(super) fn draw_fullscreen(&mut self, now: Instant) -> io::Result<()> {
+    pub(super) fn draw_fullscreen(
+        &mut self,
+        now: Instant,
+        state: Option<&AppState>,
+    ) -> io::Result<()> {
+        let dock = self.dock_lines(now, state);
         let screen = self.terminal.screen_size();
         let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
             .with_rows(screen.height);
         let blocks = self.model.history.live_blocks(&ctx);
         // Two rows stay above the live region, so some of the conversation always shows.
         let max_height = screen.height.saturating_sub(2);
-        let view = compose_live(
-            &blocks,
-            &self.model.history,
-            &self.model.bottom,
-            &ctx,
-            max_height,
-        );
+        let view = match dock {
+            Some(dock) => compose_docked(
+                &blocks,
+                &self.model.history,
+                &self.model.bottom,
+                &ctx,
+                max_height,
+                dock,
+            ),
+            None => compose_live(
+                &blocks,
+                &self.model.history,
+                &self.model.bottom,
+                &ctx,
+                max_height,
+            ),
+        };
         let (trailing, pinned) = view.lines.split_at(view.trailing.min(view.lines.len()));
         let pinned_rows = u16::try_from(pinned.len())
             .unwrap_or(u16::MAX)

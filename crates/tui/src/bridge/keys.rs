@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use argonauts_core::RunId;
 use argonauts_core::app::{AppMode, UiCommand, ViewRequest};
-use argonauts_core::names::SessionKey;
+use argonauts_core::events::run::RunMode;
+use argonauts_core::names::{RoleName, SessionKey, WorkflowId};
 use argonauts_core::settings::approvals::ApprovalMode;
 
 use crate::app::UiAction;
@@ -43,10 +44,7 @@ impl KeyActions {
                 cx.out.exit_lines = exit_lines(cx.state);
             }
             UiAction::OpenTree => open_tree(cx),
-            UiAction::OpenWorkflow(run) => match RunId::new(run.as_str()) {
-                Ok(run) => open_workflow(run, cx),
-                Err(_) => notice(&format!("No run named {run}."), cx),
-            },
+            UiAction::OpenWorkflow(key) => open_row(key, cx),
             UiAction::OpenCrewView => {
                 cx.out.open(CrewView::opened_left(cx.state));
                 // Conversations, the CLIs' own sessions, and other repos' runs come from the
@@ -108,6 +106,13 @@ fn interrupt(cx: &mut Cx<'_>) {
 
 /// `Stop` acts on the run on screen, so for any other run you're told how to get there.
 fn stop_run(run: &str, cx: &mut Cx<'_>) {
+    if run.contains('#') {
+        notice(
+            "This workflow is an agent's own; stop it from that agent",
+            cx,
+        );
+        return;
+    }
     match RunId::new(run) {
         Ok(run) if cx.state.attached.as_ref() == Some(&run) => cx.out.send(UiCommand::Stop),
         Ok(run) => notice(
@@ -141,13 +146,56 @@ pub(super) fn open_tree(cx: &mut Cx<'_>) {
     }
 }
 
+/// Enter on a panel row: a run's workflow, or a workflow an agent's own CLI runs, whose key
+/// names its run and its id after a `#`.
+fn open_row(key: &str, cx: &mut Cx<'_>) {
+    let (run, vendor) = match key.split_once('#') {
+        Some((run, workflow)) => (run, WorkflowId::parse(workflow)),
+        None => (key, None),
+    };
+    let Ok(run) = RunId::new(run) else {
+        notice(&format!("No run named {}.", sanitize_line(key)), cx);
+        return;
+    };
+    match vendor {
+        Some(workflow) => cx.out.send(UiCommand::Request {
+            view: ViewRequest::Workflow {
+                run,
+                workflow: Some(workflow),
+            },
+        }),
+        None => open_workflow(run, cx),
+    }
+}
+
+/// The run's workflow view, or for a run whose work is one agent's, that agent's session:
+/// a workflow view with one row says less than the agent does.
 fn open_workflow(run: RunId, cx: &mut Cx<'_>) {
+    if let Some(session) = single_agent(cx.state, &run) {
+        cx.out.open(SessionView::new(run, session));
+        return;
+    }
     cx.out.send(UiCommand::Request {
         view: ViewRequest::Workflow {
             run,
             workflow: None,
         },
     });
+}
+
+/// The one agent a run's work is: a solo run's owner, or the only agent a run started.
+fn single_agent(state: &AppState, run: &RunId) -> Option<SessionKey> {
+    let run = state.runs.get(run)?;
+    if run.mode == Some(RunMode::Solo)
+        && let Some(owner) = run
+            .sessions_in_order()
+            .find(|session| session.role == RoleName::Owner)
+    {
+        return Some(owner.key.clone());
+    }
+    let mut sessions = run.sessions_in_order();
+    let only = sessions.next()?;
+    sessions.next().is_none().then(|| only.key.clone())
 }
 
 pub(crate) fn notice(text: &str, cx: &mut Cx<'_>) {

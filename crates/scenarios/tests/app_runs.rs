@@ -17,7 +17,7 @@ use argonauts_core::app::{AppChoice, AppEvent, AppMode, ChoiceKind, TraceLine};
 use argonauts_core::app::{UiCommand, ViewData};
 use argonauts_core::crew_panel::{CrewPanel, CrewState, CrewTarget};
 use argonauts_core::events::checkpoint::{
-    AnswerAction, CheckpointKind, CheckpointOpened, CheckpointPacket,
+    AnswerAction, CheckpointEvent, CheckpointKind, CheckpointOpened, CheckpointPacket,
 };
 use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome};
 use argonauts_core::events::session::{EndReason, SessionEvent};
@@ -110,7 +110,7 @@ fn app_example_small_fix_solo() -> anyhow::Result<()> {
     let order = [
         "Triage(solo)",
         "2 uncommitted files left out",
-        "owner · card-001",
+        "build:",
         "Gates(",
         "Passed",
         "Merge",
@@ -185,7 +185,7 @@ fn app_example_bigger_task_crew() -> anyhow::Result<()> {
     )?;
     let drafters = wait_until("three drafter blocks", || {
         let text = pty.screen().text();
-        Ok((text.matches("· drafter").count() >= 3).then_some(text))
+        Ok((text.matches("● draft:").count() >= 3).then_some(text))
     })?;
     for agent in ["Claude Code", "Codex", "Antigravity CLI"] {
         assert!(drafters.contains(agent), "no {agent} drafter:\n{drafters}");
@@ -281,7 +281,7 @@ fn app_close_screen_run_continues_and_reattaches() -> anyhow::Result<()> {
         "the replay to end",
         |event| matches!(event, AppEvent::ReplayDone { run: done, .. } if *done == run),
     )?;
-    pty.wait_for("owner · card-001", WAIT)?;
+    pty.wait_for("build:\\S+ · ", WAIT)?;
     assert!(pid_alive(owner), "reattaching restarted the owner");
     assert_eq!(
         claude_sessions(&scenario, "acceptEdits")?.len(),
@@ -880,7 +880,7 @@ fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
     let design = wait_until("the lead's design session", || {
         Ok(sessions_of(&scenario, "claude")?
             .into_iter()
-            .find(|invocation| prompt_of(invocation).contains("\"composed\"")))
+            .find(|invocation| prompt_of(invocation).contains("\"done_when\"")))
     })?;
     assert!(
         design.args.iter().any(|arg| arg == "dontAsk")
@@ -927,20 +927,33 @@ fn app_lead_picks_review_panel_and_fills_params() -> anyhow::Result<()> {
         .context("the Review phase has no fan_out")?;
     assert_eq!(fan_out.count, Some(Count::Fixed(2)), "{fan_out:?}");
 
-    wait_checkpoint(&scenario, CheckpointKind::Plan)?;
-    // The lead's own message says why before the plan's item does, so this waits for the
-    // item's workflow in plain words, which ends with its last phase, and reads the item alone.
-    // The steps' conditions are for Ctrl+O.
-    let text = pty.wait_for(r"adjudicate \(if needed\)", WAIT)?.text();
-    let plan = &text[text.rfind("The plan").context("no plan item")?..];
-    for shown in [
-        "A review: two reviewers from other families",
-        "review-panel",
-        "review → adjudicate (if needed)",
-    ] {
-        assert!(plan.contains(shown), "the plan card lacks {shown}:\n{text}");
-    }
-    assert!(!plan.contains("reviewers_disagree"), "{text}");
+    // Understand opens the run and its card is the one go-ahead: a review writes nothing, so no
+    // plan card follows, and the review phase runs.
+    assert_eq!(
+        started
+            .workflow
+            .phases
+            .first()
+            .map(|phase| phase.name.as_str()),
+        Some("Understand")
+    );
+    wait_journal(&run_dir, "the Review phase", |event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Workflow(WorkflowEvent::PhaseStarted(mark)) if mark.title == "Review"
+        )
+    })?;
+    let plans = run_events(&run_dir)?
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+                    if opened.kind == CheckpointKind::Plan
+            )
+        })
+        .count();
+    assert_eq!(plans, 0, "a review needs no plan card");
     scenario.shot(&pty, "app_lead_picks_review_panel_and_fills_params")?;
     Ok(())
 }
@@ -1112,8 +1125,14 @@ fn app_context_command_lists_sessions() -> anyhow::Result<()> {
     );
     assert!(owner.used >= 1_200, "{owner:?}");
 
-    let text = pty.wait_for("owner · card-001", WAIT)?.text();
-    assert!(text.contains("chat"), "{text}");
+    // The owner goes by its label, not its card's id. The chat shows the label too, so wait
+    // for the view's own count of its rows.
+    assert!(owner.label.starts_with("build:"), "{owner:?}");
+    let text = pty.wait_for(r"\d+ sessions", WAIT)?.text();
+    assert!(
+        text.contains("chat") && text.contains(&owner.label),
+        "{text}"
+    );
     thread::sleep(Duration::from_millis(500));
     assert_eq!(
         all_sessions(&scenario)?.len(),

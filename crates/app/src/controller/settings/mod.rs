@@ -26,6 +26,9 @@ mod tests;
 #[cfg(test)]
 mod tests_models;
 
+pub(crate) use models::choices as model_choices;
+pub(crate) use rows::model_keys;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -381,6 +384,27 @@ pub(crate) async fn vim(ctx: &mut Ctx, settings: &mut SettingsState, on: bool) -
 pub(crate) async fn toggle_vim(ctx: &mut Ctx, settings: &mut SettingsState) -> Handled {
     let on = ctx.settings().ui.keys != KeyScheme::Vim;
     vim(ctx, settings, on).await
+}
+
+/// "Yes, and let the lead answer" on a go-ahead card: the lead answers the crew's questions in
+/// this project from now on, just for you, as Claude Code's "don't ask again" does. Picking it
+/// on the card is the confirm a safety key needs; `/approvals` undoes it.
+pub(crate) fn let_the_lead_answer(ctx: &mut Ctx) -> Handled {
+    const KEY: &str = "approvals.answered_by";
+    refuse_safety_change(&ctx.env, &[KEY.to_owned()])?;
+    let change = Change::Set(vec![(KEY.to_owned(), "\"lead\"".to_owned())]);
+    let effects = save::apply(
+        ctx,
+        &change,
+        SettingScope::ProjectLocal,
+        TrustAfter::Approved,
+    )?;
+    ctx.notice(
+        NoteLevel::Info,
+        "From now on the lead answers the crew's questions in this project, just for you. \
+         /approvals changes it.",
+    );
+    Ok(effects)
 }
 
 /// A narrator mode for this app session only.

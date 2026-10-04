@@ -1,6 +1,7 @@
 use argonauts_core::AgentEvent;
 use argonauts_core::events::session::{
     EndReason, FileDiff, QueuedMessage, SessionEnd, SessionInput, SessionStarted, SubagentUpdate,
+    VendorWorkflow,
 };
 use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::sessions::SessionSettings;
@@ -27,6 +28,8 @@ pub struct SessionState {
     pub step: Option<StepName>,
     pub card: Option<CardId>,
     pub workflow_step: Option<StepRef>,
+    /// The run's name for it, such as `fix:slugify`. A log from before labels has none.
+    pub label: Option<String>,
     pub status: SessionStatus,
     pub started: OffsetDateTime,
     pub ended: Option<OffsetDateTime>,
@@ -50,6 +53,8 @@ pub struct SessionState {
     pub diffs: Vec<FileDiff>,
     /// The latest update per child, in first-seen order.
     pub subagents: Vec<SubagentUpdate>,
+    /// Workflows the agent's own CLI runs, the latest state of each, in first-seen order.
+    pub workflows: Vec<VendorWorkflow>,
     /// What Argonauts sent it (`Session::Input`), for the session view's input side.
     pub inputs: Vec<SessionInput>,
     pub queued: Vec<QueuedMessage>,
@@ -143,6 +148,7 @@ impl SessionState {
             step: None,
             card: None,
             workflow_step: None,
+            label: None,
             status: SessionStatus::Starting,
             started,
             ended: None,
@@ -159,6 +165,7 @@ impl SessionState {
             streaming: String::new(),
             diffs: Vec::new(),
             subagents: Vec::new(),
+            workflows: Vec::new(),
             inputs: Vec::new(),
             queued: Vec::new(),
             retry: None,
@@ -188,13 +195,22 @@ impl SessionState {
         session.step = started.step;
         session.card = card;
         session.workflow_step = started.workflow_step.clone();
+        session.label = started
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_owned);
         session.vendor_session = started.resumed_from.clone();
         session
     }
 
-    /// `owner · card-002`, as its rows name what it does.
+    /// Its label, such as `fix:slugify`, as its rows name what it does, or for a log from
+    /// before labels, `owner · card-002`.
     pub fn task(&self) -> String {
-        task_label(self.role, self.step, self.card.as_ref())
+        self.label
+            .clone()
+            .unwrap_or_else(|| task_label(self.role, self.step, self.card.as_ref()))
     }
 
     pub fn tokens(&self) -> u64 {
@@ -339,6 +355,26 @@ impl SessionState {
                     None => self.subagents.push(update.clone()),
                 }
             }
+            AgentEvent::Workflow { workflow } => {
+                let mut workflow = (**workflow).clone();
+                // Its time counts from when it was first seen, on this clock.
+                let seen =
+                    u64::try_from((at - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).ok();
+                match self
+                    .workflows
+                    .iter_mut()
+                    .find(|known| known.id == workflow.id)
+                {
+                    Some(known) => {
+                        workflow.started_at_ms = known.started_at_ms.or(seen);
+                        *known = workflow;
+                    }
+                    None => {
+                        workflow.started_at_ms = seen;
+                        self.workflows.push(workflow);
+                    }
+                }
+            }
             AgentEvent::Error { .. } => {}
             AgentEvent::Result { .. } => {
                 self.finish_streaming();
@@ -369,6 +405,10 @@ impl SessionState {
         self.retry = None;
         self.doing = Doing::Nothing;
         self.stalled = false;
+        // A workflow its CLI ran ends with it, whether or not the stream said so.
+        for workflow in &mut self.workflows {
+            workflow.end_with_session("its session ended before the workflow did");
+        }
         if self.cost_usd.is_none() && end.spend.cost_usd > 0.0 {
             self.cost_usd = Some(end.spend.cost_usd);
         }

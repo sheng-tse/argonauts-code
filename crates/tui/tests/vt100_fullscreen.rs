@@ -632,3 +632,59 @@ fn the_inline_screen_leaves_the_mouse_to_the_terminal() {
     let written = String::from_utf8_lossy(inline.terminal().writer()).into_owned();
     assert!(!written.contains("\x1b[?1002h"), "{written:?}");
 }
+
+/// A run's workflow with one phase going and its two agents, for the docked view.
+fn docked_workflow() -> Box<argonauts_tui::views::workflow::WorkflowView> {
+    let data: argonauts_core::views::WorkflowView = serde_json::from_value(serde_json::json!({
+        "run": "run-01", "id": "wf-001", "name": "fix-slugify-median",
+        "description": "Fix slugify's dashes and median's even and empty lists, with tests",
+        "breadcrumb": [], "agents_done": 1, "agents_total": 2, "elapsed_ms": 271000,
+        "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "cost_usd": 0.0,
+                  "cost_partial": false, "cost_estimated": false},
+        "phases": [{"name": "Fix", "standard": "do", "status": "running",
+                    "count": {"done": 1, "total": 2},
+                    "rows": [
+            {"row": "agent", "session": "s-001", "label": "fix:slugify",
+             "worker": "claude-code/claude-haiku-4-5", "status": "done", "tokens": 18100,
+             "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+                       "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
+             "elapsed_ms": 130000, "subagents": 0, "context": null, "standing_in_for": null},
+            {"row": "agent", "session": "s-002", "label": "fix:median",
+             "worker": "codex/gpt-5.6-luna", "status": "running", "tokens": 31200,
+             "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+                       "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
+             "elapsed_ms": 151000, "subagents": 0, "context": null, "standing_in_for": null}
+        ]},
+        {"name": "Review", "standard": "check", "status": "waiting", "rows": []}]
+    }))
+    .expect("a workflow view");
+    Box::new(argonauts_tui::views::workflow::WorkflowView::new(data))
+}
+
+/// The workflow view docks under the conversation in place of the input, as Claude Code's
+/// open view does, and Esc gives the prompt back.
+#[test]
+fn the_workflow_view_docks_under_the_conversation() {
+    let mut f = Fullscreen::new(100);
+    conversation(&mut f);
+    f.frame();
+    let mode = f.row_of("supervised mode on");
+    f.ui.push_view(docked_workflow());
+    f.frame();
+    let shown = f.shown();
+    assert!(shown.contains("Answer 4."), "{shown}");
+    assert!(shown.contains("Rowing"), "the working line stays:\n{shown}");
+    assert!(
+        !shown.contains("supervised mode on"),
+        "the input gives way:\n{shown}"
+    );
+    let name = f.row_of(" fix-slugify-median");
+    assert!(f.row_of("Answer 4.") < name, "{shown}");
+    assert!(f.row_of("╭ Phases") > name, "{shown}");
+    assert!(f.row_of("esc back") > f.row_of("╰"), "{shown}");
+    f.assert_sound();
+    f.press(KeyCode::Esc, KeyModifiers::NONE);
+    f.frame();
+    assert_eq!(f.ui.views_open(), 0);
+    assert_eq!(f.row_of("supervised mode on"), mode);
+}

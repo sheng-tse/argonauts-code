@@ -120,6 +120,7 @@ pub(crate) fn session_started(
         resumed_from: None,
         follow_key: None,
         workflow_step: None,
+        label: None,
     };
     session_event(
         seq,
@@ -241,6 +242,7 @@ pub(crate) fn card_spec(n: usize) -> CardSpec {
         reviewers: Vec::new(),
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 

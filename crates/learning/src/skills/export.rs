@@ -328,6 +328,10 @@ fn instruction(step: &Step, depth: usize) -> String {
             "Make the change in small steps, running the tests as you go.".to_owned()
         }
         StepKind::Gate => "Check the gates below, and fix what fails.".to_owned(),
+        StepKind::Check => {
+            "Check each done-when criterion against evidence: a passing test, or a file and line."
+                .to_owned()
+        }
         StepKind::LoopUntil => match step.max {
             Some(max) => format!("Repeat these steps until they succeed, at most {max} times:"),
             None => "Repeat these steps until they succeed:".to_owned(),

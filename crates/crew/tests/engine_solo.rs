@@ -43,7 +43,8 @@ fn report() -> Value {
         "concerns": [],
         "questions": [],
         "change_requests": [],
-        "memory_proposals": []
+        "memory_proposals": [],
+        "answer": "I fixed the misspelled word in the README's install section."
     })
 }
 
@@ -227,6 +228,46 @@ async fn solo_lifecycle() -> anyhow::Result<()> {
     assert_eq!(opened(&outcome.events, CheckpointKind::Goal), 0);
     let merged = decide(&crew, &outcome, CheckpointKind::Merge, AnswerAction::Merge).await?;
     assert_eq!(merged.exit, EngineExit::Finished(RunOutcome::Merged));
+
+    // The owner's own answer closes the run, just before it finishes, with nobody asked again.
+    let kinds: Vec<&RunEventKind> = merged.events.iter().map(|event| &event.kind).collect();
+    let closing = kinds
+        .iter()
+        .rposition(|kind| matches!(kind, RunEventKind::Run(RunLifecycle::ClosingAnswer(_))))
+        .expect("the run has a closing answer");
+    let finished = kinds
+        .iter()
+        .rposition(|kind| matches!(kind, RunEventKind::Run(RunLifecycle::Finished { .. })))
+        .expect("the run finished");
+    assert!(closing < finished);
+    let RunEventKind::Run(RunLifecycle::ClosingAnswer(answer)) = kinds[closing] else {
+        unreachable!();
+    };
+    assert_eq!(
+        answer.text,
+        "I fixed the misspelled word in the README's install section."
+    );
+    assert_eq!(answer.by, Some(OWNER.parse::<WorkerRef>()?));
+    assert!(
+        answer
+            .files
+            .iter()
+            .all(|file| !file.path.starts_with(".argonauts/")),
+        "{answer:?}"
+    );
+    assert!(
+        builds(&owner).len() == 1
+            && !owner
+                .specs()
+                .iter()
+                .any(|spec| spec.step == Some(StepName::CloseRun)),
+        "a solo run asks nobody for its answer"
+    );
+    let closings = kinds
+        .iter()
+        .filter(|kind| matches!(kind, RunEventKind::Run(RunLifecycle::ClosingAnswer(_))))
+        .count();
+    assert_eq!(closings, 1);
     Ok(())
 }
 
@@ -527,5 +568,58 @@ async fn solo_goal_file_not_a_violation() -> anyhow::Result<()> {
         })
         .collect();
     assert!(violations.is_empty(), "{violations:?}");
+    Ok(())
+}
+
+/// Best of n keeps one attempt; the run closes with that attempt's own answer, never the
+/// answer of one it left on its branch.
+#[tokio::test]
+async fn best_of_n_closes_with_the_kept_attempts_answer() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    crew.settings.default_agent = OWNER.parse()?;
+    crew.settings.workflows.adapt_at_phase_ends = false;
+    crew.settings.evolution.propose_every = 0;
+    crew.settings.solo.attempts = 2;
+    crew.services
+        .workers
+        .add(
+            FakeWorker::harness(OWNER, "claude").respond_with(|spec: &SessionSpec| {
+                if spec.step != Some(StepName::Build) {
+                    return match &spec.json_schema {
+                        Some(schema) => FakeSession::structured(support::fill(schema)),
+                        None => FakeSession::completed("done"),
+                    };
+                }
+                let card = spec
+                    .card
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                let mut said = report();
+                said["answer"] = json!(format!("The answer from {card}."));
+                FakeSession::structured(said)
+            }),
+        );
+    crew.settings.crew.push(OWNER.parse()?);
+    let outcome = crew.start(RunMode::Solo, REQUEST).await?;
+    let packet = merge_packet(&outcome.events);
+    let kept = packet.rows.first().map(|row| row.card.to_string());
+    let kept = kept.ok_or_else(|| anyhow::anyhow!("the merge card names no card"))?;
+    assert!(kept.contains("-attempt-"), "{kept}");
+    let merged = decide(&crew, &outcome, CheckpointKind::Merge, AnswerAction::Merge).await?;
+    assert_eq!(merged.exit, EngineExit::Finished(RunOutcome::Merged));
+    let answer = merged
+        .events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Run(RunLifecycle::ClosingAnswer(answer)) => Some(answer.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("the run has no closing answer"))?;
+    assert_eq!(answer.text, format!("The answer from {kept}."));
+    assert!(
+        answer.left.iter().any(|line| line.contains("not kept")),
+        "{answer:?}"
+    );
     Ok(())
 }

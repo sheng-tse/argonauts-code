@@ -641,9 +641,11 @@ fn lead_asked(crew: &Crew) -> usize {
 /// deciding alone. In auto `goal.always_ask` still keeps it yours, so it never reaches the
 /// lead, nothing stands in for your answer, and the run waits for you.
 #[tokio::test]
-async fn an_always_ask_question_stays_yours_in_auto() -> anyhow::Result<()> {
+async fn a_topic_ask_you_about_names_stays_yours_in_auto() -> anyhow::Result<()> {
     let mut crew = asking_crew_about("security", Some(Own::Crash))?;
     crew.settings.approvals.goal.decide_with = DecideWith::Rules;
+    // `understand.always_ask` only makes it a question; this keeps it yours.
+    crew.settings.approvals.ask_you_about = vec!["Security".to_owned()];
     let outcome = run(&crew).await?;
     let events = &outcome.events;
     assert!(
@@ -664,7 +666,10 @@ async fn an_always_ask_question_stays_yours_in_auto() -> anyhow::Result<()> {
         notes(events)
     );
     let why = why_asked(events, CheckpointKind::Goal);
-    assert_eq!(why, ["goal.always_ask keeps security questions yours"]);
+    assert_eq!(
+        why,
+        ["approvals.ask_you_about keeps security questions yours"]
+    );
     Ok(())
 }
 
@@ -730,9 +735,10 @@ async fn with_the_lead_chosen_it_answers_always_ask_questions_too() -> anyhow::R
 /// A must-ask difference held back over the question limit counts as an open question, so no
 /// approver settles the goal in your place, though the lead answers in auto.
 #[tokio::test]
-async fn a_held_back_must_ask_difference_still_waits_for_you() -> anyhow::Result<()> {
+async fn a_held_back_difference_ask_you_about_names_still_waits_for_you() -> anyhow::Result<()> {
     let mut crew = asking_crew_about("scope", Some(Own::Answer(lead_picks_trace())))?;
-    crew.settings.goal.max_questions = 0;
+    crew.settings.understand.max_questions = 0;
+    crew.settings.approvals.ask_you_about = vec!["scope".to_owned()];
     let outcome = run(&crew).await?;
     let events = &outcome.events;
     assert!(
@@ -810,12 +816,12 @@ async fn the_lead_s_answers_the_approver_rejects_ask_with_its_reason() -> anyhow
 async fn a_workflow_the_lead_picks_goes_to_merge_without_asking() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     with_gates(&mut crew);
-    let design = serde_json::json!({
-        "template": "solo-reviewed",
-        "params": [],
-        "composed": null,
-        "why": "One small change, reviewed by another family"
-    });
+    let design = support::brief(
+        Some("solo-reviewed"),
+        serde_json::json!([]),
+        None,
+        "One small change, reviewed by another family",
+    );
     let own = vec![(StepName::DesignWorkflow, Own::Answer(design))];
     enlist_with(&mut crew, "claude-code/opus", "claude", None, "detail", own);
     enlist(&mut crew, "codex/gpt-x", "gpt");
@@ -841,14 +847,16 @@ async fn a_workflow_the_lead_picks_goes_to_merge_without_asking() -> anyhow::Res
             if started.from == Some(WorkflowRef::new("solo-reviewed")))
     });
     assert!(picked, "{:?}", names(events));
-    let plans: Vec<_> = decided(events)
-        .into_iter()
-        .filter(|(kind, _)| *kind == CheckpointKind::Plan)
-        .collect();
+    // One card before anything writes: Understand's, which the approver settles in auto. A
+    // solo build needs no plan, so no plan checkpoint follows it.
     let approver: WorkerRef = APPROVER.parse()?;
+    let starts: Vec<_> = decided(events)
+        .into_iter()
+        .filter(|(kind, _)| matches!(kind, CheckpointKind::Goal | CheckpointKind::Plan))
+        .collect();
     assert_eq!(
-        plans,
-        [(CheckpointKind::Plan, Party::Approver { model: approver })]
+        starts,
+        [(CheckpointKind::Goal, Party::Approver { model: approver })]
     );
     Ok(())
 }
@@ -977,6 +985,7 @@ async fn a_stopped_card_goes_to_the_other_installed_clis() -> anyhow::Result<()>
         reviewers: Vec::new(),
         budget: Default::default(),
         predictions: None,
+        item: None,
     };
     let expected: Vec<FallbackEntry> = ["antigravity-cli", "codex/gpt-x", "opencode/glm-5"]
         .into_iter()

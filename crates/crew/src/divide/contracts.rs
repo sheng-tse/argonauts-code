@@ -94,6 +94,7 @@ fn test_card(build: &CardSpec, n: u32, interfaces: &[CardId], frozen: &[String])
         reviewers: Vec::new(),
         budget: CardBudget::default(),
         predictions: None,
+        item: build.item.clone(),
     }
 }
 
@@ -204,10 +205,7 @@ mod tests {
             .flat_map(|card| card.criteria.clone())
             .collect();
         assert_eq!(tested, ["G1", "G2", "G3"]);
-        let criterion = |id: &str| Criterion {
-            id: id.to_owned(),
-            text: format!("criterion {id}"),
-        };
+        let criterion = |id: &str| Criterion::new(id, format!("criterion {id}"));
         let goal = [
             criterion("G1"),
             criterion("G2"),

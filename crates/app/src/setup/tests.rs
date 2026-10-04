@@ -265,6 +265,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
             "Your agents",
             "Who you chat with",
             "How the crew works",
+            "Who does what",
             "Approvals",
             "This folder",
         ]
@@ -517,6 +518,83 @@ async fn guided_setup_asks_who_coordinates_a_coordinated_crew() {
     let text = fixture.global();
     assert!(text.contains(r#"preset = "coordinated-crew""#), "{text}");
     assert!(text.contains(r#"workers = ["codex"]"#), "{text}");
+}
+
+#[tokio::test]
+async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
+    let mut fixture = Fixture::new(true);
+    let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    let changed = std::cell::Cell::new(false);
+    let value = |option: &argonauts_core::events::checkpoint::AnswerOption| {
+        questions::value_of(&option.action)
+    };
+    let pick = |choice: &AppChoice| {
+        let chosen = |wanted: &str| {
+            let option = choice
+                .options
+                .iter()
+                .find(|option| value(option).as_deref() == Some(wanted))
+                .unwrap_or_else(|| panic!("{wanted} isn't offered: {choice:?}"));
+            option.action.clone()
+        };
+        match choice.title.as_str() {
+            "Who does what" if !changed.replace(true) => chosen("roles.reviewer.workers"),
+            "Who is the reviewer" => chosen("codex"),
+            _ => enter(choice),
+        }
+    };
+    let (asked, _) = answer_all(&mut fixture, &mut setup, effects, pick).await;
+
+    let titles: Vec<&str> = asked.iter().map(|choice| choice.title.as_str()).collect();
+    let list = titles
+        .iter()
+        .filter(|title| **title == "Who does what")
+        .count();
+    assert_eq!(list, 2, "the list comes back after the change: {titles:?}");
+    let first = asked
+        .iter()
+        .find(|choice| choice.title == "Who does what")
+        .unwrap();
+    let labels: Vec<&str> = first
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    assert_eq!(labels[0], "Keep them all");
+    for role in [
+        "Default agent",
+        "coordinator",
+        "reviewer",
+        "narrator",
+        "approver",
+    ] {
+        assert!(labels.contains(&role), "{labels:?}");
+    }
+    let reviewer = first
+        .options
+        .iter()
+        .find(|option| option.label == "reviewer")
+        .unwrap();
+    assert_eq!(reviewer.detail.as_deref(), Some("anyone in your crew"));
+    let again = asked
+        .iter()
+        .rfind(|choice| choice.title == "Who does what")
+        .unwrap();
+    let reviewer = again
+        .options
+        .iter()
+        .find(|option| option.label == "reviewer")
+        .unwrap();
+    assert!(
+        reviewer
+            .detail
+            .as_deref()
+            .is_some_and(|now| now.contains("Codex")),
+        "{reviewer:?}"
+    );
+    let text = fixture.global();
+    assert!(text.contains("[roles.reviewer]"), "{text}");
+    assert!(text.contains(r#"workers = ["codex"#), "{text}");
 }
 
 #[tokio::test]

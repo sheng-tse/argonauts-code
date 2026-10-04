@@ -10,6 +10,8 @@ use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::workflow::{Count, Step, StepKind, StepWorkers, Workflow, WorkflowParams};
 
+use argonauts_core::labels;
+
 use crate::card;
 use crate::plan::context::crew_for;
 use crate::plan::judge;
@@ -52,6 +54,12 @@ pub enum Rule {
     InvalidValue,
     MissingParam,
     Empty,
+    /// A label that isn't one lowercase token of at most 20 cells, or one two steps share.
+    Label,
+    /// A `review_in` that names no later phase.
+    ReviewIn,
+    /// Two phases share a title, so a `review_in` or a row couldn't tell them apart.
+    PhaseTitle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,14 +201,80 @@ impl Check<'_, '_> {
             };
             self.error(Rule::Empty, &at, "it has no phases".to_owned());
         }
+        let mut titles = BTreeSet::new();
+        for (index, phase) in workflow.phases.iter().enumerate() {
+            if !titles.insert(phase.name.trim().to_lowercase()) {
+                let at = format!("{prefix}phase {} ({})", index + 1, phase.name);
+                self.error(
+                    Rule::PhaseTitle,
+                    &at,
+                    format!("another phase is also titled `{}`", phase.name.trim()),
+                );
+            }
+        }
+        // A phase may leave its steps to an earlier build's reviews, which show there.
+        let mut reviewed_in = BTreeSet::new();
         for (index, phase) in workflow.phases.iter().enumerate() {
             let at = format!("{prefix}phase {} ({})", index + 1, phase.name);
-            if phase.steps.is_empty() {
+            for (position, target) in review_targets(&phase.steps) {
+                let at = format!("{at}, step {}", position + 1);
+                match workflow
+                    .phases
+                    .iter()
+                    .position(|later| later.name == target)
+                {
+                    Some(later) if later > index => {
+                        reviewed_in.insert(later);
+                    }
+                    Some(_) => self.error(
+                        Rule::ReviewIn,
+                        &at,
+                        format!(
+                            "`review_in: {target}` names an earlier phase; it must be a later one"
+                        ),
+                    ),
+                    None => self.error(
+                        Rule::ReviewIn,
+                        &at,
+                        format!("`review_in: {target}` names no phase of this workflow"),
+                    ),
+                }
+            }
+        }
+        let mut labels = BTreeMap::new();
+        for (index, phase) in workflow.phases.iter().enumerate() {
+            let at = format!("{prefix}phase {} ({})", index + 1, phase.name);
+            if phase.steps.is_empty() && !reviewed_in.contains(&index) {
                 self.error(Rule::Empty, &at, "the phase has no steps".to_owned());
             }
             for (position, step) in phase.steps.iter().enumerate() {
-                self.step(step, format!("{at}, step {}", position + 1), runs, false);
+                let at = format!("{at}, step {}", position + 1);
+                self.labels(step, &at, &mut labels);
+                self.step(step, at, runs, false);
             }
+        }
+    }
+
+    /// Each step's label pattern, and no fixed label twice: two agents never share a name.
+    fn labels(&mut self, step: &Step, at: &str, seen: &mut BTreeMap<String, String>) {
+        if let Some(label) = &step.label {
+            if let Some(problem) = labels::pattern_problem(label) {
+                self.error(Rule::Label, at, problem);
+            } else if !label.contains('{') {
+                match seen.get(label) {
+                    Some(first) => self.error(
+                        Rule::Label,
+                        at,
+                        format!("label `{label}` is also {first}'s; each label names one agent"),
+                    ),
+                    None => {
+                        seen.insert(label.clone(), at.to_owned());
+                    }
+                }
+            }
+        }
+        for (position, inner) in step.steps.iter().enumerate() {
+            self.labels(inner, &format!("{at}.{}", position + 1), seen);
         }
     }
 
@@ -439,6 +513,7 @@ impl Check<'_, '_> {
             ("checkpoint", step.checkpoint.is_some()),
             ("workflow", step.workflow.is_some()),
             ("params", !step.params.is_empty()),
+            ("review_in", step.review_in.is_some()),
         ];
         for (field, _) in set
             .iter()
@@ -854,13 +929,37 @@ fn allowed_fields(kind: StepKind) -> &'static [&'static str] {
         StepKind::Synthesize => &["role", "workers", "task", "input"],
         // The solo card's owner is the default agent, the plan's owners come from the plan
         // checkpoint, and each card's task is its spec, so `workers` and `task` would do nothing.
-        StepKind::Build => &["role", "count", "different_family_from", "input"],
+        StepKind::Build => &[
+            "role",
+            "count",
+            "different_family_from",
+            "input",
+            "review_in",
+        ],
         StepKind::Gate => &["input"],
         StepKind::LoopUntil => &["steps", "until", "max"],
         StepKind::Checkpoint => &["checkpoint", "input"],
         StepKind::Merge => &[],
+        StepKind::Check => &[],
         StepKind::Workflow => &["workflow", "params"],
     }
+}
+
+/// Every `review_in` among these steps and their inner ones, with the top-level step's place.
+fn review_targets(steps: &[Step]) -> Vec<(usize, String)> {
+    fn walk(step: &Step, position: usize, out: &mut Vec<(usize, String)>) {
+        if let Some(target) = &step.review_in {
+            out.push((position, target.clone()));
+        }
+        for inner in &step.steps {
+            walk(inner, position, out);
+        }
+    }
+    let mut out = Vec::new();
+    for (position, step) in steps.iter().enumerate() {
+        walk(step, position, &mut out);
+    }
+    out
 }
 
 /// The kind as a workflow file spells it.
@@ -939,6 +1038,82 @@ mod tests {
             );
             assert_eq!(rules(&step), [Rule::FieldNotForKind], "{field}");
         }
+    }
+
+    /// The whole workflow's rules, for checks that span its phases.
+    fn workflow_rules(text: &str) -> Vec<Rule> {
+        let workflow = yaml::parse(text).unwrap_or_else(|err| panic!("{err}\n{text}"));
+        let settings = Settings::default();
+        let families = BTreeMap::new();
+        let lookup = |name: &str| builtin::load(name);
+        let context = Context {
+            settings: &settings,
+            allowed: &[],
+            families: &families,
+            lookup: &lookup,
+            depth: 0,
+            budget_left_usd: None,
+        };
+        match validate(&workflow, &context) {
+            Ok(()) => Vec::new(),
+            Err(errors) => errors.into_iter().map(|error| error.rule).collect(),
+        }
+    }
+
+    const FIX_THEN_REVIEW: &str = "name: fix\nphases:\n  - title: Goal\n    standard: understand\n    steps:\n      - { kind: checkpoint, checkpoint: goal }\n  - title: Fix\n    standard: do\n    steps:\n      - { kind: checkpoint, checkpoint: plan }\n      - { kind: build, input: plan, label: \"fix:{item}\", review_in: REVIEW_IN }\n  - title: Review\n    standard: check\n    steps: []\n  - title: Merge\n    standard: decide\n    steps:\n      - { kind: merge, label: \"merge:{branch}\" }\n";
+
+    #[test]
+    fn a_phase_may_hold_only_an_earlier_builds_reviews() {
+        let later = FIX_THEN_REVIEW.replace("REVIEW_IN", "Review");
+        assert_eq!(workflow_rules(&later), []);
+        let earlier = FIX_THEN_REVIEW.replace("REVIEW_IN", "Goal");
+        let refused = workflow_rules(&earlier);
+        assert!(refused.contains(&Rule::ReviewIn), "{refused:?}");
+        // Nothing feeds Review now, so its emptiness counts too.
+        assert!(refused.contains(&Rule::Empty), "{refused:?}");
+        let unknown = FIX_THEN_REVIEW.replace("REVIEW_IN", "Nowhere");
+        assert!(workflow_rules(&unknown).contains(&Rule::ReviewIn));
+        // Only a build points its reviews somewhere.
+        assert!(
+            rules("      - kind: gate\n        review_in: Build\n")
+                .contains(&Rule::FieldNotForKind)
+        );
+        // Two phases by one title can't be told apart, whatever their case.
+        let twice = FIX_THEN_REVIEW
+            .replace("REVIEW_IN", "Review")
+            .replace("title: Goal", "title: review");
+        assert!(workflow_rules(&twice).contains(&Rule::PhaseTitle));
+    }
+
+    #[test]
+    fn labels_are_one_token_and_never_shared() {
+        assert_eq!(
+            rules("      - kind: gate\n        label: \"tests:{item}\"\n"),
+            []
+        );
+        for bad in [
+            "Tests:x",
+            "tests x",
+            "tests:{thing}",
+            "a-label-much-too-long-to-fit",
+        ] {
+            let step = format!("      - kind: gate\n        label: \"{bad}\"\n");
+            assert_eq!(rules(&step), [Rule::Label], "{bad}");
+        }
+        let twice = "      - kind: gate\n        label: \"look:once\"\n      - kind: gate\n        label: \"look:once\"\n";
+        assert_eq!(rules(twice), [Rule::Label]);
+    }
+
+    #[test]
+    fn the_check_step_takes_only_its_label() {
+        assert_eq!(
+            rules("      - kind: check\n        label: \"check:final\"\n"),
+            []
+        );
+        assert_eq!(
+            rules("      - kind: check\n        role: reviewer\n"),
+            [Rule::FieldNotForKind]
+        );
     }
 
     #[test]

@@ -130,7 +130,8 @@ fn offline(request: &ControlRequest) -> Offline {
         | ControlRequest::StopSession { .. }
         | ControlRequest::ApprovalMode { .. }
         | ControlRequest::TakeOverEnded { .. }
-        | ControlRequest::SpotCheck { .. } => Offline::Defer,
+        | ControlRequest::SpotCheck { .. }
+        | ControlRequest::Goal { .. } => Offline::Defer,
         ControlRequest::TakeOver { .. }
         | ControlRequest::TakeBack { .. }
         | ControlRequest::Revert { .. } => Offline::StartThenAsk,
@@ -154,7 +155,8 @@ fn needs_a_person(request: &ControlRequest) -> bool {
         | ControlRequest::ApprovalMode { .. }
         | ControlRequest::TakeOver { .. }
         | ControlRequest::TakeOverEnded { .. }
-        | ControlRequest::SpotCheck { .. } => true,
+        | ControlRequest::SpotCheck { .. }
+        | ControlRequest::Goal { .. } => true,
         ControlRequest::Reassign { token, .. } => token.is_some(),
         _ => false,
     }

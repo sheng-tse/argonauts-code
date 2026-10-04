@@ -18,6 +18,7 @@ use tokio::time::{Interval, MissedTickBehavior};
 
 use super::AppIo;
 use super::editor::edit_in_editor;
+use super::gone::{self, TerminalGone};
 use super::keys::KeySource;
 use super::takeover::{TakeOverPlan, TermEnv, plan_take_over, run_in_tmux, write_spec_files};
 use crate::UiOptions;
@@ -72,6 +73,10 @@ pub(super) struct Screen<W: Write> {
     keymap_source: Option<BTreeMap<String, String>>,
     /// Only on the process's own terminal.
     stops: Option<Stops>,
+    /// Only on the process's own terminal: when to check it's still there.
+    gone_check: Option<Interval>,
+    /// The terminal went away, so nothing is written to it again.
+    gone: bool,
 }
 
 impl<W: Write> Screen<W> {
@@ -112,16 +117,25 @@ impl<W: Write> Screen<W> {
             size_poll: None,
             keymap_source: None,
             stops: None,
+            gone_check: None,
+            gone: false,
         };
         screen.refresh_keymap();
         screen
     }
 
     /// The process's own terminal: its modes go back on after a child program, stop signals
-    /// close the screen, and inside tmux its size is polled.
+    /// close the screen, the screen closes when the terminal goes away, and inside tmux its
+    /// size is polled.
     pub(super) fn use_real_terminal(&mut self, modes: TerminalModes, stops: Option<Stops>) {
         self.ui.set_terminal_modes(modes);
         self.stops = stops;
+        // Only from here: during the start-up probes, a terminal that doesn't answer may
+        // rightly take longer than the backstop waits.
+        gone::arm_backstop();
+        let mut check = tokio::time::interval(gone::CHECK_EVERY);
+        check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        self.gone_check = Some(check);
         if TermEnv::from_process().in_tmux {
             let start = tokio::time::Instant::now() + SIZE_POLL;
             let mut poll = tokio::time::interval_at(start, SIZE_POLL);
@@ -135,6 +149,13 @@ impl<W: Write> Screen<W> {
     /// line under it only while runs keep going.
     pub(super) async fn run<K: KeySource>(mut self, mut keys: K) -> anyhow::Result<()> {
         let result = self.run_loop(&mut keys).await;
+        if self.gone {
+            // Restoring modes on a terminal that's gone could only fail, or wait.
+            if let Some(modes) = self.ui.take_terminal_modes() {
+                modes.abandon();
+            }
+            return Err(TerminalGone.into());
+        }
         let lines = self.exit.take().unwrap_or_default();
         let lines = if self.ui.is_fullscreen() {
             watch_line(&self.bridge.state).into_iter().collect()
@@ -159,7 +180,10 @@ impl<W: Write> Screen<W> {
             if self.exit.is_some() {
                 return Ok(());
             }
-            self.ui.frame_in(Instant::now(), &self.bridge.state)?;
+            if let Err(error) = self.ui.frame_in(Instant::now(), &self.bridge.state) {
+                self.gone = self.gone_check.is_some();
+                return Err(error.into());
+            }
             let now = Instant::now();
             let wake = self.ui.next_deadline(now);
             let sleep_until = tokio::time::Instant::from_std(wake.unwrap_or(now + IDLE_WAIT));
@@ -173,12 +197,27 @@ impl<W: Write> Screen<W> {
                 },
                 key = keys.next(), if keys_open => match key {
                     Some(Ok(event)) => self.on_terminal_event(event).await,
-                    Some(Err(error)) => return Err(error.into()),
+                    Some(Err(error)) => {
+                        self.gone = self.gone_check.is_some();
+                        return Err(error.into());
+                    }
+                    // A test's keys can run out while the screen goes on; the terminal's only
+                    // end when it goes away.
+                    None if self.gone_check.is_some() => {
+                        self.gone = true;
+                        return Ok(());
+                    }
                     None => keys_open = false,
                 },
                 Some(returned) = self.returns.recv() => self.on_returned(returned).await,
                 () = tokio::time::sleep_until(sleep_until), if wake.is_some() => {}
                 () = tick(&mut self.size_poll), if self.size_poll.is_some() => self.check_size(),
+                () = tick(&mut self.gone_check), if self.gone_check.is_some() => {
+                    if gone::terminal_gone() {
+                        self.gone = true;
+                        return Ok(());
+                    }
+                }
                 () = stopped(&mut self.stops), if self.stops.is_some() => {
                     self.exit = Some(exit_lines(&self.bridge.state));
                 }

@@ -237,10 +237,7 @@ mod tests {
             run: RunId::new("run-01").unwrap(),
             version: 1,
             summary: "s".to_owned(),
-            criteria: vec![Criterion {
-                id: "G1".to_owned(),
-                text: "Requests over the limit get a 429".to_owned(),
-            }],
+            criteria: vec![Criterion::new("G1", "Requests over the limit get a 429")],
             in_scope: Vec::new(),
             out_of_scope: Vec::new(),
             assumptions: Vec::new(),

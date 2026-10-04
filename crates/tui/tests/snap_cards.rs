@@ -144,6 +144,7 @@ fn run_state() -> RunState {
                 last_gate: None,
                 reviews: 0,
                 waiting_on_vendor: None,
+                item: None,
             },
         );
     }
@@ -155,15 +156,16 @@ fn goal_file() -> GoalFile {
         run: run_id(),
         version: 1,
         summary: "Add a --json flag to the export command".into(),
-        criteria: vec![Criterion {
-            id: "G1".into(),
-            text: "`export --json` writes one JSON object per row".into(),
-        }],
+        criteria: vec![Criterion::new(
+            "G1",
+            "`export --json` writes one JSON object per row",
+        )],
         in_scope: vec!["the export command".into()],
         out_of_scope: vec!["the import command".into()],
         assumptions: vec![Assumption {
             text: "Rows keep their CSV column order".into(),
             basis: "a detail, and 2 of 3 read it that way".into(),
+            by: None,
         }],
         answers: Vec::new(),
         source: GoalSource::Restatements,
@@ -192,6 +194,7 @@ fn goal_question() -> CheckpointOpened {
             },
         ],
         tag,
+        topic: None,
     };
     checkpoint(
         CheckpointKind::Goal,
@@ -202,6 +205,7 @@ fn goal_question() -> CheckpointOpened {
             assumptions: vec![Assumption {
                 text: "Limits reset every minute".into(),
                 basis: "a detail, and 2 of 3 read it that way".into(),
+                by: None,
             }],
             questions: vec![
                 question(
@@ -253,6 +257,7 @@ fn spec(n: u32, title: &str, owner: &str, reviewer: &str, depends_on: &[u32]) ->
         reviewers: vec![worker(reviewer)],
         budget: CardBudget::default(),
         predictions: None,
+        item: None,
     }
 }
 
@@ -915,6 +920,7 @@ fn scope_questions() -> CheckpointOpened {
             ),
         ],
         tag: DiffTag::Scope,
+        topic: None,
     };
     checkpoint(
         CheckpointKind::Goal,

@@ -1,10 +1,15 @@
 //! Workflows as YAML text: built-in files, your own files, the lead's composed workflows, and
 //! the running workflow shown to the lead at a phase end.
 
-use argonauts_core::workflow::Workflow;
+use argonauts_core::workflow::{Step, Workflow};
 
 /// Unknown keys are refused, like every workflow source.
 pub fn parse(text: &str) -> Result<Workflow, String> {
+    serde_saphyr::from_str(text).map_err(|err| err.to_string())
+}
+
+/// One phase's steps, such as a goal attempt the lead planned.
+pub fn parse_steps(text: &str) -> Result<Vec<Step>, String> {
     serde_saphyr::from_str(text).map_err(|err| err.to_string())
 }
 

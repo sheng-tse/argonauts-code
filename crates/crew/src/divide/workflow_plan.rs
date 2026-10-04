@@ -6,6 +6,7 @@
 
 use argonauts_core::events::checkpoint::{
     AnswerAction, AnswerOption, CheckpointKind, CheckpointPacket, FreeText, PlanPacket,
+    PlanWorkflow,
 };
 use argonauts_core::events::plan::{BudgetPlan, TaskGraph};
 use argonauts_core::events::run::RunOutcome;
@@ -14,13 +15,14 @@ use argonauts_core::names::{WorkerRef, WorkflowId};
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::budget::BudgetUnit;
 use argonauts_core::steps::StepName;
+use argonauts_core::steps::design::DesignOutput;
 use argonauts_core::workflow::{StepKind, WorkflowRef};
 
 use crate::checkpoints::{self, CheckpointRequest, options};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::state::RunState;
-use crate::workflow::{Flow, StepCall, StepDone, align, runner, yaml};
+use crate::workflow::{Flow, StepCall, StepDone, runner, shape, yaml};
 
 /// Whether there's a plan for the checkpoint to divide into cards: drafted already, or by a
 /// step of the workflow. One that isn't recorded is taken to have one, as every plan
@@ -33,7 +35,7 @@ pub fn drafts_plan(state: &RunState, id: &WorkflowId) -> bool {
                 .workflow
                 .phases
                 .iter()
-                .any(|phase| align::has_kind(&phase.steps, StepKind::Draft))
+                .any(|phase| shape::has_kind(&phase.steps, StepKind::Draft))
         })
 }
 
@@ -58,7 +60,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
 }
 
 async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest> {
-    let shown = host.read(align::plan_workflow);
+    let shown = host.read(plan_workflow);
     let summary = match &shown {
         Some(shown) => shown
             .why
@@ -141,6 +143,38 @@ pub fn answer_options() -> Vec<AnswerOption> {
             )
         })
         .collect()
+}
+
+/// The run's workflow for the plan checkpoint, with the lead's reason when the lead picked it.
+pub fn plan_workflow(state: &RunState) -> Option<PlanWorkflow> {
+    let root = state.workflows.root.as_ref()?;
+    let record = state.workflows.by_id.get(root)?;
+    Some(PlanWorkflow {
+        from: record.from.clone(),
+        why: design_why(state, record.from.as_ref()),
+        workflow: record.workflow.clone(),
+    })
+}
+
+/// The newest design for the task that named this template, or composed one when `from` is
+/// `None`: its one line for the plan checkpoint.
+fn design_why(state: &RunState, from: Option<&WorkflowRef>) -> Option<String> {
+    state
+        .sessions
+        .in_order()
+        .into_iter()
+        .rev()
+        .find_map(|session| {
+            let started = &session.started;
+            if started.step != Some(StepName::DesignWorkflow) || started.workflow_step.is_some() {
+                return None;
+            }
+            let structured = session.end.as_ref()?.structured.clone()?;
+            let output: DesignOutput = serde_json::from_value(structured).ok()?;
+            let why = output.why.trim();
+            (output.based_on.as_deref() == from.map(WorkflowRef::as_str) && !why.is_empty())
+                .then(|| why.to_owned())
+        })
 }
 
 #[cfg(test)]

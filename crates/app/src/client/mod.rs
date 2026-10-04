@@ -23,6 +23,7 @@ use argonauts_core::api::{
     RunSummary, StartRun, StatusSummary, SteerAck,
 };
 use argonauts_core::control::{ClientKind, ControlRequest};
+use argonauts_core::events::goal::GoalAction;
 use argonauts_core::events::session::QueuedMessage;
 use argonauts_core::future::BoxFuture;
 use argonauts_core::input::MentionTarget;
@@ -299,5 +300,14 @@ impl ConductorApi for Client {
         let run = run.clone();
         let id = id.clone();
         Box::pin(async move { control::spot_check(self, &run, &id, correct).await })
+    }
+
+    fn goal(&self, run: &RunId, action: GoalAction) -> BoxFuture<'_, Result<(), ApiError>> {
+        let run = run.clone();
+        Box::pin(async move {
+            control::call(self, &run, ControlRequest::Goal { action })
+                .await?
+                .ok()
+        })
     }
 }

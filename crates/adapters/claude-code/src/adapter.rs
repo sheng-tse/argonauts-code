@@ -14,8 +14,9 @@ use crate::commands::{self, BUILTIN_COMMANDS};
 use crate::parser::ClaudeStreamParser;
 use crate::{sessions, tweaks};
 
-/// The first version is the original recordings, the second the steering and resume ones.
-pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285"];
+/// The first version is the original recordings, the second the steering and resume ones, the
+/// third a workflow Claude Code runs itself.
+pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285", "2.1.289"];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeCodeAdapter;
@@ -257,7 +258,7 @@ mod tests {
             Some("2.1.285")
         );
         assert_eq!(adapter.parse_version("no version here"), None);
-        assert_eq!(adapter.tested_versions(), ["2.1.284", "2.1.285"]);
+        assert_eq!(adapter.tested_versions(), ["2.1.284", "2.1.285", "2.1.289"]);
         assert_eq!(adapter.cheapest_model(), ("haiku", Some("low")));
         assert!(adapter.wrap_up_input("wrap up").is_none());
         assert_eq!(adapter.stop_plan(), StopPlan::default());

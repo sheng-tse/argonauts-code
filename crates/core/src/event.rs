@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::events::session::SubagentUpdate;
+use crate::events::session::{SubagentUpdate, VendorWorkflow};
 use crate::limits::QuotaReading;
 
 /// `parent` is the id of the tool call that spawned a subagent, when the event came from one.
@@ -85,6 +85,11 @@ pub enum AgentEvent {
     Subagent {
         update: SubagentUpdate,
     },
+    /// A workflow the agent's own CLI runs, with its phases and agents, replacing any earlier
+    /// state of the same id.
+    Workflow {
+        workflow: Box<VendorWorkflow>,
+    },
     /// A normalized quota reading. `QuotaSignal` still carries raw payloads.
     Quota {
         reading: QuotaReading,
@@ -124,6 +129,7 @@ impl AgentEvent {
             Self::Retry { .. } => "retry",
             Self::QuotaSignal { .. } => "quota_signal",
             Self::Subagent { .. } => "subagent",
+            Self::Workflow { .. } => "workflow",
             Self::Quota { .. } => "quota",
             Self::Error { .. } => "error",
             Self::Result { .. } => "result",

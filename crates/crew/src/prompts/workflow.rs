@@ -23,9 +23,10 @@ mod tests {
             errors: Vec::new(),
             current: Some(String::new()),
             progress: vec![String::new()],
+            style: Some(argonauts_core::settings::workflows::RunStyle::Goal),
         })
         .unwrap();
-        for field in ["current", "progress", "errors"] {
+        for field in ["current", "progress", "errors", "style"] {
             assert!(input.get(field).is_some(), "{field} left DesignInput");
             assert!(
                 DESIGN_WORKFLOW.contains(&format!("`{field}`")),
@@ -33,13 +34,30 @@ mod tests {
             );
         }
         let output = serde_json::to_value(DesignOutput {
-            template: None,
-            params: Vec::new(),
-            composed: None,
+            name: String::new(),
+            description: String::new(),
+            based_on: None,
             why: String::new(),
+            params: Vec::new(),
+            workflow: None,
+            done_when: Vec::new(),
+            plan: Vec::new(),
+            questions: Vec::new(),
+            first_attempt: None,
         })
         .unwrap();
-        for field in ["template", "composed"] {
+        for field in [
+            "name",
+            "description",
+            "based_on",
+            "why",
+            "workflow",
+            "params",
+            "done_when",
+            "plan",
+            "questions",
+            "first_attempt",
+        ] {
             assert!(output.get(field).is_some(), "{field} left DesignOutput");
             assert!(
                 DESIGN_WORKFLOW.contains(&format!("`{field}`")),
@@ -67,11 +85,22 @@ mod tests {
         };
         assert_eq!(
             required(&schema),
-            ["composed", "params", "template", "why"],
+            [
+                "based_on",
+                "description",
+                "done_when",
+                "first_attempt",
+                "name",
+                "params",
+                "plan",
+                "questions",
+                "why",
+                "workflow"
+            ],
             "{schema:#}"
         );
         assert_eq!(required(param), ["name", "value"], "{schema:#}");
-        for nullable in ["template", "composed"] {
+        for nullable in ["based_on", "workflow"] {
             assert_eq!(
                 schema["properties"][nullable]["type"],
                 serde_json::json!(["string", "null"]),

@@ -196,6 +196,7 @@ mod tests {
             reviewers: Vec::new(),
             budget: Default::default(),
             predictions: None,
+            item: None,
         }
     }
 

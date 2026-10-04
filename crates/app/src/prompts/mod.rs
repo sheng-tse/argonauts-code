@@ -195,6 +195,7 @@ mod tests {
         assert!(prompt.contains("Argonauts makes the change in a run"));
         assert!(prompt.contains("\"answer_markdown\""), "{prompt}");
         assert!(prompt.contains("\"file_count\""), "{prompt}");
+        assert!(prompt.contains("the run's description"), "{prompt}");
         assert!(prompt.contains("In the working tree: 2 uncommitted files are not included."));
         // The request comes last and is never read as a placeholder.
         assert!(

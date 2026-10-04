@@ -262,11 +262,16 @@ impl SessionView {
             SessionStatus::Failed => (marks.failed, Role::Error),
             SessionStatus::Stopped => (marks.stopped, Role::Dim),
         };
-        let mut name = vec![
-            clean(&state.names.worker(&session.worker)),
-            clean(session.role.as_str()),
-        ];
-        if let Some(card) = &session.card {
+        // Headed as the chat heads its block: the label, then the agent, as `fix:slugify ·
+        // Haiku 4.5 on Claude Code`. A log from before labels names the role and the card.
+        let mut name = match &session.label {
+            Some(label) => vec![clean(label), clean(&state.names.worker(&session.worker))],
+            None => vec![
+                clean(&state.names.worker(&session.worker)),
+                clean(session.role.as_str()),
+            ],
+        };
+        if let Some(card) = session.card.as_ref().filter(|_| session.label.is_none()) {
             let title = state
                 .runs
                 .get(&self.run)

@@ -1,4 +1,4 @@
-//! Differs: `goal.differs` workers, from different families than each other where possible,
+//! Differs: `understand.comparers` workers, from different families than each other where possible,
 //! no-tools preferred. One listing is enough to go on.
 
 use futures::future::join_all;
@@ -44,7 +44,7 @@ pub async fn compare(host: &Host, call: &StepCall) -> EngineResult<Vec<(WorkerRe
     let candidates = candidates(host, call);
     let count = match call.step.count {
         Some(Count::Fixed(count)) => count,
-        _ => host.settings().goal.differs,
+        _ => host.settings().understand.comparers,
     };
     let picked = pick(&candidates, usize::try_from(count.max(1)).unwrap_or(1));
     if picked.is_empty() {

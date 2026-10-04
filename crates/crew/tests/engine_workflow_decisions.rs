@@ -24,6 +24,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::log::NoteLevel;
 use argonauts_core::names::{CheckpointId, WorkerRef, WorkflowId};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::protocol::UnderstandWhen;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::Worker;
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
@@ -119,8 +120,9 @@ fn ended(outcome: &Outcome, expected: RunOutcome) {
     );
 }
 
+/// The lead's brief: an example by name with its params, or a workflow of its own.
 fn design(template: Option<&str>, params: Value, composed: Option<&str>) -> Value {
-    json!({"template": template, "params": params, "composed": composed, "why": "it fits"})
+    support::brief(template, params, composed, "it fits")
 }
 
 /// A worker that gives `designs` to the lead's `DesignWorkflow` asks in order, `answers` to the
@@ -160,7 +162,8 @@ fn responder(
     fake
 }
 
-/// A crew run whose lead is the one worker, designing the workflow at the start.
+/// A crew run whose lead is the one worker, designing the workflow at the start. Understand is
+/// the lead's to add, so the workflows here run as the lead wrote them.
 fn designing_crew(answers: Vec<Value>) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
     let mut crew = Crew::new()?;
     let lead = responder(
@@ -173,6 +176,7 @@ fn designing_crew(answers: Vec<Value>) -> anyhow::Result<(Crew, Arc<FakeWorker>)
     crew.settings.workflow = WorkflowRef::new("look-then-look");
     crew.settings.workflows.lead_designs = true;
     crew.settings.workflows.adapt_at_phase_ends = false;
+    crew.settings.understand.when = UnderstandWhen::Lead;
     crew.repo
         .write(".argonauts/workflows/one-look.yaml", ONE_LOOK)?;
     crew.repo
@@ -214,13 +218,35 @@ async fn lead_picks_a_template_with_params() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn lead_composes_a_workflow_that_runs() -> anyhow::Result<()> {
-    let composed = "name: composed-look\ndescription: A look\nphases:\n  - name: Look\n    standard: check\n    steps:\n      - kind: gate\n";
-    let (crew, _) = designing_crew(vec![design(None, json!([]), Some(composed))])?;
+    let composed = "name: composed-look\ndescription: A look\nphases:\n  - title: Look\n    detail: the gates, once\n    standard: check\n    steps:\n      - kind: gate\n        label: \"look:gates\"\n";
+    // Without a detail on its phase, the brief goes back to the lead with the error.
+    let bare = composed.replace("    detail: the gates, once\n", "");
+    let (crew, lead) = designing_crew(vec![
+        design(None, json!([]), Some(&bare)),
+        design(None, json!([]), Some(composed)),
+    ])?;
     let outcome = crew.start(RunMode::Crew, "look once").await?;
     let started = workflows_started(&outcome.events);
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].from, None);
-    assert_eq!(started[0].workflow, parse(composed));
+    // The brief names the run; the lead's file gives the phases.
+    assert_eq!(started[0].workflow.phases, parse(composed).phases);
+    assert_eq!(started[0].workflow.name, "look-at-it");
+    assert_eq!(started[0].workflow.description, "Look at the repository");
+    assert_eq!(designs(&lead), 2);
+    let retried = lead
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.step == Some(StepName::DesignWorkflow))
+        .nth(1)
+        .unwrap_or_else(|| panic!("no second design"));
+    assert!(
+        retried
+            .prompt
+            .iter()
+            .any(|part| part.text.contains("phase 1 (Look) has no `detail`")),
+        "the error goes back to the lead"
+    );
     assert!(
         workflow_events(&outcome.events)
             .iter()
@@ -314,6 +340,10 @@ async fn crew_run_in_a_solo_workflow_never_adapts() -> anyhow::Result<()> {
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.settings.workflows.lead_designs = false;
     let outcome = crew.start(RunMode::Crew, "fix the typo").await?;
+    // A crew run asks the go-ahead before it builds, here with nothing read.
+    let (go_ahead, _reply) = support::recommended(&outcome.events)
+        .ok_or_else(|| anyhow::anyhow!("the go-ahead waits"))?;
+    let outcome = crew.resume(outcome.events.clone(), vec![go_ahead]).await?;
     assert!(
         steps_started(&outcome.events)
             .iter()
@@ -341,7 +371,8 @@ async fn project_file_replaces_a_builtin() -> anyhow::Result<()> {
     crew.settings.workflows.adapt_at_phase_ends = false;
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
     let started = workflows_started(&outcome.events);
-    assert_eq!(started[0].workflow, parse(&mine));
+    assert_eq!(started[0].workflow.phases, parse(&mine).phases);
+    assert_eq!(started[0].workflow.based_on.as_deref(), Some("peer-crew"));
     Ok(())
 }
 
@@ -437,7 +468,7 @@ fn goal_crew() -> anyhow::Result<Crew> {
     crew.repo.commit_all("Add the workflow")?;
     crew.settings.workflow = WorkflowRef::new("goal-then-look");
     crew.settings.workflows.adapt_at_phase_ends = false;
-    crew.settings.goal.differs = 3;
+    crew.settings.understand.comparers = 3;
     let listing = json!({"agreements": ["The public API gets a rate limit."], "differences": []});
     for (worker, family) in [
         ("claude-code/opus", "claude"),
@@ -870,7 +901,7 @@ async fn your_proposal_and_the_leads_change_both_stay_open() -> anyhow::Result<(
     let made: Vec<CheckpointId> = workflow_events(&accepted.events)
         .into_iter()
         .filter_map(|event| match event {
-            WorkflowEvent::Changed(changed) => Some(changed.checkpoint.clone()),
+            WorkflowEvent::Changed(changed) => changed.checkpoint.clone(),
             _ => None,
         })
         .collect();
@@ -878,8 +909,10 @@ async fn your_proposal_and_the_leads_change_both_stay_open() -> anyhow::Result<(
     Ok(())
 }
 
+/// The lead designs before anything runs, and code opens its pick with Understand: no nested
+/// goal workflow, no Goal phase, and no Plan phase holding only a checkpoint.
 #[tokio::test]
-async fn lead_designs_once_the_goal_is_approved() -> anyhow::Result<()> {
+async fn the_lead_designs_first_and_understand_opens_the_run() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     let goal = || {
         let listing =
@@ -890,7 +923,7 @@ async fn lead_designs_once_the_goal_is_approved() -> anyhow::Result<()> {
         ]
     };
     let params = json!([{"name": "check", "value": "goal_approved"}]);
-    // The second design is the look at the plan phase's end, which keeps the workflow.
+    // The second design is the look at Understand's end, which keeps the workflow.
     let picks = vec![
         design(Some("one-look"), params.clone(), None),
         design(Some("one-look"), params, None),
@@ -905,27 +938,20 @@ async fn lead_designs_once_the_goal_is_approved() -> anyhow::Result<()> {
     crew.repo
         .write(".argonauts/workflows/goal-then-look.yaml", GOAL_THEN_LOOK)?;
 
-    // The goal aligns first, nested under the run's workflow to come, which keeps wf-001.
     let outcome = crew.start(RunMode::Crew, "rate limit the API").await?;
-    assert_eq!(designs(&lead), 0);
+    assert_eq!(designs(&lead), 1);
     let started = workflows_started(&outcome.events);
     assert_eq!(started.len(), 1, "{started:?}");
-    let run_workflow = WorkflowId::numbered(1);
-    assert_eq!(
-        started[0].parent,
-        Some(StepRef {
-            workflow: run_workflow.clone(),
-            phase: 0,
-            path: vec![0],
-        })
-    );
-    assert_eq!(opened(&outcome.events, CheckpointKind::Goal).len(), 1);
-
-    // Then the lead designs from the approved goal, and code frames its pick.
-    let (next, reply) =
-        decide(&crew, &outcome, CheckpointKind::Goal, AnswerAction::Approve).await?;
-    assert_eq!(reply, Ok(()));
-    assert_eq!(designs(&lead), 1);
+    let run = started[0];
+    assert_eq!(run.parent, None);
+    assert_eq!(run.from, Some(WorkflowRef::new("one-look")));
+    let phases: Vec<&str> = run
+        .workflow
+        .phases
+        .iter()
+        .map(|phase| phase.name.as_str())
+        .collect();
+    assert_eq!(phases, ["Understand", "Look"]);
     let asked = lead
         .specs()
         .into_iter()
@@ -935,56 +961,19 @@ async fn lead_designs_once_the_goal_is_approved() -> anyhow::Result<()> {
         asked
             .prompt
             .iter()
-            .any(|part| part.text.contains("Add a rate limit to the public API.")),
-        "the design didn't see the goal"
-    );
-    assert!(
-        asked
-            .prompt
-            .iter()
             .any(|part| part.text.contains("### one-look"))
     );
-    let started = workflows_started(&next.events);
-    let run = started
-        .iter()
-        .find(|started| started.parent.is_none())
-        .expect("the run's workflow started");
-    assert_eq!(
-        (&run.id, &run.from),
-        (&run_workflow, &Some(WorkflowRef::new("one-look")))
-    );
-    let phases: Vec<&str> = run
-        .workflow
-        .phases
-        .iter()
-        .map(|phase| phase.name.as_str())
-        .collect();
-    assert_eq!(phases, ["Goal", "Plan", "Look"]);
+    // Understand ends with its one card.
+    assert_eq!(opened(&outcome.events, CheckpointKind::Goal).len(), 1);
+    assert!(opened(&outcome.events, CheckpointKind::Plan).is_empty());
 
-    // The plan checkpoint shows the workflow with the lead's reason.
-    let plans = opened(&next.events, CheckpointKind::Plan);
-    let [plan] = plans.as_slice() else {
-        panic!("expected one plan checkpoint: {plans:?}");
-    };
-    let CheckpointPacket::Plan(packet) = &plan.packet else {
-        panic!("not a plan packet: {:?}", plan.packet);
-    };
-    let shown = packet
-        .workflow
-        .as_ref()
-        .expect("the plan shows its workflow");
-    assert_eq!(shown.from, Some(WorkflowRef::new("one-look")));
-    assert_eq!(shown.why.as_deref(), Some("it fits"));
-    assert_eq!(shown.workflow, run.workflow);
-    assert_eq!(packet.summary, "it fits");
-    let actions: Vec<&AnswerAction> = plan.options.iter().map(|option| &option.action).collect();
-    assert!(!actions.contains(&&AnswerAction::SendBack), "{actions:?}");
-
-    // Approved, it runs on; only the plan phase's end asked the lead again.
-    let (done, reply) = decide(&crew, &next, CheckpointKind::Plan, AnswerAction::Approve).await?;
+    // Approved, it runs on; Understand's end asked the lead again, and nothing else asks.
+    let (done, reply) =
+        decide(&crew, &outcome, CheckpointKind::Goal, AnswerAction::Approve).await?;
     assert_eq!(reply, Ok(()));
     assert_eq!(designs(&lead), 2);
     assert!(opened(&done.events, CheckpointKind::ChangeRequest).is_empty());
+    assert!(opened(&done.events, CheckpointKind::Plan).is_empty());
     assert!(workflow_events(&done.events).iter().any(|event| matches!(
         event,
         WorkflowEvent::StepFinished(finished) if finished.kind == StepKind::Gate

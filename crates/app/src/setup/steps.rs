@@ -1,8 +1,12 @@
 //! The setup's answers and the keys they write.
 
+use std::collections::BTreeMap;
+
 use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_registry::safety_keys_in;
+
+use super::roles;
 
 /// The checkpoints the approvals step sets, in the file's order.
 pub(crate) const APPROVAL_POINTS: &[&str] = &[
@@ -37,6 +41,8 @@ pub(crate) struct Answers {
     pub preset: String,
     /// Only for `coordinated-crew`.
     pub coordinator: Option<WorkerRef>,
+    /// Who fills each other role you set in "Who does what", by its `/model` key.
+    pub roles: BTreeMap<String, WorkerRef>,
     /// `None` keeps the modes your file has.
     pub approvals: Option<ApprovalMode>,
     pub trust_folder: bool,
@@ -51,6 +57,7 @@ impl Default for Answers {
             default_agent: None,
             preset: PEER_CREW.to_owned(),
             coordinator: None,
+            roles: BTreeMap::new(),
             approvals: Some(ApprovalMode::Auto),
             trust_folder: false,
             create_project_dir: false,
@@ -77,6 +84,9 @@ pub(crate) fn keys(answers: &Answers, interactive: bool) -> Vec<(String, String)
             workers(std::slice::from_ref(coordinator)),
         ));
     }
+    for (key, worker) in &answers.roles {
+        keys.push((key.clone(), roles::toml_value(key, worker)));
+    }
     // A reviewer's address is a safety key, so without a terminal the whole pick stays out.
     if interactive && !answers.reviewers.is_empty() {
         for pick in &answers.reviewers {
@@ -87,12 +97,15 @@ pub(crate) fn keys(answers: &Answers, interactive: bool) -> Vec<(String, String)
             ));
             keys.push((format!("endpoints.{endpoint}.local"), "true".to_owned()));
         }
-        let reviewers: Vec<WorkerRef> = answers
-            .reviewers
-            .iter()
-            .map(|pick| WorkerRef::new(pick.endpoint.clone(), Some(pick.model.clone())))
-            .collect();
-        keys.push(("roles.reviewer.workers".to_owned(), workers(&reviewers)));
+        // A reviewer you chose later, in "Who does what", is the one written.
+        if !answers.roles.contains_key(roles::REVIEWER_KEY) {
+            let reviewers: Vec<WorkerRef> = answers
+                .reviewers
+                .iter()
+                .map(|pick| WorkerRef::new(pick.endpoint.clone(), Some(pick.model.clone())))
+                .collect();
+            keys.push((roles::REVIEWER_KEY.to_owned(), workers(&reviewers)));
+        }
     }
     if let Some(mode) = answers.approvals {
         for point in APPROVAL_POINTS {

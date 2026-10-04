@@ -19,7 +19,7 @@ pub const SHARED_COMMANDS: &[SlashSpec] = &[
     SlashSpec { name: "cd", args: "[path]", help: "Work in another folder. No path shows the current one", handler: Handler::App, category: CommandCategory::Session },
     SlashSpec { name: "add-dir", args: "<path>", help: "Let the agents work in one more folder", handler: Handler::App, category: CommandCategory::Session },
     SlashSpec { name: "plan", args: "[task]", help: "Plan first, and change nothing until you agree", handler: Handler::App, category: CommandCategory::Work },
-    SlashSpec { name: "goal", args: "[goal|clear|pause|resume]", help: "A goal the agent works toward until it's met", handler: Handler::App, category: CommandCategory::Work },
+    SlashSpec { name: "goal", args: "[objective|pause|resume|clear]", help: "The crew pursues it as a goal until a check finds every criterion met. No objective shows the goal", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "review", args: "[target]", help: "Review the changes: the working tree, a branch, or a pull request", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "security-review", args: "[target]", help: "Review the changes for security problems", handler: Handler::App, category: CommandCategory::Work },
     SlashSpec { name: "diff", args: "", help: "The changes in the working tree", handler: Handler::App, category: CommandCategory::Work },

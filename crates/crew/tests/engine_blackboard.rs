@@ -60,6 +60,7 @@ fn spec(id: &str, owner: &str, owned: &[&str], reads: &[&str], depends_on: &[&st
         reviewers: Vec::new(),
         budget: Default::default(),
         predictions: None,
+        item: None,
     }
 }
 
@@ -334,6 +335,7 @@ fn run_session(
             resumed_from: None,
             follow_key: u8::try_from(n).ok(),
             workflow_step: None,
+            label: None,
         }))),
     )?;
     let (control, controls) = mpsc::channel(8);
@@ -501,6 +503,7 @@ fn report(concerns: &[&str], change_requests: Vec<ChangeRequestOut>) -> CardRepo
         questions: Vec::new(),
         change_requests,
         memory_proposals: Vec::new(),
+        answer: String::new(),
     }
 }
 

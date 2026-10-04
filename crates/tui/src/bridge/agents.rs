@@ -19,6 +19,7 @@ use argonauts_core::events::session::{
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{SessionKey, WorkerRef};
 use argonauts_core::settings::ui::Glyphs as GlyphChoice;
+use argonauts_core::steps::StepName;
 use argonauts_core::{AgentEvent, CardId, ErrorCategory, RunId, TodoItem, TodoStatus, Verbosity};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -65,6 +66,8 @@ struct StartedGroup {
 /// One working session: its live block and what it has done so far.
 #[derive(Debug)]
 struct Live {
+    /// Headed by its label, with the agent's name after it.
+    labeled: bool,
     run: RunId,
     key: SessionKey,
     vendor: String,
@@ -147,6 +150,9 @@ impl AgentBlocks {
                 if let Some(index) = self.index(&event.run_id, key) {
                     self.remove(index, cx);
                 }
+                if writes_the_closing(started.step) {
+                    return;
+                }
                 let live = Live::new(
                     Place {
                         run: &event.run_id,
@@ -156,7 +162,15 @@ impl AgentBlocks {
                     },
                     &started.worker,
                     &started.vendor.0,
-                    task_label(started.role, started.step, event.card_id.as_ref()),
+                    Named {
+                        label: started
+                            .label
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|label| !label.is_empty())
+                            .map(str::to_owned),
+                        task: task_label(started.role, started.step, event.card_id.as_ref()),
+                    },
                     cx,
                 );
                 self.started.add(live.started_row(), event.ts);
@@ -350,10 +364,13 @@ impl AgentBlocks {
         let session = cx
             .state
             .session(&event.run_id, key)
-            .filter(|session| session.is_running())?;
+            .filter(|session| session.is_running() && !writes_the_closing(session.step))?;
         let (worker, vendor) = (session.worker.clone(), session.vendor.clone());
         let card = session.card.clone().or_else(|| event.card_id.clone());
-        let task = task_label(session.role, session.step, card.as_ref());
+        let named = Named {
+            label: session.label.clone(),
+            task: task_label(session.role, session.step, card.as_ref()),
+        };
         let live = Live::new(
             Place {
                 run: &event.run_id,
@@ -363,7 +380,7 @@ impl AgentBlocks {
             },
             &worker,
             &vendor,
-            task,
+            named,
             cx,
         );
         self.sessions.push(live);
@@ -403,6 +420,12 @@ impl StartedGroup {
     }
 }
 
+/// The session that writes a crew run's closing answer prints nothing of its own: the answer
+/// itself ends the run.
+fn writes_the_closing(step: Option<StepName>) -> bool {
+    step == Some(StepName::CloseRun)
+}
+
 /// Agent output and a session's end go to scrollback, so the started tree goes before them.
 fn prints(kind: &RunEventKind) -> bool {
     match kind {
@@ -422,6 +445,13 @@ fn prints(kind: &RunEventKind) -> bool {
 }
 
 /// Where a session sits: its run, key, card, and when it began.
+/// What an agent's block is headed by: its label, `● fix:slugify · Haiku 4.5 on Claude Code`,
+/// or for a log from before labels, its role and card after its name.
+struct Named {
+    label: Option<String>,
+    task: String,
+}
+
 struct Place<'a> {
     run: &'a RunId,
     key: &'a SessionKey,
@@ -434,7 +464,7 @@ impl Live {
         place: Place<'_>,
         worker: &WorkerRef,
         vendor: &str,
-        task: String,
+        named: Named,
         cx: &mut Cx<'_>,
     ) -> Self {
         let worker = &cx.state.names.running(worker);
@@ -448,15 +478,15 @@ impl Live {
         });
         // The transcript overlay is the detail view, so its stamp keeps the id.
         let started = format::ClockTime::from(place.at.to_offset(cx.state.clock_offset()));
-        let head = ToolCall::agent(
-            cx.state.names.worker(worker),
-            Some(color),
-            task,
-            title.unwrap_or_default(),
-        )
+        let agent = cx.state.names.worker(worker);
+        let head = match &named.label {
+            Some(label) => ToolCall::agent(label.clone(), Some(color), agent, String::new()),
+            None => ToolCall::agent(agent, Some(color), named.task, title.unwrap_or_default()),
+        }
         .with_key(place.key.to_string())
         .with_stamp(format!("{started} {worker}"));
         let mut live = Self {
+            labeled: named.label.is_some(),
             run: place.run.clone(),
             key: place.key.clone(),
             vendor: vendor.to_owned(),
@@ -498,9 +528,13 @@ impl Live {
             .worker(&cx.state.names.running(&session.worker));
         let mut changed = false;
         for call in [&mut self.head, &mut self.whole, &mut self.outbox] {
-            if let ToolTitle::Agent { name: shown, .. } = &mut call.title
-                && *shown != name
-            {
+            // A labeled block names its agent after the label.
+            let shown = match &mut call.title {
+                ToolTitle::Agent { role, .. } if self.labeled => role,
+                ToolTitle::Agent { name, .. } => name,
+                _ => continue,
+            };
+            if *shown != name {
                 shown.clone_from(&name);
                 changed = true;
             }

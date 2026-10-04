@@ -284,10 +284,21 @@ pub fn value_note(key: &str, value: &str) -> &'static str {
     let segments: Vec<&str> = key.split('.').collect();
     match segments.as_slice() {
         ["preset"] => preset_note(value),
+        ["workflows", "style"] => style_note(value),
         ["handoff", .., "context"] | ["roles", _, "handoff", .., "context"] => context_note(value),
         ["sandbox", leaf] | ["roles", _, "sandbox", leaf] => {
             super::permissions::value_note(leaf, value)
         }
+        _ => "",
+    }
+}
+
+/// What each `workflows.style` makes of a crew run, as `/style` lists them.
+fn style_note(value: &str) -> &'static str {
+    match value {
+        "follow_lead" => "As the lead's CLI does: a workflow under Claude Code, a goal under Codex",
+        "workflow" => "The lead plans every phase up front, and the run ends with them",
+        "goal" => "The crew keeps attempting until a check finds every criterion met",
         _ => "",
     }
 }

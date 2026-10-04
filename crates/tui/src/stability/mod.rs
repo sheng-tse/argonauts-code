@@ -324,7 +324,8 @@ fn check_boxes(buf: &Buffer, issues: &mut Vec<FrameIssue>) {
     }
 }
 
-/// Follows one box from its top-left corner. Titles may sit on the top edge.
+/// Follows one box from its top-left corner. Titles may sit on the top edge, and a position
+/// label on the bottom edge.
 fn check_box(buf: &Buffer, left: u16, top: u16, issues: &mut Vec<FrameIssue>) {
     let area = buf.area;
     let Some(right) = (left + 1..area.right()).find(|&x| is(TOP_RIGHT, symbol(buf, x, top))) else {
@@ -346,10 +347,20 @@ fn check_box(buf: &Buffer, left: u16, top: u16, issues: &mut Vec<FrameIssue>) {
                     what: format!("a box's bottom corners don't line up (found `{r}`)"),
                 });
             }
-            let broken = (left + 1..right).find(|&x| {
+            // A label such as `1–24 of 34 ↓` may sit on the bottom edge, as Claude Code's
+            // does, so long as the edge meets both corners.
+            let edge = |x: u16| {
                 let s = symbol(buf, x, y);
-                !is(HORIZONTAL, s) && !is(BOTTOM_JOINS, s) && !s.is_empty()
-            });
+                is(HORIZONTAL, s) || is(BOTTOM_JOINS, s) || s.is_empty()
+            };
+            let labeled = (left + 1..right).any(|x| symbol(buf, x, y) == " ");
+            let broken = if labeled {
+                [left + 1, right.saturating_sub(1)]
+                    .into_iter()
+                    .find(|&x| x > left && x < right && !edge(x))
+            } else {
+                (left + 1..right).find(|&x| !edge(x))
+            };
             if let Some(x) = broken {
                 issues.push(FrameIssue {
                     row: y,

@@ -191,7 +191,8 @@ fn reply_within(request: &ControlRequest) -> Duration {
         | ControlRequest::TakeOverEnded { .. }
         | ControlRequest::Answer { .. }
         | ControlRequest::Revert { .. }
-        | ControlRequest::SpotCheck { .. } => CHANGE_TIMEOUT,
+        | ControlRequest::SpotCheck { .. }
+        | ControlRequest::Goal { .. } => CHANGE_TIMEOUT,
     }
 }
 

@@ -26,4 +26,4 @@ update = { sessionUpdate = "agent_message_chunk", content = { type = "text", tex
 [[acp.turn.step]]
 write = { path = "hello.txt", content = "hi\n" }
 [[acp.turn.step]]
-report = { status = "done", summary = "Created hello.txt containing the word hi.", files_changed = ["hello.txt"], tests_run = [], concerns = [], questions = [], change_requests = [], memory_proposals = [] }
+report = { status = "done", summary = "Created hello.txt containing the word hi.", files_changed = ["hello.txt"], tests_run = [], concerns = [], questions = [], change_requests = [], memory_proposals = [], answer = "I created hello.txt with the word hi in it." }

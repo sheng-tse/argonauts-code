@@ -216,6 +216,48 @@ fn registry_with(entries: &[serde_json::Value]) -> Arc<dyn ModelRegistry> {
 
 const GLOBAL_WITH_COMMENTS: &str = "# Mine, keep these notes.\n[ui]\nbell = true  # I like it\n";
 
+/// `/style` picks how crew runs work, saved for this project, just you; `/style goal` sets it.
+#[tokio::test]
+async fn style_picks_workflow_or_goal_for_this_project() {
+    let mut harness = Harness::start().await;
+    slash(&harness, SlashCommand::Style { style: None }).await;
+    let ViewData::Settings { rows, command, .. } = next_view(&mut harness).await else {
+        panic!("/style answers with its row");
+    };
+    assert_eq!(command.as_deref(), Some("style"));
+    let style = row(&rows, "workflows.style");
+    assert_eq!(style.value, "\"follow_lead\"");
+    assert_eq!(style.default_scope, SettingScope::ProjectLocal);
+    assert_eq!(rows.len(), 1);
+
+    slash(
+        &harness,
+        SlashCommand::Style {
+            style: Some("goal".into()),
+        },
+    )
+    .await;
+    // Picking a value asks where to save it, this project for you first.
+    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
+    assert_eq!(recommended(&question), choose(SettingScope::ProjectLocal));
+    answer(
+        &harness,
+        &question.id,
+        choose(SettingScope::ProjectLocal),
+        None,
+    )
+    .await;
+    let (key, value, scope, ..) = next_change(&mut harness).await;
+    assert_eq!(
+        (key.as_str(), value.as_str(), scope),
+        ("workflows.style", "\"goal\"", SettingScope::ProjectLocal)
+    );
+    let local =
+        std::fs::read_to_string(harness.repo.root().join(".argonauts/config.local.toml")).unwrap();
+    assert!(local.contains("style = \"goal\""), "{local}");
+    harness.exit().await;
+}
+
 #[tokio::test]
 async fn each_command_opens_its_picker_with_its_default_scopes() {
     use SettingScope::*;

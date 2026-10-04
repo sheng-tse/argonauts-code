@@ -1,4 +1,5 @@
-//! Full-screen views on the alternate screen: the workflow and agent views, the workflow
+//! The app's views. The workflow and agent views dock in the bottom region under the
+//! conversation, as Claude Code's do; the rest take the alternate screen: the workflow
 //! library, `/status`, `/context`, `/rewind`, the Learning pickers, the crew view, a session's
 //! view, the resume picker, the pagers, help, `/config`, and `/approvals`. Esc goes back one view, and from the last one to the chat exactly where it was.
 //!
@@ -9,7 +10,9 @@ pub mod agent;
 pub mod columns;
 pub mod context;
 pub mod crew;
+pub mod dock;
 pub mod follow;
+pub mod goal;
 pub mod help;
 pub mod layout;
 pub mod learning;
@@ -40,8 +43,14 @@ use crate::state::AppState;
 use crate::theme::Theme;
 
 pub trait View: fmt::Debug + Send {
-    /// Draws the whole screen.
+    /// Draws the whole screen, or for a docked view the bottom region it was given.
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>);
+
+    /// Whether it draws in the bottom region under the conversation, where the input, the mode
+    /// line, and the panel were, rather than on a screen of its own.
+    fn docked(&self) -> bool {
+        false
+    }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome;
 
@@ -140,6 +149,7 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             sessions.clone(),
         )),
         ViewData::Diff { diff } => cx.out.open(pager::Pager::diff(diff.clone())),
+        ViewData::Goal { view } => cx.out.open(goal::GoalView::new((**view).clone())),
         ViewData::Raw { raw } => cx.out.open(pager::Pager::raw(raw.clone())),
         // The crew panel lists every repo's runs itself now.
         ViewData::AllRepos { .. } => cx.out.open(crew::CrewView::new(cx.state)),

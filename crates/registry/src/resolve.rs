@@ -10,6 +10,7 @@ use argonauts_core::events::run::OverrideRecord;
 use argonauts_core::layout::{project_files, user_files};
 use argonauts_core::names::RoleName;
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
+use argonauts_core::settings::protocol::UNDERSTAND_RENAMES;
 use argonauts_core::settings::{FILE_LAYERS, GLOBAL_ONLY_KEYS, LAYERS, SAFETY_KEYS, Settings};
 use argonauts_core::{canonical_json, sha256_hex};
 use toml::{Table, Value};
@@ -112,7 +113,8 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
         }
     }
 
-    for (source, table) in flags {
+    for (source, mut table) in flags {
+        warnings.extend(moved_keys(&mut table, &source));
         set_by.record(&table, FLAG, &source);
         budget_units.note(FLAG, &source, &table)?;
         merge(&mut merged, table);
@@ -233,6 +235,7 @@ fn read_file_layer(
     let Some(mut table) = read_layer(path, source)? else {
         return Ok(None);
     };
+    warnings.extend(moved_keys(&mut table, source));
     check_plain_keys(&table, source)?;
     if layer != GLOBAL
         && let Some((key, _)) = leaves(&table).into_iter().find(|(key, _)| {
@@ -270,6 +273,44 @@ fn read_file_layer(
         }
     }
     Ok(Some(table))
+}
+
+/// Keys that moved to a new name still read, under the new one, with a notice that names it
+/// exactly. A layer that sets both keeps the new one.
+fn moved_keys(table: &mut Table, source: &str) -> Vec<String> {
+    let mut notices = Vec::new();
+    for (old, new) in UNDERSTAND_RENAMES {
+        let Some(value) = leaves(table)
+            .into_iter()
+            .find(|(key, _)| key == old)
+            .map(|(_, value)| value)
+        else {
+            continue;
+        };
+        remove_leaf(table, old);
+        let segments: Vec<String> = new.split('.').map(str::to_owned).collect();
+        let already = leaves(table).iter().any(|(key, _)| key == new);
+        if !already {
+            let _ = set_leaf(table, &segments, value);
+        }
+        notices.push(format!(
+            "{old} in {source} is now {new}; it still reads, and /config saves it as {new}"
+        ));
+    }
+    notices
+}
+
+fn set_leaf(table: &mut Table, segments: &[String], value: Value) -> Option<()> {
+    let (last, path) = segments.split_last()?;
+    let mut current = table;
+    for segment in path {
+        current = current
+            .entry(segment.clone())
+            .or_insert_with(|| Value::Table(Table::new()))
+            .as_table_mut()?;
+    }
+    current.insert(last.clone(), value);
+    Some(())
 }
 
 /// `endpoints.<id>.local = true` prices an endpoint's work as free, and `agents.<id>.price`
@@ -864,6 +905,39 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
         assert!(resolved.warnings[0].contains("ui.narrattor"));
+    }
+
+    /// `[goal]`'s alignment keys moved to `[understand]` and still read, with a notice.
+    #[test]
+    fn old_goal_keys_read_as_understand_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = write(
+            dir.path(),
+            "project.toml",
+            "[goal]\ndiffers = 3\nrestaters = 2\nmax_attempts = 4\n",
+        );
+        let resolved = resolve(&SettingsSources {
+            project: Some(project),
+            project_trusted: true,
+            overrides: vec!["goal.max_questions=1".into()],
+            ..SettingsSources::default()
+        })
+        .unwrap();
+        let settings = &resolved.settings;
+        assert_eq!(settings.understand.comparers, 3);
+        assert_eq!(settings.understand.readers, Some(2));
+        assert_eq!(settings.understand.max_questions, 1);
+        assert_eq!(settings.goal.max_attempts, 4);
+        let notices = resolved.warnings.join("\n");
+        for (old, new) in [
+            ("goal.differs", "understand.comparers"),
+            ("goal.restaters", "understand.readers"),
+            ("goal.max_questions", "understand.max_questions"),
+        ] {
+            assert!(notices.contains(&format!("{old} in ")), "{notices}");
+            assert!(notices.contains(&format!("is now {new}")), "{notices}");
+        }
+        assert!(!notices.contains("unknown setting"), "{notices}");
     }
 
     #[test]

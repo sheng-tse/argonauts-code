@@ -182,7 +182,9 @@ impl RunScript {
             json!({"type": "session", "data": {"event": "started", "worker": agent.worker,
                 "vendor": agent.vendor(), "family": "any", "kind": kind, "role": agent.role,
                 "step": "build", "access": "build", "lifetime": "card", "resumed_from": null,
-                "follow_key": follow_key}}),
+                "follow_key": follow_key,
+                // The run's workflow started it, so it's one of the run's agents.
+                "workflow_step": {"workflow": "wf-001", "phase": 0, "path": [0]}}}),
         )
     }
 

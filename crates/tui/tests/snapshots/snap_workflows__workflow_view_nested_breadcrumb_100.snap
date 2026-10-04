@@ -2,35 +2,35 @@
 source: crates/tui/tests/snap_workflows.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
-argonauts-ui-kit › build:c-demo-tests                                             [ Run ]  Library
-Demo scenes and snapshot tests for every part of the kit                  2/4 agents · 12m0s · $0.92
+──────────────────────────────────────────────────────────────────────────────────────────────
+ argonauts-ui-kit › build:c-demo-tests
+ Demo scenes and snapshot tests for every part of the kit                 2/4 agents · 12m00s
 
-╭ Phases ───────┬ Test · 2 agents ─────────────────────────────────────────────────────────────────╮
-│   ✓ Draft 2/2 │   ● test:scenes      Opus on Claude Code     41k tok  $0.12                2m50s │
-│ ❯ 2 Test  0/2 │   ● test:snapshots   GPT 5.6 on Codex      38.2k tok  $0.09                2m30s │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-│               │                                                                                  │
-╰───────────────┴──────────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · tab switch pane · → open · x stop · p pause · l library · esc back
+ ╭ Phases ───────┬ Test · 2 agents ─────────────────────────────────────────────────────────╮
+ │   ✔ Draft 2/2 │  ● test:scenes    Opus    · 41k tok                                2m50s │
+ │ ❯ 2 Test  0/2 │  ● test:snapshots GPT 5.6 · 38.2k tok                              2m30s │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ │               │                                                                          │
+ ╰───────────────┴──────────────────────────────────────────────────────────────────────────╯
+ ↑↓ select · x stop workflow · p pause · esc back · s save

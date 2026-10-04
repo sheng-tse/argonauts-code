@@ -352,6 +352,7 @@ fn plain_line(event: &RunEvent) -> Option<String> {
             )),
             RunLifecycle::Resumed(_) => Some(format!("{} resumed.", event.run_id)),
             RunLifecycle::StopRequested { .. } => Some("Stop requested.".to_owned()),
+            RunLifecycle::ClosingAnswer(answer) => Some(answer.text.clone()),
             RunLifecycle::Finished { outcome, detail } => Some(match detail {
                 Some(detail) => format!("Finished: {} · {detail}", name_of(outcome)),
                 None => format!("Finished: {}.", name_of(outcome)),

@@ -3,7 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use argonauts_adapter_claude_code::{ClaudeCodeAdapter, TESTED_VERSIONS};
-use argonauts_core::events::session::{SubagentStatus, SubagentUpdate};
+use argonauts_core::events::session::{
+    SubagentKind, SubagentStatus, SubagentUpdate, VendorAgentState, VendorWorkflow,
+};
 use argonauts_core::limits::{QuotaSource, QuotaStatus};
 use argonauts_core::{
     Adapter, AgentEvent, BudgetAction, BudgetLimit, BudgetMeter, ErrorCategory, Report,
@@ -17,6 +19,10 @@ use time::macros::datetime;
 const ORIGINAL: &str = "2.1.284";
 /// Sessions with stdin kept open, a chosen id, the status server, and a resume.
 const STEERED: &str = "2.1.285";
+/// A workflow Claude Code ran itself, recorded by hand without partial messages, so it stays
+/// out of `every_fixture`.
+const WORKFLOWS: &str = "2.1.289";
+const WORKFLOW_CALL: &str = "toolu_01T9VznHYcM7UjRKWHQ4QH2c";
 
 const STATUS_TOOL: &str = "mcp__argonauts_status__argonauts_status";
 const SUBAGENT_CALL: &str = "toolu_01V464aQnAvS82ukoevdYdMW";
@@ -749,6 +755,126 @@ fn truncated_stream_still_ends_with_a_result() {
     ));
 }
 
+fn workflows(events: &[AgentEvent]) -> Vec<&VendorWorkflow> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Workflow { workflow } => Some(&**workflow),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Claude Code 2.1.289 runs a workflow script in the background and reports it through
+/// `system/task_*` events. The replay mirrors it as it goes: the script's own name,
+/// description, and phases first, then each agent under its phase, with its model, tokens, and
+/// time, whatever the names.
+#[test]
+fn claude_runs_its_own_workflow_and_the_replay_mirrors_it() {
+    let events = replay_version(WORKFLOWS, "workflow");
+    assert_eq!(meta(WORKFLOWS, "workflow")["cli_version"], WORKFLOWS);
+    let seen = workflows(&events);
+    assert!(seen.len() >= 4, "{seen:#?}");
+
+    let first = seen[0];
+    assert_eq!(first.id, "w4d273qmn");
+    assert_eq!(first.call.as_deref(), Some(WORKFLOW_CALL));
+    assert_eq!(first.name, "probe");
+    assert_eq!(
+        first.description,
+        "Two-phase workflow that asks and answers with single words"
+    );
+    let titles: Vec<&str> = first.phases.iter().map(|p| p.title.as_str()).collect();
+    assert_eq!(titles, ["Ask", "Answer"]);
+    assert!(first.agents.is_empty());
+    assert_eq!(first.status, SubagentStatus::Running);
+
+    // The first agent runs in the first phase before the second starts.
+    let asking = seen
+        .iter()
+        .find(|workflow| !workflow.agents.is_empty())
+        .unwrap_or_else(|| panic!("no agent ever showed"));
+    let ask = &asking.agents[0];
+    assert_eq!((ask.label.as_str(), ask.phase), ("ask:one", Some(1)));
+    assert_eq!(ask.state, VendorAgentState::Running);
+    assert_eq!(ask.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+    assert_eq!(asking.count(1), Some((0, 1)));
+    assert_eq!(asking.count(2), None);
+
+    let last = seen[seen.len() - 1];
+    assert_eq!(last.status, SubagentStatus::Done);
+    assert_eq!(last.tokens, 20_626);
+    assert!(
+        last.summary
+            .as_deref()
+            .is_some_and(|s| s.contains("completed")),
+        "{:?}",
+        last.summary
+    );
+    /// Label, phase, state, tokens, and the start of its answer.
+    type Row<'a> = (&'a str, Option<u32>, VendorAgentState, u64, Option<&'a str>);
+    let agents: Vec<Row<'_>> = last
+        .agents
+        .iter()
+        .map(|agent| {
+            (
+                agent.label.as_str(),
+                agent.phase,
+                agent.state,
+                agent.tokens,
+                agent.result.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        agents,
+        [
+            (
+                "ask:one",
+                Some(1),
+                VendorAgentState::Done,
+                10_311,
+                Some("Ready")
+            ),
+            (
+                "answer:one",
+                Some(2),
+                VendorAgentState::Done,
+                10_315,
+                Some("success")
+            ),
+        ]
+    );
+    assert_eq!((last.count(1), last.count(2)), (Some((1, 1)), Some((1, 1))));
+    assert_eq!(last.agents[0].duration_ms, 3_266);
+
+    // It's a subagent too, marked as a workflow, whose agents don't stream their own steps.
+    let updates = subagent_updates(&events, WORKFLOW_CALL);
+    let end = updates
+        .last()
+        .unwrap_or_else(|| panic!("no subagent update"));
+    assert_eq!(end.kind, SubagentKind::Workflow);
+    assert_eq!(end.label.as_deref(), Some("probe"));
+    assert_eq!(end.status, SubagentStatus::Done);
+    assert!(!end.steps_visible);
+
+    // The launch and the answer after the workflow finished are two turns, nothing odd.
+    let turns = results(&events);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert!(
+        turns[1]
+            .0
+            .as_deref()
+            .is_some_and(|text| text.contains("Ready"))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Unknown { .. } | AgentEvent::Error { .. })),
+        "{events:#?}"
+    );
+}
+
 #[test]
 fn tested_versions_match_the_recorded_fixtures() {
     let mut recorded: Vec<String> = fs::read_dir(fixture_dir())
@@ -785,4 +911,63 @@ fn fixtures_hold_no_local_paths_or_keys() {
             }
         }
     }
+}
+
+/// A stream cut mid-workflow, as when its session is stopped, paused, killed for a stall, or
+/// out of budget: the workflow ends with it, and so does every agent still going, so nothing
+/// stays running in the panel or the view.
+#[test]
+fn a_workflow_cut_off_mid_stream_ends_with_its_session() {
+    let whole = read_fixture(WORKFLOWS, "workflow", "stdout.jsonl");
+    let cut: Vec<&str> = whole.lines().take(20).collect();
+    let events = replay_lines(WORKFLOWS, "workflow", &cut.join("\n"));
+    let seen = workflows(&events);
+    let last = seen.last().unwrap_or_else(|| panic!("no workflow showed"));
+    assert_eq!(last.id, "w4d273qmn");
+    assert_eq!(last.status, SubagentStatus::Failed);
+    assert!(
+        last.summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("session ended")),
+        "{last:#?}"
+    );
+    assert!(
+        last.agents.iter().all(|agent| matches!(
+            agent.state,
+            VendorAgentState::Done | VendorAgentState::Failed
+        )),
+        "{last:#?}"
+    );
+    assert!(
+        seen.iter()
+            .rev()
+            .skip(1)
+            .all(|workflow| workflow.status == SubagentStatus::Running)
+    );
+}
+
+/// A report that comes before the workflow's start still shows the workflow, and the start's
+/// name and phases join it when they come.
+#[test]
+fn a_report_before_its_start_still_shows_the_workflow() {
+    let whole = read_fixture(WORKFLOWS, "workflow", "stdout.jsonl");
+    let mut lines: Vec<&str> = whole.lines().collect();
+    // Line 14 is the first progress report; line 11 its task's start.
+    let started = lines.remove(10);
+    lines.insert(13, started);
+    let events = replay_lines(WORKFLOWS, "workflow", &lines.join("\n"));
+    let seen = workflows(&events);
+    let first = seen.first().unwrap_or_else(|| panic!("no workflow showed"));
+    assert_eq!(first.id, "w4d273qmn");
+    assert!(
+        !first.agents.is_empty(),
+        "the early report's agent was kept: {first:#?}"
+    );
+    let named = seen
+        .iter()
+        .find(|workflow| workflow.name == "probe")
+        .unwrap_or_else(|| panic!("the start never named it: {seen:#?}"));
+    assert!(!named.agents.is_empty());
+    let last = seen.last().unwrap_or_else(|| panic!("no workflow showed"));
+    assert_eq!(last.status, SubagentStatus::Done);
 }

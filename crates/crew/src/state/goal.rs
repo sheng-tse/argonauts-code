@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::goal::{
-    Assumption, GoalChangeResolution, GoalEvent, GoalFile, GoalQuestion,
+    Assumption, Attempt, Decider, GoalChangeResolution, GoalChecked, GoalEvent, GoalFile,
+    GoalQuestion, GoalRun, GoalStatus,
 };
 use argonauts_core::events::run::Party;
 use argonauts_core::names::{MessageId, WorkerRef};
@@ -32,6 +33,19 @@ pub struct GoalState {
     pub approved: Option<GoalFile>,
     pub approved_by: Option<Party>,
     pub changes: Vec<GoalChange>,
+    /// A goal-style run's goal, with its attempts and status as they stand.
+    #[serde(default)]
+    pub pursuit: Option<GoalRun>,
+    /// Every check, oldest first.
+    #[serde(default)]
+    pub checks: Vec<GoalChecked>,
+    /// `(question, answer, who)` for each question answered, oldest first.
+    #[serde(default)]
+    pub answers: Vec<(String, String, Decider)>,
+    /// The attempts after whose check the goal was stuck, so the next one goes to another
+    /// company's model.
+    #[serde(default)]
+    pub stuck_at: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -159,6 +173,45 @@ impl GoalState {
                     }
                 }
             }
+            GoalEvent::Set(goal) => self.pursuit = Some((**goal).clone()),
+            GoalEvent::AttemptStarted { n, title, phase } => {
+                if let Some(goal) = &mut self.pursuit {
+                    goal.attempts.push(Attempt {
+                        n: *n,
+                        title: title.clone(),
+                        phase: *phase,
+                        verdict: None,
+                    });
+                }
+            }
+            GoalEvent::Checked(checked) => {
+                if let Some(attempt) = self.pursuit.as_mut().and_then(|goal| {
+                    goal.attempts
+                        .iter_mut()
+                        .find(|attempt| attempt.n == checked.attempt)
+                }) {
+                    attempt.verdict = Some(checked.overall);
+                }
+                self.checks.push((**checked).clone());
+            }
+            GoalEvent::StatusChanged { status, .. } => {
+                if let Some(goal) = &mut self.pursuit {
+                    goal.status = *status;
+                    if *status == GoalStatus::Stuck
+                        && let Some(last) = goal.attempts.last()
+                        && !self.stuck_at.contains(&last.n)
+                    {
+                        self.stuck_at.push(last.n);
+                    }
+                }
+            }
+            GoalEvent::Answered {
+                question,
+                answer,
+                by,
+            } => self.answers.push((question.clone(), answer.clone(), *by)),
+            // The changed assumption reaches the goal file as its next version.
+            GoalEvent::AssumptionChanged { .. } => {}
         }
     }
 

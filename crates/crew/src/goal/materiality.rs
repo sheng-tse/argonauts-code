@@ -1,17 +1,18 @@
 //! The materiality rules, in code: wording differences are dropped; a difference at least two
-//! thirds agree on, that no differ tags in `goal.always_ask`, becomes a stated assumption;
-//! everything else becomes a question, at most `goal.max_questions`, most important first
+//! thirds agree on, that no differ tags in `understand.always_ask`, becomes a stated assumption;
+//! everything else becomes a question, at most `understand.max_questions`, most important first
 //! (scope, then security, data, cost, then detail).
 
 use std::collections::BTreeSet;
 
-use argonauts_core::events::goal::{Assumption, ChoiceOption, GoalQuestion};
+use argonauts_core::events::goal::{Assumption, ChoiceOption, Decider, GoalQuestion};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::Answerer;
-use argonauts_core::settings::protocol::GoalSettings;
+use argonauts_core::settings::protocol::UnderstandSettings;
 use argonauts_core::steps::goal::{DiffTag, DifferOutput, Difference, McQuestion, Reading};
 
 use super::restate::label;
+use crate::checkpoints;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settled {
@@ -21,8 +22,12 @@ pub struct Settled {
     /// Wording differences dropped.
     pub dropped: u32,
     /// Differences in `always_ask` that didn't fit under the question limit. They're adopted
-    /// with their recommended answer as assumptions, and the goal still waits for you.
+    /// with their recommended answer as assumptions, and the goal still waits for you, unless
+    /// the lead answers the crew's questions.
     pub held_back: u32,
+    /// The tag and topic of each difference over the question limit, which
+    /// `approvals.ask_you_about` may keep yours when the lead answers.
+    pub over_limit: Vec<(DiffTag, String)>,
 }
 
 /// One difference as every differ listed it, merged by topic.
@@ -39,22 +44,35 @@ struct Merged {
 /// The goal settings differences settle by. The question limit spares your attention, so when
 /// you chose the lead to answer the crew's questions it answers every one, and nothing is
 /// held back over the limit.
-pub fn goal_settings(settings: &Settings) -> GoalSettings {
-    let mut goal = settings.goal.clone();
+pub fn goal_settings(settings: &Settings) -> UnderstandSettings {
+    let mut goal = settings.understand.clone();
     if settings.approvals.answered_by == Some(Answerer::Lead) {
         goal.max_questions = u32::MAX;
     }
     goal
 }
 
-/// Whether the lead may answer a question tagged `tag` for you. Questions `goal.always_ask`
-/// names stay yours unless you chose the lead to answer the crew's questions yourself.
-pub fn lead_may_answer(tag: DiffTag, settings: &Settings) -> bool {
-    settings.approvals.answered_by == Some(Answerer::Lead) || !always_asks(tag, &settings.goal)
+/// Whether the lead, answering the crew's questions, may answer this one for you: any of them,
+/// unless `approvals.ask_you_about` names its tag or topic. `understand.always_ask` only makes
+/// a topic a question, never one that waits for you.
+pub fn lead_may_answer(question: &GoalQuestion, settings: &Settings) -> bool {
+    asked_about(question, settings).is_none()
+}
+
+/// The word of `approvals.ask_you_about` that keeps this question yours: its tag, such as
+/// `security`, or its topic.
+pub fn asked_about<'q>(question: &'q GoalQuestion, settings: &Settings) -> Option<&'q str> {
+    std::iter::once(tag_name(question.tag))
+        .chain(question.topic.as_deref())
+        .find(|word| checkpoints::asks_you_about(settings, &[word]))
 }
 
 /// Settles every differ's listing of `restaters` restatements.
-pub fn settle(listings: &[DifferOutput], restaters: usize, settings: &GoalSettings) -> Settled {
+pub fn settle(
+    listings: &[DifferOutput],
+    restaters: usize,
+    settings: &UnderstandSettings,
+) -> Settled {
     let mut settled = Settled {
         agreements: agreements(listings),
         ..Settled::default()
@@ -80,6 +98,7 @@ pub fn settle(listings: &[DifferOutput], restaters: usize, settings: &GoalSettin
                         tag_phrase(merged.tag),
                         group.support
                     ),
+                    by: Some(Decider::Majority),
                 });
             }
             _ => asked.push(merged),
@@ -97,11 +116,12 @@ pub fn settle(listings: &[DifferOutput], restaters: usize, settings: &GoalSettin
             let n = u8::try_from(index + 1).unwrap_or(u8::MAX);
             settled
                 .questions
-                .push(goal_question(n, of, merged.tag, question));
+                .push(goal_question(n, of, &merged, question));
         } else {
             if merged.must_ask {
                 settled.held_back += 1;
             }
+            settled.over_limit.push((merged.tag, merged.topic.clone()));
             let answer = question
                 .options
                 .get(usize::from(question.recommended))
@@ -116,13 +136,14 @@ pub fn settle(listings: &[DifferOutput], restaters: usize, settings: &GoalSettin
                 basis: format!(
                     "the recommended answer, since it was over the {limit}-question limit"
                 ),
+                by: Some(Decider::Rules),
             });
         }
     }
     settled
 }
 
-/// The tag's name as `goal.always_ask` spells it.
+/// The tag's name as `understand.always_ask` spells it.
 pub fn tag_name(tag: DiffTag) -> &'static str {
     match tag {
         DiffTag::Wording => "wording",
@@ -135,7 +156,7 @@ pub fn tag_name(tag: DiffTag) -> &'static str {
 }
 
 /// Whether a question with this tag must reach you in every mode.
-pub fn always_asks(tag: DiffTag, settings: &GoalSettings) -> bool {
+pub fn always_asks(tag: DiffTag, settings: &UnderstandSettings) -> bool {
     settings
         .always_ask
         .iter()
@@ -172,7 +193,7 @@ fn agreements(listings: &[DifferOutput]) -> Vec<String> {
 
 /// Differs name the same difference in their own words; the same topic merges, keeping the
 /// most important tag, since one differ's scope tag is enough to ask.
-fn merge(listings: &[DifferOutput], settings: &GoalSettings) -> Vec<Merged> {
+fn merge(listings: &[DifferOutput], settings: &UnderstandSettings) -> Vec<Merged> {
     let mut merged: Vec<(String, Merged)> = Vec::new();
     for difference in listings.iter().flat_map(|listing| &listing.differences) {
         let key = normalize(&difference.topic);
@@ -305,7 +326,8 @@ fn question(merged: &Merged, groups: &[Group], restaters: usize) -> McQuestion {
     }
 }
 
-fn goal_question(n: u8, of: u8, tag: DiffTag, question: McQuestion) -> GoalQuestion {
+fn goal_question(n: u8, of: u8, merged: &Merged, question: McQuestion) -> GoalQuestion {
+    let tag = merged.tag;
     let options = question
         .options
         .iter()
@@ -326,6 +348,7 @@ fn goal_question(n: u8, of: u8, tag: DiffTag, question: McQuestion) -> GoalQuest
         text: question.text,
         options,
         tag,
+        topic: Some(merged.topic.clone()),
     }
 }
 
@@ -394,7 +417,7 @@ mod tests {
         let settled = settle(
             &[listing(vec![two_to_one("phrasing", DiffTag::Wording)])],
             3,
-            &GoalSettings::default(),
+            &UnderstandSettings::default(),
         );
         assert_eq!(settled.dropped, 1);
         assert!(settled.assumptions.is_empty() && settled.questions.is_empty());
@@ -409,7 +432,7 @@ mod tests {
                 DiffTag::Detail,
             )])],
             3,
-            &GoalSettings::default(),
+            &UnderstandSettings::default(),
         );
         assert!(settled.questions.is_empty());
         assert_eq!(
@@ -417,6 +440,7 @@ mod tests {
             vec![Assumption {
                 text: "limit per user or per key: per user".to_owned(),
                 basis: "a detail, and 2 of 3 read it that way".to_owned(),
+                by: Some(Decider::Majority),
             }]
         );
     }
@@ -432,7 +456,7 @@ mod tests {
             let settled = settle(
                 &[listing(vec![two_to_one("topic", tag)])],
                 3,
-                &GoalSettings::default(),
+                &UnderstandSettings::default(),
             );
             assert!(settled.assumptions.is_empty(), "{tag:?}");
             assert_eq!(settled.questions.len(), 1, "{tag:?}");
@@ -451,7 +475,7 @@ mod tests {
                 reading("C", "sqlite"),
             ],
         );
-        let settled = settle(&[listing(vec![split])], 3, &GoalSettings::default());
+        let settled = settle(&[listing(vec![split])], 3, &UnderstandSettings::default());
         assert_eq!(settled.questions.len(), 1);
         let question = &settled.questions[0];
         assert_eq!((question.n, question.of), (1, 1));
@@ -468,9 +492,9 @@ mod tests {
 
     #[test]
     fn majority_assumptions_off_asks_instead() {
-        let settings = GoalSettings {
+        let settings = UnderstandSettings {
             majority_assumptions: false,
-            ..GoalSettings::default()
+            ..UnderstandSettings::default()
         };
         let settled = settle(
             &[listing(vec![two_to_one("t", DiffTag::Detail)])],
@@ -490,7 +514,7 @@ mod tests {
             recommended: 1,
             basis: "2 of 3 restatements read it this way".to_owned(),
         });
-        let settled = settle(&[listing(vec![asked])], 3, &GoalSettings::default());
+        let settled = settle(&[listing(vec![asked])], 3, &UnderstandSettings::default());
         let question = &settled.questions[0];
         assert_eq!(question.text, "Limit per user or per API key?");
         assert!(!question.options[0].recommended && question.options[1].recommended);
@@ -511,7 +535,7 @@ mod tests {
             two_to_one("security", DiffTag::Security),
             two_to_one("scope", DiffTag::Scope),
         ];
-        let settled = settle(&[listing(differences)], 3, &GoalSettings::default());
+        let settled = settle(&[listing(differences)], 3, &UnderstandSettings::default());
         let topics: Vec<DiffTag> = settled.questions.iter().map(|q| q.tag).collect();
         assert_eq!(topics, [DiffTag::Scope, DiffTag::Security, DiffTag::Data]);
         assert!(settled.questions.iter().all(|q| q.of == 3));
@@ -536,7 +560,7 @@ mod tests {
             agreements: vec!["add a rate limit".to_owned(), "Return 429.".to_owned()],
             differences: vec![two_to_one("limit per user or per key.", DiffTag::Scope)],
         };
-        let settled = settle(&[first, second], 3, &GoalSettings::default());
+        let settled = settle(&[first, second], 3, &UnderstandSettings::default());
         assert_eq!(settled.dropped, 0);
         assert_eq!(settled.questions.len(), 1);
         assert_eq!(settled.questions[0].tag, DiffTag::Scope);
@@ -550,7 +574,7 @@ mod tests {
             DiffTag::Detail,
             vec![reading("A and C", "per user"), reading("B", "per key")],
         );
-        let settled = settle(&[listing(vec![joint])], 3, &GoalSettings::default());
+        let settled = settle(&[listing(vec![joint])], 3, &UnderstandSettings::default());
         assert_eq!(settled.assumptions.len(), 1);
         assert!(
             settled.assumptions[0]
@@ -569,14 +593,14 @@ mod tests {
                 reading("the third", "per key"),
             ],
         );
-        let settled = settle(&[listing(vec![vague])], 3, &GoalSettings::default());
+        let settled = settle(&[listing(vec![vague])], 3, &UnderstandSettings::default());
         assert!(settled.assumptions.is_empty());
         assert_eq!(settled.questions.len(), 1);
     }
 
     #[test]
     fn no_listing_settles_nothing() {
-        let settled = settle(&[], 3, &GoalSettings::default());
+        let settled = settle(&[], 3, &UnderstandSettings::default());
         assert_eq!(settled, Settled::default());
     }
 }

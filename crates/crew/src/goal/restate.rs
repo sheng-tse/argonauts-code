@@ -97,7 +97,7 @@ pub async fn restate(
     }
 }
 
-/// Who restates: the step's named workers, else `goal.restaters` of the restater role's
+/// Who restates: the step's named workers, else `understand.readers` of the restater role's
 /// candidates (every crew member by default). In solo, the default agent alone. Restating reads
 /// the repository, so endpoints are left out.
 pub fn restaters(host: &Host, call: &StepCall, mode: RunMode) -> Vec<WorkerRef> {
@@ -111,7 +111,7 @@ pub fn restaters(host: &Host, call: &StepCall, mode: RunMode) -> Vec<WorkerRef> 
     };
     let limit = match call.step.count {
         Some(Count::Fixed(count)) => Some(count),
-        _ => settings.goal.restaters,
+        _ => settings.understand.readers,
     };
     let directory = &host.services().workers;
     let mut chosen: Vec<WorkerRef> = Vec::new();

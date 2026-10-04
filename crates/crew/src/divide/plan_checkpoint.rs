@@ -25,7 +25,7 @@ use crate::checkpoints::{self, CheckpointRequest, options};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::state::ids::IdKind;
-use crate::workflow::{Flow, StepCall, StepDone, align, runner};
+use crate::workflow::{Flow, StepCall, StepDone, runner};
 use crate::{plan, roles};
 
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
@@ -313,7 +313,7 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> CheckpointRequest {
         budget: (*budget).clone(),
         new_dependencies: division.plan.new_dependencies.clone(),
         flags,
-        workflow: host.read(align::plan_workflow),
+        workflow: host.read(super::workflow_plan::plan_workflow),
     };
     CheckpointRequest {
         at: Some(call.at.clone()),

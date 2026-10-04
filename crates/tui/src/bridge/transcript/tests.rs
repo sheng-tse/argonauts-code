@@ -6,7 +6,8 @@ use argonauts_core::app::{AppEvent, ChatEvent, ReplayTurn, TurnReply};
 use argonauts_core::events::RetroEvent;
 use argonauts_core::events::card::{AttemptCause, CardEvent, CardState, GateKind, GateOutcome};
 use argonauts_core::events::run::{
-    Party, PhaseChange, RunLifecycle, RunMode, RunOutcome, RunPhase, RunStarted,
+    ChangedFile, CheckLine, ClosingAnswer, Party, PhaseChange, RunLifecycle, RunMode, RunOutcome,
+    RunPhase, RunStarted,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::log::RETRO_FAILED;
@@ -393,6 +394,82 @@ fn a_failed_retro_is_said_once_and_not_called_saved() {
     assert_eq!(printed.matches("The retro failed").count(), 1, "{printed}");
     assert!(printed.contains("Run finished"), "{printed}");
     assert!(!printed.contains("retro saved"), "{printed}");
+}
+
+fn closing() -> ClosingAnswer {
+    let file = |path: &str, insertions| ChangedFile {
+        path: path.to_owned(),
+        insertions,
+        deletions: 1,
+    };
+    ClosingAnswer {
+        text: "Fixed parse() and format_cents() in invoice/money.py, and all six tests pass."
+            .to_owned(),
+        by: Some("claude-code/haiku".parse().unwrap()),
+        files: (1..=6).map(|n| file(&format!("src/f{n}.py"), n)).collect(),
+        checks: vec![CheckLine {
+            what: "tests".to_owned(),
+            passed: true,
+            result: "6 passed".to_owned(),
+        }],
+        tests: vec!["python3 -m unittest: OK".to_owned()],
+        left: vec![
+            "format_cents() still rounds half down.".to_owned(),
+            "No test covers huge amounts.".to_owned(),
+            "The README is out of date.".to_owned(),
+        ],
+    }
+}
+
+fn ended_with_closing(verbosity: Verbosity) -> String {
+    let mut harness = Harness::new();
+    harness.settings.verbosity = verbosity;
+    harness.send(started());
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
+        Box::new(closing()),
+    ))));
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Merged,
+        detail: None,
+    })));
+    harness.printed()
+}
+
+#[test]
+fn a_run_ends_with_its_closing_answer_under_the_merge() {
+    let printed = ended_with_closing(Verbosity::Normal);
+    let merged = printed.find("Merged the run").expect(&printed);
+    let answer = printed.find("● Fixed parse()").expect(&printed);
+    let end = printed.find(" for ").expect(&printed);
+    assert!(merged < answer && answer < end, "{printed}");
+    for line in [
+        "Changed src/f1.py +1 -1, src/f2.py +2 -1",
+        "and 2 more",
+        "Checked tests: 6 passed",
+        "Left format_cents() still rounds half down; No test",
+    ] {
+        assert!(printed.contains(line), "{line}\n{printed}");
+    }
+    assert!(
+        !printed.contains("README"),
+        "normal keeps two of what's left: {printed}"
+    );
+    assert!(!printed.contains("Tests run"), "{printed}");
+}
+
+#[test]
+fn quiet_keeps_the_closing_words_and_full_keeps_every_list() {
+    let quiet = ended_with_closing(Verbosity::Quiet);
+    assert!(quiet.contains("Fixed parse()"), "{quiet}");
+    assert!(!quiet.contains("Changed"), "{quiet}");
+    let full = ended_with_closing(Verbosity::Full);
+    for line in [
+        "src/f6.py +6 -1",
+        "Tests run python3 -m unittest: OK",
+        "README",
+    ] {
+        assert!(full.contains(line), "{line}\n{full}");
+    }
 }
 
 const SCHEMA_MISS: &str =
@@ -1304,16 +1381,14 @@ fn the_goal_line_counts_the_leads_answers_apart() {
     let assumption = |text: &str, basis: String| Assumption {
         text: text.into(),
         basis,
+        by: None,
     };
     harness.send(run_event(RunEventKind::Goal(GoalEvent::Approved {
         file: GoalFile {
             run: run_id(),
             version: 1,
             summary: "Add a --verbose flag".into(),
-            criteria: vec![Criterion {
-                id: "G1".into(),
-                text: "--verbose logs at trace".into(),
-            }],
+            criteria: vec![Criterion::new("G1", "--verbose logs at trace")],
             in_scope: vec![],
             out_of_scope: vec![],
             assumptions: vec![
@@ -1339,4 +1414,79 @@ fn the_goal_line_counts_the_leads_answers_apart() {
         printed.contains("1 question answered by the lead · 1 assumption stated"),
         "{printed}"
     );
+}
+
+/// A crew run's workflow prints as Claude Code prints its own: `● Workflow(<name>)` with the
+/// run's description and the phases it declares, and `● Workflow(<name>) · done` before the
+/// run's end.
+#[test]
+fn a_crew_workflow_prints_its_start_and_its_end() {
+    use argonauts_core::events::run::RunNamed;
+    use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
+    use argonauts_core::names::WorkflowId;
+    use argonauts_core::settings::workflows::RunStyle;
+    use argonauts_core::workflow::StandardPhase;
+
+    let mut harness = Harness::new();
+    let id = WorkflowId::numbered(1);
+    let mut run = crate::state::RunState::new(run_id());
+    run.workflows.push(crate::state::WorkflowState {
+        id: id.clone(),
+        name: "peer-crew".into(),
+        from: None,
+        description: String::new(),
+        phases: vec!["Fix".into(), "Merge".into()],
+        parent: None,
+        steps: Vec::new(),
+    });
+    run.named = Some(RunNamed {
+        name: "fix-slugify-median".into(),
+        description: "Fix slugify's dashes and median's even and empty lists".into(),
+        style: RunStyle::Workflow,
+        based_on: Some("peer-crew".into()),
+        done_when: Vec::new(),
+    });
+    harness.state.runs.insert(run_id(), run);
+    if let AppEvent::Run { event } = &mut started()
+        && let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind
+    {
+        let mut crew = (**started).clone();
+        crew.mode = RunMode::Crew;
+        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+            Box::new(crew),
+        ))));
+    }
+    let phase = |index: u32, title: &str, detail: &str| DeclaredPhase {
+        index,
+        title: title.into(),
+        detail: detail.into(),
+        standard: StandardPhase::Do,
+    };
+    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+        Box::new(WorkflowDeclared {
+            id,
+            name: "peer-crew".into(),
+            description: "Peers draft, judge, and build".into(),
+            phases: vec![
+                phase(0, "Fix", "one owner per function"),
+                phase(1, "Merge", "the final check, then the merge"),
+            ],
+        }),
+    ))));
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Merged,
+        detail: None,
+    })));
+    let printed = harness.printed();
+    assert!(
+        printed.contains(
+            "● Workflow(fix-slugify-median)\n  ⎿  Fix slugify's dashes and median's even and empty lists\n     1. Fix    one owner per function\n     2. Merge  the final check, then the merge\n     Started from peer-crew · ctrl+t to watch"
+        ),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("● Workflow(fix-slugify-median) · done"),
+        "{printed}"
+    );
+    assert!(!printed.contains("Workflow(peer-crew)"), "{printed}");
 }

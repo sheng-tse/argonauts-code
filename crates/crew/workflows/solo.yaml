@@ -1,22 +1,28 @@
 name: solo
 description: The default agent alone, with one card in a worktree, its gates, then the merge checkpoint
 phases:
-  - name: Goal
+  - name: Understand
+    detail: your prompt is the goal, unless solo.restate_first asks the agent to restate it
     standard: understand
     steps:
       - kind: restate
         name: restatement
         role: default
+        label: "read:{family}"
       - kind: checkpoint
         checkpoint: goal
         when: restate_first
   - name: Build
+    detail: the default agent builds the card in its own worktree, then its gates
     standard: do
     steps:
       - kind: build
         role: owner
         input: goal
+        label: "build:{item}"
   - name: Merge
+    detail: the final check, then the merge into your branch
     standard: decide
     steps:
       - kind: merge
+        label: "merge:{branch}"

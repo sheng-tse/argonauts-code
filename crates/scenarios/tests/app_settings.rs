@@ -885,6 +885,9 @@ fn app_workflows_library_shows_copies_diffs() -> anyhow::Result<()> {
     pty.wait_for("Workflow library", WAIT)?;
     pick_in_library(&mut pty, &rows, "solo")?;
     pty.press(Key::Enter)?;
+    // The file runs past one page, and the team's line is its last.
+    pty.wait_for("solo · ", WAIT)?;
+    pty.press(Key::End)?;
     pty.wait_for("# the team's change", WAIT)?;
     pty.press(Key::Esc)?;
     pty.wait_for("Workflow library", WAIT)?;

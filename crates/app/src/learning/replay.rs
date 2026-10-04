@@ -992,6 +992,7 @@ mod tests {
                 resumed_from: None,
                 follow_key: None,
                 workflow_step: Some(step),
+                label: None,
             }))),
             RunEventKind::Session(SessionEvent::Ended(Box::new(SessionEnd {
                 reason: EndReason::Completed,

@@ -12,6 +12,7 @@ use crate::api::{
     CheckpointAnswer, DiffScope, DiffView, RawView, StatusSummary, SteerAck, TakeOverTicket,
 };
 use crate::clock::Clock;
+use crate::events::goal::GoalAction;
 use crate::events::run::{ParkReason, RunOutcome};
 use crate::events::session::QueuedMessage;
 use crate::events::{RunEvent, RunEventKind, VendorEvent};
@@ -175,6 +176,11 @@ pub enum EngineCommand {
     SpotCheck {
         id: CheckpointId,
         correct: bool,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Clear the goal, turn the workflow into one, or change an assumption.
+    Goal {
+        action: GoalAction,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// A change to the running workflow from the next phase on. It goes through the
