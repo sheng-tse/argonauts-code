@@ -68,6 +68,8 @@ fn row(
         } else {
             summary.title.clone()
         },
+        label: None,
+        tries: 0,
         repo: repo.to_owned(),
         run: None,
         worker: summary.worker.clone(),

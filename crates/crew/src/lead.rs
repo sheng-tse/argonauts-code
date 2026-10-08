@@ -41,16 +41,16 @@ pub fn phase_lead(state: &RunState, settings: &Settings) -> Option<WorkerRef> {
         .as_ref()
         .map(|graph| graph.critical_path.as_slice())
         .filter(|path| !path.is_empty());
-    Some(lead_for(phase, &cards, critical, &settings.default_agent))
+    Some(lead_for(phase, &cards, critical, &settings.main_agent))
 }
 
-/// Who answers the crew's questions in your place: in `full_auto` the model
-/// `approvals.answered_by` picked, else the lead of the phase the run is in, else the default
+/// Who answers the crew's questions in your place: in `autopilot` the model
+/// `approvals.answers` picked, else the lead of the phase the run is in, else the default
 /// agent.
-pub fn answering(state: &RunState, settings: &Settings, full_auto: bool) -> WorkerRef {
-    match &settings.approvals.answered_by {
-        Some(Answerer::Model(model)) if full_auto => model.clone(),
-        _ => phase_lead(state, settings).unwrap_or_else(|| settings.default_agent.clone()),
+pub fn answering(state: &RunState, settings: &Settings, autopilot: bool) -> WorkerRef {
+    match &settings.approvals.answers {
+        Some(Answerer::Model(model)) if autopilot => model.clone(),
+        _ => phase_lead(state, settings).unwrap_or_else(|| settings.main_agent.clone()),
     }
 }
 
@@ -191,33 +191,33 @@ mod tests {
     #[test]
     fn the_longest_chain_wins() {
         let cards = vec![
-            spec("card-001", CardKind::Interface, &[], None),
-            spec("card-002", CardKind::Build, &["card-001"], None),
-            spec("card-003", CardKind::Build, &["card-002"], None),
-            spec("card-004", CardKind::Build, &["card-001"], None),
+            spec("task-001", CardKind::Interface, &[], None),
+            spec("task-002", CardKind::Build, &["task-001"], None),
+            spec("task-003", CardKind::Build, &["task-002"], None),
+            spec("task-004", CardKind::Build, &["task-001"], None),
         ];
         assert_eq!(
             critical_path(&cards),
-            ids(&["card-001", "card-002", "card-003"])
+            ids(&["task-001", "task-002", "task-003"])
         );
     }
 
     #[test]
     fn equal_chains_go_by_card_id() {
         let cards = vec![
-            spec("card-004", CardKind::Build, &["card-003"], None),
-            spec("card-003", CardKind::Build, &[], None),
-            spec("card-002", CardKind::Build, &["card-001"], None),
-            spec("card-001", CardKind::Build, &[], None),
+            spec("task-004", CardKind::Build, &["task-003"], None),
+            spec("task-003", CardKind::Build, &[], None),
+            spec("task-002", CardKind::Build, &["task-001"], None),
+            spec("task-001", CardKind::Build, &[], None),
         ];
-        assert_eq!(critical_path(&cards), ids(&["card-001", "card-002"]));
+        assert_eq!(critical_path(&cards), ids(&["task-001", "task-002"]));
     }
 
     #[test]
     fn cycles_and_unknown_dependencies_do_not_hang() {
         let cards = vec![
-            spec("card-001", CardKind::Build, &["card-002", "card-009"], None),
-            spec("card-002", CardKind::Build, &["card-001"], None),
+            spec("task-001", CardKind::Build, &["task-002", "task-009"], None),
+            spec("task-002", CardKind::Build, &["task-001"], None),
         ];
         assert_eq!(critical_path(&cards).len(), 2);
         assert!(critical_path(&[]).is_empty());
@@ -227,10 +227,10 @@ mod tests {
     fn the_lead_follows_the_phase() {
         let default: WorkerRef = "claude-code".parse().unwrap();
         let specs = [
-            spec("card-001", CardKind::Interface, &[], None),
-            spec("card-002", CardKind::Build, &["card-001"], None),
-            spec("card-003", CardKind::Build, &["card-001"], None),
-            spec("card-004", CardKind::Chore, &[], None),
+            spec("task-001", CardKind::Interface, &[], None),
+            spec("task-002", CardKind::Build, &["task-001"], None),
+            spec("task-003", CardKind::Build, &["task-001"], None),
+            spec("task-004", CardKind::Chore, &[], None),
         ];
         let owners: Vec<WorkerRef> = ["claude-code", "codex", "antigravity-cli", "antigravity-cli"]
             .iter()
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(lead(RunPhase::Planning, None), "claude-code");
         assert_eq!(lead(RunPhase::Build, None), "codex");
         assert_eq!(lead(RunPhase::FinalCheck, None), "antigravity-cli");
-        let path = ids(&["card-001", "card-003"]);
+        let path = ids(&["task-001", "task-003"]);
         assert_eq!(
             lead(RunPhase::Build, Some(path.as_slice())),
             "antigravity-cli"

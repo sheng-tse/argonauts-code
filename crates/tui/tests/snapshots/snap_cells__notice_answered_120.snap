@@ -1,7 +1,6 @@
 ---
-source: crates/tui/tests/cells.rs
-assertion_line: 80
+source: crates/tui/tests/snap_cells.rs
 expression: text(&lines)
 ---
-◆ Merge card-002 into main?
+◆ Merge task-002 into main?
   ⎿  Merge · you answered

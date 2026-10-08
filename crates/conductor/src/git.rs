@@ -463,7 +463,7 @@ mod tests {
         );
         assert!(git.diff(&tree, &base, &sha).await.unwrap().contains("+hi"));
 
-        git.merge(&repo.root, &sha, "Merge the card").await.unwrap();
+        git.merge(&repo.root, &sha, "Merge the task").await.unwrap();
         assert_eq!(git.head_commit(&repo.root).await.unwrap().unwrap(), sha);
         assert!(repo.root.join("hello.txt").exists());
 
@@ -490,7 +490,7 @@ mod tests {
         repo.git(&["commit", "--quiet", "-am", "ours"]);
 
         let err = git
-            .merge(&repo.root, "card", "Merge card")
+            .merge(&repo.root, "card", "Merge task")
             .await
             .unwrap_err();
         assert!(matches!(err, GitError::Failed { .. }));

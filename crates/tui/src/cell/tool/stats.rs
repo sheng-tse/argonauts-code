@@ -63,7 +63,7 @@ mod tests {
         );
         let mut call = ToolCall::described(
             ToolKind::Agent,
-            "claude-code/opus · owner · card-002 (Add the JSON writer)",
+            "claude-code/opus · worker · task-002 (Add the JSON writer)",
         )
         .with_stats(ToolStats {
             started_at: Some(start),
@@ -74,7 +74,7 @@ mod tests {
         let lines = call.lines(&ctx);
         assert_eq!(
             plain_text(&lines[..1]),
-            "● claude-code/opus · owner · card-002 (Add the JSON writer) · 4m12s · ↓ 18.1k"
+            "● claude-code/opus · worker · task-002 (Add the JSON writer) · 4m12s · ↓ 18.1k"
         );
         let stats = lines[0].spans.last().expect("the stats");
         assert_eq!(stats.style, theme.style(Role::Dim));
@@ -95,7 +95,7 @@ mod tests {
         let at = Clock::new(start, start + Duration::from_secs(103));
         let call = ToolCall::described(
             ToolKind::Agent,
-            "Antigravity CLI · reviewer · card-002 (Review the JSON writer)",
+            "Antigravity CLI · reviewer · task-002 (Review the JSON writer)",
         )
         .with_stats(ToolStats {
             started_at: Some(start),
@@ -106,17 +106,17 @@ mod tests {
         let row = |width| plain_text(&call.lines(&RenderCtx::new(width, &theme, at)));
         assert_eq!(
             row(81),
-            "● Antigravity CLI · reviewer · card-002 (Review the JSON writer) · 1m43s · ↓ 6.1k"
+            "● Antigravity CLI · reviewer · task-002 (Review the JSON writer) · 1m43s · ↓ 6.1k"
         );
         assert_eq!(
             row(80),
-            "● Antigravity CLI · reviewer · card-002 (Review the JSON writ…) · 1m43s · ↓ 6.1k"
+            "● Antigravity CLI · reviewer · task-002 (Review the JSON writ…) · 1m43s · ↓ 6.1k"
         );
         assert_eq!(
             row(60),
-            "● Antigravity CLI · reviewer · card-002 · 1m43s · ↓ 6.1k"
+            "● Antigravity CLI · reviewer · task-002 · 1m43s · ↓ 6.1k"
         );
-        assert_eq!(row(45), "● Antigravity CLI · reviewer · card-002");
+        assert_eq!(row(45), "● Antigravity CLI · reviewer · task-002");
     }
 
     #[test]

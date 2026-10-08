@@ -1,4 +1,4 @@
-# The fake Claude Code is overloaded and gives up with a 529. You give every paused card to
+# The fake Claude Code is overloaded and gives up with a 529. You give every paused task to
 # one agent, Codex, which finishes it.
 
 [version]

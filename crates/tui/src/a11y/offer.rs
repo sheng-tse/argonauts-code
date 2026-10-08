@@ -20,7 +20,7 @@ pub(super) enum Offer {
     Workflow,
     Library(Vec<WorkflowFile>),
     /// The default agent's effort was read out with All hands, which is on when `true`.
-    AllHands(bool),
+    Ultracode(bool),
 }
 
 /// What a line taken by an offer comes to.
@@ -47,7 +47,9 @@ impl Offer {
                 workflows,
                 refresh: false,
             } if !workflows.is_empty() => Some(Self::Library(workflows.clone())),
-            ViewData::Effort { slider } => slider.all_hands.map(|toggle| Self::AllHands(toggle.on)),
+            ViewData::Effort { slider } => {
+                slider.ultracode.map(|toggle| Self::Ultracode(toggle.on))
+            }
             _ => None,
         }
     }
@@ -56,7 +58,7 @@ impl Offer {
     pub fn hint(&self) -> &'static str {
         match self {
             Self::Checkpoints(_) => {
-                "rewind: type a checkpoint's number to go back to it. A confirm card comes first."
+                "rewind: type a checkpoint's number to go back to it. A confirm question comes first."
             }
             Self::Summary => "status: type s for the narrator's summary.",
             Self::Workflow => "workflow: type l for the workflow library.",
@@ -64,8 +66,8 @@ impl Offer {
                 "workflows: type a number to read one, or c, C, or d and a number to copy it, \
                  copy it to the repo, or diff it with the built-in."
             }
-            Self::AllHands(false) => "all hands: type a to turn it on.",
-            Self::AllHands(true) => "all hands: type a to turn it off.",
+            Self::Ultracode(false) => "ultracode: type a to turn it on.",
+            Self::Ultracode(true) => "ultracode: type a to turn it off.",
         }
     }
 
@@ -77,12 +79,12 @@ impl Offer {
                 command: Some(UiCommand::Summary),
                 ..Taken::default()
             }),
-            Self::AllHands(on) => (line == "a").then(|| Taken {
+            Self::Ultracode(on) => (line == "a").then(|| Taken {
                 command: Some(UiCommand::Slash {
                     command: SlashCommand::Effort {
                         role: None,
                         level: None,
-                        all_hands: Some(!on),
+                        ultracode: Some(!on),
                     },
                 }),
                 ..Taken::default()
@@ -151,7 +153,7 @@ mod tests {
 
     fn checkpoints() -> ViewData {
         let row = |n| CheckpointRow {
-            card: CardId::new("card-001").unwrap(),
+            card: CardId::new("task-001").unwrap(),
             n,
             at: OffsetDateTime::UNIX_EPOCH,
             commit: "0123456".to_owned(),
@@ -183,14 +185,14 @@ mod tests {
     /// The default agent's effort offers All hands by `a`, which asks to flip it, where the
     /// slider would take Tab.
     #[test]
-    fn a_after_the_effort_flips_all_hands() {
+    fn a_after_the_effort_flips_ultracode() {
         use argonauts_core::model_picker::EffortSlider;
 
         let view = |on: bool| {
             let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
             let slider = EffortSlider::without_levels(None, worker, "Haiku 4.5");
             ViewData::Effort {
-                slider: slider.with_all_hands(on),
+                slider: slider.with_ultracode(on),
             }
         };
         for on in [false, true] {
@@ -206,7 +208,7 @@ mod tests {
                     command: SlashCommand::Effort {
                         role: None,
                         level: None,
-                        all_hands: Some(!on),
+                        ultracode: Some(!on),
                     }
                 })
             );
@@ -250,6 +252,7 @@ mod tests {
             text: "name: solo\nphases: []".to_owned(),
             edited: None,
             in_use: true,
+            problem: None,
         };
         let offer = Offer::for_view(&ViewData::WorkflowLibrary {
             workflows: vec![file],

@@ -94,6 +94,14 @@ pub struct CrewRow {
     pub state: CrewState,
     /// The card's title, the run's goal, or the conversation's first prompt.
     pub title: String,
+    /// An agent's name in its run, such as `build:add-due`. The list names the row by it, since
+    /// the run's heading already says what the work is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The tries of its seat this row stands for, once a retry folded the earlier ones into
+    /// it. 0 and 1 both mean it's the only one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tries: u32,
     /// With `~` for home.
     pub repo: String,
     /// The run whose group it's in. `None` for conversations and CLI sessions.
@@ -110,11 +118,130 @@ pub struct CrewRow {
     pub details: CrewDetails,
 }
 
-/// A run, as its group's heading names it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A run, as its group's heading names it: `✓ add-due-dates · merged 13m ago · ~$0.23`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CrewRun {
     pub id: RunId,
     pub title: String,
+    /// The run's own name, such as `add-due-dates`. The heading shows it in place of the title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Where the run stands. A heading without it shows the name alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stands: Option<RunStands>,
+}
+
+impl CrewRun {
+    pub fn new(id: RunId, title: impl Into<String>) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            name: None,
+            stands: None,
+        }
+    }
+}
+
+/// Where a run stands, for its heading.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunStands {
+    /// Picks the heading's glyph.
+    pub state: CrewState,
+    /// In a word or two, such as `merged` or `needs you`.
+    pub word: String,
+    /// When it got there. The heading says how long ago for a run that ended.
+    #[serde(with = "time::serde::rfc3339")]
+    pub since: OffsetDateTime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent: Option<Spend>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// One session as a try of its seat, for [`fold_tries`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeatTry {
+    /// What its tries share: its label without the `-2` a later one gets to stay unique.
+    pub seat: String,
+    pub started: OffsetDateTime,
+    /// `None` while it runs.
+    pub ended: Option<OffsetDateTime>,
+    pub row: CrewRow,
+}
+
+/// The seat a label names: the label itself, without the `-2` that keeps a later session's
+/// label unique in its run.
+pub fn seat_of(label: &str) -> &str {
+    match label.rsplit_once('-') {
+        Some((seat, n)) if !seat.is_empty() && n.parse::<u32>().is_ok_and(|n| n >= 2) => seat,
+        _ => label,
+    }
+}
+
+/// One row per seat: a session that starts after the last one of its seat ended is a retry,
+/// and takes that one's place under the seat's first label, with the count of tries so far. Sessions of a seat that run side
+/// by side, such as two reviewers, each keep their row. `tries` come in the order they started.
+pub fn fold_tries(tries: Vec<SeatTry>) -> Vec<CrewRow> {
+    let mut seats: Vec<SeatTry> = Vec::new();
+    for mut next in tries {
+        let earlier = seats.iter_mut().rev().find(|seat| {
+            seat.seat == next.seat && seat.ended.is_some_and(|ended| ended <= next.started)
+        });
+        match earlier {
+            Some(seat) => {
+                next.row.tries = seat.row.tries.max(1) + 1;
+                // The seat keeps its first try's label, which has no `-2` to tell it apart.
+                next.row.label = seat.row.label.take().or(next.row.label);
+                *seat = next;
+            }
+            None => seats.push(next),
+        }
+    }
+    seats
+        .into_iter()
+        .map(|seat| {
+            let mut row = seat.row;
+            if let Some(words) = tries_words(row.state, row.tries) {
+                row.latest = match row.state {
+                    CrewState::Working | CrewState::Waiting => {
+                        format!("{words} · {}", row.latest)
+                    }
+                    _ => words,
+                };
+            }
+            row
+        })
+        .collect()
+}
+
+/// What a folded row says of its tries, such as `accepted on its 6th try`. A row that asks you
+/// something keeps its question, and so does one that stands for a single try.
+fn tries_words(state: CrewState, tries: u32) -> Option<String> {
+    if tries < 2 {
+        return None;
+    }
+    let nth = ordinal(tries);
+    Some(match state {
+        CrewState::NeedsYou | CrewState::Ready => return None,
+        CrewState::Working | CrewState::Waiting => format!("{nth} try"),
+        CrewState::Done => format!("accepted on its {nth} try"),
+        CrewState::Stopped => format!("stopped on its {nth} try"),
+        CrewState::Failed => format!("failed on its {nth} try"),
+    })
+}
+
+/// `1st`, `2nd`, `3rd`, `4th`, `11th`, `22nd`.
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,11 +392,10 @@ mod tests {
             },
             state,
             title: title.into(),
+            label: None,
+            tries: 0,
             repo: repo.into(),
-            run: run.map(|id| CrewRun {
-                id: RunId::new(id).unwrap(),
-                title: format!("Goal of {id}"),
-            }),
+            run: run.map(|id| CrewRun::new(RunId::new(id).unwrap(), format!("Goal of {id}"))),
             worker: None,
             latest: String::new(),
             updated: at(minute),
@@ -303,7 +429,7 @@ mod tests {
                     "other needs you",
                 ),
                 row("~/app", None, CrewState::Ready, 8, "a chat"),
-                row("~/app", Some("run-a"), CrewState::Done, 7, "done card"),
+                row("~/app", Some("run-a"), CrewState::Done, 7, "done task"),
                 row("~/app", Some("run-a"), CrewState::Working, 1, "older work"),
                 row("~/app", Some("run-a"), CrewState::Working, 5, "newer work"),
                 row("~/app", None, CrewState::Done, 2, "old session"),
@@ -332,7 +458,7 @@ mod tests {
                 (
                     "~/app",
                     Some("run-a"),
-                    vec!["newer work", "older work", "done card"]
+                    vec!["newer work", "older work", "done task"]
                 ),
                 ("~/app", None, vec!["a chat", "old session"]),
                 ("~/other", Some("run-b"), vec!["other needs you"]),
@@ -349,7 +475,7 @@ mod tests {
             repo: "~/app".into(),
             rows: vec![
                 row("~/app", None, CrewState::Ready, 8, "a chat"),
-                row("~/app", Some("run-a"), CrewState::Done, 7, "done card"),
+                row("~/app", Some("run-a"), CrewState::Done, 7, "done task"),
             ],
         };
         let groups = panel.groups(CrewTab::All);
@@ -384,7 +510,7 @@ mod tests {
                 "run": {"id": "run-a", "title": "Login"},
                 "latest": "Waiting for your approval of the plan",
                 "updated": "2026-09-21T14:13:20Z",
-                "details": {"card": "card-002", "spent": {"input_tokens": 10, "output_tokens": 2,
+                "details": {"card": "task-002", "spent": {"input_tokens": 10, "output_tokens": 2,
                     "cached_tokens": 0, "cost_usd": 0.5, "cost_partial": false,
                     "cost_estimated": false}}
             }]
@@ -399,5 +525,80 @@ mod tests {
             let parsed: CrewTarget = serde_json::from_value(target.clone()).unwrap();
             assert_eq!(serde_json::to_value(&parsed).unwrap(), target);
         }
+    }
+
+    fn seat_try(label: &str, state: CrewState, started: i64, ended: Option<i64>) -> SeatTry {
+        let mut row = row("~/app", Some("run-a"), state, started, label);
+        row.label = Some(label.to_owned());
+        row.latest = "Drafting the plan".to_owned();
+        SeatTry {
+            seat: seat_of(label).to_owned(),
+            started: at(started),
+            ended: ended.map(at),
+            row,
+        }
+    }
+
+    #[test]
+    fn a_seat_s_retries_fold_into_its_latest_row() {
+        let rows = fold_tries(vec![
+            seat_try("plan:orchestrator", CrewState::Failed, 0, Some(1)),
+            seat_try("plan:orchestrator-2", CrewState::Failed, 1, Some(2)),
+            seat_try("plan:orchestrator-3", CrewState::Done, 2, Some(3)),
+            seat_try("build:add-due", CrewState::Done, 3, Some(4)),
+        ]);
+        let shown: Vec<(Option<&str>, u32, &str)> = rows
+            .iter()
+            .map(|row| (row.label.as_deref(), row.tries, row.latest.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Some("plan:orchestrator"), 3, "accepted on its 3rd try"),
+                (Some("build:add-due"), 0, "Drafting the plan"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_retry_still_running_says_which_try_it_is() {
+        let rows = fold_tries(vec![
+            seat_try("build:flag", CrewState::Failed, 0, Some(1)),
+            seat_try("build:flag", CrewState::Working, 2, None),
+        ]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].latest, "2nd try · Drafting the plan");
+
+        let rows = fold_tries(vec![
+            seat_try("build:flag", CrewState::Failed, 0, Some(1)),
+            seat_try("build:flag", CrewState::Failed, 2, Some(3)),
+        ]);
+        assert_eq!(rows[0].latest, "failed on its 2nd try");
+    }
+
+    #[test]
+    fn agents_of_a_seat_that_run_side_by_side_keep_their_rows() {
+        let rows = fold_tries(vec![
+            seat_try("review:flag", CrewState::Working, 0, None),
+            seat_try("review:flag-2", CrewState::Done, 0, Some(2)),
+        ]);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.tries == 0));
+    }
+
+    #[test]
+    fn a_seat_is_its_label_without_the_number_that_keeps_it_unique() {
+        assert_eq!(seat_of("plan:orchestrator-2"), "plan:orchestrator");
+        assert_eq!(seat_of("plan:orchestrator"), "plan:orchestrator");
+        assert_eq!(seat_of("build:add-due"), "build:add-due");
+        assert_eq!(seat_of("fix:issue-1"), "fix:issue-1");
+        assert_eq!(seat_of("-2"), "-2");
+        assert_eq!(
+            [1, 2, 3, 4, 11, 12, 13, 21, 22, 103, 111].map(ordinal),
+            [
+                "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "103rd",
+                "111th"
+            ]
+        );
     }
 }

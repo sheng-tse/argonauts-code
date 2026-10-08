@@ -128,7 +128,7 @@ pub struct DesignOutput {
 
 impl DesignOutput {
     /// `based_on` as one of `examples` names it, when the lead wrote another spelling of only
-    /// that name, such as `Peer Crew` for `peer-crew` or `quick-fix` for your `quick_fix.yaml`.
+    /// that name, such as `Council` for `council` or `quick-fix` for your `quick_fix.yaml`.
     /// A name that is an example stays exactly as written.
     pub fn read_based_on(&mut self, examples: &[String]) {
         let Some(written) = self.based_on.as_deref() else {

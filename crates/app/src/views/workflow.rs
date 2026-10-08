@@ -16,6 +16,10 @@ use time::OffsetDateTime;
 
 use super::sessions::{RunFacts, add_spend};
 
+mod reported;
+
+use reported::StepWorkflow;
+
 /// Nesting stops at depth 2; a deeper chain can only come from a damaged log.
 const MAX_DEPTH: usize = 4;
 
@@ -28,10 +32,21 @@ pub(crate) fn workflow_view(
     run: &RunId,
     workflow: Option<&WorkflowId>,
 ) -> Option<WorkflowView> {
-    let log = WorkflowLog::of(events);
+    view_from(&WorkflowLog::of(events), events, run, workflow)
+}
+
+/// The view of `workflow` as `log` has the run.
+fn view_from(
+    log: &WorkflowLog,
+    events: &[RunEvent],
+    run: &RunId,
+    workflow: Option<&WorkflowId>,
+) -> Option<WorkflowView> {
     if let Some(id) = workflow
-        && let Some(view) = log.vendor_view(run, id)
+        && let Some(mut view) = log.vendor_view(run, id)
     {
+        // A workflow its CLI runs can have agents on goals too, as the run's own has.
+        view.goals = super::goal_feed::agent_goals(events, &view.phases);
         return Some(view);
     }
     let id = match workflow {
@@ -57,22 +72,47 @@ pub(crate) fn workflow_view(
     // by the template it started from.
     let (name, description) = match (&log.named, top) {
         (Some(named), true) => (named.name.clone(), named.description.clone()),
-        _ => match log.declared.get(&id) {
-            Some(declared) => (declared.name.clone(), declared.description.clone()),
-            None => (
+        _ => match (log.reported_name(&id), log.declared.get(&id)) {
+            // A workflow one of its steps runs says what it is better than its own phases do.
+            (Some(reported), _) => reported,
+            (None, Some(declared)) => (declared.name.clone(), declared.description.clone()),
+            (None, None) => (
                 facts.definition.name.clone(),
                 facts.definition.description.clone(),
             ),
         },
     };
+    // `orchestrator workflow`, after the run's own name, when it started from one.
+    let notes = log
+        .named
+        .as_ref()
+        .filter(|_| top)
+        .and_then(|named| named.based_on.as_deref())
+        .map(str::trim)
+        .filter(|based_on| !based_on.is_empty() && *based_on != name.trim())
+        .map(|based_on| vec![format!("{based_on} workflow")])
+        .unwrap_or_default();
+    // The steps of yours the workflow itself says it holds. Those every workflow must hold
+    // are marked by whoever answers with the view.
+    let required = log
+        .declared
+        .get(&id)
+        .map(|declared| declared.required.clone())
+        .unwrap_or_default();
     let mut status_lines = log.status_lines(&id, top);
-    if top && let Some(goal) = super::goal::goal_view(events, run) {
-        status_lines.insert(0, goal_line(&goal));
+    let goal = top.then(|| super::goal::goal_view(events, run)).flatten();
+    if let Some(goal) = &goal {
+        status_lines.insert(0, goal_line(goal));
     }
+    // A goal is a condition around the workflow: the view shows one once the run has taken it.
+    let style = match goal {
+        Some(_) => Some(argonauts_core::settings::workflows::RunStyle::Goal),
+        None => log.named.as_ref().filter(|_| top).map(|named| named.style),
+    };
     Some(WorkflowView {
         run: run.clone(),
         status_lines,
-        style: log.named.as_ref().filter(|_| top).map(|named| named.style),
+        style,
         id,
         name,
         description,
@@ -81,7 +121,10 @@ pub(crate) fn workflow_view(
         agents_total: built.agents_total,
         elapsed_ms: built.elapsed_ms,
         spent: built.spent,
+        goals: super::goal_feed::agent_goals(events, &built.phases),
         phases: built.phases,
+        notes,
+        required,
     })
 }
 
@@ -126,8 +169,8 @@ pub(crate) fn saved_workflow(
     Some((safe, facts.definition.clone()))
 }
 
-/// `Goal · 3 of 4 met · attempt 2 of up to 5 · not yet: median([]) raises ValueError`, the
-/// line a goal run's workflow view keeps under its description.
+/// `Goal · 3 of 4 met · round 2 · not yet: median([]) raises ValueError`, the line the workflow
+/// view keeps under its description while a goal goes round the run.
 fn goal_line(goal: &argonauts_core::views::GoalView) -> StatusLine {
     use argonauts_core::events::goal::CriterionState;
     let met = goal
@@ -137,10 +180,10 @@ fn goal_line(goal: &argonauts_core::views::GoalView) -> StatusLine {
         .count();
     let mut text = format!("Goal · {met} of {} met", goal.criteria.len());
     if let Some(attempt) = goal.attempts.last() {
-        text.push_str(&format!(
-            " · attempt {} of up to {}",
-            attempt.n, goal.max_attempts
-        ));
+        text.push_str(&format!(" · round {}", attempt.n));
+        if let Some(max) = goal.max_rounds {
+            text.push_str(&format!(" of up to {max}"));
+        }
     }
     if let Some(unmet) = goal
         .criteria
@@ -234,6 +277,8 @@ struct WorkflowLog {
     open: Vec<(CheckpointId, String)>,
     finished: Option<(RunOutcome, Option<String>)>,
     vendors: Vec<(SessionKey, VendorWorkflow)>,
+    /// The workflows the runner runs as steps, as each was last reported.
+    reported: Vec<StepWorkflow>,
     sessions: RunFacts,
 }
 
@@ -262,6 +307,7 @@ impl WorkflowLog {
             open: Vec::new(),
             finished: None,
             vendors: vendor_workflows(events),
+            reported: Vec::new(),
             sessions: RunFacts::of(events),
         };
         for event in events {
@@ -369,10 +415,53 @@ impl WorkflowLog {
                 self.note = Some((Some(phase.id.clone()), text));
             }
             WorkflowEvent::PhaseAdded { .. } => {}
+            WorkflowEvent::Reported(report) => {
+                let seats = report
+                    .sessions
+                    .iter()
+                    .map(|seat| (seat.agent, seat.session.clone()))
+                    .collect();
+                self.note_report(&report.step, &report.workflow, seats);
+            }
             WorkflowEvent::Note(note) => {
                 self.note = Some((note.workflow.clone(), note.text.trim().to_owned()));
             }
         }
+    }
+
+    /// Takes in what the runner reports of the workflow `step` runs: its name, its phases in
+    /// the order it declares them, its agents, and in `seats` the session behind each agent
+    /// that has one, by the agent's index. Each report is the whole state, so it replaces the
+    /// last one of the same workflow.
+    fn note_report(
+        &mut self,
+        step: &StepRef,
+        workflow: &VendorWorkflow,
+        seats: Vec<(u32, SessionKey)>,
+    ) {
+        let report = StepWorkflow {
+            step: step.clone(),
+            workflow: workflow.clone(),
+            seats,
+        };
+        match self
+            .reported
+            .iter_mut()
+            .find(|known| known.workflow.id == workflow.id)
+        {
+            Some(known) => *known = report,
+            None => self.reported.push(report),
+        }
+    }
+
+    /// The name and description of the workflow a step of `id` runs, when it gave a name.
+    fn reported_name(&self, id: &WorkflowId) -> Option<(String, String)> {
+        let report = self
+            .reported
+            .iter()
+            .find(|report| report.step.workflow == *id)?;
+        let name = report.workflow.name.trim();
+        (!name.is_empty()).then(|| (name.to_owned(), report.workflow.description.clone()))
     }
 
     /// A workflow an agent's own CLI runs, by the id the views give it.
@@ -383,7 +472,9 @@ impl WorkflowLog {
             .find(|(_, workflow)| vendor_workflow_id(&workflow.id) == *id)?;
         let host = self.sessions.agent_row(self.sessions.session(host)?);
         let now = self.sessions.last_ts.and_then(epoch_ms);
-        Some(WorkflowView::of_vendor(run, &host, workflow, now))
+        let mut view = WorkflowView::of_vendor(run, &host, workflow, now);
+        super::asked::answered_by_the_crew(&mut view, &self.sessions);
+        Some(view)
     }
 
     /// What the view says under its header: what waits for you, else how the run ended, else
@@ -400,7 +491,7 @@ impl WorkflowLog {
             return vec![line(
                 StatusKind::NeedsYou,
                 format!(
-                    "Needs you · {}{more} · the card is in the chat, esc goes to it",
+                    "Needs you · {}{more} · the question is in the chat, esc goes to it",
                     title.trim()
                 ),
             )];
@@ -487,6 +578,9 @@ impl WorkflowLog {
             status: RowStatus::Waiting,
         };
         let ended = self.ended(facts);
+        // Once a workflow the runner runs has said what its phases are, they are the view's
+        // phases, and the run's own phases around them leave it.
+        let mut replaced = false;
         for (index, phase) in facts.definition.phases.iter().enumerate() {
             let index = u32::try_from(index).unwrap_or(u32::MAX);
             let mark = self.phases.get(&(id.clone(), index));
@@ -494,6 +588,11 @@ impl WorkflowLog {
             if matches!(mark, Some(PhaseState::Skipped)) {
                 continue;
             }
+            let report = self
+                .reported
+                .iter()
+                .find(|report| report.runs_in(id, index));
+            let counted = (built.agents_done, built.agents_total);
             let mut rows: Vec<(OffsetDateTime, WorkflowRow)> = Vec::new();
             // Only the agents the workflow ran are its rows: an estimate or the retro, which
             // no step started, isn't one.
@@ -507,12 +606,17 @@ impl WorkflowLog {
                     continue;
                 }
                 let row = self.sessions.agent_row(session);
+                add_spend(&mut built.spent, &row.spent);
+                remember(&mut built.workers, &row.worker);
+                // An agent of the workflow this phase's step runs is a row of that workflow's
+                // own phase, below.
+                if report.is_some_and(|report| report.holds(&row)) {
+                    continue;
+                }
                 built.agents_total += 1;
                 if row.status == RowStatus::Done {
                     built.agents_done += 1;
                 }
-                add_spend(&mut built.spent, &row.spent);
-                remember(&mut built.workers, &row.worker);
                 rows.push((session.started_at, WorkflowRow::Agent(row)));
             }
             if depth < MAX_DEPTH {
@@ -550,7 +654,13 @@ impl WorkflowLog {
                 }
             }
             rows.sort_by_key(|(started, _)| *started);
-            let rows: Vec<WorkflowRow> = rows.into_iter().map(|(_, row)| row).collect();
+            let mut rows: Vec<WorkflowRow> = rows.into_iter().map(|(_, row)| row).collect();
+            let reported = report.map(|report| report.rows(&self.sessions, phase.standard));
+            if let Some(reported) = &reported {
+                rows.extend(reported.loose.iter().cloned().map(WorkflowRow::Agent));
+                built.agents_done += reported.agents_done;
+                built.agents_total += reported.agents_total;
+            }
             let steps: Vec<Option<StepProgress>> = (0..phase.steps.len())
                 .map(|step| {
                     let step = u32::try_from(step).unwrap_or(u32::MAX);
@@ -566,6 +676,25 @@ impl WorkflowLog {
             let ran = mark.is_some() || !rows.is_empty() || steps.iter().any(Option::is_some);
             // Once the workflow is over, a phase that never ran leaves the list.
             if ended && !ran {
+                continue;
+            }
+            // The run's merge after them shows as the view's status line, and stays a phase
+            // only for an agent that works in it.
+            if replaced && rows.is_empty() {
+                continue;
+            }
+            // The phases of the workflow its step runs stand in for this one. What this one
+            // holds itself, such as the agent that wrote the steps, goes first in the first of
+            // them, and only the workflow's own agents count.
+            if let Some(reported) = reported.filter(|reported| !reported.phases.is_empty()) {
+                replaced = true;
+                built.agents_done = counted.0 + reported.agents_done;
+                built.agents_total = counted.1 + reported.agents_total;
+                let mut phases = reported.phases;
+                if let Some(first) = phases.first_mut() {
+                    first.rows.splice(0..0, rows);
+                }
+                built.phases.extend(phases);
                 continue;
             }
             let done = rows
@@ -784,7 +913,7 @@ mod tests {
                 &top,
                 None,
                 definition(serde_json::json!({
-                    "name": "peer-crew",
+                    "name": "council",
                     "description": "Agents check each other",
                     "phases": [
                         {"name": "Look", "standard": "understand",
@@ -824,7 +953,7 @@ mod tests {
         let view = workflow_view(&events, &run_id(), None).unwrap();
         assert_eq!(
             (view.name.as_str(), view.id.clone()),
-            ("peer-crew", top.clone())
+            ("council", top.clone())
         );
         assert!(view.breadcrumb.is_empty());
         assert_eq!((view.agents_done, view.agents_total), (2, 3));
@@ -851,7 +980,7 @@ mod tests {
         assert_eq!((build.count, build.rows.len()), (None, 0));
 
         let inner = workflow_view(&events, &run_id(), Some(&review)).unwrap();
-        assert_eq!(inner.breadcrumb, ["peer-crew", "review"]);
+        assert_eq!(inner.breadcrumb, ["council", "review"]);
         assert_eq!(inner.phases[0].status, RowStatus::Done);
         assert!(workflow_view(&events, &run_id(), Some(&WorkflowId::numbered(9))).is_none());
         assert!(workflow_view(&[], &run_id(), None).is_none());
@@ -860,7 +989,7 @@ mod tests {
     fn solo() -> Workflow {
         definition(serde_json::json!({
             "name": "solo",
-            "description": "The default agent alone",
+            "description": "The main agent alone",
             "phases": [
                 {"name": "Understand", "standard": "understand", "steps": [{"kind": "restate"}]},
                 {"name": "Build", "standard": "do", "steps": [{"kind": "build"}]},
@@ -892,7 +1021,7 @@ mod tests {
         let events = vec![
             started(0, &top, None, solo()),
             step_started(1, build.clone(), StepKind::Build, StandardPhase::Do),
-            placed(2, &owner, RoleName::Owner, "claude-code", build.clone()),
+            placed(2, &owner, RoleName::Worker, "claude-code", build.clone()),
             session_ended(3, &owner, EndReason::Completed, 1_000),
             step_finished(4, build, StepKind::Build, StandardPhase::Do),
             step_started(5, merge.clone(), StepKind::Merge, StandardPhase::Decide),
@@ -947,7 +1076,7 @@ mod tests {
             ),
             workflow_event(3, WorkflowEvent::PhaseStarted(mark(&top, 1, "Build"))),
             step_started(4, build.clone(), StepKind::Build, StandardPhase::Do),
-            placed(5, &owner, RoleName::Owner, "claude-code", build.clone()),
+            placed(5, &owner, RoleName::Worker, "claude-code", build.clone()),
         ];
         let view = workflow_view(&events, &run_id(), None).unwrap();
         assert_eq!(view.name, "fix-money-rounding");
@@ -1034,7 +1163,7 @@ mod tests {
             started_at_ms: None,
         };
         let mut events = vec![
-            session_started(0, &host, None, RoleName::Owner, "claude-code"),
+            session_started(0, &host, None, RoleName::Worker, "claude-code"),
             event(
                 1,
                 RunEventKind::Agent(AgentEvent::Workflow {
@@ -1108,7 +1237,7 @@ mod tests {
                 name: "per-key-rate-limits".to_owned(),
                 description: "Limit requests per API key".to_owned(),
                 style: RunStyle::Workflow,
-                based_on: Some("peer-crew".to_owned()),
+                based_on: Some("council".to_owned()),
                 done_when: Vec::new(),
             })),
         ));
@@ -1121,7 +1250,7 @@ mod tests {
             &own,
             None,
             definition(serde_json::json!({
-                "name": "peer-crew",
+                "name": "council",
                 "phases": [{"name": "Goal", "standard": "understand",
                             "steps": [{"kind": "workflow", "workflow": "goal"}]}]
             })),
@@ -1171,7 +1300,7 @@ mod tests {
         );
         assert_eq!(view.agents_total as usize, all.len(), "{all:?}");
         assert_eq!(view.agents_done, view.agents_total);
-        assert!(all.iter().all(|label| !label.contains("card-")), "{all:?}");
+        assert!(all.iter().all(|label| !label.contains("task-")), "{all:?}");
     }
 
     #[test]
@@ -1213,8 +1342,136 @@ mod tests {
         assert_eq!(
             lines,
             [format!(
-                "Needs you · {title} · the card is in the chat, esc goes to it"
+                "Needs you · {title} · the question is in the chat, esc goes to it"
             )]
         );
+    }
+    /// A workflow's phases are whatever it declares, in its order: none of them is a name the
+    /// view knows, two share one name, and there are twelve.
+    #[test]
+    fn any_phases_a_workflow_declares_are_the_views_phases() {
+        let names = [
+            "Survey", "Outline", "Draft", "Critique", "Draft", "Critique", "Numbers", "Figures",
+            "Proof", "Typeset", "Package", "Announce",
+        ];
+        let phases: Vec<serde_json::Value> = names
+            .iter()
+            .map(|name| {
+                serde_json::json!({"name": name, "standard": "do", "steps": [{"kind": "build"}]})
+            })
+            .collect();
+        let top = WorkflowId::numbered(1);
+        let second_draft = step(&top, 4, 0);
+        let writer = SessionKey::numbered(1);
+        let events = vec![
+            started(
+                0,
+                &top,
+                None,
+                definition(serde_json::json!({"name": "write-the-paper", "phases": phases})),
+            ),
+            step_started(1, second_draft.clone(), StepKind::Build, StandardPhase::Do),
+            placed(2, &writer, RoleName::Worker, "codex", second_draft),
+        ];
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        let shown: Vec<&str> = view
+            .phases
+            .iter()
+            .map(|phase| phase.name.as_str())
+            .collect();
+        assert_eq!(shown, names);
+        // The agent sits in the second Draft, the phase it was placed in, not the first.
+        let with_agents: Vec<usize> = view
+            .phases
+            .iter()
+            .enumerate()
+            .filter(|(_, phase)| !phase.rows.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(with_agents, [4]);
+        assert_eq!(view.phases[4].status, RowStatus::Running);
+        assert_eq!(view.phases[2].status, RowStatus::Waiting);
+    }
+
+    #[test]
+    fn a_workflow_of_one_phase_and_one_with_no_phase_yet_both_open() {
+        let top = WorkflowId::numbered(1);
+        let one = vec![started(
+            0,
+            &top,
+            None,
+            definition(serde_json::json!({
+                "name": "translate",
+                "phases": [{"name": "Translate the changelog", "standard": "do",
+                            "steps": [{"kind": "build"}]}]
+            })),
+        )];
+        let view = workflow_view(&one, &run_id(), None).unwrap();
+        assert_eq!(view.phases.len(), 1);
+        assert_eq!(view.phases[0].name, "Translate the changelog");
+        assert_eq!(view.phases[0].count, None);
+
+        let none = vec![started(
+            0,
+            &top,
+            None,
+            definition(serde_json::json!({"name": "warming-up", "phases": []})),
+        )];
+        let view = workflow_view(&none, &run_id(), None).unwrap();
+        assert!(view.phases.is_empty());
+        assert_eq!((view.agents_done, view.agents_total), (0, 0));
+    }
+
+    /// `orchestrator workflow` follows the run's own name, and a run named after the workflow
+    /// it started from doesn't say so twice.
+    #[test]
+    fn the_workflow_a_run_started_from_is_noted_after_its_name() {
+        let top = WorkflowId::numbered(1);
+        let named = |name: &str| {
+            event(
+                1,
+                RunEventKind::Run(RunLifecycle::Named(RunNamed {
+                    name: name.to_owned(),
+                    description: "Add due dates to tasks".to_owned(),
+                    style: RunStyle::Workflow,
+                    based_on: Some("orchestrator".to_owned()),
+                    done_when: Vec::new(),
+                })),
+            )
+        };
+        let events = vec![started(0, &top, None, solo()), named("add-due-dates")];
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        assert_eq!(view.notes, ["orchestrator workflow"]);
+
+        let events = vec![started(0, &top, None, solo()), named("orchestrator")];
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        assert!(view.notes.is_empty());
+    }
+
+    /// The steps a workflow's own declaration says you require are the view's, so one asked
+    /// for in a single request is marked as one kept in a file is.
+    #[test]
+    fn the_steps_a_declaration_requires_are_the_views() {
+        let top = WorkflowId::numbered(1);
+        let workflow = definition(serde_json::json!({
+            "name": "switch-reads",
+            "phases": [
+                {"name": "Build", "standard": "do", "steps": [{"kind": "build"}]},
+                {"name": "Benchmark", "standard": "do", "steps": [{"kind": "build"}]}
+            ]
+        }));
+        let mut declared = WorkflowDeclared::of(&top, &workflow);
+        declared.required = vec!["benchmark".to_owned()];
+        let events = vec![
+            started(0, &top, None, workflow),
+            event(
+                1,
+                RunEventKind::Workflow(WorkflowEvent::Declared(Box::new(declared))),
+            ),
+        ];
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        assert_eq!(view.required, ["benchmark"]);
+        assert!(!view.requires(&view.phases[0]));
+        assert!(view.requires(&view.phases[1]));
     }
 }

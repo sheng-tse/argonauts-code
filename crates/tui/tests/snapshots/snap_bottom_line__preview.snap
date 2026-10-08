@@ -1,0 +1,39 @@
+---
+source: crates/tui/tests/snap_bottom_line.rs
+expression: both
+---
+healthy
+200 columns
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · main                                                   ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%  ~$1.86▕
+150 columns
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · main ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%  ~$1.86▕
+120 columns
+  ⏵⏵ auto mode on · main          ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%  ~$1.86▕
+100 columns
+  ⏵⏵ auto mode on     ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%▕
+ 80 columns
+  ⏵⏵ auto mode on ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex ▁ 11%  ○ agy ▁ 2%▕
+ 60 columns
+  ⏵⏵ auto     ● Claude 5h ▁ 1% 7d ███░░░ 56%  ○ Codex  ○ agy▕
+ 40 columns
+  ⏵⏵ auto   ● Claude 7d ███░░░ 56%  ○  ○▕
+ 20 columns
+  ⏵⏵     ● 56%  ○  ○▕
+
+near a limit and out
+200 columns
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · main                                                    ● Claude 5h ██████ 93% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy ██████ out  ~$1.86▕
+150 columns
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts · main  ● Claude 5h ██████ 93% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy ██████ out  ~$1.86▕
+120 columns
+  ⏵⏵ auto mode on · main           ● Claude 5h ██████ 93% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy ██████ out  ~$1.86▕
+100 columns
+  ⏵⏵ auto mode on      ● Claude 5h ██████ 93% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy ██████ out▕
+ 80 columns
+  ⏵⏵ auto mode on ● Claude 5h ██████ 93% 7d ███░░░ 56%  ○ Codex ▁ 11%  ○ agy out▕
+ 60 columns
+  ⏵⏵ auto         ● Claude 5h ██████ 93%  ○ Codex  ○ agy out▕
+ 40 columns
+  ⏵⏵ auto     ● Claude 93%  ○  ○ agy out▕
+ 20 columns
+  ⏵⏵ ● 93%  ○  ○ out▕

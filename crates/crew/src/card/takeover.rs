@@ -118,9 +118,9 @@ fn broken_rule(
     from: &WorkerRef,
     to: &WorkerRef,
 ) -> Option<String> {
-    let allowed = roles::candidates(host.settings(), RoleName::Owner);
+    let allowed = roles::candidates(host.settings(), RoleName::Worker);
     if !allowed.is_empty() && !allowed.contains(to) {
-        return Some(format!("roles.owner doesn't list {to}"));
+        return Some(format!("roles.worker doesn't list {to}"));
     }
     let family = roles::family(host, to);
     if let Some(reviewer) = record
@@ -130,11 +130,13 @@ fn broken_rule(
         .find(|reviewer| roles::family(host, reviewer) == family)
     {
         return Some(format!(
-            "{to} is the same model family as {reviewer}, who reviews {}",
+            "{to} is the same provider as {reviewer}, who reviews {}",
             record.spec.id
         ));
     }
-    roles::conflict(RoleName::Owner, to, Some(from), &|w| roles::family(host, w))
+    roles::conflict(RoleName::Worker, to, Some(from), &|w| {
+        roles::family(host, w)
+    })
 }
 
 async fn wrap_up_and_stop(host: &Host, card: &CardId) -> EngineResult<()> {
@@ -171,7 +173,7 @@ async fn take_over_card(host: &Host, card: &CardId) -> EngineResult<TakeOverTick
     );
     if !open {
         return Err(EngineError::Refused(format!(
-            "{card} is {:?}; only a running, stopped, or escalated card can be taken over",
+            "{card} is {:?}; only a running, stopped, or needs-you task can be taken over",
             record.state
         )));
     }
@@ -224,7 +226,9 @@ fn answer_handoff_card(host: &Host, card: &CardId) {
             cards: Vec::new(),
         };
         if let Err(why) = checkpoints::answer(host, answer) {
-            tracing::warn!("the handoff card of {card} stayed open after the take-over: {why}");
+            tracing::warn!(
+                "the fallback question of {card} stayed open after the take-over: {why}"
+            );
         }
     }
 }

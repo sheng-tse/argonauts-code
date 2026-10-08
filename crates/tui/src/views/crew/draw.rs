@@ -1,7 +1,9 @@
 //! What the crew panel draws: the title row with quotas, the state tabs, the grouped list, the
 //! details of the highlighted row, and the keys.
 
-use argonauts_core::crew_panel::{CrewDetails, CrewPanel, CrewRow, CrewState, CrewTab, RepoGroup};
+use argonauts_core::crew_panel::{
+    CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTab, CrewTarget, RepoGroup,
+};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::limits::{QuotaReading, QuotaStatus};
 use ratatui::style::{Modifier, Style};
@@ -15,7 +17,7 @@ use crate::text::{str_width, truncate_line, wrap_text};
 use crate::theme::{Role, Theme};
 
 use super::super::layout::{cut, cut_middle, left};
-use super::super::list::{Column, fit_columns};
+use super::super::list::Column;
 use super::super::panes::{self, Marks, key_names, pad_glyph};
 use super::super::resume::ago;
 use super::rows::clean;
@@ -23,14 +25,15 @@ use super::rows::clean;
 /// Cells between columns.
 pub(super) const GAP: usize = 2;
 
-/// An agent's name keeps at least this many cells while its column shows.
-const AGENT_MIN: usize = 12;
+/// The name column keeps at least this many cells, enough for a label such as `build:add-due`.
+const NAME_MIN: usize = 16;
+
+/// A run's name keeps at least this many cells before the words after it are cut.
+const RUN_NAME_MIN: usize = 12;
 
 /// Lines of a long message the details keep before cutting.
 const MESSAGE_LINES: usize = 6;
 const TITLE_LINES: usize = 3;
-/// The narrowest the title column starts, before the latest message gives it room.
-const TITLE_MIN: usize = 16;
 
 /// The field names in the details, padded so the values line up.
 const FIELD: usize = 9;
@@ -67,7 +70,8 @@ pub(super) fn glyph(state: CrewState, sleeping: bool, theme: &Theme) -> (&'stati
         CrewState::Working => (marks.running, Role::Accent),
         CrewState::Waiting if sleeping => (theme.glyphs.agent_timer, Role::Dim),
         CrewState::Waiting => (marks.waiting, Role::Dim),
-        CrewState::Ready => (ready_glyph(theme), Role::Bright),
+        // Lavender marks a conversation you can carry on.
+        CrewState::Ready => (ready_glyph(theme), Role::Card),
         CrewState::Done => (marks.done, Role::Success),
         CrewState::Stopped => (marks.stopped, Role::Dim),
         CrewState::Failed => (marks.failed, Role::Error),
@@ -205,10 +209,14 @@ pub(super) fn tabs_line(
     Line::from(spans)
 }
 
-/// The list: each repo, each run in it, and their rows. `selected` indexes the rows in order,
-/// and `sleeping` says which wait on a usage reset.
+/// The list: each run's heading once, then its agents by their labels and their last lines,
+/// and the conversations and CLI sessions under `Sessions`. A repo's name heads its runs only
+/// when another repo's are listed too. `selected` indexes the rows in order, and `sleeping`
+/// says which wait on a usage reset.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn list_lines(
     groups: &[RepoGroup<'_>],
+    this_repo: &str,
     sleeping: &[bool],
     selected: usize,
     width: usize,
@@ -225,38 +233,46 @@ pub(super) fn list_lines(
         .collect();
     let columns = row_columns(&rows, width.saturating_sub(lead), now, names);
     let dim = theme.style(Role::Dim);
+    let named = groups.len() > 1 || groups.iter().any(|repo| repo.repo != this_repo);
     let mut lines = Vec::new();
     let mut index = 0;
     for repo in groups {
-        if !lines.is_empty() {
-            lines.push(BodyLine::text(Line::default()));
-        }
-        lines.push(BodyLine::text(Line::from(Span::styled(
-            cut_middle(&clean(repo.repo), width),
-            theme.style(Role::Bright).add_modifier(Modifier::BOLD),
-        ))));
-        for run in &repo.runs {
-            let mut spans = vec![Span::raw("  ")];
-            match run.run {
-                // People know a run by its title. The id stays in the details pane.
-                Some(run) if run.title.trim().is_empty() => {
-                    spans.push(Span::styled(clean(run.id.as_str()), dim));
-                }
-                Some(run) => spans.push(Span::styled(clean(&run.title), theme.style(Role::Text))),
-                None => spans.push(Span::styled(
-                    "Conversations and CLI sessions",
-                    theme.style(Role::Text),
-                )),
+        if named {
+            if !lines.is_empty() {
+                lines.push(BodyLine::text(Line::default()));
             }
-            lines.push(BodyLine::text(Line::from(spans)));
+            lines.push(BodyLine::text(Line::from(Span::styled(
+                cut_middle(&clean(repo.repo), width),
+                theme.style(Role::Bright).add_modifier(Modifier::BOLD),
+            ))));
+        }
+        for run in &repo.runs {
+            match run.run {
+                // A run listed whole is its own heading, and the heading is the row.
+                Some(heading) if listed_whole(&run.rows) => {
+                    let chosen = index == selected;
+                    lines.push(BodyLine {
+                        line: run_heading(heading, chosen, width, now, theme),
+                        row: Some(index),
+                    });
+                    index += 1;
+                    continue;
+                }
+                Some(heading) => lines.push(BodyLine::text(run_heading(
+                    heading, false, width, now, theme,
+                ))),
+                None => lines.push(BodyLine::text(Line::from(Span::styled("Sessions", dim)))),
+            }
             for row in &run.rows {
                 let chosen = index == selected;
                 let asleep = sleeping.get(index).copied().unwrap_or(false);
                 let (glyph, role) = glyph(row.state, asleep, theme);
+                // The chosen row is lavender from its pointer to its last line, its mark too.
+                let role = if chosen { Role::Card } else { role };
                 let mut spans = vec![
                     Span::raw("  "),
                     if chosen {
-                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
+                        Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
                     } else {
                         Span::raw("  ")
                     },
@@ -267,14 +283,19 @@ pub(super) fn list_lines(
                     if c > 0 {
                         spans.push(Span::raw(" ".repeat(GAP)));
                     }
+                    let cell = column.cell(&column.cells[index]);
                     let style = match column.heading {
-                        "title" if chosen => theme.style(Role::Label),
-                        "title" => theme.style(Role::Text),
+                        "name" | "latest" if chosen => theme.style(Role::Card),
+                        "name" => theme.style(Role::Text),
                         "latest" if row.state == CrewState::NeedsYou => theme.style(Role::Card),
                         "latest" if row.state == CrewState::Failed => theme.style(Role::Error),
+                        "latest" if row.run.is_some() => theme.style(Role::Text),
                         _ => dim,
                     };
-                    spans.push(Span::styled(column.cell(&column.cells[index]), style));
+                    match (column.heading, tries_mark(row)) {
+                        ("name", Some(mark)) => spans.extend(with_tries(cell, &mark, style, dim)),
+                        _ => spans.push(Span::styled(cell, style)),
+                    }
                 }
                 lines.push(BodyLine {
                     line: Line::from(spans),
@@ -287,11 +308,120 @@ pub(super) fn list_lines(
     lines
 }
 
-/// The title, the agent, tokens, spend, the latest message, and how long ago, in `room` cells,
-/// each padded to its widest. Spend and then tokens give way first, then the agent, already cut
-/// with `…` where the row is short, and then the time. The title and the latest message share what's left: each
-/// whole when both fit, else the title gets at least half, and all of it that the messages
-/// leave free.
+/// A run's group is the run itself, with none of its agents listed.
+fn listed_whole(rows: &[&CrewRow]) -> bool {
+    matches!(rows, [row] if matches!(row.target, CrewTarget::Run { .. }))
+}
+
+/// `✓ add-due-dates · merged 13m ago · ~$0.23`: the run's glyph and name, then, dim, where it
+/// stands and what it spent. A run that ended says how long ago. Highlighted, as the row of a
+/// run listed whole, the selection mark takes the glyph's place, since the words say the state.
+fn run_heading(
+    run: &CrewRun,
+    chosen: bool,
+    width: usize,
+    now: OffsetDateTime,
+    theme: &Theme,
+) -> Line<'static> {
+    let marks = Marks::for_theme(theme);
+    let name = [run.name.as_deref(), Some(run.title.as_str())]
+        .into_iter()
+        .flatten()
+        .map(clean)
+        .find(|name| !name.is_empty())
+        .unwrap_or_else(|| clean(run.id.as_str()));
+    let mut tail = String::new();
+    if let Some(stands) = &run.stands {
+        let ended = matches!(
+            stands.state,
+            CrewState::Done | CrewState::Stopped | CrewState::Failed
+        );
+        tail.push_str(&format!(" · {}", clean(&stands.word)));
+        if ended {
+            tail.push_str(&format!(" {}", ago(stands.since, now)));
+        }
+        if let Some(spend) = stands.spent.as_ref().and_then(panes::spend) {
+            tail.push_str(&format!(" · {spend}"));
+        }
+    }
+    let lead = match (&run.stands, chosen) {
+        (_, true) => Span::styled(
+            pad_glyph(marks.selected, marks.slot()),
+            theme.style(Role::Card),
+        ),
+        (Some(stands), false) => {
+            let (glyph, role) = glyph(stands.state, false, theme);
+            Span::styled(pad_glyph(glyph, marks.slot()), theme.style(role))
+        }
+        (None, false) => Span::raw(" ".repeat(marks.slot())),
+    };
+    let room = width.saturating_sub(marks.slot() + 1);
+    // The name gives way before the words after it, down to a few cells.
+    let name = cut(
+        &name,
+        room.saturating_sub(str_width(&tail)).max(RUN_NAME_MIN),
+    );
+    let tail = cut(&tail, room.saturating_sub(str_width(&name)));
+    let role = if chosen { Role::Card } else { Role::Bright };
+    Line::from(vec![
+        lead,
+        Span::raw(" "),
+        Span::styled(name, theme.style(role).add_modifier(Modifier::BOLD)),
+        Span::styled(tail, theme.style(Role::Dim)),
+    ])
+}
+
+/// ` ×6` after the label of a row that stands for six tries.
+fn tries_mark(row: &CrewRow) -> Option<String> {
+    (row.tries > 1).then(|| format!(" ×{}", row.tries))
+}
+
+/// The name cell with its tries mark dim. A cell cut short of the mark draws in one style.
+fn with_tries(cell: String, mark: &str, style: Style, dim: Style) -> Vec<Span<'static>> {
+    let padded = cell.trim_end();
+    match padded.strip_suffix(mark) {
+        Some(label) => vec![
+            Span::styled(label.to_owned(), style),
+            Span::styled(mark.to_owned(), dim),
+            Span::raw(" ".repeat(cell.len() - padded.len())),
+        ],
+        None => vec![Span::styled(cell, style)],
+    }
+}
+
+/// What a row goes by: an agent's label with its tries, else its title.
+fn name_cell(row: &CrewRow) -> String {
+    let name = row
+        .label
+        .as_deref()
+        .map(clean)
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| clean(&row.title));
+    format!("{name}{}", tries_mark(row).unwrap_or_default())
+}
+
+/// An agent's last line. A conversation or a CLI session says which CLI it's in and that
+/// Enter carries it on, since that's what its row is for.
+fn latest_cell(row: &CrewRow, names: &DisplayNames) -> String {
+    match &row.target {
+        CrewTarget::Conversation { .. } | CrewTarget::VendorSession { .. } => {
+            match row.worker.as_ref() {
+                Some(worker) => format!(
+                    "{} · enter continues",
+                    clean(&names.harness(&worker.worker))
+                ),
+                None => "enter continues".to_owned(),
+            }
+        }
+        _ => clean(&row.latest),
+    }
+}
+
+/// The name and the latest line in `room` cells. Labels are short and tell the agents apart,
+/// so the name column always fits the widest of them, and a longer title beside them is cut to
+/// it. Room the two leave goes first to how long ago a row last changed, then to who runs an
+/// agent, then to the titles. The latest line takes the rest, so the times line up at the
+/// right edge.
 pub(super) fn row_columns(
     rows: &[&CrewRow],
     room: usize,
@@ -300,50 +430,25 @@ pub(super) fn row_columns(
 ) -> Vec<Column> {
     let cells = |f: &dyn Fn(&CrewRow) -> String| rows.iter().map(|row| f(row)).collect::<Vec<_>>();
     let widest = |column: &Column| column.cells.iter().map(|c| str_width(c)).max().unwrap_or(0);
-    let worker = |row: &CrewRow| {
-        row.worker
-            .as_ref()
-            .map_or(String::new(), |worker| clean(&names.worker(worker)))
-    };
-    let tokens = |row: &CrewRow| {
-        row.details
-            .spent
-            .as_ref()
-            .map(|spent| spent.input_tokens + spent.output_tokens)
-            .filter(|tokens| *tokens > 0)
-            .map_or(String::new(), panes::tokens)
-    };
-    let spend = |row: &CrewRow| {
-        row.details
-            .spent
-            .as_ref()
-            .and_then(panes::spend)
-            .unwrap_or_default()
-    };
     let fitted = |mut column: Column| {
         column.width = widest(&column);
         column
     };
-    let mut title = Column::new("title", cells(&|row| clean(&row.title)));
-    let title_wants = widest(&title).max(1);
-    title.width = title_wants.min((room * 3 / 10).max(TITLE_MIN));
-    let mut agent = fitted(Column::new("worker", cells(&worker)).keep(3));
-    let mut latest = Column::new("latest", cells(&|row| clean(&row.latest))).flex_min(14);
+    let mut name = Column::new("name", cells(&name_cell));
+    let name_wants = widest(&name).max(1);
+    let widest_label = rows
+        .iter()
+        .filter(|row| row.label.is_some())
+        .map(|row| str_width(&name_cell(row)))
+        .max();
+    name.width = name_wants.min(match widest_label {
+        Some(label) => label.max(NAME_MIN).min((room * 6 / 10).max(NAME_MIN)),
+        // With no label listed, titles keep a share of the row.
+        None => (room * 4 / 10).max(NAME_MIN),
+    });
+    let mut latest = Column::new("latest", cells(&|row| latest_cell(row, names))).flex_min(14);
     let latest_wants = widest(&latest);
-    latest.width = latest_wants;
-    let when = fitted(
-        Column::new("ago", cells(&|row| ago(row.updated, now)))
-            .numeric()
-            .keep(4),
-    );
-    // The agent is whole where the title and the messages leave room for it, else it keeps a
-    // quarter of the row before it's cut, since the messages say what each agent is doing.
-    let left_over = room.saturating_sub(title.width + latest_wants + when.width + GAP * 3);
-    agent.width = agent.width.min(left_over.max(room / 4).max(AGENT_MIN));
-    // Tokens, then spend, take only room the rest leave whole, so they never squeeze a title
-    // or a message, and spend never shows without the tokens.
-    let whole = title_wants + agent.width + latest_wants + when.width + GAP * 3;
-    let mut spare = Some(room.saturating_sub(whole));
+    let mut spare = room.checked_sub(name.width + GAP + latest_wants);
     let mut extra = |column: Column| {
         if column.width == 0 {
             return None;
@@ -351,38 +456,28 @@ pub(super) fn row_columns(
         spare = spare?.checked_sub(column.width + GAP);
         spare.map(|_| column)
     };
-    let tokens = extra(fitted(
-        Column::new("tokens", cells(&tokens)).numeric().keep(2),
+    let when = extra(fitted(
+        Column::new("ago", cells(&|row| ago(row.updated, now))).numeric(),
     ));
-    let spend = extra(fitted(
-        Column::new("spend", cells(&spend)).numeric().keep(1),
-    ));
-    let agent = (agent.width > 0).then_some(agent);
-    let columns = [Some(title), agent, tokens, spend, Some(latest), Some(when)]
+    // A session's CLI is in its latest line already.
+    let worker = extra(fitted(Column::new(
+        "worker",
+        cells(&|row| match (&row.run, &row.worker) {
+            (Some(_), Some(worker)) => clean(&names.worker(worker)),
+            _ => String::new(),
+        }),
+    )));
+    name.width = name_wants.min(name.width + spare.unwrap_or(0));
+    let others: usize = [Some(&name), worker.as_ref(), when.as_ref()]
         .into_iter()
         .flatten()
-        .collect();
-    let mut columns = fit_columns(columns, room, GAP);
-    let others: usize = columns
-        .iter()
-        .filter(|c| !matches!(c.heading, "title" | "latest"))
-        .map(|c| c.width)
+        .map(|column| column.width + GAP)
         .sum();
-    let share = room.saturating_sub(others + GAP * columns.len().saturating_sub(1));
-    let title_width = if title_wants + latest_wants <= share {
-        title_wants
-    } else {
-        title_wants.min((share / 2).max(share.saturating_sub(latest_wants)))
-    };
-    // What the title leaves goes to the latest message, so the times line up at the right edge.
-    for column in &mut columns {
-        match column.heading {
-            "title" => column.width = title_width,
-            "latest" => column.width = share.saturating_sub(title_width),
-            _ => {}
-        }
-    }
-    columns
+    latest.width = room.saturating_sub(others);
+    [Some(name), Some(latest), worker, when]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// The highlighted row in full, `width` cells wide.
@@ -457,7 +552,7 @@ fn fields(
         fields.push(("Run", value));
     }
     if let Some(card) = &details.card {
-        fields.push(("Card", clean(card.as_str())));
+        fields.push(("Task", clean(card.as_str())));
     }
     // The details are where the id shows too, for commands such as /reassign.
     if let Some(worker) = &row.worker {
@@ -560,7 +655,10 @@ pub(super) fn keys_lines(
     };
     let mut keys = vec![
         (if vim { "↑↓ or j k" } else { "↑↓" }, "move"),
-        (open, "open: answer its card, watch the agent, or carry on"),
+        (
+            open,
+            "open: answer its question, watch the agent, or carry on",
+        ),
         ("Tab, Shift+Tab", "the next or the previous tab"),
     ];
     if !wide {

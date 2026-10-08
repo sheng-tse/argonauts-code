@@ -1,0 +1,16 @@
+name: script
+description: The steps of the workflow in use, then the merge approval
+phases:
+  - name: Work
+    detail: the steps of the workflow in use, each agent on the model its role names
+    standard: do
+    steps:
+      - kind: script
+        name: steps
+        label: "build:{item}"
+  - name: Merge
+    detail: the final check, then the merge into your branch
+    standard: decide
+    steps:
+      - kind: merge
+        label: "merge:{branch}"

@@ -52,7 +52,7 @@ impl HelpView {
             .keymap
             .rows()
             .into_iter()
-            .map(|(keys, action)| (keys, action.describe().to_owned()))
+            .map(|(keys, action)| (keys, action.describe()))
             .collect();
         let mut sections = vec![("Keys".to_owned(), keys)];
         sections.extend(

@@ -11,15 +11,20 @@ use crate::SettingsError;
 const UNITS: &[(&str, &[&str])] = &[
     (
         "run",
-        &["run_usd", "run_tokens", "run_quota", "run_minutes"],
+        &[
+            "spend_per_run",
+            "run_tokens",
+            "run_plan_usage",
+            "run_minutes",
+        ],
     ),
     (
-        "per_card",
+        "per_task",
         &[
-            "per_card_usd",
-            "per_card_tokens",
-            "per_card_quota",
-            "per_card_minutes",
+            "per_task_usd",
+            "per_task_tokens",
+            "per_task_plan_usage",
+            "per_task_minutes",
         ],
     ),
 ];
@@ -47,7 +52,7 @@ impl BudgetUnits {
         source: &str,
         table: &Table,
     ) -> Result<(), SettingsError> {
-        let Some(Value::Table(budget)) = table.get("budget") else {
+        let Some(Value::Table(budget)) = table.get("limits") else {
             return Ok(());
         };
         for (limit, keys) in UNITS {
@@ -65,8 +70,8 @@ impl BudgetUnits {
                     return Err(SettingsError::Invalid {
                         layer: source.to_owned(),
                         message: format!(
-                            "budget.{} are one choice; set one of them",
-                            set.join(" and budget.")
+                            "limits.{} are one choice; set one of them",
+                            set.join(" and limits.")
                         ),
                     });
                 }
@@ -75,8 +80,8 @@ impl BudgetUnits {
         Ok(())
     }
 
-    /// A layer that sets one `run_*` (or `per_card_*`) key clears the others it inherits, the
-    /// built-in `run_usd` and `per_card_usd` included, since TOML can't unset a key. This runs
+    /// A layer that sets one `run_*` (or `per_task_*`) key clears the others it inherits, the
+    /// built-in `spend_per_run` and `per_task_usd` included, since TOML can't unset a key. This runs
     /// on the settings, because `#[serde(default)]` would bring back a key removed from the
     /// table. Returns the keys that held a value, so the run's overrides can list them.
     pub fn apply(&self, budget: &mut BudgetSettings, set_by: &mut SetBy) -> Vec<Cleared> {
@@ -86,7 +91,7 @@ impl BudgetUnits {
                 continue;
             };
             for key in keys.iter().filter(|key| **key != unit) {
-                let key = format!("budget.{key}");
+                let key = format!("limits.{key}");
                 if clear(budget, &key) {
                     cleared.push(Cleared {
                         key: key.clone(),
@@ -100,10 +105,10 @@ impl BudgetUnits {
     }
 }
 
-/// The other units of the limit a dotted key picks, such as `budget.run_usd` for
-/// `budget.run_tokens`. A file that picks one unit drops these, as a later layer does.
+/// The other units of the limit a dotted key picks, such as `limits.spend_per_run` for
+/// `limits.run_tokens`. A file that picks one unit drops these, as a later layer does.
 pub(crate) fn other_units(key: &str) -> Vec<String> {
-    let Some(unit) = key.strip_prefix("budget.") else {
+    let Some(unit) = key.strip_prefix("limits.") else {
         return Vec::new();
     };
     let Some((_, keys)) = UNITS.iter().find(|(_, keys)| keys.contains(&unit)) else {
@@ -111,21 +116,21 @@ pub(crate) fn other_units(key: &str) -> Vec<String> {
     };
     keys.iter()
         .filter(|other| **other != unit)
-        .map(|other| format!("budget.{other}"))
+        .map(|other| format!("limits.{other}"))
         .collect()
 }
 
 /// Unsets one dotted budget key, and says whether it held a value.
 fn clear(budget: &mut BudgetSettings, key: &str) -> bool {
     match key {
-        "budget.run_usd" => budget.run_usd.take().is_some(),
-        "budget.run_tokens" => budget.run_tokens.take().is_some(),
-        "budget.run_quota" => budget.run_quota.take().is_some(),
-        "budget.run_minutes" => budget.run_minutes.take().is_some(),
-        "budget.per_card_usd" => budget.per_card_usd.take().is_some(),
-        "budget.per_card_tokens" => budget.per_card_tokens.take().is_some(),
-        "budget.per_card_quota" => budget.per_card_quota.take().is_some(),
-        "budget.per_card_minutes" => budget.per_card_minutes.take().is_some(),
+        "limits.spend_per_run" => budget.spend_per_run.take().is_some(),
+        "limits.run_tokens" => budget.run_tokens.take().is_some(),
+        "limits.run_plan_usage" => budget.run_plan_usage.take().is_some(),
+        "limits.run_minutes" => budget.run_minutes.take().is_some(),
+        "limits.per_task_usd" => budget.per_task_usd.take().is_some(),
+        "limits.per_task_tokens" => budget.per_task_tokens.take().is_some(),
+        "limits.per_task_plan_usage" => budget.per_task_plan_usage.take().is_some(),
+        "limits.per_task_minutes" => budget.per_task_minutes.take().is_some(),
         _ => false,
     }
 }

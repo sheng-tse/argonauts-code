@@ -18,16 +18,16 @@ use argonauts_scenarios::WAIT;
 use argonauts_testkit::Key;
 use limits_support::*;
 
-const FALLBACK_CODEX: &str = "[handoff]\nmode = \"ask\"\nfallback = [\"codex\"]\n";
+const FALLBACK_CODEX: &str = "[fallback]\nmode = \"ask\"\norder = [\"codex\"]\n";
 
 /// Parked runs exit their supervisor quickly here, so the wake path is what the tests see.
-const PARK_FAST: &str = "\n[supervisor]\npark_grace = \"1s\"\n";
+const PARK_FAST: &str = "\n[supervisor]\nwait_grace = \"1s\"\n";
 
 #[test]
 fn limits_usage_limit_handoff_card() -> anyhow::Result<()> {
     let limits = setup(
         "usage-limit-handoff-card",
-        "[handoff]\nmode = \"ask\"\nfallback = [\"codex\", \"antigravity-cli\"]\n",
+        "[fallback]\nmode = \"ask\"\norder = [\"codex\", \"antigravity-cli\"]\n",
     )?;
     let mut pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::Handoff)?;
@@ -47,13 +47,13 @@ fn limits_usage_limit_handoff_card() -> anyhow::Result<()> {
     limits.shot(&pty, "limits_usage_limit_handoff_card")?;
 
     answer(&mut pty, &card, 'a')?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
     assert!(handed_off(&events).iter().any(|event| matches!(
         event,
         HandoffEvent::HandedOff { to, by: Party::User, .. } if to.worker == "codex"
     )));
     limits.wait_for(
-        "the merge card",
+        "the merge approval",
         CARD_WAIT,
         has_opened(CheckpointKind::Merge),
     )?;
@@ -64,10 +64,10 @@ fn limits_usage_limit_handoff_card() -> anyhow::Result<()> {
 fn limits_auto_handoff_keeps_working() -> anyhow::Result<()> {
     let limits = setup(
         "auto-handoff-keeps-working",
-        "[handoff]\nmode = \"auto\"\nfallback = [\"codex\"]\n",
+        "[fallback]\nmode = \"auto\"\norder = [\"codex\"]\n",
     )?;
     let mut pty = limits.run(&[])?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
 
     assert!(
         opened(&events, CheckpointKind::Handoff).is_none(),
@@ -92,11 +92,11 @@ fn limits_auto_handoff_keeps_working() -> anyhow::Result<()> {
 fn limits_usage_limit_pauses_then_fails_over() -> anyhow::Result<()> {
     let limits = setup(
         "usage-limit-pauses-then-fails-over",
-        "default_agent = \"codex\"\n\n[handoff]\nmode = \"auto\"\nfallback = [\"claude-code\"]\n",
+        "main_agent = \"codex\"\n\n[fallback]\nmode = \"auto\"\norder = [\"claude-code\"]\n",
     )?;
     let pty = limits.start()?;
     let events = limits.wait_for(
-        "Claude Code to finish the card",
+        "Claude Code to finish the task",
         CARD_WAIT,
         completed_by("claude-code"),
     )?;
@@ -119,7 +119,7 @@ fn limits_usage_limit_pauses_then_fails_over() -> anyhow::Result<()> {
     });
     let reading = rejected
         .first()
-        .context("no rejected Codex quota reading")?;
+        .context("no rejected Codex plan usage reading")?;
     assert!(
         reading.resets_at.is_some(),
         "the reset time was not read from the message"
@@ -132,7 +132,8 @@ fn limits_usage_limit_pauses_then_fails_over() -> anyhow::Result<()> {
         ))
     ));
     assert!(handed_off_to("claude-code")(&events));
-    pty.wait_for("Codex out", WAIT)?;
+    // The chip keeps its words at any width: a red bar while there's room, then `out`.
+    pty.wait_for(r"Codex( +\S+)? +out\b", WAIT)?;
     limits.shot(&pty, "limits_usage_limit_pauses_then_fails_over")
 }
 
@@ -141,7 +142,7 @@ fn limits_handoff_card_candidates() -> anyhow::Result<()> {
     let limits = setup(
         "handoff-card-candidates",
         "[agents.opencode]\nenabled = false\n\n\
-         [handoff]\nmode = \"ask\"\nfallback = [\"codex\", \"opencode\", \"antigravity-cli\"]\n",
+         [fallback]\nmode = \"ask\"\norder = [\"codex\", \"opencode\", \"antigravity-cli\"]\n",
     )?;
     let mut pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::Handoff)?;
@@ -159,7 +160,7 @@ fn limits_handoff_card_candidates() -> anyhow::Result<()> {
             let detail = option
                 .detail
                 .as_deref()
-                .context("a candidate shows no quota or cost")?;
+                .context("a candidate shows no plan usage or cost")?;
             pty.wait_for(&regex::escape(detail), WAIT)?;
         }
     }
@@ -171,7 +172,7 @@ fn limits_handoff_card_candidates() -> anyhow::Result<()> {
     .context("no key for agy")?;
     answer(&mut pty, &card, agy)?;
     limits.wait_for(
-        "agy to finish the card",
+        "agy to finish the task",
         CARD_WAIT,
         completed_by("antigravity-cli"),
     )?;
@@ -194,10 +195,10 @@ fn reassign_while_working() -> anyhow::Result<()> {
             .any(|started| started.worker.worker == "claude-code")
     })?;
     limits.wait_for_call("claude", "acceptEdits", WAIT)?;
-    let card = first_card(&events).context("no card")?;
+    let card = first_card(&events).context("no task")?;
 
     pty.send(&format!("/reassign {card} codex\r"))?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
     let ends = ends_of(&events, "claude-code");
     assert_eq!(
         ends.first().map(|end| &end.reason),
@@ -210,7 +211,7 @@ fn reassign_while_working() -> anyhow::Result<()> {
 fn reassign_while_parked() -> anyhow::Result<()> {
     let limits = setup(
         "reassign-parked",
-        &format!("[handoff]\nmode = \"wait\"\n{PARK_FAST}"),
+        &format!("[fallback]\nmode = \"wait\"\n{PARK_FAST}"),
     )?;
     let mut pty = limits.start()?;
     let events = limits.wait_for("the run to park", CARD_WAIT, |events| {
@@ -218,10 +219,10 @@ fn reassign_while_parked() -> anyhow::Result<()> {
             .iter()
             .any(|reason| matches!(reason, ParkReason::WaitingForVendor { .. }))
     })?;
-    let card = first_card(&events).context("no card")?;
+    let card = first_card(&events).context("no task")?;
 
     pty.send(&format!("/reassign {card} codex\r"))?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
     assert!(reassigned_by_you(&events, "codex"));
     let parked = seq_of(&events, |kind| {
         matches!(kind, RunEventKind::Run(RunLifecycle::Parked { .. }))
@@ -247,19 +248,19 @@ fn limits_ask_timeout_while_parked_hands_off() -> anyhow::Result<()> {
     let limits = setup(
         "ask-timeout-while-parked",
         &format!(
-            "[handoff]\nmode = \"ask\"\nask_timeout = \"5s\"\nfallback = [\"codex\"]\n{PARK_FAST}"
+            "[fallback]\nmode = \"ask\"\nask_timeout = \"5s\"\norder = [\"codex\"]\n{PARK_FAST}"
         ),
     )?;
     let pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::Handoff)?;
-    limits.wait_for("the run to park on the card", CARD_WAIT, |events| {
+    limits.wait_for("the run to park on the task", CARD_WAIT, |events| {
         parks(events)
             .iter()
             .any(|reason| matches!(reason, ParkReason::Checkpoint))
     })?;
 
     // No key is pressed: the timeout wakes the run, which hands the card off by itself.
-    let events = limits.wait_for("Codex to finish the card", WAKE_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", WAKE_WAIT, completed_by("codex"))?;
     assert!(
         resumes(&events)
             .iter()
@@ -271,7 +272,7 @@ fn limits_ask_timeout_while_parked_hands_off() -> anyhow::Result<()> {
     });
     assert!(
         withdrawn.contains(&&card.id),
-        "the handoff card was not withdrawn"
+        "the fallback question was not withdrawn"
     );
     assert!(handed_off(&events).iter().any(|event| matches!(
         event,
@@ -286,7 +287,7 @@ fn limits_wait_mode_resumes_when_vendor_back() -> anyhow::Result<()> {
     // fresh session whose handoff note carries the stopped session's last message.
     let limits = setup(
         "wait-mode-resumes",
-        &format!("[handoff]\nmode = \"wait\"\nfallback = [\"codex\"]\n{PARK_FAST}"),
+        &format!("[fallback]\nmode = \"wait\"\norder = [\"codex\"]\n{PARK_FAST}"),
     )?;
     let pty = limits.start()?;
     let events = limits.wait_for("the run to wait for Claude Code", CARD_WAIT, |events| {
@@ -310,7 +311,7 @@ fn limits_wait_mode_resumes_when_vendor_back() -> anyhow::Result<()> {
         .any(|vendor| vendor.0 == "claude-code")
     );
 
-    let events = limits.wait_for("Claude Code to finish the card", WAKE_WAIT, |events| {
+    let events = limits.wait_for("Claude Code to finish the task", WAKE_WAIT, |events| {
         completed_by("claude-code")(events)
             && resumes(events)
                 .iter()
@@ -360,9 +361,9 @@ fn limits_handoff_checkpoint_roundtrip() -> anyhow::Result<()> {
         })
         .is_some()
     })?;
-    let card_id = first_card(&events).context("no card")?;
-    let tags = limits.repo.git(&["tag", "--list", "*/handoff-1"])?;
-    assert!(tags.contains(&format!("{card_id}/handoff-1")), "{tags:?}");
+    let card_id = first_card(&events).context("no task")?;
+    let tags = limits.repo.git(&["tag", "--list", "*/fallback-1"])?;
+    assert!(tags.contains(&format!("{card_id}/fallback-1")), "{tags:?}");
 
     // 3. Codex commits.
     let events = limits.wait_for("Codex's commit", CARD_WAIT, |events| {
@@ -385,7 +386,7 @@ fn limits_handoff_checkpoint_roundtrip() -> anyhow::Result<()> {
     // 4. Claude Code comes back, and the return card appears. You pick review.
     let back = limits.wait_for_card_within(&pty, CheckpointKind::OriginalReturned, WAKE_WAIT)?;
     let CheckpointPacket::OriginalReturned(packet) = &back.packet else {
-        anyhow::bail!("not a return card: {:?}", back.packet);
+        anyhow::bail!("not a return question: {:?}", back.packet);
     };
     assert_eq!(packet.original.worker, "claude-code");
     assert_eq!(packet.replacement.worker, "codex");
@@ -420,12 +421,12 @@ fn limits_handoff_checkpoint_roundtrip() -> anyhow::Result<()> {
                 _ => None,
             })
     };
-    let events = limits.wait_for("the merge card after the review", CARD_WAIT, |events| {
+    let events = limits.wait_for("the merge approval after the review", CARD_WAIT, |events| {
         merge_after(events).is_some()
     })?;
-    let merge = merge_after(&events).context("the merge card went missing")?;
+    let merge = merge_after(&events).context("the merge approval went missing")?;
     let CheckpointPacket::Merge(packet) = &merge.packet else {
-        anyhow::bail!("not a merge card: {:?}", merge.packet);
+        anyhow::bail!("not a merge approval: {:?}", merge.packet);
     };
     assert!(
         packet.rows.iter().all(|row| row.debt.is_empty()),

@@ -3,6 +3,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use argonauts_core::crew_panel::{
+    CrewDetails, CrewRow, CrewRun, CrewState, CrewTarget, SeatTry, fold_tries, seat_of,
+};
 use argonauts_core::events::card::{CardEvent, CardState};
 use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointPacket};
 use argonauts_core::events::run::RunLifecycle;
@@ -14,7 +17,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{CheckpointId, RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::RotateAt;
-use argonauts_core::steps::StepName;
+use argonauts_core::steps::{StepName, summary_line};
 use argonauts_core::views::{AgentRow, ContextUse, RowStatus};
 use argonauts_core::{AgentEvent, CardId, Spend};
 use time::OffsetDateTime;
@@ -55,6 +58,10 @@ pub(crate) struct SessionFacts {
     /// settings, else the one it reported at its start. The screen names it by this.
     pub worker: WorkerRef,
     pub ended: Option<SessionEnd>,
+    /// When its end was logged.
+    pub ended_at: Option<OffsetDateTime>,
+    /// Its latest whole message of its own, not a subagent's.
+    pub last_message: Option<String>,
     /// From `Usage` events, until `Ended` gives the final spend.
     pub usage: Spend,
     /// The conductor's meter, which prices what the stream leaves unpriced.
@@ -251,6 +258,8 @@ impl RunFacts {
                         started: (**started).clone(),
                         worker,
                         ended: None,
+                        ended_at: None,
+                        last_message: None,
                         usage: Spend::default(),
                         metered: None,
                         tools: Vec::new(),
@@ -272,6 +281,7 @@ impl RunFacts {
                         continue;
                     };
                     facts.ended = Some((**end).clone());
+                    facts.ended_at = Some(event.ts);
                     // A report sent with a tool came before the end; one parsed from the last
                     // answer comes after it, before the card moves on.
                     if let Some(card) = &facts.card
@@ -363,6 +373,7 @@ impl RunFacts {
                 Some(ContextUse { used, cap })
             }),
             standing_in_for: facts.standing_in_for.clone(),
+            answered: None,
         }
     }
 
@@ -386,7 +397,119 @@ impl RunFacts {
     }
 }
 
+/// A run's agents as the list of everything running shows them: each by its
+/// label and last line, with a seat's retries folded into one row. `live` says the run's
+/// supervisor is up, so an agent with no end is working. Without one it waits to be resumed.
+pub(crate) fn crew_rows(
+    events: &[RunEvent],
+    run: &CrewRun,
+    repo: &str,
+    live: bool,
+) -> Vec<CrewRow> {
+    let facts = RunFacts::of(events);
+    let tries = facts
+        .sessions
+        .iter()
+        .map(|session| {
+            let label = session.label();
+            let state = crew_state(&facts, session, live);
+            let last_message = session.last_said();
+            let row = CrewRow {
+                target: CrewTarget::Agent {
+                    run: run.id.clone(),
+                    session: session.key.clone(),
+                },
+                state,
+                title: run.title.clone(),
+                label: Some(label.clone()),
+                tries: 0,
+                repo: repo.to_owned(),
+                run: Some(run.clone()),
+                worker: Some(session.worker.clone()),
+                latest: last_message
+                    .as_deref()
+                    .and_then(last_line)
+                    .unwrap_or_else(|| state_word(state).to_owned()),
+                updated: session
+                    .ended_at
+                    .or(facts.last_ts)
+                    .unwrap_or(session.started_at),
+                details: CrewDetails {
+                    last_message,
+                    card: session.card.clone(),
+                    spent: Some(session.spent()),
+                    context: facts.agent_row(session).context,
+                    branch: None,
+                    prompt: Some(session.prompt.trim().to_owned()).filter(|text| !text.is_empty()),
+                },
+            };
+            SeatTry {
+                seat: match &session.card {
+                    Some(card) => format!("{card}/{label}"),
+                    None => format!("{}/{}", session.started.role.as_str(), seat_of(&label)),
+                },
+                started: session.started_at,
+                ended: session.ended_at,
+                row,
+            }
+        })
+        .collect();
+    fold_tries(tries)
+}
+
+fn crew_state(facts: &RunFacts, session: &SessionFacts, live: bool) -> CrewState {
+    let stopped = session
+        .ended
+        .as_ref()
+        .is_some_and(|end| matches!(end.reason, EndReason::Stopped | EndReason::Paused));
+    match facts.status(session) {
+        RowStatus::NeedsYou => CrewState::NeedsYou,
+        RowStatus::Failed => CrewState::Failed,
+        RowStatus::Done if stopped => CrewState::Stopped,
+        RowStatus::Done | RowStatus::Skipped => CrewState::Done,
+        RowStatus::Running | RowStatus::Queued | RowStatus::Waiting if live => CrewState::Working,
+        RowStatus::Running | RowStatus::Queued | RowStatus::Waiting => CrewState::Waiting,
+    }
+}
+
+/// What a row says when its agent has said nothing yet.
+fn state_word(state: CrewState) -> &'static str {
+    match state {
+        CrewState::NeedsYou => "needs you",
+        CrewState::Working => "working",
+        CrewState::Waiting => "waiting",
+        CrewState::Ready => "ready",
+        CrewState::Done => "done",
+        CrewState::Stopped => "stopped",
+        CrewState::Failed => "failed",
+    }
+}
+
+/// The last line of `text` with anything in it.
+fn last_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
 impl SessionFacts {
+    /// What it said last: its report's summary, else its final result, else its latest whole
+    /// message. A structured result never shows as JSON.
+    fn last_said(&self) -> Option<String> {
+        let ended = self.ended.as_ref().and_then(|end| {
+            let summary = end.structured.as_ref().and_then(summary_line);
+            let result = end.result_text.clone().filter(|text| {
+                !serde_json::from_str::<serde_json::Value>(text.trim())
+                    .is_ok_and(|value| value.is_object())
+            });
+            summary.or(result).or_else(|| end.last_message.clone())
+        });
+        ended
+            .or_else(|| self.last_message.clone())
+            .filter(|text| !text.trim().is_empty())
+    }
+
     fn note(&mut self, kind: &RunEventKind) {
         match kind {
             RunEventKind::Session(SessionEvent::Input(input)) => {
@@ -450,7 +573,10 @@ impl SessionFacts {
                     add_spend(&mut self.usage, &reading);
                 }
             }
-            AgentEvent::ContextFill { used, size } => {
+            AgentEvent::Message { text, parent: None } if !text.trim().is_empty() => {
+                self.last_message = Some(text.clone());
+            }
+            AgentEvent::ContextFill { used, size, .. } => {
                 let window = size.or(self.context.and_then(|(_, window)| window));
                 self.context = Some((*used, window));
             }
@@ -479,7 +605,7 @@ mod tests {
 
     #[test]
     fn a_replacement_stands_in_for_the_stopped_worker_in_its_role() {
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let claude = WorkerRef::new("claude-code", None);
         let plan = HandoffPlan {
             card: card.clone(),
@@ -501,9 +627,9 @@ mod tests {
             SessionKey::numbered(3),
         );
         let events = vec![
-            session_started(0, &s1, Some(&card), RoleName::Owner, "claude-code"),
+            session_started(0, &s1, Some(&card), RoleName::Worker, "claude-code"),
             event(1, RunEventKind::Handoff(HandoffEvent::Needed(plan))),
-            session_started(2, &s2, Some(&card), RoleName::Owner, "codex"),
+            session_started(2, &s2, Some(&card), RoleName::Worker, "codex"),
             session_started(3, &s3, Some(&card), RoleName::Reviewer, "antigravity-cli"),
         ];
         let facts = RunFacts::of(&events);
@@ -533,8 +659,8 @@ mod tests {
         };
         let events = vec![
             started,
-            session_started(1, &codex, None, RoleName::Owner, "codex"),
-            session_started(2, &claude, None, RoleName::Owner, "claude-code"),
+            session_started(1, &codex, None, RoleName::Worker, "codex"),
+            session_started(2, &claude, None, RoleName::Worker, "claude-code"),
             agent(3, &codex, init("gpt-5.6")),
             agent(4, &claude, init("claude-haiku-4-5")),
         ];
@@ -545,5 +671,99 @@ mod tests {
         };
         assert_eq!(worker(&codex), "codex/gpt-5.6-luna");
         assert_eq!(worker(&claude), "claude-code/claude-haiku-4-5");
+    }
+
+    /// The list of everything running names a run's agents by their labels, says each one's
+    /// last line, and folds a seat's retries into one row.
+    #[test]
+    fn a_run_s_agents_list_by_label_with_retries_folded() {
+        use crate::client::test_support::{agent, base_ts, event_at, session_ended};
+        use argonauts_core::RunId;
+        let labelled = |seq: u64, key: &SessionKey, role, label: &str, minute: i64| {
+            let mut started = session_started(seq, key, None, role, "codex");
+            if let RunEventKind::Session(SessionEvent::Started(start)) = &mut started.kind {
+                start.label = Some(label.to_owned());
+            }
+            started.ts = base_ts() + time::Duration::minutes(minute);
+            started
+        };
+        let ended = |seq: u64, key: &SessionKey, reason, minute: i64| {
+            let mut end = session_ended(seq, key, reason, 60_000);
+            end.ts = base_ts() + time::Duration::minutes(minute);
+            end
+        };
+        let said = |seq: u64, key: &SessionKey, text: &str| {
+            agent(
+                seq,
+                key,
+                AgentEvent::Message {
+                    text: text.to_owned(),
+                    parent: None,
+                },
+            )
+        };
+        let key = SessionKey::numbered;
+        let failed = EndReason::AdapterBroken {
+            detail: "the plan had no tasks".to_owned(),
+        };
+        let mut events = vec![
+            labelled(0, &key(1), RoleName::Orchestrator, "plan:orchestrator", 0),
+            ended(1, &key(1), failed.clone(), 1),
+            labelled(2, &key(2), RoleName::Orchestrator, "plan:orchestrator-2", 1),
+            ended(3, &key(2), failed, 2),
+            labelled(4, &key(3), RoleName::Orchestrator, "plan:orchestrator-3", 2),
+            ended(5, &key(3), EndReason::Completed, 3),
+            labelled(6, &key(4), RoleName::Worker, "build:add-due", 3),
+            said(
+                7,
+                &key(4),
+                "Reading the store.\n\nImplemented optional due dates.\n",
+            ),
+        ];
+        events.push(event_at(
+            8,
+            base_ts() + time::Duration::minutes(5),
+            RunEventKind::Agent(AgentEvent::Reasoning {
+                text: String::new(),
+            }),
+        ));
+        let run = CrewRun::new(RunId::new("run-01").unwrap(), "Add due dates");
+        let rows = crew_rows(&events, &run, "~/app", true);
+        let shown: Vec<(&str, u32, CrewState, &str)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.label.as_deref().unwrap_or_default(),
+                    row.tries,
+                    row.state,
+                    row.latest.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "plan:orchestrator",
+                    3,
+                    CrewState::Done,
+                    "accepted on its 3rd try"
+                ),
+                (
+                    "build:add-due",
+                    0,
+                    CrewState::Working,
+                    "Implemented optional due dates."
+                ),
+            ]
+        );
+        // Enter on the folded row opens the try that was accepted.
+        assert!(matches!(
+            &rows[0].target,
+            CrewTarget::Agent { session, .. } if *session == key(3)
+        ));
+        // With no supervisor an agent with no end isn't working: it waits to be resumed.
+        let parked = crew_rows(&events, &run, "~/app", false);
+        assert_eq!(parked[1].state, CrewState::Waiting);
     }
 }

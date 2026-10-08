@@ -4,12 +4,12 @@ expression: shown
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Effort
-  How long Opus 5.5 thinks before it answers, for the default agent
+  How long Opus 5.5 thinks before it answers, for the main agent
 
     Faster                                Smarter
     ─────────────────────────────────▲───────────    All hands  on
     low      medium      high      xhigh      max    Tab to toggle
-    All hands: every task goes to the crew, and the lead designs its workflow
+    All hands: a workflow for every real request
 
     Extra depth for hard, many-step problems. The model's default
 

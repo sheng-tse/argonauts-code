@@ -1,6 +1,6 @@
 //! Validating a task graph proposal: unique keys, no cycles, owned paths disjoint, no owned
 //! path in `.argonauts/**`, `limits.protected_paths`, or the card's forbidden paths, and at most
-//! `divide.max_cards`.
+//! `divide.max_tasks`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,10 +23,10 @@ pub fn validate(
     settings: &Settings,
 ) -> Result<Vec<CardSpec>, Vec<String>> {
     let (cards, mut reasons) = convert(proposal);
-    let max = settings.divide.max_cards as usize;
+    let max = settings.divide.max_tasks as usize;
     if proposal.cards.len() > max {
         reasons.push(format!(
-            "The plan has {} cards, more than divide.max_cards ({max}).",
+            "The plan has {} tasks, more than divide.max_tasks ({max}).",
             proposal.cards.len()
         ));
     }
@@ -43,15 +43,15 @@ pub fn validate(
 pub fn convert(proposal: &TaskGraphProposal) -> (Vec<CardSpec>, Vec<String>) {
     let mut reasons = Vec::new();
     if proposal.cards.is_empty() {
-        reasons.push("The plan has no cards.".to_owned());
+        reasons.push("The plan has no tasks.".to_owned());
     }
     let mut ids: BTreeMap<&str, CardId> = BTreeMap::new();
     for (n, card) in proposal.cards.iter().enumerate() {
         let key = card.key.trim();
         if key.is_empty() {
-            reasons.push(format!("Card {} (\"{}\") has no key.", n + 1, card.title));
+            reasons.push(format!("Task {} (\"{}\") has no key.", n + 1, card.title));
         } else if ids.contains_key(key) {
-            reasons.push(format!("The key `{key}` is used by more than one card."));
+            reasons.push(format!("The key `{key}` is used by more than one task."));
         } else {
             ids.insert(key, CardId::numbered(n as u32 + 1));
         }
@@ -67,7 +67,7 @@ pub fn convert(proposal: &TaskGraphProposal) -> (Vec<CardSpec>, Vec<String>) {
                     Some(id) if !depends_on.contains(id) => depends_on.push(id.clone()),
                     Some(_) => {}
                     None => reasons.push(format!(
-                        "`{}` depends on `{key}`, which isn't a card in the plan.",
+                        "`{}` depends on `{key}`, which isn't a task in the plan.",
                         card.key
                     )),
                 }
@@ -105,7 +105,7 @@ pub fn rules(cards: &[CardSpec], settings: &Settings) -> Vec<String> {
     let mut reasons = Vec::new();
     let known: BTreeSet<&CardId> = cards.iter().map(|card| &card.id).collect();
     if known.len() != cards.len() {
-        reasons.push("Two cards share an id.".to_owned());
+        reasons.push("Two tasks share an id.".to_owned());
     }
     for card in cards {
         for dependency in &card.depends_on {
@@ -121,7 +121,7 @@ pub fn rules(cards: &[CardSpec], settings: &Settings) -> Vec<String> {
     if !cycle.is_empty() {
         let names: Vec<String> = cycle.iter().map(|card| name(card)).collect();
         reasons.push(format!(
-            "These cards depend on each other in a cycle: {}.",
+            "These tasks depend on each other in a cycle: {}.",
             names.join(", ")
         ));
     }
@@ -166,14 +166,14 @@ fn path_problems(card: &CardSpec, settings: &Settings) -> Vec<String> {
         // but never one holding the conductor's area or a protected path.
         if let Some(area) = guarded.iter().find(|area| paths::contains(owned, area)) {
             reasons.push(format!(
-                "{} owns `{owned}`, which holds `{area}`, which no card may own.",
+                "{} owns `{owned}`, which holds `{area}`, which no task may own.",
                 name(card)
             ));
             continue;
         }
         if let Some(area) = areas.iter().find(|area| paths::inside(owned, area)) {
             reasons.push(format!(
-                "{} owns `{owned}`, inside `{area}`, which no card may own.",
+                "{} owns `{owned}`, inside `{area}`, which no task may own.",
                 name(card)
             ));
         }
@@ -271,7 +271,7 @@ mod tests {
         };
         let cards = validate(&run(), &good, &settings).unwrap();
         let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["card-001", "card-002", "card-003", "card-004"]);
+        assert_eq!(ids, ["task-001", "task-002", "task-003", "task-004"]);
         assert_eq!(cards[1].depends_on, vec![CardId::numbered(1)]);
         assert_eq!(cards[3].kind, CardKind::Docs);
 
@@ -285,18 +285,18 @@ mod tests {
                 card("e", ProposedKind::Build, &["/etc/hosts"], &[]),
             ],
         };
-        settings.divide.max_cards = 5;
+        settings.divide.max_tasks = 5;
         let reasons = validate(&run(), &bad, &settings).unwrap_err();
         let has = |needle: &str| reasons.iter().any(|reason| reason.contains(needle));
-        assert!(has("used by more than one card"), "{reasons:#?}");
+        assert!(has("used by more than one task"), "{reasons:#?}");
         assert!(has("cycle"), "{reasons:#?}");
         assert!(has("which overlap"), "{reasons:#?}");
         assert!(has("inside `.argonauts/**`"), "{reasons:#?}");
         assert!(has("inside `**/*.lock`"), "{reasons:#?}");
-        assert!(has("`nowhere`, which isn't a card"), "{reasons:#?}");
+        assert!(has("`nowhere`, which isn't a task"), "{reasons:#?}");
         assert!(has("owns no paths"), "{reasons:#?}");
         assert!(has("isn't relative to the repository"), "{reasons:#?}");
-        assert!(has("more than divide.max_cards (5)"), "{reasons:#?}");
+        assert!(has("more than divide.max_tasks (5)"), "{reasons:#?}");
     }
 
     #[test]

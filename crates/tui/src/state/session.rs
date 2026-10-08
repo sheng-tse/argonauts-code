@@ -121,7 +121,7 @@ pub struct ToolRecord {
 /// an `estimator` there; `owner` would read as if building had begun.
 pub fn task_label(role: RoleName, step: Option<StepName>, card: Option<&CardId>) -> String {
     let role = match (role, step) {
-        (RoleName::Owner, Some(StepName::Predict)) => "estimator",
+        (RoleName::Worker, Some(StepName::Predict)) => "estimator",
         _ => role.as_str(),
     };
     match card {
@@ -252,6 +252,8 @@ impl SessionState {
             AgentEvent::Retry { .. }
                 | AgentEvent::Usage { .. }
                 | AgentEvent::ContextFill { .. }
+                | AgentEvent::ContextBreakdown { .. }
+                | AgentEvent::Plan { .. }
                 | AgentEvent::QuotaSignal { .. }
                 | AgentEvent::Quota { .. }
                 | AgentEvent::ModOutput { .. }
@@ -337,7 +339,7 @@ impl SessionState {
                     }
                 }
             }
-            AgentEvent::ContextFill { used, size } => {
+            AgentEvent::ContextFill { used, size, .. } => {
                 if size.is_some() {
                     self.context_window = *size;
                 }
@@ -356,6 +358,8 @@ impl SessionState {
                 });
             }
             AgentEvent::QuotaSignal { .. }
+            | AgentEvent::ContextBreakdown { .. }
+            | AgentEvent::Plan { .. }
             | AgentEvent::Quota { .. }
             | AgentEvent::ModOutput { .. }
             | AgentEvent::ModelsReported { .. }
@@ -446,8 +450,9 @@ impl SessionState {
     }
 }
 
-/// Where a session rotates: `sessions.rotate_at`, 200k tokens by default, or the window when
-/// that's smaller. `ViewData::Context` brings the configured caps when `/context` opens.
+/// Where a session rotates: `sessions.rotate_at`, near the end of its window by default, or
+/// the window when that's smaller. With no window reported yet the bar is drawn against
+/// 200k tokens. `ViewData::Context` brings the configured caps when `/context` opens.
 fn context_cap(window: Option<u64>) -> u64 {
     const FALLBACK: u64 = 200_000;
     let cap = SessionSettings::default()

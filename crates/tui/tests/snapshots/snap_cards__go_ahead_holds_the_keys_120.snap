@@ -7,11 +7,11 @@ expression: shown
   Add a --json flag to the export command
 
   ❯ 1. Yes, run it
-    2. Yes, and let the lead answer
+    2. Yes, and let the main agent answer
     3. Send back for another round
     4. Show the goal
     5. No, stop here
 
-  Enter to choose · Esc to set aside · shift+tab to cycle modes
+  Enter to choose · Esc to carry on without me · shift+tab to cycle modes
 
-  ⏵⏵ full auto mode on
+  ⏵⏵ autopilot on

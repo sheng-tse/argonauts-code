@@ -54,7 +54,7 @@ pub(super) fn handed_off(
         tag,
     } = handed;
     let told = context.map(|context| context.label().to_owned());
-    let checkpoint = tag.map(|n| format!("checkpoint handoff-{n}"));
+    let checkpoint = tag.map(|n| format!("checkpoint fallback-{n}"));
     let names = &cx.state.names;
     let why = plan.map(|plan| why(plan, clock, names));
     if mode == HandoffMode::Auto {
@@ -70,7 +70,7 @@ pub(super) fn handed_off(
             took.push_str(&format!(" · {part}"));
         }
         let details: Vec<String> = [Some(took), why].into_iter().flatten().collect();
-        emit(cx, step("Handoff", &args, ToolState::Done, &details));
+        emit(cx, step("Fallback", &args, ToolState::Done, &details));
         return;
     }
     let mut text = format!("{card} handed to {}", names.worker(to));
@@ -99,7 +99,7 @@ pub(super) fn waiting(
 pub(super) fn reverted(card: &str, to: u32, kept_on: &str, cx: &mut Cx<'_>) {
     let mut notice = Notice::new(
         Tone::Success,
-        format!("Reverted {card} to checkpoint handoff-{to}"),
+        format!("Reverted {card} to checkpoint fallback-{to}"),
     );
     if !kept_on.trim().is_empty() {
         notice = notice.with_detail(format!("The later work is kept on {}", kept_on.trim()));
@@ -136,7 +136,7 @@ pub(super) fn rotated(card: &str, worker: &WorkerRef, cx: &mut Cx<'_>) {
         "{card} rotated to a fresh {} session",
         cx.state.names.worker(worker)
     );
-    let detail = "its context filled up, so the new session starts from a handoff note";
+    let detail = "its context filled up, so the new session starts from a fallback note";
     emit(cx, Notice::new(Tone::Normal, text).with_detail(detail));
 }
 

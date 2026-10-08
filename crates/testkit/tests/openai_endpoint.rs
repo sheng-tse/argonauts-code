@@ -39,7 +39,7 @@ async fn a_structured_verdict_comes_back_through_the_endpoint_worker() {
         "properties": {"decision": {"type": "string", "enum": ["approve", "ask"]},
                        "reason": {"type": "string"}},
     });
-    let verdict = json!({"decision": "approve", "reason": "the gates passed"});
+    let verdict = json!({"decision": "approve", "reason": "the checks passed"});
     for api in [EndpointApi::ChatCompletions, EndpointApi::Responses] {
         let server = FakeOpenAi::start().unwrap();
         server.push(FakeReply::json(&verdict));
@@ -53,7 +53,7 @@ async fn a_structured_verdict_comes_back_through_the_endpoint_worker() {
         spec.prompt = vec![InputPart {
             kind: InputPartKind::StepInput,
             label: "evidence".to_owned(),
-            text: "Approve the merge of card 3?".to_owned(),
+            text: "Approve the merge of task 3?".to_owned(),
             approx_tokens: 8,
             source: None,
         }];

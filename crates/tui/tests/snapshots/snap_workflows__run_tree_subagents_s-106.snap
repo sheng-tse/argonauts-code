@@ -3,11 +3,11 @@ source: crates/tui/tests/snap_workflows.rs
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
- owner · card-003
+ worker · task-003
 
 
- ╭ owner · card-003 ────────────────────────────────────────────────────────────────────────╮
- │ ● Running · Gemini 3.6 on agy · 7m11s                                                    │
+ ╭ worker · task-003 ───────────────────────────────────────────────────────────────────────╮
+ │ ◐ Running · Gemini 3.6 on agy · 7m11s                                                    │
  │ agy/gemini-3.6 · run-01 · 77.3k tok                                                      │
  │                                                                                          │
  │ Prompt · 14 lines · ↵expand                                                              │
@@ -23,7 +23,7 @@ expression: text
  │ Diff · 4 files · +120 -18 · ↵open                                                        │
  │                                                                                          │
  │ Subagents · 1 · structure not exposed                                                    │
- │   ● research  running                                                                    │
+ │   ◐ research  running                                                                    │
  │                                                                                          │
  │ Outcome · 11 lines · ↵expand                                                             │
  │   Report: the terminal and the bottom region are done, with no stubs left.               │
@@ -41,4 +41,4 @@ expression: text
  │                                                                                          │
  │                                                                                          │
  ╰──────────────────────────────────────────────────────────────────────────────────────────╯
- ↑↓ agent · j/k scroll · ⏎ expand · i steer · x stop · p pause · esc back
+ ↑↓ agent · j/k scroll · ⏎ expand · m message it · x stop it · p pause · esc back

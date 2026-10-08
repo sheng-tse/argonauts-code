@@ -196,7 +196,7 @@ pub fn sync(store: &Store, mode: SyncMode) -> Result<SyncReport> {
     for drift in &report.skill_drift {
         report.warnings.push(format!(
             "The {} skill was edited since it was exported, so it was left alone. Re-export its \
-             recipe, or keep your edits.",
+             learned workflow, or keep your edits.",
             drift.name
         ));
     }

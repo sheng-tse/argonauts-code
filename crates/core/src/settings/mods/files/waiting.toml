@@ -1,0 +1,9 @@
+# What waits for you: approvals and questions.
+name   = "waiting"
+title  = "waiting for you"
+body   = "list"
+places = ["status"]
+form   = "full"
+
+[data]
+source = "waiting"

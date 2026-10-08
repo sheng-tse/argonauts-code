@@ -1,4 +1,4 @@
-//! A run a front end started gets `mcp.run_budget` of time from when it was started. Once
+//! A run a front end started gets `mcp.run_limit` of time from when it was started. Once
 //! that's spent it pauses at the next safe point and waits for you, since only you can let it
 //! carry on. A run you started, or carried on yourself, has no such limit.
 
@@ -23,7 +23,7 @@ pub(crate) fn time_left(
     now: OffsetDateTime,
 ) -> Option<Duration> {
     front_end?;
-    let budget = settings.mcp.run_budget.parse().ok().flatten()?;
+    let budget = settings.mcp.run_limit.parse().ok().flatten()?;
     let spent = Duration::try_from(now - started).unwrap_or(Duration::ZERO);
     Some(budget.saturating_sub(spent))
 }
@@ -42,7 +42,7 @@ impl Host {
             self.start.created,
             OffsetDateTime::now_utc(),
         )?;
-        let budget = self.settings.mcp.run_budget.0.clone();
+        let budget = self.settings.mcp.run_limit.0.clone();
         let state = Arc::clone(&self.state);
         let sink = Arc::clone(&self.sink);
         Some(tokio::spawn(async move {
@@ -56,7 +56,7 @@ impl Host {
                     &sink,
                     NoteLevel::Warn,
                     format!(
-                        "This run's front-end time budget of {budget} is spent, so it pauses at \
+                        "This run's front-end time limit of {budget} is spent, so it pauses at \
                          the next safe point. Resume it in the app to let it carry on."
                     ),
                 );
@@ -73,7 +73,7 @@ mod tests {
 
     fn budget(span: &str) -> Settings {
         let mut settings = Settings::default();
-        settings.mcp.run_budget = Span::new(span);
+        settings.mcp.run_limit = Span::new(span);
         settings
     }
 

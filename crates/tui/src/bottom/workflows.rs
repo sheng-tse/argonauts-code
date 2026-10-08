@@ -15,14 +15,16 @@ use crate::text::{Part, fit_parts, full_width, sanitize_line, str_width};
 use crate::theme::{Role, Theme};
 use crate::views::layout::left;
 use crate::views::panes::Marks;
+use crate::views::states;
+use crate::widgets::State;
 
-use super::agents::{AgentRef, RowCells, RowLayout, StatColumns, Stats, more_line, window};
+use super::agents::{AgentRef, ListRow, RowKind, more_line, window};
 use super::bar::{BAR_CELLS, MIN_BAR_CELLS, bar, run_fill};
 use super::{AgentPanel, PanelEvent};
 
 /// The name column's width, so every bar starts in one column. A longer name widens it only into
 /// room the row has to spare, so one long name can't push every bar off the row. This holds
-/// `peer-crew · add --json to export`, and under it `Opus 5.5 on Claude Code` with its card.
+/// `council · add --json to export`.
 const MAX_NAME_CELLS: usize = 37;
 
 /// Names give up cells to keep the bar down to this, which holds a CLI and a short model.
@@ -65,6 +67,8 @@ pub struct WorkflowRow {
     pub front_end: Option<String>,
     /// The phase going on, such as `Fix`, after the count.
     pub phase: Option<String>,
+    /// Goals its agents still work toward, for `2 goals running`.
+    pub goals_running: usize,
 }
 
 impl WorkflowRow {
@@ -83,6 +87,7 @@ impl WorkflowRow {
             notice: None,
             front_end: None,
             phase: None,
+            goals_running: 0,
         }
     }
 
@@ -167,6 +172,21 @@ impl WorkflowPanel {
         self.selected = (!self.rows.is_empty()).then_some(0);
     }
 
+    /// Focus as ↓ from the input gives it: on the first row past your own conversation's,
+    /// since the list is where you go to reach a run or one of the agents.
+    pub fn focus_past_main(&mut self, agents: &AgentPanel) {
+        self.focus();
+        let entries = self.entries(agents);
+        let first = entries.iter().position(|entry| {
+            entry
+                .agent()
+                .is_none_or(|j| agents.rows[j].kind != RowKind::Main)
+        });
+        if self.selected.is_some() {
+            self.selected = Some(first.unwrap_or(0));
+        }
+    }
+
     pub fn blur(&mut self) {
         self.selected = None;
     }
@@ -201,18 +221,26 @@ impl WorkflowPanel {
         self.selected = Some(found.unwrap_or(selected.min(entries.len() - 1)));
     }
 
-    /// Runs in order, each followed by its agents while they show. Agents of a run without a
-    /// row come last.
+    /// Your conversation and its own subagents first, as Claude Code lists them, then the runs
+    /// in order, each followed by its agents while they show. Agents of a run without a row
+    /// come last.
     fn entries(&self, agents: &AgentPanel) -> Vec<Entry> {
         let mut entries = Vec::new();
         let mut placed = vec![false; agents.rows.len()];
+        // These aren't a run's agents, so `ui.panel.agents` doesn't hide them.
+        for (j, agent) in agents.rows.iter().enumerate() {
+            if agent.kind != RowKind::Agent {
+                entries.push(Entry::Agent(j));
+                placed[j] = true;
+            }
+        }
         for (i, row) in self.rows.iter().enumerate() {
             entries.push(Entry::Run(i));
             if !self.show_agents {
                 continue;
             }
             for (j, agent) in agents.rows.iter().enumerate() {
-                if agent.run.as_deref() == Some(row.key.as_str()) {
+                if !placed[j] && agent.run.as_deref() == Some(row.key.as_str()) {
                     entries.push(Entry::Agent(j));
                     placed[j] = true;
                 }
@@ -264,7 +292,9 @@ pub fn panel_lines(
     let entries = workflows.entries(agents);
     let last = entries.len().saturating_sub(1);
     let selected = workflows.selected.map(|i| i.min(last));
-    let visible = window(entries.len(), workflows.max_rows, selected);
+    // Your conversation's row is always there, so it doesn't use up a row of the cap.
+    let main = usize::from(agents.rows.iter().any(|row| row.kind == RowKind::Main));
+    let visible = window(entries.len(), workflows.max_rows + main, selected);
 
     let entry_of = |i: Option<usize>| i.and_then(|i| entries.get(i).copied());
     let run_selected = entry_of(selected).and_then(Entry::run);
@@ -280,54 +310,40 @@ pub fn panel_lines(
             stats: run_stats(row, ctx),
         })
         .collect();
-    let agent_cells: Vec<(usize, RowCells)> = entries
-        .iter()
-        .filter_map(|entry| entry.agent())
-        .map(|j| (j, agents.cells(j, true, ctx)))
-        .collect();
-    let widest_agent = |cell: fn(&RowCells) -> usize| {
-        agent_cells
-            .iter()
-            .map(|(_, cells)| cell(cells))
-            .max()
-            .unwrap_or(0)
-    };
-    let agent_names = AgentNames {
-        full: widest_agent(|cells| str_width(&cells.name)),
-        harness: widest_agent(|cells| str_width(&cells.harness)),
-        card: widest_agent(|cells| str_width(&cells.task)),
-    };
-    let agent_stats: Vec<&Stats> = agent_cells.iter().map(|(_, cells)| &cells.stats).collect();
     let widest_stats = runs
         .iter()
         .map(|run| full_width(&run.stats))
-        .chain((!agent_cells.is_empty()).then(|| StatColumns::wanted(&agent_stats)))
         .max()
         .unwrap_or(0);
-    let widest_name = runs
-        .iter()
-        .map(|run| str_width(&run.name).min(MAX_NAME_CELLS))
-        .chain((!agent_cells.is_empty()).then(|| agent_names.widest()))
-        .max()
-        .unwrap_or(0);
-    let longest_name = runs
-        .iter()
-        .map(|run| str_width(&run.name))
-        .chain((!agent_cells.is_empty()).then(|| agent_names.longest()))
-        .max()
-        .unwrap_or(0);
+    let name_cells = |cut: usize| {
+        runs.iter()
+            .map(|run| str_width(&run.name).min(cut))
+            .max()
+            .unwrap_or(0)
+    };
     let columns = PanelColumns::fit(
         usize::from(ctx.width),
         Names {
-            widest: widest_name,
-            longest: longest_name,
-            least: agent_names.min_name(),
+            widest: name_cells(MAX_NAME_CELLS),
+            longest: name_cells(usize::MAX),
+            least: MIN_NAME_CELLS,
         },
         widest_stats,
     );
     let fill = run_fill(ctx.theme);
-    let mut agent_layout = agent_names.layout(&columns, fill);
-    agent_layout.fit_stats(&agent_stats, usize::from(ctx.width));
+    // The agents' rows are their own list, in Claude Code's shape, a step in under their run.
+    let listed: Vec<ListRow> = entries
+        .iter()
+        .filter_map(|entry| entry.agent())
+        .map(|index| ListRow {
+            index,
+            indent: match agents.rows[index].kind {
+                RowKind::Agent if agents.rows[index].run.is_some() => AGENT_INDENT,
+                _ => 0,
+            },
+        })
+        .collect();
+    let agent_lines = agents.list_lines(&listed, agent_selected, ctx);
 
     let mut lines = Vec::new();
     if visible.start > 0 {
@@ -347,10 +363,8 @@ pub fn panel_lines(
                 ));
             }
             Entry::Agent(j) => {
-                if let Some((_, cells)) = agent_cells.iter().find(|(k, _)| *k == j) {
-                    let selected = agent_selected == Some(j);
-                    lines.push(agents.row_line(j, cells, &agent_layout, selected, ctx));
-                }
+                let line = listed.iter().position(|row| row.index == j);
+                lines.extend(line.and_then(|at| agent_lines.get(at).cloned()));
             }
         }
     }
@@ -411,7 +425,13 @@ pub fn handle_panel_key(
         }
         KeyCode::Enter | KeyCode::Right => match entries[selected] {
             Entry::Run(i) => PanelEvent::OpenWorkflow(workflows.rows[i].key.clone()),
-            Entry::Agent(j) => PanelEvent::Open(agents.rows[j].agent_ref()),
+            Entry::Agent(j) => {
+                let event = agents.rows[j].open_event();
+                if event == PanelEvent::Leave {
+                    workflows.blur();
+                }
+                event
+            }
         },
         KeyCode::Char('x') if plain => match entries[selected] {
             Entry::Run(i) => PanelEvent::StopRun(workflows.rows[i].key.clone()),
@@ -435,18 +455,25 @@ pub struct StopAsk {
 
 /// Stops from the panel ask first, like Ctrl+C's double press: the first `x` on a row only
 /// asks, and a second `x` on the same row lets the stop through. Any other key keeps the agent.
+/// A run can be paused in place of stopped, so its ask offers that too: Esc no longer pauses
+/// one, and only an asked row takes `p`, so a message typed with a run's row
+/// selected never pauses it.
 pub fn ask_before_stop(asked: &mut Option<StopAsk>, event: PanelEvent) -> PanelEvent {
     let earlier = asked.take();
-    let (row, name) = match &event {
-        PanelEvent::Stop { agent, name } => (PanelRowId::Agent(agent.clone()), name.as_str()),
-        PanelEvent::StopRun(run) => (PanelRowId::Run(run.clone()), run.as_str()),
+    let (row, name, pause) = match &event {
+        PanelEvent::Stop { agent, name } => (PanelRowId::Agent(agent.clone()), name.as_str(), ""),
+        PanelEvent::StopRun(run) => (
+            PanelRowId::Run(run.clone()),
+            run.as_str(),
+            " · p to pause it",
+        ),
         _ => return event,
     };
     if earlier.is_some_and(|earlier| earlier.row == row) {
         return event;
     }
     let hint = format!(
-        "x again to stop {} · esc to keep",
+        "x again to stop {}{pause} · esc to keep",
         sanitize_line(name).trim()
     );
     *asked = Some(StopAsk { row, hint });
@@ -472,13 +499,14 @@ fn run_line(
     ctx: &RenderCtx<'_>,
 ) -> Line<'static> {
     let theme = ctx.theme;
-    let marks = Marks::for_theme(theme);
+    // Claude Code's `○` stays for a run that's going, in the working color; the other states
+    // draw as they do everywhere.
     let (circle, role) = match row.state {
-        WorkflowRowState::Running => (theme.glyphs.agent_waiting, Role::Text),
-        WorkflowRowState::NeedsYou => (marks.needs_you, Role::Card),
-        WorkflowRowState::Done => (marks.done, Role::Success),
-        WorkflowRowState::Failed => (marks.failed, Role::Error),
-        WorkflowRowState::Paused | WorkflowRowState::Stopped => (marks.stopped, Role::Dim),
+        WorkflowRowState::Running => (theme.glyphs.agent_waiting, Role::StateWorking),
+        WorkflowRowState::NeedsYou => states::mark(State::NeedsYou, theme),
+        WorkflowRowState::Done => states::mark(State::Done, theme),
+        WorkflowRowState::Failed => states::mark(State::Failed, theme),
+        WorkflowRowState::Paused | WorkflowRowState::Stopped => states::mark(State::Stopped, theme),
     };
     let mut spans = if selected {
         vec![Span::styled(
@@ -500,8 +528,8 @@ fn run_line(
     fit_parts(spans, &cells.stats, usize::from(ctx.width))
 }
 
-/// `8/9 agents · 2h44m · ↓ 1.8m tokens · $1.20 · via hermes`, then the state's word or the
-/// budget notice. The state and the notice give way last.
+/// `8/9 agents · Build · 2 goals running · 2h44m · ↓ 1.8M tokens · $1.20 · via hermes`, then
+/// the state's word or the budget notice. The state and the notice give way last.
 fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
     let theme = ctx.theme;
     let marks = Marks::for_theme(theme);
@@ -529,6 +557,14 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
     {
         push(sanitize_line(phase).into_owned(), dim, 3);
     }
+    if row.goals_running > 0 {
+        let noun = if row.goals_running == 1 {
+            "goal"
+        } else {
+            "goals"
+        };
+        push(format!("{} {noun} running", row.goals_running), dim, 3);
+    }
     if row.timed {
         push(format::duration_compact(row.elapsed(ctx.clock.now)), dim, 3);
     }
@@ -552,11 +588,14 @@ fn run_stats(row: &WorkflowRow, ctx: &RenderCtx<'_>) -> Vec<Part> {
     }
     let state = match row.state {
         WorkflowRowState::Running => None,
-        WorkflowRowState::NeedsYou => Some((format!("{} needs you", marks.needs_you), Role::Card)),
-        WorkflowRowState::Done => Some(("done".to_owned(), Role::Success)),
-        WorkflowRowState::Failed => Some(("failed".to_owned(), Role::Error)),
-        WorkflowRowState::Paused => Some(("paused".to_owned(), Role::Dim)),
-        WorkflowRowState::Stopped => Some(("stopped".to_owned(), Role::Dim)),
+        WorkflowRowState::NeedsYou => {
+            let (glyph, role) = states::mark(State::NeedsYou, theme);
+            Some((format!("{glyph} needs you"), role))
+        }
+        WorkflowRowState::Done => Some(("done".to_owned(), Role::StateDone)),
+        WorkflowRowState::Failed => Some(("failed".to_owned(), Role::StateFailed)),
+        WorkflowRowState::Paused => Some(("paused".to_owned(), Role::StateStopped)),
+        WorkflowRowState::Stopped => Some(("stopped".to_owned(), Role::StateStopped)),
     };
     if let Some((word, role)) = state {
         push(word, theme.style(role), 6);
@@ -622,71 +661,6 @@ impl PanelColumns {
         Self {
             name_width,
             bar_cells: 0,
-        }
-    }
-}
-
-/// The widest agent name under a run, with and without its model, and the widest card.
-struct AgentNames {
-    full: usize,
-    harness: usize,
-    card: usize,
-}
-
-impl AgentNames {
-    /// The card column after a name, with its gap, or nothing without cards.
-    fn card_cells(&self) -> usize {
-        if self.card > 0 { 2 + self.card } else { 0 }
-    }
-
-    /// Squeezed names keep room for a harness and its card, so the bar gives way before the
-    /// card does.
-    fn min_name(&self) -> usize {
-        if self.card > 0 {
-            MIN_NAME_CELLS.max(AGENT_INDENT + self.harness + self.card_cells())
-        } else {
-            MIN_NAME_CELLS
-        }
-    }
-
-    /// What the agent rows want of the name column: the indent, a name cut like a run's, and
-    /// the card.
-    fn widest(&self) -> usize {
-        AGENT_INDENT + self.full.min(MAX_NAME_CELLS - AGENT_INDENT) + self.card_cells()
-    }
-
-    /// The same with the whole name.
-    fn longest(&self) -> usize {
-        AGENT_INDENT + self.full + self.card_cells()
-    }
-
-    /// The agent rows sit inside the name column, so their bars start where the runs' bars do.
-    /// The card keeps its column while the harness still fits beside it, and once the bar is
-    /// gone, names drop their model before the card goes.
-    fn layout(&self, columns: &PanelColumns, fill: Style) -> RowLayout {
-        let room = columns.name_width.saturating_sub(AGENT_INDENT);
-        let card_cells = if self.card > 0 && self.harness + self.card_cells() <= room {
-            self.card_cells()
-        } else {
-            0
-        };
-        let name_width = room - card_cells;
-        let harness_only = columns.bar_cells == 0 && self.full > name_width;
-        // Names without their model need only the widest harness, so the card stays beside
-        // them instead of past a gap the models would have filled.
-        let name_width = if harness_only {
-            self.harness.min(name_width)
-        } else {
-            name_width
-        };
-        RowLayout {
-            indent: AGENT_INDENT,
-            name_width,
-            harness_only,
-            task_width: card_cells.saturating_sub(2),
-            bar_cells: columns.bar_cells,
-            fill,
-            stats: StatColumns::default(),
         }
     }
 }
@@ -765,7 +739,7 @@ mod tests {
         let mut panel = runs(2);
         panel.show_agents = true;
         let mut agents = AgentPanel::default();
-        let mut codex = AgentRow::new("codex", "owner · card-002", AgentState::Working);
+        let mut codex = AgentRow::new("codex", "worker · task-002", AgentState::Working);
         codex.key = Some("s-002".into());
         codex.run = Some("run-0".into());
         agents.rows.push(codex);
@@ -832,7 +806,7 @@ mod tests {
         panel.show_agents = true;
         let mut agents = AgentPanel::default();
         let row = |run: &str| {
-            let mut row = AgentRow::new("claude-code", "owner", AgentState::Working);
+            let mut row = AgentRow::new("claude-code", "worker", AgentState::Working);
             row.key = Some("s-001".into());
             row.run = Some(run.into());
             row
@@ -862,19 +836,25 @@ mod tests {
         );
     }
 
+    /// Under a run's row each agent is a row of Claude Code's list, a step further in: its
+    /// label, what it's doing, and how many tokens. Your conversation's row comes first.
     #[test]
-    fn agents_under_a_run_show_their_label() {
+    fn agents_under_a_run_read_by_label_and_what_they_do() {
         let mut theme = Theme::dark().with_level(ColorLevel::None);
         theme.glyphs = Glyphs::UNICODE;
         let t0 = Instant::now();
         let mut panel = runs(1);
         panel.show_agents = true;
+        panel.max_rows = 6;
         let mut agents = AgentPanel::default();
-        for card in ["build:flag", "review:flag"] {
+        agents.rows.push(AgentRow::main());
+        for (label, doing) in [
+            ("build:flag", "Update(src/export.rs)"),
+            ("review:flag", "Reading the diff"),
+        ] {
             let mut row =
-                AgentRow::new("claude-code", "owner", AgentState::Working).with_model("opus");
+                AgentRow::new("claude-code", doing, AgentState::Working).with_label(label, label);
             row.run = Some("run-0".into());
-            row.card = Some(card.into());
             row.tokens_down = 18_100;
             agents.rows.push(row);
         }
@@ -883,33 +863,86 @@ mod tests {
             plain_text(&panel_lines(&panel, &agents, &ctx))
         };
         let wide = at(100);
+        let rows: Vec<&str> = wide.lines().collect();
+        assert_eq!(rows[0], "  ● main", "{wide}");
+        assert!(rows[1].starts_with("  ○ workflow-0"), "{wide}");
         assert!(
-            wide.contains("    ◐ claude-code/opus        build:flag   ")
-                && wide.contains("    ◐ claude-code/opus        review:flag  "),
+            rows[2].starts_with("    ○ build:flag   Update(src/export.rs)")
+                && rows[2].ends_with("↓ 18.1k tokens"),
             "{wide}"
         );
-        assert!(wide.contains("░  ↓ 18.1k tokens"), "{wide}");
-        // The label is dim, after the harness and model.
+        assert!(
+            rows[3].starts_with("    ○ review:flag  Reading the diff"),
+            "{wide}"
+        );
+        // What it's doing reads in the text color, and the stats dim.
         let colored = self::theme();
         let ctx = RenderCtx::new(100, &colored, Clock::still(t0));
         let lines = panel_lines(&panel, &agents, &ctx);
-        let card = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content.contains("build:flag"))
-            .expect("the label shows");
-        assert_eq!(card.style, colored.style(Role::Dim));
-        // The bar gives way first, and the label outlasts the model.
-        let narrow = at(48);
-        let agent_rows: Vec<&str> = narrow.lines().filter(|row| row.contains('◐')).collect();
+        let style_of = |text: &str| {
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .find(|span| span.content.contains(text))
+                .unwrap_or_else(|| panic!("{text} shows"))
+                .style
+        };
+        assert_eq!(style_of("Reading the diff"), colored.style(Role::Text));
+        assert_eq!(style_of("18.1k tokens"), colored.style(Role::Dim));
+        // A narrow row keeps the label and the tokens, and what it's doing gives way.
+        let narrow = at(40);
+        let agent_rows: Vec<&str> = narrow.lines().filter(|row| row.contains(":flag")).collect();
         assert!(
-            agent_rows.iter().all(|row| !row.contains(['█', '░'])),
+            agent_rows[0].starts_with("    ○ build:flag")
+                && agent_rows[0].contains("↓ 18.1k tokens")
+                && !agent_rows[0].contains("Update"),
             "{narrow}"
         );
-        assert!(
-            agent_rows[0].starts_with("    ◐ claude-code  build:flag   ↓ 18.1k tokens"),
-            "{narrow}"
+    }
+
+    /// The main agent's own subagents aren't a run's agents: they list under `main`, before
+    /// the runs, whether or not `ui.panel.agents` lists each run's.
+    #[test]
+    fn the_conversations_subagents_come_first_and_always_show() {
+        let theme = theme();
+        let t0 = Instant::now();
+        let mut panel = runs(1);
+        panel.max_rows = 6;
+        let mut agents = AgentPanel::default();
+        agents.rows.push(AgentRow::main());
+        let mut sub = AgentRow::new("Count slowly", "Reading src", AgentState::Working)
+            .with_label("Count slowly", "Count slowly");
+        sub.kind = RowKind::Subagent;
+        sub.run = Some("chat".into());
+        sub.key = Some("toolu_a".into());
+        agents.rows.push(sub);
+        let mut worker = AgentRow::new("codex", "Update(src/a.rs)", AgentState::Working)
+            .with_label("build:flag", "build:flag");
+        worker.run = Some("run-0".into());
+        agents.rows.push(worker);
+        let listed = |panel: &WorkflowPanel| {
+            let ctx = RenderCtx::new(100, &theme, Clock::still(t0));
+            let text = plain_text(&panel_lines(panel, &agents, &ctx));
+            text.lines()
+                .map(|row| row.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed(&panel), ["● main", "○ Count", "○ workflow-0"]);
+        panel.show_agents = true;
+        assert_eq!(
+            listed(&panel),
+            ["● main", "○ Count", "○ workflow-0", "○ build:flag"]
         );
+        // ↓ from the input lands on the first row past main, and typing there is a message.
+        panel.focus_past_main(&agents);
+        assert_eq!(
+            panel.selected_id(&agents),
+            Some(PanelRowId::Agent(AgentRef {
+                run: Some("chat".into()),
+                session: "toolu_a".into()
+            }))
+        );
+        assert_eq!(listed(&panel)[..2], ["○ main", "● Count"]);
     }
 
     #[test]
@@ -924,7 +957,7 @@ mod tests {
         row.measured_at = Some(t0);
         row.tokens = 1_800_000;
         row.spend = Some("$4.10".into());
-        row.notice = Some("85% of budget · /workflows to stop".into());
+        row.notice = Some("85% of limit · /workflows to stop".into());
         let panel = WorkflowPanel {
             rows: vec![row],
             max_rows: 5,
@@ -936,7 +969,7 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             format!(
-                "  ○ argonauts-ui-kit{pad}  {bar}  8/9 agents · 2h44m · ↓ 1.8m tokens · $4.10 · ! 85% of budget · /workflows to stop"
+                "  ○ argonauts-ui-kit{pad}  {bar}  8/9 agents · 2h44m · ↓ 1.8M tokens · $4.10 · ! 85% of limit · /workflows to stop"
             )
         );
         let fill: Vec<_> = lines[0]
@@ -981,7 +1014,7 @@ mod tests {
             ("codex", codex, 1, 12_900),
             ("agy", "gemini-3.6-flash", 0, 0),
         ] {
-            let mut row = AgentRow::new(name, "card-002", AgentState::Working).with_model(model);
+            let mut row = AgentRow::new(name, "task-002", AgentState::Working).with_model(model);
             row.steps = Some((done, 5));
             row.started_at = Some(t0);
             row.tokens_down = tokens;
@@ -1026,7 +1059,7 @@ mod tests {
     fn a_runs_bar_keeps_its_column_when_its_name_changes() {
         let theme = theme();
         for width in [80, 100, 120, 200] {
-            let starts: Vec<Option<usize>> = ["goal", "peer-crew · add per-key rate limiting"]
+            let starts: Vec<Option<usize>> = ["goal", "council · add per-key rate limiting"]
                 .into_iter()
                 .map(|name| {
                     let (mut panel, _, clock) = crew(false);
@@ -1044,7 +1077,7 @@ mod tests {
     #[test]
     fn a_long_run_name_takes_the_room_the_row_has() {
         let theme = theme();
-        let name = "peer-crew · Add a --json flag to export, with tests";
+        let name = "council · Add a --json flag to export, with tests";
         for (width, whole) in [(80, false), (100, false), (120, true)] {
             let (mut panel, _, clock) = crew(false);
             panel.rows[0].name = name.into();
@@ -1058,8 +1091,10 @@ mod tests {
         }
     }
 
+    /// A run's row keeps its bar and stats, and the agents under it are rows of the list: a
+    /// step in, with no bar of their own, their names and stats in columns of their own.
     #[test]
-    fn run_and_agent_rows_share_one_set_of_columns() {
+    fn a_run_keeps_its_bar_and_its_agents_list_under_it() {
         let mut plain = Theme::dark().with_level(ColorLevel::None);
         plain.glyphs = Glyphs::UNICODE;
         for theme in [theme(), plain] {
@@ -1074,22 +1109,16 @@ mod tests {
                     let bars = bars(&lines, &theme);
                     assert!(bars[0].is_some(), "{width} columns\n{text}");
                     assert!(
-                        bars.iter().all(|bar| *bar == bars[0]),
+                        bars[1..].iter().all(Option::is_none),
                         "{width} columns: {bars:?}\n{text}"
                     );
-                    // Every model stays, and only a name too long for the room the row has
-                    // is cut.
-                    assert!(text.contains("claude-code/opus"), "{text}");
-                    assert!(text.contains("agy/gemini-3.6-flash"), "{text}");
-                    assert_eq!(text.contains('…'), long && width == 80, "{text}");
-                    assert!(text.contains("↓ 18.1k tokens"), "{text}");
-                    // One lavender fill for the run and its agents.
-                    let fill = theme.style(Role::Card).fg;
-                    let track = theme.style(Role::BarTrack).bg;
-                    let fills = lines.iter().flat_map(|line| &line.spans);
-                    for bg in fills.filter_map(|span| span.style.bg) {
-                        assert!(Some(bg) == fill || Some(bg) == track, "{bg:?}");
-                    }
+                    let rows: Vec<&str> = text.lines().collect();
+                    assert!(rows[1].starts_with("    ○ claude-code/opus"), "{text}");
+                    assert!(rows[3].starts_with("    ○ agy/gemini-3.6-flash"), "{text}");
+                    assert!(rows[1].ends_with("2/5 · 4m · ↓ 18.1k tokens"), "{text}");
+                    // The agents' stats start in one column.
+                    let column = |row: &str, part: &str| str_width(&row[..row.find(part).unwrap()]);
+                    assert_eq!(column(rows[1], "2/5"), column(rows[3], "0/5"), "{text}");
                 }
             }
         }

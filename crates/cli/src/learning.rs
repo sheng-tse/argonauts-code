@@ -1,4 +1,4 @@
-//! `argonauts records`, `recipes`, `skills`, `sync`, `retro`, and `mcp package`: the learning
+//! `argonauts records`, `learned`, `skills`, `sync`, `retro`, and `mcp package`: the learning
 //! stream's commands for scripts and the shell. Read commands print text, or JSON with
 //! `--json`.
 
@@ -88,9 +88,9 @@ mod tests {
             }
         );
         assert!(json);
-        let Command::Recipes { action, json } = parse(&["recipes", "diff", "api", "--from", "3"])
+        let Command::Recipes { action, json } = parse(&["learned", "diff", "api", "--from", "3"])
         else {
-            panic!("recipes");
+            panic!("learned");
         };
         assert!(!json);
         assert_eq!(
@@ -101,8 +101,8 @@ mod tests {
                 to: None,
             }
         );
-        let Command::Recipes { action, json } = parse(&["recipes", "--json"]) else {
-            panic!("recipes");
+        let Command::Recipes { action, json } = parse(&["learned", "--json"]) else {
+            panic!("learned");
         };
         assert!(json);
         assert_eq!(recipes(action), LearningShell::RecipesList);
@@ -124,7 +124,10 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["argonauts", "sync", "--check", "--force"]).is_err());
-        assert!(matches!(parse(&["retro", "run-03"]), Command::Retro { .. }));
+        assert!(matches!(
+            parse(&["run-review", "run-03"]),
+            Command::Retro { .. }
+        ));
         assert!(matches!(
             parse(&["mcp", "package", "out", "--repo", "."]),
             Command::Mcp(McpCommand::Package { .. })

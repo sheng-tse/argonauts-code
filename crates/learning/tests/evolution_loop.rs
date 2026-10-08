@@ -24,7 +24,7 @@ use argonauts_learning::recipes::{self, ChangeClass, LoadedRecipe, Recipe};
 use argonauts_learning::{RecipeRef, ReplayResult, RunRecord, Store, git};
 
 fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/recipes")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/learned")
 }
 
 fn start() -> OffsetDateTime {
@@ -272,7 +272,7 @@ fn with_workflow(recipe: &mut Recipe, folder: &Path, edit: impl FnOnce(&mut Vec<
         serde_saphyr::to_string(&workflow).unwrap(),
     )
     .unwrap();
-    recipe.workflow = Some("review-loop-v2.yaml".to_owned());
+    recipe.phases = Some("review-loop-v2.yaml".to_owned());
 }
 
 #[test]
@@ -284,7 +284,7 @@ fn mutation_rules_table() {
         .evolution
         .evolvable
         .extend(["workflow".to_owned(), "crew".to_owned()]);
-    settings.budget.run_usd = Some(20.0);
+    settings.limits.budget.spend_per_run = Some(20.0);
 
     let cases: Vec<(&str, Edit, Result<ChangeClass, &str>)> = vec![
         (
@@ -333,17 +333,17 @@ fn mutation_rules_table() {
             Err("safety key"),
         ),
         (
-            "raises a budget above its ceiling",
-            edit(|r, _| set(r, "budget", "per_card_usd", serde_json::json!(50))),
+            "raises a limit above its ceiling",
+            edit(|r, _| set(r, "limits", "per_task_usd", serde_json::json!(50))),
             Err("ceiling"),
         ),
         (
-            "moves a budget within its ceiling",
-            edit(|r, _| set(r, "budget", "per_card_usd", serde_json::json!(3))),
-            Ok(ChangeClass::CardBudget),
+            "moves a limit within its ceiling",
+            edit(|r, _| set(r, "limits", "per_task_usd", serde_json::json!(3))),
+            Ok(ChangeClass::TaskBudget),
         ),
         (
-            "removes a gate",
+            "removes a check",
             edit(|r, f| with_workflow(r, f, |steps| steps.retain(|s| s.kind != StepKind::Gate))),
             Err("removes a `gate` step"),
         ),
@@ -359,7 +359,7 @@ fn mutation_rules_table() {
             Ok(ChangeClass::StepGraph),
         ),
         (
-            "moves the gate after the reviews",
+            "moves the checks after the reviews",
             edit(|r, f| {
                 with_workflow(r, f, |steps| {
                     let gate = steps.remove(1);
@@ -377,28 +377,28 @@ fn mutation_rules_table() {
             "replaces a reviewer",
             edit(|r, f| {
                 with_workflow(r, f, |steps| {
-                    steps[2].role = Some(argonauts_core::names::RoleName::Owner)
+                    steps[2].role = Some(argonauts_core::names::RoleName::Worker)
                 })
             }),
             Err("replaces who does it"),
         ),
         (
             "swaps the workflow by name",
-            edit(|r, _| r.workflow = Some("coordinated-crew".to_owned())),
+            edit(|r, _| r.phases = Some("orchestrator".to_owned())),
             Err("whole workflow"),
         ),
         (
-            "fills the crew from one family",
+            "fills the crew from one provider",
             edit(|r, _| {
                 r.settings.insert(
                     "crew".to_owned(),
                     serde_json::json!(["claude-code", "claude-code/opus"]),
                 );
             }),
-            Err("family"),
+            Err("provider"),
         ),
         (
-            "adds a third family to the crew",
+            "adds a third provider to the crew",
             edit(|r, _| {
                 r.settings.insert(
                     "crew".to_owned(),
@@ -466,9 +466,9 @@ fn fixed_core_key_on_evolvable_is_config_error() {
     }
     for safety in [
         "limits.evolution_usd_per_month",
-        "gates.run",
+        "checks.run",
         "approvals.merge.mode",
-        "budget.run_usd",
+        "limits.spend_per_run",
     ] {
         let errors = check_evolvable(&keys(&[safety]));
         assert_eq!(errors.len(), 1, "{safety}");
@@ -476,7 +476,7 @@ fn fixed_core_key_on_evolvable_is_config_error() {
     }
     assert_eq!(check_evolvable(&keys(&["*"])).len(), 1);
     assert_eq!(
-        check_evolvable(&keys(&["critique.*", "budget.per_card_usd"])).len(),
+        check_evolvable(&keys(&["critique.*", "limits.per_task_usd"])).len(),
         0
     );
 
@@ -838,7 +838,7 @@ fn canary_tripwires_roll_back() {
         unreachable!()
     };
     assert_eq!(*to, 1);
-    assert!(reason.contains("escalated"), "{reason}");
+    assert!(reason.contains("needed you"), "{reason}");
     assert_eq!(evolution.running_version("api-feature").unwrap(), Some(1));
     assert!(matches!(
         state_of(&evolution, "api-feature-v2"),
@@ -895,7 +895,7 @@ fn canary_that_holds_is_promoted_on_a_branch() {
         unreachable!()
     };
     assert_eq!(*recipe, api(2));
-    assert_eq!(branch, "argonauts/recipes/api-feature-v2");
+    assert_eq!(branch, "argonauts/learned/api-feature-v2");
     assert_eq!(&pr_command[..3], ["gh", "pr", "create"]);
     assert!(pr_command.contains(branch));
     assert_eq!(
@@ -917,7 +917,7 @@ fn canary_that_holds_is_promoted_on_a_branch() {
         world.repo(),
         &[
             "show",
-            &format!("{branch}:.argonauts/recipes/api-feature/current"),
+            &format!("{branch}:.argonauts/learned/api-feature/current"),
         ],
     )
     .unwrap();
@@ -926,7 +926,7 @@ fn canary_that_holds_is_promoted_on_a_branch() {
         world.repo(),
         &[
             "show",
-            &format!("{branch}:.argonauts/recipes/api-feature/v2.yaml"),
+            &format!("{branch}:.argonauts/learned/api-feature/v2.yaml"),
         ],
     )
     .unwrap();
@@ -935,7 +935,7 @@ fn canary_that_holds_is_promoted_on_a_branch() {
     assert_eq!(promoted.settings["critique"]["rounds"], 2);
     let touched = git::run(world.repo(), &["diff", "--name-only", &head, branch]).unwrap();
     assert_eq!(
-        touched, ".argonauts/recipes/api-feature/current\n.argonauts/recipes/api-feature/v2.yaml",
+        touched, ".argonauts/learned/api-feature/current\n.argonauts/learned/api-feature/v2.yaml",
         "files the candidate shares with the checkout stay as they are"
     );
 
@@ -1002,12 +1002,12 @@ fn rollback_takes_effect_at_once() {
         1
     );
 
-    let branch = "argonauts/recipes/api-feature-rollback-v1";
+    let branch = "argonauts/learned/api-feature-rollback-v1";
     let pointer = git::run(
         world.repo(),
         &[
             "show",
-            &format!("{branch}:.argonauts/recipes/api-feature/current"),
+            &format!("{branch}:.argonauts/learned/api-feature/current"),
         ],
     )
     .unwrap();
@@ -1047,7 +1047,11 @@ fn stages_of_autonomy_table() {
             ApprovalMode::Supervised,
             Stage::Evolve,
         ),
-        (EvolutionStage::Evolve, ApprovalMode::Shadow, Stage::Evolve),
+        (
+            EvolutionStage::Evolve,
+            ApprovalMode::AutoPreview,
+            Stage::Evolve,
+        ),
         (EvolutionStage::Evolve, ApprovalMode::Auto, Stage::Auto),
     ];
     assert_eq!(
@@ -1059,7 +1063,7 @@ fn stages_of_autonomy_table() {
         let world = World::new();
         let mut settings = settings();
         settings.evolution.stage = evolution_stage;
-        settings.approvals.recipe_promotion.mode = mode;
+        settings.approvals.workflow_promotion.mode = mode;
         assert_eq!(stage(&settings), expected);
 
         let evolution = world.evolution();
@@ -1213,19 +1217,19 @@ fn stage_one_records_what_worked() {
     };
     assert_eq!(recipe.name, "data-migration");
     assert_eq!(recipe.version, 1);
-    assert_eq!(branch, "argonauts/recipes/data-migration-v1");
+    assert_eq!(branch, "argonauts/learned/data-migration-v1");
 
     let text = git::run(
         world.repo(),
         &[
             "show",
-            &format!("{branch}:.argonauts/recipes/data-migration/v1.yaml"),
+            &format!("{branch}:.argonauts/learned/data-migration/v1.yaml"),
         ],
     )
     .unwrap();
     let v1 = recipes::parse(Path::new("v1.yaml"), &text).unwrap();
     assert!(recipes::validate(&v1).is_empty());
-    assert_eq!(v1.workflow.as_deref(), Some("review-loop"));
+    assert_eq!(v1.phases.as_deref(), Some("review-loop"));
     assert_eq!(v1.matches.task_types, ["Data Migration"]);
     assert_eq!(v1.parent, None);
     assert_eq!(

@@ -10,5 +10,6 @@ pub const JUDGE: &str = include_str!("plan/judge.md");
 pub const RUBRIC: &str = include_str!("plan/rubric.md");
 pub const MERGE_DRAFTS: &str = include_str!("plan/merge_drafts.md");
 pub const MERGE_CHECK: &str = include_str!("plan/merge_check.md");
+pub const PICK_DRAFT: &str = include_str!("plan/pick_draft.md");
 pub const SYNTHESIZE: &str = include_str!("plan/synthesize.md");
 pub const COORDINATE: &str = include_str!("plan/coordinate.md");

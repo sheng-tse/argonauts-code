@@ -167,7 +167,7 @@ fn openclaw(ctx: &mut Ctx) -> Vec<Effect> {
     ctx.send(AppEvent::Report {
         title: "OpenClaw can't join the crew".to_owned(),
         lines: vec![
-            "`openclaw acp` runs its tools in OpenClaw's Gateway, outside the card's worktree \
+            "`openclaw acp` runs its tools in OpenClaw's Gateway, outside the task's worktree \
              and Argonauts' sandbox, so no profile runs it."
                 .to_owned(),
             "/connect openclaw lets OpenClaw start and watch your runs over MCP instead."
@@ -299,7 +299,10 @@ mod tests {
         let asked = scope_question(&mut harness).await;
         assert!(asked.contains("agents.hermes.enabled"), "{asked}");
         let lines = report(&mut harness, "Adding Hermes").await;
-        assert!(lines[0].starts_with("hermes · not installed"), "{lines:?}");
+        assert!(
+            lines[0].starts_with("Hermes Agent · not installed"),
+            "{lines:?}"
+        );
         assert!(
             lines.iter().any(|line| line.contains("checks it again")),
             "{lines:?}"

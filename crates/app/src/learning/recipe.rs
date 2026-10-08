@@ -23,7 +23,7 @@ pub(crate) struct ForRun {
     pub replay: Option<ReplayTerms>,
 }
 
-/// The recipe whose `match` fits `task_type` and `labels`, under `triage.use_recipes`, at the
+/// The recipe whose `match` fits `task_type` and `labels`, under `triage.use_learned`, at the
 /// version its runs use now: a canary's, a promotion's that hasn't merged yet, or the one a
 /// rollback went back to. The loop keeps those in the conductor's state, not your checkout.
 pub(crate) fn matched(
@@ -32,13 +32,13 @@ pub(crate) fn matched(
     task_type: &str,
     labels: &[String],
 ) -> Option<ForRun> {
-    if !settings.triage.use_recipes {
+    if !settings.triage.use_learned {
         return None;
     }
     let sets = match recipes::load_all(store) {
         Ok(sets) => sets,
         Err(err) => {
-            tracing::warn!("recipes unavailable: {err}");
+            tracing::warn!("learned workflows unavailable: {err}");
             return None;
         }
     };
@@ -92,7 +92,7 @@ pub(crate) fn overlay(recipe: &ForRun) -> Option<RecipeOverlay> {
         }
     };
     Some(RecipeOverlay {
-        label: format!("recipe {}", recipe.loaded.reference()),
+        label: format!("learned workflow {}", recipe.loaded.reference()),
         settings: table.to_string(),
         canary: recipe.canary,
         replay_budget_usd: None,
@@ -188,12 +188,12 @@ mod tests {
         let repo = TempRepo::new().unwrap();
         let store = Store::new(repo.scratch().join("state"), repo.root());
         repo.write(
-            ".argonauts/recipes/api-feature/v1.yaml",
-            "recipe: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
+            ".argonauts/learned/api-feature/v1.yaml",
+            "name: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
              match: { task_types: [backend] }\ncritique: { rounds: 1 }\n",
         )
         .unwrap();
-        repo.commit_all("a recipe").unwrap();
+        repo.commit_all("a learned workflow").unwrap();
         let mut settings = Settings::default();
         settings.skills.export_after_canary = false;
         let evolution = Evolution::open(&store).unwrap();
@@ -230,7 +230,7 @@ mod tests {
         assert!(
             !repo
                 .root()
-                .join(".argonauts/recipes/api-feature/v2.yaml")
+                .join(".argonauts/learned/api-feature/v2.yaml")
                 .exists()
         );
         let canary = matched_now();
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(matched_now().loaded.reference(), api(1));
     }
 
-    /// Closing a promoted candidate from /recipes counts against the run whose retro proposed
+    /// Closing a promoted candidate from /learned counts against the run whose retro proposed
     /// it, in the outcome log, and its parent runs again at once. A candidate that isn't
     /// promoted has nothing to close.
     #[test]
@@ -285,12 +285,12 @@ mod tests {
         .unwrap();
         let store = crate::learning::store(&env);
         repo.write(
-            ".argonauts/recipes/api-feature/v1.yaml",
-            "recipe: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
+            ".argonauts/learned/api-feature/v1.yaml",
+            "name: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
              match: { task_types: [backend] }\ncritique: { rounds: 1 }\n",
         )
         .unwrap();
-        repo.commit_all("a recipe").unwrap();
+        repo.commit_all("a learned workflow").unwrap();
         let mut settings = Settings::default();
         settings.skills.export_after_canary = false;
         let evolution = Evolution::open(&store).unwrap();

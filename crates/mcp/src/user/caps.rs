@@ -174,14 +174,14 @@ mod tests {
             "agents.claude={auth=\"api\"}",
             "agents=x",
             "endpoints.local.header_env.x=Y",
-            "budget.run_usd=100",
-            "budget={run_usd=100}",
-            "limits.anything.below=1",
+            "limits.spend_per_run=100",
+            "limits={spend_per_run=100}",
+            "limits.spend_per_day=1",
             "merge.mode=auto",
-            "gates.test=x",
+            "checks.test=x",
             "notifications.chat.url=x",
-            "handoff.allow_api_billing=true",
-            "roles.owner.handoff.allow_api_billing=true",
+            "fallback.allow_api_billing=true",
+            "fallback.workers.allow_api_billing=true",
         ];
         for entry in refused {
             let found = safety_overrides(&entries(&[entry]));
@@ -196,7 +196,7 @@ mod tests {
             "agents.claude.model=haiku",
             "budget.warn_at=0.5",
             "ui.theme=dark",
-            "roles.owner.agent=claude",
+            "roles.worker.agent=claude",
             "notifications.bell=false",
         ];
         for entry in allowed {

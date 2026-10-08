@@ -22,14 +22,14 @@ fn recipe(description: &str, extra: Value) -> LoadedRecipe {
             "critic": "rotate",
             "checklist": ["criteria", "risky_assumption", "Every endpoint has a rate limit"],
         },
-        "gates": {
+        "checks": {
             "run": ["protected_paths", "secret_scan", "lint", "unit_tests", "cargo clippy --fix"],
             "commands": { "lint": "cargo clippy --workspace -- -D warnings-sentinel" },
         },
         "divide": { "split": "by_module", "contracts_first": true },
-        "spikes": { "enabled": true, "budget_usd": 2 },
+        "experiments": { "enabled": true, "limit_usd": 2 },
         "judging": { "method": "cross" },
-        "budget": { "per_card_usd": 7.25 },
+        "limits": { "per_task_usd": 7.25 },
     }))
     .unwrap();
     if let Value::Object(extra) = extra {
@@ -40,9 +40,9 @@ fn recipe(description: &str, extra: Value) -> LoadedRecipe {
         version: 3,
         parent: Some(2),
         description: description.to_owned(),
-        preset: Some("peer-crew".to_owned()),
+        workflow: Some("council".to_owned()),
         mode: None,
-        workflow: None,
+        phases: None,
         matches: Match {
             task_types: vec!["backend".to_owned()],
             labels_any: vec!["api".to_owned(), "endpoint".to_owned()],
@@ -51,7 +51,7 @@ fn recipe(description: &str, extra: Value) -> LoadedRecipe {
         settings,
     };
     LoadedRecipe {
-        path: PathBuf::from(".argonauts/recipes/api-feature/v3.yaml"),
+        path: PathBuf::from(".argonauts/learned/api-feature/v3.yaml"),
         text: String::new(),
         sha256: "0".repeat(64),
         recipe,
@@ -109,11 +109,11 @@ fn skill_export_flat_metadata_and_hash() {
         "## Steps",
         "### 1. Understand",
         "Write the interfaces and their acceptance tests first.",
-        "throwaway spike",
+        "throwaway experiment",
         "## Checklist",
         "Does it meet every acceptance criterion?",
         "Every endpoint has a rate limit",
-        "## Gates",
+        "## Checks",
         "`secret_scan`",
         "`lint`: the linters pass",
     ] {
@@ -126,7 +126,7 @@ fn skill_export_flat_metadata_and_hash() {
         "clippy",
         "rotate",
         "by_module",
-        "peer-crew",
+        "council",
     ] {
         assert!(!text.contains(absent), "{absent}\n{text}");
     }

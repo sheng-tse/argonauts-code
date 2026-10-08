@@ -57,12 +57,12 @@ const STREAMED: &str = "## Where it stands\nIt's installed and working:\n\n```co
 
 fn samples(now: Instant) -> Vec<argonauts_tui::Cell> {
     let header = SessionHeader {
-        app: "Argonauts".into(),
+        app: "Argonauts Code".into(),
         version: "0.0.1".into(),
-        default_agent: Some("Claude Code".into()),
+        main_agent: Some("Claude Code".into()),
         model: Some("Opus 5.5".into()),
         effort: Some("xhigh".into()),
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         folder: "~/github/argonauts".into(),
         agents: vec![
             AgentReady {
@@ -119,7 +119,7 @@ fn samples(now: Instant) -> Vec<argonauts_tui::Cell> {
     let mut session = ToolCall::agent(
         "Opus 5.5 on Claude Code",
         None,
-        "owner · card-002",
+        "worker · task-002",
         "Add the JSON writer",
     )
     .with_stats(ToolStats {
@@ -185,7 +185,7 @@ fn samples(now: Instant) -> Vec<argonauts_tui::Cell> {
         TurnEnd::new("Sautéed for", Duration::from_secs(2 * 3600 + 53 * 60 + 6), ClockTime::new(6, 41)).into(),
         Recap::new("We're adding a --json flag to the export command. The JSON writer and its tests are in, and the review is going. Next, the flag itself and a line in the README.").into(),
         UserMessage::new("zsh: command not found: argonauts").into(),
-        Notice::new(Tone::Warning, "Merge card-002 into main? · answered: Merge")
+        Notice::new(Tone::Warning, "Merge task-002 into main? · answered: Merge")
             .with_glyph("◆")
             .with_detail("3 files · +48 -6 · tests passed")
             .into(),

@@ -8,6 +8,7 @@
 use std::time::{Duration, Instant};
 
 use argonauts_core::RunId;
+use argonauts_core::agent_goal::{AgentGoal, GoalKeeper};
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
 use argonauts_core::events::run::ParkReason;
 use argonauts_core::names::{SessionKey, WorkflowId};
@@ -19,10 +20,11 @@ use argonauts_core::views::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
+use crate::format;
 use crate::state::AppState;
 use crate::text::{sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::{Role, Theme};
@@ -31,9 +33,13 @@ use super::agent::{AgentView, needs_review, vendor_internals};
 use super::dock::{self, Heading};
 use super::follow::{Follower, Shown};
 use super::goal::GoalView;
+use super::goal_keys;
+use super::goal_panel;
 use super::layout::{cut, left, right};
 use super::list::{self, Nav};
 use super::panes::{self, Footer, Marks, Side};
+use super::session::{SessionView, Tab};
+use super::states;
 use super::{View, ViewCtx, ViewOutcome};
 
 /// Phase names and row labels past this are cut, so one long name can't take the pane.
@@ -44,6 +50,17 @@ const MAX_LABEL: usize = 40;
 /// to no less than [`CUT_LABEL`] before the model goes.
 const CUT_MODEL: usize = 12;
 const CUT_LABEL: usize = 12;
+
+/// Rows the goal panel's box wants, borders included: the frame grows to give it these when
+/// the usual frame is too short.
+const GOAL_BOX_ROWS: u16 = 11;
+
+/// The goal panel's box is this tall at the least, borders included, and at the most; the box
+/// above it keeps at least [`AGENTS_BOX_ROWS`]. A frame too short for both shows the agents
+/// alone.
+const GOAL_BOX_MIN: u16 = 5;
+const GOAL_BOX_MAX: u16 = 14;
+const AGENTS_BOX_ROWS: u16 = 5;
 
 #[derive(Debug)]
 pub struct WorkflowView {
@@ -209,6 +226,40 @@ impl Level {
             .any(|phase| matches!(phase.status, RowStatus::Running | RowStatus::NeedsYou))
     }
 
+    /// The goal `row`'s agent works toward, when it has one.
+    fn goal_of(&self, row: &WorkflowRow) -> Option<&AgentGoal> {
+        match row {
+            WorkflowRow::Agent(agent) => self.data.goal_of(agent),
+            _ => None,
+        }
+    }
+
+    /// The goal the panel under the agents shows: the selected agent's while the agents have
+    /// the keys, and from the phases the first of the phase still running, else its first.
+    fn shown_goal(&self) -> Option<&AgentGoal> {
+        if self.side == Side::Right {
+            return self.row().and_then(|row| self.goal_of(row));
+        }
+        let goals: Vec<&AgentGoal> = self
+            .rows()
+            .into_iter()
+            .filter_map(|row| self.goal_of(row))
+            .collect();
+        goals
+            .iter()
+            .find(|goal| goal.is_running())
+            .or(goals.first())
+            .copied()
+    }
+
+    /// What the panel says when it has no goal to show.
+    fn no_goal_words(&self) -> String {
+        match (self.side, self.row()) {
+            (Side::Right, Some(row)) => format!("{} works without a goal", row_label(row)),
+            _ => "No agent in this phase works toward a goal".to_owned(),
+        }
+    }
+
     /// Time since this data was drawn first, while the workflow still runs.
     fn ticking(&self, now: Instant) -> u64 {
         match self.seen_at {
@@ -293,15 +344,32 @@ impl WorkflowView {
         let elapsed_ms = self
             .run_elapsed(ctx.state)
             .unwrap_or_else(|| data.elapsed_ms + level.ticking(ctx.now));
-        Heading {
-            names,
-            description: data.description.clone(),
-            totals: format!(
+        // A workflow that has started no agent yet has none to count.
+        let mut totals = if data.agents_total > 0 {
+            format!(
                 "{}/{} agents · {}",
                 data.agents_done,
                 data.agents_total,
                 panes::elapsed(elapsed_ms)
-            ),
+            )
+        } else {
+            panes::elapsed(elapsed_ms)
+        };
+        let tokens = data.tokens();
+        if tokens > 0 {
+            totals.push_str(&format!(
+                " · {} {} tokens",
+                ctx.theme.glyphs.tokens,
+                format::tokens(tokens)
+            ));
+        }
+        let mut notes = data.notes.clone();
+        notes.extend(goals_note(&data.goals));
+        Heading {
+            names,
+            notes,
+            description: data.description.clone(),
+            totals,
         }
     }
 
@@ -357,19 +425,39 @@ impl WorkflowView {
                 ("s save", 1),
             ]),
             Side::Right => {
-                let running = level.row().is_some_and(|row| {
+                let row = level.row();
+                let running = row.is_some_and(|row| {
                     matches!(row, WorkflowRow::Agent(agent) if agent.status == RowStatus::Running)
                 });
-                let mut hints = vec![("↑↓ select", 0)];
-                if running {
-                    hints.push(("x stop agent", 4));
+                let mut hints = vec![("↑↓ agent", 0)];
+                if !matches!(row, Some(WorkflowRow::Command(_)) | None) {
+                    hints.push(("enter open it", 6));
                 }
-                hints.extend([
-                    (pause, 3),
-                    ("f filter", 2),
-                    (panes::ESC_BACK, 0),
-                    ("s save", 1),
-                ]);
+                // With vim keys on, `g` goes to the top of the list, as it does in every list.
+                let has_goal = row.is_some_and(|row| level.goal_of(row).is_some());
+                if has_goal && !list::vim(ctx.state) {
+                    hints.push(("g its goal", 5));
+                }
+                // `p` holds the selected agent's goal where it can, and the run otherwise.
+                let hold = self.goal_hold();
+                if let Some(hold) = &hold {
+                    hints.push((hold.hint, 5));
+                }
+                if self.editable_goal().is_some() {
+                    hints.push((goal_keys::EDIT_HINT, 5));
+                }
+                if self.message_target(ctx).is_ok() {
+                    hints.push(("m message it", 4));
+                }
+                // Claude Code's view always offers stopping, so a narrow screen gives up
+                // messaging first.
+                if running {
+                    hints.push(("x stop it", 5));
+                }
+                if hold.is_none() {
+                    hints.push((pause, 3));
+                }
+                hints.extend([("f filter", 2), (panes::ESC_BACK, 0), ("s save", 1)]);
                 Footer::hints(&hints)
             }
         }
@@ -398,6 +486,77 @@ impl WorkflowView {
             // A command has no session of its own to open.
             WorkflowRow::Command(_) => ViewOutcome::Consumed,
         }
+    }
+
+    /// The session `m` would message: the selected agent's, when the screen holds it and it
+    /// can still take a message. Else why not, in plain words.
+    fn message_target(&self, ctx: &ViewCtx<'_>) -> Result<SessionKey, String> {
+        let level = self.top();
+        let agent = match level.row().filter(|_| level.side == Side::Right) {
+            Some(WorkflowRow::Agent(agent)) if !is_vendor(&level.data.id) => agent,
+            _ => return Err("Select one of the run's own agents to message it".to_owned()),
+        };
+        if ctx.state.session(self.run(), &agent.session).is_none() {
+            return Err(format!(
+                "{} isn't on screen, so it can't take a message from here",
+                sanitize_line(&agent.label).trim()
+            ));
+        }
+        match super::steer_refusal(ctx.state, self.run(), &agent.session) {
+            Some(why) => Err(why),
+            None => Ok(agent.session.clone()),
+        }
+    }
+
+    /// `m` on a running agent: the agent opened, with the message line ready.
+    fn message(&self, ctx: &ViewCtx<'_>) -> ViewOutcome {
+        match self.message_target(ctx) {
+            Ok(session) => ViewOutcome::Open(Box::new(
+                SessionView::new(self.run().clone(), session).messaging(),
+            )),
+            Err(why) => ViewOutcome::Notice(why),
+        }
+    }
+
+    /// What `p` does to the selected agent's goal, when it has one that can be held.
+    fn goal_hold(&self) -> Option<goal_keys::GoalKey> {
+        let level = self.top();
+        let row = level.row().filter(|_| level.side == Side::Right)?;
+        goal_keys::hold(self.run(), level.goal_of(row)?)
+    }
+
+    /// The selected agent's goal, when its lines can be rewritten.
+    fn editable_goal(&self) -> Option<&AgentGoal> {
+        let level = self.top();
+        let row = level.row().filter(|_| level.side == Side::Right)?;
+        level.goal_of(row).filter(|goal| goal_keys::can_edit(goal))
+    }
+
+    /// `g` on an agent with a goal: the agent, opened on its Goal tab. `e` opens it there with
+    /// the goal's lines ready to change.
+    fn open_goal(&self, ctx: &ViewCtx<'_>, edit: bool) -> ViewOutcome {
+        let level = self.top();
+        let Some(goal) = level
+            .row()
+            .filter(|_| level.side == Side::Right)
+            .and_then(|row| level.goal_of(row))
+        else {
+            return ViewOutcome::Notice("Select an agent that works toward a goal".to_owned());
+        };
+        if ctx.state.session(self.run(), &goal.session).is_none() {
+            return ViewOutcome::Notice(format!(
+                "{} isn't on screen, so its goal shows only here",
+                sanitize_line(&goal.label).trim()
+            ));
+        }
+        let mut view = SessionView::new(self.run().clone(), goal.session.clone()).on(Tab::Goal);
+        if edit {
+            view = view.editing_lines(goal);
+        }
+        if let Some(follow) = &self.follow {
+            view = view.following(follow.another());
+        }
+        ViewOutcome::Open(Box::new(view))
     }
 
     fn move_selection(&mut self, nav: Nav) {
@@ -521,7 +680,7 @@ impl WorkflowView {
             Some(phase) => AgentView::in_phase(view.clone(), phase),
             None => AgentView::new(view.clone()),
         };
-        self.agent = Some(agent);
+        self.agent = Some(agent.lend(self.follow.as_ref().map(Follower::another)));
         true
     }
 
@@ -596,6 +755,20 @@ impl View for WorkflowView {
         true
     }
 
+    /// Taller when the workflow has goals and the usual frame is too short for the goal panel
+    /// under the agents. It goes by the workflow and not by the row selected, so the frame
+    /// never jumps as you move.
+    fn dock_height(&mut self, screen: ratatui::layout::Size, _ctx: &ViewCtx<'_>) -> Option<u16> {
+        let data = &self.top().data;
+        if self.agent.is_some() || self.goal.is_some() || data.goals.is_empty() {
+            return None;
+        }
+        // The rule, the name, the description, a blank row, and the footer, around the boxes.
+        let around = 5 + status_lines(data).len() as u16;
+        let wanted = around + agents_box_rows(data) + GOAL_BOX_ROWS;
+        Some(dock::height(screen.height).max(wanted))
+    }
+
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         self.top_mut().seen_at.get_or_insert(ctx.now);
         if let Some(follow) = &self.follow {
@@ -614,8 +787,15 @@ impl View for WorkflowView {
         }
         let level = self.top();
         let theme = ctx.theme;
-        let phases = PhaseColumns::fit(&level.data.phases, theme);
-        let frame = dock::split(area, phases.width() as u16, status.len() as u16);
+        let marks = Marks::for_theme(theme);
+        let phases = PhaseColumns::fit(&level.data, theme);
+        let mut frame = dock::split(area, phases.width() as u16, status.len() as u16);
+        let goal_box = if level.data.goals.is_empty() {
+            None
+        } else {
+            let rows = goal_box_rows(&level.data, frame.panes.body.height);
+            dock::carve_below(&mut frame, rows, AGENTS_BOX_ROWS)
+        };
         dock::draw_rule(buf, &frame, theme);
         dock::draw_heading(buf, &frame, &heading, theme);
         dock::draw_status(buf, &frame, &status, theme);
@@ -629,19 +809,33 @@ impl View for WorkflowView {
         let right_title = level.phase().map_or_else(String::new, |phase| {
             let name = sanitize_line(&phase.name).trim().to_owned();
             let agents = panes::count(agents_in_phase(phase), "agent");
-            match (level.filter.word(), phase.attempt) {
+            let mut title = match (level.filter.word(), phase.attempt) {
                 (Some(filter), _) => format!("{name} · {filter} · {agents}"),
                 (None, Some(attempt)) => format!("{name} · attempt {attempt} · {agents}"),
                 (None, None) => format!("{name} · {agents}"),
+            };
+            if level.data.requires(phase) {
+                title.push_str(&format!(" · {} a step you require", marks.required));
             }
+            if let Some(note) = phase_goals_note(level, phase) {
+                title.push_str(&format!(" · {note}"));
+            }
+            title
         });
+        // Who does the phase's work, as the workflow itself put it.
+        let title_note = level
+            .phase()
+            .filter(|phase| !phase.rows.is_empty())
+            .map(|phase| phase.detail.clone())
+            .unwrap_or_default();
         let height = usize::from(panes.right.height);
         let lines: Vec<Line<'static>> = match level.phase() {
             Some(_) if !shown.is_empty() => {
                 let cells: Vec<Cells> = shown
                     .iter()
-                    .map(|row| Cells::of(row, level.ticking(ctx.now), ctx))
+                    .map(|row| Cells::of(row, level.goal_of(row), level.ticking(ctx.now), ctx))
                     .collect();
+                let cells = with_pages(cells, &shown, &level.data.run, ctx);
                 let rows = RowColumns::fit(&cells, usize::from(panes.right.width), ctx);
                 cells
                     .iter()
@@ -660,7 +854,11 @@ impl View for WorkflowView {
         let skip = (level.row + 1).saturating_sub(height);
         let mark = dock::position(skip, height, lines.len(), theme);
         dock::draw_box(buf, &frame, ["Phases", &right_title], &mark, theme);
+        dock::draw_title_note(buf, &frame, &title_note, str_width(&right_title), theme);
         panes::put_lines(buf, panes.right, &lines[skip.min(lines.len())..]);
+        if let Some(area) = goal_box {
+            draw_goal_box(buf, area, level, theme);
+        }
         dock::draw_footer(buf, &frame, footer, theme);
     }
 
@@ -711,6 +909,9 @@ impl View for WorkflowView {
             }
             KeyCode::Char('x') if plain => self.stop(ctx),
             KeyCode::Char('p') if plain => {
+                if let Some(hold) = self.goal_hold() {
+                    return ViewOutcome::Send(hold.command);
+                }
                 if paused(ctx.state, self.run()) {
                     ViewOutcome::Send(UiCommand::Resume {
                         run: Some(self.run().clone()),
@@ -726,6 +927,13 @@ impl View for WorkflowView {
                 ViewOutcome::Consumed
             }
             KeyCode::Char('s') if plain => self.save(),
+            KeyCode::Char('g') if plain && !self.top().data.goals.is_empty() => {
+                self.open_goal(ctx, false)
+            }
+            KeyCode::Char('e') if plain && self.editable_goal().is_some() => {
+                self.open_goal(ctx, true)
+            }
+            KeyCode::Char('m') if plain && self.top().side == Side::Right => self.message(ctx),
             // A goal run's goal, as Claude Code has no Tab here.
             KeyCode::Tab if self.levels[0].data.style == Some(RunStyle::Goal) => {
                 self.pending = Some(Pending::Goal);
@@ -763,6 +971,113 @@ impl View for WorkflowView {
     }
 }
 
+/// `workers on Codex's own goal`, after the workflow's name: who works toward goals here and
+/// who keeps them going. Nothing when no agent has a goal.
+fn goals_note(goals: &[AgentGoal]) -> Option<String> {
+    let first = goals.first()?;
+    let same = |pick: fn(&AgentGoal) -> String| goals.iter().all(|goal| pick(goal) == pick(first));
+    let who = |goal: &AgentGoal| goal.role.clone().unwrap_or_default();
+    let role = sanitize_line(&who(first)).trim().to_owned();
+    let who_words = if same(who) && !role.is_empty() {
+        role
+    } else {
+        "agents".to_owned()
+    };
+    let keeper = |goal: &AgentGoal| goal.kept_by.words();
+    Some(if same(keeper) {
+        match &first.kept_by {
+            GoalKeeper::Cli { .. } => format!(
+                "{who_words} on {}",
+                sanitize_line(&first.kept_by.words()).trim()
+            ),
+            GoalKeeper::Argonauts => format!("{who_words} on goals kept by Argonauts"),
+        }
+    } else {
+        format!("{who_words} on goals")
+    })
+}
+
+/// `each task worked as a goal`, on a phase whose every agent has one, or how many do.
+fn phase_goals_note(level: &Level, phase: &PhaseRow) -> Option<String> {
+    let agents: Vec<&WorkflowRow> = phase
+        .rows
+        .iter()
+        .filter(|row| matches!(row, WorkflowRow::Agent(_)))
+        .collect();
+    let on_goals = agents
+        .iter()
+        .filter(|row| level.goal_of(row).is_some())
+        .count();
+    match on_goals {
+        0 => None,
+        n if n == agents.len() => Some("each task worked as a goal".to_owned()),
+        n => Some(format!("{n} worked as a goal")),
+    }
+}
+
+/// Rows for the goal panel's box when the two boxes share `body` rows. The agents' box takes
+/// what its longest list needs, so the split holds still as the selection moves, and the goal
+/// panel the rest, up to [`GOAL_BOX_MAX`]. 0 when there's no room for both.
+fn goal_box_rows(data: &WorkflowData, body: u16) -> u16 {
+    let left = body.saturating_sub(agents_box_rows(data));
+    if left >= GOAL_BOX_MIN {
+        return left.min(GOAL_BOX_MAX);
+    }
+    // A long list gives up rows before the panel goes.
+    let squeezed = body.saturating_sub(AGENTS_BOX_ROWS);
+    if squeezed >= GOAL_BOX_MIN {
+        squeezed
+    } else {
+        0
+    }
+}
+
+/// Rows the phases and agents box needs, borders included: its longest list, whichever pane
+/// that is.
+fn agents_box_rows(data: &WorkflowData) -> u16 {
+    let longest = data
+        .phases
+        .iter()
+        .map(|phase| phase.rows.len())
+        .max()
+        .unwrap_or(0)
+        .max(data.phases.len());
+    u16::try_from(longest)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .max(AGENTS_BOX_ROWS)
+}
+
+/// The goal panel: a second box under the agents, titled with whose goal it is and who keeps
+/// it, with the lines, the tries, and the last check inside.
+fn draw_goal_box(buf: &mut Buffer, area: Rect, level: &Level, theme: &Theme) {
+    let bold = Style::new()
+        .patch(theme.style(Role::Bright))
+        .add_modifier(Modifier::BOLD);
+    let Some(goal) = level.shown_goal() else {
+        let title = [Span::styled("Goal", bold)];
+        let inner = dock::draw_panel(buf, area, &title, &[], theme);
+        panes::put_lines(buf, inner, &[dim_line(&level.no_goal_words(), theme)]);
+        return;
+    };
+    let title = [
+        Span::styled(theme.glyphs.card, theme.style(Role::Card)),
+        Span::styled(
+            format!(" Goal of {}", sanitize_line(&goal.label).trim()),
+            bold,
+        ),
+    ];
+    let note = goal_panel::kept_by(goal, theme);
+    let inner = dock::draw_panel(buf, area, &title, &note, theme);
+    let lines = goal_panel::panel(
+        goal,
+        usize::from(inner.width),
+        usize::from(inner.height),
+        theme,
+    );
+    panes::put_lines(buf, inner, &lines);
+}
+
 /// The status lines the header carries, at most two.
 fn status_lines(data: &WorkflowData) -> Vec<StatusLine> {
     data.status_lines
@@ -788,7 +1103,13 @@ fn empty_phase(phase: &PhaseRow, state: &AppState, run: &RunId) -> String {
         ),
         (RowStatus::NeedsYou, None) => "Waiting for your answer in the chat".to_owned(),
         (RowStatus::Done, _) => "No agents ran in this phase".to_owned(),
-        _ => "Not started yet".to_owned(),
+        _ => {
+            let detail = sanitize_line(&phase.detail);
+            match detail.trim() {
+                "" => "Not started yet".to_owned(),
+                detail => format!("Not started yet · {detail}"),
+            }
+        }
     }
 }
 
@@ -800,24 +1121,31 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The Phases pane's columns: the cursor, the number or mark, the name, and `done/started`.
+/// The Phases pane's columns: the cursor, the number or mark, the mark of a step you require
+/// when the workflow has one, the name, and `done/started`.
 struct PhaseColumns {
     mark: usize,
+    /// Cells for `★ ` before the name, or none when you require no step here.
+    required: usize,
     name: usize,
     count: usize,
 }
 
 impl PhaseColumns {
-    fn fit(phases: &[PhaseRow], theme: &Theme) -> Self {
+    fn fit(data: &WorkflowData, theme: &Theme) -> Self {
         let marks = Marks::for_theme(theme);
+        let phases = &data.phases;
         let digits = phases.len().to_string().len();
-        let mark = [marks.finished, marks.needs_you, marks.failed]
-            .iter()
-            .map(|glyph| str_width(glyph))
-            .max()
-            .unwrap_or(1);
+        let required = if phases.iter().any(|phase| data.requires(phase)) {
+            str_width(marks.required) + 1
+        } else {
+            0
+        };
+        // A state's mark takes the number's place, and every one of them is one cell.
+        let mark = 1;
         Self {
             mark: mark.max(digits),
+            required,
             name: phases
                 .iter()
                 .map(|phase| str_width(sanitize_line(&phase.name).trim()))
@@ -834,7 +1162,7 @@ impl PhaseColumns {
 
     fn width(&self) -> usize {
         let count = if self.count > 0 { 1 + self.count } else { 0 };
-        2 + self.mark + 1 + self.name + count
+        2 + self.mark + 1 + self.required + self.name + count
     }
 
     /// Every phase numbered from 1 in subtle grey, a finished one a green `✔` in its place, and
@@ -845,7 +1173,7 @@ impl PhaseColumns {
         let accent = theme.style(Role::Card);
         let subtle = theme.style(Role::Faint);
         // A narrow pane cuts the names before the counts, and drops the counts last.
-        let fixed = 2 + self.mark + 1 + 1 + self.count;
+        let fixed = 2 + self.mark + 1 + self.required + 1 + self.count;
         let name_width = self.name.min(width.saturating_sub(fixed));
         let show_count = self.count > 0 && width > fixed;
         level
@@ -857,9 +1185,10 @@ impl PhaseColumns {
                 let selected = i == level.phase;
                 let pick = |style: Style| if selected { accent } else { style };
                 let (mark, mark_style) = match phase.status {
-                    RowStatus::Done => (marks.finished.to_owned(), theme.style(Role::Success)),
-                    RowStatus::NeedsYou => (marks.needs_you.to_owned(), theme.style(Role::Card)),
-                    RowStatus::Failed => (marks.failed.to_owned(), theme.style(Role::Error)),
+                    RowStatus::Done | RowStatus::NeedsYou | RowStatus::Failed => {
+                        let (glyph, role) = states::mark(states::of_row(phase.status), theme);
+                        (glyph.to_owned(), theme.style(role))
+                    }
                     _ => ((i + 1).to_string(), subtle),
                 };
                 let name_style = if phase.status == RowStatus::Waiting {
@@ -876,11 +1205,22 @@ impl PhaseColumns {
                     cursor,
                     Span::styled(left(&mark, self.mark), pick(mark_style)),
                     Span::raw(" "),
-                    Span::styled(
-                        left(sanitize_line(&phase.name).trim(), name_width),
-                        pick(name_style),
-                    ),
                 ];
+                if self.required > 0 {
+                    let star = if level.data.requires(phase) {
+                        marks.required
+                    } else {
+                        ""
+                    };
+                    spans.push(Span::styled(
+                        left(star, self.required),
+                        theme.style(Role::Accent),
+                    ));
+                }
+                spans.push(Span::styled(
+                    left(sanitize_line(&phase.name).trim(), name_width),
+                    pick(name_style),
+                ));
                 if show_count {
                     spans.push(Span::raw(" "));
                     spans.push(Span::styled(
@@ -902,8 +1242,15 @@ struct Cells {
     label: String,
     /// The model, a command such as `pytest`, or `workflow`.
     model: String,
-    /// Tokens, a command's result, or a nested workflow's agents.
+    /// The model with the CLI it runs on, such as `GPT 5.6 on Codex`, for a pane with room.
+    model_on_cli: String,
+    /// Tokens, a command's result, a nested workflow's agents, or where a goal stands.
     detail: String,
+    /// Where a goal stands in fewer words, for a pane too narrow for `detail`. The detail
+    /// itself for a row with no goal.
+    detail_brief: String,
+    /// A square per line of the agent's goal, before the detail. Empty without a goal.
+    squares: Vec<Span<'static>>,
     markers: Vec<Span<'static>>,
     cost: String,
     /// Left out when it's unknown, and `queued` for an agent waiting for a slot.
@@ -911,19 +1258,19 @@ struct Cells {
 }
 
 impl Cells {
-    fn of(row: &WorkflowRow, ticking: u64, ctx: &ViewCtx<'_>) -> Self {
+    fn of(row: &WorkflowRow, goal: Option<&AgentGoal>, ticking: u64, ctx: &ViewCtx<'_>) -> Self {
         let marks = Marks::for_theme(ctx.theme);
         let names = &ctx.state.names;
         let (glyph, glyph_role, status, elapsed_ms) = match row {
             WorkflowRow::Agent(agent) => {
-                let (glyph, role) = row_glyph(&marks, agent.status);
+                let (glyph, role) = states::mark(states::of_row(agent.status), ctx.theme);
                 (glyph, role, agent.status, agent.elapsed_ms)
             }
             WorkflowRow::Workflow(nested) => {
                 (marks.nested, Role::Card, nested.status, nested.elapsed_ms)
             }
             WorkflowRow::Command(command) => {
-                let (glyph, role) = row_glyph(&marks, command.status);
+                let (glyph, role) = states::mark(states::of_row(command.status), ctx.theme);
                 (glyph, role, command.status, command.elapsed_ms)
             }
         };
@@ -933,17 +1280,24 @@ impl Cells {
             RowStatus::Running => panes::elapsed(elapsed_ms + ticking),
             _ => panes::elapsed(elapsed_ms),
         };
+        let named = |agent: &AgentRow, name: String| {
+            let name = sanitize_line(&name).into_owned();
+            if agent.standing_in_for.is_some() {
+                format!("{} {name}", marks.stands_in)
+            } else {
+                name
+            }
+        };
         let (model, detail, markers, cost) = match row {
             WorkflowRow::Agent(agent) => {
-                let mut model = sanitize_line(&names.short(&agent.worker)).into_owned();
-                if agent.standing_in_for.is_some() {
-                    model = format!("{} {model}", marks.stands_in);
-                }
-                let tokens = if agent.tokens > 0 {
-                    panes::tokens(agent.tokens)
-                } else {
-                    String::new()
+                let model = named(agent, names.short(&agent.worker));
+                // An agent on a goal says where the goal stands, where its tokens would be.
+                let tokens = match goal {
+                    Some(goal) => goal_panel::row_words(goal),
+                    None if agent.tokens > 0 => panes::tokens(agent.tokens),
+                    None => String::new(),
                 };
+                let tokens = answered(agent, tokens);
                 let cost = if row_cost(ctx) {
                     panes::spend(&agent.spent).unwrap_or_default()
                 } else {
@@ -972,18 +1326,40 @@ impl Cells {
             glyph,
             glyph_role,
             status,
+            detail_brief: match goal {
+                Some(goal) => goal_panel::row_words_brief(goal),
+                None => detail.clone(),
+            },
             label: row_label(row),
+            // Only an agent's model runs on a CLI: a command or a nested workflow reads the
+            // same either way.
+            model_on_cli: match row {
+                WorkflowRow::Agent(agent) => named(agent, names.worker(&agent.worker)),
+                _ => model.clone(),
+            },
             model,
             detail,
+            squares: goal
+                .map(|goal| goal_panel::squares(goal, ctx.theme))
+                .unwrap_or_default(),
             markers,
             cost,
             time,
         }
     }
 
-    /// What follows the model's ` · `: the detail, then the markers after another ` · `.
+    /// What follows the model's ` · `: the squares and the detail, then the markers after
+    /// another ` · `.
     fn rest_width(&self, markers: bool) -> usize {
-        let detail = str_width(&self.detail);
+        self.rest_width_of(&self.detail, markers)
+    }
+
+    fn rest_width_of(&self, detail: &str, markers: bool) -> usize {
+        let squares = match spans_width(&self.squares) {
+            0 => 0,
+            cells => cells + 1,
+        };
+        let detail = squares + str_width(detail);
         let markers = if markers {
             spans_width(&self.markers)
         } else {
@@ -998,15 +1374,17 @@ impl Cells {
     }
 }
 
-/// A row's glyph, as Claude Code's: grey `●` running, green `✔` done, and our own `○` queued,
-/// `✗` failed, and `◆` waiting for you.
-fn row_glyph(marks: &Marks, status: RowStatus) -> (&'static str, Role) {
-    match status {
-        RowStatus::Running => (marks.running, Role::Faint),
-        RowStatus::Done => (marks.finished, Role::Success),
-        RowStatus::Failed => (marks.failed, Role::Error),
-        RowStatus::NeedsYou => (marks.needs_you, Role::Card),
-        RowStatus::Queued | RowStatus::Waiting | RowStatus::Skipped => (marks.waiting, Role::Dim),
+/// A step a role answered through Argonauts: `asked through Argonauts · 41.2k tok` while it
+/// reads, then its verdict alone.
+fn answered(agent: &AgentRow, tokens: String) -> String {
+    let Some(words) = agent.answered.as_deref() else {
+        return tokens;
+    };
+    let words = sanitize_line(words.trim()).into_owned();
+    if agent.status == RowStatus::Running && !tokens.is_empty() {
+        format!("{words} · {tokens}")
+    } else {
+        words
     }
 }
 
@@ -1016,13 +1394,18 @@ fn row_cost(ctx: &ViewCtx<'_>) -> bool {
 
 /// The right pane's columns, as Claude Code's rows: a cursor slot, the glyph, the label padded
 /// to the longest in the phase, one space, the model padded to the widest, ` · `, the tokens,
-/// and the time flush right. Room runs out from the right: markers, then tokens, then the
+/// and the time flush right. The model names its CLI too where every row has room for it. Then
+/// room runs out from the right: markers go, a goal's words shorten, the tokens and then the
 /// model go, and then the label is cut. The time always stays.
 struct RowColumns {
     width: usize,
     slot: usize,
     label: usize,
     model: usize,
+    /// Whether the model column names the CLI too.
+    on_cli: bool,
+    /// Whether a goal's words are the short ones.
+    brief: bool,
     rest: bool,
     markers: bool,
     cost: usize,
@@ -1052,6 +1435,8 @@ impl RowColumns {
             slot,
             label,
             model,
+            on_cli: false,
+            brief: false,
             rest: true,
             markers: true,
             cost,
@@ -1059,11 +1444,25 @@ impl RowColumns {
         };
         let with_markers = widest(&|c| c.rest_width(true));
         let without = widest(&|c| c.rest_width(false));
+        // The CLI's name is the first to go: the model says more, and the opened agent names
+        // both.
+        let on_cli = widest(&|c| str_width(&c.model_on_cli));
+        if need(label, on_cli, with_markers) <= room {
+            fitted.model = on_cli;
+            fitted.on_cli = true;
+            return fitted;
+        }
         if need(label, model, with_markers) <= room {
             return fitted;
         }
         fitted.markers = false;
         if need(label, model, without) <= room {
+            return fitted;
+        }
+        // A goal's row keeps its squares with fewer words before it says nothing of its goal.
+        let brief = widest(&|c| c.rest_width_of(&c.detail_brief, false));
+        if need(label, model, brief) <= room {
+            fitted.brief = true;
             return fitted;
         }
         fitted.rest = false;
@@ -1122,29 +1521,50 @@ impl RowColumns {
         spans.push(Span::styled(label, label_style));
         if self.model > 0 {
             let model_style = if selected { accent } else { dim };
+            let detail = if self.brief {
+                &cells.detail_brief
+            } else {
+                &cells.detail
+            };
             let rest = if self.rest {
-                cells.rest_width(self.markers)
+                cells.rest_width_of(detail, self.markers)
             } else {
                 0
             };
-            let model = if rest > 0 {
-                left(&cells.model, self.model)
+            let name = if self.on_cli {
+                &cells.model_on_cli
             } else {
-                cut(&cells.model, self.model)
+                &cells.model
+            };
+            let model = if rest > 0 {
+                left(name, self.model)
+            } else {
+                cut(name, self.model)
             };
             spans.push(Span::raw(" "));
             spans.push(Span::styled(model, model_style));
-            if rest > 0 {
+            if rest > 0 && cells.squares.is_empty() {
                 spans.push(Span::styled(" · ", dim));
-                if !cells.detail.is_empty() {
-                    spans.push(Span::styled(cells.detail.clone(), dim));
+                if !detail.is_empty() {
+                    spans.push(Span::styled(detail.clone(), dim));
                 }
-                if self.markers && !cells.markers.is_empty() {
-                    if !cells.detail.is_empty() {
-                        spans.push(Span::styled(" · ", dim));
-                    }
-                    spans.extend(cells.markers.iter().cloned());
+            } else if rest > 0 {
+                // The squares stand where the ` · ` would, three cells in, so both kinds of
+                // row keep one column.
+                spans.push(Span::raw("   "));
+                spans.extend(cells.squares.iter().cloned());
+                let words = match (selected, cells.status) {
+                    (true, _) => accent.add_modifier(Modifier::BOLD),
+                    (false, RowStatus::Done) => dim,
+                    (false, _) => theme.style(Role::Text),
+                };
+                spans.push(Span::styled(format!(" {detail}"), words));
+            }
+            if rest > 0 && self.markers && !cells.markers.is_empty() {
+                if !detail.is_empty() {
+                    spans.push(Span::styled(" · ", dim));
                 }
+                spans.extend(cells.markers.iter().cloned());
             }
         }
         let mut edge = Vec::new();
@@ -1236,6 +1656,37 @@ fn agent_markers(agent: &AgentRow, ctx: &ViewCtx<'_>) -> Vec<Span<'static>> {
     markers
 }
 
+/// The page an agent published goes with its markers, named as on its row in the list:
+/// `⧉ test-report`.
+fn with_pages(
+    mut cells: Vec<Cells>,
+    rows: &[&WorkflowRow],
+    run: &RunId,
+    ctx: &ViewCtx<'_>,
+) -> Vec<Cells> {
+    let dim = ctx.theme.style(Role::Dim);
+    let mark = Marks::for_theme(ctx.theme).artifact;
+    for (cells, row) in cells.iter_mut().zip(rows) {
+        let WorkflowRow::Agent(agent) = row else {
+            continue;
+        };
+        let page = ctx.state.artifacts.by_agent(run, &agent.session);
+        let Some(name) = page.map(|page| sanitize_line(&page.name).trim().to_owned()) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if !cells.markers.is_empty() {
+            cells.markers.push(Span::styled(" · ", dim));
+        }
+        cells
+            .markers
+            .push(Span::styled(format!("{mark} {name}"), dim));
+    }
+    cells
+}
+
 #[cfg(test)]
 mod tests {
     use argonauts_core::Spend;
@@ -1271,6 +1722,7 @@ mod tests {
             subagents: 0,
             context: None,
             standing_in_for: None,
+            answered: None,
         }
     }
 
@@ -1308,6 +1760,9 @@ mod tests {
             phases: vec![phase("Build", RowStatus::Running, rows)],
             style: None,
             status_lines: Vec::new(),
+            notes: Vec::new(),
+            required: Vec::new(),
+            goals: Vec::new(),
         }
     }
 
@@ -1421,6 +1876,34 @@ mod tests {
         state
     }
 
+    /// A review Claude Code's workflow asked Astra for through Argonauts says so
+    /// beside Astra's name while Astra reads, and once answered says what Astra decided.
+    #[test]
+    fn a_step_asked_through_argonauts_says_so() {
+        let mut store = agent("s-002", "review:store", RowStatus::Running);
+        store.worker = "astra".parse().unwrap();
+        store.tokens = 41_200;
+        store.answered = Some("asked through Argonauts".into());
+        let mut cli = agent("s-003", "review:cli", RowStatus::Done);
+        cli.worker = "astra".parse().unwrap();
+        cli.answered = Some("accepted".into());
+        let mut data = workflow(1, "add-due-dates", Vec::new());
+        data.phases = vec![phase(
+            "Review",
+            RowStatus::Running,
+            vec![WorkflowRow::Agent(store), WorkflowRow::Agent(cli)],
+        )];
+        let mut view = WorkflowView::new(data);
+        let text = draw_with(&mut view, 100, &theme(), &going());
+        assert!(
+            row_with(&text, "review:store").contains("astra · asked through Argonauts · 41.2k tok"),
+            "{text}"
+        );
+        let cli = row_with(&text, "review:cli");
+        assert!(cli.contains("astra · accepted"), "{text}");
+        assert!(!cli.contains("tok"), "{text}");
+    }
+
     /// The open view as Claude Code's: a rule six columns short, the name
     /// and the description with its totals inside it, numbered phases with counts only once
     /// started, `phase:target` rows with the model and tokens, and the time flush right.
@@ -1434,7 +1917,9 @@ mod tests {
         assert_eq!(lines[1].trim_end(), " fix-slugify-median", "{text}");
         // The totals end under the box's right border.
         assert!(
-            lines[2].trim_end().ends_with("6/7 agents · 4m31s"),
+            lines[2]
+                .trim_end()
+                .ends_with("6/7 agents · 4m31s · ↓ 2M tokens"),
             "{text}"
         );
         assert_eq!(lines[2].trim_end().chars().count(), 93, "{text}");
@@ -1451,16 +1936,17 @@ mod tests {
         assert!(lines[8].starts_with(" │   4 Merge          │"), "{text}");
         let slugify = row_with(&text, "fix:slugify");
         assert!(
-            slugify.contains("│  ✔ fix:slugify Haiku 4.5    · 18.1k tok"),
+            slugify.contains("│  ✔ fix:slugify Haiku 4.5 on Claude Code · 18.1k tok"),
             "{text}"
         );
         assert!(slugify.trim_end().ends_with("2m10s │"), "{text}");
         assert!(
-            row_with(&text, "fix:median").contains("● fix:median  GPT 5.6 Luna · 31.2k tok"),
+            row_with(&text, "fix:median")
+                .contains("◐ fix:median  GPT 5.6 Luna on Codex    · 31.2k tok"),
             "{text}"
         );
         assert!(!text.contains("0/0"), "{text}");
-        assert!(!text.contains("card-"), "{text}");
+        assert!(!text.contains("task-"), "{text}");
         assert!(!text.contains('$'), "{text}");
         let footer = lines.last().unwrap_or(&"").trim_end();
         assert_eq!(
@@ -1526,6 +2012,30 @@ mod tests {
         }
     }
 
+    /// A row names the CLI its model runs on where every row of the pane has room for it. On
+    /// a narrower pane the CLI's name is the first thing to go, before the tokens do.
+    #[test]
+    fn a_row_names_its_cli_where_there_is_room_and_the_model_alone_where_not() {
+        let wide = draw_with(&mut WorkflowView::new(fixing()), 100, &theme(), &going());
+        assert!(
+            row_with(&wide, "fix:slugify").contains("Haiku 4.5 on Claude Code · 18.1k tok"),
+            "{wide}"
+        );
+        assert!(
+            row_with(&wide, "fix:median").contains("GPT 5.6 Luna on Codex    · 31.2k tok"),
+            "{wide}"
+        );
+        let narrow = draw_with(&mut WorkflowView::new(fixing()), 80, &theme(), &going());
+        assert!(
+            row_with(&narrow, "fix:slugify").contains("Haiku 4.5    · 18.1k tok"),
+            "{narrow}"
+        );
+        assert!(
+            row_with(&narrow, "fix:median").contains("GPT 5.6 Luna · 31.2k tok"),
+            "{narrow}"
+        );
+    }
+
     /// A phase still to come says `Not started yet`, as Claude Code's does, and nothing else.
     #[test]
     fn a_phase_still_to_come_has_not_started() {
@@ -1551,12 +2061,12 @@ mod tests {
         };
         assert_eq!(
             footer(&mut view, &state),
-            "↑↓ select · p pause · f filter · esc back · s save"
+            "↑↓ agent · enter open it · p pause · f filter · esc back · s save"
         );
         press_in(&mut view, KeyCode::Down, &state);
         assert_eq!(
             footer(&mut view, &state),
-            "↑↓ select · x stop agent · p pause · f filter · esc back · s save"
+            "↑↓ agent · enter open it · x stop it · p pause · f filter · esc back · s save"
         );
         // Paused, p resumes.
         let mut paused = state.clone();
@@ -1777,6 +2287,8 @@ mod tests {
             diff: None,
             subagents: None,
             outcome: None,
+            goal: None,
+            plan: None,
         };
         let answer = ViewData::Agent {
             view: Box::new(data.clone()),
@@ -1798,7 +2310,7 @@ mod tests {
         let text = screen(&mut view);
         // Two agents of its own and the nested workflow's two, as the workflow view counts.
         assert!(text.contains("Build · 4 agents"), "{text}");
-        assert!(text.contains("● Running"), "{text}");
+        assert!(text.contains("◐ Running"), "{text}");
         assert!(text.contains("Prompt · 1 line"), "{text}");
 
         // Another run's answer isn't this view's.
@@ -1968,7 +2480,7 @@ mod tests {
     /// After the finish, the view opens on the last phase whose agents ran.
     #[test]
     fn a_finished_workflow_opens_on_its_last_phase_with_agents() {
-        let mut data = workflow(1, "peer-crew", Vec::new());
+        let mut data = workflow(1, "council", Vec::new());
         let done = |session: &str| WorkflowRow::Agent(agent(session, "build:x", RowStatus::Done));
         data.phases = vec![
             phase("Understand", RowStatus::Done, vec![done("s-001")]),
@@ -2019,7 +2531,7 @@ mod tests {
             card: None,
             packet: CheckpointPacket::Question(QuestionPacket {
                 from: "codex".parse().unwrap(),
-                card: argonauts_core::CardId::new("card-001").unwrap(),
+                card: argonauts_core::CardId::new("task-001").unwrap(),
                 text: title.into(),
                 options: Vec::new(),
             }),
@@ -2039,15 +2551,15 @@ mod tests {
         let mut alignment = workflow(2, "goal", Vec::new());
         alignment.breadcrumb = vec!["goal".into()];
         let mut view = WorkflowView::new(alignment);
-        let own = workflow(1, "peer-crew", Vec::new());
+        let own = workflow(1, "council", Vec::new());
         assert!(view.accept_workflow(&own));
         assert_eq!(view.depth(), 1);
-        assert_eq!(view.current().name, "peer-crew");
+        assert_eq!(view.current().name, "council");
         // A nested workflow the view didn't ask for changes nothing.
         let mut nested = workflow(3, "review", Vec::new());
-        nested.breadcrumb = vec!["peer-crew".into(), "review".into()];
+        nested.breadcrumb = vec!["council".into(), "review".into()];
         assert!(!view.accept_workflow(&nested));
-        assert_eq!(view.current().name, "peer-crew");
+        assert_eq!(view.current().name, "council");
     }
 
     /// The totals count the agents this workflow started and the run's time, as the panel
@@ -2062,14 +2574,14 @@ mod tests {
         run.ended = Some(wall);
         run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
         state.runs.insert(run.id.clone(), run);
-        let mut view = WorkflowView::new(workflow(1, "peer-crew", Vec::new()));
+        let mut view = WorkflowView::new(workflow(1, "council", Vec::new()));
         let text = draw_with(&mut view, 120, &theme, &state);
         assert!(text.contains("1/3 agents · 2m05s"), "{text}");
         assert!(!text.contains('$'), "{text}");
 
         // A nested level keeps its own numbers.
         let mut nested = workflow(2, "review", Vec::new());
-        nested.breadcrumb = vec!["peer-crew".into(), "review".into()];
+        nested.breadcrumb = vec!["council".into(), "review".into()];
         view.pending = Some(Pending::Workflow(nested.id.clone()));
         assert!(view.accept_workflow(&nested));
         let text = draw_with(&mut view, 120, &theme, &state);

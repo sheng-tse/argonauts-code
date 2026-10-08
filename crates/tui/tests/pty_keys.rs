@@ -36,7 +36,7 @@ fn wait_input(harness: &Harness, text: &str) {
 fn ctrl_c_clears_then_exits_twice() {
     let (_, _, events) = crew_run(1);
     let mut harness = Harness::start(Script::idle().all(0, events));
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.send("a draft to throw away");
     harness.wait_visible("❯ a draft to throw away");
     harness.press(Key::Ctrl('c'));
@@ -58,7 +58,7 @@ fn ctrl_c_twice_on_the_inline_screen_leaves_what_keeps_going_in_scrollback() {
     let mut harness = Harness::launch(Script::idle().all(0, events))
         .inline()
         .start();
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.press(Key::Ctrl('c'));
     harness.wait_visible("Press Ctrl-C again to exit · the run keeps going");
     harness.press(Key::Ctrl('c'));
@@ -152,6 +152,9 @@ fn navigation_keys_consistent() {
     harness.wait_visible("Opus on Claude Code");
     harness.press(Key::Esc);
     harness.press(Key::Esc);
+    // Back at the list with the agent still selected, the rule names who a message is for.
+    harness.wait_visible("^─+ task-002 ─$");
+    harness.press(Key::Esc);
     harness.wait_visible(TOP_RULE);
     harness.press(Key::Left);
     harness.wait_gone(TOP_RULE);
@@ -172,13 +175,28 @@ fn down_focuses_agent_panel() {
     // The codex agent's view opened.
     harness.wait_visible("GPT 5\\.6 on Codex");
     harness.press(Key::Esc);
-    harness.wait_visible(TOP_RULE);
+    // Back at the list, its row is still selected: the rule names it, the input offers to
+    // message it, and the list's keys take the mode line, in Claude Code's words.
+    let listed = harness.wait_visible("^─+ task-003 ─$");
+    let rule = expect_row(&listed, "^─+ task-003 ─$");
+    assert_eq!(listed.visible[rule + 1], "❯ Message @task-003…");
+    assert!(
+        listed.visible[rule + 3].starts_with(
+            "  ↑/↓ to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents"
+        ),
+        "{listed:?}"
+    );
+    assert!(
+        listed.visible[rule + 8].starts_with("    ● task-003 "),
+        "{listed:?}"
+    );
     harness.press(Key::Esc);
+    harness.wait_visible(TOP_RULE);
     harness.press(Key::Down);
     harness.press(Key::Down);
     // The first x asks inline, like Ctrl+C's double press, and the second stops.
     harness.press(Key::Char('x'));
-    harness.wait_visible("x again to stop Opus on Claude Code · esc to keep");
+    harness.wait_visible("x again to stop task-002 · esc to keep");
     harness.press(Key::Char('x'));
     let stop = harness.wait_command("stop_agent");
     assert_eq!(
@@ -237,14 +255,14 @@ fn agent_panel_rows_progress() {
         .start();
     let screen = harness.wait_visible("↓ 18\\.1k tokens");
     let mode = expect_row(&screen, "↓ to manage");
-    let mut last = expect_row(&screen, "peer-crew · Add a --json flag to export ");
+    let mut last = expect_row(&screen, "council · Add a --json flag to export ");
     assert!(last > mode, "the run's row under the mode line");
     for agent in &crew {
-        // Under the run's row: the circle, the name, the card, the bar, then steps and tokens
-        // in their columns, and the time at the edge. With room to spare, no name is cut.
+        // Under the run's row, a row of the list: the dot, the agent's name (its task, in a
+        // recording from before labels), what it's doing, then its to-do count, how long, and
+        // its tokens.
         let pattern = format!(
-            "^    ◐ {} +{} +[█░]+ +2/5 +↓ [\\d.]+k tokens +{ELAPSED}",
-            regex::escape(&agent.name()),
+            "^    ○ {} +\\S.* +2/5 · {LISTED_FOR} · ↓ [\\d.]+k tokens$",
             regex::escape(&agent.card),
         );
         let row = expect_row(&screen, &pattern);
@@ -255,18 +273,20 @@ fn agent_panel_rows_progress() {
         );
         last = row;
     }
-    // Each agent's panel row, not its line in the started tree, and its bar's column in cells.
-    let bars: Vec<Option<usize>> = crew
+    // The run's row keeps the bar, and the agents' stats start in one column.
+    let run_row = &screen.visible[expect_row(&screen, "council · Add a --json flag to export ")];
+    assert!(run_row.contains(['█', '░']), "{run_row}");
+    let stats: Vec<Option<usize>> = crew
         .iter()
         .map(|agent| {
-            let pattern = format!("^    ◐ {} ", regex::escape(&agent.name()));
+            let pattern = format!("^    ○ {} ", regex::escape(&agent.card));
             let row = &screen.visible[expect_row(&screen, &pattern)];
-            row.chars().position(|c| c == '█' || c == '░')
+            row.find("2/5").map(|at| row[..at].chars().count())
         })
         .collect();
     assert!(
-        bars[0].is_some() && bars.windows(2).all(|w| w[0] == w[1]),
-        "bars line up: {bars:?}"
+        stats[0].is_some() && stats.windows(2).all(|w| w[0] == w[1]),
+        "stats line up: {stats:?}"
     );
 }
 
@@ -281,12 +301,12 @@ fn take_over_endpoint_refused() {
             run.started("Add a --json flag to export", "crew"),
             run.card_created(&agent),
             run.session_started(&agent, 1),
-            take_over(&agent, &[], "/wt/card-002"),
+            take_over(&agent, &[], "/wt/task-002"),
         ],
     );
     let harness = Harness::start(script);
     let screen = harness
-        .wait_visible(r"A direct endpoint has no UI to hand over\. /reassign the card instead\.");
+        .wait_visible(r"A direct endpoint has no UI to hand over\. /reassign the task instead\.");
     assert!(
         screen.visible_text().contains("Ollama"),
         "{}",
@@ -310,7 +330,7 @@ fn return_from_take_over_shows_needs_you() {
                 run.started("Add a --json flag to export", "crew"),
                 run.card_created(&agent),
                 run.session_started(&agent, 1),
-                take_over(&agent, &["sh", "-c", "echo in the vendor ui; exit 3"], &cwd),
+                take_over(&agent, &["sh", "-c", "echo in the agent ui; exit 3"], &cwd),
             ],
         )
         .await_command("take_over_ended")
@@ -319,15 +339,15 @@ fn return_from_take_over_shows_needs_you() {
     let harness = Harness::start(script);
     // The program printed on the main screen, which the app's own screen covers again after.
     harness.wait_until("the program's output", |_| {
-        String::from_utf8_lossy(&harness.raw()).contains("in the vendor ui")
+        String::from_utf8_lossy(&harness.raw()).contains("in the agent ui")
     });
     let ended = harness.wait_command("take_over_ended");
     assert_eq!(ended["run"], RUN);
     assert_eq!(ended["card"], agent.card);
     assert_eq!(ended["exit_code"], 3);
-    let screen = harness.wait_visible("Let the owner continue");
+    let screen = harness.wait_visible("Let the worker continue");
     // The card holds the keys, so it stands in for the input above the mode line.
-    assert_order(&screen, &["◆", "Let the owner continue", "mode on"]);
+    assert_order(&screen, &["◆", "Let the worker continue", "mode on"]);
     harness.wait_gone(TOP_RULE);
     harness.wait_until("the bell", |_| harness.bells() > 0);
 }

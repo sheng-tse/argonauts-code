@@ -1,0 +1,8 @@
+---
+source: crates/tui/tests/snap_bottom.rs
+expression: text(&view.lines)
+---
+────────────────────────────────────────────────────────────────────── council ─
+❯ Try "review the last commit"
+────────────────────────────────────────────────────────────────────────────────
+  ǁ supervised     ● Claude 5h ▄ 38% 7d ▄▄▄▖▄▄ 56%  ○ Codex 5h ▄▄▄▄▄▖ 92% 4:40pm

@@ -59,7 +59,7 @@ pub fn message(at: OffsetDateTime, from: &WorkerRef, to: &[WorkerRef], reason: &
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    format!("Handoff checkpoint\n\ntime: {when}\nfrom: {from}\nreason: {reason}\nto: {to}\n")
+    format!("Fallback checkpoint\n\ntime: {when}\nfrom: {from}\nreason: {reason}\nto: {to}\n")
 }
 
 /// The card's checkpoints and the commit each one marks, oldest first, for `/rewind`.

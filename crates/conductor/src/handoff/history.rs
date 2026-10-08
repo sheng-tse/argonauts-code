@@ -224,7 +224,7 @@ mod tests {
             seq: 0,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: run(),
-            card_id: card.map(|id| CardId::new(id).expect("a valid card id")),
+            card_id: card.map(|id| CardId::new(id).expect("a valid task id")),
             session: session.map(SessionKey::numbered),
             source: "conductor".to_owned(),
             kind,
@@ -240,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn card_log_keeps_the_cards_sessions_and_skips_the_rest() {
-        let card = CardId::new(CARD).expect("a valid card id");
+        let card = CardId::new(CARD).expect("a valid task id");
         let attempt = RunEventKind::Card(CardEvent::Attempt {
             attempt: 1,
             worker: worker("codex/gpt-5"),
@@ -249,7 +249,7 @@ mod tests {
         let events = [
             event(Some(CARD), Some(1), attempt.clone()),
             event(None, Some(1), message("mine")),
-            event(Some("card-004"), Some(2), attempt),
+            event(Some("task-004"), Some(2), attempt),
             event(None, Some(2), message("theirs")),
             event(
                 None,
@@ -274,7 +274,7 @@ mod tests {
         // Another card's attempt still places that card.
         assert_eq!(
             read.placements.on_vendor(&vendor("codex"), &card),
-            [CardId::new("card-004").expect("a valid card id")]
+            [CardId::new("task-004").expect("a valid task id")]
         );
         assert!(
             card_log(&dir.path().join("missing.jsonl"), &card)
@@ -305,25 +305,25 @@ mod tests {
             seq,
             ..event(Some(card), None, kind)
         };
-        let id = |card: &str| CardId::new(card).expect("a valid card id");
+        let id = |card: &str| CardId::new(card).expect("a valid task id");
         let events = [
             at(
                 1,
-                "card-004",
+                "task-004",
                 attempt(1, "claude-code/opus", AttemptCause::First),
             ),
-            at(2, "card-004", state(CardState::Running)),
+            at(2, "task-004", state(CardState::Running)),
             at(
                 3,
-                "card-005",
+                "task-005",
                 attempt(1, "claude-code/opus", AttemptCause::First),
             ),
-            at(4, "card-005", state(CardState::Integrated)),
+            at(4, "task-005", state(CardState::Integrated)),
             at(
                 5,
-                "card-006",
+                "task-006",
                 RunEventKind::Handoff(HandoffEvent::HandedOff {
-                    card: id("card-006"),
+                    card: id("task-006"),
                     to: worker("codex/gpt-5"),
                     mode: argonauts_core::settings::handoff::HandoffMode::Auto,
                     by: argonauts_core::events::run::Party::Conductor,
@@ -332,12 +332,12 @@ mod tests {
             ),
             at(
                 6,
-                "card-006",
+                "task-006",
                 attempt(2, "codex/gpt-5", AttemptCause::Handoff),
             ),
             at(
                 7,
-                "card-006",
+                "task-006",
                 attempt(3, "codex/gpt-5", AttemptCause::GateRetry),
             ),
         ];
@@ -348,30 +348,30 @@ mod tests {
         let claude = vendor("claude-code");
         assert_eq!(placements.last_seq, 7);
         // A finished card has no session to move.
-        assert_eq!(placements.on_vendor(&claude, &id(CARD)), [id("card-004")]);
-        assert!(placements.on_vendor(&claude, &id("card-004")).is_empty());
+        assert_eq!(placements.on_vendor(&claude, &id(CARD)), [id("task-004")]);
+        assert!(placements.on_vendor(&claude, &id("task-004")).is_empty());
         // A gate retry on the same worker keeps the handoff that put the card there.
         assert_eq!(placements.handed_to(&worker("codex/gpt-5")), 1);
 
         let gemini = worker("antigravity-cli/gemini-3");
-        assert!(placements.pick(&id("card-004"), &gemini, 7));
+        assert!(placements.pick(&id("task-004"), &gemini, 7));
         assert_eq!(placements.handed_to(&gemini), 1);
         assert!(placements.on_vendor(&claude, &id(CARD)).is_empty());
 
         // Once the log places the card after the pick, the log wins.
         placements.observe(&at(
             8,
-            "card-004",
+            "task-004",
             attempt(2, "codex/gpt-5", AttemptCause::Handoff),
         ));
-        assert!(!placements.pick(&id("card-004"), &gemini, 7));
+        assert!(!placements.pick(&id("task-004"), &gemini, 7));
         assert_eq!(placements.handed_to(&gemini), 0);
         assert_eq!(placements.handed_to(&worker("codex/gpt-5")), 2);
     }
 
     #[test]
     fn a_race_counts_as_one_handoff() {
-        let card = CardId::new(CARD).expect("a valid card id");
+        let card = CardId::new(CARD).expect("a valid task id");
         let racers = ["codex/gpt-5", "antigravity-cli/gemini-3", "opencode/glm"];
         let at = |seq: u64, kind: RunEventKind| RunEvent {
             seq,
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn gates_count_only_after_the_latest_commit() {
-        let card = CardId::new(CARD).expect("a valid card id");
+        let card = CardId::new(CARD).expect("a valid task id");
         let at = |seq: u64, kind: RunEventKind| RunEvent {
             seq,
             ..event(Some(CARD), None, kind)
@@ -431,7 +431,7 @@ mod tests {
             })
         };
         let commit = RunEventKind::Card(CardEvent::Committed(argonauts_core::CommitInfo {
-            branch: "argonauts/run-01/card-003".to_owned(),
+            branch: "argonauts/run-01/task-003".to_owned(),
             sha: Some("abc".to_owned()),
             message: "work".to_owned(),
             stat: argonauts_core::DiffStat::default(),

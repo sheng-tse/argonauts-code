@@ -8,6 +8,7 @@ mod learning;
 mod mcp;
 mod runs;
 mod text;
+mod update;
 mod usage;
 
 use std::io::Write as _;
@@ -81,6 +82,7 @@ async fn dispatch(cli: Cli) -> ExitCode {
         Some(Command::Status { json }) => runs::status(json).await,
         Some(Command::Inbox) => runs::inbox().await,
         Some(Command::Doctor(ref args)) => doctor::run(args, &cli.set).await,
+        Some(Command::Update) => update::run(&cli.set).await,
         Some(Command::Config(ref command)) => config::run(command, &cli.set),
         Some(Command::Models { discover }) => config::models(discover).await,
         Some(Command::Approve {
@@ -102,14 +104,16 @@ async fn dispatch(cli: Cli) -> ExitCode {
             ref report_file,
             ref ask,
             approve_tool,
-            start_run,
+            ref tools,
+            ref ask_roles,
         })) => mcp::session(
             status_file.as_deref(),
             report_schema.as_deref().zip(report_file.as_deref()),
             ask.as_deref().map(|endpoint| mcp::Asking {
                 endpoint,
                 approve: approve_tool,
-                start_run,
+                tools,
+                roles: ask_roles,
             }),
         )
         .await

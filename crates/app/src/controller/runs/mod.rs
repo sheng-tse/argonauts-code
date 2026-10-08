@@ -276,14 +276,22 @@ fn on_listed(ctx: &mut Ctx, runs: &mut RunsState, listed: Result<Vec<RunSummary>
     }
 }
 
-/// Says when a run off screen starts waiting on you or finishes, as a notice and, while you're
-/// away, a notification. Every run in the repo does, so one from an earlier conversation or a
-/// front end can't wait or merge unseen, though only this conversation's get panel rows, which
-/// the mode line counts.
+/// Says when a run off screen starts in another window, starts waiting on you, or finishes, as
+/// one line and, while you're away, a notification. Every run in the repo does, so one from an
+/// earlier conversation, another window, or a front end can't start, wait, or merge unseen,
+/// though only this conversation's get panel rows, which the mode line counts.
 fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
     let on_screen = attached(runs);
     for run in list.iter().filter(|run| Some(&run.run) != on_screen) {
         let before = runs.listed.iter().find(|earlier| earlier.run == run.run);
+        if before.is_none() && started_elsewhere(runs, run) {
+            let line = started_line(run);
+            ctx.notice(NoteLevel::Info, line.clone());
+            if !runs.focused {
+                notify::send_os_line(ctx, &repo_name(ctx), &line);
+            }
+            continue;
+        }
         let (trigger, kind, text) = if run.needs_you() {
             let waits_more = match before {
                 Some(before) => run.waiting.iter().any(|id| !before.waiting.contains(id)),
@@ -293,16 +301,26 @@ fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
                 continue;
             }
             let kind = match run.stopped_at.trim() {
-                "" => "a card".to_owned(),
+                "" => "a task".to_owned(),
                 at => at.to_owned(),
             };
-            let text = format!("{run} needs you · /resume {run}", run = run.run);
+            // One of this conversation's has its row, which opens it; one from elsewhere opens
+            // by its number alone.
+            let text = if runs.ours.contains(&run.run) {
+                format!("{} needs you · ↓ to manage", run_called(run))
+            } else {
+                format!("{} needs you · /resume {}", run_called(run), run.run)
+            };
             (ChatTrigger::NeedsYou, kind, text)
         } else if let (Some(_), Some(outcome)) = (before, outcome_of(run.state)) {
+            let open = if runs.ours.contains(&run.run) {
+                "/resume".to_owned()
+            } else {
+                format!("/resume {}", run.run)
+            };
             let text = format!(
-                "{} /resume {} shows it.",
-                track::outcome_sentence(&run.run, outcome),
-                run.run
+                "{} {open} shows it.",
+                track::outcome_sentence(run_called(run), outcome),
             );
             (
                 ChatTrigger::Finished,
@@ -312,7 +330,7 @@ fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
         } else {
             continue;
         };
-        ctx.notice(NoteLevel::Info, text);
+        ctx.notice(NoteLevel::Info, text.clone());
         let needs = NeedsYou {
             repo: repo_name(ctx),
             run: run.run.clone(),
@@ -322,7 +340,51 @@ fn announce_background(ctx: &mut Ctx, runs: &RunsState, list: &[RunSummary]) {
             trigger,
         };
         notify_if_away(ctx, runs, &needs);
+        // A run that ended in another window is told on the desktop too: its merge changed
+        // your checkout while you looked elsewhere. One of this conversation's has its row.
+        if trigger == ChatTrigger::Finished && !runs.focused && !runs.ours.contains(&run.run) {
+            notify::send_os_line(ctx, &needs.repo, &text);
+        }
     }
+}
+
+/// A run this listing shows for the first time, going, that this conversation neither started
+/// nor opened: it was started in another window, or by a front end, since the last listing.
+fn started_elsewhere(runs: &RunsState, run: &RunSummary) -> bool {
+    run.live
+        && run.is_open()
+        && !run.needs_you()
+        && !runs.ours.contains(&run.run)
+        && !runs.shown.contains(&run.run)
+}
+
+/// The one line for a run that started in another window, by its own name once it has one.
+fn started_line(run: &RunSummary) -> String {
+    match named(run) {
+        Some(name) => format!(
+            "A run started in another window: {name} · /resume {} shows it",
+            run.run
+        ),
+        None => format!(
+            "A run started in another window · /resume {} shows it",
+            run.run
+        ),
+    }
+}
+
+/// A run's own name, else its title.
+fn named(run: &RunSummary) -> Option<&str> {
+    [run.name.as_deref(), Some(run.title.as_str())]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+}
+
+/// A run as a line about it names it: by its own name or title, as its panel row does, and by
+/// its number only when it has neither.
+fn run_called(run: &RunSummary) -> String {
+    named(run).map_or_else(|| run.run.to_string(), str::to_owned)
 }
 
 /// How a run ended, from its listed state. `None` while it's open, or when it crashed.
@@ -584,7 +646,7 @@ fn new_summary(ctx: &Ctx, run: &RunId, title: String, mode: RunMode) -> RunSumma
         run: run.clone(),
         title,
         mode,
-        preset: ctx.settings().preset.clone(),
+        workflow: ctx.settings().workflow.clone(),
         state: RunState::Running,
         stopped_at: String::new(),
         updated: ctx.services.clock.now(),
@@ -644,7 +706,7 @@ async fn on_event(
     attached.narrator.observe(&event);
     let seen = track::track(attached, &event);
     ctx.send(AppEvent::Run {
-        event: Box::new(event.clone()),
+        event: Box::new(crate::views::required::for_screen(&event, &ctx.env)),
     });
     attached.events.push(event);
     if history {
@@ -812,7 +874,7 @@ pub(crate) async fn wake_parked(ctx: &mut Ctx, runs: &mut RunsState) -> anyhow::
         (parked, due)
     })
     .await
-    .context("checking parked runs for a wake")?;
+    .context("checking waiting runs for a wake")?;
     runs.parked = parked;
     for (run, cause) in due {
         if !runs.waking.insert(run.clone()) {
@@ -847,8 +909,8 @@ async fn on_woke(
         return Ok(Vec::new());
     }
     let why = match cause {
-        WakeCause::VendorBack => "the vendor it waited for is back",
-        WakeCause::AskTimeout => "its handoff question timed out, so the role's fallback applies",
+        WakeCause::VendorBack => "the agent it waited for is back",
+        WakeCause::AskTimeout => "its fallback question timed out, so the role's fallback applies",
     };
     ctx.notice(NoteLevel::Info, format!("{run} woke up: {why}."));
     let reattach = runs

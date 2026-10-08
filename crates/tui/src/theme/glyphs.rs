@@ -156,6 +156,11 @@ impl Glyphs {
         }
     }
 
+    /// The ASCII set, which draws frames, bars, and marks from plain characters too.
+    pub fn is_ascii(&self) -> bool {
+        self.rule.is_ascii()
+    }
+
     /// Every glyph with its field name, spinner and title frames one by one, in declaration
     /// order.
     pub fn named(&self) -> Vec<(&'static str, &'static str)> {

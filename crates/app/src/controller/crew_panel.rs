@@ -6,7 +6,12 @@ use std::collections::BTreeSet;
 
 use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::app::{AppEvent, ViewData};
-use argonauts_core::crew_panel::{CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTarget};
+use argonauts_core::crew_panel::{
+    CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTarget, RunStands,
+};
+use argonauts_core::events::RunEvent;
+use argonauts_core::journal;
+use argonauts_core::layout::run_files;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::vendor_sessions::{VendorScan, VendorSession};
 
@@ -15,6 +20,10 @@ use super::{Ctx, Effect, run_commands};
 
 /// Each CLI's newest sessions the panel lists.
 const SESSIONS_PER_CLI: usize = 20;
+
+/// This repo's newest runs whose agents the panel lists under them. Each costs a read of its
+/// journal, so an older run is listed whole, and its workflow view shows its agents.
+const RUNS_WITH_AGENTS: usize = 5;
 
 pub(crate) async fn show(ctx: &mut Ctx, chat: &ChatState) -> anyhow::Result<Vec<Effect>> {
     let repo = ctx.env.display_repo();
@@ -28,8 +37,21 @@ pub(crate) async fn show(ctx: &mut Ctx, chat: &ChatState) -> anyhow::Result<Vec<
             .filter(|session| !own.contains(&session.id))
             .map(|session| session_row(session, &repo)),
     );
-    for listed in run_commands::all_repos(ctx).await? {
-        rows.extend(listed.runs.iter().map(|run| run_row(run, &listed.repo)));
+    for (at, listed) in run_commands::all_repos(ctx).await?.iter().enumerate() {
+        // This repo comes first, and its journals are the ones in reach.
+        let with_agents = if at == 0 { RUNS_WITH_AGENTS } else { 0 };
+        let agents = run_agents(ctx, &listed.runs[..with_agents.min(listed.runs.len())]).await;
+        for (n, run) in listed.runs.iter().enumerate() {
+            match agents.get(n).filter(|agents| !agents.is_empty()) {
+                Some(events) => rows.extend(crate::views::crew_rows(
+                    events,
+                    &crew_run(run),
+                    &listed.repo,
+                    run.live,
+                )),
+                None => rows.push(run_row(run, &listed.repo)),
+            }
+        }
     }
     ctx.send(AppEvent::View {
         data: Box::new(ViewData::Crew {
@@ -79,6 +101,8 @@ pub(crate) fn session_row(session: &VendorSession, repo: &str) -> CrewRow {
         },
         state: CrewState::Ready,
         title: session.title.clone(),
+        label: None,
+        tries: 0,
         repo: repo.to_owned(),
         run: None,
         worker: Some(WorkerRef::new(
@@ -96,7 +120,30 @@ pub(crate) fn session_row(session: &VendorSession, repo: &str) -> CrewRow {
     }
 }
 
-/// A whole run, as one row under its own heading.
+/// The events of each of `runs`, in order, read on a blocking thread. A journal that can't be
+/// read gives none, and its run is listed whole.
+async fn run_agents(ctx: &Ctx, runs: &[RunSummary]) -> Vec<Vec<RunEvent>> {
+    let journals: Vec<_> = runs
+        .iter()
+        .map(|run| ctx.env.run_dir(&run.run).join(run_files::EVENTS))
+        .collect();
+    let read = tokio::task::spawn_blocking(move || {
+        journals
+            .iter()
+            .map(|path| match journal::read_all(path) {
+                Ok(back) => back.events,
+                Err(err) => {
+                    tracing::warn!("reading {} for the crew panel: {err}", path.display());
+                    Vec::new()
+                }
+            })
+            .collect()
+    })
+    .await;
+    read.unwrap_or_default()
+}
+
+/// A whole run, as one row that is its own heading.
 pub(crate) fn run_row(run: &RunSummary, repo: &str) -> CrewRow {
     CrewRow {
         target: CrewTarget::Run {
@@ -104,11 +151,10 @@ pub(crate) fn run_row(run: &RunSummary, repo: &str) -> CrewRow {
         },
         state: run_state(run),
         title: run.title.clone(),
+        label: None,
+        tries: 0,
         repo: repo.to_owned(),
-        run: Some(CrewRun {
-            id: run.run.clone(),
-            title: run.title.clone(),
-        }),
+        run: Some(crew_run(run)),
         worker: None,
         latest: run.stopped_at.clone(),
         updated: run.updated,
@@ -117,6 +163,50 @@ pub(crate) fn run_row(run: &RunSummary, repo: &str) -> CrewRow {
             ..CrewDetails::default()
         },
     }
+}
+
+/// The run as its heading names it: its own name, where it stands, and what it spent.
+pub(crate) fn crew_run(run: &RunSummary) -> CrewRun {
+    let spent = run.spent;
+    CrewRun {
+        id: run.run.clone(),
+        title: run.title.clone(),
+        name: run
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned),
+        stands: Some(RunStands {
+            state: run_state(run),
+            word: stands_word(run),
+            since: run.updated,
+            spent: (spent.total_tokens() > 0 || spent.cost_usd > 0.0).then_some(spent),
+        }),
+    }
+}
+
+/// Where the run stands, in the heading's words. One that waits on you says what for.
+fn stands_word(run: &RunSummary) -> String {
+    if run.needs_you() {
+        return match run.stopped_at.trim() {
+            "" => "needs you".to_owned(),
+            at => at.to_owned(),
+        };
+    }
+    match run.state {
+        RunState::Running if run.live => "running",
+        RunState::Pausing if run.live => "pausing",
+        RunState::Running | RunState::Pausing | RunState::Parked => "waiting",
+        RunState::Crashed => "crashed",
+        RunState::Merged => "merged",
+        RunState::PullRequest => "pull request",
+        RunState::BranchLeft => "branch left",
+        RunState::Stopped => "stopped",
+        RunState::Failed => "failed",
+        RunState::Abandoned => "abandoned",
+    }
+    .to_owned()
 }
 
 /// A parked or crashed run takes more once resumed, so it's ready; one that waits on a card
@@ -158,9 +248,9 @@ mod tests {
             run: RunId::new("run-07").unwrap(),
             title: "Fix the login redirect".into(),
             mode: RunMode::Crew,
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             state,
-            stopped_at: "plan checkpoint".into(),
+            stopped_at: "plan approval".into(),
             updated: OffsetDateTime::UNIX_EPOCH,
             spent: Spend {
                 output_tokens: 9_000,
@@ -194,7 +284,7 @@ mod tests {
 
         let row = run_row(&summary(RunState::Parked, false, true), "~/web");
         assert_eq!(row.repo, "~/web");
-        assert_eq!(row.latest, "plan checkpoint");
+        assert_eq!(row.latest, "plan approval");
         assert_eq!(row.run.as_ref().map(|run| run.id.as_str()), Some("run-07"));
         assert_eq!(
             row.details.spent.map(|spent| spent.output_tokens),
@@ -268,6 +358,69 @@ mod tests {
             .expect("this repo's run");
         assert_eq!(run.state, CrewState::NeedsYou);
         assert_eq!(run.repo, panel.repo);
+        harness.exit().await;
+    }
+
+    /// A run of this repo that the screen doesn't hold lists its agents under its heading,
+    /// read from its journal, so its title shows once.
+    #[tokio::test]
+    async fn a_run_of_this_repo_lists_its_agents_under_its_heading() {
+        use crate::client::test_support::{session_ended, session_started, write_journal};
+        use argonauts_core::events::RunEventKind;
+        use argonauts_core::events::session::{EndReason, SessionEvent};
+        use argonauts_core::names::{RoleName, SessionKey};
+
+        let mut harness = Harness::start_with(HarnessOptions {
+            prepare: Some(Box::new(|repo| {
+                let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), true).unwrap();
+                let dir = env.run_dir(&RunId::new("run-07").unwrap());
+                std::fs::create_dir_all(&dir).unwrap();
+                let key = SessionKey::numbered(1);
+                let mut started = session_started(0, &key, None, RoleName::Worker, "codex");
+                if let RunEventKind::Session(SessionEvent::Started(start)) = &mut started.kind {
+                    start.label = Some("build:login".to_owned());
+                }
+                let ended = session_ended(1, &key, EndReason::Completed, 1_000);
+                write_journal(&dir.join(run_files::EVENTS), &[started, ended]);
+            })),
+            ..HarnessOptions::default()
+        })
+        .await;
+        let mut merged = summary(RunState::Merged, false, false);
+        merged.name = Some("fix-login-redirect".to_owned());
+        harness.conductor.set_runs(vec![merged]);
+        harness
+            .send(UiCommand::Request {
+                view: ViewRequest::Crew,
+            })
+            .await;
+        let AppEvent::View { data } = harness
+            .until(|event| {
+                matches!(event, AppEvent::View { data } if matches!(**data, ViewData::Crew { .. }))
+            })
+            .await
+        else {
+            unreachable!()
+        };
+        let ViewData::Crew { panel } = *data else {
+            unreachable!()
+        };
+        let of_run: Vec<&CrewRow> = panel.rows.iter().filter(|row| row.run.is_some()).collect();
+        assert_eq!(of_run.len(), 1, "{of_run:#?}");
+        let agent = of_run[0];
+        assert!(matches!(agent.target, CrewTarget::Agent { .. }));
+        assert_eq!(agent.label.as_deref(), Some("build:login"));
+        assert_eq!(
+            (agent.state, agent.latest.as_str()),
+            (CrewState::Done, "done")
+        );
+        let heading = agent.run.as_ref().unwrap();
+        assert_eq!(heading.name.as_deref(), Some("fix-login-redirect"));
+        let stands = heading.stands.as_ref().unwrap();
+        assert_eq!(
+            (stands.state, stands.word.as_str()),
+            (CrewState::Done, "merged")
+        );
         harness.exit().await;
     }
 

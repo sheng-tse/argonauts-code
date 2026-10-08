@@ -428,7 +428,7 @@ fn write_spec_files(spec: &CommandSpec) {
 
 /// A stdio MCP server with one read-only tool, standing in for `argonauts mcp session`.
 const STATUS_SERVER_SCRIPT: &str = r#"import json, sys
-STATUS = "Run r-01: card-001 is building. No messages for you."
+STATUS = "Run r-01: task-001 is building. No messages for you."
 def reply(msg_id, result):
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": result}) + "\n")
     sys.stdout.flush()

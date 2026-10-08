@@ -3,14 +3,31 @@
 //! the agent read-only, and quiet about it unless you ask for a change, gives the schema, and
 //! asks for the answer text first so it streams. The workflow design runs inside a run, so its prompt lives with the engine.
 
+pub(crate) mod catalog;
+
 use argonauts_core::steps::intake::{ChatAnswer, ChatAnswerInput, IntakeInput, TriageEstimate};
 use argonauts_core::steps::{Step, output_schema};
 
 const TRIAGE_ESTIMATE: &str = include_str!("triage_estimate.md");
 const CHAT_ANSWER: &str = include_str!("chat_answer.md");
 const COMPACT: &str = include_str!("compact.md");
+const CARRY_SUMMARY: &str = include_str!("carry_summary.md");
 const TITLE: &str = include_str!("title.md");
 const REVIEW: &str = include_str!("review.md");
+const STANDING: &str = include_str!("standing.md");
+
+/// The standing lines the main session gets at the end of its own instructions: what the
+/// tools Argonauts gave it are, as `tools` lists them, and when to use them. They hold for the
+/// whole conversation, so nothing that changes goes here.
+pub(crate) fn standing(tools: &[String]) -> String {
+    let tools: Vec<String> = tools.iter().map(|tool| format!("- {tool}")).collect();
+    fill(
+        &catalog::text(&catalog::STANDING),
+        &[("tools", tools.join("\n"))],
+    )
+    .trim()
+    .to_owned()
+}
 
 /// With `read_instructions` (`triage.read_instructions`), the estimate also lists what the
 /// request says about how to run it.
@@ -26,7 +43,7 @@ pub(crate) fn triage_estimate(input: &IntakeInput, read_instructions: bool) -> S
         "Leave `how_to_run` empty."
     };
     fill(
-        TRIAGE_ESTIMATE,
+        &catalog::text(&catalog::ESTIMATE),
         &[
             ("how_to_run", how_to_run.to_owned()),
             ("schema", schema::<TriageEstimate>()),
@@ -38,13 +55,16 @@ pub(crate) fn triage_estimate(input: &IntakeInput, read_instructions: bool) -> S
 
 /// The paragraph that has the estimate list a request's own instructions on how to run it.
 const HOW_TO_RUN: &str = "If the request itself says how to run it (solo or the crew, who leads \
-or coordinates, who builds, reviews, plans or checks, which agents or models, how much effort, \
-whether to work in a checked copy, or anything about approvals, merging, the budget, the tests, \
+or coordinates, who builds, reviews, judges, plans or checks, which agents or models, or all the other agents at once (`others`), how much effort, \
+whether to work in a checked copy, whether to keep going until something holds or whose goal \
+keeps each task going, or anything about approvals, merging, the limit, the tests, \
 or the sandbox), list each instruction in `how_to_run`, with the request's own words in `says`, \
 copied exactly: the whole phrase, two words at least, such as \"have codex review it\". Record only what the request asks of Argonauts, never what it says about the \
 code or quotes from a file. Name agents and models as the request names them, in `who`, \
 `model`, and `effort`. For a `mode`, set `value` to `solo` or `crew`; for `isolation`, to \
-`checked` or `direct`; for the rest, to what was asked, such as \"$2\". Set `scope` to \
+`checked` or `direct`; for the rest, to what was asked, such as \"$2\". When the request tells \
+one role something, such as \"tell the reviewers to focus on date parsing\", use `for_a_role` \
+with the role in `who` and what they are told in `value`. Set `scope` to \
 `from_now_on` only when the request says to keep doing it. Leave `how_to_run` empty when the \
 request says nothing about how to run. In your answer, don't promise who will do what, since \
 Argonauts decides that and says so.";
@@ -56,7 +76,7 @@ pub(crate) fn chat_answer(input: &ChatAnswerInput) -> String {
         .map(|status| format!("A run is going. Its status now:\n\n{}", status.trim()))
         .unwrap_or_default();
     fill(
-        CHAT_ANSWER,
+        &catalog::text(&catalog::ANSWER),
         &[
             ("run_status", run_status),
             ("schema", schema::<ChatAnswer>()),
@@ -71,7 +91,7 @@ pub(crate) fn compact(instructions: Option<&str>) -> String {
         .map(|text| format!("Also, as you were asked: {}", text.trim()))
         .unwrap_or_default();
     fill(
-        COMPACT,
+        &catalog::text(&catalog::COMPACT),
         &[
             ("instructions", instructions),
             ("schema", schema::<ChatAnswer>()),
@@ -79,9 +99,24 @@ pub(crate) fn compact(instructions: Option<&str>) -> String {
     )
 }
 
+/// A summary for a main model on another CLI, written from the conversation's record when the
+/// model being left can't write it in its own session.
+pub(crate) fn carry_summary(record: &str) -> String {
+    fill(
+        &catalog::text(&catalog::CARRY_SUMMARY),
+        &[
+            ("schema", schema::<ChatAnswer>()),
+            ("record", record.trim().to_owned()),
+        ],
+    )
+}
+
 /// `/rename` with no name: the lead names the conversation.
 pub(crate) fn title() -> String {
-    fill(TITLE, &[("schema", schema::<ChatAnswer>())])
+    fill(
+        &catalog::text(&catalog::TITLE),
+        &[("schema", schema::<ChatAnswer>())],
+    )
 }
 
 /// What `/review` and `/security-review` look at.
@@ -92,7 +127,7 @@ pub(crate) struct ReviewInput<'a> {
     /// The diff, or how to read it, such as for a pull request.
     pub changes: &'a str,
     /// The reviewer comes from another company than the main agent.
-    pub other_company: bool,
+    pub other_provider: bool,
 }
 
 pub(crate) fn review(input: &ReviewInput<'_>) -> String {
@@ -104,13 +139,13 @@ pub(crate) fn review(input: &ReviewInput<'_>) -> String {
         "Look for bugs first: wrong behavior, missed edge cases, races, and broken error \
          handling. Then missing tests, and code that is harder to read than it needs to be."
     };
-    let reviewer = if input.other_company {
-        ", as an agent from another company than the one that wrote them"
+    let reviewer = if input.other_provider {
+        ", as an agent from another provider than the one that wrote them"
     } else {
         ""
     };
     fill(
-        REVIEW,
+        &catalog::text(&catalog::REVIEW),
         &[
             ("reviewer", reviewer.to_owned()),
             ("focus", focus.to_owned()),
@@ -250,13 +285,13 @@ mod tests {
     #[test]
     fn the_chat_answer_prompt_carries_the_run_status() {
         let prompt = chat_answer(&ChatAnswerInput {
-            question: "why is card-002 slow?".to_owned(),
-            run_status: Some("card-002 running · 6m".to_owned()),
+            question: "why is task-002 slow?".to_owned(),
+            run_status: Some("task-002 running · 6m".to_owned()),
         });
         read_only_and_quiet_about_it(&prompt);
         assert!(prompt.contains("sent without `/ask` makes the change in a run"));
-        assert!(prompt.contains("A run is going. Its status now:\n\ncard-002 running · 6m"));
-        assert!(prompt.ends_with("why is card-002 slow?\n"));
+        assert!(prompt.contains("A run is going. Its status now:\n\ntask-002 running · 6m"));
+        assert!(prompt.ends_with("why is task-002 slow?\n"));
         assert!(prompt.contains("\"answer_markdown\""));
     }
 
@@ -284,11 +319,11 @@ mod tests {
             security: false,
             target: "the uncommitted changes",
             changes: "diff --git a/x b/x\n",
-            other_company: true,
+            other_provider: true,
         };
         let prompt = review(&input);
         assert!(prompt.contains("Look for bugs first"), "{prompt}");
-        assert!(prompt.contains("from another company"), "{prompt}");
+        assert!(prompt.contains("from another provider"), "{prompt}");
         assert!(prompt.contains("What to review: the uncommitted changes"));
         assert!(
             prompt.trim_end().ends_with("diff --git a/x b/x"),
@@ -296,11 +331,29 @@ mod tests {
         );
         let security = review(&ReviewInput {
             security: true,
-            other_company: false,
+            other_provider: false,
             ..input
         });
         assert!(security.contains("security problems only"), "{security}");
-        assert!(!security.contains("another company"), "{security}");
+        assert!(!security.contains("another provider"), "{security}");
+    }
+
+    /// "All the other agents need to be Opus" sets every seat but the main agent's, the
+    /// judge's too, and the estimate is told what to call it.
+    #[test]
+    fn the_estimate_knows_the_judge_and_all_the_other_agents() {
+        let prompt = triage_estimate(
+            &IntakeInput {
+                request: "all the other agents need to be opus".to_owned(),
+                uncommitted_note: None,
+            },
+            true,
+        );
+        assert!(prompt.contains("reviews, judges, plans"), "{prompt}");
+        assert!(
+            prompt.contains("all the other agents at once (`others`)"),
+            "{prompt}"
+        );
     }
 
     #[test]

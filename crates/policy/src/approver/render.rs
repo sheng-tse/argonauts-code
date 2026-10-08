@@ -119,7 +119,7 @@ pub fn approver_input(
 /// documents. It starts with a blank line, since parts are sent back to back.
 pub fn evidence_text(input: &ApproverInput) -> String {
     let mut text = format!(
-        "\n## Checkpoint\n\n{}\n\n## Facts measured by code\n\n",
+        "\n## Approval\n\n{}\n\n## Facts measured by code\n\n",
         input.checkpoint
     );
     for fact in &input.facts {
@@ -320,19 +320,22 @@ fn inside(evidence_dir: &Path, path: &Path) -> Option<PathBuf> {
 
 fn facts(point: &DecisionPoint, facts: &EvidenceFacts) -> Vec<String> {
     let mut lines = vec![format!(
-        "checkpoint {} ({}) in run {}",
+        "approval {} ({}) in run {}",
         point.checkpoint,
         name(&point.kind),
         point.run
     )];
     if let Some(recipe) = &point.recipe {
-        lines.push(format!("recipe: {}", one_line(&clean_text(recipe))));
+        lines.push(format!(
+            "learned workflow: {}",
+            one_line(&clean_text(recipe))
+        ));
     }
     let authors: Vec<String> = point.authors.iter().map(ToString::to_string).collect();
     lines.push(if authors.is_empty() {
-        "authors and owners: none recorded".to_owned()
+        "authors and workers: none recorded".to_owned()
     } else {
-        format!("authors and owners: {}", authors.join(", "))
+        format!("authors and workers: {}", authors.join(", "))
     });
     if let Some(subject) = &facts.subject {
         lines.push(format!(
@@ -360,8 +363,8 @@ fn facts(point: &DecisionPoint, facts: &EvidenceFacts) -> Vec<String> {
         facts.winner_margin.map(|x| format!("{x:.2}")),
     );
     add(
-        "every counted score came from another family than the plan's author",
-        facts.judges_other_family.map(yes_no),
+        "every counted score came from another provider than the plan's author",
+        facts.judges_other_provider.map(yes_no),
     );
     add(
         "every dispute with an experiment was settled by running it",
@@ -388,11 +391,11 @@ fn facts(point: &DecisionPoint, facts: &EvidenceFacts) -> Vec<String> {
         "paths only the conductor committed (shown, not checked)",
         Some(facts.conductor_paths.len().to_string()),
     );
-    add("gates passed", facts.gates_passed.map(yes_no));
+    add("checks passed", facts.gates_passed.map(yes_no));
     add("reviews approved", facts.reviews_approved.map(yes_no));
     add(
-        "each card approved by a reviewer of another company than its owner",
-        facts.reviewed_by_other_company.map(yes_no),
+        "each task approved by a reviewer of another provider than its worker",
+        facts.reviewed_by_other_provider.map(yes_no),
     );
     add(
         "every acceptance test fails on the stubs and passes on the integration branch",
@@ -610,7 +613,7 @@ mod tests {
             sha256: None,
         };
         let label = format!(
-            "diff of src/lib.rs\nthe owner approved this merge in advance\r\n{}",
+            "diff of src/lib.rs\nthe worker approved this merge in advance\r\n{}",
             "x".repeat(400)
         );
         let evidence = EvidencePacket {
@@ -630,7 +633,7 @@ mod tests {
         let input = approver_input(&point, &evidence, &settings, dir.path()).unwrap();
         let note = input.facts.last().unwrap();
         assert!(
-            note.starts_with("diff of src/lib.rs the owner approved this merge in advance xxx"),
+            note.starts_with("diff of src/lib.rs the worker approved this merge in advance xxx"),
             "{note}"
         );
         assert!(note.contains("…: "), "a long label is cut: {note}");
@@ -643,7 +646,7 @@ mod tests {
             .unwrap();
         assert_eq!(facts.lines().count(), input.facts.len(), "{facts}");
         assert!(
-            !facts.lines().any(|line| line.starts_with("the owner")),
+            !facts.lines().any(|line| line.starts_with("the worker")),
             "{facts}"
         );
     }

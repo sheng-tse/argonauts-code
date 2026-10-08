@@ -77,9 +77,10 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         let panels = panels(&judges, &plans, &authors, &family, own);
         score(host, call, &panels, &authors, &flags, &reports).await?;
         let scores = recorded_scores(host);
+        let criteria = rubric_of(host).len();
         match settings.method {
-            JudgingMethod::Vote => judging::vote(&scores, &authors, &settings),
-            _ => judging::aggregate(&scores, &authors, &settings),
+            JudgingMethod::Vote => judging::vote_on(&scores, &authors, &settings, criteria),
+            _ => judging::aggregate_on(&scores, &authors, &settings, criteria),
         }
     };
     host.record(
@@ -107,15 +108,15 @@ pub fn method(step: &Step) -> Result<Option<JudgingMethod>, String> {
         return Ok(None);
     };
     serde_json::from_value(value.clone()).map(Some).map_err(|_| {
-        format!("`{METHOD}: {value}` isn't a judging method; use cross, single, vote, coordinator, or human")
+        format!("`{METHOD}: {value}` isn't a judging method; use cross, single, vote, orchestrator, or human")
     })
 }
 
 fn summary(result: &JudgingResult) -> String {
     match (result.method, result.winner) {
-        (JudgingMethod::Human, _) => "You pick the plan at the plan checkpoint".to_owned(),
+        (JudgingMethod::Human, _) => "You pick the plan at the plan approval".to_owned(),
         (_, Some(winner)) => format!("Plan {winner} won by {:.1}", result.margin),
-        (_, None) => "A near tie; you pick at the plan checkpoint".to_owned(),
+        (_, None) => "A near tie; you pick at the plan approval".to_owned(),
     }
 }
 
@@ -180,10 +181,10 @@ fn judges(
             .cloned()
             .into_iter()
             .collect(),
-        JudgingMethod::Coordinator => crew_for(settings, RoleName::Coordinator)
+        JudgingMethod::Orchestrator => crew_for(settings, RoleName::Orchestrator)
             .into_iter()
             .next()
-            .or_else(|| Some(settings.default_agent.clone()))
+            .or_else(|| Some(settings.main_agent.clone()))
             .into_iter()
             .collect(),
         JudgingMethod::Cross | JudgingMethod::Vote | JudgingMethod::Human => {
@@ -306,7 +307,7 @@ async fn score(
             }
             let input = JudgeInput {
                 goal: goal.clone(),
-                rubric: judging::rubric(),
+                rubric: rubric_of(host),
                 plans: shown.clone(),
                 spikes: reports.to_vec(),
             };
@@ -390,4 +391,13 @@ fn recorded_scores(host: &Host) -> Vec<Score> {
             })
             .collect()
     })
+}
+
+/// The rubric the judges score by: your `prompts/plan/rubric.md` when you wrote one, else the
+/// built-in.
+fn rubric_of(host: &Host) -> Vec<argonauts_core::steps::plan::RubricCriterion> {
+    judging::rubric_in(crate::prompts::files::text(
+        host,
+        crate::prompts::plan::RUBRIC,
+    ))
 }

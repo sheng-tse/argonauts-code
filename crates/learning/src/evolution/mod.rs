@@ -34,7 +34,7 @@ pub use stats::{
     tripwires,
 };
 
-/// The stages of autonomy, from `evolution.stage` and `approvals.recipe_promotion.mode`.
+/// The stages of autonomy, from `evolution.stage` and `approvals.workflow_promotion.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
@@ -54,9 +54,9 @@ pub fn stage(settings: &Settings) -> Stage {
     match settings.evolution.stage {
         EvolutionStage::Record => Stage::Record,
         EvolutionStage::Suggest => Stage::Suggest,
-        EvolutionStage::Evolve => match settings.approvals.recipe_promotion.mode {
-            ApprovalMode::Auto | ApprovalMode::FullAuto => Stage::Auto,
-            ApprovalMode::Supervised | ApprovalMode::Shadow => Stage::Evolve,
+        EvolutionStage::Evolve => match settings.approvals.workflow_promotion.mode {
+            ApprovalMode::Auto | ApprovalMode::Autopilot => Stage::Auto,
+            ApprovalMode::Supervised | ApprovalMode::AutoPreview => Stage::Evolve,
         },
     }
 }
@@ -375,5 +375,5 @@ impl Evolution {
 
 /// The branch a recipe version waits on.
 pub fn recipe_branch(name: &str, version: u32) -> String {
-    format!("argonauts/recipes/{name}-v{version}")
+    format!("argonauts/learned/{name}-v{version}")
 }

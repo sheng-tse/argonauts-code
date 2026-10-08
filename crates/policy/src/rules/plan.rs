@@ -8,16 +8,16 @@ use argonauts_core::settings::approvals::{HardLimitSettings, PlanRules};
 
 use super::{Conditions, RuleVerdict, usd};
 
-/// `run_usd` is the run's budget ceiling, when it has one.
+/// `spend_per_run` is the run's budget ceiling, when it has one.
 pub fn check(
     facts: &EvidenceFacts,
     rules: &PlanRules,
     limits: &HardLimitSettings,
-    run_usd: Option<f64>,
+    spend_per_run: Option<f64>,
 ) -> RuleVerdict {
     let mut c = Conditions::default();
     judging(&mut c, facts, rules);
-    binding(&mut c, facts, limits, run_usd);
+    binding(&mut c, facts, limits, spend_per_run);
     c.verdict()
 }
 
@@ -44,10 +44,10 @@ fn judging(c: &mut Conditions, facts: &EvidenceFacts, rules: &PlanRules) {
     });
 
     c.flag(
-        facts.judges_other_family,
-        "every counted score came from another family",
-        "a counted score came from the plan author's family",
-        "no fact says which families judged",
+        facts.judges_other_provider,
+        "every counted score came from another provider",
+        "a counted score came from the plan author's provider",
+        "no fact says which providers judged",
     );
     c.flag(
         facts.disputes_settled,
@@ -61,7 +61,7 @@ fn binding(
     c: &mut Conditions,
     facts: &EvidenceFacts,
     limits: &HardLimitSettings,
-    run_usd: Option<f64>,
+    spend_per_run: Option<f64>,
 ) {
     let flagged = |flagged: u32| {
         if flagged == 0 {
@@ -70,13 +70,15 @@ fn binding(
             Err(format!("{flagged} flagged for text addressed to judges"))
         }
     };
-    let fits = |estimate: f64| fits_budget(estimate, facts.spent.cost_usd, run_usd);
+    let fits = |estimate: f64| fits_budget(estimate, facts.spent.cost_usd, spend_per_run);
     c.measure(facts.flagged_plans, "no count of flagged plans", flagged);
-    if facts.spent.cost_partial && run_usd.is_some() {
+    if facts.spent.cost_partial && spend_per_run.is_some() {
         // The spend is only a lower bound, so an estimate that seems to fit may not.
-        c.escalate("the run's spend isn't fully priced, so what's left of its budget is unknown");
+        c.escalate("the run's spend isn't fully priced, so what's left of its limit is unknown");
     }
-    c.measure(facts.estimate_usd, "no cost estimate", fits);
+    // Tasks have limits only when you set them, so a plan often has no estimate. It isn't
+    // held back for one: the meter holds the run to its limit either way.
+    c.measure_if_known(facts.estimate_usd, fits);
 
     let unlisted: Vec<String> = facts
         .new_dependencies
@@ -91,16 +93,16 @@ fn binding(
     );
     c.none_of(
         &facts.protected_paths,
-        "no card owns a protected path",
-        "cards own protected paths",
+        "no task owns a protected path",
+        "tasks own protected paths",
     );
 }
 
 /// The estimate has to fit what's left of the run's budget after what it already spent.
-fn fits_budget(estimate: f64, spent: f64, run_usd: Option<f64>) -> Result<String, String> {
-    let Some(ceiling) = run_usd else {
+fn fits_budget(estimate: f64, spent: f64, spend_per_run: Option<f64>) -> Result<String, String> {
+    let Some(ceiling) = spend_per_run else {
         return Ok(format!(
-            "the estimate is {}, and the run has no budget",
+            "the estimate is {}, and the run has no limit",
             usd(estimate)
         ));
     };
@@ -113,7 +115,7 @@ fn fits_budget(estimate: f64, spent: f64, run_usd: Option<f64>) -> Result<String
         ))
     } else {
         Err(format!(
-            "the estimate {} is over the {} left of the run's budget",
+            "the estimate {} is over the {} left of the run's limit",
             usd(estimate),
             usd(left)
         ))
@@ -129,7 +131,7 @@ mod tests {
         EvidenceFacts {
             max_score_spread: Some(0.5),
             winner_margin: Some(2.0),
-            judges_other_family: Some(true),
+            judges_other_provider: Some(true),
             disputes_settled: Some(true),
             flagged_plans: Some(0),
             estimate_usd: Some(8.0),
@@ -181,7 +183,7 @@ mod tests {
             (
                 "family",
                 EvidenceFacts {
-                    judges_other_family: Some(false),
+                    judges_other_provider: Some(false),
                     ..passing()
                 },
             ),
@@ -246,7 +248,7 @@ mod tests {
             (
                 "family",
                 EvidenceFacts {
-                    judges_other_family: None,
+                    judges_other_provider: None,
                     ..passing()
                 },
             ),
@@ -264,17 +266,20 @@ mod tests {
                     ..passing()
                 },
             ),
-            (
-                "estimate",
-                EvidenceFacts {
-                    estimate_usd: None,
-                    ..passing()
-                },
-            ),
         ];
         for (name, facts) in cases {
             assert_eq!(verdict(&facts), Verdict::Escalate, "{name}");
         }
+    }
+
+    /// Tasks have limits only when you set them, so a plan often has no estimate.
+    #[test]
+    fn a_plan_with_no_estimate_is_not_held_back_for_one() {
+        let facts = EvidenceFacts {
+            estimate_usd: None,
+            ..passing()
+        };
+        assert_eq!(verdict(&facts), Verdict::Approve);
     }
 
     #[test]

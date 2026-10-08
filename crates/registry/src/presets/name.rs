@@ -14,7 +14,7 @@ pub(crate) fn is_preset_name(name: &str) -> bool {
 /// Why `name` was refused, with the rule it broke.
 pub(crate) fn not_a_preset_name(name: &str) -> String {
     format!(
-        "preset {name:?} isn't a preset name; a preset's name uses letters, digits, -, _ and ., \
+        "workflow {name:?} isn't a workflow name; a workflow's name uses letters, digits, -, _ and ., \
          and doesn't start with a dot"
     )
 }
@@ -25,7 +25,7 @@ mod tests {
 
     #[test]
     fn preset_names_stay_plain_file_names() {
-        for name in ["peer-crew", "my_team", "team.v2", "A1"] {
+        for name in ["council", "my_team", "team.v2", "A1"] {
             assert!(is_preset_name(name), "{name}");
         }
         for name in [

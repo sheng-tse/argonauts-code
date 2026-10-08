@@ -1,0 +1,23 @@
+[package]
+name = "argonauts-runner"
+description = "Runs a workflow: a file of steps or a script, in a sandboxed JavaScript engine that can only ask for agents."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+argonauts-core.workspace = true
+futures.workspace = true
+rquickjs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

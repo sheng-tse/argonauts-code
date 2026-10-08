@@ -1,7 +1,8 @@
-# The sample run's repo: Python with no .gitignore. The fake Claude Code owns a solo card: it
-# writes hello.txt and textkit.py and, as running the tests would, bytecode and a pytest cache
-# beside them, then plays the recorded build run. Any other Claude Code call gets the recorded
-# read-only answer. The fake Codex, where a scenario makes it the reviewer, approves the card.
+# The sample run's repo: Python with no .gitignore. The fake Claude Code owns a solo task: it
+# writes hello.txt and textkit.py with its Write tool and, as running the tests would, leaves
+# bytecode and a pytest cache beside them, then plays the recorded build run, which writes
+# hello.txt. Any other Claude Code call gets the recorded read-only answer. The fake Codex,
+# where a scenario makes it the reviewer, approves the task.
 
 [version]
 claude = "2.1.284 (Claude Code)"
@@ -17,6 +18,12 @@ prompt_contains = "hello.txt"
 write = { path = "hello.txt", content = "hi\n" }
 [[rule.step]]
 write = { path = "textkit.py", content = "def slugify(text):\n    return text.lower()\n" }
+# What Claude Code prints when its Write tool makes textkit.py, which is how the file is known
+# to be the agent's own work and not something a command left behind.
+[[rule.step]]
+emit = '{"type":"assistant","message":{"id":"msg_textkit","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_textkit","name":"Write","input":{"file_path":"textkit.py","content":"def slugify(text):\n    return text.lower()\n"}}]},"parent_tool_use_id":null,"session_id":"54794f0b-6a9d-4ca1-ac64-42dac771c423"}'
+[[rule.step]]
+emit = '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_textkit","type":"tool_result","content":"File created successfully at: textkit.py"}]},"parent_tool_use_id":null,"session_id":"54794f0b-6a9d-4ca1-ac64-42dac771c423","tool_use_result":{"type":"create","filePath":"textkit.py","content":"def slugify(text):\n    return text.lower()\n","structuredPatch":[],"originalFile":null,"userModified":false}}'
 [[rule.step]]
 write = { path = "__pycache__/textkit.cpython-312.pyc", content = "bytecode the tests left" }
 [[rule.step]]

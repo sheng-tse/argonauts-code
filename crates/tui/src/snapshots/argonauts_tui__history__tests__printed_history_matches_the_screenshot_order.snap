@@ -1,6 +1,5 @@
 ---
 source: crates/tui/src/history.rs
-assertion_line: 478
 expression: "drain(&mut history, &theme)"
 ---
 ❯ Add a --json flag to the export command
@@ -10,7 +9,7 @@ expression: "drain(&mut history, &theme)"
 ● Goal(Add a --json flag to export)
   ⎿  Agreed by 3 agents · 1 question answered
 
-● Merged card-002.
+● Merged task-002.
 
   - 3 files
   - tests pass

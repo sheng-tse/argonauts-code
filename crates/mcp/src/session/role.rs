@@ -1,0 +1,147 @@
+//! `argonauts_ask_reviewers` and `argonauts_ask_judge`: a session asks a role
+//! of the crew, and Argonauts runs that role's model on the change in the session's folder and
+//! returns its answer. Claude Code's own workflow calls them at each review step when the
+//! reviewers or the judge are on another CLI, and nothing merges that didn't go through them.
+//! The main session has them too, for when you ask a role yourself.
+
+use std::sync::Arc;
+
+use argonauts_core::asking::{Ask, AskReply};
+use argonauts_core::settings::crew::CrewRole;
+use rmcp::model::{CallToolResult, ContentBlock, Tool};
+use serde_json::{Value, json};
+
+use super::ask::{send, string};
+use super::main_tools::object;
+use crate::AskTool;
+
+const PREFIX: &str = "argonauts_ask_";
+
+/// The tool that asks `role`.
+pub fn tool_name(role: CrewRole) -> String {
+    format!("{PREFIX}{}", role.as_str())
+}
+
+pub(super) fn tools(asking: &AskTool) -> Vec<Tool> {
+    asking
+        .roles
+        .iter()
+        .map(|role| {
+            Tool::new(
+                tool_name(*role),
+                description(*role),
+                Arc::new(object(json!({
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "The change's name in your workflow, such as \
+                                            review:store."
+                        },
+                        "what": {
+                            "type": "string",
+                            "description": "What the change is meant to do, and anything to \
+                                            look at closely."
+                        }
+                    },
+                    "required": ["what"]
+                }))),
+            )
+        })
+        .collect()
+}
+
+fn description(role: CrewRole) -> String {
+    let who = match role {
+        CrewRole::Judge => "the crew's judge to sign off on",
+        _ => "the crew's reviewers to review",
+    };
+    format!(
+        "Asks {who} the change now in your folder. Argonauts runs that role's own model on the \
+         change and returns its answer. In a workflow of your own, call it at each review step \
+         and once more for the final change: nothing merges that didn't go through it. \
+         Otherwise call it only when the user asks for it."
+    )
+}
+
+/// `None` when `name` isn't one of these tools.
+pub(super) async fn call(
+    asking: &AskTool,
+    name: &str,
+    arguments: &Value,
+) -> Option<CallToolResult> {
+    let role = asking
+        .roles
+        .iter()
+        .copied()
+        .find(|role| tool_name(*role) == name)?;
+    let ask = Ask::Role {
+        role,
+        label: string(arguments, "label"),
+        what: string(arguments, "what"),
+    };
+    let reply = send(asking, ask).await.unwrap_or_else(|err| AskReply {
+        text: format!("Argonauts couldn't be reached, so nobody reviewed it: {err}"),
+        is_error: true,
+    });
+    let content = vec![ContentBlock::text(reply.text)];
+    Some(if reply.is_error {
+        CallToolResult::error(content)
+    } else {
+        CallToolResult::success(content)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argonauts_core::asking::AskLine;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn the_reviewers_answer_comes_back_to_the_workflow() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let asking = AskTool {
+            endpoint: listener.local_addr().unwrap().to_string(),
+            token: "secret".into(),
+            approve: false,
+            tools: Vec::new(),
+            roles: vec![CrewRole::Reviewers, CrewRole::Judge],
+        };
+        let names: Vec<String> = tools(&asking).iter().map(|t| t.name.to_string()).collect();
+        assert_eq!(names, ["argonauts_ask_reviewers", "argonauts_ask_judge"]);
+        let app = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.unwrap();
+            let asked: AskLine = serde_json::from_str(&line).unwrap();
+            let reply = serde_json::to_string(&AskReply::text("Accepted by Astra.")).unwrap();
+            write
+                .write_all(format!("{reply}\n").as_bytes())
+                .await
+                .unwrap();
+            asked
+        });
+        let arguments = json!({"label": "review:store", "what": "due dates in the store"});
+        let result = call(&asking, "argonauts_ask_reviewers", &arguments)
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        let asked = app.await.unwrap();
+        assert_eq!(
+            asked.ask,
+            Ask::Role {
+                role: CrewRole::Reviewers,
+                label: "review:store".into(),
+                what: "due dates in the store".into(),
+            }
+        );
+        assert!(
+            call(&asking, "argonauts_ask_workers", &arguments)
+                .await
+                .is_none()
+        );
+    }
+}

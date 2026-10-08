@@ -177,6 +177,7 @@ pub(super) fn after(
         }
         TurnStep::Compact { .. } => {
             chat.history = vec![Exchange::new(COMPACTED.to_owned(), reply)];
+            super::carry::forget_summary(chat);
             chat.session = None;
             if let Err(err) = chat.store.forget_session() {
                 ctx.notice(NoteLevel::Warn, format!("{err:#}"));
@@ -294,13 +295,13 @@ pub(crate) fn review(
         );
         return Ok(Vec::new());
     };
-    let other_company = other_company(ctx, &[]).is_some();
-    if !other_company {
+    let other_provider = other_provider(ctx, &[]).is_some();
+    if !other_provider {
         ctx.notice(
             NoteLevel::Info,
             format!(
-                "No agent from another company is in the crew and ready, so {} reviews.",
-                ctx.settings().default_agent
+                "No agent from another provider is in the crew and ready, so {} reviews.",
+                ctx.settings().main_agent
             ),
         );
     }
@@ -312,7 +313,7 @@ pub(crate) fn review(
         security,
         target: changes.target,
         changes: changes.text,
-        other_company,
+        other_provider,
     })?;
     Ok(Vec::new())
 }
@@ -322,7 +323,7 @@ pub(super) fn reviewer(
     ctx: &Ctx,
     tried: &[WorkerRef],
 ) -> Result<(WorkerRef, Arc<dyn Worker>), WorkerError> {
-    match other_company(ctx, tried) {
+    match other_provider(ctx, tried) {
         Some(found) => Ok(found),
         None => turn::pick(ctx, tried),
     }
@@ -330,10 +331,10 @@ pub(super) fn reviewer(
 
 /// The reviewer role's workers first, then every other one, as a run picks its reviewers: the
 /// first of another model family than the main agent's that is on and in service.
-fn other_company(ctx: &Ctx, tried: &[WorkerRef]) -> Option<(WorkerRef, Arc<dyn Worker>)> {
+fn other_provider(ctx: &Ctx, tried: &[WorkerRef]) -> Option<(WorkerRef, Arc<dyn Worker>)> {
     let settings = ctx.settings();
     let registry = &ctx.services.registry;
-    let main = registry.family(&settings.default_agent);
+    let main = registry.family(&settings.main_agent);
     let mut pool = argonauts_crew::roles::candidates(settings, RoleName::Reviewer);
     pool.extend(ctx.services.workers.available());
     pool.into_iter().find_map(|worker| {

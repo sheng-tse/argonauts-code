@@ -15,7 +15,7 @@ fn run_event(seq: u64, data: Value) -> AppEvent {
     serde_json::from_value(json!({"type": "run", "event": {"seq": seq,
         "ts": "2026-09-30T12:00:00Z", "run_id": RUN, "card_id": null, "session": null,
         "source": "conductor", "kind": {"type": "checkpoint", "data": data}}}))
-    .expect("a checkpoint event")
+    .expect("an approval event")
 }
 
 fn option(key: char, label: &str, action: Value) -> Value {
@@ -53,7 +53,7 @@ fn merge(id: &str, rows: Vec<Value>) -> Value {
         ),
         option(
             'b',
-            "Request changes on some cards",
+            "Request changes on some tasks",
             json!({"action": "request_changes"}),
         ),
         option('k', "Keep the branch", json!({"action": "keep_branch"})),
@@ -67,8 +67,8 @@ fn two_card_merge() -> Value {
     merge(
         "cp-001",
         vec![
-            merge_row("card-002", "Add the JSON writer", Some("claude-code/opus")),
-            merge_row("card-003", "Wire the --json flag", Some("codex/gpt-5.6")),
+            merge_row("task-002", "Add the JSON writer", Some("claude-code/opus")),
+            merge_row("task-003", "Wire the --json flag", Some("codex/gpt-5.6")),
         ],
     )
 }
@@ -98,7 +98,7 @@ fn plan() -> Value {
 }
 
 fn handoff() -> Value {
-    let packet = json!({"kind": "handoff", "card": "card-003", "title": "Middleware",
+    let packet = json!({"kind": "handoff", "card": "task-003", "title": "Middleware",
         "stopped": "claude-code/opus", "reason": "usage limit", "resets_at": null,
         "work": {"files_changed": 4, "insertions": 96, "deletions": 12}, "gates_ran": false,
         "candidates": [{"worker": "codex/gpt-5.6", "quota_left": 0.62, "quota_text": "62%",
@@ -126,7 +126,7 @@ fn waiting_on(card: Value) -> Reader {
 fn checkpoint(id: &str) -> AnswerTarget {
     AnswerTarget::Checkpoint {
         run: RunId::new(RUN).expect("a run id"),
-        id: CheckpointId::parse(id).expect("a checkpoint id"),
+        id: CheckpointId::parse(id).expect("an approval id"),
     }
 }
 
@@ -138,14 +138,17 @@ fn answer(id: &str, action: AnswerAction, text: Option<&str>, cards: &[&str]) ->
         evidence_sha256: Some(EVIDENCE.to_owned()),
         cards: cards
             .iter()
-            .map(|card| CardId::new(*card).expect("a card id"))
+            .map(|card| CardId::new(*card).expect("a task id"))
             .collect(),
         remember: false,
     }
 }
 
 fn submit(text: &str) -> Vec<UiCommand> {
-    vec![UiCommand::Submit { text: text.into() }]
+    vec![UiCommand::Submit {
+        text: text.into(),
+        workflow_requested: false,
+    }]
 }
 
 #[test]
@@ -218,7 +221,7 @@ fn show_the_diff_answers_nothing() {
     // One card's merge asks the app for that card's diff.
     let one = merge(
         "cp-001",
-        vec![merge_row("card-002", "Add the JSON writer", None)],
+        vec![merge_row("task-002", "Add the JSON writer", None)],
     );
     let mut reader = waiting_on(one);
     assert_eq!(
@@ -226,7 +229,7 @@ fn show_the_diff_answers_nothing() {
         vec![UiCommand::Request {
             view: ViewRequest::Diff {
                 run: RunId::new(RUN).expect("a run id"),
-                card: CardId::new("card-002").expect("a card id"),
+                card: CardId::new("task-002").expect("a task id"),
                 scope: DiffScope::Card,
             }
         }]
@@ -248,27 +251,27 @@ fn show_the_plan_reads_the_details() {
 #[test]
 fn request_changes_names_cards() {
     let mut reader = waiting_on(two_card_merge());
-    let unknown = reader.typed("3 card-009: tighten it");
+    let unknown = reader.typed("3 task-009: tighten it");
     assert!(unknown.commands.is_empty());
     assert_eq!(
         unknown.lines,
         vec![
-            "warning: card-009 isn't one of this merge's cards (card-002, card-003), so nothing was sent."
+            "warning: task-009 isn't one of this merge's tasks (task-002, task-003), so nothing was sent."
         ]
     );
-    let named = reader.typed("3 card-003: keep the old flag");
+    let named = reader.typed("3 task-003: keep the old flag");
     assert_eq!(
         named.commands,
         vec![answer(
             "cp-001",
             AnswerAction::RequestChanges,
             Some("keep the old flag"),
-            &["card-003"]
+            &["task-003"]
         )]
     );
     assert_eq!(
         named.lines,
-        vec!["you: 3. Request changes on some cards, card-003, keep the old flag"]
+        vec!["you: 3. Request changes on some tasks, task-003, keep the old flag"]
     );
 
     let mut every = waiting_on(two_card_merge());
@@ -279,7 +282,7 @@ fn request_changes_names_cards() {
     );
     assert_eq!(
         said.lines,
-        vec!["you: 3. Request changes on some cards, every card"]
+        vec!["you: 3. Request changes on some tasks, every task"]
     );
 }
 
@@ -374,8 +377,8 @@ fn a_merge_row_without_an_owner_keeps_its_columns() {
         merge(
             "cp-001",
             vec![
-                merge_row("card-002", "Add the JSON writer", None),
-                merge_row("card-003", "Wire the --json flag", Some("codex/gpt-5.6")),
+                merge_row("task-002", "Add the JSON writer", None),
+                merge_row("task-003", "Wire the --json flag", Some("codex/gpt-5.6")),
             ],
         ),
     ));
@@ -528,7 +531,7 @@ fn an_answer_goes_to_its_card() {
 /// Screen-reader mode reads All hands after the levels, on the slider that offers it, and `a`
 /// flips it there, since Tab never reaches a typed line.
 #[test]
-fn the_effort_slider_reads_all_hands_and_a_flips_it() {
+fn the_effort_slider_reads_ultracode_and_a_flips_it() {
     use argonauts_core::app::ViewData;
     use argonauts_core::display_names::DisplayNames;
     use argonauts_core::input::SlashCommand;
@@ -554,29 +557,29 @@ fn the_effort_slider_reads_all_hands_and_a_flips_it() {
         super::views::view_lines(&ViewData::Effort { slider }, &DisplayNames::default())
     };
     assert_eq!(
-        read(slider.clone().with_all_hands(true)),
+        read(slider.clone().with_ultracode(true)),
         [
             "effort for Opus 5.5: high",
             "levels: low, high",
-            "all hands: on"
+            "ultracode: on"
         ]
     );
     assert!(
         !read(slider.clone())
             .iter()
-            .any(|line| line.contains("all hands"))
+            .any(|line| line.contains("ultracode"))
     );
 
     let mut reader = Reader::new(&UiOptions::default());
     let view = AppEvent::View {
         data: Box::new(ViewData::Effort {
-            slider: slider.clone().with_all_hands(false),
+            slider: slider.clone().with_ultracode(false),
         }),
     };
     let said = reader.event(&view);
     assert_eq!(
         said.lines.last().map(String::as_str),
-        Some("all hands: type a to turn it on.")
+        Some("ultracode: type a to turn it on.")
     );
     assert!(
         !said.lines.iter().any(|line| line.contains("tab")),
@@ -589,7 +592,7 @@ fn the_effort_slider_reads_all_hands_and_a_flips_it() {
             command: SlashCommand::Effort {
                 role: None,
                 level: None,
-                all_hands: Some(true),
+                ultracode: Some(true),
             },
         }]
     );
@@ -600,10 +603,10 @@ fn the_effort_slider_reads_all_hands_and_a_flips_it() {
     let haiku =
         EffortSlider::without_levels(None, "claude-code/haiku".parse().unwrap(), "Haiku 4.5");
     assert_eq!(
-        read(haiku.with_all_hands(true)),
+        read(haiku.with_ultracode(true)),
         [
             "effort for Haiku 4.5: none, it takes no effort setting",
-            "all hands: on"
+            "ultracode: on"
         ]
     );
 }
@@ -681,9 +684,9 @@ fn workflows_shows_the_lead_while_it_designs() {
     assert!(said.commands.is_empty(), "{:?}", said.commands);
     assert_eq!(
         said.lines,
-        ["Waiting for the lead to start designing the workflow."]
+        ["Waiting for the main agent to start designing the workflow."]
     );
-    log.design("s-001", "lead:design");
+    log.design("s-001", "main:design");
     assert_eq!(
         workflows(&log).commands,
         [UiCommand::Request {

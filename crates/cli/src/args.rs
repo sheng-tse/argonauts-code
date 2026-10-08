@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-/// Runs your coding-agent CLIs as one crew, in git worktrees, and asks you before anything lands.
+/// Runs your coding-agent CLIs as one crew, in git worktrees, and asks you before anything merges.
 #[derive(Debug, Parser)]
 #[command(name = "argonauts", version)]
 pub struct Cli {
@@ -48,8 +48,11 @@ pub enum Command {
     /// Walk through the guided setup again: your agents, who you chat with, how the crew
     /// works, approvals, and this folder. It opens by itself the first time you start.
     Init,
-    /// Check which agent CLIs are installed, and remind you of runs parked a long time.
+    /// Check which agent CLIs are installed, and remind you of runs waiting a long time.
     Doctor(DoctorArgs),
+    /// Update each installed agent CLI with its own updater, such as `claude update`, then run
+    /// the doctor.
+    Update,
     /// Show, explain, or change your settings.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -59,15 +62,16 @@ pub enum Command {
         #[arg(long)]
         discover: bool,
     },
-    /// Open a run's waiting checkpoint in the app, to answer it there. It needs you at a
+    /// Open a run's waiting approval in the app, to answer it there. It needs you at a
     /// terminal, and refuses inside an agent's session.
     Approve {
         /// Such as `run-03`.
         run: String,
         /// Such as `cp-002`. `argonauts inbox` lists what waits.
+        #[arg(value_name = "APPROVAL")]
         checkpoint: String,
     },
-    /// How each checkpoint is approved, and how often your rules agreed with you.
+    /// How each approval is decided, and how often your rules agreed with you.
     Approvals,
     /// Turn auto approval off.
     #[command(subcommand)]
@@ -86,7 +90,8 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Recipes, candidates, and their replays.
+    /// Workflows learned from your runs, their candidates, and their replays.
+    #[command(name = "learned")]
     Recipes {
         #[command(subcommand)]
         action: Option<RecipesAction>,
@@ -94,7 +99,7 @@ pub enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
-    /// Exported and imported skills: list, export a recipe, or import one for review.
+    /// Exported and imported skills: list, export a learned workflow, or import one for review.
     Skills {
         #[command(subcommand)]
         action: Option<SkillsAction>,
@@ -114,8 +119,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// A run's retro: its outcome, predictions against results, memory, routing, and the change
-    /// it proposed.
+    /// A run's review: its outcome, predictions against results, memory, routing, and the
+    /// change it proposed.
+    #[command(name = "run-review")]
     Retro {
         /// Such as `run-03`.
         run: String,
@@ -142,11 +148,11 @@ pub struct RunArgs {
     #[arg(required = true, value_name = "TASK")]
     pub task: Vec<String>,
 
-    /// One agent on one card.
+    /// One agent on one task.
     #[arg(long, conflicts_with = "crew")]
     pub solo: bool,
 
-    /// The whole crew: goal, plan, cards, reviews.
+    /// The whole crew: goal, plan, tasks, reviews.
     #[arg(long)]
     pub crew: bool,
 
@@ -158,7 +164,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub detach: bool,
 
-    /// The agent to use. Defaults to `default_agent` from your settings.
+    /// The agent to use. Defaults to `main_agent` from your settings.
     #[arg(long, value_name = "ID")]
     pub agent: Option<String>,
 
@@ -175,17 +181,17 @@ pub struct RunArgs {
     #[arg(long)]
     pub cheapest: bool,
 
-    /// Budget for each card in US dollars.
-    #[arg(long, value_name = "USD", value_parser = parse_usd)]
+    /// Spend limit for each task in US dollars.
+    #[arg(long = "limit-usd", value_name = "USD", value_parser = parse_usd)]
     pub budget_usd: Option<f64>,
 
     /// A command that must pass before merging, run in the worktree. Repeat for more. Replaces
-    /// your configured gates, so it needs you at a terminal. In scripts and CI, set `gates.run`
+    /// your configured checks, so it needs you at a terminal. In scripts and CI, set `checks.run`
     /// in a settings file.
-    #[arg(long = "gate", value_name = "CMD")]
+    #[arg(long = "check", value_name = "CMD")]
     pub gates: Vec<String>,
 
-    /// Whether to ask at the merge checkpoint or leave the branch without asking. It needs you
+    /// Whether to ask at the merge approval or leave the branch without asking. It needs you
     /// at a terminal. In scripts and CI, set `merge.mode` in a settings file.
     #[arg(long, value_enum, value_name = "MODE")]
     pub merge: Option<MergeArg>,
@@ -193,7 +199,7 @@ pub struct RunArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum MergeArg {
-    /// Wait for your answer at the merge checkpoint.
+    /// Wait for your answer at the merge approval.
     Ask,
     /// Keep the branch and finish.
     Leave,
@@ -232,7 +238,7 @@ pub enum ConfigCommand {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum AutoCommand {
-    /// Every checkpoint waits for you again, in every run, until you turn auto back on.
+    /// Every approval waits for you again, in every run, until you turn auto back on.
     Off,
 }
 
@@ -244,9 +250,9 @@ pub enum RecordsAction {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum RecipesAction {
-    /// Every recipe and its current version.
+    /// Every learned workflow and its current version.
     List,
-    /// A recipe's current version.
+    /// A learned workflow's current version.
     Show { name: String },
     /// What changed between two versions: the current and its parent unless you name them.
     Diff {
@@ -256,11 +262,11 @@ pub enum RecipesAction {
         #[arg(long, value_name = "VERSION")]
         to: Option<u32>,
     },
-    /// Replay the oldest queued candidate now, within the month's evolution budget.
+    /// Replay the oldest queued candidate now, within the month's evolution limit.
     Replay,
     /// Promote a candidate that waits for you. Needs you at a terminal.
     Promote { candidate: String },
-    /// Roll a recipe back to the version before; the pointer change waits on a branch.
+    /// Roll a learned workflow back to the version before; the pointer change waits on a branch.
     Rollback { name: String },
 }
 
@@ -268,8 +274,11 @@ pub enum RecipesAction {
 pub enum SkillsAction {
     /// Every exported and imported skill, and any drift.
     List,
-    /// Propose a recipe as a skill, on a branch for you.
-    Export { recipe: String },
+    /// Propose a learned workflow as a skill, on a branch for you.
+    Export {
+        #[arg(value_name = "WORKFLOW")]
+        recipe: String,
+    },
     /// Propose a skill from a folder or a git URL, on a branch for you. Nothing in it runs.
     Import {
         #[arg(value_name = "FOLDER_OR_URL")]
@@ -310,9 +319,13 @@ pub enum McpCommand {
         /// Offer `approve`, Claude Code's permission prompt tool.
         #[arg(long, requires = "ask")]
         approve_tool: bool,
-        /// Offer `argonauts_start_run`.
-        #[arg(long, requires = "ask")]
-        start_run: bool,
+        /// Offer one of the main session's tools, such as `argonauts_start_workflow`. Give
+        /// it once for each tool.
+        #[arg(long = "tool", value_name = "NAME", requires = "ask")]
+        tools: Vec<String>,
+        /// Offer a tool that asks this crew role, such as `reviewers`. Repeatable.
+        #[arg(long = "ask-role", value_name = "ROLE", requires = "ask")]
+        ask_roles: Vec<String>,
     },
     /// Write the delegation package other agents install: an MCP entry that runs this binary,
     /// the delegate-to-argonauts skill, and the plugin layouts.
@@ -345,7 +358,7 @@ impl RunArgs {
             |key: &str, value: &str| format!("agents.{agent}.{key}={}", toml_string(value));
         let mut overrides = global_set.to_vec();
         if self.agent.is_some() {
-            overrides.push(format!("default_agent={}", toml_string(agent)));
+            overrides.push(format!("main_agent={}", toml_string(agent)));
         }
         if self.cheapest {
             let (model, effort) = cheapest;
@@ -361,10 +374,10 @@ impl RunArgs {
             overrides.push(agent_setting("effort", effort));
         }
         if let Some(usd) = self.budget_usd {
-            overrides.push(format!("budget.per_card_usd={}", toml::Value::Float(usd)));
+            overrides.push(format!("limits.per_task_usd={}", toml::Value::Float(usd)));
         }
         if !self.gates.is_empty() {
-            overrides.push(format!("gates.run={}", gate_commands(&self.gates)?));
+            overrides.push(format!("checks.run={}", gate_commands(&self.gates)?));
         }
         if let Some(merge) = self.merge {
             overrides.push(format!("merge.mode=\"{}\"", merge.setting()));
@@ -392,9 +405,9 @@ fn toml_string(text: &str) -> String {
 fn gate_commands(gates: &[String]) -> anyhow::Result<String> {
     let mut commands = Vec::with_capacity(gates.len());
     for gate in gates {
-        let argv = shell_words::split(gate).with_context(|| format!("--gate {gate:?}"))?;
+        let argv = shell_words::split(gate).with_context(|| format!("--check {gate:?}"))?;
         if argv.is_empty() {
-            bail!("--gate {gate:?} has no command");
+            bail!("--check {gate:?} has no command");
         }
         let mut table = toml::Table::new();
         table.insert("name".to_owned(), toml::Value::String(gate.clone()));
@@ -414,7 +427,7 @@ fn parse_usd(text: &str) -> Result<f64, String> {
     if usd.is_finite() && usd > 0.0 {
         Ok(usd)
     } else {
-        Err("the budget must be more than 0".to_owned())
+        Err("the limit must be more than 0".to_owned())
     }
 }
 
@@ -476,11 +489,11 @@ mod tests {
             "low",
             "--cheapest",
             "--plain",
-            "--budget-usd",
+            "--limit-usd",
             "0.5",
-            "--gate",
+            "--check",
             "test -f hello.txt",
-            "--gate",
+            "--check",
             "cargo test",
             "--merge",
             "leave",
@@ -501,9 +514,9 @@ mod tests {
             "codex",
             "--model",
             "1.5",
-            "--budget-usd",
+            "--limit-usd",
             "2",
-            "--gate",
+            "--check",
             "test -f 'hello world.txt'",
             "--merge",
             "ask",
@@ -515,10 +528,10 @@ mod tests {
             overrides,
             vec![
                 "ui.bell=false".to_owned(),
-                "default_agent=\"codex\"".to_owned(),
+                "main_agent=\"codex\"".to_owned(),
                 "agents.codex.model=\"1.5\"".to_owned(),
-                "budget.per_card_usd=2.0".to_owned(),
-                "gates.run=[{ command = [\"test\", \"-f\", \"hello world.txt\"], name = \"test -f 'hello world.txt'\" }]".to_owned(),
+                "limits.per_task_usd=2.0".to_owned(),
+                "checks.run=[{ command = [\"test\", \"-f\", \"hello world.txt\"], name = \"test -f 'hello world.txt'\" }]".to_owned(),
                 "merge.mode=\"ask\"".to_owned(),
             ]
         );
@@ -543,17 +556,17 @@ mod tests {
 
     #[test]
     fn bad_gates_are_rejected() {
-        let unbalanced = run_args(&["--gate", "test -f 'hello", "task"]);
+        let unbalanced = run_args(&["--check", "test -f 'hello", "task"]);
         assert!(unbalanced.overrides(&[], "codex", CHEAPEST).is_err());
-        let empty = run_args(&["--gate", "  ", "task"]);
+        let empty = run_args(&["--check", "  ", "task"]);
         let err = empty.overrides(&[], "codex", CHEAPEST).unwrap_err();
         assert!(err.to_string().contains("no command"), "{err}");
     }
 
     #[test]
     fn bad_values_fail_to_parse() {
-        assert!(fails(&["run", "--budget-usd", "0", "task"]));
-        assert!(fails(&["run", "--budget-usd", "lots", "task"]));
+        assert!(fails(&["run", "--limit-usd", "0", "task"]));
+        assert!(fails(&["run", "--limit-usd", "lots", "task"]));
         assert!(fails(&["run", "--merge", "maybe", "task"]));
         assert!(fails(&["run", "--solo", "--crew", "task"]));
         assert!(fails(&["run"]));
@@ -659,7 +672,7 @@ mod tests {
                 ..
             }))
         ));
-        // A direct turn's server, which asks the app and may start a run.
+        // A direct turn's server, which asks the app and may start a workflow.
         assert!(matches!(
             parse(&[
                 "mcp",
@@ -667,15 +680,16 @@ mod tests {
                 "--ask",
                 "127.0.0.1:9",
                 "--approve-tool",
-                "--start-run"
+                "--tool",
+                "argonauts_start_workflow"
             ])
             .command,
             Some(Command::Mcp(McpCommand::Session {
                 ask: Some(_),
                 approve_tool: true,
-                start_run: true,
+                ref tools,
                 ..
-            }))
+            })) if tools == &["argonauts_start_workflow".to_owned()]
         ));
         assert!(matches!(
             parse(&["mcp", "session", "--status-file", "/s/status.json"]).command,

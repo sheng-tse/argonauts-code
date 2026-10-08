@@ -53,11 +53,12 @@ fn claude_code_ids(settings: &Settings) -> Vec<String> {
         .agents
         .get("claude-code")
         .and_then(|agent| agent.model.clone());
-    let workers = std::iter::once(&settings.default_agent)
-        .chain(&settings.crew)
+    let members = settings.crew.members();
+    let workers = std::iter::once(&settings.main_agent)
+        .chain(&members)
         .chain(settings.roles.values().flat_map(|role| &role.workers))
         .chain(&settings.narrator.model)
-        .chain(&settings.approvals.approver.model)
+        .chain(settings.approvals.approver_model())
         .filter(|worker| worker.worker == "claude-code")
         .filter_map(|worker| worker.model.clone());
     let mut ids: Vec<String> = Vec::new();
@@ -200,7 +201,8 @@ mod tests {
             "claude-code/claude-sonnet-5".parse().unwrap(),
             "claude-code/opus".parse().unwrap(),
             "codex/gpt-6-luna".parse().unwrap(),
-        ];
+        ]
+        .into();
         settings.narrator.model = Some("claude-code/claude-opus-5-5".parse().unwrap());
         let ids: Vec<String> = builtin_models(&settings)
             .iter()

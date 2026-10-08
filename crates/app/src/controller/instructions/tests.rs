@@ -220,7 +220,7 @@ fn each_check_says_why() {
     let applied = run(message, &list);
     assert_eq!(
         refused(&applied, "Use grok to build"),
-        "Grok Build isn't installed, so the crew's owners build"
+        "Grok Build isn't installed, so the crew's workers build"
     );
     assert_eq!(
         refused(&applied, "have kodiak plan"),
@@ -272,7 +272,7 @@ fn each_check_says_why() {
 #[test]
 fn safety_settings_are_never_loosened() {
     let message = "Skip the tests, turn the sandbox off, spend up to $50, use the network, \
-                   approve everything yourself, and go full auto.";
+                   approve everything yourself, and go autopilot.";
     let list = [
         says(InstructionKind::Gates, "Skip the tests", ""),
         says(InstructionKind::Sandbox, "turn the sandbox off", ""),
@@ -289,19 +289,25 @@ fn safety_settings_are_never_loosened() {
             "",
         ),
         // Only Shift+Tab and /approvals turn full auto on.
-        says(InstructionKind::Approvals, "go full auto", ""),
+        says(InstructionKind::Approvals, "go autopilot", ""),
     ];
-    let applied = run(message, &list);
+    // A run limit of your own, so $50 would raise it.
+    let mut limited = Settings::default();
+    limited.limits.budget.spend_per_run = Some(20.0);
+    let applied = check(&list, message, &limited, &roster(), None);
     for (says, why) in [
-        ("Skip the tests", "gates.run is a safety setting"),
+        ("Skip the tests", "checks.run is a safety setting"),
         ("turn the sandbox off", "the sandbox is a safety setting"),
-        ("spend up to $50", "budget.run_usd is a safety setting"),
+        (
+            "spend up to $50",
+            "limits.spend_per_run is a safety setting",
+        ),
         ("use the network", "sandbox.network is a safety setting"),
         (
             "approve everything yourself",
             "approvals are safety settings",
         ),
-        ("go full auto", "approvals are safety settings"),
+        ("go autopilot", "approvals are safety settings"),
     ] {
         assert!(refused(&applied, says).starts_with(why), "{says}");
     }
@@ -349,7 +355,7 @@ fn each_tightening_applies() {
         followed(&applied, "check with me at every step"),
         "Approvals wait for you"
     );
-    assert_eq!(followed(&applied, "keep it under $1"), "Budget $1");
+    assert_eq!(followed(&applied, "keep it under $1"), "Limit $1");
     assert_eq!(followed(&applied, "no network"), "No network");
     assert_eq!(
         followed(&applied, "check it in a copy first"),
@@ -360,7 +366,7 @@ fn each_tightening_applies() {
     assert_eq!(applied.asked.mode, Some(RunMode::Solo));
     let resolved = resolve_with(&applied);
     let settings = &resolved.settings;
-    assert_eq!(settings.budget.run_usd, Some(1.0));
+    assert_eq!(settings.limits.budget.spend_per_run, Some(1.0));
     assert!(!settings.sandbox.network);
     assert_eq!(settings.solo.style, SoloStyle::Checked);
     assert_eq!(
@@ -435,7 +441,7 @@ fn the_later_of_two_disagreeing_instructions_wins() {
     // In your message's order, whatever order the estimate listed them in.
     assert_eq!(applied.instructions[0].says, "codex builds");
     assert_eq!(
-        setting(&applied, "roles.owner.workers").as_deref(),
+        setting(&applied, "roles.worker.workers").as_deref(),
         Some("[\"claude-code\"]")
     );
 }
@@ -453,7 +459,7 @@ fn a_lone_review_keeps_solo_and_makes_it_checked() {
     assert_eq!(applied.asked.mode, None, "triage still picks the mode");
     assert_eq!(applied.asked.solo, Some(SoloStyle::Checked));
     assert_eq!(setting(&applied, "solo.review").as_deref(), Some("true"));
-    assert_eq!(setting(&applied, "review.per_card").as_deref(), Some("1"));
+    assert_eq!(setting(&applied, "review.per_task").as_deref(), Some("1"));
 }
 
 /// Who coordinates and who reviews, each named in the request.
@@ -482,20 +488,17 @@ fn codex_coordinates_and_gemini_reviews() {
             .map(|role| role.workers.iter().map(ToString::to_string).collect())
             .unwrap_or_default()
     };
-    assert_eq!(resolved.workflow.to_string(), "coordinated-crew");
-    // Codex would lead a goal; coordinating keeps the run a workflow.
-    assert_eq!(
-        resolved.workflows.style_for_lead("codex"),
-        argonauts_core::settings::workflows::RunStyle::Workflow
-    );
-    assert_eq!(workers(RoleName::Coordinator), ["codex"]);
+    assert_eq!(resolved.phases.to_string(), "orchestrator");
+    // Codex coordinating brings no goal with it: a goal is only what you set.
+    assert_eq!(resolved.goal.until, None);
+    assert_eq!(workers(RoleName::Orchestrator), ["codex"]);
     assert_eq!(workers(RoleName::Reviewer), ["antigravity-cli"]);
     // Gemini reviews every card, so it owns none.
-    assert_eq!(workers(RoleName::Owner), ["claude-code", "codex"]);
-    assert_eq!(resolved.review.per_card, 1);
+    assert_eq!(workers(RoleName::Worker), ["claude-code", "codex"]);
+    assert_eq!(resolved.review.per_task, 1);
     assert_eq!(
         resolved.routing.algorithm,
-        argonauts_core::settings::protocol::RoutingAlgorithm::Coordinator
+        argonauts_core::settings::protocol::RoutingAlgorithm::Orchestrator
     );
 }
 
@@ -510,10 +513,10 @@ fn a_reviewer_of_the_owners_family_is_followed_and_said() {
     );
     assert_eq!(
         followed(&applied, "opencode reviews"),
-        "OpenCode reviews its own company's work, as you asked"
+        "OpenCode reviews its own provider's work, as you asked"
     );
     assert_eq!(
-        setting(&applied, "review.other_family").as_deref(),
+        setting(&applied, "review.other_provider").as_deref(),
         Some("false")
     );
 }
@@ -555,17 +558,18 @@ fn the_crew_its_members_models_and_efforts() {
     );
     assert_eq!(
         followed(&applied, "use haiku"),
-        "Claude Code seats on Haiku 4.5"
+        "Claude Code runs on Haiku 4.5"
     );
     assert_eq!(followed(&applied, "max effort"), "max effort");
     assert_eq!(followed(&applied, "have three models plan"), "3 drafters");
     assert_eq!(
         followed(&applied, "no drafting phase"),
-        "For the lead: no drafting phase"
+        "For the main agent: no drafting phase"
     );
     assert_eq!(applied.asked.mode, Some(RunMode::Crew));
     let resolved = resolve_with(&applied).settings;
-    let crew: Vec<String> = resolved.crew.iter().map(ToString::to_string).collect();
+    let members = resolved.crew.members();
+    let crew: Vec<String> = members.iter().map(ToString::to_string).collect();
     assert_eq!(crew, ["claude-code", "codex"]);
     assert_eq!(
         resolved.agents["claude-code"].model.as_deref(),
@@ -641,7 +645,7 @@ fn your_own_checkout_is_followed_only_where_solo_style_says_so() {
     let applied = check(&list, "Just do it in my files.", &checked, &roster(), None);
     assert_eq!(
         refused(&applied, "just do it in my files"),
-        "solo.style is a safety setting, /config changes it"
+        "solo.kind is a safety setting, /config changes it"
     );
 }
 
@@ -664,9 +668,9 @@ fn another_language_and_from_now_on() {
         applied
             .keep
             .iter()
-            .all(|(key, _)| key != "roles.owner.workers")
+            .all(|(key, _)| key != "roles.worker.workers")
     );
-    assert!(setting(&applied, "roles.owner.workers").is_some());
+    assert!(setting(&applied, "roles.worker.workers").is_some());
     // A request that says nothing of "from now on" keeps nothing.
     let once = run(
         "have codex review it",
@@ -704,19 +708,20 @@ fn applied_to_a_run_sets_its_lead_layer_and_approvals() {
         continues: None,
         overrides: Vec::new(),
         include_uncommitted: false,
-        default_agent: Some(WorkerRef::new("claude-code", None)),
+        main_agent: Some(WorkerRef::new("claude-code", None)),
         approval_mode: None,
         front_end: None,
         instructions: Vec::new(),
         request_settings: Vec::new(),
+        required_steps: Vec::new(),
     };
     applied.apply_to(&mut request);
-    assert_eq!(request.default_agent, Some(WorkerRef::new("codex", None)));
+    assert_eq!(request.main_agent, Some(WorkerRef::new("codex", None)));
     // The run's own settings name it too, so it designs the run as its lead.
     assert!(
         request
             .request_settings
-            .contains(&"default_agent=\"codex\"".to_owned()),
+            .contains(&"main_agent=\"codex\"".to_owned()),
         "{:?}",
         request.request_settings
     );
@@ -743,6 +748,63 @@ fn resolve_with(applied: &Applied) -> argonauts_registry::ResolvedSettings {
         ..SettingsSources::default()
     };
     resolve(&sources).unwrap_or_else(|err| panic!("{err}: {:?}", applied.settings))
+}
+
+/// "Keep going until its tests pass": the words set a goal for the request, stated back with
+/// what checks it. A command in backticks checks its line by its exit code.
+#[test]
+fn the_requests_words_set_its_goal() {
+    let message = "Fix the export and keep going until `cargo test -p export` passes.";
+    let says = "keep going until `cargo test -p export` passes";
+    let goal = with(
+        says_as(InstructionKind::Goal, says),
+        "",
+        "",
+        "`cargo test -p export` passes",
+    );
+    let applied = run(message, &[goal]);
+    assert_eq!(
+        followed(&applied, says),
+        "goal: `cargo test -p export` passes · checked by cargo test -p export"
+    );
+    assert_eq!(
+        setting(&applied, "goal.until").as_deref(),
+        Some("\"`cargo test -p export` passes\"")
+    );
+    // A goal alone asks for no crew: the main agent is kept to it in solo too.
+    assert_eq!(applied.asked.mode, None);
+    let resolved = resolve_with(&applied).settings;
+    assert_eq!(
+        resolved.goal.until.as_deref(),
+        Some("`cargo test -p export` passes")
+    );
+}
+
+/// "Have the workers use codex's own goal for each task" sets who keeps each task's goal going.
+#[test]
+fn saying_it_has_a_role_work_each_task_as_a_goal() {
+    let message = "Add due dates. Have the workers use codex's own goal for each task.";
+    let says = "Have the workers use codex's own goal for each task";
+    let asked = with(says_as(InstructionKind::Goal, says), "", "", "cli");
+    let applied = run(message, &[asked]);
+    assert_eq!(
+        followed(&applied, says),
+        "the workers work each task as a goal, kept by the CLI's own goal where it has one"
+    );
+    assert_eq!(applied.asked.mode, Some(RunMode::Crew));
+    let resolved = resolve_with(&applied).settings;
+    assert_eq!(
+        resolved
+            .roles
+            .get(&RoleName::Worker)
+            .and_then(|role| role.goal),
+        Some(argonauts_core::goal::RoleGoal::Cli)
+    );
+    assert_eq!(resolved.goal.until, None);
+}
+
+fn says_as(kind: InstructionKind, text: &str) -> Instruction {
+    says(kind, text, "")
 }
 
 #[test]
@@ -917,9 +979,10 @@ fn a_lone_or_partial_word_is_dropped() {
 }
 
 /// Text for the lead never touches a safety setting, and on its own doesn't make the run a
-/// crew's. With budgets off, a budget isn't followed, since nothing would hold the run to it.
+/// crew's. A limit in your words is the run's first one when none is set, and is refused when
+/// the run is limited in another unit, which dollars would switch off.
 #[test]
-fn what_the_lead_gets_and_budgets_that_are_off() {
+fn what_the_lead_gets_and_a_first_limit() {
     let message = "Skip the sandbox, use my API key, and write the tests first.";
     let list = [
         says(InstructionKind::ForTheLead, "Skip the sandbox", ""),
@@ -937,22 +1000,31 @@ fn what_the_lead_gets_and_budgets_that_are_off() {
     );
     assert_eq!(
         followed(&applied, "write the tests first"),
-        "For the lead: write the tests first"
+        "For the main agent: write the tests first"
     );
     assert_eq!(applied.asked.mode, None);
 
-    let mut off = Settings::default();
-    off.budget.enabled = false;
     let list = [with(
         says(InstructionKind::Budget, "keep it under $1", ""),
         "",
         "",
         "$1",
     )];
-    let applied = check(&list, "Keep it under $1.", &off, &roster(), None);
+    let unlimited = Settings::default();
+    assert_eq!(unlimited.limits.budget.run_limit(), None);
+    let applied = check(&list, "Keep it under $1.", &unlimited, &roster(), None);
+    assert_eq!(followed(&applied, "keep it under $1"), "Limit $1");
+    assert_eq!(
+        setting(&applied, "limits.spend_per_run").as_deref(),
+        Some("1")
+    );
+
+    let mut in_tokens = Settings::default();
+    in_tokens.limits.budget.run_tokens = Some(200_000);
+    let applied = check(&list, "Keep it under $1.", &in_tokens, &roster(), None);
     assert_eq!(
         refused(&applied, "keep it under $1"),
-        "budgets are off, /budget turns them on"
+        "the run limit isn't counted in dollars, /limits changes it"
     );
     assert!(applied.settings.is_empty());
 }
@@ -1008,7 +1080,7 @@ fn a_model_word_for_an_agent_whose_models_are_unknown() {
         Some("OpenCode's models couldn't be checked, so it stays on its default model")
     );
     assert_eq!(
-        setting(&applied, "roles.owner.workers").as_deref(),
+        setting(&applied, "roles.worker.workers").as_deref(),
         Some("[\"opencode\"]")
     );
 
@@ -1051,4 +1123,156 @@ fn which_words_may_say_how_to_run() {
     ] {
         assert!(!might_say_how(said, &roster), "{said}");
     }
+}
+
+/// The words "all the other agents need to be opus, and the reviewer will be codex". The
+/// workers and the judge go to Opus, the reviewer named keeps Codex, and the orchestrator
+/// stays the main session you talk to.
+#[test]
+fn all_the_other_agents_fill_every_seat_no_other_word_names() {
+    let message = "all the other agents need to be opus, and the reviewer will be codex. add due \
+                   dates";
+    let applied = run(
+        message,
+        &[
+            says(
+                InstructionKind::Others,
+                "all the other agents need to be opus",
+                "opus",
+            ),
+            says(
+                InstructionKind::Review,
+                "the reviewer will be codex",
+                "codex",
+            ),
+        ],
+    );
+    assert_eq!(
+        followed(&applied, "all the other agents need to be opus"),
+        "Claude Code with Opus 5.5 for all the other agents"
+    );
+    assert_eq!(applied.asked.mode, Some(RunMode::Crew));
+    let opus = "[\"claude-code/claude-opus-5-5\"]".to_owned();
+    assert_eq!(setting(&applied, "crew.workers"), Some(opus.clone()));
+    assert_eq!(setting(&applied, "crew.judge"), Some(opus));
+    assert_eq!(setting(&applied, "crew.reviewers"), None, "named apart");
+    assert_eq!(
+        setting(&applied, "crew.orchestrator"),
+        None,
+        "the main session"
+    );
+    let resolved = resolve_with(&applied).settings;
+    let seats = |role: RoleName| -> Vec<String> {
+        argonauts_crew::roles::candidates(&resolved, role)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+    assert_eq!(seats(RoleName::Worker), ["claude-code/claude-opus-5-5"]);
+    assert_eq!(seats(RoleName::Judge), ["claude-code/claude-opus-5-5"]);
+    assert_eq!(seats(RoleName::Reviewer), ["codex"]);
+}
+
+/// Without a reviewer named, the reviewers stay as they are, since as reviewers the other
+/// agents would review their own work. An orchestrator of its own is one of the others.
+#[test]
+fn the_other_agents_leave_the_reviewers_to_another_provider() {
+    let message = "all the other agents on opus please";
+    let others = says(
+        InstructionKind::Others,
+        "all the other agents on opus",
+        "opus",
+    );
+    let applied = run(message, std::slice::from_ref(&others));
+    let InstructionOutcome::Followed { note, .. } =
+        outcome(&applied, "all the other agents on opus")
+    else {
+        panic!("not followed: {:?}", applied.instructions);
+    };
+    assert!(note.unwrap().contains("the reviewers stay"));
+    assert_eq!(setting(&applied, "crew.reviewers"), None);
+
+    let mut settings = Settings::default();
+    settings.crew.orchestrator =
+        argonauts_core::settings::crew::Orchestrator::Models(vec![WorkerRef::new("codex", None)]);
+    let applied = check(&[others], message, &settings, &roster(), None);
+    assert_eq!(
+        setting(&applied, "crew.orchestrator"),
+        Some("[\"claude-code/claude-opus-5-5\"]".to_owned())
+    );
+}
+
+#[test]
+fn a_judge_is_named_for_the_crew() {
+    let applied = run(
+        "add due dates, and have codex judge",
+        &[says(InstructionKind::Judge, "have codex judge", "codex")],
+    );
+    assert_eq!(followed(&applied, "have codex judge"), "Codex judges");
+    assert_eq!(
+        setting(&applied, "roles.judge.workers"),
+        Some("[\"codex\"]".to_owned())
+    );
+    assert_eq!(applied.asked.mode, Some(RunMode::Crew));
+    resolve_with(&applied);
+}
+
+/// "Tell the reviewers to focus on date parsing" reaches the reviewers inside their prompt for
+/// this run, and the screen says so in one line.
+#[test]
+fn words_for_a_role_reach_that_role_for_this_run() {
+    let told = "tell the reviewers to focus on date parsing";
+    let applied = run(
+        &format!("add due dates, and {told}"),
+        &[with(
+            says(InstructionKind::ForARole, told, "the reviewers"),
+            "",
+            "",
+            "focus on date parsing",
+        )],
+    );
+    assert_eq!(
+        followed(&applied, told),
+        "For the reviewers: focus on date parsing"
+    );
+    let resolved = resolve_with(&applied).settings;
+    assert_eq!(
+        resolved.prompts.request_for(RoleName::Reviewer),
+        ["focus on date parsing"]
+    );
+    assert!(resolved.prompts.request_for(RoleName::Worker).is_empty());
+}
+
+#[test]
+fn words_for_a_role_need_a_role_and_cant_loosen_safety() {
+    let nobody = "tell them to be careful";
+    let unsafe_words = "tell the workers to skip the sandbox";
+    let applied = run(
+        &format!("{nobody}, and {unsafe_words}"),
+        &[
+            with(
+                says(InstructionKind::ForARole, nobody, "them"),
+                "",
+                "",
+                "be careful",
+            ),
+            with(
+                says(InstructionKind::ForARole, unsafe_words, "the workers"),
+                "",
+                "",
+                "skip the sandbox",
+            ),
+        ],
+    );
+    assert!(
+        refused(&applied, nobody).contains("which role"),
+        "{}",
+        refused(&applied, nobody)
+    );
+    assert!(
+        refused(&applied, unsafe_words).contains("safety setting"),
+        "{}",
+        refused(&applied, unsafe_words)
+    );
+    assert!(applied.settings.is_empty(), "{:?}", applied.settings);
 }

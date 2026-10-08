@@ -1,6 +1,6 @@
 //! What counts as tightening a safety key, fixed in code and never judged by a model. A
-//! request may move a safety key only this way: toward asking you, a lower run budget, no
-//! network, or solo in a checked copy.
+//! request may move a safety key only this way: toward asking you, a lower run limit (or a
+//! first one), no network, or solo in a checked copy.
 
 use toml::Value;
 
@@ -17,12 +17,15 @@ pub fn tightens(key: &str, new: &Value, current: Option<&Value>) -> bool {
             (Some(new), None) => autonomy(new) == Some(0),
             _ => false,
         },
-        ["budget", "run_usd"] => match (number(new), current.and_then(number)) {
-            (Some(new), Some(current)) => new > 0.0 && new < current,
+        // With no limit set, the first one only tightens. The caller refuses it when the run
+        // is limited in another unit, which setting dollars would switch off.
+        ["limits", "spend_per_run"] => match (number(new), current.map(number)) {
+            (Some(new), Some(Some(current))) => new > 0.0 && new < current,
+            (Some(new), None) => new > 0.0,
             _ => false,
         },
         ["sandbox", "network"] => new.as_bool() == Some(false),
-        ["solo", "style"] | ["triage", "solo_style"] => new.as_str() == Some("checked"),
+        ["solo", "kind"] | ["solo_or_crew", "solo_kind"] => new.as_str() == Some("checked"),
         _ => false,
     }
 }
@@ -31,7 +34,7 @@ pub fn tightens(key: &str, new: &Value, current: Option<&Value>) -> bool {
 fn autonomy(mode: &str) -> Option<u8> {
     match mode {
         "supervised" => Some(0),
-        "shadow" => Some(1),
+        "auto_preview" => Some(1),
         "auto" => Some(2),
         _ => None,
     }
@@ -60,51 +63,57 @@ mod tests {
         assert!(tightens("approvals.merge.mode", &supervised, Some(&auto)));
         assert!(tightens(
             "approvals.plan.mode",
-            &text("shadow"),
+            &text("auto_preview"),
             Some(&auto)
         ));
         assert!(!tightens("approvals.merge.mode", &auto, Some(&supervised)));
         assert!(tightens(
-            "budget.run_usd",
+            "limits.spend_per_run",
             &Value::Float(1.0),
             Some(&Value::Float(20.0))
         ));
         assert!(tightens(
-            "budget.run_usd",
+            "limits.spend_per_run",
             &Value::Integer(2),
             Some(&Value::Float(20.0))
         ));
         assert!(!tightens(
-            "budget.run_usd",
+            "limits.spend_per_run",
             &Value::Float(30.0),
             Some(&Value::Float(20.0))
         ));
         assert!(!tightens(
-            "budget.run_usd",
+            "limits.spend_per_run",
             &Value::Float(0.0),
             Some(&Value::Float(20.0))
         ));
-        // No dollar limit now: setting one could switch the budget's unit, so it's refused.
-        assert!(!tightens("budget.run_usd", &Value::Float(1.0), None));
+        // No limit now: a first one only tightens.
+        assert!(tightens("limits.spend_per_run", &Value::Float(1.0), None));
+        assert!(!tightens("limits.spend_per_run", &Value::Float(0.0), None));
+        assert!(!tightens(
+            "limits.spend_per_run",
+            &Value::Float(1.0),
+            Some(&text("a lot"))
+        ));
         assert!(tightens("sandbox.network", &Value::Boolean(false), None));
         assert!(!tightens("sandbox.network", &Value::Boolean(true), None));
         assert!(tightens(
-            "solo.style",
+            "solo.kind",
             &text("checked"),
             Some(&text("direct"))
         ));
         assert!(!tightens(
-            "solo.style",
+            "solo.kind",
             &text("direct"),
             Some(&text("checked"))
         ));
-        assert!(tightens("triage.solo_style", &text("checked"), None));
-        assert!(!tightens("triage.solo_style", &text("as_solo"), None));
+        assert!(tightens("solo_or_crew.solo_kind", &text("checked"), None));
+        assert!(!tightens("solo_or_crew.solo_kind", &text("as_solo"), None));
         for key in [
-            "gates.run",
+            "checks.run",
             "sandbox.mode",
             "merge.mode",
-            "budget.enabled",
+            "limits.plan_usage",
             "limits.x",
         ] {
             assert!(!tightens(key, &Value::Boolean(false), None), "{key}");

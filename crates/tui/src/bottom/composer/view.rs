@@ -61,10 +61,15 @@ pub(super) fn render(
     let letters = if shell {
         Vec::new()
     } else {
-        keywords::letters(text, &composer.keywords, theme, Some(&ctx.clock))
+        keywords::letters(text, &composer.drawn_keywords(), theme, Some(&ctx.clock))
     };
     let mut lines = Vec::with_capacity(rows.len().min(MAX_INPUT_ROWS) + 2);
-    lines.push(top_rule(composer.label.as_deref(), rule_style, ctx));
+    lines.push(top_rule(
+        composer.label.as_deref(),
+        composer.ultracode,
+        rule_style,
+        ctx,
+    ));
     for (index, row) in rows.iter().enumerate().skip(scroll).take(MAX_INPUT_ROWS) {
         let prefix = if index == 0 {
             marks::decorative(format!("{prompt} "), prompt_style)
@@ -113,27 +118,42 @@ pub(super) fn render(
     }
 }
 
-fn top_rule(label: Option<&str>, dim: Style, ctx: &RenderCtx<'_>) -> Line<'static> {
+/// The word on the rule while ultracode is on, where Claude Code draws it.
+pub const ULTRACODE_TAG: &str = "ultracode";
+
+/// The rule above the input. Its label is the main model's name, with the workflow's first
+/// when it isn't solo, in the rule's own grey. Purple is kept for the `ultracode` tag, at the
+/// far right, two spaces after the name as Claude Code joins the tags in this slot. On a row
+/// too narrow for both, the name goes first.
+fn top_rule(
+    label: Option<&str>,
+    ultracode: bool,
+    dim: Style,
+    ctx: &RenderCtx<'_>,
+) -> Line<'static> {
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
     let rule = theme.glyphs.rule;
     let label = label
         .map(|label| sanitize_line(label).trim().to_owned())
         .filter(|label| !label.is_empty());
-    match label {
-        // At least one rule cell on each side, with a space around the label.
-        Some(label) if str_width(&label) + 4 <= width => {
-            let left = width - str_width(&label) - 3;
-            Line::from(vec![
-                Span::styled(rule.repeat(left), dim),
-                Span::raw(" "),
-                Span::styled(label, theme.style(Role::Label)),
-                Span::raw(" "),
-                Span::styled(rule.to_owned(), dim),
-            ])
+    let tag = ultracode.then(|| Span::styled(ULTRACODE_TAG, theme.style(Role::Ultracode)));
+    // At least one rule cell on each side, with a space around the words.
+    let fits = |words: usize| words + 4 <= width;
+    let name = |label: String| Span::styled(label, dim);
+    let words = match (label, tag) {
+        (Some(label), Some(tag)) if fits(str_width(&label) + 2 + ULTRACODE_TAG.len()) => {
+            vec![name(label), Span::raw("  "), tag]
         }
-        _ => Line::from(Span::styled(rule.repeat(width), dim)),
-    }
+        (_, Some(tag)) if fits(ULTRACODE_TAG.len()) => vec![tag],
+        (Some(label), None) if fits(str_width(&label)) => vec![name(label)],
+        _ => return Line::from(Span::styled(rule.repeat(width), dim)),
+    };
+    let left = width - crate::text::spans_width(&words) - 3;
+    let mut spans = vec![Span::styled(rule.repeat(left), dim), Span::raw(" ")];
+    spans.extend(words);
+    spans.extend([Span::raw(" "), Span::styled(rule.to_owned(), dim)]);
+    Line::from(spans)
 }
 
 /// With focus the block sits on the placeholder's first letter, the way Claude Code draws it.

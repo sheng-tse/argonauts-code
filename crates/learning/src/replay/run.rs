@@ -435,10 +435,8 @@ pub fn score<'a>(
 pub fn replay_workers(settings: &Settings) -> Vec<WorkerRef> {
     let use_subscriptions = settings.evolution.replay.use_subscriptions;
     let mut workers: Vec<WorkerRef> = Vec::new();
-    let candidates = settings
-        .crew
-        .iter()
-        .chain(std::iter::once(&settings.default_agent));
+    let members = settings.crew.members();
+    let candidates = members.iter().chain(std::iter::once(&settings.main_agent));
     for worker in candidates {
         let pinned = if let Some(endpoint) = settings.endpoints.get(&worker.worker) {
             // A local endpoint spends neither money nor anyone's quota.
@@ -482,7 +480,7 @@ fn phase_of(key: &str) -> Option<StandardPhase> {
     let under = |prefix: &str| key.starts_with(prefix);
     if under("critique.") || under("drafting.") || key == "prompts.drafting" {
         Some(StandardPhase::Plan)
-    } else if under("divide.") || under("budget.") || key == "prompts.build" {
+    } else if under("divide.") || under("limits.") || key == "prompts.build" {
         Some(StandardPhase::Do)
     } else {
         None
@@ -513,8 +511,8 @@ fn changed_keys(parent: &LoadedRecipe, child: &LoadedRecipe) -> Vec<String> {
         }
     }
     for (field, differs) in [
+        ("phases", a.phases != b.phases),
         ("workflow", a.workflow != b.workflow),
-        ("preset", a.preset != b.preset),
         ("mode", a.mode != b.mode),
         ("match", a.matches != b.matches),
     ] {

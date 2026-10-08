@@ -476,7 +476,11 @@ impl Driven {
                     }
                 }
             }
-            Some(SessionControl::Stop) => self.cancel(StopCause::Stopped),
+            // A driven CLI reports nothing it runs in the background, so there is nothing a
+            // turn's stop could spare.
+            Some(SessionControl::Stop | SessionControl::StopTurn) => {
+                self.cancel(StopCause::Stopped);
+            }
             // Only a CLI that says it can take these gets them, and none driven here does.
             Some(SessionControl::Send { uuid, .. }) => self.out.agent(AgentEvent::MessageState {
                 uuid,
@@ -485,7 +489,10 @@ impl Driven {
             Some(
                 SessionControl::SendNow { .. }
                 | SessionControl::TakeBack { .. }
-                | SessionControl::Screen(_),
+                | SessionControl::Screen(_)
+                | SessionControl::AskContext(_)
+                | SessionControl::WatchContext(_)
+                | SessionControl::StopSubagent { .. },
             ) => {}
             None => {
                 self.control_open = false;
@@ -609,6 +616,7 @@ impl Driven {
                 Action::WrapUp(dimension) => self.wrap_up(dimension),
                 Action::Nudge { call, times } => self.send(Pending::note(call, times), true),
                 Action::Stop(cause) => self.cancel(cause),
+                Action::AskContext(_) => {}
             }
         }
     }

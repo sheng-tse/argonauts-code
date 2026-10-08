@@ -290,29 +290,29 @@ mod tests {
         // Blind reviewers of a card never see each other's reviews before adjudication.
         folder.push(&event(
             3,
-            Some("card-002"),
+            Some("task-002"),
             RunEventKind::Card(CardEvent::Created(Box::new(spec(
-                "card-002",
+                "task-002",
                 &["src/limiter/**"],
                 &[],
             )))),
         ));
-        folder.push(&review(4, "card-002", "claude-code"));
+        folder.push(&review(4, "task-002", "claude-code"));
         assert!(!mentions(
-            &folder.summary(&reviewer("card-002")),
+            &folder.summary(&reviewer("task-002")),
             "reviewed"
         ));
         assert!(mentions(
-            &folder.summary(&reviewer("card-003")),
-            "card-002 reviewed"
+            &folder.summary(&reviewer("task-003")),
+            "task-002 reviewed"
         ));
         assert!(mentions(
             &folder.summary(&Viewer::User),
-            "card-002 reviewed"
+            "task-002 reviewed"
         ));
         folder.push(&event(
             5,
-            Some("card-002"),
+            Some("task-002"),
             RunEventKind::Review(ReviewEvent::Adjudicated {
                 adjudicator: "agy".parse().unwrap(),
                 ruling: AdjudicateOutput {
@@ -322,7 +322,7 @@ mod tests {
                 },
             }),
         ));
-        assert!(mentions(&folder.summary(&reviewer("card-002")), "reviewed"));
+        assert!(mentions(&folder.summary(&reviewer("task-002")), "reviewed"));
 
         // Hidden tests are never shown to an agent, the narrator included.
         folder.push(&event(
@@ -336,7 +336,7 @@ mod tests {
         ));
         folder.push(&event(
             7,
-            Some("card-002"),
+            Some("task-002"),
             RunEventKind::Gate(argonauts_core::events::card::GateOutcome {
                 name: "tests/hidden/limits.rs".to_owned(),
                 kind: GateKind::Command,
@@ -361,7 +361,7 @@ mod tests {
         for agent in [
             Viewer::Narrator,
             judge(),
-            reviewer("card-003"),
+            reviewer("task-003"),
             drafter(Some(1)),
         ] {
             let seen = folder.summary(&agent);

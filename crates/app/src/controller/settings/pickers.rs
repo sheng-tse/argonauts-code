@@ -46,15 +46,8 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
                 section,
             )]
         }
-        SlashCommand::Preset { .. } => vec![view(preset_rows(ctx), "preset", None)],
-        SlashCommand::Style { .. } => {
-            vec![view(
-                rows::rows(settings, Some("style"), None),
-                "style",
-                None,
-            )]
-        }
-        SlashCommand::Workflows => vec![view(workflow_rows(ctx), "workflow", None)],
+        SlashCommand::Workflow { .. } => vec![view(preset_rows(ctx), "workflow", None)],
+        SlashCommand::Workflows => vec![view(workflow_rows(ctx), "phases", None)],
         SlashCommand::Agents { .. } => {
             vec![ViewData::Settings {
                 rows: rows::rows(settings, Some("agents"), None),
@@ -75,20 +68,20 @@ pub(crate) fn picker(ctx: &Ctx, command: &SlashCommand) -> Vec<ViewData> {
             ]
         }
         SlashCommand::Budget { key, .. } => {
-            let section = key.as_deref().map(|key| args::under("budget", key));
-            let found = rows::rows(settings, Some("budget"), section.as_deref());
-            vec![view(found, "budget", section)]
+            let section = key.as_deref().map(|key| args::under("limits", key));
+            let found = rows::rows(settings, Some("limits"), section.as_deref());
+            vec![view(found, "limits", section)]
         }
-        SlashCommand::Handoff { role, key, .. } => {
-            let base = role.map(|role| format!("roles.{}.handoff", role.as_str()));
+        SlashCommand::Fallback { role, key, .. } => {
+            let base = role.map(args::fallback_section);
             let section = match (&base, key) {
                 (Some(base), Some(key)) => Some(args::under(base, key)),
                 (Some(base), None) => Some(base.clone()),
-                (None, Some(key)) => Some(args::under("handoff", key)),
+                (None, Some(key)) => Some(args::under("fallback", key)),
                 (None, None) => None,
             };
-            let found = rows::rows(settings, Some("handoff"), section.as_deref());
-            vec![view(found, "handoff", section)]
+            let found = rows::rows(settings, Some("fallback"), section.as_deref());
+            vec![view(found, "fallback", section)]
         }
         SlashCommand::Permissions {
             role: None, key, ..
@@ -231,7 +224,7 @@ fn not_installed(ctx: &Ctx) -> Vec<MissingCli> {
 /// while the router picks the worker, so there's no one model, and for a role whose model takes
 /// no effort setting. The default agent's view always opens, since it holds All hands.
 fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
-    let role = role.filter(|role| *role != RoleName::Default);
+    let role = role.filter(|role| *role != RoleName::Main);
     let (worker, levels) = models::efforts(ctx, role);
     let worker = worker?;
     let registry = &ctx.services.registry;
@@ -265,7 +258,7 @@ fn effort_slider(ctx: &Ctx, role: Option<RoleName>) -> Option<EffortSlider> {
     match role {
         None => {
             let slider = slider.unwrap_or_else(|| EffortSlider::without_levels(None, worker, name));
-            Some(slider.with_all_hands(ctx.settings().triage.all_hands))
+            Some(slider.with_ultracode(ctx.settings().ultracode))
         }
         Some(_) => slider,
     }
@@ -280,7 +273,7 @@ fn effort_rows(ctx: &Ctx, section: Option<&str>) -> Vec<SettingRow> {
             .split('.')
             .nth(1)
             .and_then(role_named)
-            .filter(|role| *role != RoleName::Default);
+            .filter(|role| *role != RoleName::Main);
         let (_, levels) = models::efforts(ctx, role);
         row.allowed = levels.iter().map(|level| args::quoted(level)).collect();
     }
@@ -290,8 +283,8 @@ fn effort_rows(ctx: &Ctx, section: Option<&str>) -> Vec<SettingRow> {
 /// One row per preset you can pick, each `preset = "<name>"` with what it does. The row of the
 /// preset in effect carries its layer; the others are `built-in`, since nothing sets them.
 fn preset_rows(ctx: &Ctx) -> Vec<SettingRow> {
-    let current = ctx.settings().preset.clone();
-    let layer = ctx.settings.layer("preset");
+    let current = ctx.settings().workflow.clone();
+    let layer = ctx.settings.layer("workflow");
     let presets = args::preset_list(ctx);
     let allowed: Vec<String> = presets
         .iter()
@@ -310,7 +303,7 @@ fn preset_rows(ctx: &Ctx) -> Vec<SettingRow> {
                 ),
             };
             SettingRow {
-                key: "preset".to_owned(),
+                key: "workflow".to_owned(),
                 value: args::quoted(&preset.name),
                 layer: if preset.name == current {
                     layer.clone()
@@ -331,8 +324,8 @@ fn preset_rows(ctx: &Ctx) -> Vec<SettingRow> {
 /// One row per workflow: the crew engine's built-ins, then your files and the project's, a file
 /// shadowing a workflow of the same name, each with its description and where it came from.
 fn workflow_rows(ctx: &Ctx) -> Vec<SettingRow> {
-    let current = ctx.settings().workflow.as_str().to_owned();
-    let layer = ctx.settings.layer("workflow");
+    let current = ctx.settings().phases.as_str().to_owned();
+    let layer = ctx.settings.layer("phases");
     let global = ctx.env.paths.home().join(user_files::WORKFLOWS);
     let project = ctx
         .env
@@ -366,7 +359,7 @@ fn workflow_rows(ctx: &Ctx) -> Vec<SettingRow> {
     names
         .into_iter()
         .map(|(name, description)| SettingRow {
-            key: "workflow".to_owned(),
+            key: "phases".to_owned(),
             value: args::quoted(&name),
             layer: if name == current {
                 layer.clone()

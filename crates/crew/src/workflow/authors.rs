@@ -22,7 +22,7 @@ pub fn excluded(state: &RunState, settings: &Settings, call: &StepCall) -> Vec<W
     };
     if workers.is_empty() {
         // Work with no recorded author is most likely the default agent's.
-        workers.push(settings.default_agent.clone());
+        workers.push(settings.main_agent.clone());
     }
     workers.sort();
     workers.dedup();

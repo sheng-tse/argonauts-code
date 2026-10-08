@@ -80,7 +80,7 @@ pub fn checkpoint_card_local(
         }
         CheckpointPacket::Question(question) => question_card(&mut card, question, run, names),
         CheckpointPacket::OriginalReturned(back) => original_returned_card(&mut card, back, names),
-        CheckpointPacket::RecipePromotion(_) => {}
+        CheckpointPacket::WorkflowPromotion(_) => {}
     }
     // A title that asks the question already needn't ask it again.
     if card.question.as_deref() == Some(opened.title.trim()) {
@@ -208,7 +208,7 @@ fn plan_card(card: &mut CardPrompt, plan: &PlanPacket, names: &DisplayNames) {
     // A workflow that drafts no plan has no cards to count; its phases are the plan.
     let mut summary = match &plan.workflow {
         Some(shown) if cards == 0 => vec![super::plan_workflow::summary(shown)],
-        _ => vec![words::plural(cards, "card", "cards")],
+        _ => vec![words::plural(cards, "task", "tasks")],
     };
     if plan.budget.estimate_high > 0.0 {
         summary.push(format!(
@@ -217,7 +217,11 @@ fn plan_card(card: &mut CardPrompt, plan: &PlanPacket, names: &DisplayNames) {
             format::usd(plan.budget.estimate_high)
         ));
     }
-    summary.push(format!("budget {}", words::amount(&plan.budget.total)));
+    if plan.budget.is_unlimited() {
+        summary.push("no limit set".to_owned());
+    } else {
+        summary.push(format!("limit {}", words::amount(&plan.budget.total)));
+    }
     card.detail.push(summary.join(" · "));
     if let Some(judging) = &plan.judging {
         let winner = judging
@@ -284,7 +288,7 @@ fn merge_card(
     }
     let cards = u32::try_from(merge.rows.len()).unwrap_or(u32::MAX);
     let mut summary = vec![
-        words::plural(cards, "card", "cards"),
+        words::plural(cards, "task", "tasks"),
         words::diffstat(&merge.combined),
     ];
     summary.push(
@@ -309,7 +313,7 @@ fn merge_card(
         let debt = u32::try_from(debt).unwrap_or(u32::MAX);
         summary.push(format!(
             "{} needs a stronger review",
-            words::plural(debt, "card", "cards")
+            words::plural(debt, "task", "tasks")
         ));
     }
     // The run's spend as the mode line counts it; the packet's count can lag behind it.
@@ -352,7 +356,7 @@ fn handoff_card(
 ) {
     card.agent = Some(agent_line(
         &plan.stopped,
-        Some("owner"),
+        Some("worker"),
         &plan.card,
         run,
         names,
@@ -363,9 +367,9 @@ fn handoff_card(
         plan.reason
     ));
     let gates = if plan.gates_ran {
-        "Gates ran on it."
+        "Checks ran on it."
     } else {
-        "Gates haven't run on it yet."
+        "Checks haven't run on it yet."
     };
     card.detail.push(format!(
         "Work so far is committed: {}, {}. {gates}",
@@ -395,16 +399,16 @@ fn strategy_line(plan: &HandoffPlan, names: &DisplayNames) -> Option<String> {
     match plan.strategy {
         HandoffStrategy::Spread if !vendors.is_empty() => Some(format!(
             "{vendor}'s {} will be spread across {}",
-            words::plural(moving, "card", "cards"),
+            words::plural(moving, "task", "tasks"),
             words::joined(&vendors)
         )),
         HandoffStrategy::Race if plan.race_count > 1 => Some(format!(
-            "{} will race {} agents at once, and the first to pass its gates and review wins",
-            plan.card, plan.race_count
+            "{} fallbacks will take {} at once, and fallback.pick says whose work is kept",
+            plan.race_count, plan.card
         )),
         HandoffStrategy::First if moving > 1 => Some(format!(
             "{vendor}'s {} will each go to the first agent that can take them",
-            words::plural(moving, "card", "cards")
+            words::plural(moving, "task", "tasks")
         )),
         _ => None,
     }
@@ -413,7 +417,7 @@ fn strategy_line(plan: &HandoffPlan, names: &DisplayNames) -> Option<String> {
 fn vendor_down_card(card: &mut CardPrompt, down: &VendorDownPacket, offset: UtcOffset) {
     let mut evidence = down.evidence.clone();
     if let Some(at) = down.test_at {
-        evidence.push_str(&format!(" · test card at {}", words::clock(at, offset)));
+        evidence.push_str(&format!(" · test task at {}", words::clock(at, offset)));
     }
     card.detail.push(evidence);
     if !down.paused.is_empty() {
@@ -567,7 +571,7 @@ fn original_returned_card(
     names: &DisplayNames,
 ) {
     let mut line = format!(
-        "{} since handoff-{} · {}",
+        "{} since fallback-{} · {}",
         words::plural(back.commits, "commit", "commits"),
         back.since,
         words::lines(&back.changed)
@@ -605,7 +609,7 @@ fn agent_line(
 ) -> CardAgent {
     let model = names.worker(&running(worker, card, run, names));
     let label = match role {
-        None | Some("owner") => card_label(run, card),
+        None | Some("worker") => card_label(run, card),
         Some(role) => own_label(worker, card, run).or_else(|| Some(role.to_owned())),
     };
     let (name, detail) = match label {
@@ -654,7 +658,7 @@ fn running(
 
 fn owner_line(run: Option<&RunState>, card: &CardId, names: &DisplayNames) -> Option<CardAgent> {
     let owner = run?.cards.get(card)?.owner.as_ref()?;
-    Some(agent_line(owner, Some("owner"), card, run, names))
+    Some(agent_line(owner, Some("worker"), card, run, names))
 }
 
 fn party_line(

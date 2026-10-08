@@ -81,6 +81,12 @@ fn lock(slot: &Slot) -> MutexGuard<'_, Option<Shown>> {
 pub struct Follower(Slot);
 
 impl Follower {
+    /// Another end on the same slot, for a view this one opens over itself. Whichever of the
+    /// two is drawn says what's shown.
+    pub fn another(&self) -> Self {
+        Self(self.0.clone())
+    }
+
     /// Called each time the view is drawn, which only the top view is.
     pub fn show(&self, shown: Shown) {
         let mut slot = lock(&self.0);
@@ -276,6 +282,9 @@ mod tests {
                     phases: Vec::new(),
                     style: None,
                     status_lines: Vec::new(),
+                    notes: Vec::new(),
+                    required: Vec::new(),
+                    goals: Vec::new(),
                 }),
             }),
         }

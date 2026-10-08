@@ -8,7 +8,7 @@ use argonauts_core::names::{ChoiceId, TurnId};
 use argonauts_core::settings::protocol::SoloStyle;
 use argonauts_core::steps::intake::{ChangeEstimate, Instruction};
 
-use super::{ChatState, Queued, Turn, direct, keep, run_request};
+use super::{ChatState, Queued, Turn, direct, handover, keep, run_request};
 use crate::choices::{self, JUST_ASKING};
 use crate::controller::instructions::{self, Command, Roster};
 use crate::controller::recap::mode_name;
@@ -100,7 +100,7 @@ pub(crate) async fn answer_choice(
             chat.queue(Queued::Solo(request));
             return Ok(Vec::new());
         }
-        let main = ctx.settings().default_agent.worker.clone();
+        let main = ctx.settings().main_agent.worker.clone();
         let words = applied
             .as_ref()
             .map(|applied| applied.for_direct(&main))
@@ -119,7 +119,7 @@ pub(crate) async fn answer_choice(
         applied.apply_to(&mut request);
         keep::offer(ctx, chat, applied);
     }
-    Ok(vec![Effect::StartRun(Box::new(request))])
+    Ok(vec![handover::start(request)])
 }
 
 fn mode_words(mode: RunMode) -> &'static str {
@@ -129,7 +129,8 @@ fn mode_words(mode: RunMode) -> &'static str {
     }
 }
 
-/// Esc on the `StartWork` card sets it aside, like a run's card: it stays answerable.
+/// Esc on the `StartWork` card goes on without you: the answer the reply gave
+/// stands and nothing starts, as when Argonauts can't tell.
 pub(crate) fn set_aside(
     ctx: &mut Ctx,
     chat: &mut ChatState,
@@ -138,8 +139,17 @@ pub(crate) fn set_aside(
     if direct::owns_choice(chat, &id) {
         return direct::set_aside(ctx, chat, id);
     }
+    if chat.offers.remove(&id).is_some() {
+        ctx.send(AppEvent::ChoiceClosed {
+            id,
+            outcome: NOTHING_STARTED.to_owned(),
+        });
+    }
     Ok(Vec::new())
 }
+
+/// What Esc on the start-work card leaves.
+const NOTHING_STARTED: &str = "No · nothing started";
 
 pub(super) fn offer_to_start(
     ctx: &mut Ctx,
@@ -152,7 +162,7 @@ pub(super) fn offer_to_start(
     let id = ctx.next_choice_id();
     let title = match would_pick {
         Some(mode) => format!(
-            "This could be a change request. Start work on it? Triage would pick {}.",
+            "This could be a change request. Start work on it? Argonauts would pick {}.",
             mode_name(mode)
         ),
         None => "This could be a change request. Start work on it?".to_owned(),

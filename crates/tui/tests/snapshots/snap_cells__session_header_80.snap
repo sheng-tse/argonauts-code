@@ -1,10 +1,10 @@
 ---
-source: crates/tui/tests/cells.rs
+source: crates/tui/tests/snap_cells.rs
 expression: text(&lines)
 ---
 
-    ▟▙     Argonauts v0.0.1
-   ▟██▙    Claude Code · Opus 5.5 with xhigh effort · peer-crew
+    ▟▙     Argonauts Code v0.0.1
+   ▟██▙    Claude Code · Opus 5.5 with xhigh effort · council
  ▝▀▀▀▀▀▀▘  ~/github/argonauts
 
   Antigravity CLI: not signed in

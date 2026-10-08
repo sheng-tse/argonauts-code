@@ -155,7 +155,7 @@ mod tests {
         let file = dir.path().join("config.local.toml");
         std::fs::write(
             &file,
-            "[sandbox]\nmode = \"off\"\n\n[roles.default]\neffort = \"low\"\n",
+            "[sandbox]\nmode = \"off\"\n\n[roles.main]\neffort = \"low\"\n",
         )
         .unwrap();
         assert_eq!(

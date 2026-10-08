@@ -11,12 +11,15 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Instant;
 
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::session::{
     Delivery, EndReason, LaunchRecord, PromptVia, QueuedMessage, SessionEnd, SessionEvent,
     WrapUpVia,
 };
 use argonauts_core::worker::{SessionControl, SteerSupport};
-use argonauts_core::{AgentEvent, BudgetDimension, MessageStage, StopSignal, StreamParser};
+use argonauts_core::{
+    AgentEvent, BudgetDimension, ErrorCategory, MessageStage, StopSignal, StreamParser,
+};
 use tokio::sync::mpsc;
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
@@ -95,6 +98,7 @@ pub async fn run(running: Running, launch: Launch) -> SessionEnd {
         stop_after_tool: false,
         wrap_up_sent: false,
         wrap_up_refused: false,
+        turn_stopped: false,
         next_turn: Vec::new(),
         steer_after_tool: Vec::new(),
         joining: Vec::new(),
@@ -165,6 +169,9 @@ struct Lines {
     wrap_up_sent: bool,
     /// The wrap-up couldn't go out, and that was reported.
     wrap_up_refused: bool,
+    /// You stopped a turn alone, so a session whose last word is that interrupted turn was
+    /// stopped by you and didn't fail.
+    turn_stopped: bool,
     /// Messages for the end of the current turn.
     next_turn: Vec<QueuedMessage>,
     /// Steering that waits for the running tool call to finish.
@@ -241,6 +248,13 @@ impl Lines {
             ..self.obs.facts.end_facts()
         };
         let reason = self.failure.take().unwrap_or_else(|| classify(&facts));
+        let reason = match reason {
+            EndReason::VendorError {
+                category: ErrorCategory::Interrupted,
+                ..
+            } if self.turn_stopped => EndReason::Stopped,
+            reason => reason,
+        };
         end_of(
             &self.obs,
             reason,
@@ -388,7 +402,7 @@ impl Lines {
         let Some(vendor_session) = self.obs.facts.vendor_session.clone() else {
             self.undelivered(
                 &items,
-                "the vendor session is unknown, so it can't be resumed",
+                "the agent session is unknown, so it can't be resumed",
             );
             return false;
         };
@@ -472,11 +486,38 @@ impl Lines {
                 let line = self.ctx.adapter.screen_line(&request);
                 self.write_control(line);
             }
+            Some(SessionControl::AskContext(detail)) => {
+                self.obs.asked_context();
+                self.ask_context(detail);
+            }
+            Some(SessionControl::WatchContext(detail)) => self.obs.watch_context(detail),
+            Some(SessionControl::StopTurn) => self.stop_turn(),
+            Some(SessionControl::StopSubagent { id }) => {
+                let line = self.live.parser.stop_subagent_line(&id);
+                if !self.write_control(line) {
+                    self.out.notice(format!(
+                        "{} can't stop that subagent on its own now. Stopping the agent stops \
+                         everything it runs.",
+                        self.ctx.adapter.display_name()
+                    ));
+                }
+            }
             None => {
                 // Every sender is gone: nobody can stop it later, so stop it now.
                 self.control_open = false;
                 self.begin_stop(StopCause::Stopped);
             }
+        }
+    }
+
+    /// Esc: the running turn stops, and the session stays open for what its CLI runs in the
+    /// background. A CLI with no line for that is stopped whole.
+    fn stop_turn(&mut self) {
+        let line = self.live.parser.stop_turn_line();
+        if self.write_control(line) {
+            self.turn_stopped = true;
+        } else {
+            self.begin_stop(StopCause::Stopped);
         }
     }
 
@@ -665,6 +706,13 @@ impl Lines {
 
     /// A line the adapter made for the open input, such as a control request. False when it
     /// didn't go out.
+    /// A CLI that can't say gets nothing, and one that answers with an error isn't asked
+    /// again until the next fill.
+    fn ask_context(&mut self, detail: ContextDetail) {
+        let line = self.ctx.adapter.context_usage_line(detail);
+        self.write_control(line);
+    }
+
     fn write_control(&mut self, line: Option<String>) -> bool {
         let Some(mut line) = line else {
             return false;
@@ -797,6 +845,7 @@ impl Lines {
                 Action::WrapUp(dimension) => self.wrap_up(dimension),
                 Action::Nudge { call, times } => self.nudge(call, times),
                 Action::Stop(cause) => self.begin_stop(cause),
+                Action::AskContext(detail) => self.ask_context(detail),
             }
         }
         self.stop_after_tool_if_idle();

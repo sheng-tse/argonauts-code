@@ -93,7 +93,7 @@ mod tests {
         let home = root.join("home");
         let argonauts = home.join(".argonauts");
         let session = argonauts.join("state/repo/runs/run-1/sessions/s-1");
-        let tree = argonauts.join("worktrees/repo/run-1/card-a");
+        let tree = argonauts.join("worktrees/repo/run-1/task-a");
         let status = session.join(session_files::STATUS);
         let input = ProfileInput {
             access: Access::Build,

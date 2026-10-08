@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{bail, ensure};
+use argonauts_core::settings::workflows::WorkflowSize;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -13,9 +14,34 @@ pub const STATUS_SERVER: &str = "argonauts_status";
 /// Every shell command, for a session with its own sandbox off.
 const BASH: &str = "Bash";
 
-/// The tool rules the adapter may write: Bash, and the fetches a direct turn in auto mode makes
-/// without asking.
-const TOOL_RULES: &[&str] = &[BASH, "WebFetch", "WebSearch"];
+/// Claude Code's own workflow tool, which asks to review each workflow before it runs.
+const WORKFLOW: &str = "Workflow";
+
+/// What a direct turn in auto mode runs without asking: commands and fetches.
+const AUTO_RULES: &[&str] = &[BASH, "WebFetch", "WebSearch"];
+
+/// The tool rules the adapter may write: the auto ones, and the workflow tool where no one is
+/// there to review a workflow.
+const TOOL_RULES: &[&str] = &[BASH, "WebFetch", "WebSearch", WORKFLOW];
+
+/// The sizes `workflowSizeGuideline` takes (2.1.292).
+const WORKFLOW_SIZES: &[&str] = &["unrestricted", "small", "medium", "large"];
+
+/// Claude Code's built-in style for work nobody is watching: it "executes immediately, minimizes
+/// interruptions, and prefers action over planning". 2.1.289's init lists it. The settings
+/// schema takes any string as `outputStyle` (read in 2.1.293), so the file stays valid on a
+/// version without the style, which then keeps your own. A headless session builds its system
+/// prompt with the style the merged settings name, `--settings` included (also read in 2.1.293).
+const PROACTIVE: &str = "Proactive";
+
+/// How the session carries itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// The output style you set in Claude Code.
+    Yours,
+    /// For a run on autopilot, where a question at the end of a turn reaches nobody.
+    Proactive,
+}
 
 /// What a session's tools may do without asking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +76,36 @@ struct SessionSettings {
     /// Settings passed with `--settings` outrank your own, so a `false` here wins.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     enabled_plugins: BTreeMap<String, bool>,
+    /// Claude Code's own ultracode for this session. The setting leaves the effort as it is,
+    /// where `--effort ultracode` would also raise it to xhigh.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    ultracode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workflow_size_guideline: Option<&'static str>,
+    /// Left out, your own output style holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_style: Option<&'static str>,
+}
+
+/// Claude Code's own workflow, in a session that may run one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OwnWorkflow {
+    /// Ultracode: a workflow on every real task.
+    pub ultracode: bool,
+    /// How big a workflow it writes, as `workflow_size` says.
+    pub size: Option<WorkflowSize>,
+    /// A workflow runs without being reviewed first, since no one is there to review it.
+    pub runs_unasked: bool,
+}
+
+/// `workflow_size` in Claude Code's words: no guideline is `unrestricted`.
+fn size_guideline(size: WorkflowSize) -> &'static str {
+    match size {
+        WorkflowSize::Small => "small",
+        WorkflowSize::Medium => "medium",
+        WorkflowSize::Large => "large",
+        WorkflowSize::None => "unrestricted",
+    }
 }
 
 /// What a session leaves out of your own Claude Code setup.
@@ -93,8 +149,20 @@ pub enum CommandSandbox {
 
 #[derive(Debug, Serialize)]
 struct Permissions {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     allow: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    deny: Vec<String>,
 }
+
+/// The main session never edits Argonauts' own files in your checkout: a setup changes them,
+/// after you pick where it's kept. Deny rules hold in every permission mode,
+/// auto included.
+const SETUP_DENIED: [&str; 3] = [
+    "Edit(.argonauts/**)",
+    "Write(.argonauts/**)",
+    "NotebookEdit(.argonauts/**)",
+];
 
 /// `status_tool` adds an allow rule for the status server, since `dontAsk` denies an MCP call
 /// no rule allows and `--permission-prompts none` denies one that would prompt. `commands` says
@@ -104,6 +172,8 @@ pub fn session_settings(
     commands: CommandSandbox,
     allowed: Allowed,
     left_out: &LeftOut,
+    own: &OwnWorkflow,
+    style: Style,
 ) -> anyhow::Result<String> {
     let sandbox = match commands {
         CommandSandbox::Own => Sandbox {
@@ -120,17 +190,27 @@ pub fn session_settings(
     let mut allow = Vec::new();
     match allowed {
         Allowed::Listed if commands == CommandSandbox::Off => allow.push(BASH.to_owned()),
-        Allowed::Everything => allow.extend(TOOL_RULES.iter().map(|rule| (*rule).to_owned())),
+        Allowed::Everything => allow.extend(AUTO_RULES.iter().map(|rule| (*rule).to_owned())),
         Allowed::Listed | Allowed::AsTheCliAsks => {}
     }
     if status_tool {
         allow.push(format!("mcp__{STATUS_SERVER}"));
     }
+    if own.runs_unasked {
+        allow.push(WORKFLOW.to_owned());
+    }
+    // Only the main session works in your checkout; a run's agents work in worktrees.
+    let deny: Vec<String> = match allowed {
+        Allowed::Everything | Allowed::AsTheCliAsks => {
+            SETUP_DENIED.iter().map(|rule| (*rule).to_owned()).collect()
+        }
+        Allowed::Listed => Vec::new(),
+    };
     let settings = SessionSettings {
         cross_session_inbound: "refuse",
         attribution: Attribution { commit: "", pr: "" },
         sandbox,
-        permissions: (!allow.is_empty()).then_some(Permissions { allow }),
+        permissions: (!allow.is_empty() || !deny.is_empty()).then_some(Permissions { allow, deny }),
         disable_all_hooks: left_out.hooks,
         sync_claude_ai_skills: left_out.plugins.as_ref().map(|_| false),
         sync_claude_ai_plugins: left_out.plugins.as_ref().map(|_| false),
@@ -140,6 +220,9 @@ pub fn session_settings(
             .flatten()
             .map(|plugin| (plugin.clone(), false))
             .collect(),
+        ultracode: own.ultracode,
+        workflow_size_guideline: own.size.map(size_guideline),
+        output_style: (style == Style::Proactive).then_some(PROACTIVE),
     };
     validate(&serde_json::to_value(&settings)?)?;
     // Written from the struct, so the keys keep their order whatever serde_json's map is.
@@ -179,6 +262,19 @@ pub fn validate(settings: &Value) -> anyhow::Result<()> {
                 "{key} is only ever false here, not {value}"
             ),
             "enabledPlugins" => check_plugins(value)?,
+            "ultracode" => ensure!(value.is_boolean(), "ultracode must be true or false"),
+            "workflowSizeGuideline" => ensure!(
+                value
+                    .as_str()
+                    .is_some_and(|size| WORKFLOW_SIZES.contains(&size)),
+                "workflowSizeGuideline must be one of {}, not {value}",
+                WORKFLOW_SIZES.join(", ")
+            ),
+            // The one style the adapter picks for you. Any other stays your choice.
+            "outputStyle" => ensure!(
+                value.as_str() == Some(PROACTIVE),
+                "outputStyle is only ever {PROACTIVE} here, not {value}"
+            ),
             other => bail!("the adapter doesn't generate the Claude Code setting {other}"),
         }
     }
@@ -210,20 +306,28 @@ fn check_permissions(value: &Value) -> anyhow::Result<()> {
     };
     for (key, rules) in fields {
         ensure!(
-            key == "allow",
+            key == "allow" || key == "deny",
             "permissions.{key} isn't a setting the adapter uses"
         );
         let Some(rules) = rules.as_array() else {
-            bail!("permissions.allow must be a list");
+            bail!("permissions.{key} must be a list");
         };
+        ensure!(!rules.is_empty(), "permissions.{key} is an empty list");
         for rule in rules {
             let Some(rule) = rule.as_str() else {
-                bail!("permissions.allow holds a rule that isn't a string: {rule}");
+                bail!("permissions.{key} holds a rule that isn't a string: {rule}");
             };
+            if key == "deny" {
+                ensure!(
+                    SETUP_DENIED.contains(&rule),
+                    "permissions.deny only takes the rules that keep .argonauts/ closed, not {rule}"
+                );
+                continue;
+            }
             ensure!(
                 TOOL_RULES.contains(&rule) || is_mcp_server_rule(rule),
-                "permissions.allow only takes MCP server rules, Bash, WebFetch, and WebSearch, \
-                 not {rule}"
+                "permissions.allow only takes MCP server rules, Bash, WebFetch, WebSearch, and \
+                 Workflow, not {rule}"
             );
         }
     }
@@ -278,8 +382,47 @@ mod tests {
         allowed: Allowed,
         left_out: &LeftOut,
     ) -> Value {
-        let settings = session_settings(status_tool, commands, allowed, left_out).unwrap();
+        styled(status_tool, commands, allowed, left_out, Style::Yours)
+    }
+
+    fn styled(
+        status_tool: bool,
+        commands: CommandSandbox,
+        allowed: Allowed,
+        left_out: &LeftOut,
+        style: Style,
+    ) -> Value {
+        let settings = session_settings(
+            status_tool,
+            commands,
+            allowed,
+            left_out,
+            &OwnWorkflow::default(),
+            style,
+        )
+        .unwrap();
         serde_json::from_str(&settings).unwrap()
+    }
+
+    #[test]
+    fn only_a_run_on_autopilot_gets_the_proactive_style() {
+        let on_autopilot = |style| {
+            styled(
+                false,
+                CommandSandbox::Own,
+                Allowed::Listed,
+                &LeftOut::default(),
+                style,
+            )
+        };
+        let proactive = on_autopilot(Style::Proactive);
+        assert_eq!(proactive["outputStyle"], json!("Proactive"));
+        // The rest of the file is what any session gets, the sandbox above all.
+        let mut rest = proactive.clone();
+        rest.as_object_mut().unwrap().remove("outputStyle");
+        assert_eq!(rest, on_autopilot(Style::Yours));
+        assert_eq!(proactive["sandbox"]["enabled"], json!(true));
+        assert!(on_autopilot(Style::Yours).get("outputStyle").is_none());
     }
 
     #[test]
@@ -321,6 +464,14 @@ mod tests {
         assert!(nothing.get("disableAllHooks").is_none());
     }
 
+    #[test]
+    fn the_workflow_size_is_one_claude_code_knows() {
+        validate(&json!({"workflowSizeGuideline": "small", "ultracode": true})).unwrap();
+        assert!(validate(&json!({"workflowSizeGuideline": "huge"})).is_err());
+        assert!(validate(&json!({"ultracode": "yes"})).is_err());
+        validate(&json!({"permissions": {"allow": ["Workflow"]}})).unwrap();
+    }
+
     /// Auto mode asks nothing, so commands and fetches are allowed. A direct turn that asks
     /// lets Claude Code ask about each, as it does when you run it.
     #[test]
@@ -329,19 +480,22 @@ mod tests {
             let auto = direct(true, commands, Allowed::Everything);
             assert_eq!(
                 auto["permissions"],
-                json!({"allow": ["Bash", "WebFetch", "WebSearch", "mcp__argonauts_status"]})
+                json!({
+                    "allow": ["Bash", "WebFetch", "WebSearch", "mcp__argonauts_status"],
+                    "deny": SETUP_DENIED,
+                })
             );
             validate(&auto).unwrap();
             let asks = direct(true, commands, Allowed::AsTheCliAsks);
             assert_eq!(
                 asks["permissions"],
-                json!({"allow": ["mcp__argonauts_status"]})
+                json!({"allow": ["mcp__argonauts_status"], "deny": SETUP_DENIED})
             );
         }
-        assert!(
-            direct(false, CommandSandbox::Off, Allowed::AsTheCliAsks)
-                .get("permissions")
-                .is_none()
+        // The main session never edits .argonauts/ itself, whatever it may run.
+        assert_eq!(
+            direct(false, CommandSandbox::Off, Allowed::AsTheCliAsks)["permissions"],
+            json!({"deny": SETUP_DENIED})
         );
     }
 
@@ -397,6 +551,7 @@ mod tests {
             json!({"permissions": {"allow": ["Bash(*)"]}}),
             json!({"permissions": {"allow": ["Write"]}}),
             json!({"permissions": {"deny": []}}),
+            json!({"permissions": {"deny": ["Bash"]}}),
             json!({"permissions": {"allow": "mcp__x"}}),
             json!({"hooks": {}}),
             json!({"disableAllHooks": false}),
@@ -404,6 +559,8 @@ mod tests {
             json!({"syncClaudeAiPlugins": "no"}),
             json!({"enabledPlugins": {"x@y": "off"}}),
             json!({"enabledPlugins": ["x@y"]}),
+            json!({"outputStyle": "Explanatory"}),
+            json!({"outputStyle": true}),
         ];
         for settings in bad {
             assert!(validate(&settings).is_err(), "{settings}");
@@ -414,7 +571,8 @@ mod tests {
             "disableAllHooks": true,
             "syncClaudeAiSkills": false,
             "syncClaudeAiPlugins": false,
-            "enabledPlugins": {"memory-keeper@market": false, "x@y": true}
+            "enabledPlugins": {"memory-keeper@market": false, "x@y": true},
+            "outputStyle": "Proactive"
         });
         validate(&good).unwrap();
     }

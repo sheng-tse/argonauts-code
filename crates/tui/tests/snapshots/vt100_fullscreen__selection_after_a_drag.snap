@@ -17,7 +17,7 @@ expression: f.marked()
 [  - It writes each row]
 [  - It flushes]
 
-● GPT on Codex · owner (Wire --json)
+● GPT on Codex · worker (Wire --json)
   ⎿  step one
 
 ∙ Rowing…

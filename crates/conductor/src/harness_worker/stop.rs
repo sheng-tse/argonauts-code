@@ -39,6 +39,12 @@ pub enum StopCause {
     WrapUp {
         resets_at: Option<OffsetDateTime>,
     },
+    /// The provider's plan window is as full as your `limits.plan_usage` lets it get, and
+    /// `limits.when_reached` is `fallback`: the turn ends as if the plan had run out, so the
+    /// fallbacks take over.
+    PlanLimit {
+        resets_at: Option<OffsetDateTime>,
+    },
     /// An isolated session loaded what its role mustn't see.
     IsolationBroken {
         plugins: Vec<String>,
@@ -67,7 +73,7 @@ impl StopCause {
             Self::Unsafe(message) => EndReason::StartFailed {
                 message: message.clone(),
             },
-            Self::WrapUp { resets_at } => EndReason::UsageLimit {
+            Self::WrapUp { resets_at } | Self::PlanLimit { resets_at } => EndReason::UsageLimit {
                 resets_at: *resets_at,
             },
             Self::IsolationBroken { plugins, skills } => EndReason::IsolationBroken {

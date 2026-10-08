@@ -52,8 +52,10 @@ pub struct Instruction {
     /// An effort as the request names it, or empty.
     #[serde(default)]
     pub effort: String,
-    /// For `mode`, `solo` or `crew`. For `style`, `workflow` or `goal`. For `isolation`,
-    /// `checked` or `direct`. For the other kinds, what was asked, such as "$2".
+    /// For `mode`, `solo` or `crew`. For `goal`, the condition in the request's own words,
+    /// such as "its tests pass"; or, when the request says who keeps each task's goal going,
+    /// `cli` for the CLI's own goal ("codex's own goal"), `argonauts`, or `off`. For
+    /// `isolation`, `checked` or `direct`. For the other kinds, what was asked, such as "$2".
     #[serde(default)]
     pub value: String,
     #[serde(default)]
@@ -65,8 +67,10 @@ pub struct Instruction {
 pub enum InstructionKind {
     /// Solo or the crew.
     Mode,
-    /// A workflow or a goal.
-    Style,
+    /// Keep going until something holds: "keep going until its tests pass", "don't stop until
+    /// the README explains the flag". Or who keeps each task's goal going: "have the workers
+    /// use codex's own goal for each task".
+    Goal,
     /// A checked copy, or your own checkout.
     Isolation,
     /// Who leads the run.
@@ -77,12 +81,17 @@ pub enum InstructionKind {
     Build,
     /// Who reviews.
     Review,
+    /// Who decides and signs off, the judge.
+    Judge,
     /// Who plans, or how many plans.
     Plan,
     /// Who checks the goal.
     Check,
     /// Which agents make up the crew.
     Crew,
+    /// Who fills every other seat but the agent the user talks to, as in "all the other agents
+    /// need to be Opus". A role another instruction names keeps that one.
+    Others,
     /// An agent to leave out.
     Exclude,
     /// Which model.
@@ -98,6 +107,10 @@ pub enum InstructionKind {
     Sandbox,
     /// Anything else about how the lead should shape the run, such as "no drafting phase".
     ForTheLead,
+    /// Words for one role's agents, such as "tell the reviewers to focus on date parsing":
+    /// the role in `who` ("the reviewers"), and what they are told in `value` ("focus on date
+    /// parsing").
+    ForARole,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
@@ -123,7 +136,7 @@ pub enum ReplyKind {
 /// Facts the triage rules read. The agent never picks the mode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ChangeEstimate {
-    /// A task type recipes can match, such as `docs`, `bugfix`, or `api-feature`.
+    /// A task type learned workflows can match, such as `docs`, `bugfix`, or `api-feature`.
     pub task_type: String,
     /// One line describing the change.
     pub summary: String,

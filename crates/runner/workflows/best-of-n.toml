@@ -1,0 +1,15 @@
+# Best of N: the same task, tried several times.
+name  = "best-of-n"
+about = "Several workers try the same task and the judge picks one"
+adapt = true
+
+[[step]]
+name        = "Try"
+role        = "workers"
+count       = 3
+independent = true           # each in its own worktree, without seeing the others
+
+[[step]]
+name = "Pick"
+role = "judge"
+does = "Compare the attempts against the request and keep the one that holds up best."

@@ -35,12 +35,12 @@ fn notices_about(scenario: &Scenario, needle: &str) -> anyhow::Result<Vec<String
 #[test]
 fn app_preset_edited_file_told_once() -> anyhow::Result<()> {
     // `preset` sits above the config's first table.
-    let scenario = scenario_with(&format!("preset = \"peer-crew\"\n{GLOBAL_CONFIG}"))?;
-    let copy = scenario.repo.home().join("presets").join("peer-crew.toml");
+    let scenario = scenario_with(&format!("workflow = \"council\"\n{GLOBAL_CONFIG}"))?;
+    let copy = scenario.repo.home().join("workflows").join("council.toml");
 
     let mut pty = start(&scenario)?;
-    submit(&mut pty, "/preset copy peer-crew")?;
-    wait_until("the preset file", || Ok(copy.exists().then_some(())))?;
+    submit(&mut pty, "/workflow copy council")?;
+    wait_until("the workflow file", || Ok(copy.exists().then_some(())))?;
     quit(&mut pty)?;
     // As if an older version wrote it: the file records a built-in that has changed since, so
     // this start's upgrade finds your edit and keeps it.
@@ -58,19 +58,19 @@ fn app_preset_edited_file_told_once() -> anyhow::Result<()> {
     std::fs::write(&copy, &edited)?;
 
     let mut pty = restart(&scenario, "copied")?;
-    let told = wait_until("the notice about the edited preset", || {
-        let told = notices_about(&scenario, "peer-crew")?;
+    let told = wait_until("the notice about the edited workflow", || {
+        let told = notices_about(&scenario, "council")?;
         Ok((!told.is_empty()).then_some(told))
     })?;
     assert_eq!(told.len(), 1, "{told:?}");
-    assert!(told[0].contains("/preset diff peer-crew"), "{told:?}");
+    assert!(told[0].contains("/workflow diff council"), "{told:?}");
     scenario.shot(&pty, "app_preset_edited_file_told_once")?;
     quit(&mut pty)?;
 
     let pty = restart(&scenario, "told")?;
     assert!(
-        notices_about(&scenario, "peer-crew")?.is_empty(),
-        "the edited preset was mentioned again"
+        notices_about(&scenario, "council")?.is_empty(),
+        "the edited workflow was mentioned again"
     );
     // The header may remember that you were told; everything else is as you left it.
     let kept: String = read(&copy)?
@@ -78,7 +78,7 @@ fn app_preset_edited_file_told_once() -> anyhow::Result<()> {
         .filter(|line| !line.starts_with(TOLD_LINE))
         .map(|line| format!("{line}\n"))
         .collect();
-    assert_eq!(kept, edited, "the app changed your preset file");
+    assert_eq!(kept, edited, "the app changed your workflow file");
     drop(pty);
     Ok(())
 }
@@ -92,7 +92,7 @@ fn app_old_config_file_told_once() -> anyhow::Result<()> {
         .join("argonauts")
         .join("config.toml");
     std::fs::create_dir_all(old.parent().expect("a parent"))?;
-    std::fs::write(&old, "default_agent = \"codex\"\n")?;
+    std::fs::write(&old, "main_agent = \"codex\"\n")?;
 
     let mut pty = start(&scenario)?;
     let told = wait_until("the notice about the old file", || {
@@ -108,12 +108,12 @@ fn app_old_config_file_told_once() -> anyhow::Result<()> {
     let status_agent = events(&scenario)?
         .into_iter()
         .find_map(|event| match event {
-            AppEvent::Status { status } => Some(status.default_agent.to_string()),
+            AppEvent::Status { status } => Some(status.main_agent.to_string()),
             _ => None,
         });
     assert!(
         status_agent.is_none_or(|agent| agent.starts_with("claude-code")),
-        "the old file's default agent was used"
+        "the old file's main agent was used"
     );
     scenario.shot(&pty, "app_old_config_file_told_once")?;
     quit(&mut pty)?;
@@ -193,7 +193,7 @@ fn app_needs_you_sends_chat_notification() -> anyhow::Result<()> {
     assert_eq!(
         sends_now.len(),
         sends.len(),
-        "one card sent more than one message"
+        "one task sent more than one message"
     );
     let argv = &sends[0];
     assert_eq!(argv.len(), 5, "the text isn't one whole argument: {argv:?}");

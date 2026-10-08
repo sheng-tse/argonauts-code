@@ -24,12 +24,17 @@ use crate::markdown::{Indent, render_markdown};
 use crate::render::{Clock, RenderCtx};
 use crate::text::{KEEP, Part, fit_parts, sanitize, sanitize_line, str_width, wrap_text};
 use crate::theme::{Role, Theme};
+use crate::widgets::State;
 
 use super::dock::{self, Heading};
 use super::follow::{Follower, Shown};
+use super::goal_panel;
 use super::layout::{cut, left};
 use super::list;
 use super::panes::{self, Footer, Marks};
+use super::session::{SessionView, Tab};
+use super::states;
+use super::structured;
 use super::workflow::agents_in_phase;
 use super::{View, ViewCtx, ViewOutcome};
 
@@ -78,6 +83,8 @@ pub struct AgentView {
     drawn: Drawn,
     /// Set when the view was opened on its own; in a workflow's frame the workflow follows.
     follow: Option<Follower>,
+    /// In a workflow's frame, the workflow's end, for a view this one opens over itself.
+    lent: Option<Follower>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -89,6 +96,8 @@ struct Drawn {
     width: u16,
     /// Rows the Outcome renders to at that width, so it expands only when some are hidden.
     outcome_rows: usize,
+    /// Rows of the Outcome that show before it's expanded.
+    outcome_preview: usize,
 }
 
 impl AgentView {
@@ -107,6 +116,7 @@ impl AgentView {
             seen_at: None,
             drawn: Drawn::default(),
             follow: None,
+            lent: None,
         }
     }
 
@@ -114,6 +124,31 @@ impl AgentView {
     pub fn following(mut self, follower: Follower) -> Self {
         self.follow = Some(follower);
         self
+    }
+
+    /// The end a view opened over this one keeps current with, when this view has none of
+    /// its own.
+    pub(super) fn lend(mut self, follower: Option<Follower>) -> Self {
+        self.lent = follower;
+        self
+    }
+
+    /// `g`: the agent in full, on its Goal tab.
+    fn open_goal(&self, ctx: &ViewCtx<'_>) -> ViewOutcome {
+        let (run, session) = (&self.data.run, &self.data.row.session);
+        if self.data.goal.is_none() {
+            return ViewOutcome::Notice("This agent works without a goal".to_owned());
+        }
+        if ctx.state.session(run, session).is_none() {
+            return ViewOutcome::Notice(
+                "This agent isn't on screen, so its goal can't open".into(),
+            );
+        }
+        let mut view = SessionView::new(run.clone(), session.clone()).on(Tab::Goal);
+        if let Some(follow) = self.follow.as_ref().or(self.lent.as_ref()) {
+            view = view.following(follow.another());
+        }
+        ViewOutcome::Open(Box::new(view))
     }
 
     /// Opened from a workflow's phase: the phase's agents show on the left, ↑↓ switches them.
@@ -280,14 +315,18 @@ impl AgentView {
             .is_some_and(|session| session.card.is_some());
         let mut hints = vec![("↑↓ agent", 0), ("j/k scroll", 6)];
         hints.extend(enter.map(|enter| (enter, 7)));
+        // With vim keys on, `g` is the top of the list.
+        if self.loaded() && self.data.goal.is_some() && !list::vim(ctx.state) {
+            hints.push(("g its goal", 5));
+        }
         if running {
-            hints.push(("i steer", 5));
+            hints.push(("m message it", 5));
         }
         if run_going && has_card {
             hints.push(("t take over", 2));
         }
         if running {
-            hints.push(("x stop", 4));
+            hints.push(("x stop it", 4));
         } else if super::run_ended(ctx.state, &self.data.run) {
             hints.push(("c continue", 3));
         }
@@ -321,7 +360,7 @@ impl AgentView {
             .enumerate()
             .skip(skip)
             .map(|(i, (row, (label, _)))| {
-                let (glyph, role) = row_glyph(&marks, row.status);
+                let (glyph, role) = states::mark(states::of_row(row.status), theme);
                 let selected = i == self.selected;
                 let label_style = if selected {
                     accent
@@ -361,6 +400,19 @@ impl AgentView {
             status_line(row, width, ctx, seen_at, self.loaded()),
             identity_line(row, &self.data.run, width, ctx),
         ];
+        // Where its goal stands, as its row in the workflow says it, and who keeps it.
+        if let Some(goal) = self.data.goal.as_deref().filter(|_| self.loaded()) {
+            let mut spans = goal_panel::squares(goal, theme);
+            spans.push(Span::styled(
+                format!(" {} · ", goal_panel::row_words(goal)),
+                theme.style(Role::Text),
+            ));
+            spans.extend(goal_panel::kept_by(goal, theme));
+            lines.push(Line::from(crate::text::truncate_spans(
+                &spans,
+                usize::from(width),
+            )));
+        }
         self.drawn.sections.clear();
         if !self.loaded() {
             lines.push(Line::default());
@@ -368,8 +420,10 @@ impl AgentView {
             return lines;
         }
         let internals = vendor_internals(ctx);
-        let mut outcome = self.outcome_rows(width, ctx);
+        let (mut outcome, plan_rows) = self.outcome_rows(width, ctx);
         self.drawn.outcome_rows = outcome.as_ref().map_or(0, Vec::len);
+        // A plan's table shows whole; the preview is of the words under it.
+        self.drawn.outcome_preview = plan_rows + OUTCOME_PREVIEW;
         let current = self.current_section(internals);
         let blocks = [
             Section::Prompt,
@@ -415,7 +469,7 @@ impl AgentView {
                 .as_ref()
                 .is_some_and(|section| section.children.len() > SUBAGENT_PREVIEW);
         let diff = self.data.diff.is_some();
-        let outcome = self.drawn.outcome_rows > OUTCOME_PREVIEW;
+        let outcome = self.drawn.outcome_rows > self.drawn.outcome_preview;
         [
             (Section::Prompt, prompt),
             (Section::Activity, activity),
@@ -572,7 +626,7 @@ impl AgentView {
                 card,
                 scope: DiffScope::Card,
             }),
-            None => ViewOutcome::Notice("This agent has no card, so no diff".to_owned()),
+            None => ViewOutcome::Notice("This agent has no task, so no diff".to_owned()),
         }
     }
 
@@ -649,10 +703,37 @@ impl AgentView {
         }
     }
 
-    fn outcome_rows(&self, width: u16, ctx: &ViewCtx<'_>) -> Option<Vec<Line<'static>>> {
-        let source = self.data.outcome.as_deref()?;
-        let render_ctx = RenderCtx::new(width, ctx.theme, Clock::still(ctx.now));
-        Some(render_markdown(source, &render_ctx, &Indent::spaces(2)))
+    /// What the agent ended with: its plan as a table when it made one, then its report or
+    /// final words. Also how many of the rows are the plan's, with the blank row after it.
+    fn outcome_rows(&self, width: u16, ctx: &ViewCtx<'_>) -> (Option<Vec<Line<'static>>>, usize) {
+        let mut rows = self.plan_rows(width, ctx).unwrap_or_default();
+        let mut plan_rows = rows.len();
+        if let Some(source) = self.data.outcome.as_deref() {
+            if !rows.is_empty() {
+                rows.push(Line::default());
+                plan_rows += 1;
+            }
+            let render_ctx = RenderCtx::new(width, ctx.theme, Clock::still(ctx.now));
+            rows.extend(render_markdown(source, &render_ctx, &Indent::spaces(2)));
+        }
+        ((!rows.is_empty()).then_some(rows), plan_rows)
+    }
+
+    /// The plan's table, two cells in as the rest of the outcome is. What each task asks for
+    /// is in the opened agent, where the right arrow expands it.
+    fn plan_rows(&self, width: u16, ctx: &ViewCtx<'_>) -> Option<Vec<Line<'static>>> {
+        let draw = structured::Draw {
+            names: &ctx.state.names,
+            theme: ctx.theme,
+            width: usize::from(width).saturating_sub(2),
+            expanded: false,
+            hints: false,
+        };
+        let (mut rows, _) = structured::lines(self.data.plan.as_ref()?, &draw)?;
+        for row in &mut rows {
+            row.spans.insert(0, Span::raw("  "));
+        }
+        Some(rows)
     }
 
     /// Expands only when the preview hides some of it.
@@ -665,12 +746,13 @@ impl AgentView {
         let rendered = rendered?;
         // Counted as drawn, so a long paragraph isn't `1 line` over five rows.
         let title = format!("Outcome · {}", panes::count(rendered.len(), "line"));
-        let expands = rendered.len() > OUTCOME_PREVIEW;
+        let preview = self.drawn.outcome_preview;
+        let expands = rendered.len() > preview;
         if open || !expands {
             return Some((title, expands, rendered));
         }
-        let hidden = rendered.len() - OUTCOME_PREVIEW;
-        let mut body: Vec<Line<'static>> = rendered.into_iter().take(OUTCOME_PREVIEW).collect();
+        let hidden = rendered.len() - preview;
+        let mut body: Vec<Line<'static>> = rendered.into_iter().take(preview).collect();
         let more = more_lines(hidden);
         body.push(Line::from(Span::styled(more, theme.style(Role::Dim))));
         Some((title, true, body))
@@ -742,14 +824,14 @@ fn section_title(title: String, hint: Option<&str>, current: bool, theme: &Theme
     Line::from(spans)
 }
 
-/// `steer > text▏  ⏎ send · esc cancel`, keeping the end of what you type in view. The hints
+/// `message > text▏  ⏎ send · esc cancel`, keeping the end of what you type in view. The hints
 /// go first when the line is short.
 fn steer_line(text: &str, width: usize, theme: &Theme) -> Line<'static> {
     let dim = theme.style(Role::Dim);
     let marks = Marks::for_theme(theme);
     let prompt = format!("{} ", theme.glyphs.prompt);
     let hints = panes::key_names("  ⏎ send · esc cancel", theme);
-    let lead = str_width("steer ") + str_width(&prompt) + str_width(marks.cursor);
+    let lead = str_width("message ") + str_width(&prompt) + str_width(marks.cursor);
     let with_hints = width.saturating_sub(lead + str_width(&hints));
     let text = sanitize_line(text);
     let (room, hints) = if with_hints >= str_width(&text) || with_hints >= MIN_STEER {
@@ -758,7 +840,7 @@ fn steer_line(text: &str, width: usize, theme: &Theme) -> Line<'static> {
         (width.saturating_sub(lead), String::new())
     };
     Line::from(vec![
-        Span::styled("steer ", theme.style(Role::Label)),
+        Span::styled("message ", theme.style(Role::Label)),
         Span::styled(prompt, theme.style(Role::Card)),
         Span::raw(list::tail(&text, room)),
         Span::styled(marks.cursor, dim),
@@ -790,12 +872,14 @@ fn subagent_line(
     theme: &Theme,
 ) -> Line<'static> {
     let marks = Marks::for_theme(theme);
-    let (glyph, word, role) = match child.status {
-        SubagentStatus::Started | SubagentStatus::Running => (marks.running, "running", Role::Dim),
-        SubagentStatus::Done => (marks.done, "done", Role::Success),
-        SubagentStatus::Failed => (marks.failed, "failed", Role::Error),
-        SubagentStatus::Unknown => (marks.waiting, "unknown", Role::Dim),
+    // A subagent its CLI has started counts as running here, as the CLI's own list has it.
+    let (state, word) = match child.status {
+        SubagentStatus::Started | SubagentStatus::Running => (State::Working, "running"),
+        SubagentStatus::Done => (State::Done, "done"),
+        SubagentStatus::Failed => (State::Failed, "failed"),
+        SubagentStatus::Unknown => (State::Waiting, "unknown"),
     };
+    let (glyph, role) = states::mark(state, theme);
     let dim = theme.style(Role::Dim);
     let mut parts = vec![Part::new(vec![Span::styled(word, theme.style(role))], KEEP)];
     if let Some(message) = &child.last_message {
@@ -855,17 +939,6 @@ fn lead(slot: usize) -> usize {
     1 + slot + 1
 }
 
-/// A row's glyph and its color, as the workflow view draws them.
-fn row_glyph(marks: &Marks, status: RowStatus) -> (&'static str, Role) {
-    match status {
-        RowStatus::Running => (marks.running, Role::Faint),
-        RowStatus::Done => (marks.finished, Role::Success),
-        RowStatus::Failed => (marks.failed, Role::Error),
-        RowStatus::NeedsYou => (marks.needs_you, Role::Card),
-        RowStatus::Queued | RowStatus::Waiting | RowStatus::Skipped => (marks.waiting, Role::Dim),
-    }
-}
-
 /// Under the status line, the ids and the numbers the row leaves out: `claude-code/opus ·
 /// run-01 · 381k tok · $0.84`, then the context it has used. The id stays for commands such as
 /// /reassign; the run and the context give way first.
@@ -917,7 +990,7 @@ fn status_line(
     let theme = ctx.theme;
     let marks = Marks::for_theme(theme);
     let dim = theme.style(Role::Dim);
-    let (glyph, role) = row_glyph(&marks, row.status);
+    let (glyph, role) = states::mark(states::of_row(row.status), theme);
     let word = match row.status {
         RowStatus::Waiting => "Waiting",
         RowStatus::Queued => "Queued",
@@ -1007,7 +1080,7 @@ impl View for AgentView {
                 .get(&self.data.run)
                 .map(|run| sanitize_line(&run.title).trim().to_owned())
                 .unwrap_or_default(),
-            totals: String::new(),
+            ..Heading::default()
         };
         self.render_frame(area, buf, ctx, &heading, &[]);
     }
@@ -1128,7 +1201,8 @@ impl View for AgentView {
                 }
                 ViewOutcome::Consumed
             }
-            KeyCode::Char('i') if plain && self.loaded() => {
+            KeyCode::Char('g') if plain && self.loaded() => self.open_goal(ctx),
+            KeyCode::Char('m') if plain && self.loaded() => {
                 match super::steer_refusal(ctx.state, &self.data.run, &self.data.row.session) {
                     Some(why) => ViewOutcome::Notice(why),
                     None => {
@@ -1219,6 +1293,7 @@ mod tests {
                 subagents: 2,
                 context: None,
                 standing_in_for: None,
+                answered: None,
             },
             prompt: "Build the history cells.".into(),
             activity: Vec::new(),
@@ -1226,6 +1301,8 @@ mod tests {
             diff: None,
             subagents: None,
             outcome: Some(outcome.into()),
+            goal: None,
+            plan: None,
         }
     }
 
@@ -1302,10 +1379,10 @@ mod tests {
             SessionKey::parse("s-002").unwrap(),
             "claude-code/opus".parse().unwrap(),
             "claude-code",
-            argonauts_core::names::RoleName::Owner,
+            argonauts_core::names::RoleName::Worker,
             time::OffsetDateTime::now_utc(),
         );
-        session.card = Some(argonauts_core::CardId::new("card-002").unwrap());
+        session.card = Some(argonauts_core::CardId::new("task-002").unwrap());
         run.sessions.insert(session.key.clone(), session);
         state.runs.insert(run_id, run);
         state
@@ -1333,7 +1410,13 @@ mod tests {
         }
         let text = draw_in(&mut in_phase("Done."), 120, &state);
         let footer = footer(&text);
-        for hint in ["i steer", "t take over", "x stop", "p pause", "s save"] {
+        for hint in [
+            "m message it",
+            "t take over",
+            "x stop it",
+            "p pause",
+            "s save",
+        ] {
             assert!(footer.contains(hint), "{hint}: {footer}");
         }
     }
@@ -1354,9 +1437,9 @@ mod tests {
         let text = draw_in(&mut view, 120, &finished);
         let shown = footer(&text);
         for gone in [
-            "i steer",
+            "m message it",
             "t take over",
-            "x stop",
+            "x stop it",
             "p pause",
             "d diff",
             "tab",
@@ -1365,7 +1448,7 @@ mod tests {
         }
         assert!(shown.contains("⏎ open"), "{shown}");
         // Pressed anyway, they say what happened and what to do instead.
-        for c in ['t', 'i'] {
+        for c in ['t', 'm'] {
             let ViewOutcome::Notice(why) =
                 key_in(&mut view, KeyCode::Char(c), KeyModifiers::NONE, &finished)
             else {
@@ -1456,7 +1539,7 @@ mod tests {
     #[test]
     fn the_steer_line_keeps_the_end_of_what_you_type() {
         let mut view = in_phase("Done.");
-        key(&mut view, KeyCode::Char('i'), KeyModifiers::NONE);
+        key(&mut view, KeyCode::Char('m'), KeyModifiers::NONE);
         for c in "use serde_json for the writer and keep the csv path as it is".chars() {
             key(&mut view, KeyCode::Char(c), KeyModifiers::NONE);
         }
@@ -1480,6 +1563,48 @@ mod tests {
         let mut view = in_phase(&long);
         let text = draw(&mut view, 80);
         assert!(text.contains("↵expand"), "{text}");
+    }
+
+    /// An agent that ended with a plan shows it as a table, with its words under it.
+    #[test]
+    fn a_plan_is_a_table_above_the_outcomes_words() {
+        let mut planned = data("Two tasks, the interface first.");
+        planned.row.status = RowStatus::Done;
+        planned.plan = Some(serde_json::json!({
+            "cards": [
+                {"key": "iface", "title": "Due-date stubs", "task": "Define the type.",
+                 "depends_on": []},
+                {"key": "impl", "title": "Store, list, overdue", "task": "Store them.",
+                 "depends_on": ["iface"]}
+            ],
+            "assignments": [
+                {"card": "iface", "owner": "claude-code", "reviewers": ["codex"]},
+                {"card": "impl", "owner": "codex", "reviewers": ["claude-code"]}
+            ]
+        }));
+        let mut view = AgentView::new(planned);
+        let text = draw(&mut view, 100);
+        let rows: Vec<&str> = text.lines().collect();
+        let head = rows
+            .iter()
+            .position(|row| row.contains("● Plan · 2 tasks"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(rows[head - 1].contains("Outcome · "), "{text}");
+        assert!(
+            rows[head + 1].contains("task   what it does          worker       reviewed by"),
+            "{text}"
+        );
+        assert!(
+            rows[head + 3].contains("impl   Store, list, overdue  Codex        Claude Code"),
+            "{text}"
+        );
+        assert!(rows[head + 4].contains("impl waits on iface"), "{text}");
+        // This view takes no key to expand a task, so it offers none.
+        assert!(!text.contains("expands the tasks"), "{text}");
+        assert!(
+            rows[head + 6].contains("Two tasks, the interface first."),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1583,7 +1708,7 @@ mod tests {
     fn row(session: &str, status: RowStatus) -> AgentRow {
         AgentRow {
             session: SessionKey::parse(session).unwrap(),
-            label: "owner · card-002".into(),
+            label: "worker · task-002".into(),
             worker: "claude-code/opus".parse().unwrap(),
             status,
             tokens: 0,
@@ -1592,6 +1717,7 @@ mod tests {
             subagents: 0,
             context: None,
             standing_in_for: None,
+            answered: None,
         }
     }
 
@@ -1607,6 +1733,8 @@ mod tests {
             diff: None,
             subagents: None,
             outcome: None,
+            goal: None,
+            plan: None,
         };
         let siblings = vec![
             WorkflowRow::Agent(row("s-001", RowStatus::Done)),
@@ -1630,7 +1758,7 @@ mod tests {
             .position(|line| line.contains('│') && line.contains("claude-code/opus · run-01"))
             .unwrap_or_else(|| panic!("{text}"));
         assert!(
-            lines[named - 1].contains("● Running · Opus on Claude Code"),
+            lines[named - 1].contains("◐ Running · Opus on Claude Code"),
             "{text}"
         );
 
@@ -1686,7 +1814,7 @@ mod tests {
             labelled("s-001", "judge", "codex"),
             labelled("s-002", "judge", "codex"),
             labelled("s-003", "judge", "claude-code"),
-            labelled("s-004", "owner", "codex"),
+            labelled("s-004", "worker", "codex"),
         ];
         let shown: Vec<String> = sibling_names(&rows, &DisplayNames::default())
             .into_iter()
@@ -1694,7 +1822,7 @@ mod tests {
             .collect();
         assert_eq!(
             shown,
-            ["judge 1 true", "judge 2 true", "judge true", "owner false"]
+            ["judge 1 true", "judge 2 true", "judge true", "worker false"]
         );
     }
 

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use argonauts_adapter_claude_code::{ClaudeCodeAdapter, TESTED_VERSIONS};
+use argonauts_core::events::context::{ContextDetail, ContextPart};
 use argonauts_core::events::session::{
     SubagentKind, SubagentStatus, SubagentUpdate, VendorAgentState, VendorWorkflow,
 };
@@ -38,6 +39,9 @@ const TWO_WAY_CALLS: &[&str] = &[
     "you_should_know",
     "checkup",
 ];
+
+/// The version installed when this was last checked, recorded as `ORIGINAL` was.
+const INSTALLED: &str = "2.1.293";
 
 const STATUS_TOOL: &str = "mcp__argonauts_status__argonauts_status";
 const SUBAGENT_CALL: &str = "toolu_01V464aQnAvS82ukoevdYdMW";
@@ -327,6 +331,29 @@ fn write_creates_a_file_and_returns_a_structured_report() {
     assert_eq!(from_text.status, ReportStatus::Done);
 }
 
+/// The installed version reads as 2.1.284 did: its new `session_title_changed` line is read and
+/// set aside, and an answer and a shell call come through whole.
+#[test]
+fn the_installed_version_reads_an_answer_and_a_shell_call() {
+    let answer = replay_version(INSTALLED, "read-only");
+    assert_clean_session(&answer);
+    assert_eq!(result(&answer).0.as_deref(), Some("ok"));
+
+    let shell = replay_version(INSTALLED, "shell");
+    assert_clean_session(&shell);
+    let bash = shell.iter().find_map(|e| match e {
+        AgentEvent::ToolStarted { id, name, .. } if name == "Bash" => Some(id.clone()),
+        _ => None,
+    });
+    let bash = bash.expect("a Bash call");
+    assert!(
+        shell
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolFinished { id, ok: true, .. } if *id == bash))
+    );
+    assert!(result(&shell).0.unwrap().contains('2'));
+}
+
 #[test]
 fn shell_runs_one_command() {
     let events = replay("shell");
@@ -408,9 +435,13 @@ fn claude_rate_limit_event_to_quota() {
                 _ => None,
             })
             .collect();
-        let [reading] = readings.as_slice() else {
-            panic!("{name}: expected one reading, got {readings:?}");
+        // The fullest comes first, and every other account window after it.
+        let Some(reading) = readings.first() else {
+            panic!("{name}: expected a reading");
         };
+        let detail = reading.detail.as_ref().unwrap();
+        let windows = detail["unifiedWindows"].as_object().unwrap();
+        assert_eq!(readings.len(), windows.len(), "{name}: {readings:?}");
         assert_eq!(reading.vendor.0, "claude-code");
         assert_eq!(reading.status, QuotaStatus::Allowed);
         assert_eq!(reading.used, Some(used), "{name}");
@@ -427,6 +458,117 @@ fn claude_rate_limit_event_to_quota() {
             !events
                 .iter()
                 .any(|e| matches!(e, AgentEvent::QuotaSignal { .. }))
+        );
+    }
+}
+
+#[test]
+fn every_window_of_a_rate_limit_event_is_a_reading_of_its_own() {
+    let events = replay_version(TWO_WAY, "checkup");
+    let readings: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Quota { reading } => Some(reading),
+            _ => None,
+        })
+        .collect();
+    let windows: Vec<_> = readings
+        .iter()
+        .map(|r| {
+            (
+                r.window.as_deref().unwrap(),
+                r.used.unwrap(),
+                r.resets_at.unwrap().unix_timestamp(),
+                r.status,
+            )
+        })
+        .collect();
+    assert_eq!(
+        windows,
+        [
+            ("five_hour", 0.54, 1791097200, QuotaStatus::Allowed),
+            ("seven_day", 0.49, 1791424800, QuotaStatus::Allowed),
+        ]
+    );
+    // The plan comes from the initialize reply, and nothing else about the account.
+    assert!(events.contains(&AgentEvent::Plan {
+        plan: "<plan>".into()
+    }));
+}
+
+/// Checked live: `get_context_usage` with `summary` after one turn, and on a resumed session
+/// before its first.
+#[test]
+fn a_recorded_context_usage_reply_becomes_a_breakdown() {
+    let asked: Value = serde_json::from_str(
+        &ClaudeCodeAdapter
+            .context_usage_line(ContextDetail::Summary)
+            .unwrap(),
+    )
+    .unwrap();
+    for name in ["context_usage_summary", "context_usage_resumed"] {
+        // The request the adapter writes is the one recorded.
+        let stdin = read_fixture(TWO_WAY, name, "stdin.jsonl");
+        let recorded: Value = stdin
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| line["request"]["subtype"] == "get_context_usage")
+            .unwrap();
+        assert_eq!(recorded["request"], asked["request"], "{name}");
+
+        let events = replay_version(TWO_WAY, name);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Unknown { .. })),
+            "{name}"
+        );
+        let at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ContextBreakdown { .. }))
+            .unwrap_or_else(|| panic!("{name}: no breakdown"));
+        let AgentEvent::ContextBreakdown {
+            categories,
+            auto_compact_at,
+            window,
+            model,
+            memory_files,
+            mcp_tools,
+            skills,
+            ..
+        } = &events[at]
+        else {
+            unreachable!()
+        };
+        let parts: Vec<(ContextPart, u64)> =
+            categories.iter().map(|c| (c.part, c.tokens)).collect();
+        // The deferred system tools are out of the window, and the buffer is held past the
+        // compaction point.
+        assert_eq!(
+            parts,
+            [
+                (ContextPart::SystemPrompt, 6888),
+                (ContextPart::Tools, 15135),
+                (ContextPart::MemoryFiles, 17),
+                (ContextPart::Skills, 1969),
+                (ContextPart::Messages, 1),
+                (ContextPart::Free, 142990),
+                (ContextPart::Buffer, 33000),
+            ],
+            "{name}"
+        );
+        assert_eq!((*window, *auto_compact_at), (200_000, Some(167_000)));
+        assert_eq!(model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(memory_files.len(), 1);
+        assert_eq!(memory_files[0].source.as_deref(), Some("Project"));
+        assert!(mcp_tools.is_empty());
+        assert_eq!(skills.len(), 23);
+        // Answering costs no model call.
+        assert!(
+            !events[at..]
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Usage { .. })),
+            "{name}"
         );
     }
 }
@@ -549,12 +691,18 @@ fn claude_subagent_parent_ids() {
         AgentEvent::ToolFinished { id, parent: Some(p), ok: true, .. }
             if *id == read_id && p == SUBAGENT_CALL
     )));
-    // The background launch returns at once without ending the subagent.
+    // The background launch returns at once without ending the subagent. It ends when its
+    // task does, and all that follows is the total the task counted for it.
     let first_done = updates
         .iter()
         .position(|u| u.status == SubagentStatus::Done)
         .unwrap();
-    assert_eq!(first_done, updates.len() - 1);
+    assert_eq!(first_done, updates.len() - 2);
+    assert_eq!(updates[first_done].tokens, Some(9_986));
+    assert_eq!(
+        (last.status, last.tokens),
+        (SubagentStatus::Done, Some(10_215))
+    );
 }
 
 #[test]
@@ -564,7 +712,7 @@ fn context_fill_from_each_vendor() {
         let fills: Vec<(u64, Option<u64>)> = events
             .iter()
             .filter_map(|e| match e {
-                AgentEvent::ContextFill { used, size } => Some((*used, *size)),
+                AgentEvent::ContextFill { used, size, .. } => Some((*used, *size)),
                 _ => None,
             })
             .collect();
@@ -591,7 +739,8 @@ fn context_fill_from_each_vendor() {
     let read_only = replay("read-only");
     assert!(read_only.contains(&AgentEvent::ContextFill {
         used: 6371,
-        size: None
+        size: None,
+        sent: None,
     }));
     // A resumed session starts from everything before it.
     let resumed = replay_steered("resume");

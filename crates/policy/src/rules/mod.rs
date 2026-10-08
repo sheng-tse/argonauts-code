@@ -58,26 +58,26 @@ pub fn check(
         CheckpointKind::Goal => goal::check(facts),
         CheckpointKind::Plan => plan::check(
             facts,
-            &approvals.plan.rules,
+            &approvals.rules.plan,
             &settings.limits,
-            settings.budget.run_usd,
+            settings.limits.budget.spend_per_run,
         ),
-        CheckpointKind::Merge => merge::check(facts, &approvals.merge.rules),
+        CheckpointKind::Merge => merge::check(facts, &approvals.rules.merge),
         CheckpointKind::Escalation => {
-            escalation::check(facts.escalation.as_ref(), &approvals.escalation.rules)
+            escalation::check(facts.escalation.as_ref(), &approvals.rules.escalation)
         }
-        CheckpointKind::Budget => budget::check(facts.budget.as_ref(), &approvals.budget.rules),
+        CheckpointKind::Budget => budget::check(facts.budget.as_ref(), &approvals.rules.budget),
         CheckpointKind::ChangeRequest => change_request::check(facts),
         CheckpointKind::GoalChange => goal_change::check(approvals.goal_changes),
-        CheckpointKind::RecipePromotion => {
-            promotion::check(facts, &approvals.recipe_promotion.rules, now)
+        CheckpointKind::WorkflowPromotion => {
+            promotion::check(facts, &approvals.rules.workflow_promotion, now)
         }
         CheckpointKind::Handoff
         | CheckpointKind::VendorDown
         | CheckpointKind::TakeOverReturn
         | CheckpointKind::Question
         | CheckpointKind::OriginalReturned => {
-            RuleVerdict::escalate("no rules decide this kind of checkpoint")
+            RuleVerdict::escalate("no rules decide this kind of approval")
         }
     }
 }
@@ -193,9 +193,9 @@ mod tests {
         let mut c = Conditions::default();
         c.flag(
             Some(false),
-            "gates passed",
-            "a gate failed",
-            "no gate result",
+            "checks passed",
+            "a check failed",
+            "no check result",
         );
         c.flag(
             None,
@@ -205,21 +205,21 @@ mod tests {
         );
         let verdict = c.verdict();
         assert_eq!(verdict.verdict, Verdict::Reject);
-        assert_eq!(verdict.reasons, ["a gate failed", "no review result"]);
+        assert_eq!(verdict.reasons, ["a check failed", "no review result"]);
     }
 
     #[test]
     fn a_missing_fact_escalates_and_a_clean_sweep_approves() {
         let mut c = Conditions::default();
-        c.flag(None, "gates passed", "a gate failed", "no gate result");
-        assert_eq!(c.verdict(), RuleVerdict::escalate("no gate result"));
+        c.flag(None, "checks passed", "a check failed", "no check result");
+        assert_eq!(c.verdict(), RuleVerdict::escalate("no check result"));
 
         let mut c = Conditions::default();
         c.flag(
             Some(true),
-            "gates passed",
-            "a gate failed",
-            "no gate result",
+            "checks passed",
+            "a check failed",
+            "no check result",
         );
         c.none_of(&[], "no flag", "flags");
         assert_eq!(c.verdict().verdict, Verdict::Approve);

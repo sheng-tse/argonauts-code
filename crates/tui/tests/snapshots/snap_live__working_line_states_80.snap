@@ -1,6 +1,5 @@
 ---
 source: crates/tui/tests/snap_live.rs
-assertion_line: 305
 expression: labeled(&rows(width))
 ---
 chat thinking:
@@ -10,8 +9,8 @@ chat running a tool:
 chat between thinking spells:
 [fg=#e6a23c]∙ [/][fg=#f7d488]R[/][fg=#e6a23c]owing…[/][fg=#999999] ([/][fg=#999999]4s[/][fg=#999999] · [/][fg=#999999]↓ 3.6k tokens[/][fg=#999999] · [/][fg=#999999]thought for 3s[/][fg=#999999])[/]
 crew run:
-[fg=#e6a23c]✻ [/][fg=#e6a23c]Rowin[/][fg=#f7d488]g…[/][fg=#999999] ([/][fg=#999999]4m 12s[/][fg=#999999] · [/][fg=#999999]↓ 48.2k tokens[/][fg=#999999] · [/][fg=#999999]Build[/][fg=#999999] · [/][fg=#999999]2/5 cards[/][fg=#999999] · [/][fg=#999999]3 agents[/][fg=#999999] · [/][fg=#999999]$0.21[/][fg=#999999])[/]
+[fg=#e6a23c]✻ [/][fg=#e6a23c]Rowin[/][fg=#f7d488]g…[/][fg=#999999] ([/][fg=#999999]4m 12s[/][fg=#999999] · [/][fg=#999999]↓ 48.2k tokens[/][fg=#999999] · [/][fg=#999999]Build[/][fg=#999999] · [/][fg=#999999]2/5 tasks[/][fg=#999999] · [/][fg=#999999]3 agents[/][fg=#999999] · [/][fg=#999999]$0.21[/][fg=#999999])[/]
 crew run stalled for 40s:
-[fg=#ffc107]✻ [/][fg=#ffc107]Rowing…[/][fg=#999999] ([/][fg=#999999]4m 52s[/][fg=#999999] · [/][fg=#999999]↓ 48.2k tokens[/][fg=#999999] · [/][fg=#999999]Build[/][fg=#999999] · [/][fg=#999999]2/5 cards[/][fg=#999999] · [/][fg=#999999]3 agents[/][fg=#999999] · [/][fg=#999999]$0.21[/][fg=#999999])[/]
+[fg=#ffc107]✻ [/][fg=#ffc107]Rowing…[/][fg=#999999] ([/][fg=#999999]4m 52s[/][fg=#999999] · [/][fg=#999999]↓ 48.2k tokens[/][fg=#999999] · [/][fg=#999999]Build[/][fg=#999999] · [/][fg=#999999]2/5 tasks[/][fg=#999999] · [/][fg=#999999]3 agents[/][fg=#999999] · [/][fg=#999999]$0.21[/][fg=#999999])[/]
 pausing:
 [fg=#e6a23c]✻ [/][fg=#e6a23c]Pausing…[/][fg=#999999] ([/][fg=#999999]esc again to stop now[/][fg=#999999])[/]

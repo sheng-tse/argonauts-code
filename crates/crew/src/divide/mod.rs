@@ -18,7 +18,6 @@ use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::protocol::TestAuthor;
 use argonauts_core::steps::plan::{
     GoalBrief, PlanDraft, PlanToCards, PlanToCardsInput, TaskGraphProposal,
@@ -112,7 +111,11 @@ pub async fn division(host: &Host, call: &StepCall) -> EngineResult<Division> {
             broken: Vec::new(),
         });
     }
-    let settings = host.settings();
+    // Who may own and review as the rules settled, which routing and the review ring go by.
+    let card_roles = roles::cards::for_run(host);
+    card_roles.announce(host)?;
+    let settled = card_roles.apply(host.settings());
+    let settings = &*settled;
     let (cards, mut broken) = match &chosen.delegated {
         Some(delegated) => {
             let proposal = TaskGraphProposal {
@@ -129,7 +132,7 @@ pub async fn division(host: &Host, call: &StepCall) -> EngineResult<Division> {
                 plan: chosen.plan.clone(),
                 decisions: decisions(host),
                 forbidden_paths: forbidden_paths(settings),
-                max_cards: settings.divide.max_cards,
+                max_tasks: settings.divide.max_tasks,
             };
             let first = ask_cards(host, call, &divided_by, input.clone(), &[]).await?;
             match build(host.run_id(), &first, settings) {
@@ -144,8 +147,8 @@ pub async fn division(host: &Host, call: &StepCall) -> EngineResult<Division> {
             }
         }
     };
-    let budget = match budget_lines::plan(&settings.budget) {
-        Ok(budget) => budget,
+    let budget = match budget_lines::plan(&settings.limits.budget) {
+        Ok(budget) => budget.unwrap_or_else(empty_budget),
         Err(reason) => {
             broken.push(reason);
             empty_budget()
@@ -188,7 +191,7 @@ pub async fn division(host: &Host, call: &StepCall) -> EngineResult<Division> {
     let protected = forbidden_paths(settings);
     let assignment = {
         let owners = |task_type: &str| {
-            roles::candidates(settings, RoleName::Owner)
+            roles::candidates(settings, RoleName::Worker)
                 .into_iter()
                 .map(|worker| candidate(host, worker, task_type, book.as_ref()))
                 .collect()
@@ -347,7 +350,7 @@ fn delegated_assignment(
 /// The track records as of now, rebuilt from the outcome log at divide time so this run routes
 /// on every run before it. `None` when the log can't be read, and the router falls back to the
 /// plain counts handoff cards read.
-fn track_records(host: &Host) -> Option<Book> {
+pub(crate) fn track_records(host: &Host) -> Option<Book> {
     let store = Store::new(repo_state_dir(host), host.repo().root.clone());
     match Book::rebuild(&store, &host.settings().routing, host.now()) {
         Ok(book) => Some(book),
@@ -380,7 +383,7 @@ fn log_draws(host: &Host, draws: &[argonauts_learning::routing::Draw]) -> Engine
 /// Nothing to divide: the plan checkpoint shows why the coordinator's plan was rejected, and
 /// you send it back, run it solo, or abandon the run.
 fn rejected_division(settings: &Settings, rejected: Rejected) -> Division {
-    let summary = "The coordinator's plan broke the rules twice.".to_owned();
+    let summary = "The orchestrator's plan broke the rules twice.".to_owned();
     let mut broken = vec![format!(
         "{summary} Send it back with a note, run it solo, or abandon the run."
     )];
@@ -408,7 +411,7 @@ fn rejected_division(settings: &Settings, rejected: Rejected) -> Division {
             cards: Vec::new(),
             critical_path: Vec::new(),
         },
-        budget: budget_lines::plan(&settings.budget).unwrap_or_else(|_| empty_budget()),
+        budget: limit_plan(settings),
         broken,
     }
 }
@@ -430,8 +433,8 @@ pub fn build(
     let builds = cards.iter().any(|card| card.kind == CardKind::Build);
     if builds && interfaces != 1 {
         return Err(vec![format!(
-            "Contracts first needs exactly one interface card (kind `interface`) with the \
-             stubs every build card codes against. The plan has {interfaces}."
+            "Contracts first needs exactly one interface task (kind `interface`) with the \
+             stubs every build task codes against. The plan has {interfaces}."
         )]);
     }
     let tests = settings.divide.acceptance_tests_by == TestAuthor::Reviewer;
@@ -596,7 +599,7 @@ fn decisions(host: &Host) -> Vec<String> {
 fn divider(host: &Host) -> WorkerRef {
     let settings = host.settings();
     host.read(|state| lead::phase_lead(state, settings))
-        .unwrap_or_else(|| settings.default_agent.clone())
+        .unwrap_or_else(|| settings.main_agent.clone())
 }
 
 async fn ask_cards(
@@ -615,7 +618,7 @@ async fn ask_cards(
     );
     if !broken.is_empty() {
         let text = format!(
-            "Your last proposal broke these rules. Propose the cards again with each fixed.\n\n- {}",
+            "Your last proposal broke these rules. Propose the tasks again with each fixed.\n\n- {}",
             broken.join("\n- ")
         );
         ask.parts.push(InputPart {
@@ -630,12 +633,12 @@ async fn ask_cards(
     let note = host.read(crate::state::plan::replan_note);
     ask.parts.extend(crate::plan::drafting::guidance_part(
         note.as_deref(),
-        "plan checkpoint",
+        "plan approval",
     ));
     Ok(host.ask::<PlanToCards>(ask).await?.output)
 }
 
-/// Each card's budget: the median spend of past cards of its task type, else `per_card_*`.
+/// Each card's budget: the median spend of past cards of its task type, else `per_task_*`.
 fn with_budgets(
     host: &Host,
     mut cards: Vec<CardSpec>,
@@ -656,12 +659,12 @@ fn with_budgets(
             .get(&task_type)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        card.budget = budget_lines::card_budget(past, &host.settings().budget);
+        card.budget = budget_lines::card_budget(past, &host.settings().limits.budget);
     }
     Ok(cards)
 }
 
-fn candidate(
+pub(crate) fn candidate(
     host: &Host,
     worker: WorkerRef,
     task_type: &str,
@@ -682,6 +685,7 @@ fn candidate(
             QuotaStatus::Rejected => Some(1.0),
             _ => reading.used,
         }),
+        plan_limit: host.settings().limits.budget.plan_usage,
         cost: services
             .registry
             .estimate(&worker, CARD_INPUT_TOKENS, CARD_OUTPUT_TOKENS),
@@ -691,16 +695,16 @@ fn candidate(
     }
 }
 
+/// The run's limit by line, or the empty plan when none is set or its lines don't add up.
+pub(crate) fn limit_plan(settings: &Settings) -> BudgetPlan {
+    budget_lines::plan(&settings.limits.budget)
+        .ok()
+        .flatten()
+        .unwrap_or_else(empty_budget)
+}
+
 pub(crate) fn empty_budget() -> BudgetPlan {
-    BudgetPlan {
-        lines: Vec::new(),
-        total: BudgetAmount {
-            unit: BudgetUnit::Usd,
-            amount: 0.0,
-        },
-        estimate_low: 0.0,
-        estimate_high: 0.0,
-    }
+    BudgetPlan::unlimited()
 }
 
 /// The run's own seed (FNV-1a of its id), so a re-divided plan routes the same way.
@@ -747,7 +751,7 @@ mod tests {
         assert_eq!(build(&run, &proposal(1), &settings).unwrap().len(), 3);
         let reasons = build(&run, &proposal(0), &settings).unwrap_err();
         assert!(
-            reasons[0].contains("exactly one interface card"),
+            reasons[0].contains("exactly one interface task"),
             "{reasons:?}"
         );
         assert!(build(&run, &proposal(2), &settings).is_err());

@@ -18,6 +18,7 @@ use super::words::{
 use super::{handoff, models, permissions};
 use crate::bottom::{Picker, PickerEvent, PickerRow};
 use crate::format::setting_value;
+use crate::widgets::State;
 
 /// The keys whose values change the palette, so `/theme` shows each one as you move to it.
 pub const PALETTE_KEYS: [&str; 5] = [
@@ -302,7 +303,7 @@ pub fn fill_settings(picker: &mut Picker, rows: Vec<SettingRow>) {
             picker.title = capitalized(&command);
             open_key(picker, 0);
         }
-        "handoff" => handoff::list(picker),
+        "fallback" => handoff::list(picker),
         _ => key_list(picker, None),
     }
 }
@@ -326,7 +327,7 @@ pub fn models_picker(command: &str, role: Option<RoleName>, choices: &[ModelChoi
 
 /// The first level of the model picker: the CLIs and endpoints the role may use.
 pub fn fill_models(picker: &mut Picker, role: Option<RoleName>, choices: &[ModelChoice]) {
-    let role = role.filter(|role| *role != RoleName::Default);
+    let role = role.filter(|role| *role != RoleName::Main);
     models::fill(picker, role, choices);
 }
 
@@ -355,7 +356,7 @@ pub fn advance(picker: &mut Picker, event: PickerEvent) -> Step {
         PickerEvent::Confirmed => confirmed(picker),
         PickerEvent::Toggled => {
             if let Some(slider) = picker.flow.slider.as_mut() {
-                slider.toggle_all_hands();
+                slider.toggle_ultracode();
             }
             Step::Stay
         }
@@ -438,21 +439,21 @@ fn push_level(picker: &mut Picker) {
 fn confirmed(picker: &Picker) -> Step {
     match (&picker.flow.stage, &picker.flow.slider) {
         (Stage::Effort { role, was }, Some(slider)) => {
-            let all_hands = slider
-                .all_hands
+            let ultracode = slider
+                .ultracode
                 .filter(|toggle| toggle.changed())
                 .map(|toggle| toggle.on);
             let level = slider.level().filter(|_| slider.moves());
             let unmoved = slider.cli_default || level.is_none() || was.as_deref() == level;
-            let level = level.filter(|_| all_hands.is_none() || !unmoved);
-            if level.is_none() && all_hands.is_none() {
+            let level = level.filter(|_| ultracode.is_none() || !unmoved);
+            if level.is_none() && ultracode.is_none() {
                 return Step::Cancel { kept: kept(picker) };
             }
             Step::Done(UiCommand::Slash {
                 command: SlashCommand::Effort {
                     role: *role,
                     level: level.map(str::to_owned),
-                    all_hands,
+                    ultracode,
                 },
             })
         }
@@ -462,7 +463,7 @@ fn confirmed(picker: &Picker) -> Step {
 
 /// `/effort`'s slider, for the default agent or a role.
 pub fn effort_picker(command: &str, slider: EffortSlider) -> Picker {
-    let role = slider.role.filter(|role| *role != RoleName::Default);
+    let role = slider.role.filter(|role| *role != RoleName::Main);
     let title = match role {
         None => "Effort".to_owned(),
         Some(role) => format!("Effort for {}", role.as_str()),
@@ -475,7 +476,7 @@ pub fn effort_picker(command: &str, slider: EffortSlider) -> Picker {
         ),
     };
     let who = match role {
-        None => "the default agent".to_owned(),
+        None => "the main agent".to_owned(),
         Some(role) => format!("the {} role", role.as_str()),
     };
     let mut picker = Picker::new(
@@ -506,7 +507,7 @@ fn act(picker: &mut Picker, action: RowAction) -> Step {
             push_level(picker);
             if picker.flow.command == "permissions" {
                 permissions::role_list(picker, &prefix);
-            } else if picker.flow.command == "handoff" {
+            } else if picker.flow.command == "fallback" {
                 handoff::role_list(picker, &prefix);
             } else {
                 key_list(picker, Some(&prefix));
@@ -681,7 +682,7 @@ fn kept(picker: &Picker) -> Kept {
         Stage::Keys if flow.command == "effort" => flow
             .settings
             .iter()
-            .find(|row| row.key == "roles.default.effort")
+            .find(|row| row.key == "roles.main.effort")
             .map(|row| match value_words(&row.value).as_str() {
                 "unset" => Kept::words("Kept effort unset"),
                 value => Kept::as_value("effort", value),
@@ -883,11 +884,14 @@ fn agents_list(picker: &mut Picker) {
                     .not_installed
                     .iter()
                     .find(|cli| kind == "agents" && cli.id == id);
-                let note = match missing {
-                    Some(cli) => not_installed_note(cli),
-                    None => group_note(settings, &group),
+                let (state, note) = match missing {
+                    Some(cli) => (Some(State::Failed), not_installed_note(cli)),
+                    None => (group_state(settings, &group), group_note(settings, &group)),
                 };
-                rows.push(PickerRow::new(label, note));
+                rows.push(PickerRow {
+                    state,
+                    ..PickerRow::new(label, note)
+                });
                 actions.push(RowAction::OpenGroup(group.clone()));
                 groups.push(group);
             }
@@ -926,6 +930,22 @@ fn not_installed_note(cli: &MissingCli) -> String {
     }
 }
 
+/// Whether an agent is switched on, where it has a switch: an endpoint has none.
+fn switched_on(settings: &[SettingRow], group: &str) -> Option<bool> {
+    settings
+        .iter()
+        .find(|row| row.key == format!("{group}.enabled"))
+        .map(|row| value_words(&row.value))
+        .filter(|value| value != "unset")
+        .map(|value| value != "false")
+}
+
+/// The state every view draws for an agent that is on, or off: the mark before `on` and `off`
+/// in its note.
+fn group_state(settings: &[SettingRow], group: &str) -> Option<State> {
+    switched_on(settings, group).map(|on| if on { State::Done } else { State::Stopped })
+}
+
 /// A harness's state in a few words: on or off, model, effort, and auth.
 fn group_note(settings: &[SettingRow], group: &str) -> String {
     let value = |leaf: &str| {
@@ -936,8 +956,8 @@ fn group_note(settings: &[SettingRow], group: &str) -> String {
             .filter(|value| value != "unset")
     };
     let mut parts = Vec::new();
-    if let Some(enabled) = value("enabled") {
-        parts.push(if enabled == "false" { "off" } else { "on" }.to_owned());
+    if let Some(on) = switched_on(settings, group) {
+        parts.push(if on { "on" } else { "off" }.to_owned());
     }
     for leaf in ["model", "effort", "auth", "base_url"] {
         if let Some(value) = value(leaf) {
@@ -976,7 +996,7 @@ fn key_labels(keys: &[&str]) -> Vec<String> {
         return per_role
             .iter()
             .map(|(role, _)| match *role {
-                "default" => "Default agent".to_owned(),
+                "main" => "Main agent".to_owned(),
                 role => role.to_owned(),
             })
             .collect();
@@ -1026,7 +1046,7 @@ fn open_key(picker: &mut Picker, key: usize) {
         "permissions" => {
             (picker.title, picker.about) = permissions::heading(&picker.flow.settings, &row);
         }
-        "handoff" if picker.flow.settings.len() > 1 => {
+        "fallback" if picker.flow.settings.len() > 1 => {
             (picker.title, picker.about) = handoff::heading(&picker.flow.settings, &row);
         }
         _ => {}
@@ -1088,7 +1108,7 @@ fn model_values(picker: &mut Picker, key: usize, row: &SettingRow, role: RoleNam
     let note = if picked {
         format!("now {set}")
     } else {
-        "From every vendor's models".to_owned()
+        "From every agent's models".to_owned()
     };
     rows.push(PickerRow {
         current: picked,
@@ -1113,8 +1133,8 @@ fn model_values(picker: &mut Picker, key: usize, row: &SettingRow, role: RoleNam
 /// The settings that take a model from the model picker, with the role whose models it lists.
 pub fn model_setting(key: &str) -> Option<RoleName> {
     match key {
-        "approvals.answered_by" => Some(RoleName::PhaseLead),
-        "approvals.approver.model" | "approvals.approver.second_model" => Some(RoleName::Approver),
+        "approvals.answers" => Some(RoleName::PhaseLead),
+        "approvals.decides" | "approvals.approver.second_model" => Some(RoleName::Approver),
         _ => None,
     }
 }
@@ -1122,14 +1142,19 @@ pub fn model_setting(key: &str) -> Option<RoleName> {
 /// The words such a setting takes besides a model, each with its label and what it means.
 fn model_setting_words(key: &str) -> &'static [(&'static str, &'static str, &'static str)] {
     match key {
-        "approvals.answered_by" => &[
-            ("you", "You", "Questions wait for you, except in full auto"),
+        "approvals.answers" => &[
+            ("you", "You", "Questions wait for you, except on autopilot"),
             (
-                "lead",
-                "The lead",
-                "The phase's lead answers; you review its assumptions",
+                "main",
+                "The main agent",
+                "The main agent answers; you review its assumptions",
             ),
         ],
+        "approvals.decides" => &[(
+            "judge",
+            "The judge",
+            "The judge your crew names, else the cheapest model from another provider",
+        )],
         _ => &[],
     }
 }
@@ -1146,7 +1171,7 @@ fn typing(picker: &mut Picker, key: usize) {
     } else {
         row.description.clone()
     };
-    if picker.flow.command == "handoff" && picker.flow.settings.len() > 1 {
+    if picker.flow.command == "fallback" && picker.flow.settings.len() > 1 {
         (picker.title, picker.about) = handoff::heading(&picker.flow.settings, &row);
     }
     picker.set_rows(Vec::new());

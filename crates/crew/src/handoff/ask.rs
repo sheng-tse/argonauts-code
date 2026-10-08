@@ -21,7 +21,7 @@ use crate::card::machine::Trigger;
 use crate::card::support::newest_owner_session;
 use crate::card::{pipeline, takeover};
 use crate::checkpoints::options::{self, HandoffCause};
-use crate::checkpoints::{self, CheckpointRequest, full_auto};
+use crate::checkpoints::{self, CheckpointRequest, autopilot};
 use crate::engine::host::Host;
 use crate::engine::stand_in;
 use crate::error::{EngineError, EngineResult, Stall};
@@ -35,7 +35,7 @@ pub async fn ask(host: &Host, card: &CardId, plan: HandoffPlan) -> EngineResult<
     if vendor_down(host, card, &plan).await? == Asked::Settled {
         return Ok(());
     }
-    if plan.candidates.is_empty() && full_auto::applies_now(host, CheckpointKind::Handoff) {
+    if plan.candidates.is_empty() && autopilot::applies_now(host, CheckpointKind::Handoff) {
         return wait_to_retry(host, card, &plan).await;
     }
     let mut plan = plan;
@@ -73,7 +73,7 @@ pub async fn ask(host: &Host, card: &CardId, plan: HandoffPlan) -> EngineResult<
         let decided = checkpoints::open_and_wait(host, request).await?;
         if seen.contains(&decided.id) {
             return Err(EngineError::Refused(format!(
-                "the handoff card for {card} could not open again"
+                "the fallback question for {card} could not open again"
             )));
         }
         seen.push(decided.id.clone());
@@ -108,13 +108,13 @@ pub async fn ask(host: &Host, card: &CardId, plan: HandoffPlan) -> EngineResult<
                     host,
                     card,
                     Trigger::Escalate,
-                    "escalated from the handoff card",
+                    "sent to you from the fallback question",
                 )?;
                 return Ok(());
             }
             other => {
                 return Err(EngineError::Refused(format!(
-                    "the handoff card doesn't offer {other:?}"
+                    "the fallback question doesn't offer {other:?}"
                 )));
             }
         }
@@ -144,7 +144,7 @@ async fn vendor_down(host: &Host, card: &CardId, plan: &HandoffPlan) -> EngineRe
         paused: vec![PausedCard {
             card: card.clone(),
             title: plan.title.clone(),
-            role: RoleName::Owner,
+            role: RoleName::Worker,
         }],
     };
     let request = CheckpointRequest {
@@ -180,9 +180,9 @@ async fn vendor_down(host: &Host, card: &CardId, plan: &HandoffPlan) -> EngineRe
             wait(host, card, vendor, health.next_test_at)?;
             Ok(Asked::Settled)
         }
-        AnswerAction::PerCard => Ok(Asked::PerCard),
+        AnswerAction::PerTask => Ok(Asked::PerCard),
         other => Err(EngineError::Refused(format!(
-            "the vendor-down card doesn't offer {other:?}"
+            "the agent-down question doesn't offer {other:?}"
         ))),
     }
 }
@@ -202,7 +202,7 @@ async fn wait_to_retry(host: &Host, card: &CardId, plan: &HandoffPlan) -> Engine
         detail: format!("nobody could take over {}", plan.title.trim()),
         line: format!(
             "Nobody could take over \"{}\" from {stopped}: {why}, and no other agent can take \
-             the card.",
+             the task.",
             plan.title.trim()
         ),
         logged_out: if logged_out {

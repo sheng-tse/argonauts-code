@@ -40,12 +40,21 @@ impl Drop for Listener {
 }
 
 impl Listener {
-    pub(crate) fn asking(&self, asks: argonauts_core::Asks, start_run: bool) -> Asking {
+    /// The session's way to ask: `tools` are the main session's tools it is offered, and
+    /// `standing` the lines that tell it about them.
+    pub(crate) fn asking(
+        &self,
+        asks: argonauts_core::Asks,
+        tools: Vec<String>,
+        standing: Option<String>,
+    ) -> Asking {
         Asking {
             asks,
             endpoint: self.endpoint.clone(),
             token: self.token.clone(),
-            start_run,
+            tools,
+            standing,
+            roles: Vec::new(),
         }
     }
 }

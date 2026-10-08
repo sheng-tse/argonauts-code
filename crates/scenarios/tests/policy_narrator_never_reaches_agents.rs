@@ -30,7 +30,7 @@ fn policy_narrator_never_reaches_agents() -> anyhow::Result<()> {
     pty.wait_for(NARRATOR_MARK, WAIT)?;
     // Let the owner's session start after at least one narration.
     std::thread::sleep(Duration::from_secs(2));
-    wait_for_events(&scenario, "the merge checkpoint", RUN_WAIT, merge_opened)?;
+    wait_for_events(&scenario, "the merge approval", RUN_WAIT, merge_opened)?;
 
     let run = journal::latest_run(scenario.repo.home()).expect("a run");
     let narrated = fs::read_to_string(run.join("narrator.jsonl"))?;

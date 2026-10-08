@@ -47,7 +47,7 @@ fn workers_manifest_harness_owns_card() -> anyhow::Result<()> {
     )?;
     write_global_config(
         &scenario,
-        "preset = \"solo\"\ndefault_agent = \"jsonl-plugin/fake-local\"\n",
+        "workflow = \"solo\"\nmain_agent = \"jsonl-plugin/fake-local\"\n",
     )?;
 
     let mut pty = launch_ready(&scenario, &[], &[])?;
@@ -67,7 +67,7 @@ fn workers_manifest_harness_owns_card() -> anyhow::Result<()> {
         .lines()
         .map(|line| line.trim_start_matches(['*', '+', ' ']))
         .find(|name| name.starts_with("argonauts/") && !name.ends_with("/integration"))
-        .with_context(|| format!("no card branch in {branches:?}"))?;
+        .with_context(|| format!("no task branch in {branches:?}"))?;
     let written = scenario
         .repo
         .git(&["show", &format!("{branch}:hello.txt")])?;

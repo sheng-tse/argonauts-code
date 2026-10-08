@@ -1,0 +1,7 @@
+phases = "maker-checker"
+
+[solo_or_crew]
+force = "solo"
+
+[solo]
+review = true

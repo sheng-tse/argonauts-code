@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 
 use super::excerpt::{Exchange, cut, reply_text};
 use super::past::{self, PastChat};
-use super::{ChatState, planned, run_request, settled};
+use super::{ChatState, handover, planned, run_request, settled};
 use crate::controller::workspace::resolve_path;
 use crate::controller::{Ctx, Effect};
 
@@ -96,7 +96,7 @@ pub(crate) fn fork(
     if chat.prefs.plan_first {
         request = planned(request);
     }
-    Ok(vec![Effect::StartRun(Box::new(request))])
+    Ok(vec![handover::start(request)])
 }
 
 /// The prompt, then the end of the conversation it came from.

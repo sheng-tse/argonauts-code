@@ -19,7 +19,6 @@ use argonauts_core::layout::run_files;
 use argonauts_core::limits::{HealthBoard, HealthState, QuotaStatus};
 use argonauts_core::names::{CheckpointId, RoleName, VendorId};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::handoff::HandoffSettings;
 use time::OffsetDateTime;
 
 use crate::client::last_event;
@@ -347,7 +346,7 @@ fn open_handoffs(events: &[RunEvent], waiting_on: &[CheckpointId]) -> Vec<OpenHa
                 .card
                 .as_ref()
                 .and_then(|card| roles.get(card).copied())
-                .unwrap_or(RoleName::Owner);
+                .unwrap_or(RoleName::Worker);
             OpenHandoff {
                 opened_at,
                 opened,
@@ -361,8 +360,9 @@ fn ask_timeout_passed(settings: &Settings, handoff: &OpenHandoff, now: OffsetDat
     let CheckpointPacket::Handoff(plan) = &handoff.opened.packet else {
         return false;
     };
-    let role_table = settings.roles.get(&handoff.role).map(|role| &role.handoff);
-    let applied = HandoffSettings::applied(&settings.handoff, role_table, &plan.stopped.vendor());
+    let applied = settings
+        .fallback
+        .applied_to(handoff.role, &plan.stopped.vendor());
     match applied.ask_timeout.parse() {
         Ok(Some(timeout)) => handoff.opened_at + timeout <= now,
         // "none" waits for you; a bad span was already refused when the settings loaded.
@@ -497,7 +497,7 @@ mod tests {
         let env = home.env(true);
         let now = OffsetDateTime::now_utc();
         let stalled = |until| ParkReason::NoStandIn {
-            detail: "nobody could take over as the lead".to_owned(),
+            detail: "nobody could take over as the main agent".to_owned(),
             until,
         };
         let due_now = run("0f01");
@@ -574,7 +574,7 @@ mod tests {
             &env,
             &quota,
             &[
-                run_started(0, "out of quota, never down", None),
+                run_started(0, "out of plan usage, never down", None),
                 parked(
                     1,
                     now,
@@ -614,7 +614,7 @@ mod tests {
         let home = TestHome::new();
         let env = home.env(true);
         let now = OffsetDateTime::now_utc();
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let checkpoint = CheckpointId::numbered(1);
         let plan = HandoffPlan {
             card: card.clone(),
@@ -649,7 +649,7 @@ mod tests {
                     1,
                     &SessionKey::numbered(1),
                     Some(&card),
-                    RoleName::Owner,
+                    RoleName::Worker,
                     "claude-code",
                 ),
                 handoff,
@@ -665,17 +665,17 @@ mod tests {
                 .is_empty(),
             "\"none\" waits for you"
         );
-        settings.handoff.ask_timeout = Span::new("1h");
-        for role in settings.roles.values_mut() {
-            role.handoff.ask_timeout = Span::new("1h");
+        settings.fallback.ask_timeout = Span::new("1h");
+        for role in settings.fallback.roles.values_mut() {
+            role.ask_timeout = Span::new("1h");
         }
         assert_eq!(
             parked_runs.due(&env, &settings, &Board::default(), now),
             vec![(asking, WakeCause::AskTimeout)]
         );
-        settings.handoff.ask_timeout = Span::new("3h");
-        for role in settings.roles.values_mut() {
-            role.handoff.ask_timeout = Span::new("3h");
+        settings.fallback.ask_timeout = Span::new("3h");
+        for role in settings.fallback.roles.values_mut() {
+            role.ask_timeout = Span::new("3h");
         }
         assert!(
             parked_runs
@@ -690,7 +690,7 @@ mod tests {
         let checkpoint = CheckpointId::numbered(2);
         let worker = |name: &str| WorkerRef::new(name, None);
         let row = MergeRow {
-            card: CardId::new("card-001").unwrap(),
+            card: CardId::new("task-001").unwrap(),
             title: "Export".to_owned(),
             kind: CardKind::Build,
             stat: DiffStat::default(),

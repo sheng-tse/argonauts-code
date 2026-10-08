@@ -1,6 +1,7 @@
 //! Every screen holds its shape at every width and with any content. The frame checker proves
 //! it on what was rendered: no glyph crosses the right edge, box borders stay in one column and
-//! close, a vertical separator never jumps a column, and no inline row is wider than the screen.
+//! close, a vertical separator never jumps a column, no inline row is wider than the screen,
+//! and no two block meters sit on back-to-back rows, which a terminal draws as one slab.
 //! Snapshot tests run it at [`WIDTHS`] with the [`samples`].
 
 use ratatui::buffer::Buffer;
@@ -9,6 +10,7 @@ use ratatui::text::Line;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::text::{ambiguous_width, spans_width, width_with};
+use crate::widgets::Drawn;
 
 /// Every view and card is checked at these widths.
 pub const WIDTHS: [u16; 6] = [40, 60, 80, 100, 120, 200];
@@ -165,6 +167,44 @@ pub fn check_line_glyphs(lines: &[Line<'_>], glyphs: &[&str]) -> Vec<FrameIssue>
         }
     }
     issues
+}
+
+/// Two block meters on adjacent rows that share a column. The kit records where it drew each
+/// one, since a meter's cells look like any colored cells once drawn. The agent panel's run
+/// rows copy Claude Code's, which stack this way, and aren't recorded.
+pub fn check_block_meters(meters: &[Rect]) -> Vec<FrameIssue> {
+    let mut issues = Vec::new();
+    for (i, upper) in meters.iter().enumerate() {
+        for (j, lower) in meters.iter().enumerate() {
+            let touching = i != j && upper.bottom() == lower.top();
+            let left = upper.left().max(lower.left());
+            let shared = left < upper.right().min(lower.right());
+            if touching && shared {
+                issues.push(FrameIssue {
+                    row: lower.top(),
+                    col: left,
+                    what: String::from(
+                        "a block meter right under another merges with it; use line meters",
+                    ),
+                });
+            }
+        }
+    }
+    issues
+}
+
+/// Checks what a widget drew: its rows, as [`check_lines`] does, and its block meters.
+pub fn check_drawn(drawn: &Drawn, width: u16) -> Vec<FrameIssue> {
+    let mut issues = check_lines(&drawn.lines, width);
+    issues.extend(check_block_meters(&drawn.meters));
+    issues
+}
+
+pub fn assert_drawn(drawn: &Drawn, width: u16) {
+    let issues = check_drawn(drawn, width);
+    if !issues.is_empty() {
+        panic!("{}", report(&lines_text(&drawn.lines), &issues));
+    }
 }
 
 /// Panics with the screen and every issue, for tests.
@@ -564,5 +604,19 @@ mod tests {
         buf[(4, 3)].set_symbol(" ");
         buf[(5, 3)].set_symbol("|");
         assert!(check(&buf).iter().any(|i| i.what.contains("jumps")));
+    }
+
+    #[test]
+    fn two_block_meters_on_adjacent_rows_fail_and_one_tall_meter_passes() {
+        let upper = Rect::new(2, 3, 20, 1);
+        let lower = Rect::new(10, 4, 20, 1);
+        let issues = check_block_meters(&[upper, lower]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!((issues[0].row, issues[0].col), (4, 10));
+        // A row of text between them, or no shared column, keeps them apart.
+        assert!(check_block_meters(&[upper, Rect::new(2, 5, 20, 1)]).is_empty());
+        assert!(check_block_meters(&[upper, Rect::new(22, 4, 5, 1)]).is_empty());
+        // One meter drawn two rows high on purpose is one meter.
+        assert!(check_block_meters(&[Rect::new(2, 3, 20, 2)]).is_empty());
     }
 }

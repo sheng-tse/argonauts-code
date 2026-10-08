@@ -16,13 +16,14 @@ const GROUPS: &[(&str, CommandCategory)] = &[
     ("approvals", CommandCategory::ApprovalsAndLimits),
     ("auto", CommandCategory::ApprovalsAndLimits),
     ("inbox", CommandCategory::ApprovalsAndLimits),
-    ("retro", CommandCategory::Runs),
+    ("run-review", CommandCategory::Runs),
     ("records", CommandCategory::Learning),
-    ("recipes", CommandCategory::Learning),
+    ("learned", CommandCategory::Learning),
     ("skills", CommandCategory::Learning),
     ("sync", CommandCategory::Learning),
     ("init", CommandCategory::SetupAndHelp),
     ("doctor", CommandCategory::SetupAndHelp),
+    ("update", CommandCategory::SetupAndHelp),
     ("config", CommandCategory::SetupAndHelp),
     ("mcp", CommandCategory::SetupAndHelp),
     ("help", CommandCategory::SetupAndHelp),
@@ -156,7 +157,7 @@ mod tests {
             .filter(|spec| spec.category == CommandCategory::Learning)
             .map(|spec| spec.name)
             .collect();
-        assert_eq!(menu, ["records", "recipes", "skills", "memory"]);
+        assert_eq!(menu, ["records", "learned", "skills", "memory"]);
         let order: Vec<CommandCategory> = SLASH_COMMANDS.iter().map(|spec| spec.category).collect();
         let learning = order
             .iter()
@@ -175,12 +176,12 @@ mod tests {
             .lines()
             .filter_map(|line| line.split_whitespace().next())
             .collect();
-        assert_eq!(names, ["records", "recipes", "skills", "sync"], "{help}");
+        assert_eq!(names, ["records", "learned", "skills", "sync"], "{help}");
         let runs = help
             .split("Runs:")
             .nth(1)
             .and_then(|rest| rest.split("Crew:").next())
             .unwrap_or_default();
-        assert!(runs.contains("  retro "), "{help}");
+        assert!(runs.contains("  run-review "), "{help}");
     }
 }

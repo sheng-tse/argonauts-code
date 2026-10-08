@@ -114,11 +114,11 @@ mod tests {
         .unwrap();
         let listed = models_text(std::slice::from_ref(&entry), false);
         assert!(
-            listed.starts_with("codex · gpt · harness · subscription\n"),
+            listed.starts_with("codex · gpt · CLI · subscription\n"),
             "{listed}"
         );
         assert!(listed.contains("--discover"), "{listed}");
         let discovered = models_text(&[entry], true);
-        assert_eq!(discovered, "codex · gpt · harness · subscription\n");
+        assert_eq!(discovered, "codex · gpt · CLI · subscription\n");
     }
 }

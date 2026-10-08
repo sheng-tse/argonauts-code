@@ -14,17 +14,17 @@ expression: text(&lines)
     Output shape: one object per line
       streams without holding every row
 
-  Cards
-    card-001 Exporter trait · Opus on Claude Code · reviewed by GPT 5.6 on Codex
-      card-002 JSON writer · GPT 5.6 on Codex · reviewed by Opus on Claude Code
-        card-003 Wire --json into the CLI · Gemini 3.6 on Antigravity CLI ·
+  Tasks
+    task-001 Exporter trait · Opus on Claude Code · reviewed by GPT 5.6 on Codex
+      task-002 JSON writer · GPT 5.6 on Codex · reviewed by Opus on Claude Code
+        task-003 Wire --json into the CLI · Gemini 3.6 on Antigravity CLI ·
           reviewed by GPT 5.6 on Codex
 
   Acceptance tests
     export --json writes one object per row
 
-  budget
-  cards    $6.00
+  limit
+  tasks    $6.00
   review   $2.00
   total   $10.00
   Estimated $7.00 to $9.50
@@ -37,7 +37,7 @@ expression: text(&lines)
 
 ────────────────────────────────────────────────────────────────────────────────
 ◆ Approve this plan?
-  3 cards · estimated $7.00 to $9.50 · budget $10.00
+  3 tasks · estimated $7.00 to $9.50 · limit $10.00
   Plan 1 by Opus on Claude Code scored best, 0.2 ahead
   A near tie: yours to break
   A flag above keeps it from auto-approval
@@ -49,4 +49,4 @@ expression: text(&lines)
     5. Abandon
     6. Show the plan
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Enter to choose · Tab to add a note · Esc to carry on without me

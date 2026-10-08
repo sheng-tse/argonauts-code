@@ -3,14 +3,14 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 Help
-The keys in effect, and every command by category                                        58 commands
+The keys in effect, and every command by category                                        65 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                                             │
 │ enter                         send the prompt                                                    │
 │ shift+enter / alt+enter / ctrl+j                                                                 │
 │                               new line                                                           │
-│ esc                           set a card aside, stop a chat turn, or pause the run               │
+│ esc                           hand a question on, or stop the main agent's turn                  │
 │ ctrl+c                        clear the prompt, twice to exit                                    │
 │ ctrl+d                        exit, twice on an empty prompt                                     │
 │ shift+tab                     next approval mode                                                 │
@@ -22,15 +22,15 @@ The keys in effect, and every command by category                               
 │ ctrl+r                        search prompt history                                              │
 │ ?                             shortcuts, on an empty prompt                                      │
 │ up                            take queued messages back                                          │
-│ tab / up                      answer a waiting card                                              │
+│ tab / up                      answer a waiting question                                          │
 │ ctrl+enter / ctrl+x ctrl+s    send waiting messages to Claude Code now                           │
-│ ctrl+x tab                    move to the heads-up above the input                               │
-│ ctrl+x ctrl+a                 hide or show the heads-up                                          │
-│                                                                                                  │
-│ Session                                                                                          │
-│ /clear                        Start a fresh chat with the lead. Runs keep going                  │
-│ /resume                       Pick an earlier conversation or a run to carry on                  │
-│ /exit                         Close the screen. Runs keep going                                  │
-│ /compact [instructions]       Summarize the conversation to free context                         │
+│ alt+w                         ignore the word ultracode in this prompt, or undo                  │
+│ ctrl+x ctrl+k                 stop every background agent, twice to confirm                      │
+│ ctrl+]                        open the most recent artifact in the browser                       │
+│ ctrl+x tab                    move to the mods and heads-up above the input                      │
+│ ctrl+x ctrl+a                 hide or show everything above the input                            │
+│ ctrl+x c                      show or hide context above the input                               │
+│ ctrl+x q                      show or hide plan usage above the input                            │
+│ ctrl+x b                      show or hide run limits above the input                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                                                   1-26 of 110 ↓
+↑↓ scroll · esc back                                                                   1-26 of 131 ↓

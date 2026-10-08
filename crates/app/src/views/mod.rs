@@ -2,11 +2,14 @@
 //! `/rewind`, and the condensed replay a resumed run shows.
 
 mod agent;
+mod asked;
 mod checkpoints;
 mod context;
 mod goal;
+mod goal_feed;
 mod replay;
-mod sessions;
+pub(crate) mod required;
+pub(crate) mod sessions;
 mod workflow;
 
 pub(crate) use agent::agent_view;
@@ -14,5 +17,5 @@ pub(crate) use checkpoints::checkpoint_rows;
 pub(crate) use context::context_rows;
 pub(crate) use goal::goal_view;
 pub(crate) use replay::condensed_replay;
-pub(crate) use sessions::add_spend;
+pub(crate) use sessions::{add_spend, crew_rows};
 pub(crate) use workflow::{saved_workflow, workflow_view};

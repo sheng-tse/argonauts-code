@@ -272,7 +272,7 @@ pub(super) fn effort_set(
 ) -> Option<String> {
     settings
         .roles
-        .get(&role.unwrap_or(RoleName::Default))
+        .get(&role.unwrap_or(RoleName::Main))
         .and_then(|role| role.effort.clone())
         .or_else(|| {
             settings

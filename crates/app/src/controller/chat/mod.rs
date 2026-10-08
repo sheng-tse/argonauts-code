@@ -4,8 +4,9 @@
 //! checkout as the CLI itself would.
 //!
 //! Text typed while a turn runs waits in a queue and is sent once the turn ends. `lifecycle`
-//! runs a turn from start to finish, `offer` asks whether to start work, and `excerpt` primes a
-//! session that can't resume the chat. `/clear` starts a new conversation, and `past` reads
+//! runs a turn from start to finish, `offer` asks whether to start work, `excerpt` primes a
+//! session that can't resume the chat, and `carry` makes a new main model on another CLI its
+//! summary. `/clear` starts a new conversation, and `past` reads
 //! earlier ones back so `/resume` can carry them on. `vendor` does the same for the main agent
 //! CLI's own sessions, and `agent` for the sessions of a run's agents, which carry on as direct
 //! conversations in the folder each ran in.
@@ -18,17 +19,24 @@
 mod agent;
 #[cfg(test)]
 mod agent_tests;
+mod carry;
+#[cfg(test)]
+mod carry_tests;
 mod copies;
 mod crew;
 mod direct;
 #[cfg(test)]
 mod direct_tests;
 mod excerpt;
+mod goal;
+mod handover;
 mod keep;
 mod lifecycle;
 mod live;
 #[cfg(test)]
 mod live_tests;
+#[cfg(test)]
+mod main_session_tests;
 #[cfg(test)]
 mod mention_tests;
 mod mirror;
@@ -43,8 +51,11 @@ mod run_copy;
 #[cfg(test)]
 mod shared_tests;
 mod side;
+mod standing;
+mod talk;
 #[cfg(test)]
 mod tests;
+mod tools;
 mod vendor;
 #[cfg(test)]
 mod vendor_tests;
@@ -63,6 +74,7 @@ use argonauts_core::api::{RunSummary, StartRun};
 use argonauts_core::app::{
     AppEvent, AppMode, ChatEvent, ChatSummary, ReplayTurn, UiCommand, ViewData,
 };
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::run::{Party, RunMode};
 use argonauts_core::events::session::VendorWorkflow;
 use argonauts_core::input::SlashCommand;
@@ -80,19 +92,24 @@ pub(crate) use self::agent::SessionCache;
 pub(crate) use self::copies::{branch, copy, export, fork};
 pub(crate) use self::direct::{rewind, set_approval};
 use self::excerpt::Exchange;
+pub(crate) use self::goal::{
+    Checked as GoalChecked, goal, goal_run_started, on_checked as goal_checked,
+};
 use self::lifecycle::{begin, on_done, on_event};
 use self::offer::Offer;
 use self::past::PastChat;
-use self::prefs::{Goal, Prefs};
-pub(crate) use self::prefs::{fast, goal, goal_run_started, output_style, plan};
+use self::prefs::Prefs;
+pub(crate) use self::prefs::{fast, output_style, plan};
 pub(crate) use self::run_copy::tidy_copies;
 pub(crate) use self::side::{btw, compact, recap, rename, review};
+pub(crate) use self::talk::conversation_steps;
 #[cfg(test)]
 pub(crate) use self::tests::checked_solo;
 use super::instructions::{self, Command, Roster};
 use super::recap::{mode_name, title_from_request};
 use super::shell::ShellRan;
 use super::turn::{DirectWords, TurnStep};
+use super::ultra;
 use super::{Ctx, Effect};
 use crate::chat_store::{ChatPlace, ChatRun, ChatSession, ChatStore};
 use argonauts_core::events::checkpoint::AnswerAction;
@@ -124,6 +141,8 @@ pub(crate) struct ChatState {
     shell_cutoff: Option<u32>,
     /// Each request and its answer, for priming a fresh session.
     history: Vec<Exchange>,
+    /// What a switch of the main model to another CLI carries over.
+    carry: carry::Carried,
     session: Option<ChatSession>,
     /// The model of a CLI session this chat carries on, kept while the chat resumes it unless
     /// you set one.
@@ -142,8 +161,14 @@ pub(crate) struct ChatState {
     sides: u32,
     /// Choices for this app session, kept across `/clear` and `/resume`.
     prefs: Prefs,
-    goal: Option<Goal>,
+    /// What `/goal` keeps for this conversation beyond the setting that holds the goal.
+    goal: goal::Kept,
     direct: direct::DirectState,
+    /// Something on screen shows the conversation's context by category, asked with this
+    /// detail. Each turn's session is told as it starts.
+    context_watch: Option<ContextDetail>,
+    /// What the main session's setup, guide and lookup tools hold between calls.
+    talk: talk::TalkState,
 }
 
 struct Turn {
@@ -167,9 +192,11 @@ struct Turn {
     live: live::Live,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Queued {
     Request(String),
+    /// A request you typed `ultracode` in.
+    WorkflowRequest(String),
     Ask(String),
     /// One of the main agent CLI's own commands.
     Vendor {
@@ -184,8 +211,11 @@ enum Queued {
     Crew(String),
     /// `/workflow <task>`, read the same way.
     Workflow(String),
-    /// `/goal <objective>`, read the same way.
-    Goal(String),
+    /// Your words for a subagent of the conversation's session, which the main agent passes on.
+    Subagent {
+        name: String,
+        text: String,
+    },
 }
 
 /// From a turn's task to the loop.
@@ -230,6 +260,7 @@ impl ChatState {
             last_shell: 0,
             shell_cutoff: None,
             history: Vec::new(),
+            carry: carry::Carried::default(),
             session: None,
             carried_model: None,
             place: None,
@@ -239,8 +270,10 @@ impl ChatState {
             workflows: Vec::new(),
             sides: 0,
             prefs: Prefs::default(),
-            goal: None,
+            goal: goal::Kept::default(),
             direct: direct::DirectState::default(),
+            context_watch: None,
+            talk: talk::TalkState::default(),
         }
     }
 
@@ -271,6 +304,7 @@ impl ChatState {
             last_shell: 0,
             shell_cutoff: None,
             history,
+            carry: carry::Carried::default(),
             session,
             carried_model: None,
             place,
@@ -280,8 +314,10 @@ impl ChatState {
             workflows: Vec::new(),
             sides: 0,
             prefs: Prefs::default(),
-            goal: None,
+            goal: goal::Kept::default(),
             direct: direct::DirectState::default(),
+            context_watch: None,
+            talk: talk::TalkState::default(),
         }
     }
 
@@ -396,7 +432,7 @@ impl ChatState {
     pub(super) fn cli<'a>(&'a self, ctx: &'a Ctx) -> &'a str {
         self.place
             .as_ref()
-            .map_or(ctx.settings().default_agent.worker.as_str(), |place| {
+            .map_or(ctx.settings().main_agent.worker.as_str(), |place| {
                 place.worker.worker.as_str()
             })
     }
@@ -448,6 +484,8 @@ pub(crate) fn clear(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<E
     }
     let old = chat.id.clone();
     let had_turns = chat.turns > 0;
+    // A goal covers the work that follows in its own conversation, and no other.
+    goal::forget(ctx)?;
     chat.succeed(ctx, ChatState::new(ctx)?);
     ctx.send(AppEvent::ChatCleared);
     let text = if had_turns {
@@ -516,6 +554,7 @@ pub(crate) async fn resume(
         worker: past.summary.worker.clone(),
         earlier: replay,
         turns: shown,
+        artifacts: past::artifacts(&ctx.env.chat_dir(), &past.summary.chat),
     });
     if let Some(text) = where_it_works {
         ctx.notice(NoteLevel::Info, text);
@@ -569,7 +608,7 @@ pub(crate) async fn resume_vendor(
         );
         return Ok(Vec::new());
     }
-    let default = ctx.settings().default_agent.clone();
+    let default = ctx.settings().main_agent.clone();
     let worker = picked.worker(&default);
     let next = ChatState::carrying(ctx, chat, &picked, worker.clone())?;
     chat.succeed(ctx, next);
@@ -581,6 +620,7 @@ pub(crate) async fn resume_vendor(
         worker: Some(worker.clone()),
         earlier: replay,
         turns: shown,
+        artifacts: Vec::new(),
     });
     let how = if worker == default {
         format!(
@@ -704,6 +744,7 @@ pub(crate) async fn resume_agent(
         worker: Some(worker.clone()),
         earlier: Vec::new(),
         turns,
+        artifacts: Vec::new(),
     });
     let agent = ctx.names.worker(&worker);
     let binary = agent::binary(ctx, &worker.worker);
@@ -828,6 +869,23 @@ pub(crate) fn context_row(chat: &ChatState) -> Option<ContextRow> {
     chat.context.clone()
 }
 
+/// /context opened: the running turn's session is asked for its context by category, where
+/// its CLI can say. Between turns there's no session to ask.
+pub(crate) fn ask_context(chat: &ChatState, detail: ContextDetail) {
+    if let Some(turn) = &chat.turn {
+        turn.live.ask_context(detail);
+    }
+}
+
+/// Something on screen started or stopped showing the conversation's context. The session
+/// then asks after each fill, at most every 10 seconds.
+pub(crate) fn watch_context(chat: &mut ChatState, detail: Option<ContextDetail>) {
+    chat.context_watch = detail;
+    if let Some(turn) = &chat.turn {
+        turn.live.watch_context(detail);
+    }
+}
+
 /// Records the request and runs `TriageEstimate` in the chat session.
 pub(crate) async fn new_request(
     ctx: &mut Ctx,
@@ -857,6 +915,76 @@ pub(crate) fn queue_turn(
     request(ctx, chat, text)
 }
 
+/// Enter on a subagent of your conversation's own session with words in the prompt. The
+/// subagent has no line of its own when Argonauts drives its CLI, so the main agent passes
+/// your words on: at once while its turn runs where the CLI takes that, else as the next
+/// turn. The chat shows `@name` and your words, never how to pass them on.
+pub(crate) fn message_subagent(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    name: String,
+    text: String,
+) -> anyhow::Result<Vec<Effect>> {
+    let words = text.trim().to_owned();
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    let prompt = pass_on(&name, &words);
+    if let Some(turn) = chat.turn.as_mut() {
+        let joined = !turn.step.own_session()
+            && turn.live.takes_messages()
+            && turn
+                .live
+                .send_for_subagent(prompt, name.clone(), words.clone());
+        if !joined {
+            chat.queue(Queued::Subagent { name, text: words });
+        }
+        return Ok(Vec::new());
+    }
+    let shown = format!("@{name} {words}");
+    let mut effects = name_the_chat(chat, &shown);
+    if is_the_cli(ctx, chat) {
+        effects.extend(direct::begin_vendor(ctx, chat, shown, prompt)?);
+        return Ok(effects);
+    }
+    begin(ctx, chat, shown, |_| TurnStep::Vendor {
+        prompt,
+        direct: None,
+    })?;
+    Ok(effects)
+}
+
+/// What the main agent reads, to pass your message on to one of its subagents: your words
+/// first, then how to pass them on. Claude Code continues a subagent with its SendMessage
+/// tool, by the agent id the subagent's launch returned, and the same call resumes one that
+/// finished (checked live on 2.1.292, where a call without `message` was refused, so the note
+/// spells the tool's fields out).
+fn pass_on(name: &str, words: &str) -> String {
+    format!(
+        "For your subagent \"{name}\": {words}\n\n(A message from me for your subagent \
+         \"{name}\". Pass it on now with the SendMessage tool: `to` is that subagent's agent id, \
+         `message` is my words above after the colon, word for word, and `summary` is a few \
+         words about them. If the subagent has finished, this resumes it. Then carry on with \
+         what you were doing.)"
+    )
+}
+
+/// `x` on a subagent of your conversation's own session, or Ctrl+X Ctrl+K: the session stops
+/// that one and goes on. Between turns there's no session to ask, and none of its subagents
+/// is running either.
+pub(crate) fn stop_subagent(ctx: &mut Ctx, chat: &mut ChatState, id: String) {
+    let asked = chat
+        .turn
+        .as_mut()
+        .is_some_and(|turn| turn.live.stop_subagent(id));
+    if !asked {
+        ctx.notice(
+            NoteLevel::Info,
+            "That subagent isn't running, so there's nothing to stop.".to_owned(),
+        );
+    }
+}
+
 /// Ctrl+Enter: what you sent the running turn goes to the model now.
 pub(crate) fn send_now(chat: &mut ChatState) {
     if let Some(turn) = chat.turn.as_mut() {
@@ -871,12 +999,12 @@ pub(crate) fn take_back(ctx: &mut Ctx, chat: &mut ChatState) {
         .queued
         .iter()
         .filter_map(|(queued, _)| match queued {
-            Queued::Request(text) => Some(text.clone()),
+            Queued::Request(text) | Queued::WorkflowRequest(text) => Some(text.clone()),
             _ => None,
         })
         .collect();
     chat.queued
-        .retain(|(queued, _)| !matches!(queued, Queued::Request(_)));
+        .retain(|(queued, _)| !matches!(queued, Queued::Request(_) | Queued::WorkflowRequest(_)));
     if let Some(turn) = chat.turn.as_mut() {
         turn.live.take_back();
     }
@@ -901,6 +1029,81 @@ pub(crate) fn press_heads_up(ctx: &Ctx, chat: &mut ChatState, plugin: &str, hand
     }
 }
 
+/// A request you typed `ultracode` in goes through a workflow: the crew
+/// workflow in use, Claude Code's own from the main session in solo, or in solo on a CLI with
+/// none of its own, one Argonauts runs on that same model. It waits for a running turn, as
+/// any request does.
+pub(crate) async fn workflow_request(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    text: String,
+) -> anyhow::Result<Vec<Effect>> {
+    let text = text.trim().to_owned();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    if chat.turn.is_some() {
+        chat.queue(Queued::WorkflowRequest(text));
+        return Ok(Vec::new());
+    }
+    let direct = direct::preset_is_direct(ctx.settings()) || chat.place.is_some();
+    match ultra::route(ctx.settings(), true) {
+        ultra::Route::Crew => start_workflow(ctx, chat, text).await,
+        ultra::Route::SameModel => Ok(same_model_workflow(ctx, chat, text)),
+        ultra::Route::MainSession(cli_workflow) if direct => {
+            if let Some(why) = ultra::unavailable(ctx.settings()) {
+                ctx.notice(NoteLevel::Info, why);
+            }
+            let mut effects = name_the_chat(chat, &text);
+            let words = DirectWords {
+                cli_workflow,
+                ..DirectWords::default()
+            };
+            if chat.prefs.plan_first {
+                effects.extend(direct::plan(ctx, chat, text, words)?);
+            } else {
+                effects.extend(direct::begin_with(ctx, chat, text, None, words)?);
+            }
+            Ok(effects)
+        }
+        ultra::Route::MainSession(_) | ultra::Route::AsUsual => request(ctx, chat, text),
+    }
+}
+
+/// Solo on a CLI with no workflow of its own: Argonauts runs the workflow in its place, every
+/// agent on that same CLI and model.
+fn same_model_workflow(ctx: &Ctx, chat: &mut ChatState, text: String) -> Vec<Effect> {
+    let mut effects = name_the_chat(chat, &text);
+    let mut run = run_request(ctx, text, RunMode::Crew, None, None);
+    run.request_settings
+        .extend(ultra::same_model(ctx.settings()));
+    effects.push(handover::start(run));
+    effects
+}
+
+/// Whether the CLI behind this conversation takes Argonauts' tools when Argonauts drives it:
+/// the main agent's, or the agent's whose session the conversation carries on. Never while
+/// `main_session.tools` is off.
+fn takes_tools(ctx: &Ctx, chat: &ChatState) -> bool {
+    if !ctx.settings().main_session.tools {
+        return false;
+    }
+    let worker = chat
+        .place
+        .as_ref()
+        .map_or(&ctx.settings().main_agent, |place| &place.worker);
+    ctx.services.workers.takes_session_tools(worker)
+}
+
+/// The main session is the CLI you chose: your message goes to it as you typed
+/// it, it works in your checkout as it does by itself, and work leaves it only when it calls a
+/// tool. True with solo in use, for an agent's session carried on, and whatever the workflow
+/// for a CLI that takes Argonauts' tools. A CLI that can't take them, with a crew workflow in
+/// use, keeps the verdict that ends each reply, and code reads it.
+fn is_the_cli(ctx: &Ctx, chat: &ChatState) -> bool {
+    direct::preset_is_direct(ctx.settings()) || chat.place.is_some() || takes_tools(ctx, chat)
+}
+
 /// A turn at a time: text that arrives while one runs waits for it to end.
 fn request(ctx: &mut Ctx, chat: &mut ChatState, text: String) -> anyhow::Result<Vec<Effect>> {
     let text = text.trim().to_owned();
@@ -912,10 +1115,10 @@ fn request(ctx: &mut Ctx, chat: &mut ChatState, text: String) -> anyhow::Result<
         return Ok(Vec::new());
     }
     let effects = name_the_chat(chat, &text);
-    // The solo preset, or an agent's session carried on: your message goes to the session as
-    // its CLI takes it, with no estimate first. With plan first on, the session plans before it
-    // changes anything.
-    if direct::preset_is_direct(ctx.settings()) || chat.place.is_some() {
+    // The main session is the CLI itself: your message goes to it as its CLI takes it, with
+    // no estimate first, and it hands work over by calling a tool. With plan first on, the
+    // session plans before it changes anything.
+    if is_the_cli(ctx, chat) {
         let mut effects = effects;
         if chat.prefs.plan_first {
             effects.extend(direct::plan(ctx, chat, text, DirectWords::default())?);
@@ -944,7 +1147,8 @@ fn request_planned(
         return Ok(Vec::new());
     }
     // Direct solo, and an agent's session carried on, plan in the session that then goes ahead,
-    // and change nothing until you say.
+    // and change nothing until you say. With a workflow in use it is the workflow that plans
+    // first and waits for you.
     if direct::preset_is_direct(ctx.settings()) || chat.place.is_some() {
         let text = text.trim().to_owned();
         if text.is_empty() {
@@ -1002,7 +1206,7 @@ pub(crate) fn vendor_command(
     let mut effects = name_the_chat(chat, &shown);
     // The solo preset, or an agent's session carried on: the command works where the
     // conversation does, as in the CLI itself.
-    if direct::preset_is_direct(ctx.settings()) || chat.place.is_some() {
+    if is_the_cli(ctx, chat) {
         effects.extend(direct::begin_vendor(ctx, chat, shown, prompt)?);
         return Ok(effects);
     }
@@ -1014,7 +1218,7 @@ pub(crate) fn vendor_command(
 }
 
 pub(crate) fn owns_choice(chat: &ChatState, id: &ChoiceId) -> bool {
-    offer::owns_choice(chat, id) || keep::owns(chat, id)
+    offer::owns_choice(chat, id) || keep::owns(chat, id) || talk::owns(chat, id)
 }
 
 /// The `StartWork` choice, or where to keep what a request said "from now on".
@@ -1028,6 +1232,9 @@ pub(crate) async fn answer_choice(
     if keep::owns(chat, &id) {
         return keep::answer(ctx, chat, id, action);
     }
+    if talk::owns(chat, &id) {
+        return talk::answer(ctx, chat, id, action);
+    }
     offer::answer_choice(ctx, chat, id, action, text).await
 }
 
@@ -1039,6 +1246,9 @@ pub(crate) fn set_aside(
     if keep::owns(chat, &id) {
         keep::set_aside(ctx, chat, id);
         return Ok(Vec::new());
+    }
+    if talk::owns(chat, &id) {
+        return Ok(talk::set_aside(ctx, chat, id));
     }
     offer::set_aside(ctx, chat, id)
 }
@@ -1101,22 +1311,32 @@ pub(crate) async fn start_forced(
     if chat.prefs.plan_first {
         request = planned(request);
     }
-    effects.push(Effect::StartRun(Box::new(request)));
+    effects.push(handover::start(request));
     Ok(effects)
 }
 
 /// Esc during a turn: cancels the step, which asks the vendor process to stop. The turn stays
 /// stopping until its step ends. Anything queued behind it goes back into the input box.
+///
+/// While the turn's CLI runs subagents or workflows of its own, only the main agent's turn
+/// stops, as on Claude Code's screen: they go on, and the turn stays for them
+/// and for what you say next.
 pub(crate) fn cancel_turn(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<Effect>> {
-    let Some(id) = stop_turn(ctx, chat) else {
-        return Ok(Vec::new());
-    };
-    settle_mode(ctx, &id);
+    let spared = chat
+        .turn
+        .as_mut()
+        .is_some_and(|turn| turn.live.stop_turn_alone());
+    if !spared {
+        let Some(id) = stop_turn(ctx, chat) else {
+            return Ok(Vec::new());
+        };
+        settle_mode(ctx, &id);
+    }
     let texts: Vec<String> = chat
         .queued
         .drain(..)
         .map(|(queued, _)| match queued {
-            Queued::Request(text) => text,
+            Queued::Request(text) | Queued::WorkflowRequest(text) => text,
             Queued::Ask(question) => format!("/ask {question}"),
             Queued::Vendor { name, args } if args.is_empty() => format!("/{name}"),
             Queued::Vendor { name, args } => format!("/{name} {args}"),
@@ -1124,8 +1344,8 @@ pub(crate) fn cancel_turn(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result
             Queued::Plan(task) => format!("/plan {task}"),
             Queued::Solo(task) => format!("/solo {task}"),
             Queued::Crew(task) => format!("/crew {task}"),
-            Queued::Workflow(task) => format!("/workflow {task}"),
-            Queued::Goal(objective) => format!("/goal {objective}"),
+            Queued::Workflow(task) => task.clone(),
+            Queued::Subagent { name, text } => format!("@{name} {text}"),
         })
         .collect();
     if !texts.is_empty() {
@@ -1149,13 +1369,13 @@ pub(crate) async fn on_update(
     }
 }
 
-/// A new default agent: another vendor can't resume the old session, so the next turn starts
-/// a fresh one primed with an excerpt of the chat so far. A conversation that carries on an
-/// agent's session from a run stays with that agent and its session.
+/// A new main agent: on the same CLI the session carries on, and on another the next turn
+/// starts a fresh one from what `switch.carry` says. A conversation that carries on an agent's
+/// session from a run stays with that agent and its session.
 pub(crate) fn fresh_session(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Result<Vec<Effect>> {
     if let Some(place) = &chat.place {
         let agent = ctx.names.worker(&place.worker);
-        let main = ctx.names.worker(&ctx.settings().default_agent);
+        let main = ctx.names.worker(&ctx.settings().main_agent);
         ctx.notice(
             NoteLevel::Info,
             format!(
@@ -1166,10 +1386,7 @@ pub(crate) fn fresh_session(ctx: &mut Ctx, chat: &mut ChatState) -> anyhow::Resu
         );
         return Ok(Vec::new());
     }
-    chat.session = None;
-    chat.carried_model = None;
-    chat.store.forget_session()?;
-    Ok(Vec::new())
+    carry::switched(ctx, chat)
 }
 
 /// The screen is closing: a turn in flight is cancelled. The loop then waits a little for
@@ -1230,11 +1447,12 @@ fn run_request(
         continues: None,
         overrides: ctx.settings.run_overrides(),
         include_uncommitted: settings.intake.include_uncommitted,
-        default_agent: Some(settings.default_agent.clone()),
+        main_agent: Some(settings.main_agent.clone()),
         approval_mode: None,
         front_end: None,
         instructions: Vec::new(),
         request_settings: Vec::new(),
+        required_steps: Vec::new(),
     }
 }
 
@@ -1251,17 +1469,12 @@ fn planned(mut request: StartRun) -> StartRun {
 /// The plan checkpoint's mode, which `/plan` sets for one run.
 const PLAN_MODE_KEY: &str = "approvals.plan.mode";
 
-/// The same run as a workflow or a goal, whatever `workflows.style` says: the run's own command
-/// wins over every setting, and the run keeps the style it starts with.
-pub(super) fn styled(mut request: StartRun, style: RunStyle) -> StartRun {
+/// `/workflow`'s run is the crew's, whatever the words say. A goal is no kind of run: it comes
+/// with the settings every run takes, from `/goal` or the request's own words.
+pub(super) fn styled(mut request: StartRun, _style: RunStyle) -> StartRun {
     request.mode = RunMode::Crew;
     request
-        .overrides
-        .push(format!("{STYLE_KEY}=\"{}\"", style.as_str()));
-    request
 }
-
-const STYLE_KEY: &str = "workflows.style";
 
 /// `/workflow <task>`: a crew run that's a workflow. Words that may say how to run it are read
 /// first, as `/crew` reads them: the command keeps its mode and style, and the rest is checked
@@ -1299,7 +1512,24 @@ pub(crate) async fn start_workflow(
     if chat.prefs.plan_first {
         request = planned(request);
     }
-    effects.push(Effect::StartRun(Box::new(request)));
+    effects.push(handover::start(request));
+    Ok(effects)
+}
+
+/// `/<name> <request>`: a crew run that follows the workflow of that name, for this request
+/// alone. The workflow in use stays as it was.
+pub(crate) async fn start_with_workflow(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    request: String,
+    workflow: &str,
+) -> anyhow::Result<Vec<Effect>> {
+    let request = request.trim().to_owned();
+    let mut effects = name_the_chat(chat, &request);
+    let mut run = run_request(ctx, request, RunMode::Crew, None, None);
+    let named = toml::Value::String(workflow.to_owned()).to_string();
+    run.request_settings.push(format!("workflow={named}"));
+    effects.push(handover::start(run));
     Ok(effects)
 }
 
@@ -1334,7 +1564,14 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
         .drain(..)
         .map(|(queued, typed_after)| {
             let command = match queued {
-                Queued::Request(text) => UiCommand::Submit { text },
+                Queued::Request(text) => UiCommand::Submit {
+                    text,
+                    workflow_requested: false,
+                },
+                Queued::WorkflowRequest(text) => UiCommand::Submit {
+                    text,
+                    workflow_requested: true,
+                },
                 Queued::Ask(question) => UiCommand::Slash {
                     command: SlashCommand::Ask { question },
                 },
@@ -1355,13 +1592,9 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
                 Queued::Crew(task) => UiCommand::Slash {
                     command: SlashCommand::Crew { task },
                 },
+                Queued::Subagent { name, text } => UiCommand::MessageSubagent { name, text },
                 Queued::Workflow(task) => UiCommand::Slash {
-                    command: SlashCommand::Workflow { task: Some(task) },
-                },
-                Queued::Goal(objective) => UiCommand::Slash {
-                    command: SlashCommand::Goal {
-                        text: Some(objective),
-                    },
+                    command: SlashCommand::WorkflowRun { task: Some(task) },
                 },
             };
             Effect::Queued {
@@ -1375,6 +1608,9 @@ fn send_queued(chat: &mut ChatState) -> Vec<Effect> {
 /// Sends the event and records it, except the streamed text, which the finished turn holds,
 /// and side questions, which stay out of the conversation.
 fn emit(ctx: &Ctx, chat: &mut ChatState, event: ChatEvent) {
+    if carry::is_carry_turn(event_turn(&event)) {
+        return;
+    }
     let passing = matches!(&event, ChatEvent::Agent { event, .. } if live::is_passing(event));
     if !passing
         && !side::is_side_turn(event_turn(&event))

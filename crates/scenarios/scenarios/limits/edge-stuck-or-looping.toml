@@ -1,5 +1,5 @@
 # The fake Claude Code goes silent after its first message and never exits. The watchdog
-# stops it, and Codex takes the card in a fresh session.
+# stops it, and Codex takes the task in a fresh session.
 
 [version]
 claude = "2.1.284 (Claude Code)"

@@ -71,7 +71,7 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
         })
         .ok_or_else(|| {
             EngineError::Refused(format!(
-                "{test_card} is not an acceptance-test card with a reviewer"
+                "{test_card} is not an acceptance-test task with a reviewer"
             ))
         })?;
     let tree = worktree::ensure(host, test_card).await?;
@@ -105,7 +105,7 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
         if let Some(output) = &gate_output {
             ask.parts.push(part(
                 InputPartKind::GateOutput,
-                "gate output",
+                "check output",
                 output.clone(),
             ));
         }
@@ -119,7 +119,7 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
                 RunEventKind::Note(Note {
                     level: NoteLevel::Warn,
                     text: format!(
-                        "Rejected acceptance tests outside the test card's paths: {}",
+                        "Rejected acceptance tests outside the test task's paths: {}",
                         paths.join(", ")
                     ),
                 }),
@@ -160,7 +160,7 @@ pub async fn write_tests(host: &Host, test_card: &CardId) -> EngineResult<Vec<St
         }
     }
     Err(EngineError::Refused(format!(
-        "the acceptance tests for {} failed their gates twice",
+        "the acceptance tests for {} failed their checks twice",
         target.id
     )))
 }

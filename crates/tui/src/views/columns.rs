@@ -170,8 +170,8 @@ mod tests {
             text(&line(cell("  "), &columns, &cells, Some(cell(edge)), 32))
         };
         assert_eq!(
-            row(["owner", "339k", "$0.12"], "57s"),
-            "  owner       339k  $0.12    57s"
+            row(["judge", "339k", "$0.12"], "57s"),
+            "  judge       339k  $0.12    57s"
         );
         assert_eq!(
             row(["reviewer", "16k", ""], " 7s"),
@@ -182,10 +182,10 @@ mod tests {
     #[test]
     fn a_column_that_gave_way_leaves_no_gap() {
         let columns = [Column::left(5), Column::right(0), Column::right(3)];
-        let cells = [cell("owner"), cell("339k"), cell("$1")];
+        let cells = [cell("judge"), cell("339k"), cell("$1")];
         assert_eq!(
             text(&line(Vec::new(), &columns, &cells, None, 20)),
-            "owner   $1"
+            "judge   $1"
         );
     }
 

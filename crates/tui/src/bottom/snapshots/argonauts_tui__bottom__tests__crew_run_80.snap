@@ -4,11 +4,11 @@ expression: screen(&view)
 ---
 ✻ Building… (4m 12s · ↓ 48.2k tokens · 3 agents · $0.21)
 
-──────────────────────────────────────────────────────────────────── peer-crew ─
+────────────────────────────────────────────────────────────────────── council ─
 ❯ ▏
 ────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents
+  ǁ supervised mode on (shift+tab to cycle) · ← 3 agents · ↓ to manage
 
-  ◐ claude-code  card-002                        2/5  ↓ 18.1k tokens      4m12s
-  ◐ codex        card-003                        1/5  ↓ 12.9k tokens      3m40s
-  ○ agy          review                          waiting
+  ○ claude-code  task-002                             2/5 · 4m · ↓ 18.1k tokens
+  ○ codex        task-003                             1/5 · 3m · ↓ 12.9k tokens
+  ○ agy          review                               waiting

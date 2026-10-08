@@ -36,7 +36,6 @@ use argonauts_tui::state::{AppState, RunState};
 use argonauts_tui::text::{plain_text, width_with};
 use argonauts_tui::theme::{Glyphs, Theme};
 use argonauts_tui::views::agent::AgentView;
-use argonauts_tui::views::context::ContextView;
 use argonauts_tui::views::crew::CrewView;
 use argonauts_tui::views::help::HelpView;
 use argonauts_tui::views::pager::Pager;
@@ -185,17 +184,6 @@ fn crew_panel_view(sample: &str) -> AppEvent {
     }
 }
 
-fn context_data(sample: &str) -> Value {
-    json!({"rows": [
-        {"run": RUN, "session": "s-001", "label": format!("owner · card-002 {sample}"),
-         "worker": "claude-code/opus", "used": 42_000, "window": 200_000, "cap": 160_000,
-         "tool_calls": 12, "spent": spend(9000, 0.46), "rotations": 1},
-        {"run": null, "session": "chat", "label": sample, "worker": "codex/gpt-5.6",
-         "used": 0, "window": null, "cap": null, "tool_calls": 0, "spent": spend(0, 0.0),
-         "rotations": 0}
-    ]})
-}
-
 fn approvals_data() -> Value {
     json!({"points": [
         {"kind": "merge", "mode": "supervised", "decide_with": "rules", "matches_in_a_row": 4,
@@ -263,15 +251,12 @@ fn every_view(
     };
     let key: SessionKey = parse(json!(crew[0].session));
     let mention: MentionTarget = parse(json!({"target": "worker", "value": "codex/gpt-5.6"}));
-    let mut context: Value = context_data(sample);
-    hostile(&mut context, sample);
     vec![
         (
             "workflow",
             Box::new(WorkflowView::new(workflow)) as Box<dyn View>,
         ),
         ("agent", Box::new(AgentView::new(agent))),
-        ("context", Box::new(ContextView::new(parse(context)))),
         ("resume", Box::new(ResumePicker::new(resume))),
         ("diff", Box::new(Pager::diff(diff))),
         ("raw", Box::new(Pager::raw(raw))),
@@ -356,7 +341,7 @@ fn every_card(sample: &str, width: u16, theme: &Theme) -> Vec<(String, Vec<Line<
         let mut prompt = checkpoint_card(1, &opened, Some(&run_state));
         prompt.focus();
         lines.extend(prompt.lines(&ctx));
-        cards.push((format!("{name} card"), lines));
+        cards.push((format!("{name} task"), lines));
         let spot = spot_check_card(2, &opened, None, Some(&run_id()), &Default::default());
         cards.push((format!("{name} spot check"), spot.lines(&ctx)));
     }
@@ -373,7 +358,7 @@ fn every_card(sample: &str, width: u16, theme: &Theme) -> Vec<(String, Vec<Line<
         prompt.focus();
         cards.push((format!("{name} choice"), prompt.lines(&ctx)));
     }
-    let card: CardId = parse(json!(format!("card-002")));
+    let card: CardId = parse(json!(format!("task-002")));
     let agent_name = format!("claude-code/opus {sample}");
     cards.push((
         "take over".into(),
@@ -553,15 +538,14 @@ fn every_bottom(sample: &str) -> Vec<(&'static str, BottomState)> {
     let mut armed = merge.clone();
     let option = option_of(&armed, OptionKind::Irreversible);
     armed.handle_key(key(KeyCode::Char(number(option))));
-    let mut pinned = merge.clone();
-    pinned.pinned = true;
-    pinned.focused = false;
+    let mut handed_on = merge.clone();
+    handed_on.dismiss();
     let mut waiting = merge;
     waiting.focused = false;
 
     let idle = || {
         let mut bottom = BottomState::new();
-        bottom.composer.label = Some(format!("peer-crew {sample}"));
+        bottom.composer.label = Some(format!("council {sample}"));
         bottom
     };
     let with_card = |card: CardPrompt| {
@@ -582,12 +566,12 @@ fn every_bottom(sample: &str) -> Vec<(&'static str, BottomState)> {
         .find(|(name, _)| *name == "scope question")
         .map(|(_, picker)| picker);
     vec![
-        ("card with a note", with_card(noted)),
-        ("card checklist", with_card(checklist)),
-        ("card own answer", with_card(answer)),
-        ("card armed", with_card(armed)),
-        ("card pinned", with_card(pinned)),
-        ("card waiting", under_work),
+        ("task with a note", with_card(noted)),
+        ("task checklist", with_card(checklist)),
+        ("task own answer", with_card(answer)),
+        ("task armed", with_card(armed)),
+        ("task handed on", with_card(handed_on)),
+        ("task waiting", under_work),
         ("picker open", picking),
     ]
 }
@@ -635,7 +619,7 @@ fn every_overlay(sample: &str) -> Vec<(&'static str, TranscriptOverlay)> {
     vec![
         ("transcript overlay", TranscriptOverlay::new()),
         (
-            "card overlay",
+            "task overlay",
             TranscriptOverlay::view(format!("the diff {sample}"), cells),
         ),
     ]

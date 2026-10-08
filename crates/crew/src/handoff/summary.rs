@@ -81,7 +81,7 @@ pub async fn summarize(
     let at = host.read(rules::current_step);
     let mut ask = Ask::new(
         at,
-        RoleName::Default,
+        RoleName::Main,
         summarizer.clone(),
         prompts::handoff::SUMMARY,
         input,
@@ -117,7 +117,7 @@ fn unusable(host: &Host, summarizer: &WorkerRef) -> Option<String> {
         .get(&vendor)
         .is_some_and(|reading| rules::quota_out(&reading, host.now()));
     if out {
-        return Some(format!("{summarizer} is out of quota"));
+        return Some(format!("{summarizer} is out of plan usage"));
     }
     (!rules::vendor_usable(host, &vendor)).then(|| format!("{summarizer} isn't working right now"))
 }
@@ -187,7 +187,7 @@ async fn save(paths: &TranscriptPaths, summary: &str) {
         };
         let path = dir.join(SUMMARY_FILE);
         if let Err(error) = tokio::fs::write(&path, &text).await {
-            tracing::warn!(path = %path.display(), %error, "the handoff summary wasn't saved");
+            tracing::warn!(path = %path.display(), %error, "the fallback summary wasn't saved");
         }
     }
 }
@@ -231,8 +231,8 @@ mod tests {
 
     #[test]
     fn a_transcript_that_fits_is_whole() {
-        let (text, cut) = tail("# card-001\n\nRead src/cli.rs\n", 100);
-        assert_eq!(text, "# card-001\n\nRead src/cli.rs\n");
+        let (text, cut) = tail("# task-001\n\nRead src/cli.rs\n", 100);
+        assert_eq!(text, "# task-001\n\nRead src/cli.rs\n");
         assert!(!cut);
     }
 

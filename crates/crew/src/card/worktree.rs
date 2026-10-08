@@ -9,16 +9,19 @@ use globset::Glob;
 
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::CardEvent;
+use argonauts_core::events::session::InputPart;
 use argonauts_core::layout;
 use argonauts_core::names::{SessionKey, WorkerRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::{CardId, CommitInfo, DiffStat, Note, NoteLevel, RunId};
 
+use crate::card::claims;
+use crate::card::prompt;
 use crate::card::support::{record_card, record_card_in, record_of};
 use crate::engine::host::Host;
 use crate::engine::shared::lock;
 use crate::error::{EngineError, EngineResult};
-use crate::git::{Git, LeftOut};
+use crate::git::{Git, LeftOut, LeftOutWhy};
 use crate::handoff::notes;
 use crate::idempotency;
 use crate::integrate::branch::{
@@ -150,7 +153,8 @@ pub async fn commit_after_end(
 
 /// Commits everything in `tree` for `session` (or, with no session, as your own work) and
 /// records it. Commits the session's agent made itself come first: each is recorded as its
-/// work, and only what it left uncommitted goes in the conductor's commit. Every new commit
+/// work, and only what it left uncommitted goes in the conductor's commit. That commit also
+/// takes back out the new files the agent committed without meaning to create them. Every new commit
 /// gets its author's note. A commit already made for the session's current start is recorded if
 /// the log missed it, and never made twice. A start that changed nothing is recorded too, with
 /// no commit, so a replay finds its end commit done in the log and doesn't ask git again. A
@@ -180,6 +184,7 @@ pub(crate) async fn commit_in(
     let range = format!("{}..HEAD", tree.base);
     let mut tree = tree.clone();
     let mut made = Vec::new();
+    let mut own = Vec::new();
     if by.is_some() {
         let key = session.map(|(key, _)| key);
         for sha in agents_commits(host, card, &git, &tree.path, &range, session).await? {
@@ -187,6 +192,7 @@ pub(crate) async fn commit_in(
                 record_commit(host, card, &git, &tree, &sha, key, by.as_ref()).await?;
             tree = moved;
             made.push(info);
+            own.push(sha);
         }
     }
     let existing = match session {
@@ -200,15 +206,28 @@ pub(crate) async fn commit_in(
         Some(sha) => Some(sha),
         None => {
             let message = commit_message(host.run_id(), card, session, by.as_ref());
+            // An agent's commit takes the new files it meant to create. What you left in the
+            // worktree yourself, with no agent named, is all yours and all committed.
+            let claims = by
+                .as_ref()
+                .and_then(|_| claims::of_card(host, card, &tree.path));
             let committed = if git.merge_in_progress(&tree.path).await? {
                 if !git.leftover_markers(&tree.path).await?.is_empty() {
                     return finish(host, card, &git, &tree, made).await;
                 }
-                let (sha, left_out) = git.finish_merge_work(&tree.path, &message).await?;
+                let (sha, left_out) = git
+                    .finish_merge_work(&tree.path, &message, claims.as_ref())
+                    .await?;
                 tell_left_out(host, card, &left_out)?;
                 Some(sha)
             } else {
-                let committed = git.commit_work(&tree.path, &message).await?;
+                // What the agent's own commits swept in is sorted like what it left behind,
+                // so the branch holds the same files whoever ran `git commit`.
+                git.unstage_left_out(&tree.path, &own, claims.as_ref())
+                    .await?;
+                let committed = git
+                    .commit_claimed(&tree.path, &message, claims.as_ref())
+                    .await?;
                 tell_left_out(host, card, &committed.left_out)?;
                 committed.sha
             };
@@ -237,41 +256,114 @@ pub(crate) async fn commit_in(
 /// The most a note names before it says how many more.
 const LEFT_OUT_NAMED: usize = 6;
 
-/// Names what a commit of `card` left out as build output, each folder or file once per card,
-/// so a file left out by mistake shows while it's still in the worktree, before the merge. A
-/// repo with no `.gitignore` would otherwise see those files go missing without a word.
+/// Names what a commit of `card` left out, each folder or file once per card, so a file left
+/// out by mistake shows while it's still in the worktree, before the merge. Otherwise those
+/// files would go missing without a word.
 fn tell_left_out(host: &Host, card: &CardId, left_out: &[LeftOut]) -> EngineResult<()> {
-    let new: Vec<&str> = {
-        let mut told = lock(&host.shared().told_left_out);
-        let mut new: Vec<&str> = Vec::new();
-        for left in left_out {
-            if told.insert(format!("{card}:{}", left.because)) {
-                new.push(&left.because);
-            }
+    for why in [
+        LeftOutWhy::BuildOutput,
+        LeftOutWhy::Unclaimed,
+        LeftOutWhy::TooBig,
+        LeftOutWhy::Ignored,
+    ] {
+        let new: Vec<&str> = {
+            let mut told = lock(&host.shared().told_left_out);
+            left_out
+                .iter()
+                .filter(|left| left.why == why)
+                .filter(|left| told.insert(format!("{card}:{}", left.because)))
+                .map(|left| left.because.as_str())
+                .collect()
+        };
+        if new.is_empty() {
+            continue;
         }
-        new
-    };
-    if new.is_empty() {
-        return Ok(());
+        let shown = new.len().min(LEFT_OUT_NAMED);
+        let mut named = new[..shown].join(", ");
+        if new.len() > shown {
+            named.push_str(&format!(" and {} more", new.len() - shown));
+        }
+        let text = match why {
+            LeftOutWhy::BuildOutput => format!(
+                "Left out of {card}'s commit as build and cache output, and kept in its \
+                 worktree: {named}. merge.leave_out and merge.leave_out_builtin set what's \
+                 left out."
+            ),
+            LeftOutWhy::Unclaimed => format!(
+                "Left out of {card}'s commit, and kept in its worktree: {named}. No edit tool \
+                 wrote them and no report lists them, so they read as something a command \
+                 left behind. commit.unclaimed = \"keep\" commits every new file."
+            ),
+            LeftOutWhy::TooBig => format!(
+                "Left out of {card}'s commit as bigger than commit.max_new_file_mb allows, \
+                 and kept in its worktree: {named}."
+            ),
+            LeftOutWhy::Ignored => format!(
+                "Left out of {card}'s commit because the repository's ignore rules match \
+                 them, and kept in its worktree: {named}. A file that belongs in the change \
+                 needs another name, or a change to the rule."
+            ),
+        };
+        host.record(
+            Some(card),
+            None,
+            RunEventKind::Note(Note {
+                level: NoteLevel::Info,
+                text,
+            }),
+        )?;
     }
-    let shown = new.len().min(LEFT_OUT_NAMED);
-    let mut named = new[..shown].join(", ");
-    if new.len() > shown {
-        named.push_str(&format!(" and {} more", new.len() - shown));
-    }
-    let text = format!(
-        "Left out of {card}'s commit as build and cache output, and kept in its worktree: \
-         {named}. merge.leave_out and merge.leave_out_builtin set what's left out."
-    );
-    host.record(
-        Some(card),
-        None,
-        RunEventKind::Note(Note {
-            level: NoteLevel::Info,
-            text,
-        }),
-    )?;
     Ok(())
+}
+
+/// What to tell `card`'s worker when checks fail on the run's branch: the new files in its
+/// worktree that its commit left out. The checks passed beside them and failed without them,
+/// so one of them may be what's missing. `None` when nothing was left out.
+pub(crate) async fn left_out_part(host: &Host, card: &CardId) -> EngineResult<Option<InputPart>> {
+    let tree = ensure(host, card).await?;
+    let Some(claims) = claims::of_card(host, card, &tree.path) else {
+        return Ok(None);
+    };
+    let git = tree_git(host, &tree.path).await?;
+    let mut text = Vec::new();
+    if let Some(named) = named(&git.unclaimed_files(&tree.path, &claims).await?) {
+        text.push(format!(
+            "These new files in your worktree are not in your commit, because no edit tool \
+             wrote them and your report didn't list them: {named}. If the change needs one of \
+             them, list it in your report's files_changed. Leave caches, build output and \
+             test leftovers out."
+        ));
+    }
+    if let Some(named) = named(&git.claimed_but_ignored(&tree.path, &claims).await?) {
+        text.push(format!(
+            "These files you meant to create are not in your commit, because the \
+             repository's ignore rules match them: {named}. If the change needs one, give it \
+             another name, or change the rule in an edit of the .gitignore file."
+        ));
+    }
+    if text.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(prompt::message_part(
+        "left out of your commit",
+        text.join("\n\n"),
+    )))
+}
+
+/// The first few of what was left out, then how many more.
+fn named(left_out: &[LeftOut]) -> Option<String> {
+    let mut named: Vec<&str> = left_out.iter().map(|left| left.because.as_str()).collect();
+    named.dedup();
+    if named.is_empty() {
+        return None;
+    }
+    let more = named.len().saturating_sub(LEFT_OUT_NAMED);
+    named.truncate(LEFT_OUT_NAMED);
+    let mut text = named.join(", ");
+    if more > 0 {
+        text.push_str(&format!(" and {more} more"));
+    }
+    Some(text)
 }
 
 /// The commits on the branch's own line in `range` that the log hasn't recorded, oldest
@@ -514,7 +606,7 @@ async fn make_tree(host: &Host, tree: &CardTree, start: &str) -> EngineResult<bo
 /// Copies the untracked files `gates.copy_untracked` names from your checkout into a new
 /// worktree. Nothing else untracked is copied, and nothing already there is overwritten.
 async fn copy_untracked(host: &Host, tree: &Path) -> EngineResult<()> {
-    let patterns = &host.settings().gates.copy_untracked;
+    let patterns = &host.settings().checks.copy_untracked;
     if patterns.is_empty() {
         return Ok(());
     }
@@ -597,20 +689,20 @@ mod tests {
     #[test]
     fn attempt_numbers_come_from_tree_and_branch_names() {
         let run = RunId::new("run-01").unwrap();
-        let card = CardId::new("card-002").unwrap();
+        let card = CardId::new("task-002").unwrap();
         let branch = attempt_branch(&run, &card, 7);
         assert_eq!(attempt_of_branch(&run, &card, &branch), Some(7));
         assert_eq!(
             attempt_of_branch(&run, &card, &card_branch(&run, &card)),
             None
         );
-        let other = CardId::new("card-003").unwrap();
+        let other = CardId::new("task-003").unwrap();
         assert_eq!(attempt_of_branch(&run, &other, &branch), None);
-        let tree = Path::new("/worktrees/run-01/card-002-attempt-3");
+        let tree = Path::new("/worktrees/run-01/task-002-attempt-3");
         assert_eq!(attempt_of_tree(&card, tree), Some(3));
         assert_eq!(attempt_of_tree(&other, tree), None);
         assert_eq!(
-            attempt_of_tree(&card, Path::new("/worktrees/card-002")),
+            attempt_of_tree(&card, Path::new("/worktrees/task-002")),
             None
         );
     }
@@ -618,13 +710,13 @@ mod tests {
     #[test]
     fn commit_messages_carry_the_session_key() {
         let run = RunId::new("run-01").unwrap();
-        let card = CardId::new("card-002").unwrap();
+        let card = CardId::new("task-002").unwrap();
         let key = SessionKey::numbered(4);
         let by: WorkerRef = "codex".parse().unwrap();
         let text = commit_message(&run, &card, Some((&key, 1)), Some(&by));
         assert_eq!(
             text,
-            "card-002: work from s-004 (codex)\n\nArgonauts-Session: s-004"
+            "task-002: work from s-004 (codex)\n\nArgonauts-Session: s-004"
         );
         let resumed = commit_message(&run, &card, Some((&key, 2)), Some(&by));
         assert!(resumed.ends_with("Argonauts-Session: s-004\nArgonauts-Start: 2"));

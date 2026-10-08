@@ -1,13 +1,15 @@
 //! The built-in presets. Each file sets only the keys its preset changes on top of the
-//! defaults, which are `peer-crew`, so `peer-crew.toml` is empty.
+//! defaults, which are `council`, so `council.toml` is empty.
 
-pub(crate) const DEFAULT_PRESET: &str = "peer-crew";
+pub(crate) const DEFAULT_PRESET: &str = "council";
 
 pub(crate) struct BuiltinPreset {
     pub name: &'static str,
     pub description: &'static str,
     /// The keys it sets, as TOML.
     pub toml: &'static str,
+    /// Its steps, as the file `/setup` writes out shows them. The ablations and solo have none.
+    pub steps: Option<&'static str>,
 }
 
 macro_rules! preset {
@@ -15,7 +17,21 @@ macro_rules! preset {
         BuiltinPreset {
             name: $name,
             description: $description,
-            toml: include_str!(concat!("../../presets/", $name, ".toml")),
+            toml: include_str!(concat!("../../workflows/", $name, ".toml")),
+            steps: None,
+        }
+    };
+    // The steps are the runner's own built-in files, so what is shown is what runs.
+    ($name:literal, $description:literal, steps) => {
+        BuiltinPreset {
+            name: $name,
+            description: $description,
+            toml: include_str!(concat!("../../workflows/", $name, ".toml")),
+            steps: Some(include_str!(concat!(
+                "../../../runner/workflows/",
+                $name,
+                ".toml"
+            ))),
         }
     };
 }
@@ -23,35 +39,39 @@ macro_rules! preset {
 /// In the order the picker shows them, the default first.
 pub(crate) const BUILTIN: &[BuiltinPreset] = &[
     preset!(
-        "peer-crew",
-        "Peers, blind drafts, cross-family review (the default)"
+        "council",
+        "No single planner: everyone proposes and challenges, the judge decides (the default)",
+        steps
     ),
     preset!(
-        "coordinated-crew",
-        "One coordinator plans and delegates; blind reviewers and an adjudicator"
+        "orchestrator",
+        "The orchestrator plans and delegates; workers build, reviewers check",
+        steps
     ),
     preset!("solo", "One agent does every task"),
     preset!(
-        "solo-reviewed",
-        "One agent, reviewed by another model family"
+        "maker-checker",
+        "A worker builds, a reviewer sends it back until it holds",
+        steps
     ),
     preset!(
         "best-of-n",
-        "Several solo attempts; keeps one that passes the visible tests"
+        "Several workers try the same task and the judge picks one",
+        steps
     ),
     preset!(
         "draft-and-vote",
-        "Drafts, then a vote; no critique or spikes"
+        "Drafts, then a vote; no critique or experiments"
     ),
     preset!("ablate-no-blind", "Drafts see each other"),
     preset!("ablate-no-anonymize", "Judges see authors"),
     preset!("ablate-no-critique", "No critique round"),
-    preset!("ablate-fixed-roles", "Fixed owners, no router"),
+    preset!("ablate-fixed-roles", "Fixed workers, no router"),
     preset!(
-        "ablate-same-family",
-        "Reviewers may share the owner's family"
+        "ablate-same-provider",
+        "Reviewers may share the worker's provider"
     ),
-    preset!("ablate-no-spikes", "No spikes"),
+    preset!("ablate-no-experiments", "No experiments"),
 ];
 
 pub(crate) fn builtin(name: &str) -> Option<&'static BuiltinPreset> {

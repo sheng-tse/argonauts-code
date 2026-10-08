@@ -1,14 +1,14 @@
 //! `~/.argonauts/state/cli-versions.json`: for each agent CLI, the newer versions already
 //! noticed, so each gets one notice, per version the kinds of events it sent that its adapter
-//! doesn't read yet, with counts, and the built-in plugins a later version loads that its
-//! adapter doesn't know. Never their content.
+//! doesn't read yet, with counts, the built-in plugins a later version loads that its adapter
+//! doesn't know, and the CLI's own commands its adapter's table doesn't list. Never their content.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use argonauts_core::{Adapter, create_private_dir_all, write_private_file};
+use argonauts_core::{Adapter, ReportedCommand, create_private_dir_all, write_private_file};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,6 +32,10 @@ pub struct CliEntry {
     /// Isolated sessions turn them off from then on.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub builtins: BTreeSet<String>,
+    /// The CLI's own commands, as its last session listed them, that its adapter's table
+    /// doesn't have, by name. The `/` menu offers them in every folder.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub commands: BTreeMap<String, ReportedCommand>,
 }
 
 impl CliVersions {
@@ -91,6 +95,29 @@ impl CliVersions {
             .unwrap_or_default()
     }
 
+    /// Keeps `listed` as `cli`'s own commands its table lacks, in place of the last list, since
+    /// a CLI can drop one too. True when they changed.
+    pub fn learn_commands(&mut self, cli: &str, listed: Vec<ReportedCommand>) -> bool {
+        let listed: BTreeMap<String, ReportedCommand> = listed
+            .into_iter()
+            .map(|command| (command.name.clone(), command))
+            .collect();
+        let known = &mut self.clis.entry(cli.to_owned()).or_default().commands;
+        if *known == listed {
+            return false;
+        }
+        *known = listed;
+        true
+    }
+
+    /// `cli`'s own commands its table lacked when a session last listed them, by name.
+    pub fn commands(&self, cli: &str) -> Vec<ReportedCommand> {
+        self.clis
+            .get(cli)
+            .map(|entry| entry.commands.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// The kinds `version` of `cli` sent that weren't read, most frequent first.
     pub fn unread(&self, cli: &str, version: &str) -> Vec<(String, u64)> {
         let mut kinds: Vec<(String, u64)> = self
@@ -129,6 +156,16 @@ pub fn newer_notice(adapter: &dyn Adapter, version: &str) -> Option<String> {
         "{cli} {version} is newer than {newest}, the newest version Argonauts was checked with. \
          It should work. /doctor lists anything it sends that Argonauts doesn't read yet."
     ))
+}
+
+/// Whether `command` is one of the CLI's own that `adapter`'s table doesn't list, by name or
+/// alias. A name starting with `__` is the CLI's internal plumbing, never offered.
+pub fn new_command(adapter: &dyn Adapter, command: &ReportedCommand) -> bool {
+    command.builtin
+        && !command.name.starts_with("__")
+        && !adapter.builtin_commands().iter().any(|known| {
+            known.name == command.name || known.aliases.contains(&command.name.as_str())
+        })
 }
 
 /// `system/turn_summary` for a line with a subtype, else its type, such as `cost_update`.
@@ -203,32 +240,79 @@ mod tests {
         assert!(!text.contains("content"), "{text}");
     }
 
-    /// With recordings up to 2.1.289: that version is tested, a later patch newer with one
-    /// notice that holds across restarts, and the next minor untested.
+    /// With recordings up to 2.1.293: that version is checked, a later patch newer with one
+    /// notice that holds across restarts, and the next minor not checked.
     #[test]
     fn a_newer_patch_is_noticed_once_per_version() {
         use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 
         let adapter = ClaudeCodeAdapter;
         let tested = adapter.tested_versions();
-        assert_eq!(version_fit("2.1.289", tested), VersionFit::Tested);
-        assert_eq!(version_fit("2.1.291", tested), VersionFit::Newer);
+        assert_eq!(version_fit("2.1.293", tested), VersionFit::Tested);
+        assert_eq!(version_fit("2.1.295", tested), VersionFit::Newer);
         assert_eq!(version_fit("2.2.0", tested), VersionFit::Untested);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state/cli-versions.json");
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.289").is_none());
+        assert!(CliVersions::notice_once(&path, &adapter, "2.1.293").is_none());
         assert!(CliVersions::notice_once(&path, &adapter, "2.2.0").is_none());
-        let notice = CliVersions::notice_once(&path, &adapter, "2.1.291").unwrap();
+        let notice = CliVersions::notice_once(&path, &adapter, "2.1.295").unwrap();
         assert_eq!(
             notice,
-            "Claude Code 2.1.291 is newer than 2.1.289, the newest version Argonauts was \
+            "Claude Code 2.1.295 is newer than 2.1.293, the newest version Argonauts was \
              checked with. It should work. /doctor lists anything it sends that Argonauts \
              doesn't read yet."
         );
         // The file is read again each time, as after a restart.
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.291").is_none());
-        assert!(CliVersions::notice_once(&path, &adapter, "2.1.292").is_some());
+        assert!(CliVersions::notice_once(&path, &adapter, "2.1.295").is_none());
+        assert!(CliVersions::notice_once(&path, &adapter, "2.1.296").is_some());
+    }
+
+    /// Claude Code lists `/heapdump` as its own, which its table doesn't have; `/compact` and
+    /// the alias `/reset` are in the table, and `__remote-workflow` is plumbing.
+    #[test]
+    fn the_clis_own_commands_its_table_lacks_are_kept_as_last_listed() {
+        use argonauts_adapter_claude_code::ClaudeCodeAdapter;
+
+        let own = |name: &str| ReportedCommand {
+            name: name.to_owned(),
+            description: format!("{name} it"),
+            argument_hint: String::new(),
+            aliases: Vec::new(),
+            builtin: true,
+        };
+        let adapter = ClaudeCodeAdapter;
+        let plugin = ReportedCommand {
+            builtin: false,
+            ..own("pr-tools:review")
+        };
+        let listed = [
+            own("compact"),
+            own("reset"),
+            own("heapdump"),
+            own("__remote-workflow"),
+            plugin,
+        ];
+        let new: Vec<ReportedCommand> = listed
+            .iter()
+            .filter(|command| new_command(&adapter, command))
+            .cloned()
+            .collect();
+        assert_eq!(new, [own("heapdump")]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state/cli-versions.json");
+        let mut file = CliVersions::load(&path);
+        assert!(file.learn_commands("claude-code", new.clone()));
+        assert!(!file.learn_commands("claude-code", new));
+        file.save(&path).unwrap();
+        assert_eq!(
+            CliVersions::load(&path).commands("claude-code"),
+            [own("heapdump")]
+        );
+        // A later version that drops it drops it here too.
+        assert!(file.learn_commands("claude-code", Vec::new()));
+        assert!(file.commands("claude-code").is_empty());
     }
 
     #[test]

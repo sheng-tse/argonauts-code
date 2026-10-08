@@ -39,6 +39,38 @@ pub fn remove_setting(file: &Path, key: &str) -> Result<bool, SettingsError> {
     remove(file, key, in_agent_session)
 }
 
+/// Checks keys and their TOML values the way [`write_setting`] checks a file that holds only
+/// them, and writes nothing. For a change nobody has placed yet, such as a setup the main
+/// session proposes. `workflows` names the workflows there are besides the built-in ones.
+pub fn check_settings(
+    pairs: &[(String, String)],
+    workflows: &[String],
+) -> Result<(), SettingsError> {
+    let invalid = |message: String| SettingsError::Invalid {
+        layer: PROPOSED.to_owned(),
+        message,
+    };
+    let mut doc = DocumentMut::new();
+    for (key, toml_value) in pairs {
+        let path = key_path(key).map_err(invalid)?;
+        let key = &path.join(".");
+        let value =
+            parse_value(toml_value).map_err(|message| invalid(format!("{key}: {message}")))?;
+        if let Some(odd) = odd_name(&value) {
+            return Err(invalid(format!(
+                "{odd:?} in {key}'s value isn't a plain key name; use letters, digits, _ and -"
+            )));
+        }
+        check(key, &value, &|| workflows.to_vec()).map_err(invalid)?;
+        set(doc.as_table_mut(), &path, value, None, false)
+            .map_err(|message| invalid(format!("{key}: {message}")))?;
+    }
+    resolves_alone(Path::new(PROPOSED), &doc.to_string())
+}
+
+/// What [`check_settings`] calls the change in its errors.
+const PROPOSED: &str = "the proposed setup";
+
 fn write(
     file: &Path,
     key: &str,
@@ -337,7 +369,7 @@ fn check(key: &str, value: &Value, presets: &dyn Fn() -> Vec<String>) -> Result<
     match (setting_meta(key), inner) {
         (Some(meta), _) => {
             let mut allowed = meta.allowed;
-            if key == "preset" {
+            if key == "workflow" {
                 if let Some(name) = value.as_str()
                     && !is_preset_name(name)
                 {
@@ -349,6 +381,14 @@ fn check(key: &str, value: &Value, presets: &dyn Fn() -> Vec<String>) -> Result<
                         allowed.push(name);
                     }
                 }
+            }
+            // A theme file's name can't be listed, so the type check decides it.
+            if key == "ui.theme"
+                && value
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("custom:"))
+            {
+                return Ok(());
             }
             check_allowed(key, value, &allowed)
         }
@@ -447,7 +487,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// The presets a file's `preset` may name besides the built-ins: the files in the `presets`
 /// folder beside it and in your global one.
 fn preset_names(file: &Path) -> Vec<String> {
-    let beside = folder_of(file).join("presets");
+    let beside = folder_of(file).join("workflows");
     let global = Paths::from_env().map(|paths| paths.global_presets());
     let all = match &global {
         Ok(global) => presets_in(global, Some(&beside)),
@@ -621,17 +661,29 @@ fn set(
 }
 
 fn insert(table: &mut dyn TableLike, name: &str, item: Item, comment: Option<&str>, inline: bool) {
+    let comment = comment.map(|comment| format!("# {}\n", comment.replace(['\n', '\r'], " ")));
     match comment {
         // A comment can't sit inside an inline table or between the parts of a dotted key.
-        Some(comment) if !inline && !table.is_dotted() => {
-            let comment = comment.replace(['\n', '\r'], " ");
-            let key = Key::new(name).with_leaf_decor(Decor::new(format!("# {comment}\n"), " "));
+        // Keys that share one description, as each color under `[ui.colors]` does, say it
+        // once, above the first of them.
+        Some(comment) if !inline && !table.is_dotted() && !says(table, &comment) => {
+            let key = Key::new(name).with_leaf_decor(Decor::new(comment, " "));
             table.entry_format(&key).or_insert(item);
         }
         _ => {
             table.insert(name, item);
         }
     }
+}
+
+/// Whether a key of `table` already has `comment` above it.
+fn says(table: &dyn TableLike, comment: &str) -> bool {
+    table.iter().any(|(name, _)| {
+        let above = table.key(name).and_then(|key| key.leaf_decor().prefix());
+        above
+            .and_then(|prefix| prefix.as_str())
+            .is_some_and(|prefix| prefix.contains(comment))
+    })
 }
 
 /// The repo root when `file` is a repo's `.argonauts/config.local.toml`.
@@ -786,7 +838,7 @@ mod tests {
         let file = dir.path().join("config.toml");
         let before = "\
 # My settings. Hands off, robots.
-preset = \"peer-crew\"   # the default
+workflow = \"council\"   # the default
 
 [ui]
 # I like vim.
@@ -794,7 +846,7 @@ keys = \"default\"
 ";
         fs::write(&file, before).unwrap();
         write(&file, "ui.keys", "vim", false).unwrap();
-        write(&file, "preset", "\"coordinated-crew\"", false).unwrap();
+        write(&file, "workflow", "\"orchestrator\"", false).unwrap();
         write(&file, "ui.theme", "\"light\"", false).unwrap();
         write(&file, "approvals.merge.mode", "\"auto\"", false).unwrap();
         let after = fs::read_to_string(&file).unwrap();
@@ -803,20 +855,41 @@ keys = \"default\"
             "{after}"
         );
         assert!(
-            after.contains("preset = \"coordinated-crew\"   # the default\n"),
+            after.contains("workflow = \"orchestrator\"   # the default\n"),
             "{after}"
         );
         assert!(after.contains("# I like vim.\nkeys = \"vim\"\n"), "{after}");
         assert!(after.contains("# The palette. Auto follows"), "{after}");
         assert!(
-            after.contains("[approvals.merge]\n# The merge checkpoint: supervised waits"),
+            after.contains("[approvals.merge]\n# The merge approval: supervised waits"),
             "{after}"
         );
         assert!(after.contains("mode = \"auto\"\n"), "{after}");
         assert!(!after.contains("[approvals]\n"), "{after}");
         let settings: Settings = toml::from_str(&after).unwrap();
-        assert_eq!(settings.preset, "coordinated-crew");
+        assert_eq!(settings.workflow, "orchestrator");
         assert_eq!(settings.ui.keys, argonauts_core::KeyScheme::Vim);
+    }
+
+    #[test]
+    fn keys_that_share_a_description_say_it_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        write(&file, "ui.colors.agent-blue", "\"agent-purple\"", false).unwrap();
+        write(&file, "ui.colors.agent-cyan", "\"agent-green\"", false).unwrap();
+        write(&file, "ui.theme", "\"light\"", false).unwrap();
+        let after = fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            after.matches("# A role and its color").count(),
+            1,
+            "{after}"
+        );
+        assert!(
+            after.contains("agent-blue = \"agent-purple\"\nagent-cyan = \"agent-green\"\n"),
+            "{after}"
+        );
+        // A key with a description of its own still gets it.
+        assert!(after.contains("# The palette. Auto follows"), "{after}");
     }
 
     #[test]
@@ -857,12 +930,12 @@ keys = \"default\"
     fn a_word_can_replace_a_table_where_the_key_takes_either() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
-        fs::write(&file, "[roles.owner.native_fanout]\nmax = 3\n").unwrap();
-        write(&file, "roles.owner.native_fanout", "off", false).unwrap();
+        fs::write(&file, "[roles.worker.native_fanout]\nmax = 3\n").unwrap();
+        write(&file, "roles.worker.native_fanout", "off", false).unwrap();
         let text = fs::read_to_string(&file).unwrap();
         assert!(text.contains("native_fanout = \"off\""), "{text}");
         let settings: Settings = toml::from_str(&text).unwrap();
-        let owner = &settings.roles[&argonauts_core::names::RoleName::Owner];
+        let owner = &settings.roles[&argonauts_core::names::RoleName::Worker];
         use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
         assert_eq!(
             owner.native_fanout,
@@ -874,13 +947,13 @@ keys = \"default\"
     fn wrong_values_never_reach_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.toml");
-        fs::write(&file, "[budget]\nrun_usd = 20.0\n").unwrap();
+        fs::write(&file, "[limits]\nspend_per_run = 20.0\n").unwrap();
         for (key, value) in [
-            ("budget.run_usd", "\"lots\""),
-            ("budget..run_usd", "5"),
-            ("budget", "5"),
-            ("budget.run_usd.x", "5"),
-            ("budget.run_usd", "5\nsandbox.network = true"),
+            ("limits.spend_per_run", "\"lots\""),
+            ("limits..spend_per_run", "5"),
+            ("limits", "5"),
+            ("limits.spend_per_run.x", "5"),
+            ("limits.spend_per_run", "5\nsandbox.network = true"),
             ("ui.keys", ""),
             // A quoted or odd name would dodge the safety rules as a key they don't know.
             ("\"approvals\".merge.mode", "auto"),
@@ -892,7 +965,7 @@ keys = \"default\"
         }
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
-            "[budget]\nrun_usd = 20.0\n"
+            "[limits]\nspend_per_run = 20.0\n"
         );
     }
 
@@ -917,20 +990,21 @@ keys = \"default\"
         assert!(!file.exists());
         fs::write(
             &file,
-            "[budget]\nrun_usd = 5.0\n[agents.codex]\nbinary = \"/opt/codex\"\n\
-             [roles.owner.handoff]\nallow_api_billing = true\n",
+            "[limits]\nspend_per_run = 5.0\n[agents.codex]\nbinary = \"/opt/codex\"\n\
+             [fallback.workers]\nallow_api_billing = true\n",
         )
         .unwrap();
-        write(&file, "budget", "{}", true).unwrap();
+        write(&file, "limits", "{}", true).unwrap();
         write(&file, "agents.codex", "{ model = \"x\" }", true).unwrap();
-        write(&file, "roles.owner.handoff", "{ mode = \"auto\" }", true).unwrap();
+        write(&file, "fallback.workers", "{ mode = \"auto\" }", true).unwrap();
         let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!(settings.budget.run_usd, Some(5.0));
+        assert_eq!(settings.limits.budget.spend_per_run, Some(5.0));
         let codex = &settings.agents["codex"];
         assert_eq!(codex.binary.as_deref(), Some(Path::new("/opt/codex")));
         assert_eq!(codex.model.as_deref(), Some("x"));
-        let owner = &settings.roles[&argonauts_core::names::RoleName::Owner];
-        assert!(owner.handoff.allow_api_billing);
+        let workers =
+            &settings.fallback.roles[&argonauts_core::settings::handoff::CrewRole::Workers];
+        assert!(workers.allow_api_billing);
         fs::remove_file(&file).unwrap();
         assert_eq!(
             safety_keys_in(
@@ -941,8 +1015,8 @@ keys = \"default\"
         );
         assert!(safety_keys_in("endpoints.ollama", "{ local = true }").is_empty());
         assert_eq!(
-            safety_keys_in("gates.run", "[\"cargo test\"]"),
-            ["gates.run"]
+            safety_keys_in("checks.run", "[\"cargo test\"]"),
+            ["checks.run"]
         );
         assert!(safety_keys_in("ui.keys", "vim").is_empty());
         write(&file, "ui.keys", "vim", true).unwrap();
@@ -955,18 +1029,15 @@ keys = \"default\"
         let file = dir.path().join("config.toml");
         let billing = "{ worker = \"codex\", allow_api_billing = true }";
         for (key, value) in [
-            ("handoff.fallback", format!("[{billing}]")),
+            ("fallback.order", format!("[{billing}]")),
             (
-                "handoff.replace.codex.with",
+                "fallback.replace.codex.with",
                 format!("[\"claude-code\", {billing}]"),
             ),
+            ("fallback.workers", format!("{{ order = [{billing}] }}")),
             (
-                "roles.owner.handoff",
-                format!("{{ fallback = [{billing}] }}"),
-            ),
-            (
-                "roles.owner",
-                format!("{{ handoff = {{ replace = {{ codex = {{ with = [{billing}] }} }} }} }}"),
+                "fallback",
+                format!("{{ workers = {{ replace = {{ codex = {{ with = [{billing}] }} }} }} }}"),
             ),
         ] {
             let err = write(&file, key, &value, true).unwrap_err();
@@ -974,19 +1045,19 @@ keys = \"default\"
         }
         assert!(!file.exists());
         assert_eq!(
-            safety_keys_in("handoff.fallback", &format!("[\"codex\", {billing}]")),
-            ["handoff.fallback[1].allow_api_billing"]
+            safety_keys_in("fallback.order", &format!("[\"codex\", {billing}]")),
+            ["fallback.order[1].allow_api_billing"]
         );
         assert_eq!(
             safety_keys_in(
-                "roles.owner.handoff",
+                "fallback.workers",
                 &format!("{{ replace = {{ codex = {{ with = [{billing}] }} }} }}")
             ),
-            ["roles.owner.handoff.replace.codex.with[0].allow_api_billing"]
+            ["fallback.workers.replace.codex.with[0].allow_api_billing"]
         );
         let no_billing = "[\"claude-code\", { worker = \"codex\", allow_api_billing = false }]";
-        assert!(safety_keys_in("handoff.fallback", no_billing).is_empty());
-        write(&file, "handoff.fallback", no_billing, true).unwrap();
+        assert!(safety_keys_in("fallback.order", no_billing).is_empty());
+        write(&file, "fallback.order", no_billing, true).unwrap();
     }
 
     fn resolve_alone(file: &Path) -> Result<crate::ResolvedSettings, SettingsError> {
@@ -1002,22 +1073,26 @@ keys = \"default\"
         let file = dir.path().join("config.toml");
         fs::write(
             &file,
-            "[budget]\n# Dollars.\nrun_usd = 20.0\nper_card_usd = 2.0\nsoft_stop = 0.8\n",
+            "[limits]\n# Dollars.\nspend_per_run = 20.0\nper_task_usd = 2.0\nsoft_stop = 0.8\n",
         )
         .unwrap();
-        write(&file, "budget.run_tokens", "2000000", false).unwrap();
-        write(&file, "budget", "{ per_card_minutes = 30 }", false).unwrap();
+        write(&file, "limits.run_tokens", "2000000", false).unwrap();
+        write(&file, "limits", "{ per_task_minutes = 30 }", false).unwrap();
         let text = fs::read_to_string(&file).unwrap();
         assert!(!text.contains("usd") && !text.contains("Dollars"), "{text}");
-        let budget = resolve_alone(&file).unwrap().settings.budget;
+        let budget = resolve_alone(&file).unwrap().settings.limits.budget;
         assert_eq!(budget.run_tokens, Some(2_000_000));
-        assert_eq!(budget.run_usd, None);
-        assert_eq!(budget.per_card_usd, None);
+        assert_eq!(budget.spend_per_run, None);
+        assert_eq!(budget.per_task_usd, None);
         assert_eq!(budget.soft_stop, 0.8);
 
-        let message = refusal(&file, "budget", "{ run_usd = 5.0, run_quota = 0.5 }");
+        let message = refusal(
+            &file,
+            "limits",
+            "{ spend_per_run = 5.0, run_plan_usage = 0.5 }",
+        );
         assert!(
-            message.contains("budget.run_usd and budget.run_quota are one choice"),
+            message.contains("limits.spend_per_run and limits.run_plan_usage are one choice"),
             "{message}"
         );
         assert_eq!(fs::read_to_string(&file).unwrap(), text);
@@ -1037,21 +1112,17 @@ keys = \"default\"
             ),
             ("sessions.rotate_at", "0", "sessions.rotate_at"),
             ("critique.critic", "\"not a worker!\"", "critique.critic is"),
+            ("main_agent", "ollama", "main_agent is ollama, an endpoint"),
             (
-                "default_agent",
-                "ollama",
-                "default_agent is ollama, an endpoint",
-            ),
-            (
-                "budget.soft_stop",
+                "limits.soft_stop",
                 "1.5",
-                "budget.soft_stop must be more than 0",
+                "limits.soft_stop must be more than 0",
             ),
-            ("gates.timeout", "soon", "gates.timeout: "),
+            ("checks.timeout", "soon", "checks.timeout: "),
             (
-                "roles.owner.native_fanout",
+                "roles.worker.native_fanout",
                 "{ max = 0 }",
-                "roles.owner.native_fanout.max must be at least 1",
+                "roles.worker.native_fanout.max must be at least 1",
             ),
         ] {
             let message = refusal(&file, key, value);
@@ -1149,7 +1220,7 @@ keys = \"default\"
         let shared = argonauts_core::paths::project_config_path(repo);
         write(&local, "agents.codex.effort", "high", false).unwrap();
         write(&local, "agents.codex.model", "gpt-x", false).unwrap();
-        write(&shared, "preset", "solo", false).unwrap();
+        write(&shared, "workflow", "solo", false).unwrap();
         let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
         assert_eq!(
             exclude.matches(".argonauts/config.local.toml").count(),
@@ -1214,7 +1285,7 @@ keys = \"default\"
             &file,
             "\
 # My settings. Hands off, robots.
-preset = \"peer-crew\"   # the default
+workflow = \"council\"   # the default
 
 [ui]
 # I like vim.
@@ -1237,7 +1308,7 @@ model = \"ollama/llama3.2\"
             "{after}"
         );
         assert!(
-            after.contains("preset = \"peer-crew\"   # the default\n"),
+            after.contains("workflow = \"council\"   # the default\n"),
             "{after}"
         );
         assert!(after.contains("# I like vim.\nkeys = \"vim\"\n"), "{after}");
@@ -1260,33 +1331,29 @@ model = \"ollama/llama3.2\"
         let file = dir.path().join("config.toml");
         fs::write(
             &file,
-            "# My settings. Hands off, robots.\ndefault_agent = \"codex\"\npreset = \"solo\"\n",
+            "# My settings. Hands off, robots.\nmain_agent = \"codex\"\nworkflow = \"solo\"\n",
         )
         .unwrap();
-        assert!(remove(&file, "default_agent", false).unwrap());
+        assert!(remove(&file, "main_agent", false).unwrap());
         let after = fs::read_to_string(&file).unwrap();
         assert_eq!(
             after,
-            "# My settings. Hands off, robots.\npreset = \"solo\"\n"
+            "# My settings. Hands off, robots.\nworkflow = \"solo\"\n"
         );
 
         // With no key left, the first table carries it, and the key's description goes.
         write_setting(&file, "ui.theme", "dark").unwrap();
-        remove(&file, "preset", false).unwrap();
-        write_setting(&file, "default_agent", "codex").unwrap();
+        remove(&file, "workflow", false).unwrap();
+        write_setting(&file, "main_agent", "codex").unwrap();
         let text = fs::read_to_string(&file).unwrap();
-        fs::write(
-            &file,
-            text.replace("default_agent", "# opening\ndefault_agent"),
-        )
-        .unwrap();
-        assert!(remove(&file, "default_agent", false).unwrap());
+        fs::write(&file, text.replace("main_agent", "# opening\nmain_agent")).unwrap();
+        assert!(remove(&file, "main_agent", false).unwrap());
         let after = fs::read_to_string(&file).unwrap();
         assert!(
             after.starts_with("# opening\n# My settings. Hands off, robots.\n\n[ui]\n"),
             "{after}"
         );
-        assert!(!after.contains("default_agent") && !after.contains("Who you chat with"));
+        assert!(!after.contains("main_agent") && !after.contains("Who you chat with"));
     }
 
     #[test]
@@ -1362,14 +1429,14 @@ model = \"ollama/llama3.2\"
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("repo/.argonauts/config.toml");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let err = write(&file, "gates.run", "[\"cargo test\"]", false).unwrap_err();
+        let err = write(&file, "checks.run", "[\"cargo test\"]", false).unwrap_err();
         assert_eq!(
             err,
             SettingsError::Invalid {
                 layer: ".argonauts/config.toml".to_owned(),
-                message: "gates.run can't be a list of strings; it takes a list of checks, each \
-                          a [[gates.run]] table with a name and a command. Write it like this:\n\
-                          [[gates.run]]\nname = \"test\"\ncommand = [\"cargo\", \"test\"]"
+                message: "checks.run can't be a list of strings; it takes a list of checks, each \
+                          a [[checks.run]] table with a name and a command. Write it like this:\n\
+                          [[checks.run]]\nname = \"test\"\ncommand = [\"cargo\", \"test\"]"
                     .to_owned(),
             }
         );
@@ -1385,17 +1452,17 @@ model = \"ollama/llama3.2\"
         for (key, value, near) in [
             ("ui.them", "light", "ui.theme"),
             ("agents.codex.modle", "gpt-x", "agents.codex.model"),
-            ("budgt.run_usd", "5", "budget.run_usd"),
-            ("budgt", "{ run_usd = 5 }", "budget"),
+            ("limts.spend_per_run", "5", "limits.spend_per_run"),
+            ("limts", "{ spend_per_run = 5 }", "limits"),
             (
-                "roles.owner.handoff.stratgy",
+                "fallback.workers.stratgy",
                 "race",
-                "roles.owner.handoff.strategy",
+                "fallback.workers.strategy",
             ),
             (
-                "handoff.replace.codex.wth",
+                "fallback.replace.codex.wth",
                 "[\"claude-code\"]",
-                "handoff.replace.codex.with",
+                "fallback.replace.codex.with",
             ),
             (
                 "agents.codex",
@@ -1409,18 +1476,18 @@ model = \"ollama/llama3.2\"
                 "{key}: {message}"
             );
         }
-        let message = refusal(&file, "budget", "5");
+        let message = refusal(&file, "limits", "5");
         assert!(
-            message.contains("budget is a table of settings"),
+            message.contains("limits is a table of settings"),
             "{message}"
         );
         assert_eq!(fs::read_to_string(&file).unwrap(), before);
 
         // Map keys you choose are known wherever the catalog has a `*`.
         for (key, value) in [
-            ("roles.owner.native_fanout.max", "2"),
-            ("roles.owner.handoff.replace.codex.strategy", "spread"),
-            ("visibility.status_summary.owner", "false"),
+            ("roles.worker.native_fanout.max", "2"),
+            ("fallback.workers.replace.codex.strategy", "spread"),
+            ("visibility.status_summary.worker", "false"),
             ("endpoints.ollama.header_env.X-Team", "TEAM_HEADER"),
             ("ui.keymap.crew_view", "\"ctrl+left\""),
             (
@@ -1437,13 +1504,13 @@ model = \"ollama/llama3.2\"
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(".argonauts/config.toml");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let before = "# mine\npreset = \"solo\"\n";
+        let before = "# mine\nworkflow = \"solo\"\n";
         fs::write(&file, before).unwrap();
         for (key, value, wanted) in [
             (
                 "ui.theme",
                 "blue",
-                "ui.theme can't be \"blue\"; it takes \"auto\", \"dark\", or \"light\"",
+                "ui.theme can't be \"blue\"; it takes \"auto\", \"dark\", \"light\", \"dark-daltonized\"",
             ),
             (
                 "sandbox.network",
@@ -1461,7 +1528,7 @@ model = \"ollama/llama3.2\"
                 "approvals.merge.mode can't be \"sometimes\"",
             ),
             (
-                "roles.owner.handoff.on_return",
+                "fallback.workers.on_return",
                 "later",
                 "\"ask\", \"keep\", \"review\", \"hand_back\", or \"redo\"",
             ),
@@ -1470,33 +1537,59 @@ model = \"ollama/llama3.2\"
             assert!(message.contains(wanted), "{key}: {message}");
         }
         let preset = "a-preset-only-this-test-writes";
-        let message = refusal(&file, "preset", preset);
-        assert_eq!(message.matches("\"peer-crew\"").count(), 1, "{message}");
+        let message = refusal(&file, "workflow", preset);
+        assert_eq!(message.matches("\"council\"").count(), 1, "{message}");
         assert_eq!(fs::read_to_string(&file).unwrap(), before);
 
         // A preset file beside the settings makes its name a value `preset` takes.
-        let presets = dir.path().join(".argonauts/presets");
+        let presets = dir.path().join(".argonauts/workflows");
         fs::create_dir_all(&presets).unwrap();
         fs::write(
             presets.join(format!("{preset}.toml")),
-            "[review]\nper_card = 2\n",
+            "[review]\nper_task = 2\n",
         )
         .unwrap();
-        write(&file, "preset", preset, false).unwrap();
+        write(&file, "workflow", preset, false).unwrap();
         // A file whose name the lookup refuses doesn't make that name a value `preset` takes.
-        fs::write(presets.join("my team.toml"), "[review]\nper_card = 2\n").unwrap();
-        let message = refusal(&file, "preset", "\"my team\"");
-        assert!(message.contains("isn't a preset name"), "{message}");
+        fs::write(presets.join("my team.toml"), "[review]\nper_task = 2\n").unwrap();
+        let message = refusal(&file, "workflow", "\"my team\"");
+        assert!(message.contains("isn't a workflow name"), "{message}");
         for (key, value) in [
             ("ui.theme", "'light'"),
             ("ui.ambiguous_width", "2"),
-            ("roles.owner.native_fanout", "off"),
+            ("roles.worker.native_fanout", "off"),
             ("agents.codex.effort", "xhigh"),
-            ("workflow", "any-workflow-name"),
+            ("phases", "any-workflow-name"),
         ] {
             write(&file, key, value, false).unwrap_or_else(|err| panic!("{key}: {err}"));
         }
         let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!(settings.preset, preset);
+        assert_eq!(settings.workflow, preset);
+    }
+
+    #[test]
+    fn a_proposed_setup_is_checked_without_a_file() {
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        check_settings(
+            &pairs(&[
+                ("ui.theme", "\"light\""),
+                ("agents.codex.effort", "\"high\""),
+            ]),
+            &[],
+        )
+        .expect("a valid setup");
+        let unknown = check_settings(&pairs(&[("ui.themes", "\"light\"")]), &[]).unwrap_err();
+        assert!(unknown.to_string().contains("isn't a setting"), "{unknown}");
+        let wrong = check_settings(&pairs(&[("ui.theme", "\"plaid\"")]), &[]).unwrap_err();
+        assert!(wrong.to_string().contains("ui.theme"), "{wrong}");
+        let typed = check_settings(&pairs(&[("ui.ambiguous_width", "\"wide\"")]), &[]).unwrap_err();
+        assert!(typed.to_string().contains("the proposed setup"), "{typed}");
+        let yours = pairs(&[("workflow", "\"tight-loop\"")]);
+        assert!(check_settings(&yours, &[]).is_err(), "no such workflow");
+        check_settings(&yours, &["tight-loop".to_owned()]).expect("a workflow of yours");
     }
 }

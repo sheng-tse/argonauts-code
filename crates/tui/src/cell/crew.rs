@@ -109,7 +109,7 @@ mod tests {
             StartedAgent::new(
                 "Opus 5.5 on Claude Code",
                 Some(AgentColor::Blue),
-                "owner · card-002 Add the JSON writer",
+                "worker · task-002 Add the JSON writer",
             ),
             StartedAgent::new(
                 "Gemini 3.6 on Antigravity CLI",
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             "● 2 agents started (↓ to manage)\n   \
-             ├ Opus 5.5 on Claude Code · owner · card-002 Add the JSON writer\n   \
+             ├ Opus 5.5 on Claude Code · worker · task-002 Add the JSON writer\n   \
              └ Gemini 3.6 on Antigravity CLI · reviewer · review"
         );
         assert_eq!(

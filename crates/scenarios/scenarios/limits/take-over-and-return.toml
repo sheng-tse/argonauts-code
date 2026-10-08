@@ -1,12 +1,12 @@
-# The fake Claude Code works slowly on the card. You take it over in Claude Code's own UI on
-# the same session, then let the owner continue, which resumes and finishes it.
+# The fake Claude Code works slowly on the task. You take it over in Claude Code's own UI on
+# the same session, then let the worker continue, which resumes and finishes it.
 
 [version]
 claude = "2.1.284 (Claude Code)"
 codex = "codex-cli 0.158.0"
 agy = "1.2.13"
 
-# A resumed session finishes the card.
+# A resumed session finishes the task.
 [[rule]]
 argv0 = "claude"
 args_contain = ["-p", "--resume", "limits-claude-1"]

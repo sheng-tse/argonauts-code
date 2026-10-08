@@ -49,7 +49,7 @@ pub fn candidates(state: &AppState) -> Vec<MenuItem> {
     }
 
     for card in run.cards.values().filter(|card| !finished(card.state)) {
-        items.push(MenuItem::new(card.id.as_str(), card.title.clone()).with_kind("card"));
+        items.push(MenuItem::new(card.id.as_str(), card.title.clone()).with_kind("task"));
     }
 
     let mut roles: Vec<RoleName> = Vec::new();
@@ -190,7 +190,7 @@ fn session_target(session: &SessionState) -> Option<MentionTarget> {
     let card = session
         .card
         .clone()
-        .filter(|_| session.role == RoleName::Owner)?;
+        .filter(|_| session.role == RoleName::Worker)?;
     Some(MentionTarget::Card(card))
 }
 
@@ -407,17 +407,24 @@ pub(crate) mod fixture {
                 1,
                 "claude-code",
                 Some("opus"),
-                RoleName::Owner,
-                Some("card-002"),
+                RoleName::Worker,
+                Some("task-002"),
                 Some(1),
             ),
-            session(2, "codex", None, RoleName::Owner, Some("card-003"), Some(2)),
+            session(
+                2,
+                "codex",
+                None,
+                RoleName::Worker,
+                Some("task-003"),
+                Some(2),
+            ),
             session(
                 3,
                 "codex",
                 None,
                 RoleName::Reviewer,
-                Some("card-002"),
+                Some("task-002"),
                 Some(3),
             ),
         ];
@@ -428,9 +435,9 @@ pub(crate) mod fixture {
             run.sessions.insert(session.key.clone(), session);
         }
         for card in [
-            card("card-002", "Add the JSON writer", CardState::Running),
-            card("card-003", "Fix the flaky export test", CardState::InReview),
-            card("card-001", "Set up the crate", CardState::Integrated),
+            card("task-002", "Add the JSON writer", CardState::Running),
+            card("task-003", "Fix the flaky export test", CardState::InReview),
+            card("task-001", "Set up the crate", CardState::Integrated),
         ] {
             run.cards.insert(card.id.clone(), card);
         }
@@ -508,23 +515,23 @@ mod tests {
         assert_eq!(
             rows,
             [
-                row("claude-code", "opus · owner on card-002", "agent"),
+                row("claude-code", "opus · worker on task-002", "agent"),
                 row(
                     "codex",
-                    "2 sessions: owner on card-003, reviewer on card-002",
+                    "2 sessions: worker on task-003, reviewer on task-002",
                     "agent"
                 ),
-                row("card-002", "Add the JSON writer", "card"),
-                row("card-003", "Fix the flaky export test", "card"),
+                row("task-002", "Add the JSON writer", "task"),
+                row("task-003", "Fix the flaky export test", "task"),
                 row(
-                    "owner",
-                    "claude-code/opus on card-002, codex on card-003",
+                    "worker",
+                    "claude-code/opus on task-002, codex on task-003",
                     "role"
                 ),
-                row("reviewer", "codex on card-002", "role"),
-                row("1", "claude-code/opus on card-002", "follow"),
-                row("2", "codex on card-003", "follow"),
-                row("3", "codex on card-002", "follow"),
+                row("reviewer", "codex on task-002", "role"),
+                row("1", "claude-code/opus on task-002", "follow"),
+                row("2", "codex on task-003", "follow"),
+                row("3", "codex on task-002", "follow"),
                 row("all", "Every agent in this run", "run"),
             ]
         );
@@ -546,11 +553,11 @@ mod tests {
                     MentionTarget::Worker(codex)
                 ),
                 (
-                    "codex · owner on card-003".to_owned(),
+                    "codex · worker on task-003".to_owned(),
                     MentionTarget::Number(2)
                 ),
                 (
-                    "codex · reviewer on card-002".to_owned(),
+                    "codex · reviewer on task-002".to_owned(),
                     MentionTarget::Number(3)
                 ),
             ]
@@ -560,7 +567,7 @@ mod tests {
             Resolved::One(MentionTarget::Worker(WorkerRef::new("claude-code", None)))
         );
         assert_eq!(resolve("9", &state), Resolved::Unknown);
-        assert_eq!(resolve("card-404", &state), Resolved::Unknown);
+        assert_eq!(resolve("task-404", &state), Resolved::Unknown);
         assert!(matches!(resolve("reviewer", &state), Resolved::One(_)));
 
         let theme = crate::theme::Theme::dark();
@@ -578,7 +585,7 @@ mod tests {
         assert_eq!(shown[0], "@codex matches more than one agent");
         assert!(shown[3].ends_with("1. All 2 codex sessions"), "{shown:?}");
         assert!(
-            shown[5].ends_with("3. codex · reviewer on card-002"),
+            shown[5].ends_with("3. codex · reviewer on task-002"),
             "{shown:?}"
         );
         picker.handle_key(KeyEvent::from(KeyCode::Down), &ctx);

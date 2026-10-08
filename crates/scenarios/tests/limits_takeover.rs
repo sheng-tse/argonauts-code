@@ -25,7 +25,7 @@ fn limits_take_over_and_return() -> anyhow::Result<()> {
 
     let back = limits.wait_for_card(&pty, CheckpointKind::TakeOverReturn)?;
     let CheckpointPacket::TakeOverReturn(packet) = &back.packet else {
-        anyhow::bail!("not a take-over return card: {:?}", back.packet);
+        anyhow::bail!("not a take-over return question: {:?}", back.packet);
     };
     assert_eq!(packet.owner.worker, "claude-code");
     assert_eq!(packet.changed.files_changed, 1);
@@ -33,19 +33,18 @@ fn limits_take_over_and_return() -> anyhow::Result<()> {
     assert_eq!(option_keys(&back), ['c', 't', 'd']);
     let ui = limits
         .call_with("claude", "--resume")?
-        .context("the vendor UI never ran")?;
+        .context("the agent UI never ran")?;
     assert!(!ui.args.iter().any(|arg| arg == "-p"), "{:?}", ui.args);
     limits.shot(&pty, "limits_take_over_and_return")?;
 
-    // Back from the views, the agent panel keeps the focus it had, and Esc gives it back to
-    // the input, where ↑ reaches the card.
-    pty.press(Key::Esc)?;
-    wait_for_row(&pty, "the input's mode line", WAIT, |row| {
-        row.contains("shift+tab to cycle") && !row.contains("esc to go back")
+    // The return card takes the keys as it shows, from the owner's docked view too, which
+    // closes so the card can stand in for the input.
+    wait_for_row(&pty, "the card's key line", WAIT, |row| {
+        row.starts_with("  Enter to choose") && !row.contains("esc to go back")
     })?;
     answer(&mut pty, &back, 'c')?;
     // The owner's work is committed a moment after its session ends.
-    let events = limits.wait_for("the owner to finish and commit", CARD_WAIT, |events| {
+    let events = limits.wait_for("the worker to finish and commit", CARD_WAIT, |events| {
         let yours = seq_of(events, |kind| {
             matches!(kind, RunEventKind::Card(CardEvent::TakeOverEnded { .. }))
         });
@@ -60,7 +59,7 @@ fn limits_take_over_and_return() -> anyhow::Result<()> {
         .calls_with("claude", "--resume")?
         .into_iter()
         .any(|call| call.args.iter().any(|arg| arg == "-p"));
-    assert!(continued, "the owner did not resume its session");
+    assert!(continued, "the worker did not resume its session");
     assert!(
         seq_of(&events, |kind| matches!(
             kind,
@@ -68,7 +67,7 @@ fn limits_take_over_and_return() -> anyhow::Result<()> {
         ))
         .is_some()
     );
-    let branch = card_branch(&events).context("the card has no branch")?;
+    let branch = card_branch(&events).context("the task has no branch")?;
     let files = limits
         .repo
         .git(&["ls-tree", "-r", "--name-only", &branch])?;

@@ -1,4 +1,5 @@
-//! The run's planning steps as tool-call-shaped lines: triage, goal, plan, and contracts.
+//! The run's planning steps as tool-call-shaped lines: what its start says, the goal, the plan,
+//! and contracts.
 
 use std::collections::BTreeSet;
 
@@ -6,10 +7,9 @@ use argonauts_core::PhaseStatus;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::goal::{GoalChangeResolution, GoalFile, GoalSource};
 use argonauts_core::events::run::{
-    CheckedInstruction, InstructionOutcome, Party, RunMode, RunPhase, RunStarted, TriageDecision,
+    CheckedInstruction, InstructionOutcome, Party, RunPhase, RunStarted,
 };
 use argonauts_core::log::RETRO_FAILED;
-use argonauts_core::steps::intake::ChangeEstimate;
 
 use crate::cell::{Notice, Tone, ToolCall, ToolItem, ToolKind, ToolState};
 
@@ -37,10 +37,10 @@ pub(super) fn step(name: &str, args: &str, state: ToolState, details: &[String])
 /// Who decided, in a few words, or `None` for a fixed rule.
 pub(super) fn party_words(party: &Party, names: &DisplayNames) -> Option<String> {
     match party {
-        Party::User => Some("you".to_owned()),
+        Party::User | Party::Declined => Some("you".to_owned()),
         Party::Rules => Some("your rules".to_owned()),
         Party::Config => Some("your settings".to_owned()),
-        Party::FullAuto => Some("full auto".to_owned()),
+        Party::Autopilot => Some("autopilot".to_owned()),
         Party::Approver { model } | Party::Agent { worker: model, .. } => Some(names.worker(model)),
         Party::FrontEnd { client } => Some(client.clone()),
         Party::Conductor => None,
@@ -50,35 +50,12 @@ pub(super) fn party_words(party: &Party, names: &DisplayNames) -> Option<String>
 pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
-/// `● Triage(solo, checked)` and what the run starts from, with `as you asked` when a command
-/// or your words chose the mode. A solo run works in a copy, so it's always the checked solo.
-pub(super) fn triage(started: &RunStarted, cx: &mut Cx<'_>) {
-    let mut args = match started.mode {
-        RunMode::Solo => "solo, checked",
-        RunMode::Crew => "crew",
-    }
-    .to_owned();
-    let asked = started.forced
-        || started
-            .triage
-            .as_ref()
-            .is_some_and(|triage| triage.as_you_asked());
-    if asked {
-        args.push_str(", as you asked");
-    }
-    let mut details = Vec::new();
-    let branch = started
-        .base_branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|branch| !branch.is_empty());
-    let mut recorded = match branch {
-        Some(branch) => format!("Starts from {branch}"),
-        None if started.base_commit.trim().is_empty() => {
-            "Starts from your work as it is".to_owned()
-        }
-        None => "Starts from the commit you're on".to_owned(),
-    };
+/// What a run's start says in the chat. There is no Triage row: the workflow's
+/// own row marks the start, as Claude Code's does. Only what you would otherwise never hear is
+/// said, in one quiet item: what your words asked and what of it wasn't followed, the files
+/// left out, and who else started it.
+pub(super) fn run_started(started: &RunStarted, cx: &mut Cx<'_>) {
+    let mut lines = as_you_asked(&started.instructions);
     if !started.uncommitted.is_empty() {
         let files = plural(
             started.uncommitted.len(),
@@ -90,76 +67,27 @@ pub(super) fn triage(started: &RunStarted, cx: &mut Cx<'_>) {
         } else {
             "left out"
         };
-        recorded.push_str(&format!(" · {files} {fate}"));
-    }
-    details.push(recorded);
-    if let Some(estimate) = &started.estimate {
-        details.push(estimate_line(estimate));
-    }
-    if let Some(triage) = &started.triage {
-        details.push(triage.reason.clone());
-        if triage.escalate_to_crew {
-            details.push("Solo first, and a crew if it grows".to_owned());
-        }
-    }
-    details.extend(as_you_asked(&started.instructions));
-    let restate_first = started
-        .settings
-        .pointer("/solo/restate_first")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    if started.mode == RunMode::Solo && !restate_first {
-        details.push("Goal: your prompt as you wrote it".to_owned());
+        lines.push(format!("{files} {fate}"));
     }
     if let Some(client) = &started.front_end {
-        details.push(format!("Started by {client}"));
+        lines.push(format!("Started by {client}"));
     }
-    if let Some(earlier) = &started.continues {
-        details.push(format!("Continues {earlier}"));
-    }
-    emit(cx, triage_step(&args, &details));
+    start_note(lines, cx);
 }
 
-/// `● Triage(solo, in your checkout)` for a solo that works in your checkout, which has no run
-/// to say it: the estimate, the rule that picked it, and what your words asked.
-pub(super) fn direct_triage(
-    estimate: &ChangeEstimate,
-    triage: &TriageDecision,
-    instructions: &[CheckedInstruction],
-    cx: &mut Cx<'_>,
-) {
-    let mut args = "solo, in your checkout".to_owned();
-    if triage.as_you_asked() {
-        args.push_str(", as you asked");
-    }
-    let mut details = vec![estimate_line(estimate), triage.reason.clone()];
-    details.extend(as_you_asked(instructions));
-    emit(cx, triage_step(&args, &details));
+/// What your words asked of a solo that works in your checkout, which has no run to say it.
+pub(super) fn direct_asked(instructions: &[CheckedInstruction], cx: &mut Cx<'_>) {
+    start_note(as_you_asked(instructions), cx);
 }
 
-/// The Triage item, whose lines wrap at 100 columns however wide the screen is.
-fn triage_step(args: &str, details: &[String]) -> ToolCall {
-    step("Triage", args, ToolState::Done, details).with_wrap_at(TRIAGE_COLUMNS)
-}
-
-const TRIAGE_COLUMNS: u16 = 100;
-
-/// `Estimate: 2 files · bugfix · tests exist`.
-fn estimate_line(estimate: &ChangeEstimate) -> String {
-    let files = usize::try_from(estimate.file_count).unwrap_or(usize::MAX);
-    let mut line = format!("Estimate: {}", plural(files, "file", "files"));
-    if !estimate.task_type.trim().is_empty() {
-        line.push_str(&format!(" · {}", estimate.task_type.trim()));
+/// The first line stands as the item, and the rest go under it.
+fn start_note(mut lines: Vec<String>, cx: &mut Cx<'_>) {
+    if lines.is_empty() {
+        return;
     }
-    line.push_str(if estimate.tests_exist {
-        " · tests exist"
-    } else {
-        " · no tests yet"
-    });
-    if !estimate.risk_labels.is_empty() {
-        line.push_str(&format!(" · touches {}", estimate.risk_labels.join(", ")));
-    }
-    line
+    let mut note = Notice::new(Tone::Dim, lines.remove(0));
+    note.detail = lines;
+    emit(cx, note);
 }
 
 /// `As you asked: Codex coordinates · Claude Code reviews`, then a `Not followed:` line for
@@ -195,7 +123,7 @@ pub(super) fn as_you_asked(instructions: &[CheckedInstruction]) -> Vec<String> {
     lines
 }
 
-/// The longest an instruction's own words show on the Triage line, in cells.
+/// The longest an instruction's own words show on a `Not followed:` line, in cells.
 const SAYS_CELLS: usize = 40;
 
 /// A failed phase, and the contracts step, whose events no other line sums up.
@@ -238,7 +166,7 @@ fn phase_name(phase: RunPhase) -> &'static str {
         RunPhase::Build => "The build",
         RunPhase::FinalCheck => "The final check",
         RunPhase::Merge => "The merge",
-        RunPhase::Retro => "The retro",
+        RunPhase::Retro => "The run review",
     }
 }
 /// `● Goal(Add a --json flag to export)` then `⎿  Agreed by 3 agents · 1 question answered`,
@@ -266,7 +194,7 @@ pub(super) fn goal(story: &RunStory, file: &GoalFile, by: &Party, cx: &mut Cx<'_
         .count();
     if by_lead > 0 {
         parts.push(format!(
-            "{} answered by the lead",
+            "{} answered by the main agent",
             plural(by_lead, "question", "questions")
         ));
     }
@@ -308,7 +236,7 @@ pub(super) fn goal_change(resolution: GoalChangeResolution, cx: &mut Cx<'_>) {
 /// `● Plan(3 drafts, judged)`, the winner and the card count, then the disputed topics.
 pub(super) fn plan(story: &RunStory, cards: usize, cx: &mut Cx<'_>) {
     let drafts = usize::try_from(story.drafts).unwrap_or(usize::MAX);
-    let cards = plural(cards, "card", "cards");
+    let cards = plural(cards, "task", "tasks");
     let (args, outcome) = if let Some(coordinator) = &story.coordinated {
         let who = cx.state.names.worker(coordinator);
         (format!("coordinated by {who}"), cards)
@@ -321,7 +249,7 @@ pub(super) fn plan(story: &RunStory, cards: usize, cx: &mut Cx<'_>) {
     } else if let Some(judged) = &story.judged {
         let won = match judged.winner {
             Some(label) if !judged.near_tie => format!("Plan {label} won"),
-            _ => "A near tie, so you pick at the plan checkpoint".to_owned(),
+            _ => "A near tie, so you pick at the plan approval".to_owned(),
         };
         (
             format!("{}, judged", plural(drafts, "draft", "drafts")),

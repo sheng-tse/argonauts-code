@@ -177,11 +177,12 @@ pub(crate) fn start_run(request: &str) -> StartRun {
         continues: None,
         overrides: Vec::new(),
         include_uncommitted: false,
-        default_agent: None,
+        main_agent: None,
         approval_mode: None,
         front_end: None,
         instructions: Vec::new(),
         request_settings: Vec::new(),
+        required_steps: Vec::new(),
     }
 }
 
@@ -230,11 +231,11 @@ pub(crate) fn finished(run: &RunId, seq: u64, outcome: RunOutcome) -> RunEvent {
 
 /// A question from an agent that waits for you.
 pub(crate) fn question(run: &RunId, seq: u64, id: &str) -> RunEvent {
-    let card = CardId::new("card-001").expect("a card id");
+    let card = CardId::new("task-001").expect("a task id");
     let opened = CheckpointOpened {
-        id: CheckpointId::parse(id).expect("a checkpoint id"),
+        id: CheckpointId::parse(id).expect("an approval id"),
         kind: CheckpointKind::Question,
-        title: "Question · card-001".to_owned(),
+        title: "Question · task-001".to_owned(),
         card: Some(card.clone()),
         packet: CheckpointPacket::Question(QuestionPacket {
             from: WorkerRef::new("codex", None),

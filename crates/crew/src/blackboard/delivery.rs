@@ -290,8 +290,8 @@ pub fn kind_label(kind: BlackboardKind) -> &'static str {
         BlackboardKind::Answer => "Answer",
         BlackboardKind::ChangeRequest => "Change request",
         BlackboardKind::Decision => "Decision",
-        BlackboardKind::SpikeReport => "Spike report",
-        BlackboardKind::Handoff => "Handoff",
+        BlackboardKind::SpikeReport => "Experiment report",
+        BlackboardKind::Handoff => "Fallback",
         BlackboardKind::Guidance => "Guidance",
         BlackboardKind::Mention => "Message",
     }
@@ -299,11 +299,11 @@ pub fn kind_label(kind: BlackboardKind) -> &'static str {
 
 pub fn party_label(party: &Party) -> String {
     match party {
-        Party::User => "you".to_owned(),
+        Party::User | Party::Declined => "you".to_owned(),
         Party::Rules => "your approval rules".to_owned(),
         Party::Approver { model } => format!("your approver {model}"),
         Party::Config => "a setting".to_owned(),
-        Party::FullAuto => "full auto".to_owned(),
+        Party::Autopilot => "autopilot".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         Party::FrontEnd { client } => client.clone(),
@@ -354,6 +354,6 @@ mod tests {
         let settings = Settings::default();
         assert!(blind_role(RoleName::Drafter, &settings));
         assert!(blind_role(RoleName::Judge, &settings));
-        assert!(!blind_role(RoleName::Owner, &settings));
+        assert!(!blind_role(RoleName::Worker, &settings));
     }
 }

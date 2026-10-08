@@ -7,7 +7,7 @@ expression: text
  Add per-API-key rate limiting with Retry-After headers
 
  ╭ Starting ────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ Waiting for the lead to start designing the workflow.                                                        │
+ │ Waiting for the main agent to start designing the workflow.                                                  │
  │ Enter opens its agent once one starts.                                                                       │
  │                                                                                                              │
  │                                                                                                              │

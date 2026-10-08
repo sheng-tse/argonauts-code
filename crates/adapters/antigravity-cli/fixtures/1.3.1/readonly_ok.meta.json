@@ -1,0 +1,79 @@
+{
+  "adapter": "antigravity-cli",
+  "args": [
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--sandbox",
+    "--disable-slash-commands",
+    "--add-dir",
+    "<live>/scratch/readonly_ok/agy-agent",
+    "--agent",
+    "argonauts-read-only",
+    "--project",
+    "argonauts-live-readonly_ok",
+    "--model",
+    "gemini-3.6-flash-low",
+    "--effort",
+    "low",
+    "--log-file",
+    "<live>/logs/readonly_ok.agy.log"
+  ],
+  "cli_version": "1.3.1",
+  "date": "2026-10-08T04:16:01.710614Z",
+  "duration_ms": 36527,
+  "env_removed": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "AZURE_OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT"
+  ],
+  "env_set": [
+    [
+      "AGY_CLI_DISABLE_AUTO_UPDATE",
+      "true"
+    ]
+  ],
+  "exit_code": 0,
+  "files": [
+    {
+      "contents": "---\nname: argonauts-read-only\ndescription: Reads files and answers. It never edits files or runs commands.\nmainAgent: true\nmodel: inherit\ncommandExecutionPolicy: off\ninheritCustomizations: false\ntools:\n  - view_file\n  - list_dir\n  - find_by_name\n  - grep_search\n  - finish\n---\nYou work read-only. Read and search files to answer, and never try to change files or run commands.\n",
+      "path": "<live>/scratch/readonly_ok/agy-agent/.agents/agents/argonauts-read-only.md"
+    }
+  ],
+  "files_after": [
+    "README.md",
+    "notes.txt"
+  ],
+  "keep_stdin_open": false,
+  "name": "readonly_ok",
+  "program": "agy",
+  "prompt": "Reply with exactly the word: ok",
+  "role": "read-only",
+  "sanitized": "absolute paths replaced with <workdir> and <live>, the home directory with ~, and email addresses with <email>",
+  "stdin": [
+    {
+      "after_ms": 0,
+      "line": "{\"event\":\"user\",\"message\":{\"content\":\"Reply with exactly the word: ok\"}}"
+    }
+  ]
+}

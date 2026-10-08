@@ -13,9 +13,11 @@ use argonauts_core::limits::{
     Candidate, CandidateQuery, HandoffPacket, HandoffPlanner, Shortlist, TranscriptPaths,
 };
 use argonauts_core::names::{CheckpointId, RoleName, VendorId, WorkerRef};
+use argonauts_core::settings::context::ContextSize;
 use argonauts_core::settings::handoff::{
-    BrokenWork, FallbackEntry, FallbackRules, HandoffContext, HandoffMode, HandoffSettings,
-    HandoffStrategy, MergeRule, OnReturn, UnknownTier, VendorReplacement,
+    BrokenWork, CrewRole, FallbackEntry, FallbackRules, FallbackSettings, HandoffContext,
+    HandoffMode, HandoffSettings, HandoffStrategy, MergeRule, OnReturn, OrderStrategy, Pick,
+    UnknownTier, VendorReplacement,
 };
 use argonauts_core::settings::sessions::RotateAt;
 use argonauts_core::settings::{SAFETY_KEYS, Settings, Span};
@@ -41,7 +43,7 @@ fn envelope(kind: Value) -> Value {
         "seq": 7,
         "ts": "2026-09-29T12:00:00Z",
         "run_id": "run-01",
-        "card_id": "card-002",
+        "card_id": "task-002",
         "source": "conductor",
         "kind": kind,
     })
@@ -66,18 +68,18 @@ fn candidate() -> Value {
 }
 
 fn handoff_plan() -> Value {
-    json!({"card": "card-002", "title": "Redis store", "stopped": "claude-code/opus",
+    json!({"card": "task-002", "title": "Redis store", "stopped": "claude-code/opus",
         "reason": "usage limit, resets in 2h 10m", "resets_at": "2026-09-29T18:00:00Z",
         "work": diff_stat(), "gates_ran": false, "candidates": [candidate()], "mode": "ask"})
 }
 
 fn merge_row() -> Value {
-    json!({"card": "card-002", "title": "Redis store", "kind": {"kind": "build"},
+    json!({"card": "task-002", "title": "Redis store", "kind": {"kind": "build"},
         "stat": diff_stat(), "owner": "codex", "gates_passed": true, "review": "approve"})
 }
 
 fn card_spec() -> CardSpec {
-    serde_json::from_value(json!({"id": "card-002", "title": "Redis store",
+    serde_json::from_value(json!({"id": "task-002", "title": "Redis store",
         "task": "Add the token bucket store", "kind": {"kind": "build"},
         "owned_paths": ["src/limits/store.ts"], "read_only_paths": [], "forbidden_paths": [],
         "hidden_paths": [], "depends_on": [], "criteria": ["G1"], "owner": "claude-code/opus",
@@ -92,36 +94,36 @@ fn card_spec() -> CardSpec {
 fn the_handoff_example_parses_with_every_replacement_list() {
     let settings: Settings = toml::from_str(
         r#"
-[handoff]
+[fallback]
 mode = "auto"
 strategy = "first"
 on_return = "ask"
 checkpoint = true
 merge_rule = "upgrade_review"
 unknown_tier = "weaker"
-max_handoffs = 3
+max_fallbacks = 3
 context = "note+transcript"
 
-[handoff.replace.claude-code]
+[fallback.replace.claude-code]
 with = ["codex/<model>", "antigravity-cli/<model>"]
 strategy = "spread"
 
-[handoff.replace.codex]
+[fallback.replace.codex]
 with = ["claude-code/sonnet"]
 
-[handoff.replace.antigravity-cli]
-with = ["claude-code/sonnet", { worker = "opencode/<model>", max_budget_usd = 2 }]
+[fallback.replace.antigravity-cli]
+with = ["claude-code/sonnet", { worker = "opencode/<model>", max_spend_usd = 2 }]
 
-[roles.reviewer.handoff]
-fallback = ["ollama/<model>"]
+[fallback.reviewers]
+order = ["ollama/<model>"]
 
-[roles.owner.handoff.replace.claude-code]
+[fallback.workers.replace.claude-code]
 with = ["codex/<model>"]
 on_return = "review"
 "#,
     )
     .unwrap();
-    let replace = &settings.handoff.replace;
+    let replace = &settings.fallback.replace;
     assert_eq!(replace.len(), 3);
     let vendor = |id: &str| VendorId(id.to_owned());
     assert_eq!(
@@ -131,7 +133,7 @@ on_return = "review"
                 FallbackEntry::Worker(worker("codex/<model>")),
                 FallbackEntry::Worker(worker("antigravity-cli/<model>")),
             ],
-            strategy: Some(HandoffStrategy::Spread),
+            strategy: Some(OrderStrategy::Spread),
             on_return: None,
             context: None,
         }
@@ -150,18 +152,18 @@ on_return = "review"
     assert_eq!(
         HandoffSettings {
             replace: Default::default(),
-            race_count: Some(2),
-            ..settings.handoff.clone()
+            together: Some(1),
+            ..settings.fallback.every_role.clone()
         },
         HandoffSettings::built_in()
     );
 
-    let reviewer = &settings.roles[&RoleName::Reviewer].handoff;
+    let reviewer = &settings.fallback.roles[&CrewRole::Reviewers];
     assert_eq!(
-        reviewer.fallback,
+        reviewer.order,
         [FallbackEntry::Worker(worker("ollama/<model>"))]
     );
-    let owner = &settings.roles[&RoleName::Owner].handoff.replace[&vendor("claude-code")];
+    let owner = &settings.fallback.roles[&CrewRole::Workers].replace[&vendor("claude-code")];
     assert_eq!(owner.with, [FallbackEntry::Worker(worker("codex/<model>"))]);
     assert_eq!(owner.on_return, Some(OnReturn::Review));
     assert_eq!(owner.strategy, None);
@@ -175,17 +177,19 @@ fn the_new_handoff_defaults_hold() {
     let handoff = HandoffSettings::built_in();
     // An agent that runs out picks its replacement itself.
     assert_eq!(handoff.mode, HandoffMode::Auto);
-    assert!(handoff.fallback.is_empty() && handoff.replace.is_empty());
+    assert!(handoff.order.is_empty() && handoff.replace.is_empty());
     assert_eq!(handoff.ask_timeout, Span::new("none"));
     assert!(!handoff.allow_api_billing && !handoff.return_to_original);
     assert_eq!(handoff.broken_work, BrokenWork::Continue);
-    assert_eq!(handoff.strategy, Some(HandoffStrategy::First));
-    assert_eq!(handoff.race_count, Some(2));
+    assert_eq!(handoff.strategy, Some(OrderStrategy::First));
+    // One fallback at a time, and each role's own way of combining several.
+    assert_eq!(handoff.together, Some(1));
+    assert_eq!(handoff.pick, None);
     assert_eq!(handoff.on_return, Some(OnReturn::Ask));
     assert_eq!(handoff.checkpoint, Some(true));
     assert_eq!(handoff.merge_rule, Some(MergeRule::UpgradeReview));
     assert_eq!(handoff.unknown_tier, Some(UnknownTier::Weaker));
-    assert_eq!(handoff.max_handoffs, Some(3));
+    assert_eq!(handoff.max_fallbacks, Some(3));
     assert_eq!(handoff.context, Some(HandoffContext::NoteAndTranscript));
     assert_eq!(handoff.summarizer, None);
     assert_eq!(VendorReplacement::default().strategy, None);
@@ -196,14 +200,14 @@ fn the_new_handoff_defaults_hold() {
     assert_eq!(
         (
             unset.strategy,
-            unset.race_count,
+            unset.together,
             unset.on_return,
             unset.checkpoint
         ),
         (None, None, None, None)
     );
     assert_eq!(
-        (unset.merge_rule, unset.unknown_tier, unset.max_handoffs),
+        (unset.merge_rule, unset.unknown_tier, unset.max_fallbacks),
         (None, None, None)
     );
     assert_eq!((unset.context, unset.summarizer.as_ref()), (None, None));
@@ -216,56 +220,51 @@ fn the_new_handoff_defaults_hold() {
     // No list anywhere: the policy builder offers the other installed, logged-in CLIs.
     assert!(applied.candidates.is_empty());
     assert_eq!(applied.strategy, HandoffStrategy::First);
-    assert_eq!(applied.max_handoffs, 3);
+    assert_eq!(applied.max_fallbacks, 3);
     assert_eq!(applied.context, HandoffContext::NoteAndTranscript);
     assert_eq!(applied.summarizer, None);
 
     let settings = Settings::default();
-    assert_eq!(settings.handoff, handoff);
-    assert_eq!(
-        settings.sessions.rotate_at,
-        RotateAt::Text("200k".to_owned())
-    );
-    assert!(!settings.approvals.merge.rules.allow_debt);
+    assert_eq!(settings.fallback.every_role, handoff);
+    assert!(settings.fallback.roles.is_empty());
+    // A session uses the largest window its CLI offers, and starts fresh only near its end.
+    assert_eq!(settings.sessions.context, ContextSize::default());
+    assert_eq!(settings.sessions.context.cap(), Ok(None));
+    assert_eq!(settings.sessions.rotate_at, RotateAt::Share(0.9));
+    assert!(!settings.approvals.rules.merge.allow_debt);
 }
 
 #[test]
 fn the_handoff_walk_takes_each_list_and_key_from_the_most_specific_level() {
     let settings: Settings = toml::from_str(
         r#"
-[handoff]
-fallback = ["opencode/top-fallback"]
+[fallback]
+order = ["opencode/top-fallback"]
 strategy = "first"
 on_return = "keep"
-max_handoffs = 5
-[handoff.replace.claude-code]
+max_fallbacks = 5
+[fallback.replace.claude-code]
 with = ["codex/top-replace"]
 strategy = "spread"
 on_return = "redo"
 
-[roles.reviewer.handoff]
-fallback = ["ollama/role-fallback"]
-race_count = 4
+[fallback.reviewers]
+order = ["ollama/role-fallback"]
+pick = "judge"
 
-[roles.owner.handoff]
-fallback = ["ollama/role-fallback"]
-strategy = "race"
+[fallback.workers]
+order = ["ollama/role-fallback"]
+together = 2
 return_to_original = true
-[roles.owner.handoff.replace.claude-code]
+[fallback.workers.replace.claude-code]
 with = ["codex/role-replace"]
 on_return = "review"
 "#,
     )
     .unwrap();
-    let top = &settings.handoff;
-    let owner = settings
-        .roles
-        .get(&RoleName::Owner)
-        .map(|role| &role.handoff);
-    let reviewer = settings
-        .roles
-        .get(&RoleName::Reviewer)
-        .map(|role| &role.handoff);
+    let top = &settings.fallback;
+    let owner = top.for_role(RoleName::Worker);
+    let reviewer = top.for_role(RoleName::Reviewer);
     let claude = VendorId("claude-code".into());
     let codex = VendorId("codex".into());
     let list = |text: &str| vec![FallbackEntry::Worker(worker(text))];
@@ -287,8 +286,29 @@ on_return = "review"
     assert_eq!(applied.candidates, list("ollama/role-fallback"));
     assert_eq!(applied.strategy, HandoffStrategy::Spread);
     assert_eq!(applied.on_return, OnReturn::Redo);
-    assert_eq!(applied.race_count, 4);
-    assert_eq!(applied.max_handoffs, 5);
+    assert_eq!((applied.together, applied.pick), (1, Some(Pick::Judge)));
+    assert_eq!(applied.max_fallbacks, 5);
+
+    // Several at once is the engine's race, whatever the order's strategy says, and how their
+    // results combine is the role's own way unless a table says.
+    let together = top.applied_to(RoleName::Worker, &claude);
+    assert_eq!(
+        (together.together, together.strategy),
+        (2, HandoffStrategy::Race)
+    );
+    assert_eq!(together.pick, Some(Pick::FirstPassing));
+    // Each finer role follows one of the crew's five: the spike and the drafter the workers,
+    // the critic the reviewers.
+    assert_eq!(top.applied_to(RoleName::Spike, &claude), together);
+    assert_eq!(
+        top.applied_to(RoleName::Drafter, &claude).pick,
+        Some(Pick::Judge)
+    );
+    assert_eq!(
+        top.applied_to(RoleName::Critic, &claude).pick,
+        Some(Pick::Judge)
+    );
+    assert_eq!(top.for_role(RoleName::Judge), None);
 
     // Levels 4 and 5, for a role with no table.
     let applied = HandoffSettings::applied(top, None, &claude);
@@ -302,33 +322,39 @@ on_return = "review"
     // Nothing set anywhere: the router offers the crew, and the built-in keys apply.
     let applied = HandoffSettings::applied(&HandoffSettings::default(), None, &codex);
     assert!(applied.candidates.is_empty());
-    assert_eq!(applied.race_count, 2);
+    assert_eq!((applied.together, applied.pick), (1, None));
     assert!(applied.checkpoint);
+    let unset = FallbackSettings::default();
+    assert_eq!(
+        unset.applied_to(RoleName::Reviewer, &codex).pick,
+        Some(Pick::Merge),
+        "reviews keep every finding"
+    );
 }
 
 #[test]
 fn the_handoff_context_walks_like_strategy_and_the_summarizer_like_checkpoint() {
     let settings: Settings = toml::from_str(
         r#"
-[handoff]
+[fallback]
 context = "note"
 summarizer = "ollama/llama3.2"
-[handoff.replace.claude-code]
+[fallback.replace.claude-code]
 context = "note+summary"
 
-[roles.reviewer.handoff]
+[fallback.reviewers]
 summarizer = "codex/cheap"
 
-[roles.owner.handoff]
+[fallback.workers]
 context = "fresh"
-[roles.owner.handoff.replace.claude-code]
+[fallback.workers.replace.claude-code]
 context = "note+transcript"
 "#,
     )
     .unwrap();
-    let top = &settings.handoff;
-    let role = |name: RoleName| settings.roles.get(&name).map(|role| &role.handoff);
-    let (owner, reviewer) = (role(RoleName::Owner), role(RoleName::Reviewer));
+    let top = &settings.fallback;
+    let role = |name: RoleName| top.for_role(name);
+    let (owner, reviewer) = (role(RoleName::Worker), role(RoleName::Reviewer));
     let claude = VendorId("claude-code".into());
     let codex = VendorId("codex".into());
     let applied = |role: Option<&HandoffSettings>, vendor: &VendorId| {
@@ -381,19 +407,19 @@ fn handoff_contexts_keep_their_words_and_labels() {
         assert_eq!(round_trip::<HandoffContext>(json!(word)), context);
         assert_eq!(context.label(), label);
         let settings: Settings =
-            toml::from_str(&format!("[handoff]\ncontext = \"{word}\"\n")).unwrap();
-        assert_eq!(settings.handoff.context, Some(context));
+            toml::from_str(&format!("[fallback]\ncontext = \"{word}\"\n")).unwrap();
+        assert_eq!(settings.fallback.context, Some(context));
         let text = toml::to_string(&settings).unwrap();
         assert!(text.contains(&format!("context = \"{word}\"")), "{text}");
     }
     assert_eq!(HandoffContext::default(), HandoffContext::NoteAndTranscript);
     assert!(serde_json::from_value::<HandoffContext>(json!("note_and_transcript")).is_err());
-    assert!(toml::from_str::<Settings>("[handoff]\ncontext = \"transcript\"\n").is_err());
+    assert!(toml::from_str::<Settings>("[fallback]\ncontext = \"transcript\"\n").is_err());
 }
 
 fn older_packet() -> Value {
     json!({"card": serde_json::to_value(card_spec()).unwrap(), "goal_sha256": null,
-        "notes": [], "work": {"branch": "argonauts/run-01/card-002", "commit": null,
+        "notes": [], "work": {"branch": "argonauts/run-01/task-002", "commit": null,
         "stat": diff_stat()}, "happened": ["Read src/limits/store.ts"], "last_todo": [],
         "gates": [], "why_stopped": "usage limit", "last_words": null, "budget_left": null})
 }
@@ -405,15 +431,15 @@ fn packets_carry_the_transcript_and_summary_and_older_ones_still_read() {
 
     let mut told = older_packet();
     told["transcript"] = json!({
-        "worktree": "/work/card-002/.argonauts/handoff/1/transcript.md",
-        "run": "runs/run-01/cards/card-002/handoff-1/transcript.md"});
+        "worktree": "/work/task-002/.argonauts/fallback/1/transcript.md",
+        "run": "runs/run-01/cards/task-002/fallback-1/transcript.md"});
     told["summary"] = json!("Tried a Lua script for the bucket; one test is still flaky.");
     let packet: HandoffPacket = round_trip(told);
     assert_eq!(
         packet.transcript,
         Some(TranscriptPaths {
-            worktree: "/work/card-002/.argonauts/handoff/1/transcript.md".into(),
-            run: "runs/run-01/cards/card-002/handoff-1/transcript.md".into(),
+            worktree: "/work/task-002/.argonauts/fallback/1/transcript.md".into(),
+            run: "runs/run-01/cards/task-002/fallback-1/transcript.md".into(),
         })
     );
     assert!(
@@ -458,48 +484,51 @@ fn rotate_at_takes_a_share_a_count_or_a_token_count() {
 fn settings_with_the_handoff_keys_set_pass_the_schema() {
     let settings: Settings = toml::from_str(
         r#"
-[handoff]
+[fallback]
 mode = "auto"
-fallback = ["codex/gpt-x", { worker = "openrouter/a/b", max_budget_usd = 2.0,
+order = ["codex/gpt-x", { worker = "openrouter/a/b", max_spend_usd = 2.0,
             instructions = "keep it small", read_only = true, allow_api_billing = true }]
 ask_timeout = "10m"
 allow_api_billing = true
 return_to_original = true
 broken_work = "restart"
-strategy = "race"
-race_count = 3
+strategy = "spread"
+together = 3
+pick = "judge"
 on_return = "hand_back"
 checkpoint = false
 merge_rule = "none"
 unknown_tier = "equal"
-max_handoffs = 5
+max_fallbacks = 5
 context = "note+summary"
 summarizer = "ollama/llama3.2"
-[handoff.replace.claude-code]
+[fallback.replace.claude-code]
 with = ["codex/gpt-x"]
 strategy = "spread"
 on_return = "redo"
 context = "fresh"
-[roles.owner.handoff]
+[fallback.workers]
 summarizer = "codex/gpt-x"
-[roles.owner.handoff.replace.codex]
+[fallback.workers.replace.codex]
 with = ["claude-code/opus"]
 on_return = "keep"
 context = "note"
 [sessions]
 rotate_at = "1m"
-[approvals.merge.rules]
+[approvals.rules.merge]
 allow_debt = true
 "#,
     )
     .unwrap();
-    assert_eq!(settings.handoff.strategy, Some(HandoffStrategy::Race));
-    assert_eq!(settings.handoff.on_return, Some(OnReturn::HandBack));
+    assert_eq!(settings.fallback.strategy, Some(OrderStrategy::Spread));
+    assert_eq!(settings.fallback.together, Some(3));
+    assert_eq!(settings.fallback.pick, Some(Pick::Judge));
+    assert_eq!(settings.fallback.on_return, Some(OnReturn::HandBack));
     assert_eq!(
-        settings.handoff.context,
+        settings.fallback.context,
         Some(HandoffContext::NoteAndSummary)
     );
-    assert!(settings.approvals.merge.rules.allow_debt);
+    assert!(settings.approvals.rules.merge.allow_debt);
     let value = serde_json::to_value(&settings).unwrap();
     let schema = schemars::schema_for!(Settings).to_value();
     let validator = jsonschema::validator_for(&schema).unwrap();
@@ -513,32 +542,32 @@ allow_debt = true
 
 #[test]
 fn api_billing_on_handoff_is_a_safety_key_at_both_levels() {
-    assert!(SAFETY_KEYS.contains(&"handoff.allow_api_billing"));
-    assert!(SAFETY_KEYS.contains(&"roles.*.handoff.allow_api_billing"));
+    assert!(SAFETY_KEYS.contains(&"fallback.allow_api_billing"));
+    assert!(SAFETY_KEYS.contains(&"fallback.*.allow_api_billing"));
 }
 
 #[test]
 fn checkpoint_tags_name_their_tag_label_and_side_branch() {
-    let tag: CheckpointTag = round_trip(json!({"run": "run-01", "card": "card-002", "n": 1}));
+    let tag: CheckpointTag = round_trip(json!({"run": "run-01", "card": "task-002", "n": 1}));
     assert_eq!(
         tag,
         CheckpointTag {
             run: RunId::new("run-01").unwrap(),
-            card: CardId::new("card-002").unwrap(),
+            card: CardId::new("task-002").unwrap(),
             n: 1,
         }
     );
-    assert_eq!(tag.tag_name(), "argonauts/run-01/card-002/handoff-1");
-    assert_eq!(tag.label(), "handoff-1");
+    assert_eq!(tag.tag_name(), "argonauts/run-01/task-002/fallback-1");
+    assert_eq!(tag.label(), "fallback-1");
     assert_eq!(
         tag.replaced_branch(),
-        "argonauts/run-01/card-002-replaced-1"
+        "argonauts/run-01/task-002-replaced-1"
     );
-    assert_eq!(CheckpointTag::parse_label("handoff-1"), Some(1));
-    assert_eq!(CheckpointTag::parse_label("handoff-12"), Some(12));
+    assert_eq!(CheckpointTag::parse_label("fallback-1"), Some(1));
+    assert_eq!(CheckpointTag::parse_label("fallback-12"), Some(12));
     for bad in [
-        "handoff-0",
-        "handoff-",
+        "fallback-0",
+        "fallback-",
         "handoff-x",
         "handoff-+1",
         "handoff--1",
@@ -567,7 +596,7 @@ fn the_new_card_events_keep_their_wire_format() {
         ),
         card(json!({"event": "debt_cleared", "by": "claude-code/opus"})),
         card(json!({"event": "reverted", "to": 1,
-            "kept_on": "argonauts/run-01/card-002-replaced-1"})),
+            "kept_on": "argonauts/run-01/task-002-replaced-1"})),
     ] {
         round_trip::<RunEvent>(event);
     }
@@ -577,8 +606,8 @@ fn the_new_card_events_keep_their_wire_format() {
 fn commits_name_their_author_and_older_ones_still_read() {
     let card = |data: Value| envelope(json!({"type": "card", "data": data}));
     let by_replacement = card(
-        json!({"event": "committed", "branch": "argonauts/run-01/card-002",
-        "sha": "c0ffee", "message": "card-002: Redis store", "stat": diff_stat(),
+        json!({"event": "committed", "branch": "argonauts/run-01/task-002",
+        "sha": "c0ffee", "message": "task-002: Redis store", "stat": diff_stat(),
         "by": "codex/gpt-x"}),
     );
     let committed = |event: RunEvent| match event.kind {
@@ -589,8 +618,8 @@ fn commits_name_their_author_and_older_ones_still_read() {
     assert_eq!(info.by, Some(worker("codex/gpt-x")));
 
     let older = card(
-        json!({"event": "committed", "branch": "argonauts/run-01/card-002",
-        "sha": null, "message": "card-002: your take-over", "stat": diff_stat()}),
+        json!({"event": "committed", "branch": "argonauts/run-01/task-002",
+        "sha": null, "message": "task-002: your take-over", "stat": diff_stat()}),
     );
     assert_eq!(committed(round_trip::<RunEvent>(older)).by, None);
 }
@@ -604,9 +633,9 @@ fn the_original_returned_card_and_its_answers_keep_their_wire_format() {
                "recommended": recommended, "detail": null})
     };
     round_trip::<RunEvent>(checkpoint(json!({"event": "opened", "id": "cp-005",
-        "kind": "original_returned", "title": "Claude Code is back · card-002",
-        "card": "card-002",
-        "packet": {"kind": "original_returned", "card": "card-002", "title": "Redis store",
+        "kind": "original_returned", "title": "Claude Code is back · task-002",
+        "card": "task-002",
+        "packet": {"kind": "original_returned", "card": "task-002", "title": "Redis store",
                    "original": "claude-code/opus", "replacement": "codex/gpt-x", "since": 1,
                    "commits": 3, "changed": diff_stat(), "tests_passed": true,
                    "debt": [debt()]},
@@ -614,7 +643,7 @@ fn the_original_returned_card_and_its_answers_keep_their_wire_format() {
         "options": [option("r", "review it", "upgrade_review"),
                     option("o", "hand it back", "hand_back"),
                     option("u", "redo it", "redo"),
-                    option("y", "keep the replacement", "keep_replacement"),
+                    option("y", "keep the fallback", "keep_replacement"),
                     option("t", "take over", "take_over"),
                     option("d", "show the diff", "show_diff")],
         "free_text": "none", "needs_you": true})));
@@ -641,7 +670,7 @@ fn handoff_plans_without_a_strategy_keep_their_older_json() {
 
     let mut spread = handoff_plan();
     spread["strategy"] = json!("spread");
-    spread["also_moving"] = json!(["card-003", "card-005"]);
+    spread["also_moving"] = json!(["task-003", "task-005"]);
     let plan: HandoffPlan = round_trip(spread);
     assert_eq!(plan.also_moving.len(), 2);
 
@@ -682,7 +711,7 @@ fn the_default_shortlist_hands_each_card_to_the_first_candidate() {
     };
     let query = CandidateQuery {
         card: card_spec(),
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         stopped: worker("claude-code/opus"),
         exclude_families: Vec::new(),
         fallback: Vec::new(),
@@ -694,11 +723,12 @@ fn the_default_shortlist_hands_each_card_to_the_first_candidate() {
         Shortlist {
             strategy: HandoffStrategy::First,
             race_count: 1,
+            pick: Pick::FirstPassing,
             candidates: planner.candidates(&query),
         }
     );
     round_trip::<Shortlist>(json!({"strategy": "first", "race_count": 1,
-        "candidates": [candidate()]}));
+        "pick": "first_passing", "candidates": [candidate()]}));
 }
 
 #[test]
@@ -713,7 +743,7 @@ fn remembering_a_pick_and_confirming_a_revert_keep_their_wire_format() {
         }
     );
     round_trip::<AppEvent>(json!({"type": "choice", "choice": {"id": "ch-009",
-        "kind": "confirm_revert", "title": "Revert card-002 to handoff-1?", "body": [],
+        "kind": "confirm_revert", "title": "Revert task-002 to fallback-1?", "body": [],
         "options": [], "free_text": "none", "bell": false}}));
     round_trip::<ChoiceKind>(json!("confirm_revert"));
 }
@@ -724,16 +754,16 @@ fn parsed(text: &str) -> Value {
 
 #[test]
 fn rewind_parses_to_its_wire_format() {
-    let rewind = json!({"input": "slash", "command": {"command": "rewind", "card": "card-002"}});
-    assert_eq!(parsed("/rewind card-002"), rewind);
+    let rewind = json!({"input": "slash", "command": {"command": "rewind", "card": "task-002"}});
+    assert_eq!(parsed("/rewind task-002"), rewind);
     round_trip::<ParsedInput>(rewind);
     assert_eq!(
         parsed("/rewind"),
         json!({"input": "slash", "command": {"command": "rewind", "card": null}})
     );
     for bad in [
-        "/rewind card-002 handoff-1",
-        "/rewind handoff-1",
+        "/rewind task-002 fallback-1",
+        "/rewind fallback-1",
         "/rewind run-01",
     ] {
         assert!(parse_input(bad).is_err(), "{bad}");
@@ -743,7 +773,7 @@ fn rewind_parses_to_its_wire_format() {
 
     // The checkpoint you pick goes back as a command of its own; a confirm card comes first.
     let pick =
-        round_trip::<UiCommand>(json!({"type": "rewind", "card": "card-002", "checkpoint": 2}));
+        round_trip::<UiCommand>(json!({"type": "rewind", "card": "task-002", "checkpoint": 2}));
     assert!(matches!(pick, UiCommand::Rewind { checkpoint: 2, .. }));
 }
 
@@ -751,7 +781,7 @@ fn rewind_parses_to_its_wire_format() {
 async fn a_revert_answers_on_its_reply_channel() {
     let (reply, answer) = oneshot::channel();
     let command = EngineCommand::Revert {
-        card: CardId::new("card-002").unwrap(),
+        card: CardId::new("task-002").unwrap(),
         checkpoint: 1,
         reply,
     };
@@ -762,6 +792,22 @@ async fn a_revert_answers_on_its_reply_channel() {
         panic!("not a revert");
     };
     assert_eq!(checkpoint, 1);
-    reply.send(Err("card-002 is merged".into())).unwrap();
-    assert_eq!(answer.await.unwrap(), Err("card-002 is merged".to_owned()));
+    reply.send(Err("task-002 is merged".into())).unwrap();
+    assert_eq!(answer.await.unwrap(), Err("task-002 is merged".to_owned()));
+}
+
+#[test]
+fn a_key_that_names_no_role_is_passed_over_and_a_roles_bad_value_is_refused() {
+    let settings: Settings = toml::from_str(
+        "[fallback]\nstrategi = \"spread\"\n[fallback.crew]\nmode = \"wait\"\n\
+         [fallback.judge]\nmode = \"wait\"\n",
+    )
+    .unwrap();
+    let roles: Vec<CrewRole> = settings.fallback.roles.keys().copied().collect();
+    assert_eq!(roles, [CrewRole::Judge]);
+    assert_eq!(
+        settings.fallback.strategy, None,
+        "the misspelt key set nothing"
+    );
+    assert!(toml::from_str::<Settings>("[fallback.judge]\nmode = \"sideways\"\n").is_err());
 }

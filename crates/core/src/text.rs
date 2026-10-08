@@ -1,5 +1,5 @@
 //! Prose helpers for what Argonauts says. A message often starts with something you typed, such
-//! as `budget.run_usd`, a file, or a worker, and that keeps its exact spelling.
+//! as `limits.spend_per_run`, a file, or a worker, and that keeps its exact spelling.
 
 /// Starts `text` with a capital, as a sentence does, unless its first word is written as code:
 /// a dotted key, a path, a flag, a worker, or anything with a digit, `_`, or backtick in it.
@@ -47,6 +47,18 @@ fn is_code(word: &str) -> bool {
     })
 }
 
+/// A state's name in the journal, as the screen says it. The journal keeps the older words,
+/// and every place that prints a state from its serialized name goes through here.
+pub fn state_words(name: &str) -> &str {
+    match name {
+        "parked" => "waiting",
+        "escalated" => "needs you",
+        "landed" => "merged",
+        "integrated" => "merged into the run",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,13 +66,13 @@ mod tests {
     #[test]
     fn a_clause_starts_in_lowercase_unless_it_names_something() {
         assert_eq!(
-            clause_case("One card needs no debate"),
-            "one card needs no debate"
+            clause_case("One task needs no debate"),
+            "one task needs no debate"
         );
         assert_eq!(clause_case("README says so"), "README says so");
         assert_eq!(
-            clause_case("budget.run_usd is spent"),
-            "budget.run_usd is spent"
+            clause_case("limits.spend_per_run is spent"),
+            "limits.spend_per_run is spent"
         );
         assert_eq!(clause_case(""), "");
     }
@@ -76,14 +88,14 @@ mod tests {
     #[test]
     fn keys_paths_and_names_keep_their_spelling() {
         for text in [
-            "budget.run_usd in .argonauts/config.local.toml is ignored",
-            "default_agent: invalid worker",
+            "limits.spend_per_run in .argonauts/config.local.toml is ignored",
+            "main_agent: invalid worker",
             ".argonauts/config.toml changed",
             "~/.argonauts/config.toml is yours",
             "--set ui.keys=vim is refused",
-            "claude-code/haiku's model family is unknown",
+            "claude-code/haiku's provider is unknown",
             "`cargo test` failed",
-            "[[gates.run]] needs a name",
+            "[[checks.run]] needs a name",
             "gpt5 is gone",
         ] {
             assert_eq!(sentence_case(text), text);

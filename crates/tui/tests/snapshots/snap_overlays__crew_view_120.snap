@@ -6,20 +6,20 @@ argonauts › crew                                                              
   Needs you 2    Working 2    Ready 2    Done 2  [ All 8 ]
 
 ~/code/export                                                                     │ Add the JSON writer
-  Add a --json flag to export                                                     │ ◆ Needs you
-  ❯ ◆ Add the JSON writer     GPT 5.6 on Codex    asks: Keep a CSV fall…   2m ago │
-    ● Wire the --json flag    Opus on Claude Co…  Update(src/mw/limit.t…   5m ago │ Last message
-    ○ Wire the --json flag    Gemini 3.6 Pro on…  waiting on other work    1m ago │ asks: Keep a CSV fallback?
-    ✓ Rename the CSV writer   GPT 5.6 on Codex    Integrated card-001.     3m ago │
-  Conversations and CLI sessions                                                  │ Repo     ~/code/export
-    ◎ How does the export p…  Opus on Claude Co…  It reads --format, th…  40m ago │ Run      run-01 · Add a --json flag
-    ◎ Explain the input han…  GPT 5.6 on Codex    It reads keys in one …   1d ago │          to export
-                                                                                  │ Card     card-002
+◆ Add a --json flag to export · needs you                                         │ ◆ Needs you
+  ❯ ◆ build:json-writer  asks: Keep a CSV fallback?                        2m ago │
+    ● build:json-flag    Update(src/mw/limit.ts)                           5m ago │ Last message
+    ○ review:json-flag   waiting on other work                             1m ago │ asks: Keep a CSV fallback?
+    ✓ build:csv-writer   Integrated task-001.                              3m ago │
+Sessions                                                                          │ Repo     ~/code/export
+    ◎ How does the exp…  Claude Code · enter continues                    40m ago │ Run      run-01 · Add a --json flag
+    ◎ Explain the inpu…  Codex · enter continues                           1d ago │          to export
+                                                                                  │ Task     task-002
 ~/code/api                                                                        │ Model    GPT 5.6 on Codex
-  Fix the login redirect                                                          │          (codex/gpt-5.6)
-    ◆ Fix the login redirect                      plan checkpoint, wait…   1d ago │ Tokens   0 in · 12.4k out
-  Tidy the README                                                                 │ Context  41k of 200k (21%)
-    ✓ Tidy the README                             merged                   2d ago │ Branch   argonauts/run-01/card-002
+◆ Fix the login redirect · plan approval, waiting for you · $0.46                 │          (codex/gpt-5.6)
+✓ tidy-readme · merged 2d ago                                                     │ Tokens   0 in · 12.4k out
+                                                                                  │ Context  41k of 200k (21%)
+                                                                                  │ Branch   argonauts/run-01/task-002
                                                                                   │
                                                                                   │ Prompt
                                                                                   │ Add a JSON writer beside the CSV

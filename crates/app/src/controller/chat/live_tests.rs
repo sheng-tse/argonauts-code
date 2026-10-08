@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use argonauts_core::app::{AppEvent, AppMode, ChatEvent, UiCommand};
 use argonauts_core::event::AgentEvent;
+use argonauts_core::events::context::ContextDetail;
+use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
 use argonauts_core::input::SlashCommand;
 use argonauts_core::screen::{ScreenChange, ScreenRequest};
 use argonauts_core::worker::{SessionControl, WorkerEvent};
@@ -36,7 +38,7 @@ fn writing() -> WorkerEvent {
 async fn direct() -> Harness {
     Harness::start_with(HarnessOptions {
         prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
-            std::fs::write(repo.global_config(), "[triage]\nforce = \"solo\"\n").unwrap();
+            std::fs::write(repo.global_config(), "[solo_or_crew]\nforce = \"solo\"\n").unwrap();
         })),
         ..HarnessOptions::default()
     })
@@ -335,5 +337,448 @@ async fn a_turn_that_wont_join_and_clear_take_the_heads_up_away() {
     .await;
     assert!(!harness.seen().iter().any(draws_nothing));
     harness.send(UiCommand::CancelTurn).await;
+    harness.exit().await;
+}
+
+#[tokio::test]
+async fn context_opening_and_a_watch_reach_the_running_session() {
+    let mut harness = Harness::start().await;
+    harness
+        .send(UiCommand::WatchContext {
+            detail: Some(ContextDetail::Summary),
+        })
+        .await;
+    working(&mut harness, vec![init(&[], &[]), writing()]).await;
+    // The watch set between turns goes to the session as it starts.
+    let controls = controls_after(&harness, 1).await;
+    assert_eq!(
+        controls[0],
+        SessionControl::WatchContext(Some(ContextDetail::Summary))
+    );
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Context {
+                all: false,
+                action: Default::default(),
+            },
+        })
+        .await;
+    harness
+        .until(|event| matches!(event, AppEvent::View { .. }))
+        .await;
+    harness.send(UiCommand::WatchContext { detail: None }).await;
+    let controls = controls_after(&harness, 3).await;
+    assert_eq!(
+        controls[1..3],
+        [
+            SessionControl::AskContext(ContextDetail::Summary),
+            SessionControl::WatchContext(None)
+        ]
+    );
+    harness.send(UiCommand::CancelTurn).await;
+    harness.exit().await;
+}
+
+/// `x` on a subagent of the conversation's own session: the session is asked to stop that one
+/// and goes on. With no turn running there's nothing to ask, and you're told.
+#[tokio::test]
+async fn stopping_a_subagent_asks_the_session_and_leaves_the_turn_running() {
+    let mut harness = direct().await;
+    working(&mut harness, vec![init(&[], &[]), writing()]).await;
+    harness
+        .send(UiCommand::StopSubagent {
+            id: "toolu_a".into(),
+        })
+        .await;
+    let controls = controls_after(&harness, 1).await;
+    assert_eq!(
+        controls,
+        [SessionControl::StopSubagent {
+            id: "toolu_a".into()
+        }]
+    );
+    harness.send(UiCommand::CancelTurn).await;
+    harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Chat {
+                    event: ChatEvent::TurnCancelled { .. }
+                }
+            )
+        })
+        .await;
+    harness
+        .send(UiCommand::StopSubagent {
+            id: "toolu_a".into(),
+        })
+        .await;
+    let told = harness
+        .until(|event| matches!(event, AppEvent::Notice { .. }))
+        .await;
+    let AppEvent::Notice { text, .. } = told else {
+        unreachable!()
+    };
+    assert_eq!(
+        text,
+        "That subagent isn't running, so there's nothing to stop."
+    );
+    harness.exit().await;
+}
+
+/// Enter on a subagent's row: the main agent gets your words with how to pass them on, as
+/// its own command, so a name whose first word reads like an agent's is never a mention, and
+/// the chat shows only `@name` and your words.
+#[tokio::test]
+async fn a_message_for_a_subagent_goes_to_the_main_agent_whatever_its_name() {
+    let mut harness = direct().await;
+    harness.agent.push(FakeSession::until_stopped(vec![
+        init(&["interrupt_send_now_v1"], &[]),
+        writing(),
+    ]));
+    harness
+        .send(UiCommand::MessageSubagent {
+            name: "Count slowly".into(),
+            text: "stop at 5".into(),
+        })
+        .await;
+    let started = harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Chat {
+                    event: ChatEvent::TurnStarted { .. }
+                }
+            )
+        })
+        .await;
+    let AppEvent::Chat {
+        event: ChatEvent::TurnStarted { text, .. },
+    } = started
+    else {
+        unreachable!()
+    };
+    assert_eq!(text, "@Count slowly stop at 5");
+    let prompt: String = harness
+        .agent
+        .specs()
+        .last()
+        .map(|spec| spec.prompt.iter().map(|part| part.text.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        prompt.contains("For your subagent \"Count slowly\": stop at 5")
+            && prompt.contains("SendMessage"),
+        "{prompt}"
+    );
+
+    // While that turn runs, the next goes in at once.
+    harness
+        .send(UiCommand::MessageSubagent {
+            name: "Explore the auth flow".into(),
+            text: "skip the tests".into(),
+        })
+        .await;
+    let controls = controls_after(&harness, 1).await;
+    let Some(SessionControl::Send { text, .. }) = controls.first() else {
+        panic!("{controls:?}");
+    };
+    assert!(
+        text.starts_with("For your subagent \"Explore the auth flow\": skip the tests"),
+        "{text}"
+    );
+    assert!(
+        !harness.seen().iter().any(|event| matches!(
+            event,
+            AppEvent::Notice { text, .. } if text.contains("mention")
+        )),
+        "never read as a mention"
+    );
+    harness.exit().await;
+}
+
+fn background(running: &[&str]) -> WorkerEvent {
+    WorkerEvent::Agent(AgentEvent::BackgroundTasks {
+        running: running.iter().map(|&task| task.to_owned()).collect(),
+        ended: running.is_empty(),
+    })
+}
+
+/// One of the session's own subagents, going or done.
+fn subagent(status: SubagentStatus) -> WorkerEvent {
+    WorkerEvent::Agent(AgentEvent::Subagent {
+        update: SubagentUpdate {
+            id: "toolu_a".into(),
+            parent: None,
+            kind: SubagentKind::Subagent,
+            label: Some("Count slowly".into()),
+            prompt: None,
+            status,
+            last_message: None,
+            log_uri: None,
+            steps_visible: true,
+            tokens: None,
+        },
+    })
+}
+
+/// Esc while the conversation's own session runs subagents: only the main agent's turn is
+/// asked to stop. The turn stays for them, so one can still be stopped by
+/// itself. With nothing in the background, or only a command the session left running, which
+/// has no row to stop it from, Esc stops the session whole, as before.
+#[tokio::test]
+async fn esc_stops_the_main_agents_turn_alone_while_its_own_subagents_run() {
+    let mut harness = direct().await;
+    working(
+        &mut harness,
+        vec![
+            init(&[], &[]),
+            subagent(SubagentStatus::Running),
+            background(&["b1"]),
+            writing(),
+        ],
+    )
+    .await;
+    harness.send(UiCommand::CancelTurn).await;
+    harness
+        .send(UiCommand::StopSubagent {
+            id: "toolu_a".into(),
+        })
+        .await;
+    let controls = controls_after(&harness, 2).await;
+    assert_eq!(
+        controls,
+        [
+            SessionControl::StopTurn,
+            SessionControl::StopSubagent {
+                id: "toolu_a".into()
+            }
+        ]
+    );
+    let cancelled = harness.seen().iter().any(|event| {
+        matches!(
+            event,
+            AppEvent::Chat {
+                event: ChatEvent::TurnCancelled { .. }
+            }
+        )
+    });
+    assert!(!cancelled, "the turn goes on for its subagents");
+    harness.exit().await;
+
+    let alone = vec![init(&[], &[]), writing()];
+    let with_a_command = vec![
+        init(&[], &[]),
+        subagent(SubagentStatus::Done),
+        background(&["bash-1"]),
+        writing(),
+    ];
+    for events in [alone, with_a_command] {
+        let mut harness = direct().await;
+        working(&mut harness, events).await;
+        harness.send(UiCommand::CancelTurn).await;
+        harness
+            .until(|event| {
+                matches!(
+                    event,
+                    AppEvent::Chat {
+                        event: ChatEvent::TurnCancelled { .. }
+                    }
+                )
+            })
+            .await;
+        assert_eq!(controls_after(&harness, 1).await, [SessionControl::Stop]);
+        harness.exit().await;
+    }
+}
+
+/// A turn stopped alone ends when its session does. What the main agent said once its
+/// subagents were done is shown as its words, and starts no work: you stopped that request.
+#[tokio::test]
+async fn a_turn_stopped_alone_starts_no_work_when_its_session_ends() {
+    use argonauts_core::app::TurnReply;
+    use argonauts_core::event::ErrorCategory;
+    use serde_json::json;
+
+    let change = json!({
+        "kind": "change",
+        "answer_markdown": "The README's install line names the wrong package.",
+        "estimate": {
+            "task_type": "docs",
+            "summary": "Fix the install command in the README",
+            "files_likely": ["README.md"],
+            "file_count": 1,
+            "risk_labels": [],
+            "tests_exist": true,
+            "unknowns": []
+        }
+    });
+    let mut harness = Harness::start_with(HarnessOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            std::fs::write(
+                repo.global_config(),
+                "ultracode = true\n[solo]\nkind = \"checked\"\n",
+            )
+            .unwrap();
+        })),
+        ..HarnessOptions::default()
+    })
+    .await;
+    let mut session = FakeSession::structured(change);
+    let verdict = session.events.pop().expect("the result");
+    session.events = vec![
+        init(&[], &[]),
+        subagent(SubagentStatus::Running),
+        background(&["b1"]),
+        writing(),
+        WorkerEvent::Agent(AgentEvent::Error {
+            category: ErrorCategory::Interrupted,
+            message: "interrupted".into(),
+            retryable: false,
+        }),
+        WorkerEvent::Agent(AgentEvent::Result {
+            text: None,
+            structured: None,
+            is_error: true,
+        }),
+        subagent(SubagentStatus::Done),
+        background(&[]),
+        verdict,
+    ];
+    // Slow enough that Esc lands while the main agent still writes.
+    harness
+        .agent
+        .push(session.with_delay(Duration::from_millis(200)));
+    harness
+        .submit("fix the install command in the README")
+        .await;
+    harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Chat {
+                    event: ChatEvent::Agent {
+                        event: AgentEvent::TextDelta { .. },
+                        ..
+                    }
+                }
+            )
+        })
+        .await;
+    harness.send(UiCommand::CancelTurn).await;
+    let finished = harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Chat {
+                    event: ChatEvent::TurnFinished { .. } | ChatEvent::TurnFailed { .. }
+                }
+            )
+        })
+        .await;
+    let AppEvent::Chat {
+        event: ChatEvent::TurnFinished { reply, .. },
+    } = finished
+    else {
+        panic!("{finished:?}");
+    };
+    assert_eq!(
+        reply,
+        TurnReply::Answer {
+            markdown: "The README's install line names the wrong package.".into()
+        }
+    );
+    harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Mode {
+                    mode: AppMode::Idle
+                }
+            )
+        })
+        .await;
+    assert!(harness.conductor.starts().is_empty(), "no run was started");
+    assert_eq!(
+        controls_after(&harness, 1).await,
+        [SessionControl::StopTurn]
+    );
+    harness.exit().await;
+}
+
+/// A turn stopped alone whose session ends with nothing more ends as any turn Esc stops: it
+/// is cancelled, nothing failed, and no fallback takes the request.
+#[tokio::test]
+async fn a_turn_stopped_alone_with_nothing_after_it_ends_cancelled() {
+    use argonauts_core::event::ErrorCategory;
+    use argonauts_core::events::session::EndReason;
+
+    let mut harness = direct().await;
+    let mut session = FakeSession::ended(EndReason::Stopped);
+    session.events = vec![
+        init(&[], &[]),
+        subagent(SubagentStatus::Running),
+        background(&["b1"]),
+        writing(),
+        WorkerEvent::Agent(AgentEvent::Error {
+            category: ErrorCategory::Interrupted,
+            message: "interrupted".into(),
+            retryable: false,
+        }),
+        WorkerEvent::Agent(AgentEvent::Result {
+            text: None,
+            structured: None,
+            is_error: true,
+        }),
+    ];
+    harness
+        .agent
+        .push(session.with_delay(Duration::from_millis(200)));
+    harness.submit("count in the background").await;
+    harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Chat {
+                    event: ChatEvent::Agent {
+                        event: AgentEvent::TextDelta { .. },
+                        ..
+                    }
+                }
+            )
+        })
+        .await;
+    harness.send(UiCommand::CancelTurn).await;
+    let ended = harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Chat {
+                    event: ChatEvent::TurnCancelled { .. }
+                        | ChatEvent::TurnFailed { .. }
+                        | ChatEvent::TurnFinished { .. }
+                }
+            )
+        })
+        .await;
+    assert!(
+        matches!(
+            ended,
+            AppEvent::Chat {
+                event: ChatEvent::TurnCancelled { .. }
+            }
+        ),
+        "{ended:?}"
+    );
+    harness
+        .until(|event| {
+            matches!(
+                event,
+                AppEvent::Mode {
+                    mode: AppMode::Idle
+                }
+            )
+        })
+        .await;
+    assert_eq!(harness.agent.specs().len(), 1, "no fallback took it");
     harness.exit().await;
 }

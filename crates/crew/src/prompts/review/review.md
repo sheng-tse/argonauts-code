@@ -1,7 +1,7 @@
-Review the card's change in the input. You get the goal, the card's task, the diff, the gate results, the acceptance tests, and the settled decisions. You don't get the owner's own notes, on purpose: judge the change itself.
+Review the task's change in the input. You get the goal, the task, the diff, the results of the checks, the acceptance tests, and the settled decisions. You don't get the worker's own notes, on purpose: judge the change itself.
 
 - Approve when the change does the task, meets the criteria it serves, and keeps the decisions.
-- Request changes for problems the owner can fix, with a comment per problem: the path, the line when you can, the severity, and what to do.
+- Request changes for problems the worker can fix, with a comment per problem: the path, the line when you can, the severity, and what to do.
 - Reject when the approach is wrong for the task.
 - Set `tamper_suspected` when tests look weakened: deleted, skipped, or loosened.
 

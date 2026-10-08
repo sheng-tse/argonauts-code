@@ -46,7 +46,7 @@ pub fn startable(state: &RunState, settings: &Settings, running: usize) -> Vec<C
             .owner
             .clone()
             .or_else(|| record.spec.owner.clone())
-            .unwrap_or_else(|| settings.default_agent.clone())
+            .unwrap_or_else(|| settings.main_agent.clone())
     };
     let active: Vec<&CardRecord> = state
         .cards
@@ -149,7 +149,7 @@ pub async fn run_cards(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             joined = tasks.join_next() => {
                 let Some(joined) = joined else { continue };
                 let (card, result) = joined.map_err(|err| {
-                    EngineError::Refused(format!("a card's task stopped: {err}"))
+                    EngineError::Refused(format!("a task stopped: {err}"))
                 })?;
                 active.remove(&card);
                 let state = result?;
@@ -192,7 +192,7 @@ async fn settle_without_sessions(
             host,
             &card,
             Trigger::DependenciesIntegrated,
-            "its dependencies are integrated",
+            "its dependencies are merged into the run",
         )?;
     }
     let (low, deferred, ready_now) = host.read(|state| {
@@ -213,11 +213,11 @@ async fn settle_without_sessions(
     });
     if low {
         for card in ready_now {
-            transition(host, &card, Trigger::BudgetLow, "the run's budget is low")?;
+            transition(host, &card, Trigger::BudgetLow, "the run's limit is low")?;
         }
     } else {
         for card in deferred {
-            transition(host, &card, Trigger::MoreBudget, "the run has budget again")?;
+            transition(host, &card, Trigger::MoreBudget, "the run has limit again")?;
         }
     }
     Ok(None)
@@ -295,7 +295,7 @@ fn finished(host: &Host) -> Option<StepDone> {
     if solo && escalated && solo::escalates_to_crew(&snapshot, host) {
         return Some(StepDone {
             end: StepEnd::Done,
-            summary: Some("the solo card escalated, so the crew takes over".to_owned()),
+            summary: Some("the solo task needed you, so the crew takes over".to_owned()),
             flow: Flow::Switch(runner::crew_workflow(host)),
         });
     }
@@ -320,8 +320,8 @@ pub(crate) fn summary(state: &RunState) -> String {
     };
     let integrated = count(CardState::Integrated);
     let mut text = match integrated {
-        1 => "1 card integrated".to_owned(),
-        n => format!("{n} cards integrated"),
+        1 => "1 task merged into the run".to_owned(),
+        n => format!("{n} tasks merged into the run"),
     };
     for (state, word) in [
         (CardState::Deferred, "deferred"),
@@ -337,7 +337,7 @@ pub(crate) fn summary(state: &RunState) -> String {
         .filter(|card| state.cards.get(card).map(|r| r.state) == Some(CardState::Waiting))
         .count();
     if held > 0 {
-        text.push_str(&format!(", {held} waiting on deferred cards"));
+        text.push_str(&format!(", {held} waiting on deferred tasks"));
     }
     text
 }
@@ -368,12 +368,12 @@ mod tests {
     #[test]
     fn waiting_cards_unblock_once_their_dependencies_are_in() {
         let state = state_with(&[
-            ("card-001", &[], None, CardState::Integrated),
-            ("card-002", &["card-001"], None, CardState::Waiting),
-            ("card-003", &["card-002"], None, CardState::Waiting),
-            ("card-004", &[], None, CardState::Ready),
+            ("task-001", &[], None, CardState::Integrated),
+            ("task-002", &["task-001"], None, CardState::Waiting),
+            ("task-003", &["task-002"], None, CardState::Waiting),
+            ("task-004", &[], None, CardState::Ready),
         ]);
-        assert_eq!(ids(&unblocked(&state)), ["card-002"]);
+        assert_eq!(ids(&unblocked(&state)), ["task-002"]);
     }
 
     #[test]
@@ -383,25 +383,25 @@ mod tests {
         settings.concurrency.max_per_vendor = 1;
         let state = state_with(&[
             (
-                "card-001",
+                "task-001",
                 &[],
                 Some("claude-code/opus"),
                 CardState::Running,
             ),
-            ("card-002", &[], Some("claude-code/opus"), CardState::Ready),
+            ("task-002", &[], Some("claude-code/opus"), CardState::Ready),
             (
-                "card-003",
+                "task-003",
                 &[],
                 Some("claude-code/sonnet"),
                 CardState::Ready,
             ),
-            ("card-004", &[], Some("codex"), CardState::Ready),
-            ("card-005", &[], Some("codex"), CardState::Ready),
-            ("card-006", &[], Some("agy"), CardState::Ready),
+            ("task-004", &[], Some("codex"), CardState::Ready),
+            ("task-005", &[], Some("codex"), CardState::Ready),
+            ("task-006", &[], Some("agy"), CardState::Ready),
         ]);
         assert_eq!(
             ids(&startable(&state, &settings, 1)),
-            ["card-004", "card-006"]
+            ["task-004", "task-006"]
         );
     }
 
@@ -410,13 +410,13 @@ mod tests {
         let mut settings = Settings::default();
         settings.concurrency.max_sessions = 2;
         let state = state_with(&[
-            ("card-001", &[], Some("codex"), CardState::Ready),
-            ("card-002", &[], Some("agy"), CardState::Ready),
-            ("card-003", &[], Some("claude-code"), CardState::Ready),
+            ("task-001", &[], Some("codex"), CardState::Ready),
+            ("task-002", &[], Some("agy"), CardState::Ready),
+            ("task-003", &[], Some("claude-code"), CardState::Ready),
         ]);
         assert_eq!(
             ids(&startable(&state, &settings, 0)),
-            ["card-001", "card-002"]
+            ["task-001", "task-002"]
         );
         assert!(startable(&state, &settings, 2).is_empty());
     }
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn a_spent_budget_holds_every_start() {
         let settings = Settings::default();
-        let mut state = state_with(&[("card-001", &[], Some("codex"), CardState::Ready)]);
+        let mut state = state_with(&[("task-001", &[], Some("codex"), CardState::Ready)]);
         let limit = BudgetAmount {
             unit: BudgetUnit::Usd,
             amount: 5.0,
@@ -450,42 +450,42 @@ mod tests {
     #[test]
     fn the_summary_counts_integrated_deferred_and_cancelled() {
         let state = state_with(&[
-            ("card-001", &[], None, CardState::Integrated),
-            ("card-002", &[], None, CardState::Integrated),
-            ("card-003", &[], None, CardState::Deferred),
+            ("task-001", &[], None, CardState::Integrated),
+            ("task-002", &[], None, CardState::Integrated),
+            ("task-003", &[], None, CardState::Deferred),
         ]);
-        assert_eq!(summary(&state), "2 cards integrated, 1 deferred");
+        assert_eq!(summary(&state), "2 tasks merged into the run, 1 deferred");
     }
 
     #[test]
     fn waiting_on_a_deferred_card_leaves_a_card_out() {
         let state = state_with(&[
-            ("card-001", &[], None, CardState::Integrated),
-            ("card-002", &[], None, CardState::Deferred),
-            ("card-003", &["card-002"], None, CardState::Waiting),
+            ("task-001", &[], None, CardState::Integrated),
+            ("task-002", &[], None, CardState::Deferred),
+            ("task-003", &["task-002"], None, CardState::Waiting),
             (
-                "card-004",
-                &["card-003", "card-001"],
+                "task-004",
+                &["task-003", "task-001"],
                 None,
                 CardState::Waiting,
             ),
-            ("card-005", &["card-001"], None, CardState::Waiting),
+            ("task-005", &["task-001"], None, CardState::Waiting),
         ]);
         assert_eq!(
             left_out(&state)
                 .iter()
                 .map(CardId::as_str)
                 .collect::<Vec<_>>(),
-            ["card-002", "card-003", "card-004"]
+            ["task-002", "task-003", "task-004"]
         );
         let settled = state_with(&[
-            ("card-001", &[], None, CardState::Integrated),
-            ("card-002", &[], None, CardState::Deferred),
-            ("card-003", &["card-002"], None, CardState::Waiting),
+            ("task-001", &[], None, CardState::Integrated),
+            ("task-002", &[], None, CardState::Deferred),
+            ("task-003", &["task-002"], None, CardState::Waiting),
         ]);
         assert_eq!(
             summary(&settled),
-            "1 card integrated, 1 deferred, 1 waiting on deferred cards"
+            "1 task merged into the run, 1 deferred, 1 waiting on deferred tasks"
         );
     }
 }

@@ -7,8 +7,10 @@ use argonauts_core::{
     Asks, AuthMode, CommandSpec, SessionRequest, SessionRole, SpecFile, env_remove_except,
 };
 
-use crate::settings::{Allowed, CommandSandbox, LeftOut, STATUS_SERVER, session_settings};
-use crate::tweaks::{self, Fanout, SUBAGENT_TOOL};
+use crate::settings::{
+    Allowed, CommandSandbox, LeftOut, OwnWorkflow, STATUS_SERVER, Style, session_settings,
+};
+use crate::tweaks::{self, Fanout, SUBAGENT_TOOL, WORKFLOW_TOOL};
 use crate::{control, isolation};
 
 /// Written into the session's scratch directory, outside the worktree.
@@ -29,7 +31,11 @@ const ASKING_TIMEOUT_MS: &str = "86400000";
 
 /// Messaging between Claude Code sessions on one machine (2.1.224 and later) would let blind
 /// sessions reach each other outside the blackboard.
-const CROSS_SESSION_TOOLS: &[&str] = &["SendMessage", "ListAgents"];
+const CROSS_SESSION_TOOLS: &[&str] = &[SUBAGENT_MESSAGE_TOOL, "ListAgents"];
+
+/// The tool the main agent continues one of its own subagents with, by the agent id its launch
+/// returned. It is also how one session writes to another, which is why the rest go without.
+const SUBAGENT_MESSAGE_TOOL: &str = "SendMessage";
 
 /// An isolated session loads only your own settings. `-p` skips the trust dialog, so a
 /// repository's `.claude/settings.json` would otherwise run its hooks, including ones an agent
@@ -91,6 +97,13 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
             .args(["--setting-sources", ISOLATED_SETTING_SOURCES]);
     }
     spec = with_settings(spec, req)?;
+    // Added to Claude Code's own prompt, which stays whole. It is kept from a conversation's
+    // first request on, so only lines that hold for the whole conversation go here.
+    if let Some(note) = req.standing_note.as_deref().map(str::trim)
+        && !note.is_empty()
+    {
+        spec = spec.args(["--append-system-prompt".to_owned(), note.to_owned()]);
+    }
     if let Some(compaction) = req.compaction {
         spec = spec.args(tweaks::compaction(compaction).args);
     }
@@ -106,7 +119,12 @@ pub fn build_command(program: &str, req: &SessionRequest) -> anyhow::Result<Comm
         } else {
             String::new()
         };
-        spec.stdin = Some(opening + &user_message_line(&req.prompt));
+        let first = if req.typed_by_you {
+            typed_message_line(&req.prompt)
+        } else {
+            user_message_line(&req.prompt)
+        };
+        spec.stdin = Some(opening + &first);
         spec.keep_stdin_open = true;
     } else {
         // On stdin, so a prompt never looks like a flag or shows in the process list.
@@ -128,7 +146,24 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
         (SessionRole::Direct, Asks::LikeCli | Asks::EveryChange) => Allowed::AsTheCliAsks,
         (SessionRole::ReadOnly | SessionRole::Build, _) => Allowed::Listed,
     };
-    let settings = session_settings(req.mcp_config.is_some(), commands, allowed, &left_out(req))?;
+    let own = own_workflow(
+        req,
+        effective_role(req),
+        Fanout::from_setting(req.native_fanout),
+    );
+    let style = if req.autopilot {
+        Style::Proactive
+    } else {
+        Style::Yours
+    };
+    let settings = session_settings(
+        req.mcp_config.is_some(),
+        commands,
+        allowed,
+        &left_out(req),
+        &own,
+        style,
+    )?;
     let Some(dir) = &req.scratch_dir else {
         return Ok(spec.args(["--settings".to_owned(), settings]));
     };
@@ -143,6 +178,25 @@ fn with_settings(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
         Some(name) => spec.args(["--name".to_owned(), name]),
         None => spec,
     })
+}
+
+/// Claude Code's own workflow, where the session may run one: a direct turn has the workflow
+/// tool unless fan-out is off, and a build session when it may fan out as it sees fit. Where no
+/// one is asked, a workflow runs without the review Claude Code otherwise asks for (2.1.293).
+fn own_workflow(req: &SessionRequest, role: SessionRole, fanout: Fanout) -> OwnWorkflow {
+    let (may_run, asks_you) = match role {
+        SessionRole::Direct => (fanout != Fanout::Off, req.asks != Asks::Never),
+        SessionRole::Build => (fanout.offers_workflows(), false),
+        SessionRole::ReadOnly => (false, false),
+    };
+    if !may_run {
+        return OwnWorkflow::default();
+    }
+    OwnWorkflow {
+        ultracode: req.ultracode,
+        size: req.workflow_size,
+        runs_unasked: !asks_you,
+    }
 }
 
 /// An isolated session gets none of your plugins, mods, hooks, or synced extras. Your hooks
@@ -206,7 +260,8 @@ fn with_permission_flags(
             }
         }
     };
-    spec.arg("--disallowedTools").args(disallowed_tools(fanout))
+    spec.arg("--disallowedTools")
+        .args(disallowed_tools(fanout, req.main_session))
 }
 
 /// One stream-json user message, the way `--input-format stream-json` reads them.
@@ -214,6 +269,17 @@ pub fn user_message_line(text: &str) -> String {
     let message = serde_json::json!({
         "type": "user",
         "message": {"role": "user", "content": text},
+    });
+    format!("{message}\n")
+}
+
+/// A user line marked as typed by a person, which Claude Code's `ultracode` keyword needs: the
+/// same line without the mark doesn't trigger it (checked live on 2.1.293).
+pub fn typed_message_line(text: &str) -> String {
+    let message = serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "origin": {"kind": "human"},
     });
     format!("{message}\n")
 }
@@ -244,13 +310,22 @@ fn tool_list(role: SessionRole, fanout: Fanout) -> String {
     if role == SessionRole::Build && fanout.offers_subagents() {
         tools.push(SUBAGENT_TOOL);
     }
+    if role == SessionRole::Build && fanout.offers_workflows() {
+        tools.push(WORKFLOW_TOOL);
+    }
     tools.join(",")
 }
 
-fn disallowed_tools(fanout: Fanout) -> Vec<&'static str> {
+/// Your conversation's own session keeps `SendMessage` while it may start subagents: it's how
+/// the main agent passes your message on to one of them, and resumes one that finished
+/// (checked live on 2.1.292). It still can't list other sessions to write to,
+/// and every session Argonauts starts refuses messages from outside.
+fn disallowed_tools(fanout: Fanout, main_session: bool) -> Vec<&'static str> {
     let mut tools = CROSS_SESSION_TOOLS.to_vec();
     if fanout == Fanout::Off {
         tools.push(SUBAGENT_TOOL);
+    } else if main_session {
+        tools.retain(|tool| *tool != SUBAGENT_MESSAGE_TOOL);
     }
     tools
 }
@@ -282,7 +357,8 @@ fn with_session_flag(spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<
 
 fn with_model_flags(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Result<CommandSpec> {
     if let Some(model) = &req.model {
-        spec = spec.args(["--model", flag_value("model", model)?]);
+        let model = tweaks::model_for(model, req.context, req.auth);
+        spec = spec.args(["--model", flag_value("model", &model)?]);
     }
     if let Some(effort) = &req.effort {
         spec = spec.args(["--effort", flag_value("effort", effort)?]);
@@ -302,7 +378,7 @@ fn with_model_flags(mut spec: CommandSpec, req: &SessionRequest) -> anyhow::Resu
 pub fn native_cap_args(budget_usd: f64) -> anyhow::Result<[String; 2]> {
     ensure!(
         budget_usd.is_finite() && budget_usd > 0.0,
-        "the Claude Code budget must be a positive number of dollars, not {budget_usd}"
+        "Claude Code's spend limit must be a positive number of dollars, not {budget_usd}"
     );
     Ok(["--max-budget-usd".to_owned(), budget_usd.to_string()])
 }

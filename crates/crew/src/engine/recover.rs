@@ -25,7 +25,7 @@ pub async fn recover(host: &Host) -> EngineResult<()> {
     let now = host.now().unix_timestamp();
     let ask_timeout = host
         .settings()
-        .handoff
+        .fallback
         .ask_timeout
         .parse()
         .ok()
@@ -236,7 +236,7 @@ async fn ask_timed_out(host: &Host, id: &CheckpointId, card: Option<&CardId>) ->
     checkpoints::withdraw(
         host,
         id,
-        "nobody answered in the time /handoff allows, so the next agent in line took it",
+        "nobody answered in the time /fallback allows, so the next agent in line took it",
     )?;
     let spec = host.read(|state| state.cards.get(card).map(|record| record.spec.clone()));
     let Some(spec) = spec else {
@@ -261,7 +261,7 @@ async fn main_moved_by(host: &Host, branch: Option<&str>, base: &str) -> EngineR
     let root = &host.repo().root;
     let git = host.git();
     let counted = async {
-        let head = git.resolve(root, branch).await?;
+        let head = crate::integrate::final_check::main_commit(host, branch).await?;
         if head == base {
             return Ok(0);
         }
@@ -376,7 +376,7 @@ mod tests {
 
         assert!(
             !merge_waits_on(&state, std::slice::from_ref(&claude)),
-            "not parked"
+            "not waiting"
         );
         state.run.parked = Some(ParkReason::Checkpoint);
         assert!(merge_waits_on(&state, std::slice::from_ref(&claude)));

@@ -34,7 +34,7 @@ fn created(event: &RunEvent) -> Option<String> {
         .map_or_else(|| "the run".to_owned(), ToString::to_string);
     match &event.kind {
         RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
-            Some(format!("checkpoint {}", opened.id))
+            Some(format!("approval {}", opened.id))
         }
         RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) => {
             Some(format!("decision on {}", decided.id))
@@ -65,7 +65,7 @@ fn created(event: &RunEvent) -> Option<String> {
         RunEventKind::Integration(IntegrationEvent::FinalCheck { .. }) => {
             Some("final check".to_owned())
         }
-        RunEventKind::Gate(gate) => Some(format!("{:?} gate {} on {on}", gate.kind, gate.name)),
+        RunEventKind::Gate(gate) => Some(format!("{:?} check {} on {on}", gate.kind, gate.name)),
         RunEventKind::Run(RunLifecycle::Finished { .. }) => Some("finish".to_owned()),
         _ => None,
     }
@@ -116,7 +116,7 @@ fn merges_and_moves(crew: &Crew, cards: &BTreeSet<CardId>) -> anyhow::Result<(Ve
         "--format=%H%n%B%x1e",
         "--branches=argonauts/*",
     ])?;
-    let per_card = cards
+    let per_task = cards
         .iter()
         .map(|card| {
             let line = card_line(card);
@@ -132,7 +132,7 @@ fn merges_and_moves(crew: &Crew, cards: &BTreeSet<CardId>) -> anyhow::Result<(Ve
         .lines()
         .count()
         .saturating_sub(1);
-    Ok((per_card, moves))
+    Ok((per_task, moves))
 }
 
 async fn replay_every_prefix(snapshot_every: u32) -> anyhow::Result<()> {
@@ -160,19 +160,19 @@ async fn replay_every_prefix(snapshot_every: u32) -> anyhow::Result<()> {
             _ => None,
         })
         .collect();
-    assert!(!cards.is_empty(), "no card merged: {:?}", names(&full));
+    assert!(!cards.is_empty(), "no task merged: {:?}", names(&full));
     let landed = full.iter().any(|event| {
         matches!(
             event.kind,
             RunEventKind::Integration(IntegrationEvent::Landed { .. })
         )
     });
-    assert!(landed, "the run never landed: {:?}", names(&full));
+    assert!(landed, "the run never merged: {:?}", names(&full));
     let once = (vec![1; cards.len()], 1);
     assert_eq!(
         merges_and_moves(&crew, &cards)?,
         once,
-        "one merge commit per card and one move of main"
+        "one merge commit per task and one move of main"
     );
 
     for cut in 1..full.len() {
@@ -203,7 +203,7 @@ async fn replay_every_prefix(snapshot_every: u32) -> anyhow::Result<()> {
                     );
                     assert_eq!(
                         started.resumed_from, earlier.vendor_session,
-                        "cut at {cut}: {key} resumes its own vendor session"
+                        "cut at {cut}: {key} resumes its own agent session"
                     );
                 }
             }
@@ -243,7 +243,7 @@ async fn replay_every_prefix(snapshot_every: u32) -> anyhow::Result<()> {
     assert_eq!(
         merges_and_moves(&crew, &cards)?,
         once,
-        "merged or landed again"
+        "merged or merged again"
     );
     Ok(())
 }

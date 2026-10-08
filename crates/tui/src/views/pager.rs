@@ -78,9 +78,9 @@ impl Pager {
             PagerContent::Raw(raw) => {
                 let lines = panes::count(raw.lines.len(), "line");
                 let description = if raw.truncated {
-                    format!("The vendor's own lines, unparsed · the last {lines}")
+                    format!("The agent's own lines, unparsed · the last {lines}")
                 } else {
-                    format!("The vendor's own lines, unparsed · {lines}")
+                    format!("The agent's own lines, unparsed · {lines}")
                 };
                 Header {
                     title: label(format!(

@@ -1,0 +1,4 @@
+phases = "solo"
+
+[solo_or_crew]
+force = "solo"

@@ -22,6 +22,7 @@ use argonauts_core::workflow::StepRef;
 
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
+use crate::integrate::merge_packet::merged_files_path;
 use crate::prompts;
 use crate::state::RunState;
 use crate::state::cards::CardRecord;
@@ -99,10 +100,14 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
         (cards, landed(state), gates, diff_path, Agents::of(state))
     });
     let files = match diff_path {
-        Some(path) => tokio::fs::read_to_string(&path)
-            .await
-            .map(|diff| files_in_diff(&diff))
-            .unwrap_or_default(),
+        Some(path) => match merged_files(&path).await {
+            Some(files) => files,
+            // A merge from before the counts were kept.
+            None => tokio::fs::read_to_string(&path)
+                .await
+                .map(|diff| files_in_diff(&diff))
+                .unwrap_or_default(),
+        },
         None => {
             let delivered: Vec<CardRecord> = cards
                 .iter()
@@ -122,6 +127,9 @@ struct Agents {
     total: usize,
     reported: usize,
     did: Vec<String>,
+    /// What the workflows' notes said is left, such as a step you require that Claude Code's
+    /// own workflow didn't have.
+    left: Vec<String>,
 }
 
 impl Agents {
@@ -148,10 +156,17 @@ impl Agents {
             })
             .collect();
         did.extend(steps_done(state));
+        let left = state
+            .workflows
+            .by_id
+            .values()
+            .flat_map(|workflow| workflow.left.iter().cloned())
+            .collect();
         Self {
             total: sessions.count(),
             reported,
             did,
+            left,
         }
     }
 }
@@ -223,6 +238,11 @@ fn answer_from(
                 left.push(concern.clone());
             }
         }
+    }
+    // What a workflow said is left comes first: it's about what you asked for.
+    for line in agents.left.iter().rev() {
+        left.retain(|other| other != line);
+        left.insert(0, line.clone());
     }
     if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
         left.insert(0, detail.to_owned());
@@ -303,7 +323,7 @@ fn not_landed(card: &CardRecord, landed: &BTreeSet<CardId>) -> Option<&'static s
         CardState::Cancelled => "dropped",
         CardState::Escalated | CardState::NeedsDecision => "waits for a decision",
         CardState::Blocked => "blocked on a question",
-        CardState::Deferred => "waits for budget",
+        CardState::Deferred => "waits for limit",
         CardState::Integrated => "not merged",
         CardState::Running | CardState::Gating | CardState::InReview | CardState::Integrating => {
             "stopped unfinished"
@@ -313,10 +333,10 @@ fn not_landed(card: &CardRecord, landed: &BTreeSet<CardId>) -> Option<&'static s
     })
 }
 
-/// The words a card's state has for the lead: `landed`, else how it ended.
+/// The words a task's state has for the main agent: `merged`, else how it ended.
 fn digest_state(card: &CardRecord, landed: &BTreeSet<CardId>) -> String {
     if landed.contains(&card.spec.id) {
-        "landed".to_owned()
+        "merged".to_owned()
     } else {
         not_landed(card, landed).unwrap_or("taken over").to_owned()
     }
@@ -421,10 +441,10 @@ async fn lead_answer(
             })
             .collect(),
     };
-    let worker = host.settings().default_agent.clone();
+    let worker = host.settings().main_agent.clone();
     let mut ask = Ask::new(
         None,
-        RoleName::Default,
+        RoleName::Main,
         worker,
         prompts::divide::CLOSE_RUN,
         input,
@@ -484,6 +504,15 @@ async fn card_files(host: &Host, cards: &[CardRecord]) -> Vec<ChangedFile> {
             deletions,
         })
         .collect()
+}
+
+/// Each file the merge changed, as `git diff --numstat` counted it when the merge was
+/// readied. The run's own records are left out.
+async fn merged_files(diff_path: &std::path::Path) -> Option<Vec<ChangedFile>> {
+    let bytes = tokio::fs::read(merged_files_path(diff_path)).await.ok()?;
+    let mut files: Vec<ChangedFile> = serde_json::from_slice(&bytes).ok()?;
+    files.retain(|file| !file.path.starts_with(OWN_RECORDS));
+    Some(files)
 }
 
 /// Each file of a unified diff, as `git diff` writes it, with its lines added and removed. The
@@ -630,8 +659,8 @@ mod tests {
     fn only_a_card_that_landed_is_what_changed() {
         // A crew run whose second card was dropped: its claims are left, never what changed.
         let cards = vec![
-            card("card-001", "Add the flag", CardState::Integrated, "FLAG"),
-            card("card-002", "Write the docs", CardState::Cancelled, "DOCS"),
+            card("task-001", "Add the flag", CardState::Integrated, "FLAG"),
+            card("task-002", "Write the docs", CardState::Cancelled, "DOCS"),
         ];
         let state = state_of(cards.clone());
         let landed = landed(&state);
@@ -654,7 +683,7 @@ mod tests {
         assert_eq!(
             told,
             [
-                ("Add the flag".to_owned(), "landed".to_owned()),
+                ("Add the flag".to_owned(), "merged".to_owned()),
                 ("Write the docs".to_owned(), "dropped".to_owned())
             ]
         );
@@ -664,13 +693,13 @@ mod tests {
     fn best_of_n_speaks_for_the_attempt_it_kept() {
         let mut state = state_of(vec![
             card(
-                "card-001-attempt-1",
+                "task-001-attempt-1",
                 "Fix (attempt 1)",
                 CardState::Integrated,
                 "FIRST",
             ),
             card(
-                "card-001-attempt-2",
+                "task-001-attempt-2",
                 "Fix (attempt 2)",
                 CardState::Gating,
                 "SECOND",
@@ -743,6 +772,40 @@ diff --git a/my notes.md b/my notes.md
         );
     }
 
+    #[tokio::test]
+    async fn the_merges_own_counts_list_each_file_and_leave_the_runs_records_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let diff_path = dir.path().join("merge").join("abc123.diff");
+        assert_eq!(merged_files(&diff_path).await, None, "a merge from before");
+        std::fs::create_dir_all(diff_path.parent().unwrap()).unwrap();
+        let counted = vec![
+            ChangedFile {
+                path: "src/export/csv.rs".into(),
+                insertions: 64,
+                deletions: 6,
+            },
+            ChangedFile {
+                path: ".argonauts/goal.md".into(),
+                insertions: 3,
+                deletions: 0,
+            },
+            ChangedFile {
+                path: "assets/logo.png".into(),
+                insertions: 0,
+                deletions: 0,
+            },
+        ];
+        std::fs::write(
+            merged_files_path(&diff_path),
+            serde_json::to_vec(&counted).unwrap(),
+        )
+        .unwrap();
+        let files = merged_files(&diff_path).await.unwrap();
+        let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["src/export/csv.rs", "assets/logo.png"]);
+        assert_eq!((files[0].insertions, files[0].deletions), (64, 6));
+    }
+
     /// A run shaped like a coordinated crew that failed late: the lead designed its workflow,
     /// three agents restated the goal, two compared the restatements, the lead answered the
     /// questions, and the lead's next design session ended early.
@@ -794,7 +857,7 @@ diff --git a/my notes.md b/my notes.md
             session(json!({
                 "event": "started", "worker": worker, "vendor": worker, "family": "gpt",
                 "kind": "harness", "role": role, "step": null, "access": "read_only",
-                "lifetime": "card", "resumed_from": null, "follow_key": null,
+                "lifetime": "task", "resumed_from": null, "follow_key": null,
             }))
         };
         let ended = |why: serde_json::Value| {
@@ -849,7 +912,7 @@ diff --git a/my notes.md b/my notes.md
             finished(
                 &[0, 2],
                 StepKind::Checkpoint,
-                "The lead answered 5 questions, and the goal is approved.",
+                "The main agent answered 5 questions, and the goal is approved.",
             ),
         ));
         events.push((
@@ -873,6 +936,62 @@ diff --git a/my notes.md b/my notes.md
         state
     }
 
+    /// What Claude Code's own workflow lacked of the steps you require is said when it's found,
+    /// and the closing answer lists it first among what's left. Other notes stay out.
+    #[test]
+    fn what_a_workflow_left_undone_leads_whats_left() {
+        use argonauts_core::events::workflow::{RunNote, WorkflowEvent, WorkflowStarted};
+        use argonauts_core::names::WorkflowId;
+        use serde_json::json;
+
+        let id = WorkflowId::numbered(1);
+        let workflow = serde_json::from_value(json!({
+            "name": "add-due-dates",
+            "phases": [{"name": "Build", "standard": "do", "steps": [{"kind": "build"}]}],
+        }))
+        .unwrap();
+        let note = |text: &str, left: bool| {
+            RunEventKind::Workflow(WorkflowEvent::Note(RunNote {
+                text: text.to_owned(),
+                workflow: Some(id.clone()),
+                left,
+            }))
+        };
+        let lacked = "It had no step for \"Benchmark\", which you require.";
+        let events = [
+            RunEventKind::Workflow(WorkflowEvent::Started(Box::new(WorkflowStarted {
+                id: id.clone(),
+                from: None,
+                version: "v1".to_owned(),
+                parent: None,
+                workflow,
+            }))),
+            note("Build · Claude Code's own workflow", false),
+            note(lacked, true),
+        ];
+        let mut state = RunState::default();
+        for (seq, kind) in (0..).zip(events) {
+            state.apply(&crate::testutil::run_event(seq, None, None, kind));
+        }
+        let cards = vec![card(
+            "task-001",
+            "Add due dates",
+            CardState::Integrated,
+            "DUE",
+        )];
+        let landed: BTreeSet<CardId> = [CardId::new("task-001").unwrap()].into();
+        let answer = answer_from(
+            &cards,
+            &landed,
+            &[],
+            Vec::new(),
+            RunOutcome::Merged,
+            None,
+            &Agents::of(&state),
+        );
+        assert_eq!(answer.left, [lacked, "DUE concern"]);
+    }
+
     /// A run that failed after its agents did their work says how many reported and what they
     /// did, never that it failed before any agent reported. A loop sums up its steps, so it
     /// isn't told twice.
@@ -887,15 +1006,15 @@ diff --git a/my notes.md b/my notes.md
             &[],
             Vec::new(),
             RunOutcome::Failed,
-            Some("the lead's design session ended early"),
+            Some("the main agent's design session ended early"),
             &agents,
         );
         assert_eq!(
             answer.text,
             "The run failed after 7 of its 8 agents reported: 3 agents restated the goal; 5 \
-             questions, 2 assumptions; the lead answered 5 questions, and the goal is approved."
+             questions, 2 assumptions; the main agent answered 5 questions, and the goal is approved."
         );
-        assert_eq!(answer.left, ["the lead's design session ended early"]);
+        assert_eq!(answer.left, ["the main agent's design session ended early"]);
         assert!(!answer.text.contains("before any agent reported"));
 
         let none = Agents::default();
@@ -906,7 +1025,7 @@ diff --git a/my notes.md b/my notes.md
         let all = Agents {
             total: 2,
             reported: 2,
-            did: Vec::new(),
+            ..Agents::default()
         };
         assert_eq!(
             ending_sentence(RunOutcome::Stopped, &all),

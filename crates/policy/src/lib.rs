@@ -22,6 +22,7 @@ pub mod narrator;
 pub mod parts;
 pub mod rules;
 pub mod session;
+pub mod templates;
 
 /// Re-reads the settings, so each checkpoint can use the stricter of the run-start and current
 /// approval settings.

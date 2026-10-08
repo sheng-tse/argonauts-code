@@ -4,7 +4,7 @@ expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Effort
-  How long Claude Code's default model thinks before it answers, for the default agent
+  How long Claude Code's default model thinks before it answers, for the main agent
 
     Faster                                Smarter
     ─────────────────────────────────▲───────────

@@ -13,11 +13,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Widget};
 
-use crate::text::{marks, sanitize_line, str_width};
+use crate::text::{marks, sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::{Role, Theme};
+use crate::widgets::State;
 
 use super::layout::cut;
 use super::panes::{self, Footer, Panes};
+use super::states;
 
 /// The least the frame takes, rule to footer. Under it the frame takes the whole region.
 pub const MIN_ROWS: u16 = 12;
@@ -120,6 +122,8 @@ pub fn draw_rule(buf: &mut Buffer, dock: &Dock, theme: &Theme) {
 pub struct Heading {
     /// From the run's workflow down to the one shown; the last is its own name.
     pub names: Vec<String>,
+    /// What kind of workflow it is, dim after the name: such as `orchestrator workflow`.
+    pub notes: Vec<String>,
     pub description: String,
     /// Such as `6/8 agents · 4m31s`, ending under the box's right border.
     pub totals: String,
@@ -148,6 +152,13 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
         }
         spans.push(Span::styled(own.clone(), theme.style(Role::Card)));
     }
+    for note in &heading.notes {
+        let note = sanitize_line(note);
+        if !note.trim().is_empty() {
+            spans.push(Span::styled(format!(" · {}", note.trim()), dim));
+        }
+    }
+    let spans = truncate_spans(&spans, usize::from(area.width));
     panes::put(buf, area.x, area.y, area.width, &Line::from(spans));
     if area.height < 2 {
         return;
@@ -171,8 +182,9 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
     );
 }
 
-/// The status lines, dim, each with its mark: `◎` for the goal, `◆` in the card color for
-/// what needs you, and `›` for a note. How the run ended reads alone.
+/// The status lines, dim, each with its mark: `◎` for the goal, `◆` in the needs-you color for
+/// what needs you, as every view draws that state, and `›` for a note. How the run ended reads
+/// alone.
 pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &Theme) {
     let area = dock.status;
     let dim = theme.style(Role::Dim);
@@ -180,7 +192,10 @@ pub fn draw_status(buf: &mut Buffer, dock: &Dock, lines: &[StatusLine], theme: &
     for (row, status) in lines.iter().take(usize::from(area.height)).enumerate() {
         let (mark, role) = match status.kind {
             StatusKind::Goal => (Some(if ascii { "@" } else { "◎" }), Role::Card),
-            StatusKind::NeedsYou => (Some(theme.glyphs.card), Role::Card),
+            StatusKind::NeedsYou => {
+                let (glyph, role) = states::mark(State::NeedsYou, theme);
+                (Some(glyph), role)
+            }
             StatusKind::Note => (Some(if ascii { ">" } else { "›" }), Role::Dim),
             StatusKind::Ended => (None, Role::Dim),
         };
@@ -272,6 +287,136 @@ pub fn draw_box(buf: &mut Buffer, dock: &Dock, titles: [&str; 2], mark: &str, th
     }
 }
 
+/// Takes `rows` off the bottom of the box for a second box under it, such as the goal panel,
+/// and says where that box goes. `None`, and nothing taken, when the first box would be left
+/// with fewer than `keep` rows.
+pub fn carve_below(dock: &mut Dock, rows: u16, keep: u16) -> Option<Rect> {
+    let body = dock.panes.body;
+    if rows < 3 || body.height < rows.saturating_add(keep) {
+        return None;
+    }
+    let shorter = |rect: Rect| Rect {
+        height: rect.height.saturating_sub(rows),
+        ..rect
+    };
+    dock.panes.body = shorter(body);
+    dock.panes.left = shorter(dock.panes.left);
+    dock.panes.right = shorter(dock.panes.right);
+    Some(Rect {
+        y: dock.panes.body.bottom(),
+        height: rows,
+        ..body
+    })
+}
+
+/// A second box in the frame, drawn as the first is: `title` on its top edge at the left and
+/// `note` at the right. Returns where its rows go, one cell in from each border.
+pub fn draw_panel(
+    buf: &mut Buffer,
+    area: Rect,
+    title: &[Span<'static>],
+    note: &[Span<'static>],
+    theme: &Theme,
+) -> Rect {
+    if area.width < 4 || area.height < 2 {
+        return Rect::default();
+    }
+    let border = marks::decoration(theme.style(Role::Bright));
+    let set = if theme.glyphs.prompt.is_ascii() {
+        ASCII_BORDER
+    } else {
+        ratatui::symbols::border::ROUNDED
+    };
+    Block::bordered()
+        .border_set(set)
+        .border_style(border)
+        .render(area, buf);
+    let edge = |buf: &mut Buffer, x: u16, spans: &[Span<'static>]| {
+        let mut text = vec![Span::raw(" ")];
+        text.extend(spans.iter().cloned());
+        text.push(Span::raw(" "));
+        let width = spans_width(&text) as u16;
+        for cell_x in x..x.saturating_add(width) {
+            if let Some(cell) = buf.cell_mut((cell_x, area.y)) {
+                cell.reset();
+            }
+        }
+        panes::put(buf, x, area.y, width, &Line::from(text));
+    };
+    let room = usize::from(area.width.saturating_sub(4));
+    let title = truncate_spans(title, room);
+    let title_width = spans_width(&title);
+    if title_width > 0 {
+        edge(buf, area.x + 1, &title);
+    }
+    // The note needs its own two spaces and three cells of border after the title.
+    let note_width = spans_width(note);
+    if note_width > 0 && title_width + 2 + 3 + note_width + 2 < room + 2 {
+        // One cell of border stays between the note and the corner.
+        let x = area.right().saturating_sub(note_width as u16 + 4);
+        edge(buf, x, note);
+    }
+    Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width - 4,
+        height: area.height - 2,
+    }
+}
+
+const ASCII_BORDER: ratatui::symbols::border::Set = ratatui::symbols::border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
+
+/// A dim note at the right end of the box's top edge, such as who does a phase's work. It is
+/// left out when the right pane's title, `title_width` cells of it, leaves it no room.
+pub fn draw_title_note(
+    buf: &mut Buffer,
+    dock: &Dock,
+    note: &str,
+    title_width: usize,
+    theme: &Theme,
+) {
+    let body = dock.panes.body;
+    let note = sanitize_line(note);
+    let note = note.trim();
+    if note.is_empty() || body.width < 4 || body.height == 0 {
+        return;
+    }
+    let text = format!(" {note} ");
+    let width = str_width(&text);
+    let pane_start = if dock.panes.left.width > 0 {
+        usize::from(dock.panes.left.right()) + 2
+    } else {
+        usize::from(body.x) + 1
+    };
+    // The title's two spaces, and at least three cells of border between the two.
+    let free_from = pane_start + title_width + 2 + 3;
+    let Some(x) = usize::from(body.right()).checked_sub(2 + width) else {
+        return;
+    };
+    if x < free_from {
+        return;
+    }
+    let Ok(x) = u16::try_from(x) else {
+        return;
+    };
+    for cell_x in x..x.saturating_add(width as u16) {
+        if let Some(cell) = buf.cell_mut((cell_x, body.y)) {
+            cell.reset();
+        }
+    }
+    let line = Line::from(Span::styled(text, theme.style(Role::Dim)));
+    panes::put(buf, x, body.y, width as u16, &line);
+}
+
 /// A title on the top edge, ` Phases `, in its own style rather than the border's, so the
 /// border's decoration mark doesn't carry into it.
 fn put_title(buf: &mut Buffer, x: u16, y: u16, title: &str, room: u16, style: Style) {
@@ -315,6 +460,45 @@ pub fn position(first: usize, shown: usize, total: usize, theme: &Theme) -> Stri
         String::new()
     };
     format!("{}{dash}{end} of {total}{more}", first + 1)
+}
+
+/// What the last row of a panel says while the answer goes on above it.
+pub const PANEL_HINT: &str = "esc closes this · the answer keeps running";
+
+/// A view made for the whole screen, drawn as a panel under the working line because an
+/// answer was running when it opened: Claude Code's dialog rule in the card
+/// color, the view in the rows under it, and while the answer still runs a last row saying
+/// Esc closes the panel and not the answer.
+pub fn render_in_panel(
+    view: &mut dyn super::View,
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &super::ViewCtx<'_>,
+    answer_running: bool,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let theme = ctx.theme;
+    let rule = Line::from(marks::decorative(
+        theme.glyphs.rule.repeat(usize::from(area.width)),
+        theme.style(Role::Card),
+    ));
+    buf.set_line(area.x, area.y, &rule, area.width);
+    let hint_rows = u16::from(answer_running && area.height > 3);
+    let inner = Rect {
+        y: area.y + 1,
+        height: area.height - 1 - hint_rows,
+        ..area
+    };
+    view.render(inner, buf, ctx);
+    if hint_rows == 1 {
+        let hint = Line::from(Span::styled(
+            format!("  {PANEL_HINT}"),
+            theme.style(Role::Dim),
+        ));
+        buf.set_line(area.x, area.bottom() - 1, &hint, area.width);
+    }
 }
 
 /// The frame's rows as lines, for the bottom region to paint.
@@ -381,6 +565,7 @@ mod tests {
                 names: vec![stability::samples::CJK.to_owned()],
                 description: stability::samples::EMOJI.to_owned(),
                 totals: "8/9 agents · 2h44m".to_owned(),
+                ..Heading::default()
             };
             draw_heading(&mut buf, &dock, &heading, &theme);
             draw_box(
@@ -394,6 +579,39 @@ mod tests {
         }
     }
 
+    /// A view made for the whole screen keeps inside the panel's rows at every width: the rule
+    /// first, the hint last while the answer runs, and the view between them.
+    #[test]
+    fn a_whole_screen_view_fits_in_a_panel_at_every_width() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let state = crate::state::AppState::default();
+        let ctx = crate::views::ViewCtx {
+            theme: &theme,
+            state: &state,
+            now: std::time::Instant::now(),
+        };
+        let mut help = crate::views::help::HelpView::new(crate::keymap::Keymap::default());
+        for width in stability::WIDTHS {
+            for running in [true, false] {
+                let area = Rect::new(0, 0, width, MIN_ROWS);
+                let mut buf = Buffer::empty(area);
+                render_in_panel(&mut help, area, &mut buf, &ctx, running);
+                stability::assert_frames(&buf);
+                let rows: Vec<String> = lines(&buf)
+                    .iter()
+                    .map(|line| line.to_string().trim_end().to_owned())
+                    .collect();
+                assert!(rows[0].chars().all(|c| c == '─'), "{width}: {rows:#?}");
+                let hint = rows
+                    .last()
+                    .is_some_and(|row| row.contains("esc closes this"));
+                assert_eq!(hint, running, "{width}: {rows:#?}");
+                assert!(rows[1..].iter().any(|row| !row.is_empty()), "{rows:#?}");
+            }
+        }
+    }
+
     #[test]
     fn the_description_ends_one_space_before_the_totals() {
         let theme = Theme::dark();
@@ -404,6 +622,7 @@ mod tests {
             names: vec!["fix-it".to_owned()],
             description: "a description far too long for the row it has".to_owned(),
             totals: "6/8 agents · 4m31s".to_owned(),
+            ..Heading::default()
         };
         draw_heading(&mut buf, &dock, &heading, &theme);
         let row: String = (0..area.width)
@@ -415,6 +634,25 @@ mod tests {
             str_width(row.trim_end()),
             usize::from(dock.panes.body.right())
         );
+    }
+
+    /// What needs you is marked as that state is in every view, so a theme that moves the
+    /// state's color moves this line's mark too.
+    #[test]
+    fn a_line_that_needs_you_carries_that_states_mark_in_its_color() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let area = Rect::new(0, 0, 60, 14);
+        let mut buf = Buffer::empty(area);
+        let dock = split(area, 10, 1);
+        let line = StatusLine {
+            kind: StatusKind::NeedsYou,
+            text: "the plan approval".to_owned(),
+        };
+        draw_status(&mut buf, &dock, &[line], &theme);
+        let mark = &buf[(dock.status.x, dock.status.y)];
+        assert_eq!(mark.symbol(), "◆");
+        assert_eq!(mark.fg, theme.style(Role::StateNeedsYou).fg.unwrap());
     }
 
     #[test]

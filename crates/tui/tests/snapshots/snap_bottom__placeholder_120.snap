@@ -1,8 +1,8 @@
 ---
-source: crates/tui/tests/bottom.rs
+source: crates/tui/tests/snap_bottom.rs
 expression: text(&view.lines)
 ---
-──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
 ❯ Ask anything, or describe a change
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts

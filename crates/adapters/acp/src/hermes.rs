@@ -140,7 +140,7 @@ delegation:
         assert_eq!(config["delegation"]["max_concurrent_children"], json!(4));
         assert_eq!(config["fallback_providers"], json!([]));
         let long =
-            Path::new("/a-worktree-path-long-enough-that-yaml-would-fold-it-into-a-block/card-001");
+            Path::new("/a-worktree-path-long-enough-that-yaml-would-fold-it-into-a-block/task-001");
         let mut files = template();
         tune_config(&mut files, Path::new("/h"), long, None).unwrap();
         let line = format!("- {}/.agents/skills", long.display());

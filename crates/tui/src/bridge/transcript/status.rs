@@ -112,7 +112,7 @@ fn amount(limit: &BudgetAmount) -> String {
     match limit.unit {
         BudgetUnit::Usd => format::usd(limit.amount),
         BudgetUnit::Tokens => format!("{} tokens", format::tokens(limit.amount.max(0.0) as u64)),
-        BudgetUnit::Quota => format!("{:.0}% of quota", limit.amount * 100.0),
+        BudgetUnit::Quota => format!("{:.0}% of plan usage", limit.amount * 100.0),
         BudgetUnit::Minutes => format!("{:.0} minutes", limit.amount),
     }
 }
@@ -124,13 +124,13 @@ fn state(state: CardState) -> &'static str {
         CardState::Running => "running",
         CardState::Blocked => "blocked on a question",
         CardState::NeedsDecision => "needs a decision",
-        CardState::Gating => "running gates",
+        CardState::Gating => "running checks",
         CardState::InReview => "in review",
         CardState::Integrating => "integrating",
-        CardState::Integrated => "integrated",
+        CardState::Integrated => "merged into the run",
         CardState::Failed => "failed",
-        CardState::Escalated => "escalated",
-        CardState::Deferred => "waiting for budget",
+        CardState::Escalated => "needs you",
+        CardState::Deferred => "waiting for limit",
         CardState::Cancelled => "cancelled",
         CardState::TakenOver => "taken over",
     }

@@ -1,5 +1,10 @@
 //! The interface, the narrator, and notifications.
 
+mod check;
+mod look;
+mod places;
+mod widgets;
+
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
@@ -8,6 +13,22 @@ use serde::{Deserialize, Serialize};
 use super::Span;
 use crate::names::WorkerRef;
 use crate::{KeyScheme, Verbosity};
+
+pub use check::{BadValue, UiProblem, drop_bad_values};
+pub use look::{
+    ClockStyle, ColorText, Crossing, DurationStyle, FormatSettings, LevelSettings, Percent,
+    QuotaWording, ResetStyle, State, StateStyle, StatesSettings, Theme, Threshold, TokenStyle,
+};
+pub use places::{
+    AboveInputSettings, HiddenLine, PanelBar, PanelContext, UsagePeriod, UsageTab, ViewOpen,
+    ViewTab, ViewsSettings, WhenQuestion,
+};
+pub use widgets::{
+    Border, BudgetKeys, BudgetLimitKind, BudgetRun, ContextCategory, ContextDetail, ContextKeys,
+    ContextSession, HistoryKeys, LegendMarker, NoKeys, Place, QuotaKeys, ReceiptKeys, RunsKeys,
+    SpendBy, SpendKeys, Units, WidgetForm, WidgetLook, WidgetName, WidgetTable, WidgetWidth,
+    WidgetsSettings,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -27,7 +48,7 @@ pub struct UiSettings {
     pub motion: Motion,
     pub color: ColorChoice,
     pub bell: bool,
-    /// Most rows the live area (live blocks, cards, prompt) may take, as a share of the screen.
+    /// Most rows the live area (live blocks, questions, prompt) may take, as a share of the screen.
     pub live_area_max: f64,
     /// Working-line verbs: `voyage` (`Rowing…`, `Sailed for`) or `plain` (`Working…`, `Worked for`).
     pub verbs: VerbTheme,
@@ -36,10 +57,20 @@ pub struct UiSettings {
     /// Show a `※ recap:` after long turns and finished runs.
     pub recaps: bool,
     pub recap_after: Span,
-    /// `auto` asks the terminal for its background; `dark` or `light` forces a palette.
+    /// `auto` asks the terminal for its background; Claude Code's six themes, or
+    /// `custom:<name>` for a theme file.
     pub theme: Theme,
-    /// The accent color for the working glyph and verb, as `#rrggbb`. Unset is the warm gold.
+    /// The accent color for the working glyph and verb and its shimmer, as `#rrggbb`. Unset is
+    /// the warm gold.
     pub accent: Option<String>,
+    /// A role and its color, over the theme's, such as `"bar-fill" = "#b1b9f9"`.
+    pub colors: BTreeMap<String, ColorText>,
+    pub format: FormatSettings,
+    pub levels: LevelSettings,
+    pub states: StatesSettings,
+    pub above_input: AboveInputSettings,
+    pub views: ViewsSettings,
+    pub mods: WidgetsSettings,
     /// The panel under the mode line: one row per workflow run.
     pub panel: PanelSettings,
     /// The workflow view.
@@ -89,10 +120,15 @@ pub struct WorkflowViewSettings {
 #[serde(default)]
 pub struct PanelSettings {
     /// What an agent's own subagents or threads show.
+    #[serde(rename = "subagents")]
     pub vendor_internals: VendorInternals,
     /// Also list running agents under each workflow row.
     pub agents: bool,
     pub max_rows: u32,
+    /// What a run row's bar measures: agents (Claude Code's), tasks, spend, or time
+    pub bar: PanelBar,
+    /// How a row shows its agent's context: pills, words, or off
+    pub context: PanelContext,
 }
 
 impl Default for PanelSettings {
@@ -101,6 +137,8 @@ impl Default for PanelSettings {
             vendor_internals: VendorInternals::Discovered,
             agents: false,
             max_rows: 5,
+            bar: PanelBar::Agents,
+            context: PanelContext::Pills,
         }
     }
 }
@@ -130,14 +168,6 @@ pub enum VerbTheme {
     Plain,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Theme {
-    Auto,
-    Dark,
-    Light,
-}
-
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
@@ -158,6 +188,13 @@ impl Default for UiSettings {
             recap_after: Span::new("2m"),
             theme: Theme::Auto,
             accent: None,
+            colors: BTreeMap::new(),
+            format: FormatSettings::default(),
+            levels: LevelSettings::default(),
+            states: StatesSettings::default(),
+            above_input: AboveInputSettings::default(),
+            views: ViewsSettings::default(),
+            mods: WidgetsSettings::default(),
             panel: PanelSettings::default(),
             workflow: WorkflowViewSettings::default(),
             glyphs: Glyphs::Unicode,
@@ -166,6 +203,34 @@ impl Default for UiSettings {
             mod_output: ModOutput::Show,
             heads_up: HeadsUp::WhenEnabled,
         }
+    }
+}
+
+impl UiSettings {
+    /// The widgets that show in `place`, in order.
+    pub fn place(&self, place: Place) -> &[WidgetName] {
+        match place {
+            Place::AboveInput => &self.above_input.mods,
+            Place::Status => &self.views.status.mods,
+            Place::Usage => &self.views.usage.mods,
+            Place::Context => &self.views.context.mods,
+            Place::Budget => &self.views.budget.mods,
+        }
+    }
+
+    pub fn place_mut(&mut self, place: Place) -> &mut Vec<WidgetName> {
+        match place {
+            Place::AboveInput => &mut self.above_input.mods,
+            Place::Status => &mut self.views.status.mods,
+            Place::Usage => &mut self.views.usage.mods,
+            Place::Context => &mut self.views.context.mods,
+            Place::Budget => &mut self.views.budget.mods,
+        }
+    }
+
+    /// `widget`'s settings with every fallback applied.
+    pub fn widget(&self, widget: WidgetName) -> WidgetLook {
+        self.mods.look(widget, &self.levels)
     }
 }
 
@@ -288,5 +353,7 @@ impl Default for ChatSink {
 pub enum ChatTrigger {
     NeedsYou,
     Finished,
+    /// An agent's CLI went down.
+    #[serde(rename = "agent_down")]
     VendorDown,
 }

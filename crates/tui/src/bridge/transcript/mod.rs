@@ -81,8 +81,11 @@ impl Transcript {
                 worker,
                 earlier,
                 turns,
+                ..
             } => replay::chat_resumed(chat, title, worker.as_ref(), earlier, turns, cx),
             AppEvent::Report { title, lines } => items::report(title, lines, cx),
+            AppEvent::Folded { title, lines, more } => items::folded(title, lines, more, cx),
+            AppEvent::Continued { text } => items::continued(text, cx),
             AppEvent::Recap { text, .. } => items::recap(text, cx),
             AppEvent::SettingChanged {
                 key,

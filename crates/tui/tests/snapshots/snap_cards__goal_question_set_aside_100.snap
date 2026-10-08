@@ -2,9 +2,7 @@
 source: crates/tui/tests/snap_cards.rs
 expression: "text(&bottom_lines(&aside, width))"
 ---
-◆ What should the goal say? · 1 of 2 · needs you · ↑ to answer
-
-──────────────────────────────────────────────────────────────────────────── peer-crew · all hands ─
-❯ ↑ to answer the card
+────────────────────────────────────────────────────────────────────────────── council · ultracode ─
+❯ Try "review the last commit"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 1 needs you
+  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts

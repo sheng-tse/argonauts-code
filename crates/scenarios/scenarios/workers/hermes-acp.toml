@@ -1,4 +1,4 @@
-# The fake `hermes` in ACP mode owns a solo card through the built-in Hermes profile. It takes
+# The fake `hermes` in ACP mode owns a solo task through the built-in Hermes profile. It takes
 # the model the client sets, writes hello.txt, reports through `argonauts_report`, and ends
 # the turn.
 

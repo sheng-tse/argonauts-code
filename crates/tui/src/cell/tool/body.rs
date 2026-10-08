@@ -4,13 +4,14 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::{Todo, TodoState, ToolCall, ToolItem, ToolState, ToolTitle};
+use super::{PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolState, ToolTitle};
 use crate::cell::Tone;
 use crate::cell::layout::{BODY_COL, NEST, hook, indent, more_row};
 use crate::markdown::{Indent, render_markdown};
 use crate::render::RenderCtx;
 use crate::text::{sanitize, sanitize_line, str_width, truncate_spans, wrap_spans};
 use crate::theme::{Role, Theme};
+use crate::views::panes::Marks;
 
 const OUTPUT_LINES: usize = 5;
 const COMMAND_LINES: usize = 10;
@@ -58,7 +59,7 @@ pub(in crate::cell) fn item_rows(
 ) -> Vec<Line<'static>> {
     match item {
         ToolItem::Text { text, tone } => text_rows(text, *tone, ctx, vec![indent(col)], col),
-        ToolItem::Hanging { lead, text } => hanging_rows(lead, text, ctx, col),
+        ToolItem::Phases(phases) => phase_rows(phases, ctx, col),
         ToolItem::Command {
             command,
             output: lines,
@@ -154,6 +155,12 @@ pub(in crate::cell) fn nested_rows(
     };
     content.extend(call.failed_word(ctx));
     content.extend(call.stats.span(ctx));
+    if let Some(tail) = &call.tail {
+        content.push(Span::styled(
+            sanitize_line(tail).into_owned(),
+            theme.style(Role::Dim),
+        ));
+    }
     let mut rows = wrap_spans(&content, width, &head, &[indent(hang)]);
     let output = output_role(call);
     for item in &call.body {
@@ -179,13 +186,46 @@ pub(in crate::cell) fn text_rows(
     wrap_spans(&spans, usize::from(ctx.width), &first, &[indent(col)])
 }
 
-fn hanging_rows(lead: &str, text: &str, ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'static>> {
-    let dim = ctx.theme.style(Role::Dim);
-    let lead = sanitize_line(lead).into_owned();
-    let under = col + str_width(&lead);
-    let first = [indent(col), Span::styled(lead, dim)];
-    let spans = [Span::styled(sanitize_line(text).into_owned(), dim)];
-    wrap_spans(&spans, usize::from(ctx.width), &first, &[indent(under)])
+/// A workflow's phases on one line in its order, as the chat's workflow row draws them:
+/// `◐ Build · Review · ★ Secrets scan · Merge`. The first is under way when the row prints.
+/// A step you require carries the mark, and a line under them says what it means.
+fn phase_rows(phases: &[PhaseLine], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'static>> {
+    if phases.is_empty() {
+        return Vec::new();
+    }
+    let theme = ctx.theme;
+    let dim = theme.style(Role::Dim);
+    let star = Marks::for_theme(theme).required;
+    let mut spans = Vec::new();
+    for (i, phase) in phases.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+        }
+        let style = if i == 0 {
+            spans.push(crate::views::states::span(
+                crate::widgets::State::Working,
+                theme,
+            ));
+            spans.push(Span::raw(" "));
+            theme.style(Role::Card)
+        } else {
+            dim
+        };
+        if phase.required {
+            spans.push(Span::styled(format!("{star} "), theme.style(Role::Accent)));
+        }
+        let title = sanitize_line(phase.title.trim()).into_owned();
+        spans.push(Span::styled(title, style));
+    }
+    let lead = [indent(col)];
+    let mut rows = wrap_spans(&spans, usize::from(ctx.width), &lead, &lead);
+    if phases.iter().any(|phase| phase.required) {
+        rows.push(Line::from(vec![
+            indent(col),
+            Span::styled(format!("{star} a step you require"), dim),
+        ]));
+    }
+    rows
 }
 
 fn command_rows(

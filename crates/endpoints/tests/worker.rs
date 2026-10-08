@@ -85,7 +85,7 @@ fn spec(dir: &Path) -> SessionSpec {
     let mut spec = session_spec("fake/fake-model", Access::NoTools, dir);
     spec.prompt = vec![
         part(InputPartKind::Prompt, "You are a careful reviewer.\n"),
-        part(InputPartKind::StepInput, "Review card 3."),
+        part(InputPartKind::StepInput, "Review task 3."),
     ];
     spec
 }

@@ -35,11 +35,12 @@ use argonauts_core::policy::{HardLimit, PolicyOutcome, Verdict};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::delivery::{DeliveryCommits, DeliveryWrite, UnbornLanding};
 use argonauts_core::settings::handoff::{MergeRule, UnknownTier};
 use argonauts_core::settings::protocol::GateCommand;
 use argonauts_core::steps::card::{CardReport, MemoryProposal, ReportStatus};
 use argonauts_core::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
-use argonauts_core::{CardId, RepoId, RunId};
+use argonauts_core::{CardId, RepoId, RunId, unborn};
 use argonauts_crew::checkpoints;
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::Shared;
@@ -96,9 +97,21 @@ impl Bench {
         settings: Settings,
         files: &[(&str, &str)],
     ) -> anyhow::Result<Self> {
-        let services = FakeServices::new();
         let repo = TempRepo::new()?;
         let base = repo.head()?;
+        Self::in_repo(repo, &base, cards, debt, settings, files).await
+    }
+
+    /// As [`Bench::with_work`], for a run that started from `base` in `repo`.
+    async fn in_repo(
+        repo: TempRepo,
+        base: &str,
+        cards: Vec<CardSpec>,
+        debt: Option<QualityDebt>,
+        settings: Settings,
+        files: &[(&str, &str)],
+    ) -> anyhow::Result<Self> {
+        let services = FakeServices::new();
         let state_dir = repo.scratch().join("argonauts");
         let layout = RepoContext {
             id: RepoId::from_canonical_path(repo.root()),
@@ -108,7 +121,7 @@ impl Bench {
             base_worktree: state_dir.join("worktrees").join(TEST_RUN).join("base"),
         };
         let mut history = vec![
-            (None, started(&repo, &base)),
+            (None, started(&repo, base)),
             (None, goal_approved()?),
             (None, plan_opened(&cards)),
             (None, plan_approved()),
@@ -202,6 +215,30 @@ impl Bench {
         git_in(&self.repo, &self.integration, &["rev-parse", "HEAD"])
     }
 
+    /// `rev` holds the run as it lands by default: the run's files, in one commit of its own
+    /// with one parent, and none of the run's own commits or merges.
+    fn landed_on(&self, rev: &str) -> anyhow::Result<()> {
+        let root = self.repo.root();
+        let tree = |rev: &str| git_in(&self.repo, root, &["rev-parse", &format!("{rev}^{{tree}}")]);
+        let head = self.integration_head()?;
+        anyhow::ensure!(
+            tree(rev)? == tree(&head)?,
+            "{rev} doesn't hold the run's files"
+        );
+        let with_parents = git_in(&self.repo, root, &["rev-list", "--parents", "-n", "1", rev])?;
+        anyhow::ensure!(
+            with_parents.split_whitespace().count() == 2,
+            "{rev} isn't one commit on your branch: {with_parents}"
+        );
+        let merged = git_in(
+            &self.repo,
+            root,
+            &["merge-base", "--is-ancestor", &head, rev],
+        );
+        anyhow::ensure!(merged.is_err(), "{rev} carries the run's own history");
+        Ok(())
+    }
+
     /// A commit on main in the repository's own checkout.
     fn move_main(&self, file: &str) -> anyhow::Result<String> {
         self.repo.write(file, "main moved\n")?;
@@ -237,7 +274,7 @@ impl Bench {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        bail!("no merge checkpoint opened")
+        bail!("no merge approval opened")
     }
 
     /// Waits for an open "original is back" card.
@@ -254,7 +291,7 @@ impl Bench {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        bail!("no \"original is back\" card opened")
+        bail!("no \"original is back\" question opened")
     }
 
     /// The run saw `name`'s vendor go down, and the board has it healthy again.
@@ -354,7 +391,7 @@ impl Bench {
 
 fn suite_settings() -> Settings {
     let mut settings = Settings::default();
-    settings.gates.full_suite = vec![GateCommand {
+    settings.checks.full_suite = vec![GateCommand {
         name: "suite".to_owned(),
         command: vec!["true".to_owned()],
     }];
@@ -406,7 +443,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         title: "Redis store".to_owned(),
         mode: RunMode::Crew,
         forced: true,
-        preset: "default".to_owned(),
+        workflow: "default".to_owned(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -423,6 +460,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         version: "0.0.1".to_owned(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     })))
 }
 
@@ -640,8 +678,7 @@ async fn main_moved_merged_in_and_rechecked() -> anyhow::Result<()> {
     assert_eq!(checks, [true, true], "the suite ran again on the new main");
 
     // The run's own diff didn't change, so the approval carried over and main fast-forwarded.
-    let head = bench.integration_head()?;
-    assert_eq!(bench.repo.head()?, head);
+    bench.landed_on("HEAD")?;
     for file in ["store.rs", "before.txt", "while-waiting.txt"] {
         assert!(bench.repo.root().join(file).exists(), "{file}");
     }
@@ -677,14 +714,13 @@ async fn merge_fast_forward_or_pr() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    let head = bench.integration_head()?;
-    assert_eq!(bench.repo.head()?, head);
+    bench.landed_on("HEAD")?;
     assert!(
         bench
             .integration_events()
             .contains(&IntegrationEvent::Landed {
                 target: "main".to_owned(),
-                sha: head,
+                sha: bench.repo.head()?,
                 fast_forward: true,
             })
     );
@@ -701,10 +737,7 @@ async fn merge_fast_forward_or_pr() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    assert_eq!(
-        bench.repo.git(&["rev-parse", "main"])?,
-        bench.integration_head()?
-    );
+    bench.landed_on("main")?;
     assert_eq!(bench.repo.git(&["branch", "--show-current"])?, "elsewhere");
 
     // A pull request: the command is recorded, and with no remote it isn't run.
@@ -782,8 +815,7 @@ async fn merge_refused_when_head_moved_after_approval() -> anyhow::Result<()> {
         });
     assert!(refused, "no HeadMoved refusal recorded");
     // What landed is what you approved the second time, late change included.
-    let head = bench.integration_head()?;
-    assert_eq!(bench.repo.head()?, head);
+    bench.landed_on("HEAD")?;
     assert!(bench.repo.root().join("late.rs").exists());
     Ok(())
 }
@@ -900,7 +932,7 @@ async fn the_original_back_at_the_merge_card_asks_first() -> anyhow::Result<()> 
                     .open_for(CheckpointKind::Merge, None)
                     .is_some()
             });
-            ensure!(!merge_cards, "the merge card opened beside it");
+            ensure!(!merge_cards, "the merge approval opened beside it");
             bench.answer(&back, AnswerAction::UpgradeReview)?;
             let merge = bench.next_merge_card(&[]).await?;
             let CheckpointPacket::Merge(packet) = &merge.packet else {
@@ -990,13 +1022,13 @@ async fn the_original_takes_its_card_back_from_the_merge_card() -> anyhow::Resul
     let worked = original
         .specs()
         .into_iter()
-        .find(|spec| spec.role == RoleName::Owner)
+        .find(|spec| spec.role == RoleName::Worker)
         .context("the original never worked on it")?;
     assert!(
         worked
             .prompt
             .iter()
-            .any(|part| part.text.contains("is back and continues the card"))
+            .any(|part| part.text.contains("is back and continues the task"))
     );
     assert!(bench.integration.join("back.rs").exists());
     Ok(())
@@ -1010,7 +1042,11 @@ async fn a_withdrawn_merge_card_opens_again() -> anyhow::Result<()> {
     let done = bench
         .run(async {
             let first = bench.next_merge_card(&[]).await?;
-            checkpoints::withdraw(&bench.host, &first.id, "you reverted card-001 to handoff-1")?;
+            checkpoints::withdraw(
+                &bench.host,
+                &first.id,
+                "you reverted task-001 to fallback-1",
+            )?;
             let second = bench
                 .next_merge_card(std::slice::from_ref(&first.id))
                 .await?;
@@ -1019,7 +1055,7 @@ async fn a_withdrawn_merge_card_opens_again() -> anyhow::Result<()> {
                 evidence
                     .agent_outputs
                     .iter()
-                    .any(|line| line.contains("you reverted card-001")),
+                    .any(|line| line.contains("you reverted task-001")),
                 "{:?}",
                 evidence.agent_outputs
             );
@@ -1045,7 +1081,7 @@ impl Bench {
         };
         ensure!(
             packet.waits_on_you(),
-            "a merge card without files in the way: {}",
+            "a merge approval without files in the way: {}",
             opened.title
         );
         Ok(opened)
@@ -1069,6 +1105,715 @@ impl Bench {
     }
 }
 
+/// A merge that waits on a file of yours lands by itself once you've moved the file: nobody
+/// has to come back and answer.
+#[tokio::test]
+async fn a_waiting_merge_lands_by_itself_once_your_file_is_out_of_the_way() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.repo.write("store.rs", "// my own draft\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            ensure!(!bench.landed(), "merged over your file");
+            std::fs::rename(
+                bench.repo.root().join("store.rs"),
+                bench.repo.scratch().join("my-draft.rs"),
+            )?;
+            // No answer: the run looks again by itself.
+            drop(asked);
+            Ok(())
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    bench.landed_on("HEAD")?;
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
+        "fn store() {}\n"
+    );
+    Ok(())
+}
+
+/// Files of yours that already hold what the run brings aren't in its way: an untracked
+/// file with the same bytes and an edit that matches the run's, as a landing cut short
+/// leaves them. The run merges without asking, and nothing of yours is left aside.
+#[tokio::test]
+async fn files_that_already_hold_the_runs_work_are_taken_as_they_are() -> anyhow::Result<()> {
+    let bench = Bench::with_work(
+        vec![spec(&CardId::numbered(1))],
+        None,
+        suite_settings(),
+        &[("README.md", "# From the run\n")],
+    )
+    .await?;
+    bench.repo.write("store.rs", "fn store() {}\n")?;
+    bench.repo.write("README.md", "# From the run\n")?;
+    let done = bench.run(merged(&bench)).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    bench.landed_on("HEAD")?;
+    let waited = bench
+        .integration_events()
+        .iter()
+        .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+    assert!(!waited, "waited on files that hold the run's work");
+    assert_eq!(bench.repo.git(&["status", "--porcelain"])?, "");
+    assert!(!bench.host.repo().run_dir.join("landing-aside").exists());
+    Ok(())
+}
+
+/// The same holds when the run only writes your files: a file that matches the run's
+/// version already stays as it is, and the rest is written.
+#[tokio::test]
+async fn writing_files_takes_yours_that_already_match() -> anyhow::Result<()> {
+    let mut settings = suite_settings();
+    settings.delivery.write = DeliveryWrite::Files;
+    let bench = Bench::with_work(
+        vec![spec(&CardId::numbered(1))],
+        None,
+        settings,
+        &[("README.md", "# From the run\n")],
+    )
+    .await?;
+    let base = bench.repo.head()?;
+    bench.repo.write("store.rs", "fn store() {}\n")?;
+    let done = bench.run(merged(&bench)).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, base);
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("README.md"))?,
+        "# From the run\n"
+    );
+    let mut status: Vec<String> = bench
+        .repo
+        .git(&["status", "--porcelain"])?
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .collect();
+    status.sort();
+    assert_eq!(status, ["?? store.rs", "M README.md"]);
+    Ok(())
+}
+
+/// A landing cut short with a file of yours set aside puts it back before anything else,
+/// whatever the answer.
+#[tokio::test]
+async fn a_file_left_set_aside_goes_back_before_the_run_lands() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let aside = bench
+        .host
+        .repo()
+        .run_dir
+        .join("landing-aside/notes/todo.txt");
+    std::fs::create_dir_all(aside.parent().context("no folder")?)?;
+    std::fs::write(&aside, "mine\n")?;
+    let done = bench.run(merged(&bench)).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("notes/todo.txt"))?,
+        "mine\n"
+    );
+    assert!(!bench.host.repo().run_dir.join("landing-aside").exists());
+    Ok(())
+}
+
+/// Answers the merge approval with Merge.
+async fn merged(bench: &Bench) -> anyhow::Result<()> {
+    let opened = bench.next_merge_card(&[]).await?;
+    bench.answer(&opened, AnswerAction::Merge)
+}
+
+/// `delivery.commits = "as_run"` lands the run's history as it happened, and `"per_task"` one
+/// commit for each step the run took.
+#[tokio::test]
+async fn delivery_can_keep_the_runs_history_or_a_commit_per_task() -> anyhow::Result<()> {
+    let mut as_run = suite_settings();
+    as_run.delivery.commits = DeliveryCommits::AsRun;
+    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, as_run).await?;
+    let done = bench.run(merged(&bench)).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+
+    let mut per_task = suite_settings();
+    per_task.delivery.commits = DeliveryCommits::PerTask;
+    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, per_task).await?;
+    let base = bench.repo.head()?;
+    let steps = git_in(
+        &bench.repo,
+        &bench.integration,
+        &[
+            "rev-list",
+            "--first-parent",
+            "--count",
+            &format!("{base}..HEAD"),
+        ],
+    )?;
+    let done = bench.run(merged(&bench)).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let root = bench.repo.root();
+    let landed = git_in(
+        &bench.repo,
+        root,
+        &["rev-list", "--count", &format!("{base}..main")],
+    )?;
+    assert_eq!(landed, steps, "one commit for each step of the run");
+    let merges = git_in(
+        &bench.repo,
+        root,
+        &["rev-list", "--merges", &format!("{base}..main")],
+    )?;
+    assert!(merges.is_empty(), "a merge commit landed: {merges}");
+    assert_eq!(
+        git_in(&bench.repo, root, &["rev-parse", "main^{tree}"])?,
+        git_in(
+            &bench.repo,
+            &bench.integration,
+            &["rev-parse", "HEAD^{tree}"]
+        )?
+    );
+    Ok(())
+}
+
+/// `delivery.write = "files"` writes the run's changes into your checkout and commits
+/// nothing: your branch and your index stay as they were, and what's yours in the way still
+/// makes the run wait.
+#[tokio::test]
+async fn delivery_can_write_your_files_and_leave_the_commit_to_you() -> anyhow::Result<()> {
+    let mut settings = suite_settings();
+    settings.delivery.write = DeliveryWrite::Files;
+    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
+    let base = bench.repo.head()?;
+    // Yours: a staged edit to a file the run leaves alone.
+    bench.repo.write("README.md", "# Mine\n")?;
+    bench.repo.git(&["add", "README.md"])?;
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, base, "your branch didn't move");
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
+        "fn store() {}\n"
+    );
+    let status = bench.repo.git(&["status", "--porcelain"])?;
+    assert!(
+        status.contains("M  README.md"),
+        "your staged edit: {status}"
+    );
+    assert!(
+        status.contains("?? store.rs"),
+        "the run's file, uncommitted: {status}"
+    );
+    assert!(
+        bench
+            .notes()
+            .iter()
+            .any(|note| note.starts_with("The run's changes are in your files, uncommitted")),
+        "{:?}",
+        bench.notes()
+    );
+    assert!(!bench.host.repo().run_dir.join("landing.index").exists());
+    Ok(())
+}
+
+/// Under `delivery.write = "files"`, files the run wrote that you then committed, as after a
+/// landing cut short before it was recorded: your branch holds the run's work in a commit of
+/// yours. That reads as merged, and the run review's notes don't follow your branch.
+#[tokio::test]
+async fn your_commit_of_the_runs_files_reads_as_merged() -> anyhow::Result<()> {
+    let mut settings = suite_settings();
+    settings.delivery.write = DeliveryWrite::Files;
+    settings.evolution.propose_every = 0;
+    let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            let head = bench.integration_head()?;
+            for file in bench
+                .repo
+                .git(&["ls-tree", "-r", "--name-only", &head])?
+                .lines()
+            {
+                let text = bench.repo.git(&["show", &format!("{head}:{file}")])?;
+                bench.repo.write(file, &format!("{text}\n"))?;
+                bench.repo.git(&["add", file])?;
+            }
+            bench.repo.git(&["commit", "-q", "-m", "Mine"])?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let mine = bench.repo.head()?;
+    let fast_forward = bench
+        .integration_events()
+        .iter()
+        .find_map(|event| match event {
+            IntegrationEvent::Landed { fast_forward, .. } => Some(*fast_forward),
+            _ => None,
+        });
+    assert_eq!(
+        fast_forward,
+        Some(false),
+        "your branch was taken as the run's"
+    );
+    retro::run(&bench.host).await?;
+    assert_eq!(bench.repo.head()?, mine, "nothing followed your commit");
+    Ok(())
+}
+
+/// A run in a repository that had no commit when it started: your files with nothing on your
+/// branch, README.md staged, and the run's base a snapshot of them with no parent at the
+/// run's own ref. The run changes README.md beside its own new file.
+async fn started_before_your_first_commit() -> anyhow::Result<Bench> {
+    before_your_first_commit_with(suite_settings()).await
+}
+
+async fn before_your_first_commit_with(settings: Settings) -> anyhow::Result<Bench> {
+    let repo = TempRepo::new()?;
+    let tree = repo.git(&["rev-parse", "HEAD^{tree}"])?;
+    let snapshot = repo.git(&["commit-tree", &tree, "-m", "your files"])?;
+    let run = RunId::new(TEST_RUN)?;
+    repo.git(&["update-ref", &unborn::base_ref(&run), &snapshot])?;
+    repo.git(&["update-ref", "-d", "refs/heads/main"])?;
+    ensure!(repo.head().is_err(), "the branch still has a commit");
+    Bench::in_repo(
+        repo,
+        &snapshot,
+        vec![spec(&CardId::numbered(1))],
+        None,
+        settings,
+        &[("README.md", "# From the run\n")],
+    )
+    .await
+}
+
+/// With no commit to move forward from, the run's work comes back as files: nothing is
+/// committed or staged, your branch still has nothing on it, and the file you staged, which
+/// your index lists as a change of yours, isn't taken for one in the way.
+#[tokio::test]
+async fn a_run_started_before_your_first_commit_lands_as_files() -> anyhow::Result<()> {
+    let bench = started_before_your_first_commit().await?;
+    let staged = bench.repo.git(&["diff", "--cached", "--name-only"])?;
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            // No branch moves, so the question names what the run's work goes into.
+            ensure!(
+                opened.title == "Merge this run into your files?",
+                "{}",
+                opened.title
+            );
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let landed_on = bench
+        .integration_events()
+        .into_iter()
+        .find_map(|event| match event {
+            IntegrationEvent::Landed {
+                target,
+                fast_forward,
+                ..
+            } => Some((target, fast_forward)),
+            _ => None,
+        });
+    assert_eq!(landed_on, Some(("your files".to_owned(), false)));
+
+    let root = bench.repo.root();
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md"))?,
+        "# From the run\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("store.rs"))?,
+        "fn store() {}\n"
+    );
+    assert!(
+        bench.repo.head().is_err(),
+        "a first commit was made for you"
+    );
+    assert_eq!(
+        bench.repo.git(&["diff", "--cached", "--name-only"])?,
+        staged,
+        "your staging area changed"
+    );
+    assert_eq!(
+        bench.repo.git(&["show", ":README.md"])?,
+        "# Test repo",
+        "what you staged is still what you staged"
+    );
+    assert!(
+        bench
+            .notes()
+            .iter()
+            .any(|note| note.starts_with("The run's changes are in your files for you to commit")),
+        "{:?}",
+        bench.notes()
+    );
+    let moved = bench
+        .integration_events()
+        .iter()
+        .any(|event| matches!(event, IntegrationEvent::MainMoved { .. }));
+    assert!(!moved, "nothing of your branch to bring in");
+    for scratch in ["landing.index", "in-the-way.index"] {
+        assert!(
+            !bench.host.repo().run_dir.join(scratch).exists(),
+            "{scratch}"
+        );
+    }
+    Ok(())
+}
+
+/// A file you changed since the snapshot is yours, so the run waits and names it, and lands
+/// by itself once the file is as it was.
+#[tokio::test]
+async fn an_edit_since_the_snapshot_makes_the_files_wait() -> anyhow::Result<()> {
+    let bench = started_before_your_first_commit().await?;
+    bench.repo.write("README.md", "# Mine now\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            ensure!(!bench.landed(), "wrote over your edit");
+            let waiting = bench
+                .host
+                .read(|state| state.integration.waiting_to_merge.clone());
+            ensure!(waiting == ["README.md"], "{waiting:?}");
+            ensure!(
+                std::fs::read_to_string(bench.repo.root().join("README.md"))? == "# Mine now\n",
+                "your edit is gone"
+            );
+            ensure!(
+                !bench.repo.root().join("store.rs").exists(),
+                "half of the run was written"
+            );
+            bench.repo.write("README.md", "# Test repo\n")?;
+            drop(asked);
+            Ok(())
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("README.md"))?,
+        "# From the run\n"
+    );
+    Ok(())
+}
+
+/// A landing as files that was cut short after the writing, before the run recorded it: your
+/// files hold the run's work already. Taken up again, that reads as landed, and never as
+/// edits of yours in the run's way.
+#[tokio::test]
+async fn files_written_before_a_crash_are_not_in_their_own_way() -> anyhow::Result<()> {
+    let before_a_commit = started_before_your_first_commit().await?;
+    let mut settings = suite_settings();
+    settings.delivery.write = DeliveryWrite::Files;
+    let asked = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
+    for bench in [before_a_commit, asked] {
+        let head = bench.integration_head()?;
+        for file in bench
+            .repo
+            .git(&["ls-tree", "-r", "--name-only", &head])?
+            .lines()
+        {
+            let text = bench.repo.git(&["show", &format!("{head}:{file}")])?;
+            bench.repo.write(file, &format!("{text}\n"))?;
+        }
+        let done = bench
+            .run(async {
+                let first = bench.next_merge_card(&[]).await?;
+                bench.answer(&first, AnswerAction::Merge)
+            })
+            .await?;
+        assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+        ensure!(bench.landed(), "the landing wasn't recorded");
+        let waited = bench
+            .integration_events()
+            .iter()
+            .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+        ensure!(!waited, "the run's own files were taken for yours");
+    }
+    Ok(())
+}
+
+/// A landing as files cut short partway, before a first commit: what it wrote holds the
+/// run's work already, so only the rest is written, and nothing waits on you.
+#[tokio::test]
+async fn files_written_partway_are_not_in_the_way_of_the_rest() -> anyhow::Result<()> {
+    let bench = started_before_your_first_commit().await?;
+    bench.repo.write("README.md", "# From the run\n")?;
+    let done = bench.run(merged(&bench)).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let waited = bench
+        .integration_events()
+        .iter()
+        .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+    assert!(!waited, "the run's own file was taken for yours");
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
+        "fn store() {}\n"
+    );
+    assert!(
+        bench.repo.head().is_err(),
+        "a first commit was made for you"
+    );
+    Ok(())
+}
+
+/// Your first commit, made while the run worked, shares no history with the snapshot the run
+/// started from. The run still lands as files over what it started from, and your commit and
+/// branch stay as you made them.
+#[tokio::test]
+async fn a_first_commit_made_meanwhile_stays_yours() -> anyhow::Result<()> {
+    let bench = started_before_your_first_commit().await?;
+    let yours = bench.repo.commit_all("my first commit")?;
+    let done = bench.run(merged(&bench)).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, yours, "your branch moved");
+    // The run's work, as changes of yours to commit: one file edited, one new.
+    let unstaged = bench.repo.git(&["diff", "--name-only"])?;
+    assert_eq!(unstaged, "README.md");
+    let status = bench.repo.git(&["status", "--porcelain"])?;
+    assert!(status.contains("?? store.rs"), "{status}");
+    Ok(())
+}
+
+/// A run that started before your first commit, under `merge.unborn = "first_commit"`.
+async fn asked_for_your_first_commit() -> anyhow::Result<Bench> {
+    let mut settings = suite_settings();
+    settings.merge.unborn = UnbornLanding::FirstCommit;
+    settings.evolution.propose_every = 0;
+    before_your_first_commit_with(settings).await
+}
+
+impl Bench {
+    /// What landed, where, and whether a branch of yours moved to it.
+    fn landing(&self) -> Option<(String, String, bool)> {
+        self.integration_events()
+            .into_iter()
+            .find_map(|event| match event {
+                IntegrationEvent::Landed {
+                    target,
+                    sha,
+                    fast_forward,
+                } => Some((target, sha, fast_forward)),
+                _ => None,
+            })
+    }
+
+    /// `main` holds one commit with no parent, made for the run, with the run's files.
+    fn main_has_the_runs_first_commit(&self) -> anyhow::Result<String> {
+        let first = self.repo.head()?;
+        let with_parents = self
+            .repo
+            .git(&["rev-list", "--parents", "-n", "1", &first])?;
+        ensure!(with_parents == first, "it has a parent: {with_parents}");
+        let tree = |rev: &str| self.repo.git(&["rev-parse", &format!("{rev}^{{tree}}")]);
+        ensure!(
+            tree(&first)? == tree(&self.integration_head()?)?,
+            "it doesn't hold the run's files"
+        );
+        let message = self.repo.git(&["log", "-1", "--format=%B", &first])?;
+        ensure!(
+            message.contains(&format!("Argonauts-Run: {TEST_RUN}")),
+            "it doesn't name the run: {message}"
+        );
+        Ok(first)
+    }
+}
+
+/// `merge.unborn = "first_commit"`: the run gives your branch its first commit, one commit
+/// with no parent that holds your files as the run found them and its work, and the approval
+/// says so before you answer. Afterwards git shows only what you did since the run started.
+#[tokio::test]
+async fn a_run_can_make_your_branchs_first_commit() -> anyhow::Result<()> {
+    let bench = asked_for_your_first_commit().await?;
+    // Yours since the run started, beside what the run changes: a new file, staged.
+    bench.repo.write("notes.txt", "mine\n")?;
+    bench.repo.git(&["add", "notes.txt"])?;
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            ensure!(
+                opened.title == "Merge this run into main?",
+                "{}",
+                opened.title
+            );
+            let evidence = checkpoints::evidence_of(&bench.host, &opened)?;
+            ensure!(
+                evidence.agent_outputs.iter().any(|line| line
+                    .starts_with("main has no commits yet, so merging makes its first one")),
+                "{:?}",
+                evidence.agent_outputs
+            );
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let first = bench.main_has_the_runs_first_commit()?;
+    assert_eq!(
+        bench.landing(),
+        Some(("main".to_owned(), first.clone(), true))
+    );
+
+    let root = bench.repo.root();
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md"))?,
+        "# From the run\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("store.rs"))?,
+        "fn store() {}\n"
+    );
+    assert_eq!(
+        bench.repo.git(&["status", "--porcelain"])?,
+        "A  notes.txt",
+        "only what you did since the run started is a change"
+    );
+    assert!(
+        bench
+            .notes()
+            .iter()
+            .any(|note| note.starts_with("main had no commits, so the run made its first one")),
+        "{:?}",
+        bench.notes()
+    );
+    for scratch in ["landing.index", "in-the-way.index"] {
+        assert!(
+            !bench.host.repo().run_dir.join(scratch).exists(),
+            "{scratch}"
+        );
+    }
+
+    // The run review finds its notes in that commit already, and adds nothing to your branch.
+    retro::run(&bench.host).await?;
+    assert_eq!(bench.repo.head()?, first);
+    Ok(())
+}
+
+/// A file you changed since the run started holds the first commit back like any landing:
+/// nothing is committed or written until it's out of the way.
+#[tokio::test]
+async fn your_edit_in_the_way_holds_the_first_commit_back() -> anyhow::Result<()> {
+    let bench = asked_for_your_first_commit().await?;
+    bench.repo.write("README.md", "# Mine now\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            ensure!(bench.repo.head().is_err(), "committed over your edit");
+            ensure!(
+                !bench.repo.root().join("store.rs").exists(),
+                "half of the run was written"
+            );
+            bench.repo.write("README.md", "# Test repo\n")?;
+            drop(asked);
+            Ok(())
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    bench.main_has_the_runs_first_commit()?;
+    assert_eq!(bench.repo.git(&["status", "--porcelain"])?, "");
+    Ok(())
+}
+
+/// Your own first commit, made while the run worked, is never replaced or built on: the run
+/// lands as files, as it would without the setting, and says why it made no commit.
+#[tokio::test]
+async fn your_own_first_commit_wins_over_the_runs() -> anyhow::Result<()> {
+    let bench = asked_for_your_first_commit().await?;
+    let yours = bench.repo.commit_all("my first commit")?;
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            ensure!(
+                opened.title == "Merge this run into your files?",
+                "{}",
+                opened.title
+            );
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    assert_eq!(bench.repo.head()?, yours, "your branch moved");
+    let landing = bench.landing().context("nothing landed")?;
+    assert_eq!((landing.0.as_str(), landing.2), ("your files", false));
+    assert_eq!(bench.repo.git(&["diff", "--name-only"])?, "README.md");
+    assert!(
+        bench
+            .notes()
+            .iter()
+            .any(|note| note.contains("you made that one while the run worked")),
+        "{:?}",
+        bench.notes()
+    );
+    Ok(())
+}
+
+/// A first commit cut short is taken up where it stopped, and never read as edits of yours
+/// in the run's way: after the files were written, the commit is still made, and after your
+/// branch got the commit, only your index is left to follow it.
+#[tokio::test]
+async fn a_first_commit_cut_short_is_taken_up_where_it_stopped() -> anyhow::Result<()> {
+    for branch_started in [false, true] {
+        let bench = asked_for_your_first_commit().await?;
+        let head = bench.integration_head()?;
+        write_out(&bench, &head)?;
+        let made = if branch_started {
+            let tree = bench
+                .repo
+                .git(&["rev-parse", &format!("{head}^{{tree}}")])?;
+            let message = format!("Work\n\nArgonauts-Run: {TEST_RUN}");
+            let commit = bench.repo.git(&["commit-tree", &tree, "-m", &message])?;
+            bench
+                .repo
+                .git(&["update-ref", "refs/heads/main", &commit, ""])?;
+            Some(commit)
+        } else {
+            None
+        };
+        let done = bench.run(merged(&bench)).await?;
+        assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+        let first = bench.main_has_the_runs_first_commit()?;
+        if let Some(made) = made {
+            assert_eq!(first, made, "a second first commit was made");
+        }
+        assert_eq!(bench.landing(), Some(("main".to_owned(), first, true)));
+        assert_eq!(bench.repo.git(&["status", "--porcelain"])?, "");
+        let waited = bench
+            .integration_events()
+            .iter()
+            .any(|event| matches!(event, IntegrationEvent::WaitingToMerge { .. }));
+        ensure!(!waited, "the run's own files were taken for yours");
+    }
+    Ok(())
+}
+
+/// Your files as the run's `head` has them, written the way a landing writes them.
+fn write_out(bench: &Bench, head: &str) -> anyhow::Result<()> {
+    for file in bench
+        .repo
+        .git(&["ls-tree", "-r", "--name-only", head])?
+        .lines()
+    {
+        let text = bench.repo.git(&["show", &format!("{head}:{file}")])?;
+        bench.repo.write(file, &format!("{text}\n"))?;
+    }
+    Ok(())
+}
+
 /// The sample run's failure: your checkout had an untracked file where the run adds one, and
 /// git refused the fast-forward. Now the run waits to merge and asks you, and moving the file
 /// aside lands it, with nothing of yours deleted.
@@ -1087,7 +1832,7 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
                 .in_the_way_card(std::slice::from_ref(&first.id))
                 .await?;
             assert_eq!(asked.title, "Waiting to merge into main");
-            assert_eq!(keys(&asked), ['m', 't', 'l']);
+            assert_eq!(keys(&asked), ['m', 't', 'l', 'p', 'k']);
             assert!(asked.needs_you, "only you can move your files");
             assert_eq!(asked.mode, ApprovalMode::Supervised);
             assert_eq!(
@@ -1102,7 +1847,7 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
             assert_eq!(packet.rows.len(), 1, "the merge's evidence, shown again");
             ensure!(
                 !bench.landed(),
-                "nothing landed while the files were in the way"
+                "nothing merged while the files were in the way"
             );
             ensure!(
                 bench
@@ -1116,7 +1861,7 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    bench.landed_on("HEAD")?;
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
         "fn store() {}\n"
@@ -1186,13 +1931,22 @@ async fn bytecode_the_run_committed_and_you_have_waits_to_merge() -> anyhow::Res
             .iter()
             .map(|option| option.label.as_str())
             .collect();
-        assert_eq!(labels, [MOVE_ASIDE, TRY_AGAIN, MERGE_LATER]);
+        assert_eq!(
+            labels,
+            [
+                MOVE_ASIDE,
+                TRY_AGAIN,
+                MERGE_LATER,
+                "Open a pull request",
+                "Keep the branch"
+            ]
+        );
         assert!(asked.needs_you);
         let CheckpointPacket::Merge(packet) = &asked.packet else {
             bail!("not a merge packet");
         };
         assert_eq!(packet.in_the_way, [BYTECODE]);
-        ensure!(!bench.landed(), "nothing landed over your file");
+        ensure!(!bench.landed(), "nothing merged over your file");
         ensure!(
             bench
                 .integration_events()
@@ -1260,7 +2014,77 @@ async fn try_again_asks_while_files_are_still_in_the_way() -> anyhow::Result<()>
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    bench.landed_on("HEAD")?;
+    Ok(())
+}
+
+/// A merge waiting on a file of yours can end without merging, as when it was ready: the run
+/// keeps its work on its branch, and nothing of yours moves.
+#[tokio::test]
+async fn a_waiting_merge_can_keep_the_branch_instead() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let base = bench.repo.head()?;
+    bench.repo.write("store.rs", "// mine\n")?;
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .in_the_way_card(std::slice::from_ref(&first.id))
+                .await?;
+            let offered: Vec<&AnswerAction> =
+                asked.options.iter().map(|option| &option.action).collect();
+            ensure!(
+                offered.contains(&&AnswerAction::PullRequest)
+                    && offered.contains(&&AnswerAction::KeepBranch),
+                "{offered:?}"
+            );
+            bench.answer(&asked, AnswerAction::KeepBranch)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::BranchLeft));
+    assert!(!bench.landed());
+    assert_eq!(bench.repo.head()?, base, "your branch didn't move");
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
+        "// mine\n"
+    );
+    Ok(())
+}
+
+/// Git failing while the run lands never fails the run: it waits with git's words, and
+/// trying again once the trouble is dealt with lands it.
+#[tokio::test]
+async fn git_trouble_while_landing_waits_instead_of_failing() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let index = bench.repo.root().join(".git/index");
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            std::fs::write(&index, "not an index")?;
+            bench.answer(&first, AnswerAction::Merge)?;
+            let asked = bench
+                .next_merge_card(std::slice::from_ref(&first.id))
+                .await?;
+            let CheckpointPacket::Merge(packet) = &asked.packet else {
+                bail!("not a merge packet");
+            };
+            ensure!(
+                packet
+                    .refused
+                    .as_deref()
+                    .is_some_and(|said| said.contains("index")),
+                "{:?}",
+                packet.refused
+            );
+            ensure!(!bench.landed(), "landed with a broken index");
+            std::fs::remove_file(&index)?;
+            bench.repo.git(&["reset", "--quiet"])?;
+            bench.answer(&asked, choose(TRY_AGAIN))
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    bench.landed_on("HEAD")?;
     Ok(())
 }
 
@@ -1333,8 +2157,7 @@ async fn a_branch_switched_while_the_card_waits_leaves_it_alone() -> anyhow::Res
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    let main = git_in(&bench.repo, bench.repo.root(), &["rev-parse", "main"])?;
-    assert_eq!(main, bench.integration_head()?, "main has the run");
+    bench.landed_on("main")?;
     assert_eq!(bench.repo.head()?, base, "your branch didn't move");
     assert!(bench.integration_events().iter().any(|event| matches!(
         event,
@@ -1377,7 +2200,7 @@ async fn an_edit_made_while_the_card_waits_asks_instead_of_failing() -> anyhow::
             assert_eq!(edited.title, "Waiting to merge into main");
             assert_eq!(packet.edited, ["README.md"]);
             assert!(packet.in_the_way.is_empty());
-            assert_eq!(keys(&edited), ['t', 'l'], "nothing to move aside");
+            assert_eq!(keys(&edited), ['t', 'l', 'p', 'k'], "nothing to move aside");
             assert_eq!(edited.mode, ApprovalMode::Supervised);
             ensure!(!bench.landed());
             git_in(
@@ -1389,7 +2212,7 @@ async fn an_edit_made_while_the_card_waits_asks_instead_of_failing() -> anyhow::
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    bench.landed_on("HEAD")?;
     Ok(())
 }
 
@@ -1406,7 +2229,7 @@ async fn an_edit_to_a_file_the_run_leaves_alone_rides_along() -> anyhow::Result<
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
-    assert_eq!(bench.repo.head()?, bench.integration_head()?);
+    bench.landed_on("HEAD")?;
     assert_eq!(
         std::fs::read_to_string(bench.repo.root().join("README.md"))?,
         "# Test repo, my notes\n"
@@ -1484,7 +2307,7 @@ async fn debt_under_merge_rule_none_is_not_unreviewed() -> anyhow::Result<()> {
         needs: worker(OPUS),
     };
     let mut settings = suite_settings();
-    settings.handoff.merge_rule = Some(MergeRule::None);
+    settings.fallback.merge_rule = Some(MergeRule::None);
     let bench = Bench::with(
         vec![spec(&CardId::numbered(1))],
         Some(debt.clone()),
@@ -1589,9 +2412,9 @@ async fn retro_notes_land_as_part_of_the_merge() -> anyhow::Result<()> {
     );
     assert!(!events.iter().any(|event| matches!(
         &event.kind,
-        RunEventKind::Note(note) if note.text.contains("retro's notes")
+        RunEventKind::Note(note) if note.text.contains("run review's notes")
     )));
-    assert_eq!(bench.repo.head()?, landed, "nothing landed after the merge");
+    assert_eq!(bench.repo.head()?, landed, "nothing merged after the merge");
     Ok(())
 }
 
@@ -1677,9 +2500,9 @@ async fn an_upgrade_review_that_asks_for_changes_sends_the_card_back() -> anyhow
         needs: worker(OPUS),
     };
     let mut settings = suite_settings();
-    settings.crew = vec![worker(OPUS), worker(CODEX), worker(GEMINI)];
+    settings.crew = vec![worker(OPUS), worker(CODEX), worker(GEMINI)].into();
     settings.roles.clear();
-    settings.handoff.unknown_tier = Some(UnknownTier::Equal);
+    settings.fallback.unknown_tier = Some(UnknownTier::Equal);
     let card = CardSpec {
         reviewers: vec![worker(GEMINI)],
         ..spec(&CardId::numbered(1))

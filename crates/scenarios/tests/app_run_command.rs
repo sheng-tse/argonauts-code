@@ -15,7 +15,7 @@ fn milestones(events: &[RunEvent]) -> Vec<String> {
         .filter_map(|event| match &event.kind {
             RunEventKind::Phase(change) => Some(format!("{:?} {:?}", change.phase, change.status)),
             RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => {
-                Some(format!("card {:?}", opened.kind))
+                Some(format!("task {:?}", opened.kind))
             }
             _ => None,
         })
@@ -23,7 +23,7 @@ fn milestones(events: &[RunEvent]) -> Vec<String> {
 }
 
 fn milestones_to_merge(run_dir: &Path) -> anyhow::Result<Vec<String>> {
-    wait_journal(run_dir, "the merge card", |event| {
+    wait_journal(run_dir, "the merge approval", |event| {
         matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
             if opened.kind == CheckpointKind::Merge)
     })?;
@@ -40,7 +40,7 @@ fn app_run_command_same_settings_and_engine() -> anyhow::Result<()> {
         &["run", "--solo", "--plain", requests::SMALL_FIX],
     )?;
     let said = output_text(&output);
-    assert!(!output.status.success(), "a parked run exited 0:\n{said}");
+    assert!(!output.status.success(), "a waiting run exited 0:\n{said}");
     let cli_dir = run_dirs(&scenario)
         .pop()
         .context("argonauts run started no run")?;

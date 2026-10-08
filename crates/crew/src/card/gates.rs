@@ -25,7 +25,7 @@ use crate::git::Git;
 use crate::integrate::branch::integration_branch;
 
 /// What the gates cell says when there are no command gates.
-pub const NO_COMMAND_GATES: &str = "No command gates set · /config gates.run";
+pub const NO_COMMAND_GATES: &str = "No command checks set · /config checks.run";
 
 /// Used when `gates.timeout` can't be read.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -62,7 +62,7 @@ pub async fn run_in(
     let spec = record_of(host, card)?.spec;
     if let Some(output) = setup(host, card, &tree.path, &tree.branch).await? {
         return Ok(GateVerdict::Stopped {
-            reason: format!("gates.setup failed in {}: {output}", tree.branch),
+            reason: format!("checks.setup failed in {}: {output}", tree.branch),
         });
     }
 
@@ -84,7 +84,7 @@ pub async fn run_in(
         }
     }
 
-    let commands = &host.settings().gates.run;
+    let commands = &host.settings().checks.run;
     let tests_card = matches!(spec.kind, CardKind::AcceptanceTests { .. });
     if commands.is_empty() {
         host.record(
@@ -223,7 +223,7 @@ pub(crate) async fn setup(
     workdir: &Path,
     branch: &str,
 ) -> EngineResult<Option<String>> {
-    for command in &host.settings().gates.setup {
+    for command in &host.settings().checks.setup {
         let name = format!("setup: {} · {branch}", command.name);
         let done = host.read(|state| {
             state
@@ -257,7 +257,7 @@ pub(crate) fn request(
     let temp = host.repo().run_dir.join("tmp").join(card.as_str());
     std::fs::create_dir_all(&temp)?;
     let sandbox = crate::spec::sandbox(settings, Access::Build, workdir, &temp)?;
-    let timeout = match settings.gates.timeout.parse() {
+    let timeout = match settings.checks.timeout.parse() {
         Ok(Some(timeout)) => timeout,
         Ok(None) => NO_TIMEOUT,
         Err(_) => DEFAULT_TIMEOUT,
@@ -497,7 +497,7 @@ fn stub_check(outcomes: &[GateOutcome]) -> GateOutcome {
 /// nothing, and rules that need the suite still see it as not run.
 pub fn no_command_gates(kind: GateKind) -> GateOutcome {
     GateOutcome {
-        name: "gates.run".to_owned(),
+        name: "checks.run".to_owned(),
         kind,
         passed: true,
         command: None,
@@ -684,7 +684,7 @@ mod tests {
         let recorded = serde_json::to_value(&marker).unwrap();
         assert_eq!(recorded["skipped"], true);
         let older = serde_json::json!({
-            "name": "gates.run", "kind": "command", "passed": false, "command": null,
+            "name": "checks.run", "kind": "command", "passed": false, "command": null,
             "exit_code": null, "duration_ms": 0, "summary": NO_COMMAND_GATES,
             "output_tail": "", "violations": [], "sandboxed": false
         });
@@ -700,7 +700,7 @@ mod tests {
         assert_eq!(
             gates_passed(&[secret, failed, passed]),
             Some(true),
-            "the newest run of each gate counts"
+            "the newest run of each check counts"
         );
     }
 
@@ -721,7 +721,7 @@ mod tests {
         repo.write("src/agent.rs", "agent line\n");
         git.commit_all(
             &repo.root,
-            "card-001: work from s-001\n\nArgonauts-Session: s-001",
+            "task-001: work from s-001\n\nArgonauts-Session: s-001",
         )
         .await
         .unwrap();
@@ -729,13 +729,13 @@ mod tests {
         let yours = git
             .commit_all(
                 &repo.root,
-                &conductor::message(&run, "card-001: your changes"),
+                &conductor::message(&run, "task-001: your changes"),
             )
             .await
             .unwrap()
             .unwrap();
         repo.write(".github/workflows/ci.yml", "forged line\n");
-        git.commit_all(&repo.root, &conductor::message(&run, "card-001: tidy up"))
+        git.commit_all(&repo.root, &conductor::message(&run, "task-001: tidy up"))
             .await
             .unwrap();
         let diff = agent_diff(&git, &history(&repo, &[&yours]), &base, "HEAD")
@@ -776,13 +776,13 @@ mod tests {
         // The agent's own `git add -A` takes the cache along.
         std::fs::write(cache.join("core.cpython-312.pyc"), pyc("\u{5}median")).unwrap();
         repo.git(&["add", "--all"]);
-        repo.git(&["commit", "-qm", "card-001: work"]);
+        repo.git(&["commit", "-qm", "task-001: work"]);
         assert_eq!(scan(&repo).await, Vec::new(), "harmless bytecode passes");
 
         let key = format!("AKIA{}", "Q".repeat(16));
         std::fs::write(cache.join("settings.cpython-312.pyc"), pyc(&key)).unwrap();
         repo.git(&["add", "--all"]);
-        repo.git(&["commit", "-qm", "card-001: more"]);
+        repo.git(&["commit", "-qm", "task-001: more"]);
         let found = scan(&repo).await;
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].limit, HardLimit::Secret);
@@ -801,7 +801,7 @@ mod tests {
         repo.git(&["rm", "-q", "stats/__pycache__/settings.cpython-312.pyc"]);
         std::fs::write(repo.root.join("data.bin"), pyc("blob")).unwrap();
         repo.git(&["add", "--all"]);
-        repo.git(&["commit", "-qm", "card-001: data"]);
+        repo.git(&["commit", "-qm", "task-001: data"]);
         let found = scan(&repo).await;
         assert!(
             found
@@ -821,12 +821,12 @@ mod tests {
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
         repo.git(&["checkout", "--quiet", "-b", "integration"]);
         repo.write("shared.txt", "theirs\n");
-        repo.write("other.rs", "other card line\n");
+        repo.write("other.rs", "other task line\n");
         repo.git(&["add", "--all"]);
-        repo.git(&["commit", "--quiet", "-m", "another card"]);
+        repo.git(&["commit", "--quiet", "-m", "another task"]);
         repo.git(&["checkout", "--quiet", "main"]);
         repo.write("shared.txt", "ours\n");
-        git.commit_all(&repo.root, "card-001: work").await.unwrap();
+        git.commit_all(&repo.root, "task-001: work").await.unwrap();
 
         let staged = git
             .merge_staged(&repo.root, "integration", true)
@@ -835,7 +835,7 @@ mod tests {
         assert!(matches!(staged, crate::git::StagedMerge::Conflict(_)));
         repo.write("shared.txt", "resolved\n");
         repo.write("sneaky.rs", "sneaky line\n");
-        git.finish_merge(&repo.root, "card-001: work from s-002")
+        git.finish_merge(&repo.root, "task-001: work from s-002")
             .await
             .unwrap();
 
@@ -852,7 +852,7 @@ mod tests {
         assert!(diff.contains("+ours"));
         assert!(diff.contains("+resolved"));
         assert!(diff.contains("+sneaky line"));
-        assert!(!diff.contains("other card line"), "{diff}");
+        assert!(!diff.contains("other task line"), "{diff}");
         assert!(
             diff.contains("+side line"),
             "a merge of anything else counts in full"

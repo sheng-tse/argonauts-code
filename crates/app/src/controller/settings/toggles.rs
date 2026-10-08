@@ -50,7 +50,7 @@ fn who_sets(layer: &str) -> &'static str {
     match layer {
         "project" => "This project's file",
         "project-local" => "Your own project file (config.local.toml)",
-        "preset" => "The preset",
+        "workflow" => "The workflow",
         _ => "A --set flag",
     }
 }

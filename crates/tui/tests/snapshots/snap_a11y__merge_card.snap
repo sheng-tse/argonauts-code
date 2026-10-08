@@ -2,17 +2,17 @@
 source: crates/tui/tests/snap_a11y.rs
 expression: "said.lines.join(\"\\n\")"
 ---
-needs you: Merge checkpoint, run-01
+needs you: Merge approval, run-01
   Merge the run into main
-  card: card-002, title: Add the JSON writer, files: 4, lines: +60 -9, owner: Opus on Claude Code, gates: passed, review: approved
-  card: card-003, title: Wire the --json flag, files: 4, lines: +60 -9, owner: GPT 5.6 on Codex, gates: passed, review: approved
-  2 cards, 7 files, +120 -18
+  task: task-002, title: Add the JSON writer, files: 4, lines: +60 -9, worker: Opus on Claude Code, checks: passed, review: approved
+  task: task-003, title: Wire the --json flag, files: 4, lines: +60 -9, worker: GPT 5.6 on Codex, checks: passed, review: approved
+  2 tasks, 7 files, +120 -18
   Suite passed on the latest main
-  2 cards, 7 files, +120 -18, suite passed on the latest main, every review approved, $0.46 of $3.00
+  2 tasks, 7 files, +120 -18, suite passed on the latest main, every review approved, $0.46 of $3.00
   1. Merge, recommended
   2. Open a pull request
-  3. Request changes on some cards
+  3. Request changes on some tasks
   4. Keep the branch
   5. Abandon the run
   6. Show the diff
-answer: type a number. To add a note, type it after a colon, as in 1: the note. To send back only some cards, name them after 3, as in 3 card-002: what to change.
+answer: type a number. To add a note, type it after a colon, as in 1: the note. To send back only some tasks, name them after 3, as in 3 task-002: what to change.

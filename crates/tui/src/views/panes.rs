@@ -380,12 +380,16 @@ pub struct Marks {
     pub expand: &'static str,
     pub stands_in: &'static str,
     pub debt: &'static str,
+    /// Before the name of a page an agent published, as Claude Code marks an artifact.
+    pub artifact: &'static str,
     pub warning: &'static str,
     pub crumb: &'static str,
     pub down: &'static str,
     pub up: &'static str,
     /// Where you type, such as steering text.
     pub cursor: &'static str,
+    /// On a step you require of the workflow.
+    pub required: &'static str,
 }
 
 impl Marks {
@@ -406,11 +410,13 @@ impl Marks {
                 expand: ">",
                 stands_in: "~",
                 debt: "o",
+                artifact: artifact_mark(true),
                 warning: "!",
                 crumb: ">",
                 down: "v",
                 up: "^",
                 cursor: "|",
+                required: "*",
             }
         } else {
             Self {
@@ -428,11 +434,13 @@ impl Marks {
                 expand: "↵",
                 stands_in: "↺",
                 debt: "◌",
+                artifact: artifact_mark(false),
                 warning: "!",
                 crumb: "›",
                 down: "↓",
                 up: "↑",
                 cursor: "▏",
+                required: "★",
             }
         }
     }
@@ -469,6 +477,15 @@ impl Marks {
 
 fn is_ascii(theme: &Theme) -> bool {
     theme.glyphs.prompt.is_ascii()
+}
+
+/// Claude Code's mark for an artifact, or its word for one where only plain characters draw.
+pub fn artifact_mark(plain: bool) -> &'static str {
+    if plain {
+        "artifact"
+    } else {
+        argonauts_core::artifacts::GLYPH
+    }
 }
 
 /// `glyph` padded to `slot` cells.

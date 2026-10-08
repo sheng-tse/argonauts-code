@@ -107,7 +107,7 @@ mod tests {
     fn spec(n: u32) -> CardSpec {
         CardSpec {
             id: CardId::numbered(n),
-            title: format!("card {n}"),
+            title: format!("task {n}"),
             task: String::new(),
             kind: CardKind::Build,
             owned_paths: vec![format!("src/{n}/**")],
@@ -136,7 +136,7 @@ mod tests {
                     worker: codex.clone(),
                     algorithm: RoutingAlgorithm::Bandit,
                     explored: false,
-                    reason: "9 of 10 similar cards passed".into(),
+                    reason: "9 of 10 similar tasks passed".into(),
                 },
             ),
             event(

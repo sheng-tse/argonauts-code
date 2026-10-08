@@ -3,12 +3,14 @@
 
 mod agents;
 mod answered;
+mod band;
 mod bar;
 mod card;
 mod composer;
 mod files;
 mod heads_up;
 mod history_search;
+pub mod line;
 mod menu;
 mod mode_line;
 mod narrator;
@@ -19,6 +21,7 @@ mod working;
 
 use std::time::{Duration, Instant};
 
+use argonauts_core::settings::ui::WhenQuestion;
 use crossterm::event::KeyEvent;
 use ratatui::text::{Line, Span};
 
@@ -27,21 +30,26 @@ use crate::text::{sanitize_line, truncate_line};
 use crate::theme::Role;
 
 pub use agents::{
-    AgentLabel, AgentPanel, AgentRef, AgentRow, AgentState, CIRCLE_PERIOD, PanelEvent,
+    AgentLabel, AgentPanel, AgentRef, AgentRow, AgentState, CIRCLE_PERIOD, LIST_KEYS, MAIN,
+    PanelEvent, RowKind,
 };
 pub use answered::{AnsweredPick, REMEMBER_KEY};
+pub use band::{BAND_KEYS, Band, BandEvent, PinnedRun, wall_now};
 pub use card::{
-    CardAgent, CardChip, CardEvent, CardNote, CardOption, CardPrompt, CardView, Checklist,
-    NOTE_PLACEHOLDER, OptionKind,
+    CARD_GUARD, CardAgent, CardChip, CardEvent, CardNote, CardOption, CardPrompt, CardView,
+    Checklist, ESC_HINT, NOTE_PLACEHOLDER, OptionKind,
 };
 pub use composer::{
-    BUILT_IN_EXAMPLE, Composer, ComposerEvent, ComposerState, ComposerView, MAX_INPUT_ROWS,
-    SHELL_PLACEHOLDER, SHELL_PROMPT,
+    BUILT_IN_EXAMPLE, Composer, ComposerEvent, ComposerState, ComposerView, DraftAside,
+    MAX_INPUT_ROWS, SHELL_PLACEHOLDER, SHELL_PROMPT, ignored_notice, requested_notice,
 };
 pub use heads_up::{HEADS_UP_KEYS, HeadsUp, HeadsUpEvent};
 pub use history_search::{HistorySearch, SearchEvent, SearchScope};
+pub use line::{
+    AddedPart, BottomLine, CliState, CliUse, LinePart, NEAR_LIMIT, PartBody, WindowUse,
+};
 pub use menu::{MenuEvent, MenuItem, MenuKind, Menus};
-pub use mode_line::{ApprovalMode, ModeLine, ModeNotice, ModeState, VimMode, status_line};
+pub use mode_line::{ApprovalMode, ModeLine, ModeNotice, ModeState, VimMode};
 pub use narrator::{NARRATOR_MAX_ROWS, narrator_lines};
 pub use picker::{Picker, PickerEvent, PickerRow};
 pub use workflows::{
@@ -49,8 +57,6 @@ pub use workflows::{
     handle_panel_key, panel_has_rows, panel_lines,
 };
 pub use working::{Activity, SPINNER_PERIOD, WorkingLine};
-
-use crate::cell::Tone;
 
 #[derive(Debug, Clone, Default)]
 pub struct BottomState {
@@ -74,8 +80,15 @@ pub struct BottomState {
     /// Open under the input in place of the mode line and everything below it.
     pub menus: Menus,
     pub mode: ModeLine,
-    /// Vendor quotas, spend, and context, at the mode line's right end when they fit.
-    pub status_line: Vec<StatusPart>,
+    /// The bottom line's parts beside the mode: each CLI's plan usage, and what you added.
+    pub line: BottomLine,
+    /// Parts other code draws on the bottom line, by the name `left` and `right` know them by,
+    /// such as `awake`, `stats`, `checks`, or a mod's name. The line shows one only while it's
+    /// named in the settings, except `awake`: a hold you asked for shows while it lasts.
+    pub line_slots: std::collections::BTreeMap<String, PartBody>,
+    /// Your mods from `mods/`, as the controller last read them. Those placed above the input
+    /// sit under the band's own cards.
+    pub file_mods: Option<argonauts_core::settings::mods::ModsView>,
     pub agents: AgentPanel,
     /// One row per run, under the mode line, with the agents above when they show.
     pub workflows: WorkflowPanel,
@@ -86,6 +99,12 @@ pub struct BottomState {
     /// Prompt history search, open in place of the input and everything below it.
     pub history_search: Option<HistorySearch>,
     pub hint: Option<Hint>,
+    /// The key that ignores the word `ultracode` in a draft, as the notice names it.
+    pub workflow_key: String,
+    /// Said for a moment after that key ignored the word, in the notice's place.
+    pub word_notice: Option<Hint>,
+    /// When the draft began to ask for a workflow, which is what the notice's time counts from.
+    pub word_asked_at: Option<Instant>,
     /// A first `x` on a panel row, shown on the mode line until the next key.
     pub stop_asked: Option<StopAsk>,
     /// Added to the exit hint, such as `the run keeps going`.
@@ -101,13 +120,12 @@ pub struct BottomState {
     /// `ui.live_area_max`: the most of the screen's height the live region may take.
     pub live_area_max: Option<f64>,
     pub synced: Synced,
-    /// When a key or a paste last went anywhere but a card that has the keys.
-    pub last_typed: Option<Instant>,
+    /// The draft that was in the input when a card took the keys, back once the card is
+    /// answered or handed on.
+    pub draft_aside: Option<DraftAside>,
+    /// The mods pinned above the input.
+    pub band: Band,
 }
-
-/// How long the input sits empty and untouched before a card that needs you takes the keys, so
-/// the next message after one you sent, or a draft you cleared to rewrite, never lands on it.
-pub const CARD_WAITS_FOR_QUIET: Duration = Duration::from_millis(1500);
 
 /// What the status sync last applied, so running it again changes nothing, and a change made
 /// on screen (Shift+Tab) stays until the controller says otherwise.
@@ -119,101 +137,16 @@ pub struct Synced {
     pub approval: Option<ApprovalMode>,
 }
 
-pub const CARD_PLACEHOLDER_RUN: &str = "↑ to answer the card, or type to guide the run";
+pub const CARD_PLACEHOLDER_RUN: &str = "↑ to answer the question, or type to guide the run";
 
-pub const CARD_PLACEHOLDER: &str = "↑ to answer the card";
+pub const CARD_PLACEHOLDER: &str = "↑ to answer the question";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusPart {
-    pub text: String,
-    pub tone: Tone,
-    /// Parts give way on a narrow terminal lowest rank first, and never at
-    /// [`KEEP`](crate::text::KEEP).
-    pub rank: u16,
-}
+/// How long the screen says the draft asks for a workflow, as Claude Code does. The word
+/// keeps its color after.
+pub const WORD_REQUESTED_NOTICE: Duration = Duration::from_secs(30);
 
-impl StatusPart {
-    /// A part that always shows, such as `Codex down` or `agy out`.
-    pub fn new(text: impl Into<String>, tone: Tone) -> Self {
-        Self {
-            text: text.into(),
-            tone,
-            rank: crate::text::KEEP,
-        }
-    }
-
-    /// Chips under 90% used give way before the spend, the least used first. A chip at 90%
-    /// or more stays.
-    pub fn quota(text: impl Into<String>, used_percent: u8, tone: Tone) -> Self {
-        let rank = if used_percent >= 90 {
-            crate::text::KEEP
-        } else {
-            status_rank::KNOWN + u16::from(used_percent)
-        };
-        Self {
-            rank,
-            ..Self::new(text, tone)
-        }
-    }
-
-    /// A reading older than its refresh, which gives way before every fresh one.
-    pub fn stale(text: impl Into<String>, used_percent: u8) -> Self {
-        Self {
-            rank: status_rank::STALE + u16::from(used_percent.min(99)),
-            ..Self::new(text, Tone::Dim)
-        }
-    }
-
-    /// An agent without a quota, such as `OpenRouter $0.06`, gives way with the quota chips.
-    pub fn no_quota(text: impl Into<String>) -> Self {
-        Self {
-            rank: status_rank::KNOWN,
-            ..Self::new(text, Tone::Dim)
-        }
-    }
-
-    /// The busiest session's context against its cap, which goes just before the spend.
-    pub fn context(text: impl Into<String>, tone: Tone) -> Self {
-        Self {
-            rank: status_rank::CONTEXT,
-            ..Self::new(text, tone)
-        }
-    }
-
-    /// The narrator's spend against its cap.
-    pub fn narrator(text: impl Into<String>, tone: Tone) -> Self {
-        Self {
-            rank: status_rank::NARRATOR,
-            ..Self::new(text, tone)
-        }
-    }
-
-    pub fn spend(text: impl Into<String>) -> Self {
-        Self {
-            rank: status_rank::SPEND,
-            ..Self::new(text, Tone::Dim)
-        }
-    }
-
-    pub fn model(text: impl Into<String>) -> Self {
-        Self {
-            rank: status_rank::MODEL,
-            ..Self::new(text, Tone::Dim)
-        }
-    }
-}
-
-/// When status line parts give way, lowest first: stale readings, fresh quota chips by how
-/// little is used, the context and the narrator, the spend, and the model. Pinned chips
-/// never go.
-mod status_rank {
-    pub const STALE: u16 = 1;
-    pub const KNOWN: u16 = 200;
-    pub const CONTEXT: u16 = 398;
-    pub const NARRATOR: u16 = 399;
-    pub const SPEND: u16 = 400;
-    pub const MODEL: u16 = 500;
-}
+/// How long the screen says the workflow word was ignored, as Claude Code does.
+pub const WORD_IGNORED_NOTICE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hint {
@@ -239,47 +172,46 @@ impl BottomState {
             && !self.agents.has_focus()
             && !self.pick_selected()
             && !self.heads_up.has_focus()
+            && !self.band.has_focus()
     }
 
-    /// The card on screen takes the keys if it claims them, and one that needs you only from
-    /// an empty input nobody has touched for [`CARD_WAITS_FOR_QUIET`]. Returns whether it did.
+    /// The card on screen takes the keys the moment it shows if it asks, from wherever they
+    /// were: the input, a panel, the heads-up, a picker, or the prompt search.
+    /// The panels let go, a draft goes aside, and a picker or search waits under the card to
+    /// come back with the input. Returns whether it took them.
     pub fn hand_keys_to_card(&mut self, now: Instant) -> bool {
-        let free = self.input_free(now);
-        self.card.as_mut().is_some_and(|card| card.take_keys(free))
-    }
-
-    /// When the card on screen will take the keys if nothing is typed before then.
-    pub fn card_takes_keys_at(&self) -> Option<Instant> {
-        let card = self.card.as_ref()?;
-        let waiting = !card.focused && card.claims_keys() && self.input_empty();
-        waiting.then(|| self.last_typed.map(|at| at + CARD_WAITS_FOR_QUIET))?
-    }
-
-    /// No draft: no text, no `!` waiting for a command, and no prompt search open.
-    fn input_empty(&self) -> bool {
-        self.composer.is_empty() && !self.composer.is_shell() && self.history_search.is_none()
-    }
-
-    /// Something went to the input, or to whatever had the keys besides a card.
-    pub fn typed_at(&mut self, now: Instant) {
-        self.last_typed = Some(now);
-        if let Some(card) = self.card.as_mut().filter(|card| !card.focused) {
-            card.typed_while_up = true;
+        let took = self.card.as_mut().is_some_and(|card| card.take_keys(now));
+        if took {
+            self.agents.blur();
+            self.workflows.blur();
+            self.heads_up.blur();
+            self.band.blur();
+            self.stop_asked = None;
+            self.settle_draft();
         }
+        took
     }
 
-    /// An empty input you aren't using: nothing else has the keys, and nothing was typed for a
-    /// moment.
-    fn input_free(&self, now: Instant) -> bool {
-        let quiet = self
-            .last_typed
-            .is_none_or(|at| now.saturating_duration_since(at) >= CARD_WAITS_FOR_QUIET);
-        quiet
-            && self.input_empty()
-            && self.picker.is_none()
-            && !self.agents.has_focus()
-            && !self.workflows.has_focus()
-            && !self.pick_selected()
+    /// A draft goes aside while a card holds the keys and comes back once it doesn't, after
+    /// the card is answered or handed on. Returns whether the input changed.
+    pub fn settle_draft(&mut self) -> bool {
+        let card_holds_keys = self.focused_card().is_some();
+        match self.draft_aside.take() {
+            Some(aside) if card_holds_keys => {
+                self.draft_aside = Some(aside);
+                false
+            }
+            Some(aside) => {
+                self.composer.bring_back(aside);
+                self.menus.text_changed();
+                true
+            }
+            None if card_holds_keys => {
+                self.draft_aside = self.composer.set_aside();
+                self.draft_aside.is_some()
+            }
+            None => false,
+        }
     }
 
     /// ↑ picked the answered handoff pick's line, and no card covers it.
@@ -292,17 +224,17 @@ impl BottomState {
     }
 
     pub fn expanded_card(&self) -> Option<&CardPrompt> {
-        self.card.as_ref().filter(|card| !card.pinned)
+        self.card.as_ref().filter(|card| !card.dismissed)
     }
 
     pub fn focused_card(&self) -> Option<&CardPrompt> {
         self.card
             .as_ref()
-            .filter(|card| card.focused && !card.pinned)
+            .filter(|card| card.focused && !card.dismissed)
     }
 
     pub fn waiting_card(&self) -> Option<&CardPrompt> {
-        self.card.as_ref().filter(|card| card.waits())
+        self.expanded_card().filter(|card| card.waits())
     }
 
     pub fn active_hint(&self, now: Instant) -> Option<&str> {
@@ -319,13 +251,53 @@ impl BottomState {
         })
     }
 
+    /// Notes when the draft began to ask for a workflow, after whatever changed the draft, and
+    /// forgets it once the draft no longer asks.
+    pub fn settle_workflow_word(&mut self, now: Instant) {
+        let requested = self.composer.workflow_requested();
+        self.word_asked_at = if requested {
+            self.word_asked_at.or(Some(now))
+        } else {
+            None
+        };
+        // The word left the draft, or the ignore was undone: "ignored" no longer holds.
+        if requested || !self.composer.holds_workflow_word() {
+            self.word_notice = None;
+        }
+    }
+
+    /// When the notice that the draft asks for a workflow goes. A draft nothing has timed yet
+    /// keeps it.
+    fn word_notice_ends(&self) -> Option<Instant> {
+        self.word_asked_at.map(|at| at + WORD_REQUESTED_NOTICE)
+    }
+
     /// Keys for the focused panel, with a stop asked for before it goes.
     pub fn panel_key(&mut self, key: KeyEvent) -> PanelEvent {
+        if let Some(run) = self.pause_asked(&key) {
+            self.stop_asked = None;
+            return PanelEvent::PauseRun(run);
+        }
         let event = handle_panel_key(&mut self.workflows, &mut self.agents, key);
         ask_before_stop(&mut self.stop_asked, event)
     }
 
-    /// Focus moves into the panel, on its first row, with no stop asked yet.
+    /// `p` on the run's row a stop was just asked on: the run to pause.
+    fn pause_asked(&self, key: &KeyEvent) -> Option<String> {
+        if key.code != crossterm::event::KeyCode::Char('p') || !key.modifiers.is_empty() {
+            return None;
+        }
+        let asked = &self.stop_asked.as_ref()?.row;
+        match asked {
+            PanelRowId::Run(run) if self.panel_selection().as_ref() == Some(asked) => {
+                Some(run.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Focus moves into the panel, on its first row past your own conversation's, with no
+    /// stop asked yet.
     pub fn focus_panel(&mut self) {
         self.stop_asked = None;
         // The panel has a row per run, with its agents under it only with `ui.panel.agents`,
@@ -333,8 +305,22 @@ impl BottomState {
         if self.workflows.rows.is_empty() {
             self.agents.focus();
         } else {
-            self.workflows.focus();
+            self.workflows.focus_past_main(&self.agents);
         }
+    }
+
+    /// The agent your typing goes to: the one whose row is selected in the list. `None` on
+    /// your own conversation's row, on a run's, and without a selection, where typing goes to
+    /// the main agent as always.
+    pub fn messaging(&self) -> Option<&AgentRow> {
+        let PanelRowId::Agent(selected) = self.panel_selection()? else {
+            return None;
+        };
+        self.agents
+            .rows
+            .iter()
+            .find(|row| row.agent_ref() == selected)
+            .filter(|row| row.kind != RowKind::Main)
     }
 
     /// The panel row under the pointer while the panel has focus.
@@ -367,8 +353,48 @@ impl BottomState {
         text_streaming: bool,
     ) -> BottomView {
         let mut parts = self.parts(ctx, text_streaming, max_rows);
+        // The band takes only rows nothing else wants: the input and a question never lose
+        // one to it.
+        let room = max_rows.saturating_sub(parts.rows());
+        let question_up = self.focused_card().is_some();
+        parts.band = self
+            .band
+            .lines(ctx, room, question_up, self.working.is_some());
+        // Your mods share the band's rows, under its cap.
+        let left = room
+            .min(self.band.max_rows)
+            .saturating_sub(parts.band.len());
+        parts
+            .band
+            .extend(self.file_mods_above(ctx, left, question_up));
         parts.fit(max_rows);
         parts.assemble(max_rows)
+    }
+
+    /// Your mods placed above the input, in the `room` the band's own cards left, as the band
+    /// shows them: not while it's off or hidden, folded to their lines while a question has
+    /// the keys, or gone then when `when_question` says so.
+    fn file_mods_above(
+        &self,
+        ctx: &RenderCtx<'_>,
+        room: usize,
+        question_up: bool,
+    ) -> Vec<Line<'static>> {
+        let band = &self.band;
+        let gone = question_up && band.when_question == WhenQuestion::Hide;
+        let Some(view) = self
+            .file_mods
+            .as_ref()
+            .filter(|_| band.shown && !band.hidden && !gone)
+        else {
+            return Vec::new();
+        };
+        let room = crate::mods::BandRoom {
+            screen: usize::from(ctx.width),
+            rows: room,
+            folded: question_up && band.when_question == WhenQuestion::Fold,
+        };
+        crate::mods::above_input(&crate::widgets::Kit::new(ctx.theme), view, room).lines
     }
 
     /// The region while a docked view is up: the narrator and the working line stay, then a
@@ -420,12 +446,45 @@ impl BottomState {
                 .and_then(|working| working.next_change(clock, ctx.theme)),
             self.agents.next_change(clock, ctx.theme),
             self.composer.next_change(clock, ctx.theme),
+            self.band.next_change(),
             hint,
             notice,
+            self.word_notice
+                .as_ref()
+                .map(|notice| notice.until)
+                .filter(|until| *until > clock.now),
+            self.word_notice_ends().filter(|ends| *ends > clock.now),
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// What the screen says about the word `ultracode` in the draft: that it asks for a
+    /// workflow, or for a moment that the key ignored it.
+    fn word_notice_line(&self, ctx: &RenderCtx<'_>) -> Option<Line<'static>> {
+        let still_ignored =
+            self.composer.holds_workflow_word() && !self.composer.workflow_requested();
+        let ignored = self
+            .word_notice
+            .as_ref()
+            .filter(|notice| notice.until > ctx.clock.now && still_ignored)
+            .map(|notice| notice.text.clone());
+        let asking = || {
+            self.composer.workflow_requested()
+                && self
+                    .word_notice_ends()
+                    .is_none_or(|ends| ends > ctx.clock.now)
+        };
+        let text = ignored.or_else(|| asking().then(|| requested_notice(&self.workflow_key)))?;
+        let width = usize::from(ctx.width);
+        let text = sanitize_line(&text).into_owned();
+        let pad = width.saturating_sub(crate::text::str_width(&text) + 1);
+        let line = Line::from(vec![
+            Span::raw(" ".repeat(pad)),
+            Span::styled(text, ctx.theme.style(Role::Dim)),
+        ]);
+        Some(truncate_line(&line, width))
     }
 
     fn parts(&self, ctx: &RenderCtx<'_>, text_streaming: bool, max_rows: usize) -> Parts {
@@ -473,7 +532,7 @@ impl BottomState {
             let line = Line::from(vec![Span::raw("  "), Span::styled(hint.clone(), dim)]);
             queued.extend([truncate_line(&line, width), Line::default()]);
         }
-        // A card with the keys hides it until it's answered or set aside.
+        // A card with the keys hides it until it's answered or handed on.
         let heads_up = if self.focused_card().is_some() {
             Vec::new()
         } else {
@@ -495,18 +554,26 @@ impl BottomState {
         let focused = self.composer_has_focus();
         let busy = self.working.is_some();
         let waiting = self.waiting_card().is_some();
-        let placeholder = waiting.then_some(if busy || self.run_takes_text {
-            CARD_PLACEHOLDER_RUN
-        } else {
-            CARD_PLACEHOLDER
-        });
+        // With an agent selected in the list, the input is a message to it, as in Claude Code.
+        let messaging = self.messaging();
+        let message_to = messaging.and_then(AgentRow::placeholder);
+        let placeholder =
+            message_to
+                .as_deref()
+                .or(waiting.then_some(if busy || self.run_takes_text {
+                    CARD_PLACEHOLDER_RUN
+                } else {
+                    CARD_PLACEHOLDER
+                }));
         // An example prompt is a way to start, so it waits while work runs or a card is up.
-        let offer_example = !busy && self.card.is_none();
+        let offer_example = !busy && self.expanded_card().is_none();
         // A card that holds the keys stands in for the input, as Claude Code's permission
-        // prompts do, so nothing on screen looks typeable while typing goes nowhere.
-        let card_holds_keys =
-            self.focused_card().is_some() && self.history_search.is_none() && self.picker.is_none();
-        let mut composer = match &self.history_search {
+        // prompts do, so nothing on screen looks typeable while typing goes nowhere. A picker
+        // or the prompt search it took the keys from waits under it.
+        let card_holds_keys = self.focused_card().is_some();
+        let search = self.history_search.as_ref().filter(|_| !card_holds_keys);
+        let picker = self.picker.as_ref().filter(|_| !card_holds_keys);
+        let mut composer = match search {
             Some(search) => {
                 let (lines, cursor) = search.lines(ctx, max_rows);
                 ComposerView { lines, cursor }
@@ -515,20 +582,35 @@ impl BottomState {
                 lines: Vec::new(),
                 cursor: (0, 0),
             },
-            None => self.composer.render_with(
-                ctx,
-                ComposerState {
-                    focused,
-                    busy,
-                    offer_example,
-                    placeholder,
-                },
-            ),
+            None => {
+                let mut view = self.composer.render_with(
+                    ctx,
+                    ComposerState {
+                        focused: focused || messaging.is_some(),
+                        busy,
+                        offer_example,
+                        placeholder,
+                    },
+                );
+                // The workflow word's notice sits right above the rule, at its right end.
+                if let Some(notice) = self.word_notice_line(ctx) {
+                    view.lines.insert(0, notice);
+                    view.cursor.1 += 1;
+                }
+                view
+            }
         };
+        // The rule over the input names who the message is for.
+        if let (Some(agent), Some(rule)) = (messaging, composer.lines.first_mut())
+            && self.history_search.is_none()
+            && !card_holds_keys
+        {
+            *rule = agents::message_rule(agent, ctx);
+        }
         // An open picker's edge rule takes the bottom rule's place, and its rows take the menu's.
-        let menu = if self.history_search.is_some() {
+        let menu = if search.is_some() || card_holds_keys {
             Vec::new()
-        } else if let Some(picker) = &self.picker {
+        } else if let Some(picker) = picker {
             composer.lines.pop();
             picker.lines(ctx)
         } else if focused && !self.composer.is_shell() {
@@ -538,41 +620,48 @@ impl BottomState {
         } else {
             Vec::new()
         };
-        let pinned_cards = self
-            .card
-            .as_ref()
-            .filter(|card| card.pinned)
-            .map_or(0, |_| 1);
         let typing = !self.composer.is_empty();
-        let heads_up_keys = self.heads_up.has_focus().then_some(HEADS_UP_KEYS);
+        let heads_up_keys = if self.band.has_focus() {
+            Some(BAND_KEYS)
+        } else {
+            self.heads_up.has_focus().then_some(HEADS_UP_KEYS)
+        };
+        let panel_focused = self.agents.has_focus() || self.workflows.selected.is_some();
+        // The focused list's keys take the line, as they do under Claude Code's list.
+        let list_keys = panel_focused.then_some(LIST_KEYS);
         let mode = self.mode.line(
             ctx,
             ModeState {
-                hint: heads_up_keys.or_else(|| self.active_hint(ctx.clock.now)),
-                working: busy,
+                hint: heads_up_keys
+                    .or_else(|| self.active_hint(ctx.clock.now))
+                    .or(list_keys),
+                working: self.working.as_ref().is_some_and(|line| line.esc_stops),
                 typing,
-                pinned_cards,
+                // A card handed on leaves the screen, so what still waits is in `needs_you`.
+                pinned_cards: 0,
                 panel: panel_has_rows(&self.workflows, &self.agents),
-                panel_focused: self.agents.has_focus() || self.workflows.selected.is_some(),
+                panel_focused,
                 card_focused: self.focused_card().is_some(),
                 shell: self.composer.is_shell(),
+                // A command runs when Enter is pressed, whatever works above it.
                 enter_sends: self
                     .enter_sends
                     .as_deref()
-                    .filter(|_| typing && focused && (busy || waiting)),
-                status: &self.status_line,
+                    .filter(|_| typing && focused && (busy || waiting))
+                    .filter(|_| !self.composer.text().trim_start().starts_with('/')),
+                line: Some(&self.line),
             },
         );
         let card_rows = card.lines.len();
-        let searching = self.history_search.is_some();
+        let searching = search.is_some();
         Parts {
             working,
             queued,
+            band: Vec::new(),
             heads_up,
             card_gap: card_rows > 0,
             card_tail: card.tail,
             card_extra: card.extra,
-            // A pinned card is one row.
             card_head_rows: card_rows.min(2),
             card_cursor: card.cursor,
             card: card.lines,
@@ -592,6 +681,8 @@ impl BottomState {
 struct Parts {
     working: Vec<Line<'static>>,
     queued: Vec<Line<'static>>,
+    /// The mods pinned above the input, over the heads-up.
+    band: Vec<Line<'static>>,
     heads_up: Vec<Line<'static>>,
     card: Vec<Line<'static>>,
     card_gap: bool,
@@ -619,6 +710,7 @@ impl Parts {
                 + self.card.len()
                 + usize::from(self.card_gap)
                 + self.queued.len()
+                + self.band.len()
                 + self.heads_up.len()
                 + self.composer.len()
                 + self.menu.len();
@@ -631,6 +723,7 @@ impl Parts {
             + self.card.len()
             + usize::from(self.card_gap)
             + self.queued.len()
+            + self.band.len()
             + self.heads_up.len()
             + self.composer.len()
             + usize::from(self.mode.is_some())
@@ -689,6 +782,7 @@ impl Parts {
             lines.push(Line::default());
         }
         lines.extend(self.queued);
+        lines.extend(self.band);
         lines.extend(self.heads_up);
         let composer_top = lines.len();
         lines.extend(self.composer);

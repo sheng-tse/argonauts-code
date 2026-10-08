@@ -8,11 +8,20 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use argonauts_core::events::RunEvent;
-use argonauts_testkit::{FakeVendors, Pty, PtyCommand, TempRepo, Trace, argonauts_bin, journal};
+use argonauts_testkit::{
+    FakeVendors, Key, Pty, PtyCommand, TempRepo, Trace, argonauts_bin, journal,
+};
 
 mod leftovers;
 
 pub const WAIT: Duration = Duration::from_secs(20);
+
+/// A card that takes the keys by itself works only the arrows for its first 400 ms (the
+/// screen's `CARD_GUARD`), so a key meant for something else never answers it. A test waits
+/// that out before working a card, as someone reading it would.
+pub fn past_the_card_guard() {
+    std::thread::sleep(Duration::from_millis(500));
+}
 
 pub const ROWS: u16 = 32;
 pub const COLS: u16 = 100;
@@ -103,6 +112,22 @@ pub fn inline_screen<'a>(args: &[&'a str]) -> Vec<&'a str> {
     all
 }
 
+/// Pauses the run on screen at its next safe point, from its row in the list under the input:
+/// `x` asks, and `p` pauses in place of stopping. Esc leaves a run's agents going,
+/// so it no longer starts a pause. Back in the input, the working line says the run is
+/// pausing.
+pub fn pause_run(pty: &mut Pty) -> anyhow::Result<()> {
+    pty.press(Key::Down)?;
+    pty.press(Key::Char('x'))?;
+    pty.wait_for("p to pause it", WAIT)?;
+    pty.press(Key::Char('p'))?;
+    pty.wait_for(r"Pausing… \(esc again to stop now\)", WAIT)?;
+    // The list still has the keys, and Esc hands them back to the input.
+    pty.press(Key::Esc)?;
+    pty.wait_for(r"shift\+tab to cycle", WAIT)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,7 +198,7 @@ mod tests {
         while in_group() < 2 {
             assert!(
                 Instant::now() < deadline,
-                "the stand-in never started its child"
+                "the fallback never started its child"
             );
             std::thread::sleep(Duration::from_millis(20));
         }

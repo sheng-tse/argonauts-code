@@ -27,10 +27,10 @@ pub fn part(host: &Host) -> Option<InputPart> {
     let name = runner::crew_workflow(host);
     let workflow = runner::lookup(host, name.as_str()).ok()?;
     let file = yaml::print(&workflow).ok()?;
-    let mut text = String::from("## The preset's workflow\n\n");
+    let mut text = String::from("## The workflow's steps\n\n");
     let _ = write!(
         text,
-        "The user chose the preset that runs `{name}`, so this run keeps it. Set `based_on` to \
+        "The user chose the workflow that runs `{name}`, so this run keeps it. Set `based_on` to \
          `{name}`, and size it for the task: with its params, or in `workflow` with more or \
          fewer agents at a step, fewer rounds, or a step that doesn't apply left out. Keep its \
          phases, their titles, and their order, and don't run another workflow, unless \
@@ -41,7 +41,7 @@ pub fn part(host: &Host) -> Option<InputPart> {
     );
     Some(InputPart {
         kind: InputPartKind::StepInput,
-        label: "the preset's workflow".to_owned(),
+        label: "the workflow's steps".to_owned(),
         approx_tokens: u32::try_from(text.len() / 4).unwrap_or(u32::MAX),
         text,
         source: None,
@@ -93,10 +93,10 @@ pub fn check(
         }),
         Err(why) => Err(match from {
             Some(from) if *from != preset => format!(
-                "keep `{preset}`, the preset's workflow: size it for the task, but don't run \
+                "keep `{preset}`, the workflow's steps: size it for the task, but don't run \
                  `{from}` in its place"
             ),
-            _ => format!("keep `{preset}`, the preset's workflow, and only size it: {why}"),
+            _ => format!("keep `{preset}`, the workflow's steps, and only size it: {why}"),
         }),
     }
 }
@@ -106,7 +106,7 @@ pub fn check(
 pub fn keeps(host: &Host, current: &Workflow, proposed: &Workflow) -> Result<(), String> {
     sized(current, proposed).map(|_| ()).map_err(|why| {
         let preset = runner::crew_workflow(host);
-        format!("keep `{preset}`, the preset's workflow, and only size what's left of it: {why}")
+        format!("keep `{preset}`, the workflow's steps, and only size what's left of it: {why}")
     })
 }
 
@@ -122,7 +122,7 @@ pub fn line(changes: &[String], why: &str) -> Option<String> {
         format!(", since {}", clause_case(why))
     };
     Some(format!(
-        "The lead changed the preset's workflow: {}{because}.",
+        "The main agent changed the workflow's steps: {}{because}.",
         changes.join("; ")
     ))
 }
@@ -192,7 +192,7 @@ fn steps(preset: &[Step], proposed: &[Step], changes: &mut Vec<String>) -> Resul
                 Some(original) => passed.push(original),
                 None => {
                     return Err(format!(
-                        "`{}` isn't a step of the preset's workflow at that place",
+                        "`{}` isn't a step of the workflow's steps at that place",
                         step_name(step)
                     ));
                 }
@@ -269,7 +269,7 @@ fn step_changes(original: &Step, step: &Step, changes: &mut Vec<String>) -> Resu
     same.label.clone_from(&original.label);
     same.review_in.clone_from(&original.review_in);
     if same != *original {
-        return Err(format!("`{name}` works differently from the preset's"));
+        return Err(format!("`{name}` works differently from the workflow's"));
     }
     Ok(())
 }
@@ -281,7 +281,7 @@ fn agents(count: Option<&Count>) -> String {
         Some(Count::Fixed(1)) => "1 agent".to_owned(),
         Some(Count::Fixed(n)) => format!("{n} agents"),
         Some(Count::Param(text)) => format!("{text} agents"),
-        None => "the preset's number of agents".to_owned(),
+        None => "the workflow's number of agents".to_owned(),
     }
 }
 
@@ -290,7 +290,7 @@ fn count(count: Option<&Count>) -> String {
     match count {
         Some(Count::Fixed(n)) => n.to_string(),
         Some(Count::Param(text)) => text.clone(),
-        None => "the preset's number".to_owned(),
+        None => "the workflow's number".to_owned(),
     }
 }
 
@@ -312,7 +312,7 @@ mod tests {
     use crate::workflow::builtin;
 
     fn peer_crew() -> Workflow {
-        builtin::load("peer-crew").unwrap_or_else(|err| panic!("{err}"))
+        builtin::load("council").unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn find<'a>(steps: &'a mut [Step], name: &str) -> Option<&'a mut Step> {
@@ -343,7 +343,7 @@ mod tests {
             .steps
             .retain(|step| step.name.as_deref() != Some("critique"));
         planning.max = Some(1);
-        let changes = sized(&preset, &smaller).expect("still peer-crew");
+        let changes = sized(&preset, &smaller).expect("still council");
         assert_eq!(
             changes,
             [
@@ -363,17 +363,17 @@ mod tests {
         let before = drafts.count.clone();
         drafts.count = Some(Count::Fixed(1));
         drafts.label = Some("plan:{family}".to_owned());
-        let changes = sized(&preset, &fewer).expect("still peer-crew");
+        let changes = sized(&preset, &fewer).expect("still council");
         let said = format!("1 agent at drafts instead of {}", count(before.as_ref()));
         assert_eq!(changes, [said]);
-        assert_eq!(agents(None), "the preset's number of agents");
+        assert_eq!(agents(None), "the workflow's number of agents");
         assert_eq!(agents(Some(&Count::Fixed(3))), "3 agents");
     }
 
     #[test]
     fn another_workflow_is_not_a_sizing() {
         let preset = peer_crew();
-        let solo = builtin::load("solo-reviewed").unwrap_or_else(|err| panic!("{err}"));
+        let solo = builtin::load("maker-checker").unwrap_or_else(|err| panic!("{err}"));
         let refused = sized(&preset, &solo).expect_err("another workflow");
         assert!(refused.starts_with("its phases are"), "{refused}");
 
@@ -425,7 +425,7 @@ mod tests {
             )
             .as_deref(),
             Some(
-                "The lead changed the preset's workflow: left out critique, since one small \
+                "The main agent changed the workflow's steps: left out critique, since one small \
                  change needs no debate."
             )
         );

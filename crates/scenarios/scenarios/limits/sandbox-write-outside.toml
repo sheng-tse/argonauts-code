@@ -1,5 +1,5 @@
 # The probe set as Claude Code's binary tries its writes, then this fake Claude Code finishes
-# the card from the recorded build run.
+# the task from the recorded build run.
 
 [version]
 claude = "2.1.284 (Claude Code)"

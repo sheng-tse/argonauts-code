@@ -56,7 +56,7 @@ pub struct Workflow {
     /// One line, shown under the name in the workflow view.
     #[serde(default)]
     pub description: String,
-    /// The example it started from, such as `peer-crew`, when the lead wrote it from one.
+    /// The example it started from, such as `council`, when the lead wrote it from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub based_on: Option<String>,
     /// Defaults that the lead fills in per task.
@@ -196,6 +196,9 @@ pub enum StepKind {
     Merge,
     /// Another workflow run as one step. Nesting stops at depth 2.
     Workflow,
+    /// The workflow in use, run by its own steps: a file of `[[step]]` entries or a script, in
+    /// the sandboxed runner.
+    Script,
 }
 
 /// A number, or a `{{name}}` placeholder.

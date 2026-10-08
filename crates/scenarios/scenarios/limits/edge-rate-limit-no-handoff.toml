@@ -1,5 +1,5 @@
 # The fake Claude Code is rate limited twice, retries as the real one does, and then finishes
-# the card from the recorded build run. Nothing is handed off.
+# the task from the recorded build run. Nothing is handed off.
 
 [version]
 claude = "2.1.284 (Claude Code)"

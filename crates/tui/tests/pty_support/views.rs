@@ -14,7 +14,7 @@ pub fn view(data: Value) -> AppEvent {
 /// The label a workflow gives the agent, `phase:target`, such as `build:json-writer`.
 pub fn label(agent: &Agent) -> String {
     let step = match agent.role.as_str() {
-        "owner" => "build",
+        "worker" => "build",
         "restater" => "read",
         other => other,
     };
@@ -81,7 +81,7 @@ pub fn workflow_view(agents: &[Agent], nested: Option<Value>) -> AppEvent {
     };
     view(
         json!({"data": "workflow", "view": {"run": RUN, "id": "wf-001",
-        "name": "peer-crew", "description": "Goal, plans, build, review, and merge",
+        "name": "council", "description": "Goal, plans, build, review, and merge",
         "breadcrumb": [], "agents_done": 4, "agents_total": 4 + total,
         "elapsed_ms": 9_840_000, "spent": spend(747_000, 4.10),
         "phases": [
@@ -135,8 +135,8 @@ pub fn config_view(entries: &[(&str, &str, &str)]) -> AppEvent {
 
 /// `state` is `running`, `parked`, `crashed`, `merged`, and so on.
 pub fn run_summary(run: &str, title: &str, state: &str, remind: bool) -> Value {
-    json!({"run": run, "title": title, "mode": "crew", "preset": "peer-crew", "state": state,
-           "stopped_at": "merge checkpoint", "updated": "2026-09-30T11:00:00Z",
+    json!({"run": run, "title": title, "mode": "crew", "workflow": "council", "state": state,
+           "stopped_at": "merge approval", "updated": "2026-09-30T11:00:00Z",
            "spent": spend(9000, 0.46), "sessions_to_resume": 2, "waiting": [],
            "live": state == "running", "remind": remind})
 }
@@ -218,11 +218,11 @@ pub fn replay_done(run: &str, seq: u64) -> AppEvent {
 
 pub const REPLAY_MILESTONES: [&str; 3] = [
     "Goal approved",
-    "Plan approved · 3 cards",
-    "card-002 merged into the run branch",
+    "Plan approved · 3 tasks",
+    "task-002 merged into the run branch",
 ];
 
-pub const REPLAY_RECAP: &str = "Two cards are done and the merge waits for you.";
+pub const REPLAY_RECAP: &str = "Two tasks are done and the merge waits for you.";
 
 /// Reattaching to a long run: `tool_calls` calls per agent for three agents, a card answered
 /// long ago, then the condensed replay and `ReplayDone`. Returns the script for events after

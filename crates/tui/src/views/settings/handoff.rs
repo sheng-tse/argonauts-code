@@ -1,11 +1,12 @@
-//! `/handoff` by name, as `/permissions` lists its keys: what happens when an agent stops, for
+//! `/fallback` by name, as `/permissions` lists its keys: what happens when an agent stops, for
 //! every agent, then a row per role whose own settings win for its agents.
 
 use argonauts_core::app::SettingRow;
 use argonauts_core::display_names::builtin_harness_name;
+use argonauts_core::settings::handoff::CrewRole;
 
 use super::flow::{RowAction, Stage};
-use super::words::{layer_words, parse_role, role_words, row_value_words};
+use super::words::{layer_words, role_words, row_value_words};
 use crate::bottom::{Picker, PickerRow};
 
 /// What a handoff key decides, as its row says it: `When an agent stops` for `handoff.mode`, or
@@ -19,46 +20,48 @@ pub fn label(key: &str) -> Option<String> {
         let vendor = builtin_harness_name(vendor).unwrap_or(vendor);
         return Some(match leaf {
             "with" => format!("Who replaces {vendor}"),
-            "strategy" => format!("How {vendor}'s cards are shared"),
+            "strategy" => format!("How {vendor}'s tasks are shared"),
             "on_return" => format!("When {vendor} comes back"),
-            "context" => format!("What {vendor}'s replacement is told"),
+            "context" => format!("What {vendor}'s fallback is told"),
             _ => return None,
         });
     }
     let name = match rest {
         "mode" => "When an agent stops",
-        "fallback" => "Who takes over",
-        "ask_timeout" => "How long the card waits",
+        "order" => "Who takes over",
+        "ask_timeout" => "How long the question waits",
         "allow_api_billing" => "Hand off to a paid API",
         "return_to_original" => "Hand back when it returns",
         "broken_work" => "Broken work in progress",
         "wrap_up" => "An agent finishing on its allowance",
-        "strategy" => "How the cards are shared",
-        "race_count" => "Attempts in a race",
+        "strategy" => "How the tasks are shared",
+        "together" => "How many take over at once",
+        "pick" => "How their results combine",
         "on_return" => "When the agent comes back",
-        "checkpoint" => "Tag the card at each handoff",
+        "checkpoint" => "Tag the task at each fallback",
         "merge_rule" => "Weaker model's work",
         "unknown_tier" => "A model with no tier counts as",
-        "max_handoffs" => "Handoffs before it asks you",
-        "context" => "What the replacement is told",
+        "max_fallbacks" => "Fallbacks before it asks you",
+        "context" => "What the fallback is told",
         "summarizer" => "Who summarizes the old session",
         _ => return None,
     };
     Some(name.to_owned())
 }
 
-/// `mode` for `handoff.mode` and `roles.owner.handoff.mode`.
+/// `mode` for `fallback.mode` and `fallback.workers.mode`.
 fn handoff_part(key: &str) -> Option<&str> {
-    key.strip_prefix("handoff.").or_else(|| {
-        let (_, rest) = key.strip_prefix("roles.")?.split_once('.')?;
-        rest.strip_prefix("handoff.")
+    let rest = key.strip_prefix("fallback.")?;
+    Some(match role_of(key) {
+        Some(role) => rest.strip_prefix(role)?.strip_prefix('.')?,
+        None => rest,
     })
 }
 
-/// `owner` for `roles.owner.handoff.mode`.
+/// `workers` for `fallback.workers.mode`: one of the crew's five roles.
 fn role_of(key: &str) -> Option<&str> {
-    let (role, rest) = key.strip_prefix("roles.")?.split_once('.')?;
-    rest.starts_with("handoff.").then_some(role)
+    let (role, _) = key.strip_prefix("fallback.")?.split_once('.')?;
+    CrewRole::named(role).map(|_| role)
 }
 
 /// `/handoff`: a row per key for every agent, then a row per role that opens its own. Rows for
@@ -75,7 +78,7 @@ pub fn list(picker: &mut Picker) {
     }
     let every_agent = settings.iter().any(|row| role_of(&row.key).is_none());
     if let ([role], false) = (roles.as_slice(), every_agent) {
-        let prefix = format!("roles.{role}.handoff");
+        let prefix = format!("fallback.{role}");
         role_list(picker, &prefix);
         return;
     }
@@ -88,18 +91,18 @@ pub fn list(picker: &mut Picker) {
         }
     }
     for role in &roles {
-        let prefix = format!("roles.{role}.handoff");
+        let prefix = format!("fallback.{role}");
         rows.push(PickerRow::new(
             role_name(role),
             role_note(settings, &prefix),
         ));
         actions.push(RowAction::OpenGroup(prefix));
     }
-    picker.title = "Handoff".to_owned();
+    picker.title = "Fallback".to_owned();
     show(picker, rows, actions);
 }
 
-/// One role's keys under `prefix`, such as `roles.owner.handoff`. A key the role leaves unset
+/// One role's keys under `prefix`, such as `fallback.workers`. A key the role leaves unset
 /// says what every agent has.
 pub fn role_list(picker: &mut Picker, prefix: &str) {
     let settings = &picker.flow.settings;
@@ -114,11 +117,8 @@ pub fn role_list(picker: &mut Picker, prefix: &str) {
             actions.push(RowAction::OpenKey(index));
         }
     }
-    let role = prefix
-        .strip_prefix("roles.")
-        .and_then(|rest| rest.split('.').next())
-        .unwrap_or_default();
-    picker.title = format!("Handoff for {}", role_name(role));
+    let role = prefix.strip_prefix("fallback.").unwrap_or_default();
+    picker.title = format!("Fallback for {}", role_name(role));
     picker.about =
         "What this role sets wins for its agents; the rest follows every agent's".to_owned();
     show(picker, rows, actions);
@@ -155,10 +155,11 @@ fn row_label(key: &str) -> String {
     label(key).unwrap_or_else(|| key.to_owned())
 }
 
+/// A crew role as a row names it: `Main agent` as the other pickers do, else its own name.
 fn role_name(role: &str) -> String {
-    match parse_role(role) {
-        Some(role) => role_words(Some(role)),
-        None => role.to_owned(),
+    match CrewRole::named(role) {
+        Some(CrewRole::Main) => role_words(None),
+        _ => role.to_owned(),
     }
 }
 
@@ -191,7 +192,7 @@ fn inherited(settings: &[SettingRow], key: &str) -> String {
     let Some(rest) = handoff_part(key) else {
         return "unset".to_owned();
     };
-    let every = format!("handoff.{rest}");
+    let every = format!("fallback.{rest}");
     settings
         .iter()
         .find(|row| row.key == every)
@@ -220,25 +221,32 @@ mod tests {
     #[test]
     fn keys_read_as_names_for_every_agent_and_each_role() {
         assert_eq!(
-            label("handoff.mode").as_deref(),
+            label("fallback.mode").as_deref(),
             Some("When an agent stops")
         );
         assert_eq!(
-            label("roles.owner.handoff.context").as_deref(),
-            Some("What the replacement is told")
+            label("fallback.workers.context").as_deref(),
+            Some("What the fallback is told")
         );
         assert_eq!(
-            label("handoff.replace.codex.with").as_deref(),
+            label("fallback.replace.codex.with").as_deref(),
             Some("Who replaces Codex")
         );
-        assert_eq!(label("handoff.unheard_of"), None);
+        assert_eq!(label("fallback.unheard_of"), None);
         assert_eq!(label("sandbox.mode"), None);
     }
 
     #[test]
     fn only_handoff_keys_under_a_role_have_one() {
-        assert_eq!(role_of("roles.owner.handoff.mode"), Some("owner"));
-        assert_eq!(role_of("roles.owner.sandbox.mode"), None);
-        assert_eq!(role_of("handoff.mode"), None);
+        assert_eq!(role_of("fallback.workers.mode"), Some("workers"));
+        assert_eq!(role_of("roles.worker.sandbox.mode"), None);
+        assert_eq!(role_of("fallback.mode"), None);
+        assert_eq!(role_of("fallback.replace.codex"), None);
+        assert_eq!(handoff_part("fallback.workers.mode"), Some("mode"));
+        assert_eq!(
+            handoff_part("fallback.reviewers.replace.codex.with"),
+            Some("replace.codex.with")
+        );
+        assert_eq!(handoff_part("fallback.mode"), Some("mode"));
     }
 }

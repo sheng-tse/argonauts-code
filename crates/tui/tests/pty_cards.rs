@@ -1,6 +1,6 @@
 //! ◆ cards above the input: focus, keys, notes, the evidence hash, the bell, Esc, and the
-//! guided setup's steps. A card that needs you takes the keys as it shows, unless a draft is
-//! being typed, which keeps them until it's sent.
+//! guided setup's steps. A card that needs you takes the keys as it shows, and a draft being
+//! typed goes aside until the card is answered or handed on.
 
 mod pty_support;
 
@@ -8,12 +8,12 @@ use pty_support::*;
 use serde_json::{Value, json};
 
 const MERGE_CARD: &str = "◆ Merge";
-const PLACEHOLDER: &str = "↑ to answer the card, or type to guide the run";
 /// The card's own key line while it has the keys.
-const CARD_KEYS: &str = "^  Enter to choose.* · Esc to set aside( · shift\\+tab to cycle modes)?$";
+const CARD_KEYS: &str =
+    "^  Enter to choose.* · Esc to carry on without me( · shift\\+tab to cycle modes)?$";
 /// The key line once something was typed at the card.
 const TYPED_AT: &str =
-    "^  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside$";
+    "^  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me$";
 
 /// The card has the keys and stands in for the input, whose rules are gone.
 fn card_holds_keys(harness: &Harness) {
@@ -53,6 +53,7 @@ fn a_card_that_needs_you_takes_the_keys_as_it_shows() {
     card_holds_keys(&harness);
     harness.press(Key::Down);
     harness.wait_visible("❯ 2\\. Open a pull request");
+    past_the_card_guard();
     harness.press(Key::Enter);
     let answer = harness.wait_command("answer");
     assert_eq!(answer["to"], checkpoint_target("cp-001"));
@@ -81,14 +82,17 @@ fn chat_typed_at_a_card_never_answers_it() {
     harness.wait_visible("❯ 2\\. Open a pull request");
     harness.assert_no_command("answer");
 
-    // Set aside, the input takes typing again, and ↑ brings the card back.
+    // Handed on, it leaves the screen, a line says who decides now, and the input takes
+    // typing again.
+    past_the_card_guard();
     harness.press(Key::Esc);
-    harness.wait_visible("· needs you · ↑ to answer");
-    harness.wait_visible(PLACEHOLDER);
+    harness.wait_visible("◆ Merge approval left to the main agent · you, ");
+    harness.wait_gone("2\\. Open a pull request");
+    assert_eq!(
+        harness.wait_command("set_aside")["to"],
+        checkpoint_target("cp-001")
+    );
     harness.submit("keep the CSV path");
-    harness.press(Key::Up);
-    harness.wait_visible("❯ 2\\. Open a pull request");
-    card_holds_keys(&harness);
     harness.assert_no_command("answer");
 }
 
@@ -101,6 +105,7 @@ fn own_answer_option_opens_line_in_card() {
     let mut harness = Harness::start(script);
     harness.wait_visible("Keep a CSV fallback\\?");
     harness.wait_visible("❯ 1\\. Yes, keep it");
+    past_the_card_guard();
     harness.press(Key::Char('3'));
     harness.wait_visible("Enter to answer · Esc to close");
     harness.send("only behind a flag");
@@ -109,12 +114,12 @@ fn own_answer_option_opens_line_in_card() {
     let keys = expect_row(&screen, "Enter to answer · Esc to close");
     assert!(
         typed < keys,
-        "the line is inside the card:\n{}",
+        "the line is inside the task:\n{}",
         screen.visible_text()
     );
     assert!(
-        !screen.visible_text().contains("peer-crew ─"),
-        "the input is hidden while the card has the keys:\n{}",
+        !screen.visible_text().contains("council · Haiku ─"),
+        "the input is hidden while the question has the keys:\n{}",
         screen.visible_text()
     );
     harness.press(Key::Enter);
@@ -138,6 +143,7 @@ fn card_tab_adds_note() {
     let mut harness = Harness::start(script);
     harness.wait_visible("Approve with edits");
     harness.wait_visible("❯ 1\\. Approve the plan");
+    past_the_card_guard();
     harness.press(Key::Down);
     harness.wait_visible("❯ 2\\. Approve with edits");
     harness.press(Key::Tab);
@@ -151,30 +157,38 @@ fn card_tab_adds_note() {
 }
 
 #[test]
-fn keys_typed_as_card_appears_kept() {
+fn a_draft_typed_as_a_card_appears_comes_back_after() {
     let (mut run, crew, events) = crew_run(1);
     let script = Script::idle()
         .all(0, events)
         .await_signal("card")
         .at(0, run.question_checkpoint("cp-001", &crew[0]));
     let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.send("keep go");
+    harness.wait_visible("❯ keep go");
     harness.signal("card");
-    harness.send("ing");
     harness.wait_visible("Keep a CSV fallback\\?");
-    let screen = harness.wait_visible("❯ keep going");
+    card_holds_keys(&harness);
+    // The rest of the line lands on the card as stray typing, and its Enter answers nothing.
+    harness.send("ing");
+    harness.press(Key::Enter);
+    harness.wait_visible(TYPED_AT);
+    harness.assert_no_command("answer");
+    harness.assert_no_command("submit");
+    // Set aside, the draft comes back as it was.
+    past_the_card_guard();
+    harness.press(Key::Esc);
+    let screen = harness.wait_visible("❯ keep go");
     let rule = expect_row(&screen, TOP_RULE);
     assert!(
-        screen.visible[rule + 1].contains("keep going"),
+        screen.visible[rule + 1].contains("keep go"),
         "{}",
         screen.visible_text()
     );
+    harness.send("ing");
     harness.press(Key::Enter);
     harness.wait_command_where("submit", |c| c["text"] == "keep going");
-    // With the draft sent, the card takes the keys.
-    harness.wait_visible("❯ 1\\. Yes, keep it");
-    card_holds_keys(&harness);
     harness.assert_no_command("answer");
 }
 
@@ -186,7 +200,7 @@ fn bell_rings_when_needs_you() {
         .await_signal("card")
         .at(0, run.question_checkpoint("cp-001", &crew[0]));
     let harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     assert_eq!(harness.bells(), 0, "nothing needs you yet");
     harness.signal("card");
     harness.wait_visible("Keep a CSV fallback\\?");
@@ -199,8 +213,8 @@ fn answer_sends_rendered_hash() {
     let (_, script) = merge_waiting();
     let mut harness = Harness::start(script);
     harness.wait_visible(MERGE_CARD);
-    harness.press(Key::Up);
     harness.wait_visible("❯ 1\\. Merge");
+    past_the_card_guard();
     harness.press(Key::Char('1'));
     harness.wait_visible("Enter to merge · Esc to cancel");
     harness.assert_no_command("answer");
@@ -216,24 +230,24 @@ fn merge_request_changes_picks_cards() {
     let (_, script) = merge_waiting();
     let mut harness = Harness::start(script);
     harness.wait_visible(MERGE_CARD);
-    harness.press(Key::Up);
     harness.wait_visible("❯ 1\\. Merge");
+    past_the_card_guard();
     harness.press(Key::Char('3'));
-    harness.wait_visible("card-003");
+    harness.wait_visible("task-003");
     let screen = harness.screen();
-    let first = expect_row(&screen, "card-002");
-    let second = expect_row(&screen, "card-003");
+    let first = expect_row(&screen, "task-002");
+    let second = expect_row(&screen, "task-003");
     assert!(first < second, "{}", screen.visible_text());
     harness.press(Key::Char(' '));
     harness.press(Key::Enter);
     // The changes are what the agents act on, so Enter on the ticks asks for them.
-    harness.wait_visible("Request changes on some cards, and add a note");
+    harness.wait_visible("Request changes on some tasks, and add a note");
     harness.send("split the writer");
     harness.wait_visible("split the writer");
     harness.press(Key::Enter);
     let answer = harness.wait_command("answer");
     assert_eq!(answer["action"], json!({"action": "request_changes"}));
-    assert_eq!(answer["cards"], json!(["card-002"]));
+    assert_eq!(answer["cards"], json!(["task-002"]));
     assert_eq!(answer["text"], "split the writer");
     assert_eq!(answer["evidence_sha256"], EVIDENCE);
 }
@@ -254,8 +268,8 @@ fn spot_check_card_sends_spot_check() {
     harness.wait_visible("Overrule");
     let screen = harness.screen();
     assert_order(&screen, &["Agree", "Overrule", "Show the evidence"]);
-    harness.press(Key::Up);
     harness.wait_visible("❯ 1\\. Agree");
+    past_the_card_guard();
     harness.press(Key::Char('2'));
     let check = harness.wait_command("spot_check");
     assert_eq!(
@@ -265,12 +279,24 @@ fn spot_check_card_sends_spot_check() {
     harness.assert_no_command("answer");
 }
 
+/// Esc on a run's question hands it on: the screen says so to the engine, whose
+/// decision closes the question, so nothing is left under "needs you". The next Esc leaves the
+/// run's agents going and says how to stop them. The run's row in the list
+/// pauses it, where its stop is asked, and once the run is pausing Esc stops it now.
 #[test]
-fn esc_sets_card_aside_then_pauses_then_stops_now() {
+fn esc_hands_the_question_on_leaves_the_run_going_and_stops_a_pausing_one_now() {
     let (mut run, crew, events) = crew_run(2);
+    let question = run.question_checkpoint("cp-001", &crew[0]);
+    let left = run.decided(
+        "cp-001",
+        json!({"action": "answer"}),
+        json!({"party": "declined"}),
+    );
     let script = Script::idle()
         .all(0, events)
-        .at(0, run.question_checkpoint("cp-001", &crew[0]))
+        .at(0, question)
+        .await_command("set_aside")
+        .at(0, left)
         .await_command("pause")
         .at(0, mode_pausing(RUN))
         .await_command("pause")
@@ -278,19 +304,30 @@ fn esc_sets_card_aside_then_pauses_then_stops_now() {
         .at(0, mode_parked(RUN, "paused"));
     let mut harness = Harness::start(script);
     harness.wait_visible("Keep a CSV fallback\\?");
+    past_the_card_guard();
     harness.press(Key::Esc);
-    let screen = harness.wait_visible("· needs you · ↑ to answer");
-    assert!(
-        row_of(&screen, "^◆ ").is_some(),
-        "{}",
-        screen.visible_text()
+    harness.wait_visible("◆ Question left to the agent · you, ");
+    harness.wait_gone("Keep a CSV fallback\\?");
+    assert_eq!(
+        harness.wait_command("set_aside")["to"],
+        checkpoint_target("cp-001")
     );
-    harness.wait_visible("← 1 needs you");
+    // The engine's decision closes it, so nothing is left under "needs you".
+    harness.wait_gone("needs you");
     harness.assert_no_command("pause");
-    harness.assert_no_command("set_aside");
     harness.press(Key::Esc);
+    harness.wait_visible("The run keeps going · ctrl\\+x ctrl\\+k to stop all agents");
+    harness.assert_no_command("pause");
+    // x on the run's row asks before it stops, and p there pauses it instead.
+    harness.press(Key::Down);
+    harness.press(Key::Char('x'));
+    harness.wait_visible("x again to stop run-01 · p to pause it · esc to keep");
+    harness.press(Key::Char('p'));
     assert_eq!(harness.wait_command("pause")["now"], false);
     harness.wait_visible("Pausing… \\(esc again to stop now\\)");
+    // The first Esc gives the list's keys back to the input, and the next stops the run now.
+    harness.press(Key::Esc);
+    harness.wait_gone("enter to view");
     harness.press(Key::Esc);
     assert_eq!(harness.wait_command("pause")["now"], true);
     let pauses = harness
@@ -326,8 +363,8 @@ fn guided_setup_steps() {
         "How should the crew work?",
         &[],
         vec![
-            option('a', "peer-crew", choose("peer-crew"), true),
-            option('b', "coordinated-crew", choose("coordinated-crew"), false),
+            option('a', "council", choose("council"), true),
+            option('b', "orchestrator", choose("orchestrator"), false),
         ],
     );
     let script = Script::new()
@@ -362,7 +399,7 @@ fn guided_setup_steps() {
     assert_eq!(second["action"], choose("codex/gpt-5.6"));
 
     harness.wait_visible("How should the crew work\\?");
-    harness.wait_visible("❯ 1\\. peer-crew");
+    harness.wait_visible("❯ 1\\. council");
     harness.press(Key::Esc);
     let aside = harness.wait_command("set_aside");
     assert_eq!(

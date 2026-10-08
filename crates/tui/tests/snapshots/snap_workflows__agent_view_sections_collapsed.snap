@@ -23,8 +23,8 @@ expression: text
  │ Diff · 4 files · +120 -18 · ↵open                                                        │
  │                                                                                          │
  │ Subagents · 4 · structure not exposed · ↵expand                                          │
- │   ✓ explorer  done · Found 14 call sites                                                 │
- │   ● planner   running                                                                    │
+ │   ✔ explorer  done · Found 14 call sites                                                 │
+ │   ◐ planner   running                                                                    │
  │   ✗ tester    failed · 2 tests failed                                                    │
  │   …1 more                                                                                │
  │                                                                                          │

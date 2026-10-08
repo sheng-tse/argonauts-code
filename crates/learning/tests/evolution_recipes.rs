@@ -10,7 +10,7 @@ use argonauts_learning::recipes::{
 };
 
 fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/recipes")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/learned")
 }
 
 fn store() -> (tempfile::TempDir, Store) {
@@ -49,12 +49,12 @@ fn recipe_refuses_safety_and_fixed_core_keys() {
     let problems = recipes::validate(&unsafe_recipe).join("\n");
     for key in [
         "sandbox.network",
-        "budget.run_usd",
+        "limits.spend_per_run",
         "judging.method",
         "drafting.blind",
         "evolution.min_gain_points",
         "review.assign",
-        "gates.run",
+        "checks.run",
         "approvals.merge.mode",
         "prompts.judge",
     ] {
@@ -66,11 +66,11 @@ fn recipe_refuses_safety_and_fixed_core_keys() {
     assert!(problems.contains("fixed core"), "{problems}");
     assert!(problems.contains("safety key"), "{problems}");
     // Keys beside the guarded ones are fine on their own.
-    assert!(!problems.contains("budget.per_card_usd"), "{problems}");
+    assert!(!problems.contains("limits.per_task_usd"), "{problems}");
     assert!(!problems.contains("drafting.deadline_min"), "{problems}");
 
     let fine = yaml_recipe(
-        "recipe: fine\nversion: 1\ndescription: d\nmatch: { task_types: [backend] }\n\
+        "name: fine\nversion: 1\ndescription: d\nmatch: { task_types: [backend] }\n\
          drafting: { deadline_min: 10 }\ncritique: { rounds: 2 }\n",
     );
     assert_eq!(recipes::validate(&fine), Vec::<String>::new());
@@ -105,7 +105,7 @@ fn recipe_refuses_safety_and_fixed_core_keys() {
         Some(beside("drafting-v1.md").as_str())
     );
     assert_eq!(overlay["critique"]["rounds"].as_integer(), Some(1));
-    assert!(!overlay.contains_key("match") && !overlay.contains_key("recipe"));
+    assert!(!overlay.contains_key("match") && !overlay.contains_key("name"));
 }
 
 #[test]
@@ -163,24 +163,24 @@ fn recipe_matches_task_type_and_labels() {
     write_recipe(
         &root.join("backend-general"),
         &yaml_recipe(
-            "recipe: backend-general\nversion: 1\ndescription: d\nmatch: { task_types: [backend] }\n",
+            "name: backend-general\nversion: 1\ndescription: d\nmatch: { task_types: [backend] }\n",
         ),
     );
     write_recipe(
         &root.join("docs"),
-        &yaml_recipe("recipe: docs\nversion: 1\ndescription: d\nmatch: { labels_any: [docs] }\n"),
+        &yaml_recipe("name: docs\nversion: 1\ndescription: d\nmatch: { labels_any: [docs] }\n"),
     );
     let frontend = root.join("frontend");
     write_recipe(
         &frontend,
         &yaml_recipe(
-            "recipe: frontend\nversion: 1\ndescription: first\nmatch: { task_types: [frontend] }\n",
+            "name: frontend\nversion: 1\ndescription: first\nmatch: { task_types: [frontend] }\n",
         ),
     );
     write_recipe(
         &frontend,
         &yaml_recipe(
-            "recipe: frontend\nversion: 2\nparent: 1\ndescription: second\n\
+            "name: frontend\nversion: 2\nparent: 1\ndescription: second\n\
              match: { task_types: [frontend] }\ncritique: { rounds: 2 }\n",
         ),
     );
@@ -226,11 +226,11 @@ fn recipe_diff_is_structural() {
         folder.join("drafting-copy.md"),
     )
     .unwrap();
-    let same = "recipe: api-feature\nversion: 2\nparent: 1\n\
-        crew: [claude-code, codex]\nbudget: { per_card_usd: 2 }\n\
+    let same = "name: api-feature\nversion: 2\nparent: 1\n\
+        crew: [claude-code, codex]\nlimits: { per_task_usd: 2 }\n\
         critique: { checklist: [testability, criteria], critic: rotate, rounds: 1 }\n\
-        description: Reworded, which isn't a change\npreset: peer-crew\nmode: crew\n\
-        workflow: review-loop.star\nmatch: { labels_any: [api, endpoint], task_types: [backend] }\n\
+        description: Reworded, which isn't a change\nworkflow: council\nmode: crew\n\
+        phases: review-loop.star\nmatch: { labels_any: [api, endpoint], task_types: [backend] }\n\
         prompts: { drafting: drafting-copy.md }\n";
     let child = write_recipe(&folder, &yaml_recipe(same));
     assert_eq!(recipes::diff(&parent, &child).unwrap(), Vec::new());
@@ -282,7 +282,7 @@ fn recipe_diff_is_structural() {
     stepped
         .prompts
         .insert("drafting".to_owned(), "drafting-v1.md".to_owned());
-    stepped.workflow = Some("review-loop-v4.yaml".to_owned());
+    stepped.phases = Some("review-loop-v4.yaml".to_owned());
     let child = write_recipe(&folder, &stepped);
     let changes = recipes::diff(&parent, &child).unwrap();
     assert_eq!(changes.len(), 1, "{changes:?}");
@@ -322,7 +322,7 @@ fn starlark_builds_a_workflow() {
 order = {}
 for name in ["zeta", "alpha", "mid"]:
     order[name] = len(order)
-workflow(name = ",".join(order.keys()), phases = [phase("Do", "do", [build(role = "owner")])])
+workflow(name = ",".join(order.keys()), phases = [phase("Do", "do", [build(role = "worker")])])
 "#;
     for _ in 0..3 {
         assert_eq!(

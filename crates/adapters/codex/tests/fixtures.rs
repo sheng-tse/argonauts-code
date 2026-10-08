@@ -505,7 +505,7 @@ fn context_fill_from_each_vendor() {
             .all()
             .into_iter()
             .filter_map(|event| match event {
-                AgentEvent::ContextFill { used, size } => Some((*used, *size)),
+                AgentEvent::ContextFill { used, size, .. } => Some((*used, *size)),
                 _ => None,
             })
             .collect();
@@ -520,7 +520,8 @@ fn context_fill_from_each_vendor() {
     let replay = Fixture::load(VERSION, "resume_with_message").replay();
     assert!(replay.all().contains(&&AgentEvent::ContextFill {
         used: 8430,
-        size: None
+        size: None,
+        sent: None,
     }));
 }
 
@@ -561,6 +562,29 @@ fn codex_rate_limits_probe_parses() {
         detail["rateLimits"]["secondary"]["windowDurationMins"],
         10080
     );
+
+    // Primary and secondary are two readings, named by their length: 300 minutes is the
+    // five-hour window (`5h` on screen) and 10080 the weekly one (`7d`). The plan comes along.
+    let answer = CodexAdapter.parse_quota_probe_answer(&answer).unwrap();
+    let windows: Vec<_> = answer
+        .windows
+        .iter()
+        .map(|r| {
+            (
+                r.window.as_deref().unwrap(),
+                r.used.unwrap(),
+                r.resets_at.unwrap().unix_timestamp(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        windows,
+        [
+            ("five_hour", 0.0, 1_790_760_327),
+            ("weekly", 0.0, 1_791_259_618)
+        ]
+    );
+    assert_eq!(answer.plan.as_deref(), Some("<plan>"));
 }
 
 /// Each request's id, method, and params, without the client version that changes with ours.

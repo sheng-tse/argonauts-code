@@ -5,6 +5,7 @@ mod motion;
 mod paste_burst;
 mod view;
 mod vim;
+mod workflow_word;
 
 use std::cell::Cell;
 use std::time::Instant;
@@ -26,6 +27,7 @@ use paste_burst::PasteBurst;
 pub(super) use paste_burst::{CHAR_INTERVAL, ENTER_WINDOW, MIN_CHARS};
 
 pub use view::{SHELL_PLACEHOLDER, SHELL_PROMPT};
+pub use workflow_word::{ignored_notice, requested_notice};
 
 /// Longer drafts scroll to keep the cursor in view.
 pub const MAX_INPUT_ROWS: usize = 10;
@@ -42,6 +44,8 @@ pub const BUILT_IN_EXAMPLE: &str = "review the last commit";
 pub struct Composer {
     draft: Draft,
     pub label: Option<String>,
+    /// Ultracode is on for the session, so the rule carries its tag at the far right.
+    pub ultracode: bool,
     /// Takes the place of the example.
     pub placeholder: Option<String>,
     /// Built from recent commit subjects, never with a model. Without one,
@@ -77,6 +81,11 @@ pub struct Composer {
     /// A field inside a card, such as a question's answer: `!` is a letter there, and nothing
     /// typed in it joins the input's history.
     field: bool,
+    /// Opt+W ignored the workflow word in this draft. Reading it settles it, since the word
+    /// leaving the draft forgets the ignore.
+    workflow_ignored: Cell<bool>,
+    /// The prompt just sent asked for a workflow.
+    workflow_sent: bool,
 }
 
 /// A draft put aside while history shows, with the mode it was typed in.
@@ -84,6 +93,15 @@ pub struct Composer {
 struct Saved {
     draft: Draft,
     shell: bool,
+}
+
+/// A draft out of the input while a card holds the keys, to come back as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftAside {
+    saved: Saved,
+    browsing: Option<usize>,
+    stash: Option<Saved>,
+    pastes: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -286,6 +304,40 @@ impl Composer {
         self.shell = false;
     }
 
+    /// Takes the draft out whole, with its pastes, its mode, and where you were in history,
+    /// leaving the input empty. `None` when there's nothing to keep.
+    pub fn set_aside(&mut self) -> Option<DraftAside> {
+        if self.is_empty() && !self.shell && self.browsing.is_none() {
+            return None;
+        }
+        let aside = DraftAside {
+            saved: Saved {
+                draft: self.draft.clone(),
+                shell: self.shell,
+            },
+            browsing: self.browsing,
+            stash: self.stash.clone(),
+            pastes: self.pastes,
+        };
+        self.clear();
+        Some(aside)
+    }
+
+    /// Puts a draft taken by [`set_aside`](Self::set_aside) back as it was. Text that reached
+    /// the input meanwhile stays, after it.
+    pub fn bring_back(&mut self, aside: DraftAside) {
+        if !self.is_empty() || self.shell {
+            self.restore(&[aside.saved.draft.expanded()]);
+            return;
+        }
+        self.set_text("");
+        self.draft = aside.saved.draft;
+        self.shell = aside.saved.shell;
+        self.browsing = aside.browsing;
+        self.stash = aside.stash;
+        self.pastes = aside.pastes;
+    }
+
     pub fn is_browsing_history(&self) -> bool {
         self.browsing.is_some()
     }
@@ -307,6 +359,8 @@ impl Composer {
         let flushed = self.flush_burst();
         self.burst.end_run();
         let event = self.dispatch(key);
+        // Settles the ignore, so a word typed again after it left counts afresh.
+        self.workflow_requested();
         if flushed { event.or_edited() } else { event }
     }
 
@@ -408,6 +462,7 @@ impl Composer {
         if self.shell {
             return None;
         }
+        // The workflow word holds still, so only the CLI's own keywords can move.
         keywords::next_change(&self.draft.text, &self.keywords, theme, clock)
     }
 
@@ -447,6 +502,7 @@ impl Composer {
         }
         // The echo keeps a long paste as its label, so it doesn't push the conversation away.
         let shown = self.draft.text.trim_end_matches('\n').to_owned();
+        self.workflow_sent = self.workflow_requested();
         self.remember(text.clone());
         self.clear();
         self.end_example();

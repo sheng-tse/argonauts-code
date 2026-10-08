@@ -22,8 +22,8 @@ fn solo_preset(scenario: &Scenario) -> anyhow::Result<()> {
     }
     fs::write(
         config,
-        "default_agent = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
-         [triage]\nforce = \"solo\"\n",
+        "main_agent = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
+         [solo_or_crew]\nforce = \"solo\"\n",
     )?;
     Ok(())
 }
@@ -104,7 +104,7 @@ fn ui_direct_solo_turn_looks_like_claude_code() -> anyhow::Result<()> {
             "{text}"
         );
         assert_eq!(count(&done, r"^[●⏺] done$"), 1, "{text}");
-        for run_only in [r"Triage\(", "card-001", r"^◆ ", r"Merged", "owner"] {
+        for run_only in [r"Triage\(", "task-001", r"^◆ ", r"Merged", "worker"] {
             assert_eq!(count(&done, run_only), 0, "{run_only}:\n{text}");
         }
         // Nothing after the agent's last message but the `✻` line.

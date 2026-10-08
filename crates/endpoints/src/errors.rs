@@ -474,7 +474,7 @@ mod tests {
         let Failure::End(EndReason::VendorError { message, .. }) =
             classify(502, None, &body, "m", &secrets)
         else {
-            panic!("expected a vendor error");
+            panic!("expected an agent error");
         };
         assert!(!message.contains("plain-"), "{message}");
         let mut detail = json!({"error": {"message": KEY, "list": [KEY]}});

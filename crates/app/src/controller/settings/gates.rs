@@ -48,10 +48,10 @@ pub(crate) fn remember_skip(state_dir: &Path) -> anyhow::Result<()> {
 }
 
 pub(crate) fn offer(id: ChoiceId, commands: &[String]) -> AppChoice {
-    let mut body = vec!["Checks every card must pass, found in this repo:".to_owned()];
+    let mut body = vec!["Checks every task must pass, found in this repo:".to_owned()];
     body.extend(commands.iter().map(|command| format!("  {command}")));
     body.push(
-        "They go to .argonauts/config.toml as gates.run. Gates are a safety setting, so your \
+        "They go to .argonauts/config.toml as checks.run. Checks are a safety setting, so your \
          answer here is the confirm."
             .to_owned(),
     );
@@ -59,7 +59,7 @@ pub(crate) fn offer(id: ChoiceId, commands: &[String]) -> AppChoice {
     app_choice(
         id,
         ChoiceKind::DetectedGates,
-        "Use these gate commands?",
+        "Use these check commands?",
         body,
         options(ChoiceKind::DetectedGates),
     )

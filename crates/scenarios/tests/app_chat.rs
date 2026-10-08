@@ -68,7 +68,7 @@ fn assert_in_order(text: &str, needles: &[&str]) {
 fn app_example_hi() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;
-    pty.wait_for(r"Argonauts v?\d+\.\d+\.\d+", WAIT)?;
+    pty.wait_for(r"Argonauts Code v?\d+\.\d+\.\d+", WAIT)?;
 
     submit(&mut pty, requests::HI)?;
     wait_turns_finished(&scenario, 1)?;
@@ -105,15 +105,18 @@ fn app_example_question_could_be_task() -> anyhow::Result<()> {
     let keys: Vec<char> = card.options.iter().map(|option| option.key).collect();
     assert_eq!(keys, ['s', 'c', 'n'], "{card:?}");
     let card_text = format!("{} {}", card.title, card.body.join(" "));
-    assert!(card_text.contains("Triage would pick crew"), "{card_text}");
-    let screen = pty.wait_for(r"Start work on it\? Triage would pick crew\.", WAIT)?;
+    assert!(
+        card_text.contains("Argonauts would pick crew"),
+        "{card_text}"
+    );
+    let screen = pty.wait_for(r"Start work on it\? Argonauts would pick crew\.", WAIT)?;
     let text = screen.text();
     assert_in_order(
         &text,
         &[
             "Read",
             turn_end(&text),
-            "Start work on it? Triage would pick crew.",
+            "Start work on it? Argonauts would pick crew.",
         ],
     );
 
@@ -138,7 +141,7 @@ fn app_plain_text_is_a_request() -> anyhow::Result<()> {
     wait_until("the text to go up as a request", || {
         Ok(commands(&scenario)?
             .into_iter()
-            .find(|c| matches!(c, UiCommand::Submit { text } if text == requests::SMALL_FIX)))
+            .find(|c| matches!(c, UiCommand::Submit { text, .. } if text == requests::SMALL_FIX)))
     })?;
     assert!(matches!(nth_reply(&scenario, 1)?, TurnReply::Change { .. }));
     let turns = turns_started(&scenario)?;
@@ -183,17 +186,16 @@ fn app_routes_input_by_mode() -> anyhow::Result<()> {
     );
 
     // Pausing: Enter on an empty prompt goes up as it is, and the app cancels the pause.
-    pty.press(Key::Esc)?;
+    argonauts_scenarios::pause_run(&mut pty)?;
     wait_mode(&scenario, "the run to start pausing", |m| {
         matches!(m, AppMode::Pausing { .. })
     })?;
-    pty.wait_for(r"Pausing… \(esc again to stop now\)", WAIT)?;
     check_mode_line(&pty)?;
     pty.press(Key::Enter)?;
     wait_until("the empty prompt to go up", || {
         Ok(commands(&scenario)?
             .into_iter()
-            .find(|c| matches!(c, UiCommand::Submit { text } if text.is_empty())))
+            .find(|c| matches!(c, UiCommand::Submit { text, .. } if text.is_empty())))
     })?;
     wait_journal(&run_dir, "PauseCancelled", |event| {
         matches!(event.kind, RunEventKind::Run(RunLifecycle::PauseCancelled))
@@ -225,7 +227,9 @@ fn app_change_request_runs_triage() -> anyhow::Result<()> {
         "{started:?}"
     );
     assert_eq!(started.triage.as_ref().map(|t| t.mode), Some(RunMode::Solo));
-    pty.wait_for(r"Triage\(solo, checked\)", WAIT)?;
+    // A run's start prints no Triage row: its agent's row marks it.
+    let screen = pty.wait_for(r"(?m)^[●⏺] build:", WAIT)?;
+    assert!(!screen.text().contains("Triage("), "{}", screen.text());
     scenario.shot(&pty, "app_change_request_runs_triage")?;
     Ok(())
 }
@@ -252,7 +256,10 @@ fn app_unclear_offers_solo_crew_no() -> anyhow::Result<()> {
         "{card:?}"
     );
     let card_text = format!("{} {}", card.title, card.body.join(" "));
-    assert!(card_text.contains("Triage would pick solo"), "{card_text}");
+    assert!(
+        card_text.contains("Argonauts would pick solo"),
+        "{card_text}"
+    );
 
     answer_card(&mut pty, number_of(&card.options, 's'))?;
     wait_choice_closed(&scenario, &card.id)?;
@@ -347,7 +354,7 @@ fn app_chat_resumes_vendor_session() -> anyhow::Result<()> {
         // Codex never reports which model ran, so its adapter launches only with one chosen.
         let config = format!(
             "{}\n[agents.codex]\nmodel = \"gpt-5.6-luna\"\n",
-            config_with_default_agent(agent)
+            config_with_main_agent(agent)
         );
         let scenario = scenario_with(&config)?;
         let mut pty = start(&scenario)?;
@@ -387,7 +394,7 @@ fn app_chat_turn_records_settings_hash() -> anyhow::Result<()> {
 
     submit(&mut pty, "/effort high")?;
     answer_scope(&scenario, &mut pty, 's', None)?;
-    wait_setting_changed(&scenario, "roles.default.effort", 1)?;
+    wait_setting_changed(&scenario, "roles.main.effort", 1)?;
     submit(&mut pty, "and once more")?;
     wait_turns_finished(&scenario, 3)?;
     let third = turns_started(&scenario)?[2].settings_sha256.clone();
@@ -554,7 +561,9 @@ fn app_triage_picks_crew_by_labels() -> anyhow::Result<()> {
     }
     let started = run_started(&wait_run_dir(&scenario)?)?;
     assert_eq!(started.mode, RunMode::Crew);
-    pty.wait_for(r"Triage\(crew\)", WAIT)?;
+    // The crew's first agent marks the start, with no Triage row above it.
+    let screen = pty.wait_for(r"(?m)^[●⏺] main:design", WAIT)?;
+    assert!(!screen.text().contains("Triage("), "{}", screen.text());
     scenario.shot(&pty, "app_triage_picks_crew_by_labels")?;
     Ok(())
 }

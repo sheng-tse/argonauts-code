@@ -43,7 +43,7 @@ pub async fn hand_off(
     let mut packet = packet.clone();
     if let Some(kept_on) = broken::set_aside(host, &record).await? {
         packet.notes.push(format!(
-            "Its work failed the gates, so it was kept on {kept_on} and the card starts again \
+            "Its work failed the checks, so it was kept on {kept_on} and the task starts again \
              from its base."
         ));
     }

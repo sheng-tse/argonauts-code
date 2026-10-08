@@ -22,6 +22,7 @@ use argonauts_core::events::shared::RetroEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::delivery::DeliveryCommits;
 use argonauts_core::settings::protocol::MergeMode;
 use argonauts_core::steps::StepName;
 use argonauts_core::steps::card::Predictions;
@@ -108,7 +109,7 @@ impl Script {
                     .iter()
                     .map(|(topic, text)| json!({"topic": topic, "text": text}))
                     .collect::<Value>();
-                FakeSession::structured(report)
+                FakeSession::structured(report).with_event(support::wrote(BUILT))
             }
             (_, Some(schema)) => FakeSession::structured(fill(schema)),
             (_, None) => FakeSession::completed("done"),
@@ -138,9 +139,9 @@ fn crew_of_two(script: impl Fn(&str) -> Script) -> anyhow::Result<(Crew, Vec<Arc
         );
         let reference = fake.worker_ref().clone();
         if crew.settings.crew.is_empty() {
-            crew.settings.default_agent = reference.clone();
+            crew.settings.main_agent = reference.clone();
         }
-        crew.settings.crew.push(reference);
+        crew.settings.crew.add(reference);
         fakes.push(fake);
     }
     Ok((crew, fakes))
@@ -274,7 +275,7 @@ async fn outcomes_carry_model_assignment_and_recipe() -> anyhow::Result<()> {
     assert!(!run.canary);
     assert_eq!(run.task_type, "build");
     let (name, version) = found(run.workflow.clone(), "workflow")?;
-    assert_eq!(name, crew.settings.workflow.as_str());
+    assert_eq!(name, crew.settings.phases.as_str());
     assert_eq!(version.len(), 64);
     assert!(matches!(lines.last(), Some(LogLine::Run(_))));
     Ok(())
@@ -318,7 +319,7 @@ async fn predictions_logged_before_cards_start() -> anyhow::Result<()> {
     );
     assert!(
         seen_at_build.load(Ordering::SeqCst),
-        "the prediction and the draw are in the log before the card's build starts"
+        "the prediction and the draw are in the log before the task's build starts"
     );
     let lines = log(&crew)?;
     let prediction = found(
@@ -440,7 +441,7 @@ async fn predictions_never_skip_a_gate() -> anyhow::Result<()> {
             _ => None,
         })
         .collect();
-    assert!(gates.len() >= 4, "every gate still ran: {gates:?}");
+    assert!(gates.len() >= 4, "every check still ran: {gates:?}");
     let reviewed = events.iter().any(|event| {
         matches!(
             &event.kind,
@@ -503,10 +504,12 @@ async fn each_note_is_its_own_commit() -> anyhow::Result<()> {
             "The limiter tests need the fake clock.".to_owned(),
         ),
     ];
-    let (crew, _fakes) = crew_of_two(|worker| Script {
+    let (mut crew, _fakes) = crew_of_two(|worker| Script {
         notes: proposed.clone(),
         ..Script::new(model_of(worker))
     })?;
+    // The run's commits as it made them, which one commit for the run would fold together.
+    crew.settings.delivery.commits = DeliveryCommits::AsRun;
     let (exit, _) = crew_run(&crew).await?;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged));
     let log = crew
@@ -519,8 +522,8 @@ async fn each_note_is_its_own_commit() -> anyhow::Result<()> {
     assert_eq!(commits.len(), 2, "{commits:?}");
     let mut topics = Vec::new();
     for (sha, subject) in &commits {
-        let topic = subject.strip_prefix("Note from card-001: ");
-        topics.push(found(topic, "a subject naming the card")?.to_owned());
+        let topic = subject.strip_prefix("Note from task-001: ");
+        topics.push(found(topic, "a subject naming the task")?.to_owned());
         let files = crew.repo.git(&["show", "--name-only", "--format=", sha])?;
         let files: Vec<&str> = files.lines().filter(|line| !line.is_empty()).collect();
         assert_eq!(files.len(), 1, "one fact per commit: {files:?}");
@@ -533,7 +536,7 @@ async fn each_note_is_its_own_commit() -> anyhow::Result<()> {
     let text = std::fs::read_to_string(crew.repo.root().join(".argonauts/notes/redis.md"))?;
     let sourced = notes::parse(&text);
     assert_eq!(sourced.len(), 1, "{text}");
-    assert_eq!(sourced[0].1.card.as_str(), "card-001");
+    assert_eq!(sourced[0].1.card.as_str(), "task-001");
     assert_eq!(sourced[0].1.run.as_str(), TEST_RUN);
     Ok(())
 }
@@ -543,8 +546,8 @@ async fn judges_never_get_notes_of_the_judged() -> anyhow::Result<()> {
     let (crew, fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
     let earlier = format!(
         "# redis\n\n\
-         - Counters expire with the window. (card-004, {CLAUDE}, run-00, 2026-09-01T00:00:00Z)\n\
-         - Keys carry the tenant prefix. (card-002, {CODEX}, run-00, 2026-09-01T00:00:00Z)\n"
+         - Counters expire with the window. (task-004, {CLAUDE}, run-00, 2026-09-01T00:00:00Z)\n\
+         - Keys carry the tenant prefix. (task-002, {CODEX}, run-00, 2026-09-01T00:00:00Z)\n"
     );
     crew.repo.write(".argonauts/notes/redis.md", &earlier)?;
     crew.repo.git(&["add", ".argonauts/notes/redis.md"])?;
@@ -556,7 +559,7 @@ async fn judges_never_get_notes_of_the_judged() -> anyhow::Result<()> {
     let owner = found(
         sessions
             .iter()
-            .find(|spec| spec.role == RoleName::Owner && spec.step == Some(StepName::Build)),
+            .find(|spec| spec.role == RoleName::Worker && spec.step == Some(StepName::Build)),
         "build session",
     )?;
     let owner_text = prompt_text(owner);
@@ -595,14 +598,14 @@ async fn judges_never_get_notes_of_the_judged() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Writes `.argonauts/recipes/cli-flag/v<version>.yaml` and commits it.
+/// Writes `.argonauts/learned/cli-flag/v<version>.yaml` and commits it.
 fn write_recipe(crew: &Crew, version: u32) -> anyhow::Result<()> {
-    let path = format!(".argonauts/recipes/cli-flag/v{version}.yaml");
+    let path = format!(".argonauts/learned/cli-flag/v{version}.yaml");
     crew.repo.write(
         &path,
         &format!(
-            "recipe: cli-flag\nversion: {version}\ndescription: Command-line flags, with tests\n\
-             mode: crew\nmatch: {{ task_types: [cli] }}\ndivide: {{ max_cards: 4 }}\n"
+            "name: cli-flag\nversion: {version}\ndescription: Command-line flags, with tests\n\
+             mode: crew\nmatch: {{ task_types: [cli] }}\ndivide: {{ max_tasks: 4 }}\n"
         ),
     )?;
     crew.repo.git(&["add", &path])?;
@@ -616,7 +619,7 @@ async fn retro_candidate_enters_the_loop() -> anyhow::Result<()> {
         "change": {
             "setting": "critique.rounds",
             "value": "2",
-            "why": "The card failed review for a risk the plan never named.",
+            "why": "The task failed review for a risk the plan never named.",
         }
     });
     let (mut crew, _fakes) = crew_of_two(|worker| Script {
@@ -666,7 +669,7 @@ async fn stage_record_asks_the_retro_for_no_change() -> anyhow::Result<()> {
         "change": {
             "setting": "critique.rounds",
             "value": "2",
-            "why": "The card failed review for a risk the plan never named.",
+            "why": "The task failed review for a risk the plan never named.",
         }
     });
     let (mut crew, fakes) = crew_of_two(|worker| Script {
@@ -735,12 +738,12 @@ async fn recipe_applies_at_triage_and_run_start() -> anyhow::Result<()> {
     );
     let decided = triage::decide_with(&estimate, &crew.settings, Some(matched), Default::default());
     assert_eq!(decided.mode, RunMode::Crew);
-    assert_eq!(decided.rule, "recipe:cli-flag");
+    assert_eq!(decided.rule, "learned:cli-flag");
     let overlay = recipes::settings_overlay(matched)?;
     assert_eq!(
         overlay
             .get("divide")
-            .and_then(|divide| divide.get("max_cards"))
+            .and_then(|divide| divide.get("max_tasks"))
             .and_then(|max| max.as_integer()),
         Some(4)
     );
@@ -775,9 +778,9 @@ fn a_recipe_decides_the_mode_at_triage() {
             version: 2,
             parent: Some(1),
             description: "Command-line flags".to_owned(),
-            preset: None,
-            mode: Some(RecipeMode::Crew),
             workflow: None,
+            mode: Some(RecipeMode::Crew),
+            phases: None,
             matches: Match {
                 task_types: vec!["cli".to_owned()],
                 labels_any: Vec::new(),
@@ -785,18 +788,18 @@ fn a_recipe_decides_the_mode_at_triage() {
             prompts: Default::default(),
             settings: Default::default(),
         },
-        path: PathBuf::from(".argonauts/recipes/cli-flag/v2.yaml"),
+        path: PathBuf::from(".argonauts/learned/cli-flag/v2.yaml"),
         text: String::new(),
         sha256: "ef".repeat(32),
     };
     assert_eq!(triage::decide(&estimate, &settings).mode, RunMode::Solo);
     let decided = triage::decide_with(&estimate, &settings, Some(&loaded), Default::default());
     assert_eq!(decided.mode, RunMode::Crew);
-    assert_eq!(decided.rule, "recipe:cli-flag");
+    assert_eq!(decided.rule, "learned:cli-flag");
     assert!(decided.reason.contains("cli-flag v2"), "{}", decided.reason);
-    // `triage.use_recipes = false` leaves it to the file and label rules.
+    // `triage.use_learned = false` leaves it to the file and label rules.
     let mut off = settings.clone();
-    off.triage.use_recipes = false;
+    off.triage.use_learned = false;
     assert_eq!(
         triage::decide_with(&estimate, &off, Some(&loaded), Default::default()).mode,
         RunMode::Solo
@@ -860,10 +863,10 @@ async fn lead_examples_ranked_by_past_runs() -> anyhow::Result<()> {
         let workflow = builtin::load(name).map_err(anyhow::Error::msg)?;
         Ok(runner::version(&workflow)?)
     };
-    // `solo` passed three runs of three; `peer-crew` one of two.
+    // `solo` passed three runs of three; `council` one of two.
     let past = [
-        ("peer-crew", true),
-        ("peer-crew", false),
+        ("council", true),
+        ("council", false),
         ("solo", true),
         ("solo", true),
         ("solo", true),
@@ -893,7 +896,7 @@ async fn lead_examples_ranked_by_past_runs() -> anyhow::Result<()> {
     let examples = change::examples(&host);
     let at = |name: &str| examples.iter().position(|example| example.name == name);
     let solo = found(at("solo"), "solo")?;
-    let peer = found(at("peer-crew"), "peer-crew")?;
+    let peer = found(at("council"), "council")?;
     assert!(solo < peer);
     assert_eq!((examples[solo].runs, examples[solo].passed), (3, 3));
     assert_eq!((examples[peer].runs, examples[peer].passed), (2, 1));
@@ -1040,6 +1043,7 @@ async fn a_recipes_own_files_come_from_beside_its_version() -> anyhow::Result<()
 async fn finished_runs_logs_land_with_the_next_run() -> anyhow::Result<()> {
     let (mut crew, _fakes) = crew_of_two(|worker| Script::new(model_of(worker)))?;
     crew.settings.outcomes.share = true;
+    crew.settings.delivery.commits = DeliveryCommits::AsRun;
     let state = state_dir(&crew);
     let finished = RunId::new("run-20260901-090000-0001")?;
     let going = RunId::new("run-20260901-100000-0002")?;
@@ -1060,7 +1064,7 @@ async fn finished_runs_logs_land_with_the_next_run() -> anyhow::Result<()> {
     let reversal = argonauts_learning::outcomes::Reversal {
         run: going.clone(),
         card: None,
-        what: "you answered send back at the plan checkpoint".to_owned(),
+        what: "you answered send back at the plan approval".to_owned(),
         at: time::OffsetDateTime::now_utc(),
     };
     outcomes::append_lines(&state, &going, &[LogLine::Reversal(reversal)])?;

@@ -1,0 +1,6 @@
+---
+source: crates/tui/tests/snap_bottom_line.rs
+expression: styled(&rows)
+---
+  [fg=#ffc107]⏵⏵ auto mode on[/] [fg=#999999](shift+tab to cycle)[/]    [fg=#e08a66]●[/] [fg=#ffffff b]Claude[/] [fg=#999999]5h[/] [fg=#505370]▄▄▄▄▄▄[/] [fg=#ffffff b]1%[/] [fg=#999999]7d[/] [fg=#e08a66]▄▄▄▖[/][fg=#505370]▄▄[/] [fg=#ffffff b]56%[/]  [fg=#6aa6ff]○[/] [fg=#999999]Codex[/] [fg=#999999]7d[/] [fg=#6aa6ff]▖[/][fg=#505370]▄▄▄▄▄[/] [fg=#999999]11%[/]  [fg=#36cfe6]○[/] [fg=#999999]agy[/] [fg=#999999]5h[/] [fg=#505370]▄▄▄▄▄▄[/] [fg=#999999]2%[/]
+  [fg=#ffc107]⏵⏵ auto mode on[/]      [fg=#e08a66]●[/] [fg=#ffffff b]Claude[/] [fg=#999999]5h[/] [fg=#ffc107]▄▄▄▄▄▖[/] [fg=#ffc107 b]93%[/] [fg=#ffc107]4:40pm[/] [fg=#999999]7d[/] [fg=#e08a66]▄▄▄▖[/][fg=#505370]▄▄[/] [fg=#ffffff b]56%[/]  [fg=#6aa6ff]○[/] [fg=#999999]Codex[/] [fg=#999999]7d[/] [fg=#6aa6ff]▖[/][fg=#505370]▄▄▄▄▄[/] [fg=#999999]11%[/]  [fg=#36cfe6]○[/] [fg=#999999]agy[/] [fg=#ff6b80]▄▄▄▄▄▄[/] [fg=#ff6b80]out · Tue 3:45pm[/]

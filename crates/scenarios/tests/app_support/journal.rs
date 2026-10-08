@@ -55,7 +55,7 @@ pub fn fabricate_parked_run(scenario: &Scenario, days_parked: i64) -> anyhow::Re
         title: "Rename the config loader".to_owned(),
         mode: RunMode::Solo,
         forced: true,
-        preset: "solo".to_owned(),
+        workflow: "solo".to_owned(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -72,11 +72,12 @@ pub fn fabricate_parked_run(scenario: &Scenario, days_parked: i64) -> anyhow::Re
         version: "0.1.0".to_owned(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     };
     let opened = CheckpointOpened {
         id: checkpoint.clone(),
         kind: CheckpointKind::Question,
-        title: "Question from claude-code · card-001".to_owned(),
+        title: "Question from claude-code · task-001".to_owned(),
         card: Some(card.clone()),
         packet: CheckpointPacket::Question(QuestionPacket {
             from: owner,

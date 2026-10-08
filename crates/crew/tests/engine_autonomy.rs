@@ -21,8 +21,10 @@ use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
 use argonauts_core::events::session::EndReason;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::{RoleName, WorkerRef};
-use argonauts_core::settings::approvals::{Answerer, ApprovalMode, AtHardLimit, DecideWith};
-use argonauts_core::settings::handoff::FallbackEntry;
+use argonauts_core::settings::approvals::{
+    Answerer, ApprovalMode, AtHardLimit, DecideWith, Decides,
+};
+use argonauts_core::settings::handoff::{CrewRole, FallbackEntry};
 use argonauts_core::settings::protocol::GateCommand;
 use argonauts_core::settings::workflows::LeadDesigns;
 use argonauts_core::steps::StepName;
@@ -128,11 +130,13 @@ fn enlist_with(
             (Some(StepName::Build), _) => {
                 // A plan's second card, when it has one, writes a file of its own.
                 let file = match spec.card.as_ref().map(|card| card.as_str()) {
-                    Some("card-002") => NOTES,
+                    Some("task-002") => NOTES,
                     _ => FILE,
                 };
                 std::fs::write(spec.workdir.join(file), "--verbose\n")
                     .expect("the build session writes its file");
+                // Written with the agent's edit tool, as a CLI reports it.
+                return answer(spec).with_event(support::wrote(file));
             }
             (Some(StepName::PlanToCards), _) => {
                 return FakeSession::structured(serde_json::json!({
@@ -155,9 +159,9 @@ fn enlist_with(
     crew.services.workers.add(fake);
     let reference: WorkerRef = worker.parse().expect("a worker reference");
     if crew.settings.crew.is_empty() {
-        crew.settings.default_agent = reference.clone();
+        crew.settings.main_agent = reference.clone();
     }
-    crew.settings.crew.push(reference);
+    crew.settings.crew.add(reference);
 }
 
 /// An approval citing the default rules as the approver step, else the smallest valid answer
@@ -184,8 +188,8 @@ fn with_gates(crew: &mut Crew) {
         name: name.to_owned(),
         command: vec!["true".to_owned()],
     };
-    crew.settings.gates.run = vec![passing("tests")];
-    crew.settings.gates.full_suite = vec![passing("suite")];
+    crew.settings.checks.run = vec![passing("tests")];
+    crew.settings.checks.full_suite = vec![passing("suite")];
 }
 
 /// Starts the run with the real policy in place of the fakes' asking one, and drives it until
@@ -369,7 +373,7 @@ async fn a_run_goes_from_goal_to_merge_without_asking() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn with_no_agent_of_another_company_the_goal_asks_with_a_warning() -> anyhow::Result<()> {
+async fn with_no_agent_of_another_provider_the_goal_asks_with_a_warning() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     with_gates(&mut crew);
     enlist(&mut crew, "claude-code/opus", "claude");
@@ -382,7 +386,7 @@ async fn with_no_agent_of_another_company_the_goal_asks_with_a_warning() -> anyh
     );
     assert_eq!(open_kinds(&outcome.events), [CheckpointKind::Goal]);
     let why = reasons(&outcome.events, CheckpointKind::Goal).join("\n");
-    assert!(why.contains("another company than Anthropic"), "{why}");
+    assert!(why.contains("another provider than Anthropic"), "{why}");
     assert!(why.contains("pick an approver in /approvals"), "{why}");
     Ok(())
 }
@@ -406,10 +410,10 @@ async fn a_merge_past_the_daily_cap_asks() -> anyhow::Result<()> {
 /// In full auto a hard limit does what the checkpoint's `at_hard_limit` says: the merge past
 /// the daily cap opens a pull request, and set to park it waits for you with one line why.
 #[tokio::test]
-async fn in_full_auto_a_hard_limit_does_what_you_set() -> anyhow::Result<()> {
+async fn in_autopilot_a_hard_limit_does_what_you_set() -> anyhow::Result<()> {
     let mut crew = crew()?;
     crew.settings.limits.auto_merges_per_day = 0;
-    crew.settings.approvals.full_auto = true;
+    crew.settings.approvals.autopilot = true;
     crew.settings.approvals.merge.at_hard_limit = AtHardLimit::OpenPullRequest;
     let outcome = run(&crew).await?;
     assert!(
@@ -421,7 +425,7 @@ async fn in_full_auto_a_hard_limit_does_what_you_set() -> anyhow::Result<()> {
         outcome.exit,
         open_kinds(&outcome.events)
     );
-    assert!(decided(&outcome.events).contains(&(CheckpointKind::Merge, Party::FullAuto)));
+    assert!(decided(&outcome.events).contains(&(CheckpointKind::Merge, Party::Autopilot)));
     let said = notes(&outcome.events);
     assert!(
         said.iter()
@@ -449,11 +453,11 @@ async fn in_full_auto_a_hard_limit_does_what_you_set() -> anyhow::Result<()> {
 /// Another round can't change the daily merge cap, so a merge set to send back at a hard limit
 /// stops there instead: the run ends with its branch kept, and the merge checkpoint opens once.
 #[tokio::test]
-async fn in_full_auto_a_cap_another_round_cant_change_stops_instead_of_sending_back()
+async fn in_autopilot_a_cap_another_round_cant_change_stops_instead_of_sending_back()
 -> anyhow::Result<()> {
     let mut crew = crew()?;
     crew.settings.limits.auto_merges_per_day = 0;
-    crew.settings.approvals.full_auto = true;
+    crew.settings.approvals.autopilot = true;
     crew.settings.approvals.merge.at_hard_limit = AtHardLimit::SendBack;
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
         .await
@@ -470,18 +474,19 @@ async fn in_full_auto_a_cap_another_round_cant_change_stops_instead_of_sending_b
         .into_iter()
         .filter(|(kind, _)| *kind == CheckpointKind::Merge)
         .collect();
-    assert_eq!(merges, [(CheckpointKind::Merge, Party::FullAuto)]);
+    assert_eq!(merges, [(CheckpointKind::Merge, Party::Autopilot)]);
     Ok(())
 }
 
 /// A plan set to send back at a hard limit another round could clear goes back once, telling
 /// the lead which limit stopped it. When the next plan stops at a hard limit too, full auto
-/// stops instead of sending it back again, so a plan with nothing safe to end parks.
+/// runs the work as a checked solo run instead of asking. The solo card can't
+/// land the protected path either, so it's deferred with its work kept, and nothing waits.
 #[tokio::test]
-async fn in_full_auto_a_hard_limit_sends_back_once_and_says_why() -> anyhow::Result<()> {
+async fn in_autopilot_a_hard_limit_sends_back_once_and_says_why() -> anyhow::Result<()> {
     let mut crew = crew()?;
     crew.settings.limits.protected_paths = vec![FILE.to_owned()];
-    crew.settings.approvals.full_auto = true;
+    crew.settings.approvals.autopilot = true;
     crew.settings.approvals.plan.at_hard_limit = AtHardLimit::SendBack;
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), run(&crew))
         .await
@@ -491,7 +496,7 @@ async fn in_full_auto_a_hard_limit_sends_back_once_and_says_why() -> anyhow::Res
         .iter()
         .filter_map(|event| match &event.kind {
             RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
-                if decided.by == Party::FullAuto && decided.action == AnswerAction::SendBack =>
+                if decided.by == Party::Autopilot && decided.action == AnswerAction::SendBack =>
             {
                 decided.text.clone()
             }
@@ -513,11 +518,19 @@ async fn in_full_auto_a_hard_limit_sends_back_once_and_says_why() -> anyhow::Res
         })
         .count();
     assert_eq!(plans, 2);
+    let solo = outcome.events.iter().any(|event| {
+        matches!(&event.kind, RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
+            if decided.by == Party::Autopilot && decided.action == AnswerAction::SwitchToSolo)
+    });
+    assert!(solo, "{:#?}", notes(&outcome.events));
     assert!(
-        matches!(outcome.exit, EngineExit::Parked(_)),
-        "{:?}",
-        outcome.exit
+        matches!(outcome.exit, EngineExit::Finished(_)),
+        "{:?}: open {:?}",
+        outcome.exit,
+        open_kinds(&outcome.events)
     );
+    assert!(waited_for_you(&outcome.events).is_empty());
+    assert!(!crew.repo.root().join(FILE).exists());
     Ok(())
 }
 
@@ -553,7 +566,7 @@ async fn a_merge_the_approver_rejects_asks() -> anyhow::Result<()> {
     assert!(why.contains("isn't what the goal asked for"), "{why}");
 
     // In full auto the same merge keeps the branch instead, and says why.
-    let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     assert!(
         matches!(
             outcome.exit,
@@ -563,7 +576,7 @@ async fn a_merge_the_approver_rejects_asks() -> anyhow::Result<()> {
         outcome.exit,
         open_kinds(&outcome.events)
     );
-    assert!(decided(&outcome.events).contains(&(CheckpointKind::Merge, Party::FullAuto)));
+    assert!(decided(&outcome.events).contains(&(CheckpointKind::Merge, Party::Autopilot)));
     let said = notes(&outcome.events);
     assert!(
         said.iter().any(
@@ -643,8 +656,9 @@ fn crew_asking(tag: &'static str, lead: Option<Own>, approver: FakeWorker) -> an
 /// answers in the lead's place.
 fn only_the_crew_leads(crew: &mut Crew) -> anyhow::Result<()> {
     let codex: WorkerRef = "codex/gpt-x".parse()?;
-    let lead = crew.settings.roles.entry(RoleName::PhaseLead).or_default();
-    lead.handoff.fallback = vec![FallbackEntry::Worker(codex)];
+    let lead = CrewRole::of(RoleName::PhaseLead);
+    let lead = crew.settings.fallback.roles.entry(lead).or_default();
+    lead.order = vec![FallbackEntry::Worker(codex)];
     Ok(())
 }
 
@@ -726,7 +740,7 @@ async fn in_auto_the_lead_answers_the_goals_questions_and_nothing_asks() -> anyh
     assert!(
         notes(events)
             .iter()
-            .any(|note| note.starts_with("The lead answered 1 of the goal's questions")),
+            .any(|note| note.starts_with("The main agent answered 1 of the goal's questions")),
         "{:?}",
         notes(events)
     );
@@ -762,7 +776,7 @@ async fn in_auto_the_lead_answers_the_goals_questions_and_nothing_asks() -> anyh
 #[tokio::test]
 async fn questions_you_answer_ask_even_in_auto() -> anyhow::Result<()> {
     let mut crew = asking_crew(Some(lead_picks_trace()))?;
-    crew.settings.approvals.answered_by = Some(Answerer::You);
+    crew.settings.approvals.answers = Some(Answerer::You);
     let outcome = run(&crew).await?;
     assert!(
         matches!(outcome.exit, EngineExit::Parked(_)),
@@ -795,7 +809,7 @@ async fn a_question_that_turns_on_your_fact_asks_and_says_so() -> anyhow::Result
     let why = why_asked(&outcome.events, CheckpointKind::Goal);
     assert_eq!(
         why,
-        ["the lead needs a fact only you have, which level your log collector keeps"]
+        ["the main agent needs a fact only you have, which level your log collector keeps"]
     );
     Ok(())
 }
@@ -843,11 +857,11 @@ async fn a_topic_ask_you_about_names_stays_yours_in_auto() -> anyhow::Result<()>
     assert_eq!(question_cards(events), 1);
     assert!(decided(events).is_empty());
     assert!(approved_goal(events).is_none());
-    assert_eq!(lead_asked(&crew), 0, "the lead never saw it");
+    assert_eq!(lead_asked(&crew), 0, "the main agent never saw it");
     assert!(
         !notes(events)
             .iter()
-            .any(|note| note.starts_with("The lead answered")),
+            .any(|note| note.starts_with("The main agent answered")),
         "{:?}",
         notes(events)
     );
@@ -867,7 +881,7 @@ async fn a_picked_model_leaves_ask_you_about_questions_yours_in_auto() -> anyhow
     let mut crew = asking_crew_about("security", Some(Own::Crash))?;
     crew.settings.approvals.goal.decide_with = DecideWith::Rules;
     crew.settings.approvals.ask_you_about = vec!["security".to_owned()];
-    crew.settings.approvals.answered_by = Some(Answerer::Model("opencode/glm-5".parse()?));
+    crew.settings.approvals.answers = Some(Answerer::Model("opencode/glm-5".parse()?));
     crew.services
         .workers
         .add(FakeWorker::harness("opencode", "zhipu").respond_with(answer));
@@ -894,7 +908,7 @@ async fn a_picked_model_leaves_ask_you_about_questions_yours_in_auto() -> anyhow
             .specs()
             .iter()
             .all(|spec| spec.step != Some(StepName::AnswerQuestions)),
-        "the picked model answered outside full auto"
+        "the picked model answered outside autopilot"
     );
     Ok(())
 }
@@ -918,19 +932,20 @@ async fn when_the_lead_fails_its_questions_come_to_you() -> anyhow::Result<()> {
     assert_eq!(lead_asked(&crew), 2);
     let said = notes(events);
     assert!(
-        said.iter().any(|note| note
-            .starts_with("The lead couldn't answer the goal's questions, so they come to you")),
+        said.iter().any(|note| note.starts_with(
+            "The main agent couldn't answer the goal's questions, so they come to you"
+        )),
         "{said:?}"
     );
     assert!(
         !said
             .iter()
-            .any(|note| note.starts_with("The lead answered")),
+            .any(|note| note.starts_with("The main agent answered")),
         "{said:?}"
     );
     assert_eq!(
         why_asked(events, CheckpointKind::Goal),
-        ["the lead couldn't answer it"]
+        ["the main agent couldn't answer it"]
     );
     Ok(())
 }
@@ -954,9 +969,9 @@ async fn a_picked_model_answers_in_the_leads_place_and_a_picked_approver_checks(
             }),
         );
     let approver: WorkerRef = "antigravity-cli/gemini-3.6-pro".parse()?;
-    crew.settings.approvals.full_auto = true;
-    crew.settings.approvals.answered_by = Some(Answerer::Model(picked.clone()));
-    crew.settings.approvals.approver.model = Some(approver.clone());
+    crew.settings.approvals.autopilot = true;
+    crew.settings.approvals.answers = Some(Answerer::Model(picked.clone()));
+    crew.settings.approvals.decides = approver.clone().into();
     crew.settings.approvals.ask_you_about = vec!["security".to_owned()];
 
     let outcome = run(&crew).await?;
@@ -969,7 +984,7 @@ async fn a_picked_model_answers_in_the_leads_place_and_a_picked_approver_checks(
         checks(events)
     );
     assert_eq!(question_cards(events), 0);
-    assert_eq!(lead_asked(&crew), 0, "the lead was never asked");
+    assert_eq!(lead_asked(&crew), 0, "the main agent was never asked");
     let answerer = crew
         .services
         .workers
@@ -1012,7 +1027,7 @@ async fn a_picked_model_answers_in_the_leads_place_and_a_picked_approver_checks(
         .collect();
     assert!(!modes.is_empty());
     assert!(
-        modes.iter().all(|mode| *mode == ApprovalMode::FullAuto),
+        modes.iter().all(|mode| *mode == ApprovalMode::Autopilot),
         "{modes:?}"
     );
     let by_approver = Party::Approver {
@@ -1037,12 +1052,12 @@ async fn a_picked_model_answers_in_the_leads_place_and_a_picked_approver_checks(
     Ok(())
 }
 
-/// Chosen yourself, `answered_by = "lead"` lets the lead answer every question, the ones
+/// Chosen yourself, `answers = "lead"` lets the lead answer every question, the ones
 /// `understand.always_ask` makes questions too, so the run goes on without you.
 #[tokio::test]
 async fn with_the_lead_chosen_it_answers_always_ask_questions_too() -> anyhow::Result<()> {
     let mut crew = asking_crew_about("security", Some(Own::Answer(lead_picks_trace())))?;
-    crew.settings.approvals.answered_by = Some(Answerer::Lead);
+    crew.settings.approvals.answers = Some(Answerer::Main);
     let outcome = run(&crew).await?;
     let events = &outcome.events;
     assert!(
@@ -1067,8 +1082,8 @@ async fn with_the_lead_chosen_it_answers_always_ask_questions_too() -> anyhow::R
 #[tokio::test]
 async fn a_picked_model_that_cant_answer_the_goal_leaves_it_to_the_lead() -> anyhow::Result<()> {
     let mut crew = asking_crew_about("security", Some(Own::Answer(lead_picks_trace())))?;
-    crew.settings.approvals.full_auto = true;
-    crew.settings.approvals.answered_by = Some(Answerer::Model("nobody/x".parse()?));
+    crew.settings.approvals.autopilot = true;
+    crew.settings.approvals.answers = Some(Answerer::Model("nobody/x".parse()?));
     let outcome = run(&crew).await?;
     let events = &outcome.events;
     assert!(
@@ -1078,10 +1093,10 @@ async fn a_picked_model_that_cant_answer_the_goal_leaves_it_to_the_lead() -> any
         open_kinds(events),
         checks(events)
     );
-    assert_eq!(lead_asked(&crew), 1, "the lead answered in its place");
+    assert_eq!(lead_asked(&crew), 1, "the main agent answered in its place");
     let said = notes(events).join("\n");
     assert!(
-        said.contains("couldn't answer the goal's questions, so the lead answers them"),
+        said.contains("couldn't answer the goal's questions, so the main agent answers them"),
         "{said}"
     );
     let goal = approved_goal(events).expect("the goal was approved");
@@ -1181,10 +1196,10 @@ async fn a_workflow_the_lead_picks_goes_to_merge_without_asking() -> anyhow::Res
     let mut crew = Crew::new()?;
     with_gates(&mut crew);
     let design = support::brief(
-        Some("solo-reviewed"),
+        Some("maker-checker"),
         serde_json::json!([]),
         None,
-        "One small change, reviewed by another family",
+        "One small change, reviewed by another provider",
     );
     let own = vec![(StepName::DesignWorkflow, Own::Answer(design))];
     enlist_with(&mut crew, "claude-code/opus", "claude", None, "detail", own);
@@ -1194,7 +1209,7 @@ async fn a_workflow_the_lead_picks_goes_to_merge_without_asking() -> anyhow::Res
             .with_cheapest_model("gemini-3.6-flash-low")
             .respond_with(answer),
     );
-    crew.settings.triage.all_hands = true;
+    crew.settings.ultracode = true;
     crew.settings.workflows.lead_designs = LeadDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = false;
 
@@ -1209,7 +1224,7 @@ async fn a_workflow_the_lead_picks_goes_to_merge_without_asking() -> anyhow::Res
     );
     let picked = events.iter().any(|event| {
         matches!(&event.kind, RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Started(started))
-            if started.from == Some(WorkflowRef::new("solo-reviewed")))
+            if started.from == Some(WorkflowRef::new("maker-checker")))
     });
     assert!(picked, "{:?}", names(events));
     // One card before anything writes: Understand's, which the approver settles in auto. A
@@ -1272,7 +1287,10 @@ async fn a_merge_reviewed_only_within_one_company_asks() -> anyhow::Result<()> {
     );
     assert_eq!(open_kinds(&outcome.events), [CheckpointKind::Merge]);
     let why = reasons(&outcome.events, CheckpointKind::Merge).join("\n");
-    assert!(why.contains("reviewer of its owner's own company"), "{why}");
+    assert!(
+        why.contains("reviewer of its worker's own provider"),
+        "{why}"
+    );
     Ok(())
 }
 
@@ -1337,7 +1355,7 @@ async fn a_stopped_card_goes_to_the_other_installed_clis() -> anyhow::Result<()>
     let (host, _) = crew.host(RunMode::Crew)?;
     let stopped = r("claude-code/opus");
     let card = CardSpec {
-        id: "card-001".parse()?,
+        id: "task-001".parse()?,
         title: "Add the --verbose flag".to_owned(),
         task: "Add a --verbose flag.".to_owned(),
         kind: CardKind::Build,
@@ -1367,10 +1385,13 @@ async fn a_stopped_card_goes_to_the_other_installed_clis() -> anyhow::Result<()>
 /// build hits its budget with no reserve to release. The lead answers the question as an assumption the
 /// approver checks, the budget hit ends that attempt safely and says so, and the run merges.
 #[tokio::test]
-async fn full_auto_goes_from_request_to_merge_with_no_card() -> anyhow::Result<()> {
+async fn autopilot_goes_from_request_to_merge_with_no_card() -> anyhow::Result<()> {
     let mut crew = crew()?;
     crew.services.workers = Default::default();
     crew.settings.crew.clear();
+    // Limits of your own, since this run is about one being reached.
+    crew.settings.limits.budget.spend_per_run = Some(20.0);
+    crew.settings.limits.budget.per_task_usd = Some(3.0);
     let hit = Arc::new(AtomicBool::new(false));
     let card = |key: &str, file: &str| {
         serde_json::json!({
@@ -1392,7 +1413,7 @@ async fn full_auto_goes_from_request_to_merge_with_no_card() -> anyhow::Result<(
             (
                 StepName::Build,
                 Own::BudgetHitOnce {
-                    card: "card-001",
+                    card: "task-001",
                     hit: hit.clone(),
                 },
             ),
@@ -1406,7 +1427,7 @@ async fn full_auto_goes_from_request_to_merge_with_no_card() -> anyhow::Result<(
     );
     crew.settings.approvals.ask_you_about = vec!["scope".to_owned()];
 
-    let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     let events = &outcome.events;
     assert!(
         matches!(outcome.exit, EngineExit::Finished(_)),
@@ -1422,7 +1443,7 @@ async fn full_auto_goes_from_request_to_merge_with_no_card() -> anyhow::Result<(
         )
     });
     assert!(landed, "{:?}", names(events));
-    assert!(hit.load(Ordering::SeqCst), "no build hit its budget");
+    assert!(hit.load(Ordering::SeqCst), "no build hit its limit");
     // The card past its budget waits, deferred with its work kept, and the other one landed.
     assert!(crew.repo.root().join(NOTES).exists());
     assert!(!crew.repo.root().join(FILE).exists());
@@ -1451,18 +1472,18 @@ async fn full_auto_goes_from_request_to_merge_with_no_card() -> anyhow::Result<(
 
     // The budget past its reserve ended that card's part safely instead of asking, and the
     // transcript says what full auto chose and why.
-    assert!(decided(events).contains(&(CheckpointKind::Budget, Party::FullAuto)));
+    assert!(decided(events).contains(&(CheckpointKind::Budget, Party::Autopilot)));
     let said = notes(events);
     let ended = |what: &str, why: &str| {
         said.iter().any(|note| {
-            note.starts_with("Full auto answered \"card-001")
+            note.starts_with("Autopilot answered \"task-001")
                 && note.contains(&format!(
                     "with \"{what}\" instead of asking you, since {why}"
                 ))
         })
     };
     assert!(
-        ended("Stop and escalate", "the remaining cards need"),
+        ended("Stop and ask me", "the remaining tasks need"),
         "{said:?}"
     );
     assert!(ended("Defer it", "no fallback"), "{said:?}");
@@ -1470,7 +1491,7 @@ async fn full_auto_goes_from_request_to_merge_with_no_card() -> anyhow::Result<(
     // What the policy found is kept for review, and the closing answer can list each ending
     // as the transcript said it.
     let state = argonauts_crew::state::RunState::fold(events);
-    let endings = argonauts_crew::checkpoints::full_auto::endings(&state);
+    let endings = argonauts_crew::checkpoints::autopilot::endings(&state);
     assert_eq!(endings.len(), 2, "{endings:#?}");
     for ending in &endings {
         assert!(
@@ -1488,7 +1509,7 @@ fn waited_for_you(events: &[RunEvent]) -> Vec<&PolicyCheck> {
         .iter()
         .filter_map(|event| match &event.kind {
             RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
-                if decided.by == Party::FullAuto =>
+                if decided.by == Party::Autopilot =>
             {
                 Some(decided.id.clone())
             }
@@ -1505,7 +1526,7 @@ fn waited_for_you(events: &[RunEvent]) -> Vec<&PolicyCheck> {
 /// full auto had been on: the lead's answer becomes the goal's assumption, which the approver
 /// checks with the goal. Nothing in the transcript names another answer.
 #[tokio::test]
-async fn full_auto_leaves_the_waiting_goal_question_to_the_lead() -> anyhow::Result<()> {
+async fn autopilot_leaves_the_waiting_goal_question_to_the_lead() -> anyhow::Result<()> {
     let mut crew = asking_crew_about("security", Some(Own::Answer(lead_picks_trace())))?;
     crew.settings.approvals.ask_you_about = vec!["security".to_owned()];
     let outcome = run(&crew).await?;
@@ -1520,7 +1541,7 @@ async fn full_auto_leaves_the_waiting_goal_question_to_the_lead() -> anyhow::Res
     );
 
     let (host, sink) = crew.host_over(outcome.events.clone())?;
-    argonauts_crew::engine::commands::approval_mode(&host, ApprovalMode::FullAuto)?;
+    argonauts_crew::engine::commands::approval_mode(&host, ApprovalMode::Autopilot)?;
     let mut events = outcome.events.clone();
     events.extend(sink.events());
     assert!(open_kinds(&events).is_empty(), "{:?}", open_kinds(&events));
@@ -1535,7 +1556,7 @@ async fn full_auto_leaves_the_waiting_goal_question_to_the_lead() -> anyhow::Res
         .collect();
     assert_eq!(
         withdrawn,
-        [argonauts_crew::checkpoints::full_auto::LEFT_TO_THE_LEAD]
+        [argonauts_crew::checkpoints::autopilot::LEFT_TO_THE_LEAD]
     );
 
     let resumed = drive(&crew, events).await?;
@@ -1551,7 +1572,7 @@ async fn full_auto_leaves_the_waiting_goal_question_to_the_lead() -> anyhow::Res
         .assumptions
         .iter()
         .find(|assumption| assumption.by_lead())
-        .expect("the lead's answer is the goal's assumption");
+        .expect("the main agent's answer is the goal's assumption");
     assert!(assumed.text.ends_with(": trace"), "{assumed:?}");
     let approver: WorkerRef = APPROVER.parse()?;
     assert!(decided(events).contains(&(CheckpointKind::Goal, Party::Approver { model: approver })));
@@ -1559,7 +1580,7 @@ async fn full_auto_leaves_the_waiting_goal_question_to_the_lead() -> anyhow::Res
     assert!(
         !said
             .iter()
-            .any(|note| note.starts_with("Full auto answered \"What should the goal say?")),
+            .any(|note| note.starts_with("Autopilot answered \"What should the goal say?")),
         "{said:?}"
     );
     Ok(())
@@ -1577,7 +1598,7 @@ fn designing_crew(design: serde_json::Value) -> anyhow::Result<Crew> {
             .with_cheapest_model("gemini-3.6-flash-low")
             .respond_with(answer),
     );
-    crew.settings.triage.all_hands = true;
+    crew.settings.ultracode = true;
     crew.settings.workflows.adapt_at_phase_ends = false;
     Ok(crew)
 }
@@ -1594,15 +1615,15 @@ fn started_from(events: &[RunEvent]) -> Vec<Option<WorkflowRef>> {
         .collect()
 }
 
-/// The sample run's case: All hands on peer-crew, and the lead would run the task
-/// as solo-reviewed. It may only size the preset, so the run stays peer-crew and says why.
+/// The sample run's case: All hands on council, and the lead would run the task
+/// as maker-checker. It may only size the preset, so the run stays council and says why.
 #[tokio::test]
 async fn the_lead_never_swaps_the_preset_for_another_workflow() -> anyhow::Result<()> {
     let crew = designing_crew(support::brief(
-        Some("solo-reviewed"),
+        Some("maker-checker"),
         serde_json::json!([]),
         None,
-        "One small change, reviewed by another family",
+        "One small change, reviewed by another provider",
     ))?;
     let outcome = run(&crew).await?;
     let events = &outcome.events;
@@ -1614,11 +1635,11 @@ async fn the_lead_never_swaps_the_preset_for_another_workflow() -> anyhow::Resul
     );
     let from = started_from(events);
     assert!(
-        from.contains(&Some(WorkflowRef::new("peer-crew"))),
+        from.contains(&Some(WorkflowRef::new("council"))),
         "{from:?}"
     );
     assert!(
-        !from.contains(&Some(WorkflowRef::new("solo-reviewed"))),
+        !from.contains(&Some(WorkflowRef::new("maker-checker"))),
         "{from:?}"
     );
 
@@ -1641,16 +1662,16 @@ async fn the_lead_never_swaps_the_preset_for_another_workflow() -> anyhow::Resul
             .collect::<Vec<_>>()
             .join("\n")
     };
-    assert!(text(&designs[0]).contains("## The preset's workflow"));
-    assert!(!text(&designs[0]).contains("### solo-reviewed"));
+    assert!(text(&designs[0]).contains("## The workflow's steps"));
+    assert!(!text(&designs[0]).contains("### maker-checker"));
     assert!(
-        text(&designs[1]).contains("keep `peer-crew`, the preset's workflow"),
+        text(&designs[1]).contains("keep `council`, the workflow's steps"),
         "{}",
         text(&designs[1])
     );
     assert!(
         notes(events).iter().any(|note| note.starts_with(
-            "The lead's workflow broke the rules twice, so peer-crew runs as written."
+            "The main agent's workflow broke the rules twice, so council runs as written."
         )),
         "{:?}",
         notes(events)
@@ -1674,7 +1695,7 @@ async fn an_incomplete_design_is_said_plainly() -> anyhow::Result<()> {
     let note = events
         .iter()
         .find_map(|event| match &event.kind {
-            RunEventKind::Note(note) if note.line().starts_with("The lead's design") => {
+            RunEventKind::Note(note) if note.line().starts_with("The main agent's design") => {
                 Some(note.clone())
             }
             _ => None,
@@ -1682,7 +1703,7 @@ async fn an_incomplete_design_is_said_plainly() -> anyhow::Result<()> {
         .context("the design's note")?;
     assert_eq!(
         note.line(),
-        "The lead's design came back incomplete, so peer-crew runs as written."
+        "The main agent's design came back incomplete, so council runs as written."
     );
     let detail = note.detail().context("what the validator said")?;
     assert!(
@@ -1691,7 +1712,7 @@ async fn an_incomplete_design_is_said_plainly() -> anyhow::Result<()> {
     );
     let from = started_from(events);
     assert!(
-        from.contains(&Some(WorkflowRef::new("peer-crew"))),
+        from.contains(&Some(WorkflowRef::new("council"))),
         "{from:?}"
     );
     Ok(())
@@ -1701,7 +1722,7 @@ async fn an_incomplete_design_is_said_plainly() -> anyhow::Result<()> {
 #[tokio::test]
 async fn the_lead_sizes_the_preset_and_says_what_it_changed() -> anyhow::Result<()> {
     let mut sized =
-        argonauts_crew::workflow::builtin::load("peer-crew").map_err(|err| anyhow::anyhow!(err))?;
+        argonauts_crew::workflow::builtin::load("council").map_err(|err| anyhow::anyhow!(err))?;
     for phase in &mut sized.phases {
         for step in &mut phase.steps {
             step.steps
@@ -1711,10 +1732,10 @@ async fn the_lead_sizes_the_preset_and_says_what_it_changed() -> anyhow::Result<
     let composed =
         argonauts_crew::workflow::yaml::print(&sized).map_err(|err| anyhow::anyhow!(err))?;
     let crew = designing_crew(support::brief(
-        Some("peer-crew"),
+        Some("council"),
         serde_json::json!([]),
         Some(&composed),
-        "One card needs no debate.",
+        "One task needs no debate.",
     ))?;
     let outcome = run(&crew).await?;
     let events = &outcome.events;
@@ -1726,13 +1747,13 @@ async fn the_lead_sizes_the_preset_and_says_what_it_changed() -> anyhow::Result<
     );
     let from = started_from(events);
     assert!(
-        from.contains(&Some(WorkflowRef::new("peer-crew"))),
+        from.contains(&Some(WorkflowRef::new("council"))),
         "{from:?}"
     );
     let said = notes(events);
     assert!(
         said.contains(
-            &"The lead changed the preset's workflow: left out critique, since one card needs no \
+            &"The main agent changed the workflow's steps: left out critique, since one task needs no \
               debate."
         ),
         "{said:?}"
@@ -1743,11 +1764,11 @@ async fn the_lead_sizes_the_preset_and_says_what_it_changed() -> anyhow::Result<
 /// In full auto even a question the lead couldn't answer doesn't wait: it takes the crew's
 /// recommended answer, as an assumption that says so, for the approver to check.
 #[tokio::test]
-async fn in_full_auto_a_question_the_lead_fails_takes_the_recommended_answer() -> anyhow::Result<()>
+async fn in_autopilot_a_question_the_lead_fails_takes_the_recommended_answer() -> anyhow::Result<()>
 {
     let mut crew = asking_crew_about("scope", Some(Own::Crash))?;
     only_the_crew_leads(&mut crew)?;
-    let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     let events = &outcome.events;
     assert!(
         matches!(outcome.exit, EngineExit::Finished(_)),
@@ -1763,17 +1784,17 @@ async fn in_full_auto_a_question_the_lead_fails_takes_the_recommended_answer() -
         .assumptions
         .iter()
         .find(|assumption| assumption.by_lead())
-        .expect("the stand-in answer is the lead's assumption");
+        .expect("the fallback answer is the main agent's assumption");
     assert!(assumed.text.ends_with(": debug"), "{assumed:?}");
     assert!(
-        assumed
-            .basis
-            .contains("full auto took the crew's recommended answer, since the lead couldn't"),
+        assumed.basis.contains(
+            "autopilot took the crew's recommended answer, since the main agent couldn't"
+        ),
         "{assumed:?}"
     );
     assert!(
         notes(events).iter().any(|note| note.starts_with(
-            "The lead couldn't answer the goal's questions, so full auto takes the crew's"
+            "The main agent couldn't answer the goal's questions, so autopilot takes the crew's"
         )),
         "{:?}",
         notes(events)
@@ -1801,11 +1822,11 @@ fn merged(exit: &EngineExit) -> bool {
 /// leaves no approver of a company outside the crew. Full auto has a model of another company
 /// than the lead's check the goal, the lead's answers in it, and the run lands.
 #[tokio::test]
-async fn full_auto_with_every_company_in_the_crew_lands() -> anyhow::Result<()> {
+async fn autopilot_with_every_company_in_the_crew_lands() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     with_gates(&mut crew);
     let keep = serde_json::json!({
-        "template": "peer-crew",
+        "template": "council",
         "params": [],
         "composed": null,
         "why": "It fits"
@@ -1814,10 +1835,10 @@ async fn full_auto_with_every_company_in_the_crew_lands() -> anyhow::Result<()> 
     enlist_with(&mut crew, "claude-code/opus", "claude", None, "detail", own);
     enlist(&mut crew, "codex/gpt-x", "gpt");
     enlist(&mut crew, "antigravity-cli/gemini-3.6-flash-low", "gemini");
-    crew.settings.triage.all_hands = true;
+    crew.settings.ultracode = true;
     crew.settings.workflows.adapt_at_phase_ends = false;
 
-    let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     let events = &outcome.events;
     assert!(
         merged(&outcome.exit),
@@ -1848,7 +1869,7 @@ async fn full_auto_with_every_company_in_the_crew_lands() -> anyhow::Result<()> 
     assert_ne!(
         model.worker.as_str(),
         "claude-code",
-        "the lead checked itself"
+        "the main agent checked itself"
     );
     assert!(waited_for_you(events).is_empty());
     Ok(())
@@ -1857,11 +1878,11 @@ async fn full_auto_with_every_company_in_the_crew_lands() -> anyhow::Result<()> 
 /// Nobody answers spot checks in full auto, so the ones waiting never pause it: the approver's
 /// approvals go through, each drawn for a spot check, and the run lands.
 #[tokio::test]
-async fn full_auto_goes_on_past_waiting_spot_checks() -> anyhow::Result<()> {
+async fn autopilot_goes_on_past_waiting_spot_checks() -> anyhow::Result<()> {
     let mut crew = crew()?;
     crew.settings.approvals.spot_check_sample = 1.0;
     crew.settings.approvals.pause_auto_when_spot_checks_waiting = 1;
-    let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     let events = &outcome.events;
     assert!(
         merged(&outcome.exit),
@@ -1887,12 +1908,12 @@ async fn full_auto_goes_on_past_waiting_spot_checks() -> anyhow::Result<()> {
 /// With no model of another company to run, full auto goes ahead on your rules alone, keeps the
 /// lead's answers as assumptions, and says so in plain words with where to pick an approver.
 #[tokio::test]
-async fn full_auto_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result<()> {
+async fn autopilot_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     with_gates(&mut crew);
     enlist(&mut crew, "claude-code/opus", "claude");
     enlist(&mut crew, "claude-code/sonnet", "claude");
-    let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     let events = &outcome.events;
     assert!(
         merged(&outcome.exit),
@@ -1905,9 +1926,9 @@ async fn full_auto_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result
     let said = notes(events);
     assert!(
         said.contains(
-            &"\"Run this workflow?\": No model you can run comes from another company than \
+            &"\"Run this workflow?\": No model you can run comes from another provider than \
               Anthropic, so no approver can judge this; your rules decided. Pick an approver in \
-              /approvals, or install and log in to an agent from another company."
+              /approvals, or install and log in to an agent from another provider."
         ),
         "{said:#?}"
     );
@@ -1917,10 +1938,10 @@ async fn full_auto_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result
 /// A plan nothing can approve, here kept for you by `presence = required`, parks the run with
 /// one line saying why. Full auto never abandons it.
 #[tokio::test]
-async fn full_auto_parks_on_a_plan_it_cant_approve() -> anyhow::Result<()> {
+async fn autopilot_parks_on_a_plan_it_cant_approve() -> anyhow::Result<()> {
     let mut crew = crew()?;
     crew.settings.approvals.presence = argonauts_core::settings::approvals::Presence::Required;
-    let outcome = run_in(&crew, Some(ApprovalMode::FullAuto)).await?;
+    let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     let events = &outcome.events;
     assert!(
         matches!(outcome.exit, EngineExit::Parked(_)),
@@ -1931,7 +1952,7 @@ async fn full_auto_parks_on_a_plan_it_cant_approve() -> anyhow::Result<()> {
     let said = notes(events);
     assert!(
         said.iter().any(|note| note
-            == &"Full auto left \"Approve this plan?\" to you, since your /approvals settings \
+            == &"Autopilot left \"Approve this plan?\" to you, since your /approvals settings \
                  keep it for you at the terminal."),
         "{said:#?}"
     );
@@ -1949,7 +1970,7 @@ fn three_company_crew() -> anyhow::Result<Crew> {
         answer(spec)
     });
     crew.services.workers.add(codex);
-    crew.settings.crew.push("codex/gpt-x".parse()?);
+    crew.settings.crew.add("codex/gpt-x".parse()?);
     crew.services.workers.add(
         FakeWorker::harness("antigravity-cli", "gemini")
             .with_cheapest_model("gemini-3.6-flash-low")
@@ -1960,76 +1981,162 @@ fn three_company_crew() -> anyhow::Result<Crew> {
 
 /// The events of a run in full auto where card-001, owned by Claude Code, reports a question
 /// meant for you.
-async fn ask_in_full_auto(crew: &Crew) -> anyhow::Result<Vec<RunEvent>> {
-    use argonauts_core::events::card::{CardEvent, CardKind, CardSpec, CardState};
-    use argonauts_core::steps::card::{CardReport, ReportStatus};
-
+async fn ask_in_autopilot(crew: &Crew) -> anyhow::Result<Vec<RunEvent>> {
     let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
-    let full_auto = RunEvent {
+    let autopilot = RunEvent {
         seq: 1,
         kind: RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
-            mode: ApprovalMode::FullAuto,
+            mode: ApprovalMode::Autopilot,
             by: Party::User,
         }),
         ..started.clone()
     };
-    let history = vec![started, full_auto];
-    let state = argonauts_crew::state::RunState::fold(&history);
-    let (mut context, sink, _commands) = crew.context(history)?;
-    context.services.policy = real_policy(crew, &context.settings)?;
-    let shared = argonauts_crew::engine::shared::Shared::new(&context, state)?;
-    let host = argonauts_crew::engine::host::Host::new(Arc::new(shared));
-
-    let card = argonauts_core::CardId::new("card-001")?;
-    let owner: WorkerRef = "claude-code/opus".parse()?;
-    let spec = CardSpec {
-        id: card.clone(),
-        title: "Add the --verbose flag".to_owned(),
-        task: String::new(),
-        kind: CardKind::Build,
-        owned_paths: vec![FILE.to_owned()],
-        read_only_paths: Vec::new(),
-        forbidden_paths: Vec::new(),
-        hidden_paths: Vec::new(),
-        depends_on: Vec::new(),
-        criteria: Vec::new(),
-        owner: Some(owner),
-        reviewers: Vec::new(),
-        budget: Default::default(),
-        predictions: None,
-        item: None,
-    };
-    host.record(
-        Some(&card),
-        None,
-        RunEventKind::Card(CardEvent::Created(Box::new(spec))),
-    )?;
-    host.record(
-        Some(&card),
-        None,
-        RunEventKind::Card(CardEvent::State {
-            from: None,
-            to: CardState::Running,
-            reason: String::new(),
-        }),
-    )?;
-    let report = CardReport {
-        status: ReportStatus::Done,
-        summary: "Done.".to_owned(),
-        files_changed: Vec::new(),
-        tests_run: Vec::new(),
-        concerns: Vec::new(),
-        questions: vec!["Should --verbose also write to a log file?".to_owned()],
-        change_requests: Vec::new(),
-        memory_proposals: Vec::new(),
-        answer: String::new(),
-    };
+    let asking = Asking::new(crew, vec![started, autopilot])?;
     with_git_env(
         crew.git_env(),
-        argonauts_crew::blackboard::on_report(&host, &card, &report),
+        argonauts_crew::blackboard::on_report(&asking.host, &asking.card, &asking.report),
     )
     .await?;
-    Ok(sink.events())
+    Ok(asking.sink.events())
+}
+
+/// A running task whose agent's report asks a question meant for you.
+struct Asking {
+    host: argonauts_crew::engine::host::Host,
+    sink: Arc<argonauts_testkit::MemorySink>,
+    card: argonauts_core::CardId,
+    report: argonauts_core::steps::card::CardReport,
+}
+
+impl Asking {
+    fn new(crew: &Crew, history: Vec<RunEvent>) -> anyhow::Result<Self> {
+        use argonauts_core::events::card::{CardEvent, CardKind, CardSpec, CardState};
+        use argonauts_core::steps::card::{CardReport, ReportStatus};
+
+        let state = argonauts_crew::state::RunState::fold(&history);
+        let (mut context, sink, _commands) = crew.context(history)?;
+        context.services.policy = real_policy(crew, &context.settings)?;
+        let shared = argonauts_crew::engine::shared::Shared::new(&context, state)?;
+        let host = argonauts_crew::engine::host::Host::new(Arc::new(shared));
+
+        let card = argonauts_core::CardId::new("task-001")?;
+        let owner: WorkerRef = "claude-code/opus".parse()?;
+        let spec = CardSpec {
+            id: card.clone(),
+            title: "Add the --verbose flag".to_owned(),
+            task: String::new(),
+            kind: CardKind::Build,
+            owned_paths: vec![FILE.to_owned()],
+            read_only_paths: Vec::new(),
+            forbidden_paths: Vec::new(),
+            hidden_paths: Vec::new(),
+            depends_on: Vec::new(),
+            criteria: Vec::new(),
+            owner: Some(owner),
+            reviewers: Vec::new(),
+            budget: Default::default(),
+            predictions: None,
+            item: None,
+        };
+        host.record(
+            Some(&card),
+            None,
+            RunEventKind::Card(CardEvent::Created(Box::new(spec))),
+        )?;
+        host.record(
+            Some(&card),
+            None,
+            RunEventKind::Card(CardEvent::State {
+                from: None,
+                to: CardState::Running,
+                reason: String::new(),
+            }),
+        )?;
+        let report = CardReport {
+            status: ReportStatus::Done,
+            summary: "Done.".to_owned(),
+            files_changed: Vec::new(),
+            tests_run: Vec::new(),
+            concerns: Vec::new(),
+            questions: vec!["Should --verbose also write to a log file?".to_owned()],
+            change_requests: Vec::new(),
+            memory_proposals: Vec::new(),
+            answer: String::new(),
+        };
+        Ok(Self {
+            host,
+            sink,
+            card,
+            report,
+        })
+    }
+}
+
+/// Esc on an agent's question means "carry on without me": the question goes
+/// back to the agent at once, which is told to decide and say what it assumed, a line says so,
+/// and the closing answer lists it. Nothing waits.
+#[tokio::test]
+async fn a_question_you_leave_goes_back_to_its_agent() -> anyhow::Result<()> {
+    use argonauts_core::api::CheckpointAnswer;
+    use argonauts_core::events::checkpoint::{AnswerAction, LEFT_TO_THE_AGENT};
+
+    let crew = three_company_crew()?;
+    let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
+    let asking = Asking::new(&crew, vec![started])?;
+    let ask = with_git_env(
+        crew.git_env(),
+        argonauts_crew::blackboard::on_report(&asking.host, &asking.card, &asking.report),
+    );
+    let leave = async {
+        let id = loop {
+            let open = asking
+                .sink
+                .events()
+                .into_iter()
+                .find_map(|event| match event.kind {
+                    RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+                        if opened.kind == CheckpointKind::Question =>
+                    {
+                        Some(opened.id)
+                    }
+                    _ => None,
+                });
+            if let Some(id) = open {
+                break id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        let left = CheckpointAnswer {
+            id,
+            action: AnswerAction::CarryOn,
+            text: None,
+            evidence_sha256: String::new(),
+            cards: Vec::new(),
+        };
+        argonauts_crew::checkpoints::answer(&asking.host, left.clone())
+            .expect("the question is left");
+        // It is decided now, so a second Esc has nothing to leave.
+        let again = argonauts_crew::checkpoints::answer(&asking.host, left);
+        assert_eq!(again, Err("already decided".to_owned()));
+    };
+    let (asked, ()) = tokio::join!(ask, leave);
+    asked?;
+
+    let events = asking.sink.events();
+    assert!(open_kinds(&events).is_empty(), "something still waits");
+    let answer = posted_answer(&events);
+    assert_eq!(answer.from, Party::Declined);
+    assert_eq!(answer.text, LEFT_TO_THE_AGENT);
+    assert!(decided(&events).contains(&(CheckpointKind::Question, Party::Declined)));
+    let line = "You left \"Question from build:add-the\" to the agent, which decides and says \
+                what it assumed.";
+    assert!(notes(&events).contains(&line), "{:#?}", notes(&events));
+    let state = argonauts_crew::state::RunState::fold(&events);
+    assert_eq!(
+        argonauts_crew::checkpoints::autopilot::endings(&state),
+        [line]
+    );
+    Ok(())
 }
 
 /// The answer posted to the agent's question.
@@ -2053,9 +2160,9 @@ fn posted_answer(events: &[RunEvent]) -> argonauts_core::events::shared::Blackbo
 /// checks the answer before it's sent. One line names the asking card's label and the models,
 /// never a card id, and the run's status keeps the answer for you to review.
 #[tokio::test]
-async fn in_full_auto_an_agents_question_is_answered_elsewhere_and_checked() -> anyhow::Result<()> {
+async fn in_autopilot_an_agents_question_is_answered_elsewhere_and_checked() -> anyhow::Result<()> {
     let crew = three_company_crew()?;
-    let events = ask_in_full_auto(&crew).await?;
+    let events = ask_in_autopilot(&crew).await?;
     let answer = posted_answer(&events);
     assert!(
         matches!(&answer.from, Party::Agent { worker, .. } if worker.worker.as_str() == "codex"),
@@ -2077,20 +2184,20 @@ async fn in_full_auto_an_agents_question_is_answered_elsewhere_and_checked() -> 
     let said = notes(&events);
     assert!(
         said.contains(
-            &"Full auto answered the question from build:add-the (Opus on Claude Code) for you \
+            &"Autopilot answered the question from build:add-the (Opus on Claude Code) for you \
               with GPT X on Codex's answer, which Gemini 3.6 Flash Low on Antigravity CLI \
               checked."
         ),
         "{said:#?}"
     );
     assert!(
-        !said.iter().any(|note| note.contains("card-001")),
+        !said.iter().any(|note| note.contains("task-001")),
         "{said:#?}"
     );
     let status = argonauts_crew::status::summary(&events, &argonauts_crew::status::Viewer::User);
     assert!(
         status.goal.iter().any(|line| line.starts_with(
-            "Answered for you in full auto · Should --verbose also write to a log file: Log to \
+            "Answered for you on autopilot · Should --verbose also write to a log file: Log to \
              stderr only"
         )),
         "{:#?}",
@@ -2102,25 +2209,25 @@ async fn in_full_auto_an_agents_question_is_answered_elsewhere_and_checked() -> 
 /// A model you picked to answer, checked by an approver of its own company, can't be checked,
 /// so the agent is told to use its best judgment, and the line says why the approver couldn't.
 #[tokio::test]
-async fn in_full_auto_an_answer_no_one_can_check_goes_as_best_judgment() -> anyhow::Result<()> {
+async fn in_autopilot_an_answer_no_one_can_check_goes_as_best_judgment() -> anyhow::Result<()> {
     let mut crew = three_company_crew()?;
     crew.services
         .workers
         .add(FakeWorker::harness("codex/gpt-y", "gpt").respond_with(answer));
-    crew.settings.approvals.answered_by = Some(Answerer::Model("codex/gpt-x".parse()?));
-    crew.settings.approvals.approver.model = Some("codex/gpt-y".parse()?);
-    let events = ask_in_full_auto(&crew).await?;
+    crew.settings.approvals.answers = Some(Answerer::Model("codex/gpt-x".parse()?));
+    crew.settings.approvals.decides = Decides::Model("codex/gpt-y".parse()?);
+    let events = ask_in_autopilot(&crew).await?;
     let answer = posted_answer(&events);
-    assert_eq!(answer.from, Party::FullAuto);
+    assert_eq!(answer.from, Party::Autopilot);
     assert_eq!(
         answer.text,
-        argonauts_crew::checkpoints::full_auto::OWN_ANSWER
+        argonauts_crew::checkpoints::autopilot::OWN_ANSWER
     );
     let said = notes(&events).join("\n");
     assert!(said.contains("Go with your best judgment"), "{said}");
-    assert!(said.contains("same company as"), "{said}");
+    assert!(said.contains("same provider as"), "{said}");
     assert!(
-        !said.contains("no rules decide this kind of checkpoint"),
+        !said.contains("no rules decide this kind of approval"),
         "{said}"
     );
     Ok(())
@@ -2131,8 +2238,8 @@ async fn in_full_auto_an_answer_no_one_can_check_goes_as_best_judgment() -> anyh
 #[tokio::test]
 async fn a_picked_model_never_answers_its_own_companys_agent() -> anyhow::Result<()> {
     let mut crew = three_company_crew()?;
-    crew.settings.approvals.answered_by = Some(Answerer::Model("claude-code/opus".parse()?));
-    let events = ask_in_full_auto(&crew).await?;
+    crew.settings.approvals.answers = Some(Answerer::Model("claude-code/opus".parse()?));
+    let events = ask_in_autopilot(&crew).await?;
     let answer = posted_answer(&events);
     assert!(
         matches!(&answer.from, Party::Agent { worker, .. } if worker.worker.as_str() == "codex"),
@@ -2147,8 +2254,8 @@ async fn a_picked_model_never_answers_its_own_companys_agent() -> anyhow::Result
 #[tokio::test]
 async fn a_picked_model_that_cant_answer_leaves_it_to_the_lead() -> anyhow::Result<()> {
     let mut crew = three_company_crew()?;
-    crew.settings.approvals.answered_by = Some(Answerer::Model("nobody/x".parse()?));
-    let events = ask_in_full_auto(&crew).await?;
+    crew.settings.approvals.answers = Some(Answerer::Model("nobody/x".parse()?));
+    let events = ask_in_autopilot(&crew).await?;
     let answer = posted_answer(&events);
     assert!(
         matches!(&answer.from, Party::Agent { worker, .. } if worker.worker.as_str() == "codex"),
@@ -2166,7 +2273,7 @@ async fn a_picked_model_that_cant_answer_leaves_it_to_the_lead() -> anyhow::Resu
 }
 
 /// At a phase's end too, the lead may size what's left of the preset, never swap it
-/// for another template. Its pick of solo-reviewed is refused, and the run stays peer-crew.
+/// for another template. Its pick of maker-checker is refused, and the run stays council.
 #[tokio::test]
 async fn at_a_phase_end_the_lead_keeps_the_preset() -> anyhow::Result<()> {
     let picks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2178,9 +2285,9 @@ async fn at_a_phase_end_the_lead_keeps_the_preset() -> anyhow::Result<()> {
             if spec.step == Some(StepName::DesignWorkflow) {
                 // The run's design keeps the preset; each phase end wants another template.
                 let template = if picks.fetch_add(1, Ordering::SeqCst) == 0 {
-                    "peer-crew"
+                    "council"
                 } else {
-                    "solo-reviewed"
+                    "maker-checker"
                 };
                 return FakeSession::structured(support::brief(
                     Some(template),
@@ -2192,6 +2299,7 @@ async fn at_a_phase_end_the_lead_keeps_the_preset() -> anyhow::Result<()> {
             if spec.step == Some(StepName::Build) {
                 std::fs::write(spec.workdir.join(FILE), "--verbose\n")
                     .expect("the build session writes its file");
+                return answer(spec).with_event(support::wrote(FILE));
             }
             if spec.step == Some(StepName::PlanToCards) {
                 return FakeSession::structured(serde_json::json!({
@@ -2211,22 +2319,22 @@ async fn at_a_phase_end_the_lead_keeps_the_preset() -> anyhow::Result<()> {
         })
     };
     crew.services.workers.add(lead);
-    crew.settings.default_agent = "claude-code/opus".parse()?;
-    crew.settings.crew.push("claude-code/opus".parse()?);
+    crew.settings.main_agent = "claude-code/opus".parse()?;
+    crew.settings.crew.add("claude-code/opus".parse()?);
     enlist(&mut crew, "codex/gpt-x", "gpt");
     crew.services.workers.add(
         FakeWorker::harness("antigravity-cli", "gemini")
             .with_cheapest_model("gemini-3.6-flash-low")
             .respond_with(answer),
     );
-    crew.settings.triage.all_hands = true;
+    crew.settings.ultracode = true;
     crew.settings.workflows.adapt_at_phase_ends = true;
 
     let outcome = run(&crew).await?;
     let events = &outcome.events;
     assert!(
         picks.load(Ordering::SeqCst) > 1,
-        "no phase end asked the lead"
+        "no phase end asked the main agent"
     );
     let changed = events.iter().any(|event| {
         matches!(
@@ -2237,14 +2345,14 @@ async fn at_a_phase_end_the_lead_keeps_the_preset() -> anyhow::Result<()> {
     assert!(!changed, "the workflow changed: {:?}", names(events));
     let from = started_from(events);
     assert!(
-        !from.contains(&Some(WorkflowRef::new("solo-reviewed"))),
+        !from.contains(&Some(WorkflowRef::new("maker-checker"))),
         "{from:?}"
     );
     let said = notes(events);
     assert!(
         said.iter().any(|note| note
             .contains("broke the rules twice, so the workflow goes on unchanged")
-            && note.contains("keep `peer-crew`, the preset's workflow")),
+            && note.contains("keep `council`, the workflow's steps")),
         "{said:#?}"
     );
     Ok(())

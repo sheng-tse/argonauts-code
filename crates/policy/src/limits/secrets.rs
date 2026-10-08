@@ -43,7 +43,7 @@ pub fn check(changes: &[FileChange]) -> Vec<Violation> {
         violations.push(violation(
             HardLimit::Secret,
             format!(
-                "adds or changes binary files the secret scan can't read, so the card stops: {}",
+                "adds or changes binary files the secret scan can't read, so the task stops: {}",
                 unscanned.join(", ")
             ),
             unscanned,
@@ -63,7 +63,7 @@ fn secrets_found(found: Vec<(String, BTreeSet<&'static str>)>) -> Violation {
         .collect();
     violation(
         HardLimit::Secret,
-        format!("adds secrets, so the card stops: {}", listed.join("; ")),
+        format!("adds secrets, so the task stops: {}", listed.join("; ")),
         found.into_iter().map(|(path, _)| path).collect(),
     )
 }

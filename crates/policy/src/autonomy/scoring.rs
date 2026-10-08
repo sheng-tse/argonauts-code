@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use argonauts_core::events::checkpoint::{AnswerAction, CheckpointKind};
 use argonauts_core::policy::{EvidencePacket, Verdict};
 use argonauts_core::settings::approvals::{
-    ApprovalMode, ApprovalSettings, ApproverSettings, CheckpointSettings, DecideWith,
+    ApprovalMode, ApprovalSettings, ApproverSettings, CheckpointSettings, DecideWith, Decides,
 };
 use argonauts_core::{canonical_json, sha256_hex};
 use serde::Serialize;
@@ -59,15 +59,16 @@ pub struct PointSettings {
 /// `None` for kinds without approval settings, which never earn auto.
 pub fn point_settings(approvals: &ApprovalSettings, kind: CheckpointKind) -> Option<PointSettings> {
     use CheckpointKind as Kind;
-    let approver = &approvals.approver;
+    let rules = &approvals.rules;
+    let promotion = approvals.workflow_promotion.as_checkpoint();
     Some(match kind {
-        Kind::Goal => of(&approvals.goal, approver),
-        Kind::Plan => of(&approvals.plan, approver),
-        Kind::Merge => of(&approvals.merge, approver),
-        Kind::RecipePromotion => of(&approvals.recipe_promotion.as_checkpoint(), approver),
-        Kind::Escalation => of(&approvals.escalation, approver),
-        Kind::Budget => of(&approvals.budget, approver),
-        Kind::ChangeRequest => of(&approvals.change_request, approver),
+        Kind::Goal => of(&approvals.goal, &NoRules {}, approvals),
+        Kind::Plan => of(&approvals.plan, &rules.plan, approvals),
+        Kind::Merge => of(&approvals.merge, &rules.merge, approvals),
+        Kind::WorkflowPromotion => of(&promotion, &rules.workflow_promotion, approvals),
+        Kind::Escalation => of(&approvals.escalation, &rules.escalation, approvals),
+        Kind::Budget => of(&approvals.budget, &rules.budget, approvals),
+        Kind::ChangeRequest => of(&approvals.change_request, &NoRules {}, approvals),
         Kind::Handoff
         | Kind::VendorDown
         | Kind::GoalChange
@@ -77,22 +78,30 @@ pub fn point_settings(approvals: &ApprovalSettings, kind: CheckpointKind) -> Opt
     })
 }
 
+/// A goal and a change request have no numbers of their own.
+#[derive(Serialize)]
+struct NoRules {}
+
 #[derive(Serialize)]
 struct Fingerprinted<'a, R> {
     rules: &'a R,
     decide_with: DecideWith,
+    /// Who judges, and by which rules file, where a model has a say.
+    decides: Option<&'a Decides>,
     approver: Option<&'a ApproverSettings>,
 }
 
-fn of<R: Default + Serialize>(
-    point: &CheckpointSettings<R>,
-    approver: &ApproverSettings,
+fn of<R: Serialize>(
+    point: &CheckpointSettings,
+    rules: &R,
+    approvals: &ApprovalSettings,
 ) -> PointSettings {
     let uses_model = point.decide_with != DecideWith::Rules;
     let value = serde_json::to_value(Fingerprinted {
-        rules: &point.rules,
+        rules,
         decide_with: point.decide_with,
-        approver: uses_model.then_some(approver),
+        decides: uses_model.then_some(&approvals.decides),
+        approver: uses_model.then_some(&approvals.approver),
     })
     // Plain settings data can't fail to serialize.
     .unwrap_or_default();

@@ -104,9 +104,9 @@ pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) 
         }
         if !phase.steps.is_empty() && phase.steps.iter().all(is_checkpoint) {
             problems.push(Problem::new(
-                "put a checkpoint in a phase of its own",
+                "put an approval in a phase of its own",
                 format!(
-                    "{at} holds only a checkpoint; a checkpoint gates the phase it comes before, \
+                    "{at} holds only an approval; an approval belongs to the phase it comes before, \
                      so put it there"
                 ),
             ));
@@ -157,11 +157,11 @@ pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) 
     if brief.plan.len() > 1 {
         problems.push(Problem::new(
             format!(
-                "planned {} cards where its build makes one",
+                "planned {} tasks where its build makes one",
                 brief.plan.len()
             ),
             format!(
-                "`plan` lists {} cards; a build from the goal makes one card, and a drafted \
+                "`plan` lists {} tasks; a build from the goal makes one task, and a drafted \
                  plan's planner names its own",
                 brief.plan.len()
             ),
@@ -172,9 +172,9 @@ pub fn problems(brief: &DesignOutput, workflow: &Workflow, examples: &[String]) 
         let item = labels::slug(&card.item, 3);
         if item.is_empty() || !items.insert(item.clone()) {
             problems.push(Problem::new(
-                "gave a card no name of its own",
+                "gave a task no name of its own",
                 format!(
-                    "plan item `{}` is empty or repeats; each card needs its own one-token name",
+                    "plan item `{}` is empty or repeats; each task needs its own one-token name",
                     card.item
                 ),
             ));
@@ -383,12 +383,12 @@ mod tests {
 description: Fix slugify's dashes and median's even and empty lists, with tests
 phases:
   - title: Fix
-    detail: one owner per function, each in its own worktree, tests as the gate
+    detail: one worker per function, each in its own worktree, tests as the checks
     standard: do
     steps:
       - { kind: build, input: plan, label: "fix:{item}", review_in: Review }
   - title: Review
-    detail: a reviewer from another company reads each fix
+    detail: a reviewer from another provider reads each fix
     standard: check
     steps: []
   - title: Merge
@@ -399,7 +399,9 @@ phases:
 "#;
 
     fn examples() -> Vec<String> {
-        ["peer-crew", "solo"].map(str::to_owned).to_vec()
+        ["council", "maker-checker", "solo"]
+            .map(str::to_owned)
+            .to_vec()
     }
 
     fn brief() -> DesignOutput {
@@ -407,7 +409,7 @@ phases:
             name: "fix-slugify-median".to_owned(),
             description: "Fix slugify's dashes and median's even and empty lists, with tests"
                 .to_owned(),
-            based_on: Some("peer-crew".to_owned()),
+            based_on: Some("council".to_owned()),
             why: "each bug has one clear fix, so no drafting".to_owned(),
             params: Vec::new(),
             workflow: Some(FIX.to_owned()),
@@ -425,7 +427,7 @@ phases:
         yaml::parse(FIX).unwrap()
     }
 
-    /// Why Haiku's first brief for a peer-crew run on 10-04 was refused: its name. Its checks
+    /// Why Haiku's first brief for a council run on 10-04 was refused: its name. Its checks
     /// written as `"review"` were never the problem.
     #[test]
     fn the_logged_brief_was_refused_for_its_five_word_name() {
@@ -488,7 +490,7 @@ phases:
                 .contains("name ``")
         );
         let mut template = brief();
-        template.name = "peer-crew".to_owned();
+        template.name = "maker-checker".to_owned();
         assert!(
             problems(&template, &workflow(), &examples())[0]
                 .line
@@ -533,7 +535,7 @@ phases:
         assert!(
             problems(&brief(), &lone, &examples())
                 .iter()
-                .any(|problem| problem.line.contains("only a checkpoint"))
+                .any(|problem| problem.line.contains("only an approval"))
         );
     }
 
@@ -597,7 +599,7 @@ phases:
         assert!(
             problems(&two, &workflow(), &examples())
                 .iter()
-                .any(|problem| problem.line.contains("lists 2 cards"))
+                .any(|problem| problem.line.contains("lists 2 tasks"))
         );
     }
 

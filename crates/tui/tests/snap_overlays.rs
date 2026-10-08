@@ -148,7 +148,7 @@ fn question(id: &str, from: &str, card: &str, text: &str) -> OpenCheckpoint {
                "recommended": recommended, "detail": null})
     };
     let opened: CheckpointOpened = serde_json::from_value(json!({
-        "id": id, "kind": "question", "title": "Question checkpoint · run-01", "card": card,
+        "id": id, "kind": "question", "title": "Question approval · run-01", "card": card,
         "packet": {"kind": "question", "from": from, "card": card, "text": text,
                    "options": ["Yes, keep it", "No, JSON only"]},
         "evidence_sha256": "e3b0c442", "mode": "supervised", "decide_with": "rules",
@@ -172,7 +172,7 @@ fn session_input(parts: &[(&str, &str)]) -> SessionInput {
         .collect();
     serde_json::from_value(json!({
         "launch": {"program": "codex", "args": ["exec", "--json", "<prompt>"],
-                   "cwd": "/wt/card-002", "env_set": ["ARGONAUTS_SESSION"], "env_removed": [],
+                   "cwd": "/wt/task-002", "env_set": ["ARGONAUTS_SESSION"], "env_removed": [],
                    "prompt_via": "stdin", "sandbox": "worktree"},
         "parts": parts, "queued": []}))
     .unwrap()
@@ -197,7 +197,7 @@ fn crew_state(asks: &str) -> AppState {
     let mut claude = session(
         "s-001",
         "claude-code/opus",
-        RoleName::Owner,
+        RoleName::Worker,
         3,
         SessionStatus::Working,
         340,
@@ -221,7 +221,7 @@ fn crew_state(asks: &str) -> AppState {
     let mut codex = session(
         "s-002",
         "codex/gpt-5.6",
-        RoleName::Owner,
+        RoleName::Worker,
         2,
         SessionStatus::Working,
         120,
@@ -241,21 +241,21 @@ fn crew_state(asks: &str) -> AppState {
     let mut done = session(
         "s-004",
         "codex/gpt-5.6",
-        RoleName::Owner,
+        RoleName::Worker,
         1,
         SessionStatus::Done,
         770,
     );
     done.ended = Some(WALL - Duration::seconds(190));
     done.tokens_out = 61_000;
-    done.messages = vec!["Integrated card-001.".into()];
+    done.messages = vec!["Integrated task-001.".into()];
     done.standing_in_for = Some(worker("claude-code/opus"));
     for session in [claude, codex, agy, done] {
         run.session_order.push(session.key.clone());
         run.sessions.insert(session.key.clone(), session);
     }
     run.checkpoints
-        .push(question("cp-001", "codex/gpt-5.6", "card-002", asks));
+        .push(question("cp-001", "codex/gpt-5.6", "task-002", asks));
 
     let mut state = AppState::default();
     state.attached = Some(run_id());
@@ -263,8 +263,8 @@ fn crew_state(asks: &str) -> AppState {
     state.welcome = Some(Welcome {
         version: "0.1.0".into(),
         repo: "~/code/export".into(),
-        preset: "peer-crew".into(),
-        default_agent: None,
+        workflow: "council".into(),
+        main_agent: None,
         agents: ["claude-code", "codex", "antigravity-cli", "opencode"]
             .into_iter()
             .map(|id| AgentReady {
@@ -279,8 +279,8 @@ fn crew_state(asks: &str) -> AppState {
         example_prompt: None,
     });
     let status: StatusLine = serde_json::from_value(json!({
-        "title": "Argonauts", "repo": "~/code/export", "preset": "peer-crew", "run": "run-01",
-        "default_agent": "claude-code/opus",
+        "title": "Argonauts", "repo": "~/code/export", "workflow": "council", "run": "run-01",
+        "main_agent": "claude-code/opus",
         "quotas": [
             {"label": "Claude", "reading": reading("claude-code", 0.72, Some("2026-09-30T15:10:00Z")), "health": "healthy"},
             {"label": "Codex", "reading": reading("codex", 0.41, Some("2026-09-30T13:45:00Z")), "health": "healthy"},
@@ -288,6 +288,21 @@ fn crew_state(asks: &str) -> AppState {
         "spent": null, "limit": null, "narrator": "on_demand", "approval_mode": "supervised"}))
     .unwrap();
     state.status = Some(status);
+    state
+}
+
+/// The crew of four with the labels a run gives its agents now. `crew_state` alone reads as a
+/// log from before agents had labels, which the session view's snapshots keep.
+fn labelled(mut state: AppState) -> AppState {
+    let run = state.runs.get_mut(&run_id()).unwrap();
+    for (session, label) in [
+        ("s-001", "build:json-flag"),
+        ("s-002", "build:json-writer"),
+        ("s-003", "review:json-flag"),
+        ("s-004", "build:csv-writer"),
+    ] {
+        run.sessions.get_mut(&key(session)).unwrap().label = Some(label.into());
+    }
     state
 }
 
@@ -302,9 +317,9 @@ fn summary(run: &str, title: &str, state: RunPhase, remind: bool, hours_ago: i64
         run: RunId::new(run).unwrap(),
         title: title.into(),
         mode: RunMode::Crew,
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         state,
-        stopped_at: "merge checkpoint".into(),
+        stopped_at: "merge approval".into(),
         updated: WALL - Duration::hours(hours_ago),
         spent: Spend {
             output_tokens: 9_000,
@@ -344,14 +359,19 @@ fn fetched_panel(text: &str) -> CrewPanel {
              "latest": "running", "updated": "2026-09-30T11:59:00Z"},
             {"target": {"kind": "run", "run": "run-07"}, "state": "needs_you",
              "title": text, "repo": "~/code/api",
-             "run": {"id": "run-07", "title": text},
-             "latest": "plan checkpoint, waiting for you", "updated": "2026-09-29T06:00:00Z",
+             "run": {"id": "run-07", "title": text, "stands": {"state": "needs_you",
+                 "word": "plan approval, waiting for you", "since": "2026-09-29T06:00:00Z",
+                 "spent": {"input_tokens": 40000, "output_tokens": 9000, "cached_tokens": 0,
+                     "cost_usd": 0.46, "cost_partial": false, "cost_estimated": false}}},
+             "latest": "plan approval, waiting for you", "updated": "2026-09-29T06:00:00Z",
              "details": {"spent": {"input_tokens": 40000, "output_tokens": 9000,
                  "cached_tokens": 0, "cost_usd": 0.46, "cost_partial": false,
                  "cost_estimated": false}}},
             {"target": {"kind": "run", "run": "run-06"}, "state": "done",
              "title": "Tidy the README", "repo": "~/code/api",
-             "run": {"id": "run-06", "title": "Tidy the README"},
+             "run": {"id": "run-06", "title": "Tidy the README", "name": "tidy-readme",
+                 "stands": {"state": "done", "word": "merged",
+                     "since": "2026-09-28T10:00:00Z"}},
              "latest": "merged", "updated": "2026-09-28T10:00:00Z"}
         ]
     }))
@@ -361,7 +381,7 @@ fn fetched_panel(text: &str) -> CrewPanel {
 /// The crew of four, with what the controller listed, and the asking agent's card, context,
 /// and prompt filled in for the details.
 fn panel_state(asks: &str, other: &str) -> AppState {
-    let mut state = crew_state(asks);
+    let mut state = labelled(crew_state(asks));
     let run = state.runs.get_mut(&run_id()).unwrap();
     let codex = run.sessions.get_mut(&key("s-002")).unwrap();
     codex.context = Some(ContextUse {
@@ -369,7 +389,7 @@ fn panel_state(asks: &str, other: &str) -> AppState {
         cap: 200_000,
     });
     codex.inputs = vec![session_input(&[(
-        "card",
+        "task",
         "Add a JSON writer beside the CSV one. Keep the CSV output byte for byte.",
     )])];
     state.crew_panel = Some(fetched_panel(other));
@@ -381,13 +401,13 @@ const PANEL_SIZES: [(u16, u16); 4] = [(80, 24), (100, 32), (120, 32), (200, 40)]
 
 #[test]
 fn crew_view_says_what_a_run_waits_on_and_what_each_step_does() {
-    let mut state = crew_state("Keep a CSV fallback?");
+    let mut state = labelled(crew_state("Keep a CSV fallback?"));
     let run = state.runs.get_mut(&run_id()).unwrap();
     // A merge waits on you with no agent of its own.
     let mut merge = question(
         "cp-009",
         "codex/gpt-5.6",
-        "card-001",
+        "task-001",
         "Merge this run into main?",
     );
     merge.opened.card = None;
@@ -408,35 +428,36 @@ fn crew_view_says_what_a_run_waits_on_and_what_each_step_does() {
     }
     let mut view = open_crew(&state);
     let wide = screen(&mut view, 200, 40, &state);
-    // The card's row names the work and asks its question once, instead of saying its title
-    // twice; the step agents with no card say which step they are.
+    // The approval's row says what it is and asks its question once, under the run's heading,
+    // which names the work once. The step agents with no task say which step they are.
     let merge_row = wide
         .lines()
         .find(|line| line.contains("asks: Merge this run into main?"))
         .unwrap_or_else(|| panic!("{wide}"));
-    assert!(merge_row.contains("Add a --json flag to export"), "{wide}");
+    assert!(merge_row.contains("◆ question"), "{wide}");
     assert_eq!(
         wide.matches("Merge this run into main?").count(),
         2,
         "row and details"
     );
-    for title in [
-        "Restater · Add a --json flag to export",
-        "Drafter · Add a --json flag to export",
-    ] {
-        assert!(wide.contains(title), "{title}\n{wide}");
+    assert_eq!(wide.matches("Add a --json flag to export").count(), 3);
+    for name in ["✓ restater", "✓ drafter"] {
+        assert!(wide.contains(name), "{name}\n{wide}");
     }
 }
 
 #[test]
-fn the_title_column_grows_with_the_screen() {
-    let mut state = crew_state("Keep a CSV fallback?");
-    let run = state.runs.get_mut(&run_id()).unwrap();
-    let long = "Rename the CSV writer so the JSON one can share it";
-    run.cards.get_mut(&CardId::numbered(1)).unwrap().title = long.into();
+fn a_session_s_title_takes_the_room_the_last_lines_leave() {
+    let long = "How does the export pick a format when the two disagree?";
+    let mut state = labelled(crew_state("Keep a CSV fallback?"));
+    let mut panel = fetched_panel("Fix the login redirect");
+    panel.rows[0].title = long.into();
+    state.crew_panel = Some(panel);
     let mut view = open_crew(&state);
-    let narrow = screen(&mut view, 120, 32, &state);
+    let narrow = screen(&mut view, 80, 24, &state);
     assert!(!narrow.contains(long), "{narrow}");
+    // Cut or not, the agents' labels beside it stay whole.
+    assert!(narrow.contains("build:json-writer  asks:"), "{narrow}");
     let mut view = open_crew(&state);
     let wide = screen(&mut view, 200, 40, &state);
     assert!(wide.contains(long), "{wide}");
@@ -473,28 +494,32 @@ fn crew_view() {
     let order = [
         "~/code/export",
         "Add a --json flag to export",
-        "Add the JSON writer",
-        "Wire the --json flag",
-        "Conversations and CLI sessions",
-        "How does the export",
-        "Explain the input handling",
+        "build:json-writer",
+        "build:json-flag",
+        "Sessions",
+        "How does the",
+        "Explain the input",
         "~/code/api",
         "Fix the login redirect",
-        "Tidy the README",
+        "tidy-readme",
     ]
     .map(|needle| position(&text, needle));
     assert!(order.is_sorted(), "{order:?}\n{text}");
     assert!(!text.contains("running"), "{text}");
+    // The run's title shows once, in its heading, and each agent goes by its label.
+    assert_eq!(text.matches("Add a --json flag to export").count(), 1);
     let asks = row_with(&text, "asks: Keep a CSV fallback?");
-    for cell in ["❯ ◆ Add the JSON writer", "GPT 5.6 on Codex", "2m ago"] {
+    for cell in ["❯ ◆ build:json-writer", "GPT 5.6 on Codex", "2m ago"] {
         assert!(asks.contains(cell), "{cell}:\n{text}");
     }
     let writing = row_with(&text, "Update(src/mw/limit.ts)");
-    assert!(writing.contains("● Wire the --json flag"), "{text}");
+    assert!(writing.contains("● build:json-flag"), "{text}");
     assert!(writing.contains("Opus on Claude Code") && writing.contains("5m ago"));
-    assert!(row_with(&text, "It reads keys in one loop.").contains("◎ Explain the input"));
-    assert!(row_with(&text, "Integrated card-001.").contains("✓ Rename the CSV writer"));
-    assert!(row_with(&text, "plan checkpoint").contains("◆ Fix the login"));
+    assert!(row_with(&text, "◎ Explain the input").contains("Codex · enter continues"));
+    assert!(row_with(&text, "Integrated task-001.").contains("✓ build:csv-writer"));
+    // A run with none of its agents listed is one row: its heading.
+    assert!(row_with(&text, "plan approval").starts_with("◆ Fix the login"));
+    assert!(text.contains("✓ tidy-readme · merged 2d ago"), "{text}");
     let footer = text.lines().last().unwrap();
     assert_eq!(
         footer,
@@ -511,12 +536,12 @@ fn crew_view() {
         "│ Repo     ~/code/export",
         "│ Run      run-01 · Add a --json flag",
         "│          to export",
-        "│ Card     card-002",
+        "│ Task     task-002",
         "│ Model    GPT 5.6 on Codex",
         "(codex/gpt-5.6)",
         "│ Tokens   0 in · 12.4k out",
         "│ Context  41k of 200k (21%)",
-        "│ Branch   argonauts/run-01/card-002",
+        "│ Branch   argonauts/run-01/task-002",
         "│ Prompt",
         "│ Add a JSON writer beside the CSV",
     ] {
@@ -546,7 +571,9 @@ fn crew_view() {
     let ViewOutcome::Open(mut session) = open else {
         panic!("{open:?}");
     };
-    assert!(screen(session.as_mut(), 100, 32, &state).contains("Opus on Claude Code · owner"));
+    assert!(
+        screen(session.as_mut(), 100, 32, &state).contains("build:json-flag · Opus on Claude Code")
+    );
 
     // x asks first, and the second x stops that agent.
     assert!(matches!(
@@ -570,9 +597,9 @@ fn crew_view() {
         keys.contains("Tab, Shift+Tab  the next or the previous tab"),
         "{keys}"
     );
-    assert!(!keys.contains("Wire the --json flag"), "{keys}");
+    assert!(!keys.contains("build:json-flag"), "{keys}");
     press(&mut view, KeyCode::Esc, &state);
-    assert!(screen(&mut view, 100, 32, &state).contains("Wire the --json flag"));
+    assert!(screen(&mut view, 100, 32, &state).contains("build:json-flag"));
 
     // Tab and Shift+Tab cycle the tabs, each with its rows only.
     press(&mut view, KeyCode::Tab, &state);
@@ -580,7 +607,7 @@ fn crew_view() {
     let needs_you = screen(&mut view, 100, 32, &state);
     assert!(needs_you.contains("[ Needs you 2 ]"), "{needs_you}");
     assert!(needs_you.contains("Fix the login redirect"), "{needs_you}");
-    assert!(!needs_you.contains("Wire the --json flag"), "{needs_you}");
+    assert!(!needs_you.contains("build:json-flag"), "{needs_you}");
     press(&mut view, KeyCode::Tab, &state);
     press(&mut view, KeyCode::Tab, &state);
     assert_eq!(view.tab, CrewTab::Ready);
@@ -627,16 +654,13 @@ fn crew_view_keeps_the_highlighted_row_as_rows_move() {
     press(&mut view, KeyCode::Down, &state);
     let before = screen(&mut view, 100, 32, &state);
     assert!(
-        row_with(&before, "❯").contains("Wire the --json flag"),
+        row_with(&before, "❯").contains("build:json-flag"),
         "{before}"
     );
     // The question is answered, so the writer moves up to the top.
     state.runs.get_mut(&run_id()).unwrap().checkpoints.clear();
     let after = screen(&mut view, 100, 32, &state);
-    assert!(
-        row_with(&after, "❯").contains("Wire the --json flag"),
-        "{after}"
-    );
+    assert!(row_with(&after, "❯").contains("build:json-flag"), "{after}");
     assert!(after.contains("Needs you 1"), "{after}");
 
     // Before the controller answers, the panel says it's still asking.
@@ -695,6 +719,7 @@ fn session_state(text: &str) -> AppState {
             last_message: Some("Two writers, both in src/export.rs".into()),
             log_uri: None,
             steps_visible: true,
+            tokens: None,
         },
         SubagentUpdate {
             id: "thread-2".into(),
@@ -706,6 +731,7 @@ fn session_state(text: &str) -> AppState {
             last_message: None,
             log_uri: None,
             steps_visible: false,
+            tokens: None,
         },
     ];
     codex.queued = vec![QueuedMessage {
@@ -718,8 +744,8 @@ fn session_state(text: &str) -> AppState {
     }];
     codex.inputs = vec![session_input(&[
         (
-            "card",
-            "You own card-002: Add the JSON writer.\nKeep the CSV path working.",
+            "task",
+            "You own task-002: Add the JSON writer.\nKeep the CSV path working.",
         ),
         ("goal", "Export takes --json and prints valid JSON."),
         ("notes", "Use serde_json.\nNo new dependencies."),
@@ -745,9 +771,14 @@ fn session_view_output() {
     }
     let mut view = session_view();
     let text = screen(&mut view, 100, 60, &state);
+    // The name, the tabs with Output open, and the time and tokens at the right end.
+    let header = text.lines().next().unwrap_or_default();
     assert!(
-        text.starts_with("● GPT 5.6 on Codex · owner · card-002 (Add the JSON writer) · 2m00s")
+        header.starts_with("◐ GPT 5.6 on Codex · worker · task-002 (Add the JSON writer)  "),
+        "{header}"
     );
+    assert!(header.contains(" Output  Input  Raw "), "{header}");
+    assert!(header.ends_with("2m00s · ↓ 12.4k"), "{header}");
     for needle in [
         "Read(src/export.rs)",
         "fn write(&self) {}",
@@ -760,19 +791,21 @@ fn session_view_output() {
         "The JSON writer goes beside the CSV one.",
         "⎿ Queued use serde_json",
         "arrives after the current tool call",
-        "following",
     ] {
         assert!(text.contains(needle), "{needle}:\n{text}");
     }
     // The subagent's thread hangs under it.
     assert!(position(&text, "explorer") < position(&text, "Check the tests"));
 
-    // s steers, and the line shows until the message is queued.
-    press(&mut view, KeyCode::Char('s'), &state);
+    // Following the live end is the usual state, so only a pause is said.
+    assert!(!text.contains("paused"), "{text}");
+
+    // m messages the agent, and the line shows until the message is queued.
+    press(&mut view, KeyCode::Char('m'), &state);
     for c in "keep the CSV path".chars() {
         press(&mut view, KeyCode::Char(c), &state);
     }
-    assert!(screen(&mut view, 100, 32, &state).contains("steer ❯ keep the CSV path"));
+    assert!(screen(&mut view, 100, 32, &state).contains("message ❯ keep the CSV path"));
     let steer = press(&mut view, KeyCode::Enter, &state);
     assert!(
         matches!(&steer, ViewOutcome::Send(UiCommand::Steer { session, text, .. })
@@ -788,12 +821,12 @@ fn session_view_output() {
     );
     let diff = press(&mut view, KeyCode::Char('d'), &state);
     assert!(
-        matches!(&diff, ViewOutcome::Request(ViewRequest::Diff { card, .. }) if card.as_str() == "card-002"),
+        matches!(&diff, ViewOutcome::Request(ViewRequest::Diff { card, .. }) if card.as_str() == "task-002"),
         "{diff:?}"
     );
     let take = press(&mut view, KeyCode::Char('t'), &state);
     assert!(
-        matches!(&take, ViewOutcome::ConfirmTakeOver { card, .. } if card.as_str() == "card-002"),
+        matches!(&take, ViewOutcome::ConfirmTakeOver { card, .. } if card.as_str() == "task-002"),
         "{take:?}"
     );
     // Opened by a follow key, ← opens the crew view in its place.
@@ -826,7 +859,8 @@ fn the_crew_panel_opens_a_finished_agents_transcript() {
         let mut crew = open_crew(&state);
         crew.list.selected = at;
         let picked = screen(&mut crew, 120, 32, &state);
-        if !row_with(&picked, "❯").contains("Add the JSON writer") {
+        // The fixture's log has no labels, so its agents go by role and task.
+        if !row_with(&picked, "❯").contains("worker · task-002") {
             continue;
         }
         opened = Some(press(&mut crew, KeyCode::Enter, &state));
@@ -837,7 +871,7 @@ fn the_crew_panel_opens_a_finished_agents_transcript() {
     };
     let text = screen(&mut *view, 120, 32, &state);
     assert!(
-        text.starts_with("✓ GPT 5.6 on Codex · owner · card-002"),
+        text.starts_with("✔ GPT 5.6 on Codex · worker · task-002"),
         "{text}"
     );
     for (width, height) in [(80, 24), (100, 32), (120, 32)] {
@@ -845,7 +879,7 @@ fn the_crew_panel_opens_a_finished_agents_transcript() {
         view.clock = WallClock::pinned(WALL);
         let text = screen(&mut view, width, height, &state);
         let footer = text.lines().last().unwrap_or_default();
-        for gone in ["s steer", "t take over"] {
+        for gone in ["m message it", "t take over", "x stop it"] {
             assert!(!footer.contains(gone), "{gone}: {footer}");
         }
         insta::assert_snapshot!(format!("crew_opens_a_finished_agent_{width}"), text);
@@ -882,7 +916,7 @@ fn follow_mode_keeps_the_live_end_on_screen() {
     press(&mut view, KeyCode::End, &state);
     let live = screen(&mut view, 80, 24, &state);
     assert!(live.contains("Streamed while you read."), "{live}");
-    assert!(live.contains("following"), "{live}");
+    assert!(!live.contains("paused"), "{live}");
 }
 
 #[test]
@@ -890,21 +924,25 @@ fn session_view_input_side() {
     let state = session_state("text");
     for (width, height) in SIZES {
         let mut view = session_view();
-        press(&mut view, KeyCode::Char('i'), &state);
+        press(&mut view, KeyCode::Tab, &state);
         insta::assert_snapshot!(
             format!("session_view_input_side_{width}"),
             screen(&mut view, width, height, &state)
         );
     }
     let mut view = session_view();
-    press(&mut view, KeyCode::Char('i'), &state);
+    press(&mut view, KeyCode::Tab, &state);
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("$ codex exec --json '<prompt>'"), "{text}");
-    assert!(text.contains("cwd /wt/card-002 · prompt on stdin · sandbox worktree"));
+    // The launch folds to one line under the parts, and opens to the whole command.
+    assert!(
+        text.contains("Launched as codex exec --json '<prompt>' · → expands"),
+        "{text}"
+    );
+    assert!(!text.contains("cwd /wt/task-002"), "{text}");
     // Each line of each part ends its own row, word for word and in order.
     let mut last = 0;
     for line in [
-        "You own card-002: Add the JSON writer.",
+        "You own task-002: Add the JSON writer.",
         "Keep the CSV path working.",
         "Export takes --json and prints valid JSON.",
         "Use serde_json.",
@@ -917,8 +955,18 @@ fn session_view_input_side() {
         assert!(row >= last, "{line:?} in order:\n{text}");
         last = row;
     }
-    assert!(row_with(&text, "❯ card").contains("~16 tok"));
+    // Each part is headed by where it came from, with no token estimate beside it.
+    assert!(text.contains("\nTask\n  You own task-002"), "{text}");
+    assert!(!text.contains("tok"), "{text}");
+    assert!(position(&text, "Launched as") > last);
     assert!(position(&text, "Queued") > last);
+    for _ in 0..3 {
+        press(&mut view, KeyCode::Down, &state);
+    }
+    press(&mut view, KeyCode::Right, &state);
+    let open = screen(&mut view, 100, 32, &state);
+    assert!(open.contains("$ codex exec --json '<prompt>'"), "{open}");
+    assert!(open.contains("cwd /wt/task-002 · prompt on stdin · sandbox worktree"));
 
     // ↓ selects the next part, and → expands a long one.
     let mut long = session_state("text");
@@ -932,17 +980,25 @@ fn session_view_input_side() {
         .sessions
         .get_mut(&key("s-002"))
         .unwrap()
-        .inputs = vec![session_input(&[("card", "short"), ("rules", &body)])];
+        .inputs = vec![session_input(&[("task", "short"), ("rules", &body)])];
     let mut view = session_view();
-    press(&mut view, KeyCode::Char('i'), &long);
+    press(&mut view, KeyCode::Tab, &long);
     press(&mut view, KeyCode::Down, &long);
     let folded = screen(&mut view, 100, 32, &long);
     assert!(folded.contains("… +3 lines · → expands"), "{folded}");
     assert!(!folded.contains("line 9"));
     press(&mut view, KeyCode::Right, &long);
     assert!(screen(&mut view, 100, 32, &long).contains("line 9"));
-    press(&mut view, KeyCode::Char('i'), &long);
-    assert!(screen(&mut view, 100, 32, &long).contains("[ Output ]"));
+    // Shift+Tab goes back to Output, and Tab past Input opens the raw log.
+    press(&mut view, KeyCode::BackTab, &long);
+    assert!(screen(&mut view, 100, 32, &long).contains("tab input"));
+    press(&mut view, KeyCode::Tab, &long);
+    let raw = press(&mut view, KeyCode::Tab, &long);
+    assert!(
+        matches!(&raw, ViewOutcome::Request(ViewRequest::Raw { session, .. }) if session.as_str() == "s-002"),
+        "{raw:?}"
+    );
+    assert!(screen(&mut view, 100, 32, &long).contains("tab input"));
 }
 
 fn picker() -> ResumePicker {
@@ -985,20 +1041,29 @@ fn resume_picker_rows() {
     }
     let mut view = picker();
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("Parked runs never expire, so resume it or stop it"));
+    assert!(text.contains("Waiting runs never expire, so resume it or stop it"));
     let parked = row_with(&text, "Add a --json flag to export");
     assert!(parked.contains('◆'), "{text}");
     for cell in [
         "run-03",
-        "parked",
-        "merge checkpoint",
+        // The state is its glyph and its word, as every view draws it.
+        "◆ waiting",
+        "merge approval",
         "2d ago",
         "$0.46",
         "2",
     ] {
         assert!(parked.contains(cell), "{cell}:\n{text}");
     }
-    assert!(!row_with(&text, "Fix the flaky export test").contains('◆'));
+    let crashed = row_with(&text, "Fix the flaky export test");
+    assert!(
+        crashed.contains("✗ crashed") && !crashed.contains('◆'),
+        "{text}"
+    );
+    assert!(
+        row_with(&text, "Rename the CSV writer").contains("✔ merged"),
+        "{text}"
+    );
     assert!(text.contains("⏎ resume · → agents · x stop · d diff · r raw · / search · esc back"));
 
     press(&mut view, KeyCode::Down, &state);
@@ -1137,7 +1202,7 @@ fn resume_picker_with_cli_sessions() {
     let newest = row_with(&text, "claude-code:0a1b2c3d-1");
     for cell in [
         "session",
-        "Explain the inpu",
+        "Explain the in",
         "Claude Code on main",
         "just now",
     ] {
@@ -1169,7 +1234,7 @@ fn diff_data(text: &str) -> DiffView {
             deletions: 1,
         },
         text: text.into(),
-        path: PathBuf::from("/state/cards/card-002/diff"),
+        path: PathBuf::from("/state/cards/task-002/diff"),
     }
 }
 
@@ -1198,7 +1263,7 @@ fn diff_pager() {
     let mut view = Pager::diff(diff_data(DIFF));
     let buf = draw(&mut view, 100, 32, &state);
     let text = buffer_text(&buf);
-    assert!(text.contains("Diff · card-002"));
+    assert!(text.contains("Diff · task-002"));
     assert!(text.contains("1 file changed · +3 −1"));
     let theme = theme();
     let style_of = |needle: &str| {
@@ -1359,7 +1424,7 @@ fn overlays_hold_their_frames_at_every_width() {
                 assert_frames(&draw(&mut output, width, height, &state));
                 press(&mut output, KeyCode::PageUp, &state);
                 assert_frames(&draw(&mut output, width, height, &state));
-                press(&mut output, KeyCode::Char('i'), &state);
+                press(&mut output, KeyCode::Tab, &state);
                 press(&mut output, KeyCode::Right, &state);
                 assert_frames(&draw(&mut output, width, height, &state));
 
@@ -1429,39 +1494,14 @@ fn rewind_picker() {
             run_id(),
             None,
             vec![
-                row("card-001", 1, "codex", true),
-                row("card-002", 1, "antigravity-cli", false),
-                row("card-001", 2, "opencode", false),
+                row("task-001", 1, "codex", true),
+                row("task-002", 1, "antigravity-cli", false),
+                row("task-001", 2, "opencode", false),
             ],
         );
         view.clock = WallClock::pinned(WALL);
         insta::assert_snapshot!(
             format!("rewind_picker_{width}"),
-            screen(&mut view, width, height, &state)
-        );
-    }
-}
-
-#[test]
-fn status_view() {
-    use argonauts_core::api::StatusSummary;
-    use argonauts_tui::views::status::StatusView;
-    let state = AppState::default();
-    let summary = StatusSummary {
-        run: Some(run_id()),
-        goal: vec![
-            "Export reports as CSV".to_owned(),
-            "Every report has a CSV button".to_owned(),
-        ],
-        plan: Some("Two cards: the writer, then the button".to_owned()),
-        recent: vec!["card-001 merged".to_owned()],
-        waiting: vec!["the merge of card-002".to_owned()],
-        ..StatusSummary::default()
-    };
-    for (width, height) in SIZES {
-        let mut view = StatusView::new(summary.clone());
-        insta::assert_snapshot!(
-            format!("status_view_{width}"),
             screen(&mut view, width, height, &state)
         );
     }

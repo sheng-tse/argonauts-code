@@ -37,18 +37,24 @@ pub fn vendor_screen_only(set: &VendorCommandSet) -> impl Iterator<Item = &Vendo
 pub fn handler(typed: &str, vendor: Option<&VendorCommandSet>) -> Handler {
     let spec = slash_spec(typed).or_else(|| match &vendor?.find(typed)?.kind {
         CommandKind::Argonauts { command } => slash_spec(command),
-        CommandKind::Vendor | CommandKind::ScreenOnly => None,
+        CommandKind::Vendor | CommandKind::ScreenOnly | CommandKind::Workflow => None,
     });
     spec.map_or(Handler::App, |spec| spec.handler)
 }
 
-/// The `/` menu's rows, each under its category, the main agent's last.
+/// The group your own workflows list under, in the `/` menu and `/help`.
+pub const YOUR_WORKFLOWS: &str = "Your workflows";
+
+/// The `/` menu's rows, each under its category, your workflows next, the main agent's last.
 pub fn command_items(vendor: Option<&VendorCommandSet>) -> Vec<MenuItem> {
     let mut items: Vec<MenuItem> = argonauts_commands()
         .into_iter()
         .map(|spec| item(spec.name, spec.help, spec.args).in_group(spec.category.title()))
         .collect();
     if let Some(set) = vendor {
+        items.extend(set.workflows().map(|command| {
+            item(&command.name, &command.help, &command.args).in_group(YOUR_WORKFLOWS)
+        }));
         items.extend(vendor_menu(set).map(|command| {
             let item = item(&command.name, &command.help, &command.args).in_group(&set.title);
             match origin(command) {
@@ -101,6 +107,14 @@ pub fn help_sections(vendor: Option<&VendorCommandSet>) -> Vec<HelpSection> {
             })
             .collect()
     };
+    let workflows = rows(set.workflows().collect());
+    if !workflows.is_empty() {
+        sections.push(HelpSection {
+            heading: YOUR_WORKFLOWS.to_owned(),
+            runs_here: true,
+            rows: workflows,
+        });
+    }
     let menu = rows(vendor_menu(set).collect());
     if !menu.is_empty() {
         sections.push(HelpSection {
@@ -280,7 +294,7 @@ pub(crate) mod tests {
             .filter(|item| item.group.as_deref() == Some("Session"))
             .map(|item| item.name.as_str())
             .collect();
-        assert_eq!(&session[..3], ["clear", "resume", "exit"]);
+        assert_eq!(&session[..4], ["clear", "resume", "artifacts", "exit"]);
         assert!(session.contains(&"compact") && session.contains(&"add-dir"));
 
         let set = claude_commands();
@@ -305,6 +319,50 @@ pub(crate) mod tests {
                 ("commit-commands:commit", Some("commit-commands"), false),
             ],
             "what runs inside Claude Code, less what Argonauts' own names hide"
+        );
+    }
+
+    #[test]
+    fn your_workflows_list_after_argonauts_commands_and_before_the_main_agents() {
+        let mut set = claude_commands();
+        set.commands.insert(
+            0,
+            VendorCommand {
+                name: "spec-first".into(),
+                aliases: Vec::new(),
+                args: "<request>".into(),
+                help: "Write the spec first".into(),
+                kind: CommandKind::Workflow,
+                source: CommandSource::Custom {
+                    scope: CommandScope::Project,
+                    path: PathBuf::from("/repo/.argonauts/workflows/spec-first.toml"),
+                },
+            },
+        );
+        let items = command_items(Some(&set));
+        let yours: Vec<(&str, bool)> = items
+            .iter()
+            .filter(|item| item.group.as_deref() == Some(YOUR_WORKFLOWS))
+            .map(|item| (item.name.as_str(), item.needs_argument))
+            .collect();
+        assert_eq!(yours, [("spec-first", true)]);
+        let first_of = |group: &str| {
+            items
+                .iter()
+                .position(|item| item.group.as_deref() == Some(group))
+                .unwrap_or_else(|| panic!("no {group} in the menu"))
+        };
+        assert!(first_of("Setup and help") < first_of(YOUR_WORKFLOWS));
+        assert!(first_of(YOUR_WORKFLOWS) < first_of("Claude Code"));
+        assert!(vendor_menu(&set).all(|command| command.name != "spec-first"));
+        assert_eq!(handler("spec-first", Some(&set)), Handler::App);
+        let headings: Vec<String> = help_sections(Some(&set))
+            .into_iter()
+            .map(|section| section.heading)
+            .collect();
+        assert!(
+            headings.contains(&YOUR_WORKFLOWS.to_owned()),
+            "{headings:?}"
         );
     }
 

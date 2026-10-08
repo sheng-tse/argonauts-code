@@ -34,7 +34,7 @@ pub(crate) fn start(ctx: &Ctx, settings: &mut SettingsState) {
 
 /// The models `role` may use, with how fresh the list is.
 pub(crate) fn view(ctx: &Ctx, settings: &mut SettingsState, role: Option<RoleName>) -> ViewData {
-    let role = role.filter(|role| *role != RoleName::Default);
+    let role = role.filter(|role| *role != RoleName::Main);
     let refreshed = ctx.services.registry.refreshed();
     settings.shown = Some(ModelsShown { role, refreshed });
     ViewData::Models {

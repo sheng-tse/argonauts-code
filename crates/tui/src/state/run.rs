@@ -9,7 +9,7 @@ use argonauts_core::events::checkpoint::{
 use argonauts_core::events::run::{
     ParkReason, PhaseChange, RunLifecycle, RunMode, RunNamed, RunOutcome, RunPhase, RunSnapshot,
 };
-use argonauts_core::events::session::{QueuedMessage, SessionEvent};
+use argonauts_core::events::session::{QueuedMessage, SessionEvent, VendorWorkflow};
 use argonauts_core::events::shared::BlackboardEvent;
 use argonauts_core::events::vendor::{BudgetEvent, HandoffEvent, RunBudget};
 use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
@@ -24,6 +24,7 @@ use argonauts_core::{CardId, DiffStat, PhaseStatus, RunId, Spend};
 use time::OffsetDateTime;
 
 use super::decisions::{DecisionRecord, Decisions};
+use super::reported::StepWorkflows;
 use super::session::{SessionState, SessionStatus};
 
 #[derive(Debug, Clone)]
@@ -55,6 +56,8 @@ pub struct RunState {
     decisions: Decisions,
     /// The run's own workflow first, nested ones after.
     pub workflows: Vec<WorkflowState>,
+    /// The workflows the runner runs as steps, as each last reported itself.
+    pub reported: StepWorkflows,
     /// The workflow step that started last.
     pub last_step: Option<StepRef>,
     pub spent: Spend,
@@ -65,7 +68,7 @@ pub struct RunState {
     /// The run's own name and description, from the lead's brief or intake, which the panel
     /// row and the views show rather than a template's.
     pub named: Option<RunNamed>,
-    pub preset: Option<String>,
+    pub workflow: Option<String>,
     /// Set by `Run::ApprovalModeChanged`; the status line's mode until then.
     pub approval: Option<ApprovalMode>,
     /// A stop was asked for and the run is winding down.
@@ -99,11 +102,12 @@ impl RunState {
             spot_checks: Vec::new(),
             decisions: Decisions::default(),
             workflows: Vec::new(),
+            reported: StepWorkflows::default(),
             last_step: None,
             spent: Spend::default(),
             queued: Vec::new(),
             seq: 0,
-            preset: None,
+            workflow: None,
             named: None,
             approval: None,
             stopping: false,
@@ -175,19 +179,28 @@ impl RunState {
     /// Agents done out of all of them, its time, and its spend: what the panel row and the
     /// workflow view's header both show. `wall` is now, for a run that still goes.
     pub fn totals(&self, wall: OffsetDateTime) -> RunTotals {
-        // The agents its workflow ran, as the workflow view counts them.
+        // The agents its workflow ran, as the workflow view counts them. The agents of a
+        // workflow one of its steps runs count as that workflow reports them, so one tried
+        // again is one agent, and those still to start are counted before they do.
         let agents: Vec<&SessionState> = self
             .sessions
             .values()
             .filter(|session| is_workflow_agent(session.step, session.workflow_step.as_ref()))
+            .filter(|session| {
+                !self
+                    .reported
+                    .names(session.label.as_deref().unwrap_or_default())
+            })
             .collect();
-        let done = agents
-            .iter()
-            .filter(|session| session.status == SessionStatus::Done)
-            .count();
+        let (reported_done, reported) = self.reported.agents();
+        let done = reported_done
+            + agents
+                .iter()
+                .filter(|session| session.status == SessionStatus::Done)
+                .count();
         RunTotals {
             agents_done: u32::try_from(done).unwrap_or(u32::MAX),
-            agents_total: u32::try_from(agents.len()).unwrap_or(u32::MAX),
+            agents_total: u32::try_from(agents.len() + reported).unwrap_or(u32::MAX),
             elapsed: self.elapsed(wall),
             spent: self.spend(),
         }
@@ -253,10 +266,20 @@ impl RunState {
                     .find_map(|step| phase_in_shown(&step.step))
             })
             .or_else(|| last.and_then(phase_in_shown))?;
+        // A workflow that phase's step runs says which of its own phases it is in.
+        let reported = self.reported.in_phase(&shown.id, phase);
+        if let Some(own) = reported.and_then(super::reported::current_phase) {
+            return Some(own);
+        }
         shown
             .phases
             .get(usize::try_from(phase).ok()?)
             .map(String::as_str)
+    }
+
+    /// Takes in what the runner reports of the workflow `step` runs.
+    pub fn workflow_reported(&mut self, step: &StepRef, workflow: &VendorWorkflow) {
+        self.reported.report(step, workflow);
     }
 
     pub fn tokens_out(&self) -> u64 {
@@ -396,7 +419,7 @@ impl RunState {
                 self.title.clone_from(&started.title);
                 self.mode = Some(started.mode);
                 self.front_end.clone_from(&started.front_end);
-                self.preset = Some(started.preset.clone());
+                self.workflow = Some(started.workflow.clone());
                 self.started = Some(at);
             }
             RunLifecycle::Named(named) => self.named = Some(named.clone()),
@@ -471,7 +494,7 @@ impl RunState {
                 // Only the key survives a snapshot; its next events fill in the rest.
                 let worker = WorkerRef::new("agent", None);
                 let mut session =
-                    SessionState::new(key.clone(), worker, String::new(), RoleName::Default, at);
+                    SessionState::new(key.clone(), worker, String::new(), RoleName::Main, at);
                 session.status = SessionStatus::Working;
                 self.sessions.insert(key.clone(), session);
                 self.session_order.push(key.clone());
@@ -718,6 +741,9 @@ impl RunState {
                     Some(known) => *known = state,
                     None => self.workflows.push(state),
                 }
+                if super::reported::hands_over(&started.workflow) {
+                    self.reported.expect_from(&started.id);
+                }
             }
             WorkflowEvent::StepStarted(step) => {
                 self.last_step = Some(step.step.clone());
@@ -770,6 +796,9 @@ impl RunState {
                         .description
                         .clone_from(&changed.workflow.description);
                 }
+            }
+            WorkflowEvent::Reported(report) => {
+                self.workflow_reported(&report.step, &report.workflow);
             }
             WorkflowEvent::Declared(_)
             | WorkflowEvent::PhaseStarted(_)
@@ -874,7 +903,7 @@ fn opened_in<'a>(open: &'a [OpenCheckpoint], id: &CheckpointId) -> Option<&'a Ch
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenCheckpoint {
     pub opened: Box<CheckpointOpened>,
-    /// Esc folded it to its pinned line; it's listed under "needs you".
+    /// Esc handed it on; until it's settled it's listed under "needs you".
     pub set_aside: bool,
     /// Opened before `ReplayDone`, so it rang no bell.
     pub replayed: bool,

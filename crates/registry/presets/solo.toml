@@ -1,4 +1,0 @@
-workflow = "solo"
-
-[triage]
-force = "solo"

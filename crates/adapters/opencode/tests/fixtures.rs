@@ -108,6 +108,12 @@ fn opencode_events_parse() {
         output: Some("Wrote file successfully.".to_owned()),
         parent: None,
     }));
+    // The write tool's file is reported as changed, which is what makes a new file the
+    // agent's own when its task is committed.
+    assert!(events.contains(&AgentEvent::FileChanged {
+        path: "/work/tree/hello.txt".to_owned(),
+        kind: "update".to_owned(),
+    }));
     let usage: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
@@ -125,7 +131,8 @@ fn opencode_events_parse() {
     assert_eq!(usage, [(9272, 88, 1152, false), (9426, 2, 9216, false)]);
     assert!(events.contains(&AgentEvent::ContextFill {
         used: 9360,
-        size: None
+        size: None,
+        sent: None,
     }));
     assert!(events.contains(&AgentEvent::Message {
         text: "done".to_owned(),

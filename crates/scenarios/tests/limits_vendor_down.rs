@@ -15,7 +15,7 @@ use limits_support::*;
 const DOWN_AT_ONCE: &str = "[health]\ndown_after = 1\ndown_sessions = 1\n";
 
 fn ask_with_codex() -> String {
-    format!("{DOWN_AT_ONCE}\n[handoff]\nmode = \"ask\"\nfallback = [\"codex\"]\n")
+    format!("{DOWN_AT_ONCE}\n[fallback]\nmode = \"ask\"\norder = [\"codex\"]\n")
 }
 
 fn went_down(events: &[RunEvent], vendor: &str) -> bool {
@@ -74,7 +74,7 @@ fn limits_vendor_down_one_agent_for_all() -> anyhow::Result<()> {
     limits.shot(&pty, "limits_vendor_down_one_agent_for_all")?;
 
     answer(&mut pty, &card, 'a')?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
     let decided = find(&events, |kind| match kind {
         RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) if decided.id == card.id => {
             Some(&decided.action)
@@ -101,18 +101,18 @@ fn limits_vendor_down_follows_handoff_mode() -> anyhow::Result<()> {
     let limits = setup(
         "vendor-down-follows-handoff-mode",
         &format!(
-            "default_agent = \"antigravity-cli\"\n\n{DOWN_AT_ONCE}\n\
-             [handoff]\nmode = \"ask\"\n\n\
-             [roles.owner.handoff]\nmode = \"auto\"\nfallback = [\"codex\"]\n"
+            "main_agent = \"antigravity-cli\"\n\n{DOWN_AT_ONCE}\n\
+             [fallback]\nmode = \"ask\"\n\n\
+             [fallback.workers]\nmode = \"auto\"\norder = [\"codex\"]\n"
         ),
     )?;
     let mut pty = limits.run(&[])?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
 
     assert!(went_down(&events, "antigravity-cli"));
     assert!(
         opened(&events, CheckpointKind::VendorDown).is_none(),
-        "the owner role hands off on its own, so nothing should ask"
+        "the worker role hands off on its own, so nothing should ask"
     );
     assert!(handed_off(&events).iter().any(|event| matches!(
         event,

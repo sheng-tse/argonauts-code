@@ -1,4 +1,4 @@
-# Three cards, one per vendor. Claude Code and Codex finish theirs; agy starts three subagents
+# Three tasks, one per vendor. Claude Code and Codex finish theirs; agy starts three subagents
 # at once, one past the role's cap.
 
 [version]

@@ -139,7 +139,7 @@ mod tests {
     fn prompt_is_the_parts_byte_for_byte() {
         let parts = vec![
             part(InputPartKind::Prompt, "role", "You fix bugs.\n", None),
-            part(InputPartKind::Card, "card", "Card: é ✓\r\n", None),
+            part(InputPartKind::Card, "card", "Task: é ✓\r\n", None),
             part(InputPartKind::Rules, "rules", "", None),
             part(
                 InputPartKind::Goal,
@@ -148,7 +148,7 @@ mod tests {
                 Some("goal.md".into()),
             ),
         ];
-        assert_eq!(prompt_text(&parts), "You fix bugs.\nCard: é ✓\r\nGoal 🦀");
+        assert_eq!(prompt_text(&parts), "You fix bugs.\nTask: é ✓\r\nGoal 🦀");
         assert_eq!(parts[0].approx_tokens, 4);
     }
 }

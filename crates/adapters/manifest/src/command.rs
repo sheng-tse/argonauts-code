@@ -26,7 +26,7 @@ pub(crate) fn build(
     if manifest.transport == Transport::Acp {
         bail!("{id} is an ACP profile, which runs through the ACP adapter");
     }
-    crate::output::ErrorRules::compile(manifest).with_context(|| format!("harness {id}"))?;
+    crate::output::ErrorRules::compile(manifest).with_context(|| format!("CLI {id}"))?;
     // A take-over is asked for long after launch and can only answer with a command or none,
     // so a take-over command that doesn't fill refuses the launch instead.
     take_over_args(manifest, "", &req.workdir)?;

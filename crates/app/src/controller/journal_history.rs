@@ -149,7 +149,7 @@ mod tests {
             panic!("a replay");
         };
         assert_eq!(turns[0].text, "Add --json to export");
-        assert_eq!(milestones, ["Plan approved · 5 cards"]);
+        assert_eq!(milestones, ["Plan approved · 5 tasks"]);
     }
 
     #[test]

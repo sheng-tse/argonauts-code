@@ -3,31 +3,31 @@ source: crates/tui/tests/snap_settings.rs
 expression: "&shown"
 ---
 Approvals
-Who decides each checkpoint, and how auto matched you
+Who decides each approval, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Full auto                                                off: each checkpoint keeps its own mode │
-│ ❯ For every checkpoint        off                      built-in             Full auto for every… │
-│   Who answers questions       GPT 5.6 on Codex         everywhere (global)  Who answers the cre… │
-│     In full auto only; elsewhere you or the lead, by mode                                        │
+│ Autopilot                                                  off: each approval keeps its own mode │
+│ ❯ For every approval          off                       built-in             Autopilot for ever… │
+│   Who answers questions       GPT 5.6 on Codex          everywhere (global)  Who answers the cr… │
+│     On autopilot only; elsewhere you or main, by mode                                            │
 │                                                                                                  │
-│ Who checks                                               the cheapest model from another company │
-│   Approver model              cheapest, other company  built-in             The approver model,… │
-│   Second approver             none, one approver       built-in             A second approver, … │
+│ Who checks                                              the cheapest model from another provider │
+│   The judge                   cheapest, other provider  built-in             Who settles what y… │
+│   Second approver             none, one approver        built-in             A second approver,… │
 │                                                                                                  │
 │ Plan · auto · rules and approver both agree                        0 matches in a row · 0 misses │
-│   How it's decided            auto                     everywhere (global)  The plan checkpoint… │
-│   Who decides in auto         both agree               built-in             The plan checkpoint… │
-│   When auto doesn't approve   ask you                  built-in             The plan checkpoint… │
-│   Hard limit in full auto     stop safely              built-in             The plan checkpoint… │
-│   Judge's widest score gap    1.0                      built-in             Plan rules: the lar… │
+│   How it's decided            auto                      everywhere (global)  The plan approval:… │
+│   Who decides in auto         both agree                built-in             The plan approval:… │
+│   When auto doesn't approve   ask you                   built-in             The plan approval:… │
+│   Hard limit on autopilot     stop safely               built-in             The plan approval:… │
+│   Judge's widest score gap    1.0                       built-in             Plan rules: the la… │
 │                                                                                                  │
 │ Merge · auto · your rules decide                                   0 matches in a row · 0 misses │
-│   How it's decided            auto                     everywhere (global)  The merge checkpoin… │
-│   Who decides in auto         your rules               built-in             The merge checkpoin… │
-│   When auto doesn't approve   ask you                  built-in             The merge checkpoin… │
-│   Hard limit in full auto     stop safely              built-in             The merge checkpoin… │
-│   Merge with unreviewed debt  no                       built-in             Merge rules: whethe… │
+│   How it's decided            auto                      everywhere (global)  The merge approval… │
+│   Who decides in auto         your rules                built-in             The merge approval… │
+│   When auto doesn't approve   ask you                   built-in             The merge approval… │
+│   Hard limit on autopilot     stop safely               built-in             The merge approval… │
+│   Merge with unreviewed debt  no                        built-in             Merge rules: wheth… │
 │                                                                                                  │
 │ Spot checks                                                                                      │
 │   None waiting                                                                                   │

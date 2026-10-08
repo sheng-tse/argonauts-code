@@ -100,6 +100,8 @@ pub enum CommandKind {
     Vendor,
     /// Only the CLI's own screen can run it, such as a theme or voice setting.
     ScreenOnly,
+    /// A workflow of your own, which runs one request with it: `/<name> <request>`.
+    Workflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +204,11 @@ impl VendorCommandSet {
     /// The menu's category for this CLI: what runs inside it.
     pub fn menu(&self) -> impl Iterator<Item = &VendorCommand> {
         self.of_kind(|kind| matches!(kind, CommandKind::Vendor))
+    }
+
+    /// Your own workflows, each a command of its name.
+    pub fn workflows(&self) -> impl Iterator<Item = &VendorCommand> {
+        self.of_kind(|kind| matches!(kind, CommandKind::Workflow))
     }
 
     /// What `/help` lists under [`Self::screen_only_heading`].

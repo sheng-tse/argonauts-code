@@ -29,7 +29,11 @@ pub fn diff(parent: &LoadedRecipe, child: &LoadedRecipe) -> Result<Vec<Change>> 
 
 fn header_changes(parent: &Recipe, child: &Recipe, out: &mut Vec<Change>) {
     let pairs = [
-        ("preset", to_json(&parent.preset), to_json(&child.preset)),
+        (
+            "workflow",
+            to_json(&parent.workflow),
+            to_json(&child.workflow),
+        ),
         ("mode", to_json(&parent.mode), to_json(&child.mode)),
         (
             "match.task_types",
@@ -129,8 +133,8 @@ fn workflow_changes(
     child: &LoadedRecipe,
     out: &mut Vec<Change>,
 ) -> Result<()> {
-    let before = parent.recipe.workflow.as_deref();
-    let after = child.recipe.workflow.as_deref();
+    let before = parent.recipe.phases.as_deref();
+    let after = child.recipe.phases.as_deref();
     if before.is_none() && after.is_none() {
         return Ok(());
     }
@@ -152,7 +156,7 @@ fn workflow_changes(
 /// The recipe's workflow as steps: a `.star` file built, a YAML file beside it, or a named one
 /// in the project's `.argonauts/workflows/`. `None` for a built-in one, known only by name.
 pub fn load_workflow(loaded: &LoadedRecipe) -> Result<Option<Workflow>> {
-    let Some(workflow) = loaded.recipe.workflow.as_deref() else {
+    let Some(workflow) = loaded.recipe.phases.as_deref() else {
         return Ok(None);
     };
     let dir = recipe_dir(loaded);

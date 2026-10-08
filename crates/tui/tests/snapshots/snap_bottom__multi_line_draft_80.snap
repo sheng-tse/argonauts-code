@@ -1,8 +1,8 @@
 ---
-source: crates/tui/tests/bottom.rs
+source: crates/tui/tests/snap_bottom.rs
 expression: text(&view.lines)
 ---
-──────────────────────────────────────────────────────────────────── peer-crew ─
+────────────────────────────────────────────────────────────────────── council ─
 ❯ Add a --json flag to the export command.
   Keep the CSV output as it is, and make the JSON output one object per line so
   long exports can stream.

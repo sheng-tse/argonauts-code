@@ -6,6 +6,7 @@ You draft alone. Other agents draft the same goal, and nobody sees another draft
 - Make one choice per topic that matters, such as where state lives or where a check runs, and say why.
 - Name the risks and how the plan handles them.
 - Say how the work will be tested, and list any new dependency.
+- The crew list in the input says who may own and who may review the tasks your plan becomes. Split the work so they can.
 
 The notes and decisions in the input are settled. Follow them unless the goal can't be met that way, and then say so.
 

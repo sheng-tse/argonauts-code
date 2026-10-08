@@ -3,11 +3,17 @@
 //! after the running tool call, send now hands it over at once, ↑ takes back what the model
 //! hasn't read, and the session draws You should know above the input for a screen that joins.
 
+use std::collections::BTreeSet;
+
+use argonauts_core::events::context::ContextDetail;
+use argonauts_core::events::session::{SubagentKind, SubagentStatus};
 use argonauts_core::screen::{Drawn, ScreenChange, ScreenRequest};
 use argonauts_core::settings::ui::HeadsUp;
 use argonauts_core::worker::SessionControl;
 use argonauts_core::{AgentEvent, MessageStage};
 use tokio::sync::mpsc;
+
+use super::Queued;
 
 /// What the session's `init` lists when it takes messages mid-turn with send now.
 const SEND_NOW: &str = "interrupt_send_now_v1";
@@ -29,11 +35,42 @@ pub(super) struct Live {
     screen: Screen,
     /// The last drawing, whose buttons a press names.
     drawn: Option<Drawn>,
+    /// How many tasks the session's CLI runs in the background now, a command it left running
+    /// among them.
+    background: usize,
+    /// The CLI's own subagents and workflows still going, by the id their updates carry.
+    agents: BTreeSet<String>,
+    /// The main agent's turn has its result, and it has started nothing since.
+    idle: bool,
+    /// You stopped a turn alone, so a session whose last word is that turn didn't fail.
+    stopped_turn: bool,
 }
 
 struct Joining {
     uuid: String,
+    /// What the session reads.
     text: String,
+    /// For a message to one of the session's subagents: its name and your words. `text` adds
+    /// how to pass them on, which the chat never shows.
+    for_subagent: Option<(String, String)>,
+}
+
+impl Joining {
+    /// What the chat shows and the prompt gets back: your own words.
+    fn shown(&self) -> String {
+        match &self.for_subagent {
+            Some((name, words)) => format!("@{name} {words}"),
+            None => self.text.clone(),
+        }
+    }
+
+    /// The turn it waits for when it never went.
+    fn queued(self) -> Queued {
+        match self.for_subagent {
+            Some((name, text)) => Queued::Subagent { name, text },
+            None => Queued::Request(self.text),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +91,7 @@ pub(super) enum Heard {
     /// Too late to take back.
     AlreadyRead,
     /// It never went, so it waits for the next turn.
-    NotSent(String),
+    NotSent(Queued),
 }
 
 impl Live {
@@ -66,6 +103,10 @@ impl Live {
             joining: Vec::new(),
             screen: Screen::Off,
             drawn: None,
+            background: 0,
+            agents: BTreeSet::new(),
+            idle: false,
+            stopped_turn: false,
         }
     }
 
@@ -115,6 +156,16 @@ impl Live {
     /// Sends your message into the session with a uuid of its own. False when the session
     /// can't take it, and it waits for the next turn instead.
     pub(super) fn send(&mut self, text: String) -> bool {
+        self.send_joining(text, None)
+    }
+
+    /// Sends `text`, your message for one of the session's subagents with how to pass it on,
+    /// while the chat shows only `@name` and your words.
+    pub(super) fn send_for_subagent(&mut self, text: String, name: String, words: String) -> bool {
+        self.send_joining(text, Some((name, words)))
+    }
+
+    fn send_joining(&mut self, text: String, for_subagent: Option<(String, String)>) -> bool {
         if !self.send_now {
             return false;
         }
@@ -124,9 +175,70 @@ impl Live {
             uuid: uuid.clone(),
         });
         if sent {
-            self.joining.push(Joining { uuid, text });
+            self.joining.push(Joining {
+                uuid,
+                text,
+                for_subagent,
+            });
         }
         sent
+    }
+
+    /// Follows what the session runs in the background and whether its main agent is at work,
+    /// which decide what Esc stops.
+    pub(super) fn on_agent(&mut self, event: &AgentEvent) {
+        match event {
+            AgentEvent::BackgroundTasks { running, .. } => self.background = running.len(),
+            // A workflow reports itself, below.
+            AgentEvent::Subagent { update } if update.kind != SubagentKind::Workflow => {
+                let ended = matches!(update.status, SubagentStatus::Done | SubagentStatus::Failed);
+                if ended {
+                    self.agents.remove(&update.id);
+                } else {
+                    self.agents.insert(update.id.clone());
+                }
+            }
+            AgentEvent::Workflow { workflow } if workflow.ended() => {
+                self.agents.remove(&workflow.id);
+            }
+            AgentEvent::Workflow { workflow } => {
+                self.agents.insert(workflow.id.clone());
+            }
+            AgentEvent::Result { .. } => self.idle = true,
+            // Each turn of the CLI's opens with its init, and then the main agent speaks or
+            // calls a tool.
+            AgentEvent::Init { .. }
+            | AgentEvent::TextDelta { parent: None, .. }
+            | AgentEvent::ToolStarted { parent: None, .. } => self.idle = false,
+            _ => {}
+        }
+    }
+
+    /// Esc while the session's own subagents or workflows run: the main agent's turn stops
+    /// and they go on, as on Claude Code's screen. False when none of them
+    /// runs in the background or the session can't be asked, and then the whole session
+    /// stops. A command left running is no agent: the list has no row to stop it from, so it
+    /// goes with the session as before.
+    pub(super) fn stop_turn_alone(&mut self) -> bool {
+        if self.background == 0 || self.agents.is_empty() {
+            return false;
+        }
+        // Only the background works, so there is no turn to stop and nothing to do.
+        if self.idle {
+            return true;
+        }
+        self.stopped_turn = self.ask(SessionControl::StopTurn);
+        self.stopped_turn
+    }
+
+    /// You stopped a turn of this session alone.
+    pub(super) fn stopped_turn(&self) -> bool {
+        self.stopped_turn
+    }
+
+    /// Stops one of the session's own subagents. False when the session can't be asked now.
+    pub(super) fn stop_subagent(&mut self, id: String) -> bool {
+        self.ask(SessionControl::StopSubagent { id })
     }
 
     /// Ctrl+Enter: what waits goes to the model now. False when nothing waits.
@@ -150,16 +262,18 @@ impl Live {
     }
 
     /// What waits when the turn ends with no process left to read it.
-    pub(super) fn unread(&mut self) -> Vec<String> {
-        self.joining.drain(..).map(|joining| joining.text).collect()
+    pub(super) fn unread(&mut self) -> Vec<Queued> {
+        self.joining.drain(..).map(Joining::queued).collect()
     }
 
     pub(super) fn on_message(&mut self, uuid: &str, state: MessageStage) -> Option<Heard> {
         let at = self.joining.iter().position(|joining| joining.uuid == uuid);
         match state {
-            MessageStage::Started => at.map(|at| Heard::Read(self.joining.remove(at).text)),
-            MessageStage::TakenBack => at.map(|at| Heard::TakenBack(self.joining.remove(at).text)),
-            MessageStage::NotSent => at.map(|at| Heard::NotSent(self.joining.remove(at).text)),
+            MessageStage::Started => at.map(|at| Heard::Read(self.joining.remove(at).shown())),
+            MessageStage::TakenBack => {
+                at.map(|at| Heard::TakenBack(self.joining.remove(at).shown()))
+            }
+            MessageStage::NotSent => at.map(|at| Heard::NotSent(self.joining.remove(at).queued())),
             MessageStage::AlreadyRead => Some(Heard::AlreadyRead),
             MessageStage::Queued
             | MessageStage::Completed
@@ -211,6 +325,14 @@ impl Live {
     }
 
     /// A full or closed channel means the session is on its way out.
+    pub(super) fn ask_context(&self, detail: ContextDetail) {
+        self.ask(SessionControl::AskContext(detail));
+    }
+
+    pub(super) fn watch_context(&self, detail: Option<ContextDetail>) {
+        self.ask(SessionControl::WatchContext(detail));
+    }
+
     fn ask(&self, control: SessionControl) -> bool {
         self.control.try_send(control).is_ok()
     }
@@ -226,6 +348,8 @@ pub(super) fn is_passing(event: &AgentEvent) -> bool {
         | AgentEvent::MessageState { .. }
         | AgentEvent::CommandsChanged { .. }
         | AgentEvent::ModelsReported { .. }
+        | AgentEvent::ContextBreakdown { .. }
+        | AgentEvent::Plan { .. }
         | AgentEvent::BackgroundTasks { .. } => true,
         AgentEvent::ModOutput { kind, .. } => matches!(
             kind,
@@ -274,6 +398,32 @@ mod tests {
         );
         // Nothing waits now.
         assert!(!live.send_now());
+    }
+
+    #[test]
+    fn a_message_for_a_subagent_shows_your_words_and_waits_as_one() {
+        let (mut live, mut sent) = live();
+        live.on_init(&caps(&[SEND_NOW]), &[], HeadsUp::WhenEnabled);
+        assert!(live.send_for_subagent(
+            "For your subagent \"Count slowly\": stop at 5\n\n(how to pass it on)".into(),
+            "Count slowly".into(),
+            "stop at 5".into(),
+        ));
+        let Ok(SessionControl::Send { uuid, .. }) = sent.try_recv() else {
+            panic!("nothing sent");
+        };
+        assert_eq!(
+            live.on_message(&uuid, MessageStage::Started),
+            Some(Heard::Read("@Count slowly stop at 5".into()))
+        );
+        live.send_for_subagent("again".into(), "Count slowly".into(), "stop at 6".into());
+        assert_eq!(
+            live.unread(),
+            [Queued::Subagent {
+                name: "Count slowly".into(),
+                text: "stop at 6".into(),
+            }]
+        );
     }
 
     #[test]

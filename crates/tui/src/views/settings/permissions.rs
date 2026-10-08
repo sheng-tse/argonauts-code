@@ -14,7 +14,7 @@ pub fn label(key: &str) -> Option<&'static str> {
         return Some(match leaf {
             "mode" => "Whose rules guard the agents",
             "network" => "Internet for agents' commands",
-            "agents_see_other_copies" => "Agents can open each other's copies",
+            "agents_see_other_worktrees" => "Agents see each other's worktrees",
             "agents_commit" => "Agents make their own commits",
             "fail_closed" => "Refuse to start without a sandbox",
             "extra_writable" => "Other folders agents may write",
@@ -29,7 +29,7 @@ pub fn label(key: &str) -> Option<&'static str> {
     Some(match key {
         "limits.protected_paths" => "Protected paths",
         "limits.dependency_allowlist" => "Packages a plan may add",
-        "limits.usd_per_day" => "Daily spend cap",
+        "limits.spend_per_day" => "Daily spend cap",
         _ => return None,
     })
 }
@@ -59,14 +59,16 @@ pub fn value_note(leaf: &str, value: &str) -> &'static str {
     match (leaf, value) {
         ("mode", "os") => "Argonauts' rules, kept by your OS's own sandbox",
         ("mode", "container") => {
-            "Argonauts' rules, in a container that holds only the agent's copy"
+            "Argonauts' rules, in a container that holds only the agent's worktree"
         }
         ("mode", "tool") => "Each AI tool's own sandbox and approvals, with Argonauts' off",
         ("mode", "none") => "No protection at all, neither Argonauts' nor the tool's",
         ("network", "true") => "Commands agents run can reach the internet",
         ("network", "false") => "Only each AI tool's own service and the hosts you allow",
-        ("agents_see_other_copies", "true") => "An agent can read every agent's copy of the repo",
-        ("agents_see_other_copies", "false") => "Each agent sees only its own copy",
+        ("agents_see_other_worktrees", "true") => {
+            "An agent can read every agent's worktree of the repo"
+        }
+        ("agents_see_other_worktrees", "false") => "Each agent sees only its own worktree",
         ("agents_commit", "true") => "Agents commit their own work",
         ("agents_commit", "false") => {
             "Git stays read-only to agents, and Argonauts commits for them"
@@ -243,8 +245,8 @@ fn role_note(settings: &[SettingRow], prefix: &str) -> String {
             match sandbox_leaf(&row.key) {
                 Some("mode") => format!("rules {value}"),
                 Some("network") => format!("internet {value}"),
-                Some("agents_see_other_copies") if yes => "sees other copies".to_owned(),
-                Some("agents_see_other_copies") => "sees only its copy".to_owned(),
+                Some("agents_see_other_worktrees") if yes => "sees other worktrees".to_owned(),
+                Some("agents_see_other_worktrees") => "sees only its copy".to_owned(),
                 Some("agents_commit") if yes => "commits its work".to_owned(),
                 Some("agents_commit") => "Argonauts commits".to_owned(),
                 _ => value,
@@ -266,23 +268,23 @@ mod tests {
     fn keys_and_values_read_in_plain_words() {
         assert_eq!(label("sandbox.mode"), Some("Whose rules guard the agents"));
         assert_eq!(
-            label("roles.owner.sandbox.agents_commit"),
+            label("roles.worker.sandbox.agents_commit"),
             Some("Agents make their own commits")
         );
-        assert_eq!(label("limits.usd_per_day"), Some("Daily spend cap"));
+        assert_eq!(label("limits.spend_per_day"), Some("Daily spend cap"));
         assert_eq!(label("limits.auto_merges_per_day"), None);
-        assert_eq!(label("roles.owner.handoff.mode"), None);
+        assert_eq!(label("fallback.workers.mode"), None);
         assert_eq!(
             value_in_words("sandbox.mode", "\"os\""),
             "Argonauts' (OS sandbox)"
         );
         assert_eq!(
-            value_in_words("roles.owner.sandbox.mode", "\"tool\""),
+            value_in_words("roles.worker.sandbox.mode", "\"tool\""),
             "each AI tool's own"
         );
         assert_eq!(value_in_words("sandbox.network", "true"), "on");
         assert_eq!(value_in_words("sandbox.agents_commit", "false"), "no");
-        assert_eq!(value_in_words("limits.usd_per_day", "25.0"), "25.0");
+        assert_eq!(value_in_words("limits.spend_per_day", "25.0"), "25.0");
         for value in ["os", "container", "tool", "none"] {
             assert!(!value_note("mode", value).is_empty(), "{value}");
         }
@@ -290,13 +292,13 @@ mod tests {
 
     #[test]
     fn only_sandbox_keys_have_a_role() {
-        assert_eq!(role_of("roles.owner.sandbox.mode"), Some("owner"));
-        assert_eq!(role_of("roles.owner.handoff.mode"), None);
+        assert_eq!(role_of("roles.worker.sandbox.mode"), Some("worker"));
+        assert_eq!(role_of("fallback.workers.mode"), None);
         assert_eq!(role_of("sandbox.mode"), None);
         assert_eq!(
             sandbox_leaf("roles.phase-lead.sandbox.network"),
             Some("network")
         );
-        assert_eq!(sandbox_leaf("roles.owner.handoff.mode"), None);
+        assert_eq!(sandbox_leaf("fallback.workers.mode"), None);
     }
 }

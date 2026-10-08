@@ -28,19 +28,23 @@ pub(crate) enum OnSetAside {
     JustThisRequest,
     /// Answers No.
     No,
+    /// Closes with "Nothing ran.": a dry run was all it showed.
+    NothingRan,
 }
 
 pub(crate) fn on_set_aside(kind: ChoiceKind) -> OnSetAside {
     match kind {
         ChoiceKind::StartWork | ChoiceKind::RefusedCommands => OnSetAside::SetAside,
         ChoiceKind::Permission | ChoiceKind::GoAhead | ChoiceKind::HandOff => OnSetAside::No,
-        ChoiceKind::RewindTurn => OnSetAside::NotChanged,
+        ChoiceKind::RewindTurn | ChoiceKind::Git => OnSetAside::NotChanged,
+        ChoiceKind::TryWorkflow => OnSetAside::NothingRan,
         ChoiceKind::ConfirmTakeOver | ChoiceKind::ConfirmRevert => OnSetAside::Cancel,
         ChoiceKind::SettingScope | ChoiceKind::ConfirmSafetySetting => OnSetAside::NotChanged,
         ChoiceKind::TrustProject | ChoiceKind::ConfirmConnect => OnSetAside::NotNow,
         ChoiceKind::DetectedGates => OnSetAside::NextRun,
         ChoiceKind::TermsNote | ChoiceKind::Init => OnSetAside::Recommended,
         ChoiceKind::KeepInstructions => OnSetAside::JustThisRequest,
+        ChoiceKind::Setup => OnSetAside::NotChanged,
     }
 }
 
@@ -87,11 +91,17 @@ pub(crate) fn options(kind: ChoiceKind) -> Vec<AnswerOption> {
             option('y', "Yes, go ahead", choose("yes"), true),
             option('n', "No, keep planning", choose("no"), false),
         ],
+        ChoiceKind::TryWorkflow => vec![
+            option('y', "Run it", AnswerAction::Approve, true),
+            option('e', "Edit it", choose(EDIT_IT), false),
+        ],
         // Built for each question: they name the CLI, the command, and the turns.
         ChoiceKind::Init
         | ChoiceKind::Permission
         | ChoiceKind::RewindTurn
-        | ChoiceKind::HandOff => Vec::new(),
+        | ChoiceKind::HandOff
+        | ChoiceKind::Setup
+        | ChoiceKind::Git => Vec::new(),
     }
 }
 
@@ -120,6 +130,31 @@ pub(crate) fn keep_options() -> Vec<AnswerOption> {
     ));
     options
 }
+
+/// Where the crew your words set is kept: the request alone first, then this
+/// conversation, which writes nothing either, then the repository's shared settings.
+pub(crate) fn keep_crew_options() -> Vec<AnswerOption> {
+    let mut save = option(
+        'p',
+        "Save for this repository",
+        choose(scope_value(SettingScope::Project)),
+        false,
+    );
+    save.detail = Some("writes [crew] in .argonauts/config.toml".to_owned());
+    vec![
+        option('r', "Just this request", choose(JUST_THIS_REQUEST), true),
+        option(
+            's',
+            "This conversation",
+            choose(scope_value(SettingScope::Session)),
+            false,
+        ),
+        save,
+    ]
+}
+
+/// The `Choose` value of a dry run's Edit it.
+pub(crate) const EDIT_IT: &str = "edit";
 
 /// The `Choose` value that keeps nothing past the request.
 pub(crate) const JUST_THIS_REQUEST: &str = "request";
@@ -366,6 +401,13 @@ mod tests {
                 OnSetAside::No,
             ),
             (ChoiceKind::HandOff, Vec::new(), OnSetAside::No),
+            (
+                ChoiceKind::TryWorkflow,
+                vec![('y', "Run it", Approve), ('e', "Edit it", choose("edit"))],
+                OnSetAside::NothingRan,
+            ),
+            (ChoiceKind::Setup, Vec::new(), OnSetAside::NotChanged),
+            (ChoiceKind::Git, Vec::new(), OnSetAside::NotChanged),
         ];
         for (kind, expected, esc) in &table {
             assert_eq!(shape(&options(*kind)), *expected, "{kind:?}");
@@ -404,7 +446,10 @@ mod tests {
                 | ChoiceKind::RefusedCommands
                 | ChoiceKind::RewindTurn
                 | ChoiceKind::GoAhead
-                | ChoiceKind::HandOff => {}
+                | ChoiceKind::HandOff
+                | ChoiceKind::TryWorkflow
+                | ChoiceKind::Setup
+                | ChoiceKind::Git => {}
             }
         }
 

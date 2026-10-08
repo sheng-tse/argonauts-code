@@ -6,7 +6,7 @@ access = "subscription"          # subscription | api-key | local
 tools = true
 cost = { unit = "quota" }        # quota | usd | none, with input_per_mtok, output_per_mtok, cached_input_per_mtok
 strengths = ["refactor"]
-good_for = ["owner"]
+good_for = ["worker"]
 efforts = ["low", "medium", "high", "xhigh", "max"]   # the levels it accepts; empty or absent means unknown
 tier = 5                         # optional: your own strength rating, 1 to 5, for quality debt after a handoff
 

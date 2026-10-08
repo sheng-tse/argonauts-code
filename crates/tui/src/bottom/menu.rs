@@ -343,12 +343,18 @@ impl Menus {
             MenuKind::Mentions => &self.mentions,
         };
         let lower: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
-        let mut found: Vec<(u8, Match<'_>)> = items
+        let mut found: Vec<((bool, u8), Match<'_>)> = items
             .iter()
             .filter_map(|item| {
                 let (rank, letters) = match_name(&item.name, &lower)?;
+                // A name typed in full comes first, so `/workflow` never runs `/workflows`.
+                let longer = !item
+                    .name
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                    .eq(lower.iter().copied());
                 let entry = Entry::Item(item);
-                Some((rank, Match { entry, letters }))
+                Some(((longer, rank), Match { entry, letters }))
             })
             .collect();
         found.sort_by_key(|(rank, _)| *rank);
@@ -564,13 +570,13 @@ mod tests {
     fn menus() -> Menus {
         Menus {
             commands: vec![
-                MenuItem::new("model", "Pick the default agent's model"),
-                MenuItem::new("preset", "Pick the crew preset"),
+                MenuItem::new("model", "Pick the main agent's model"),
+                MenuItem::new("workflow", "Pick the crew workflow"),
                 MenuItem::new("resume", "Reattach to a run that is still going"),
             ],
             mentions: vec![
-                MenuItem::new("codex", "owner of card-003").with_kind("agent"),
-                MenuItem::new("card-002", "Add the JSON writer").with_kind("card"),
+                MenuItem::new("codex", "worker of task-003").with_kind("agent"),
+                MenuItem::new("task-002", "Add the JSON writer").with_kind("task"),
             ],
             shortcuts: Keymap::default().shortcut_hints(),
             ..Menus::default()
@@ -597,8 +603,8 @@ mod tests {
         assert_eq!(
             plain_text(&rows),
             [
-                row("/model", "Pick the default agent's model"),
-                row("/preset", "Pick the crew preset"),
+                row("/model", "Pick the main agent's model"),
+                row("/workflow", "Pick the crew workflow"),
                 row("/resume", "Reattach to a run that is still going"),
             ]
             .join("\n")
@@ -683,7 +689,7 @@ mod tests {
     #[test]
     fn every_description_is_one_row_cut_with_an_ellipsis() {
         let theme = theme();
-        let long = "Where each run stands: goal, plan, cards, budget, quotas. Costs nothing. \
+        let long = "Where each run stands: goal, plan, tasks, limit, plan usage. Costs nothing. \
                     s in it asks the narrator for a summary";
         let menus = Menus {
             commands: vec![
@@ -744,7 +750,7 @@ mod tests {
         assert_eq!(menus.handle_key(key(KeyCode::Down), "/"), MenuEvent::Moved);
         assert_eq!(
             menus.handle_key(key(KeyCode::Tab), "/"),
-            MenuEvent::Complete("/preset ".into())
+            MenuEvent::Complete("/workflow ".into())
         );
         assert_eq!(
             menus.handle_key(key(KeyCode::Enter), "/mo"),
@@ -756,9 +762,9 @@ mod tests {
         );
         assert_eq!(menus.handle_key(key(KeyCode::Esc), "/"), MenuEvent::Moved);
         assert!(!menus.is_open("/"));
-        assert!(menus.is_open("/p"));
+        assert!(menus.is_open("/w"));
         assert_eq!(
-            menus.handle_key(key(KeyCode::Char('x')), "/p"),
+            menus.handle_key(key(KeyCode::Char('x')), "/w"),
             MenuEvent::Unhandled
         );
     }
@@ -779,6 +785,23 @@ mod tests {
     }
 
     #[test]
+    fn a_command_typed_in_full_comes_before_a_longer_one() {
+        let theme = theme();
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let menus = Menus {
+            commands: ["workflows", "workflow"]
+                .map(|name| MenuItem::new(name, "x"))
+                .to_vec(),
+            ..Menus::default()
+        };
+        assert_eq!(names(&menus, "/wo", &ctx), ["/workflows", "/workflow"]);
+        assert_eq!(
+            names(&menus, "/workflow", &ctx),
+            ["/workflow", "/workflows"]
+        );
+    }
+
+    #[test]
     fn slash_menu_filters_by_prefix_and_word() {
         let theme = theme();
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
@@ -786,7 +809,7 @@ mod tests {
             commands: ["set-model", "model", "add-dir", "checkpoints", "resume"]
                 .map(|name| MenuItem::new(name, "x"))
                 .to_vec(),
-            mentions: ["claude-code/opus", "card-002", "codex"]
+            mentions: ["claude-code/opus", "task-002", "codex"]
                 .map(|name| MenuItem::new(name, "x"))
                 .to_vec(),
             ..Menus::default()
@@ -797,11 +820,8 @@ mod tests {
         assert!(menus.rows("/points", &ctx, 20).is_none());
         assert!(menus.rows("/rsm", &ctx, 20).is_none());
         assert_eq!(names(&menus, "ask @opus", &ctx), ["@claude-code/opus"]);
-        assert_eq!(names(&menus, "@002", &ctx), ["@card-002"]);
-        assert_eq!(
-            names(&menus, "@c", &ctx),
-            ["@claude-code/opus", "@card-002", "@codex"]
-        );
+        assert_eq!(names(&menus, "@002", &ctx), ["@task-002"]);
+        assert_eq!(names(&menus, "@c", &ctx), ["@claude-code/opus", "@codex"]);
 
         let rows = menus.rows("/dir", &ctx, 20).unwrap();
         let bold: String = rows[0]
@@ -829,7 +849,7 @@ mod tests {
             menus.handle_key(key(KeyCode::Enter), "then\n/mo"),
             MenuEvent::Complete("then\n/model ".into())
         );
-        assert_eq!(names(&menus, "please /pre", &ctx), ["/preset"]);
+        assert_eq!(names(&menus, "please /wor", &ctx), ["/workflow"]);
         assert_eq!(
             menus.handle_key(key(KeyCode::Enter), "/sol"),
             MenuEvent::Complete("/solo ".into())
@@ -928,7 +948,7 @@ mod tests {
             "{text}"
         );
         assert!(lines[3].starts_with("  @codex"), "{text}");
-        assert!(lines[4].starts_with("  @card-002"), "{text}");
+        assert!(lines[4].starts_with("  @task-002"), "{text}");
         assert_eq!(rows[0].spans[1].style, theme.style(Role::Card));
         assert_eq!(rows[1].spans[1].style, theme.style(Role::Dim));
         assert_eq!(rows[2].spans[0].style, header_style(&ctx));

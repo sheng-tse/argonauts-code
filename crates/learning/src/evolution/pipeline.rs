@@ -59,9 +59,9 @@ impl Evolution {
             version: 1,
             parent: None,
             description: format!("What worked for {} tasks", run.task_type),
-            preset: Some(settings.preset.clone()),
+            workflow: Some(settings.workflow.clone()),
             mode: None,
-            workflow: Some(workflow.clone()),
+            phases: Some(workflow.clone()),
             matches: Match {
                 task_types: vec![run.task_type.clone()],
                 labels_any: Vec::new(),
@@ -73,7 +73,7 @@ impl Evolution {
         if !problems.is_empty() {
             return Ok(vec![Action::Tell {
                 text: format!(
-                    "Run {} worked, but it can't become a recipe: {}",
+                    "Run {} worked, but it can't become a learned workflow: {}",
                     run.run,
                     problems.join("; ")
                 ),
@@ -84,8 +84,8 @@ impl Evolution {
             git::Entry::File(recipes::render(&recipe)?),
         )];
         let message = format!(
-            "Record recipe {name} v1\n\nRun {} merged with workflow {workflow} ({sha256}) and \
-             passed its final checks first time.",
+            "Record learned workflow {name} v1\n\nRun {} merged with workflow {workflow} \
+             ({sha256}) and passed its final checks first time.",
             run.run
         );
         git::commit_on_branch(repo, "HEAD", &branch, &entries, &message)?;
@@ -106,26 +106,26 @@ impl Evolution {
         let tell = |text: String| Ok(vec![Action::Tell { text }]);
         let Some(ran) = &run.recipe else {
             return tell(format!(
-                "The retro proposed changing `{}`, but no recipe ran, so there's nothing to change",
+                "The run review proposed changing `{}`, but no learned workflow ran, so there's nothing to change",
                 proposal.setting
             ));
         };
         // Fixed-core and safety keys never even become candidates.
         if let Some(reason) = recipes::guarded(&proposal.setting) {
-            return tell(format!("Refused the retro's proposal: {reason}"));
+            return tell(format!("Refused the run review's proposal: {reason}"));
         }
 
         // The engine asks the retro for a proposal only every `propose_every` runs, so one that
         // arrives is due.
         if self.canaries()?.contains_key(&ran.name) {
             return tell(format!(
-                "The retro's proposal for {} waits: a canary is running",
+                "The run review's proposal for {} waits: a canary is running",
                 ran.name
             ));
         }
         let Some(parent) = self.load_version(&ran.name, ran.version)? else {
             return tell(format!(
-                "The retro proposed a change to {ran}, which isn't there"
+                "The run review proposed a change to {ran}, which isn't there"
             ));
         };
 
@@ -308,7 +308,7 @@ impl Evolution {
         self.save_candidates(&candidates)?;
         Ok(vec![Action::Tell {
             text: format!(
-                "{candidate}'s replay stopped at the month's evolution budget, ${spent_usd:.2} in; \
+                "{candidate}'s replay stopped at the month's evolution limit, ${spent_usd:.2} in; \
                  it carries on next month"
             ),
         }])
@@ -428,11 +428,11 @@ fn seed_of(id: &str) -> u64 {
 
 fn who(by: &Party) -> String {
     match by {
-        Party::User => "you".to_owned(),
+        Party::User | Party::Declined => "you".to_owned(),
         Party::Rules => "your rules".to_owned(),
         Party::Approver { model } => format!("the approver {model}"),
         Party::Config => "a setting".to_owned(),
-        Party::FullAuto => "full auto".to_owned(),
+        Party::Autopilot => "autopilot".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         Party::FrontEnd { client } => client.clone(),

@@ -24,7 +24,7 @@ pub struct AgentSettings {
     /// The version you pinned; `doctor` warns when the installed one differs.
     pub version_pin: Option<String>,
     pub extra_args: Vec<String>,
-    /// Paths this vendor must never see (removed from its worktrees with sparse checkout).
+    /// Paths this agent must never see (removed from its worktrees with sparse checkout).
     pub exclude_paths: Vec<String>,
 }
 
@@ -126,7 +126,7 @@ pub struct McpSettings {
     /// prompts, or raw logs.
     pub share: Share,
     /// The time budget of each run a front end starts.
-    pub run_budget: Span,
+    pub run_limit: Span,
     /// Runs front ends may start per day, across every repo.
     pub runs_per_day: u32,
 }
@@ -139,7 +139,7 @@ impl Default for McpSettings {
             guidance: true,
             pause: true,
             share: Share::Summaries,
-            run_budget: Span::new("60m"),
+            run_limit: Span::new("60m"),
             runs_per_day: 5,
         }
     }

@@ -302,6 +302,7 @@ dependencies = [
  "argonauts-mcp",
  "argonauts-policy",
  "argonauts-registry",
+ "argonauts-runner",
  "argonauts-testkit",
  "argonauts-tui",
  "futures",
@@ -319,8 +320,10 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "unicode-width 0.2.2",
  "uuid",
 ]
 
@@ -386,6 +389,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "shell-words",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -405,6 +409,7 @@ dependencies = [
  "argonauts-core",
  "argonauts-learning",
  "argonauts-policy",
+ "argonauts-runner",
  "argonauts-testkit",
  "futures",
  "globset",
@@ -468,6 +473,7 @@ dependencies = [
  "anyhow",
  "argonauts-core",
  "argonauts-policy",
+ "argonauts-registry",
  "argonauts-testkit",
  "jsonschema",
  "rmcp",
@@ -510,6 +516,22 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "time",
+ "tokio",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
+name = "argonauts-runner"
+version = "0.0.1"
+dependencies = [
+ "argonauts-core",
+ "futures",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "toml",
  "toml_edit",
@@ -3870,6 +3892,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "relative-path"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2a073568cd8b9c4825429d3e9fc5f52851b4f97cc1348800689408921e6b8f8"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3958,6 +3989,35 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

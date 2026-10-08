@@ -1,5 +1,5 @@
-# Example 2 of the four: a one-line README fix that triage runs solo. The default agent
-# answers the chat, then the owner edits README.md; every other call gets a read-only reply.
+# Example 2 of the four: a one-line README fix that triage runs solo. The main agent
+# answers the chat, then the worker edits README.md; every other call gets a read-only reply.
 
 [version]
 claude = "2.1.284 (Claude Code)"

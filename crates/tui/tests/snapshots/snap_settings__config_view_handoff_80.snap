@@ -5,13 +5,13 @@ expression: shown
 Config
 Every setting and the layer it comes from. ! marks a safety key    3 of 11 match
 
-╭ Search: handoff ─────────────────────────────────────────────────────────────╮
-│ roles                                                                        │
-│ ❯   roles.owner.handoff.context  unset              built-in                 │
+╭ Search: fallback ────────────────────────────────────────────────────────────╮
+│ fallback                                                                     │
+│ ❯   fallback.context       note+summary       this project                   │
+│     fallback.summarizer    claude-code/haiku  just you (project-local)       │
+│     fallback.main.context  unset              built-in                       │
 │                                                                              │
-│ handoff                                                                      │
-│     handoff.context              note+summary       this project             │
-│     handoff.summarizer           claude-code/haiku  just you (project-local) │
+│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

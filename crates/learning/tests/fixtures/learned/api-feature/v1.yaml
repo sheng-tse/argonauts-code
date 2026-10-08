@@ -1,0 +1,18 @@
+name: api-feature
+version: 1
+description: New or changed HTTP API endpoints, with tests
+workflow: council
+mode: crew
+phases: review-loop.yaml
+match:
+  task_types: [backend]
+  labels_any: [api, endpoint]
+prompts:
+  drafting: drafting-v1.md
+critique:
+  rounds: 1
+  critic: rotate
+  checklist: [criteria, testability]
+limits:
+  per_task_usd: 2
+crew: [claude-code, codex]

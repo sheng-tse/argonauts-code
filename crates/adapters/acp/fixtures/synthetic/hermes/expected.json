@@ -43,7 +43,7 @@
     {
       "type": "error",
       "category": "permission",
-      "message": "Rejected write_file: .hermes/config.yaml: an edit of .hermes/config.yaml, which no card may touch",
+      "message": "Rejected write_file: .hermes/config.yaml: an edit of .hermes/config.yaml, which no task may touch",
       "retryable": false
     },
     {

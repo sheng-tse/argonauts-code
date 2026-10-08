@@ -4,16 +4,22 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::Spend;
-use argonauts_core::crew_panel::{CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTarget};
-use argonauts_core::events::checkpoint::CheckpointPacket;
-use argonauts_core::events::session::InputPartKind;
+use argonauts_core::crew_panel::{
+    CrewDetails, CrewPanel, CrewRow, CrewRun, CrewState, CrewTarget, RunStands, SeatTry,
+    fold_tries, seat_of,
+};
+use argonauts_core::events::checkpoint::{CheckpointKind, CheckpointPacket};
+use argonauts_core::events::run::{ParkReason, RunOutcome};
+use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::names::{RoleName, SessionKey};
 use argonauts_core::steps::summary_line;
 use time::OffsetDateTime;
 
 use crate::bridge::tools;
-use crate::state::{AppState, OpenCheckpoint, RunState, SessionState, SessionStatus};
+use crate::state::{AppState, OpenCheckpoint, RunState, SessionState, SessionStatus, task_label};
 use crate::text::sanitize_line;
+use crate::theme::Glyphs;
+use crate::views::panes;
 use crate::views::settings::words::capitalized;
 
 pub(super) fn clean(text: &str) -> String {
@@ -94,11 +100,19 @@ fn own_rows(state: &AppState, repo: &str, now: OffsetDateTime) -> Vec<CrewRow> {
         let crew_run = CrewRun {
             id: run.id.clone(),
             title: clean(&run.title),
+            name: run
+                .named
+                .as_ref()
+                .map(|named| clean(&named.name))
+                .filter(|name| !name.is_empty()),
+            stands: Some(run_stands(run, now)),
         };
         let sessions: Vec<&SessionState> = run.sessions_in_order().collect();
+        let mut tries = Vec::new();
         for session in &sessions {
             let asks = asked_by(run, &session.key);
-            rows.push(CrewRow {
+            let label = label_of(session);
+            let row = CrewRow {
                 target: CrewTarget::Agent {
                     run: run.id.clone(),
                     session: session.key.clone(),
@@ -108,17 +122,30 @@ fn own_rows(state: &AppState, repo: &str, now: OffsetDateTime) -> Vec<CrewRow> {
                     None => state_of(session.status),
                 },
                 title: session_title(run, session),
+                label: Some(label.clone()),
+                tries: 0,
                 repo: repo.to_owned(),
                 run: Some(crew_run.clone()),
                 worker: Some(session.worker.clone()),
                 latest: match asks {
                     Some(open) => format!("asks: {}", question(open)),
-                    None => activity(session),
+                    None => {
+                        let page = state.artifacts.by_agent(&run.id, &session.key);
+                        let page = page.map(|page| page.name.as_str());
+                        with_artifact(page, activity(session), page_mark(state))
+                    }
                 },
                 updated: session.ended.unwrap_or(session.last_event),
                 details: details(run, session),
+            };
+            tries.push(SeatTry {
+                seat: seat(session, &label),
+                started: session.started,
+                ended: session.ended,
+                row,
             });
         }
+        rows.extend(fold_tries(tries));
         // Cards that wait on you with no agent of their own, such as a merge.
         for open in run.checkpoints.iter().filter(|open| open.opened.needs_you) {
             if asker(&sessions, open).is_some() {
@@ -133,6 +160,11 @@ fn own_rows(state: &AppState, repo: &str, now: OffsetDateTime) -> Vec<CrewRow> {
                 state: CrewState::NeedsYou,
                 // The question goes in the message column, so the title names the work.
                 title: card_title(run, card),
+                label: Some(match card {
+                    Some(card) => clean(&run.card_label(card)),
+                    None => approval_name(open.opened.kind).to_owned(),
+                }),
+                tries: 0,
                 repo: repo.to_owned(),
                 run: Some(crew_run.clone()),
                 worker: None,
@@ -149,6 +181,86 @@ fn own_rows(state: &AppState, repo: &str, now: OffsetDateTime) -> Vec<CrewRow> {
     rows
 }
 
+/// An agent's last line, led by the page it published, marked as Claude Code marks one: the
+/// page is what it left to open, and Enter on the row shows the call with its link.
+fn with_artifact(page: Option<&str>, said: String, mark: &str) -> String {
+    let Some(name) = page.map(clean).filter(|name| !name.is_empty()) else {
+        return said;
+    };
+    if said.is_empty() {
+        format!("{mark} {name}")
+    } else {
+        format!("{mark} {name} · {said}")
+    }
+}
+
+/// The mark a published page's name follows, from the settings the theme takes its own from.
+fn page_mark(state: &AppState) -> &'static str {
+    let plain = state
+        .ui
+        .as_ref()
+        .is_some_and(|ui| Glyphs::for_settings(ui.glyphs, ui.ambiguous_width).is_ascii());
+    panes::artifact_mark(plain)
+}
+
+/// Where the run stands, for its heading: how it ended and when, else what it's doing now.
+fn run_stands(run: &RunState, now: OffsetDateTime) -> RunStands {
+    let (state, word) = match (&run.finished, &run.parked) {
+        (Some(RunOutcome::Merged), _) => (CrewState::Done, "merged"),
+        (Some(RunOutcome::PullRequest), _) => (CrewState::Done, "pull request"),
+        (Some(RunOutcome::BranchLeft), _) => (CrewState::Done, "branch left"),
+        (Some(RunOutcome::Stopped), _) => (CrewState::Stopped, "stopped"),
+        (Some(RunOutcome::Abandoned), _) => (CrewState::Stopped, "abandoned"),
+        (Some(RunOutcome::Failed), _) => (CrewState::Failed, "failed"),
+        (None, _) if run.checkpoints.iter().any(|open| open.opened.needs_you) => {
+            (CrewState::NeedsYou, "needs you")
+        }
+        (None, Some(ParkReason::Checkpoint)) => (CrewState::NeedsYou, "needs you"),
+        (None, Some(_)) => (CrewState::Waiting, "waiting"),
+        (None, None) if run.pausing => (CrewState::Waiting, "pausing"),
+        (None, None) => (CrewState::Working, "running"),
+    };
+    let spent = run.spend();
+    RunStands {
+        state,
+        word: word.to_owned(),
+        since: run.ended.or(run.updated).unwrap_or(now),
+        spent: (spent.total_tokens() > 0 || spent.cost_usd > 0.0).then_some(spent),
+    }
+}
+
+/// What the list calls an approval that waits on you with no task of its own. The run's
+/// heading already says what the work is.
+fn approval_name(kind: CheckpointKind) -> &'static str {
+    match kind {
+        CheckpointKind::Goal | CheckpointKind::GoalChange => "goal approval",
+        CheckpointKind::Plan => "plan approval",
+        CheckpointKind::Merge => "merge approval",
+        CheckpointKind::Question => "question",
+        _ => "approval",
+    }
+}
+
+/// What the list calls an agent: the run's label for it, such as `build:add-due`. A log from
+/// before agents had labels gives its role and task, as the panel names it.
+fn label_of(session: &SessionState) -> String {
+    let label = session
+        .label
+        .clone()
+        .unwrap_or_else(|| task_label(session.role, session.step, session.card.as_ref()));
+    clean(&label)
+}
+
+/// What an agent's tries share. A task's sessions keep its label through every retry, so the
+/// label is the seat. An agent with no task gets `-2` on a retry to keep its label unique, so
+/// its seat is the label without that, told apart by its role.
+fn seat(session: &SessionState, label: &str) -> String {
+    match &session.card {
+        Some(card) => format!("{card}/{label}"),
+        None => format!("{}/{}", session.role.as_str(), seat_of(label)),
+    }
+}
+
 pub(super) fn state_of(status: SessionStatus) -> CrewState {
     match status {
         SessionStatus::Starting | SessionStatus::Working => CrewState::Working,
@@ -163,7 +275,7 @@ pub(super) fn state_of(status: SessionStatus) -> CrewState {
 /// isn't the default agent's, so a run's restaters, drafters, and judges read apart.
 fn session_title(run: &RunState, session: &SessionState) -> String {
     let title = card_title(run, session.card.as_ref());
-    if session.card.is_some() || session.role == RoleName::Default {
+    if session.card.is_some() || session.role == RoleName::Main {
         return title;
     }
     let role = capitalized(&session.role.as_str().replace('_', " "));
@@ -230,7 +342,7 @@ fn asker<'a>(sessions: &[&'a SessionState], open: &OpenCheckpoint) -> Option<&'a
 
 /// What a session is doing in one line: its running tool call, the text streaming now, or
 /// its latest message.
-fn activity(session: &SessionState) -> String {
+pub(crate) fn activity(session: &SessionState) -> String {
     if let Some(tool) = session.tools.iter().rev().find(|tool| tool.ok.is_none()) {
         let call = tools::start_call(&session.vendor, &tool.name, &tool.input);
         return clean(&call.title.plain());
@@ -292,27 +404,36 @@ fn details(run: &RunState, session: &SessionState) -> CrewDetails {
     }
 }
 
-/// What the session was asked to do: the card it was handed, else the message that started
-/// it, else the run's goal. The role's standing instructions aren't the ask.
+/// What the session was asked to do: what the orchestrator wrote for it, then the task it was
+/// handed, else the message that started it, else the run's goal. The role's standing
+/// instructions aren't the ask.
 fn prompt(session: &SessionState) -> Option<String> {
     let first = session.inputs.first()?;
-    [
+    let texts = |wanted: &dyn Fn(&InputPart) -> bool| {
+        first
+            .parts
+            .iter()
+            .filter(|part| wanted(part))
+            .map(|part| part.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+    let written = texts(&argonauts_core::prompt_parts::written_for_the_agent);
+    let handed = [
         InputPartKind::Card,
         InputPartKind::Message,
         InputPartKind::Goal,
     ]
     .into_iter()
-    .map(|kind| {
-        first
-            .parts
-            .iter()
-            .filter(|part| part.kind == kind)
-            .map(|part| part.text.trim())
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    })
-    .find(|text| !text.is_empty())
+    .map(|kind| texts(&|part| part.kind == kind))
+    .find(|text| !text.is_empty());
+    let ask: Vec<String> = [Some(written), handed]
+        .into_iter()
+        .flatten()
+        .filter(|text| !text.is_empty())
+        .collect();
+    (!ask.is_empty()).then(|| ask.join("\n\n"))
 }
 
 #[cfg(test)]
@@ -328,7 +449,7 @@ mod tests {
             SessionKey::numbered(1),
             "codex".parse().unwrap(),
             "codex",
-            RoleName::Owner,
+            RoleName::Worker,
             OffsetDateTime::UNIX_EPOCH,
         );
         session.end = Some(Box::new(SessionEnd {
@@ -347,6 +468,55 @@ mod tests {
         session
     }
 
+    /// The orchestrator's brief is the ask, ahead of the task's facts, and the frame and
+    /// Argonauts' own template for the step are never part of it.
+    #[test]
+    fn the_ask_is_what_the_orchestrator_wrote_then_the_task() {
+        use argonauts_core::events::session::{LaunchRecord, PromptVia, SessionInput};
+        use argonauts_core::prompt_parts as parts;
+
+        let task = InputPart {
+            kind: InputPartKind::Card,
+            label: "task-001".to_owned(),
+            text: "task-001 · Add due dates\n\nKind: building\n".to_owned(),
+            approx_tokens: 8,
+            source: None,
+        };
+        let input = |parts: Vec<InputPart>| SessionInput {
+            launch: LaunchRecord {
+                program: "codex".to_owned(),
+                args: Vec::new(),
+                cwd: "/repo".into(),
+                env_set: Vec::new(),
+                env_removed: Vec::new(),
+                prompt_via: PromptVia::Stdin,
+                sandbox: None,
+            },
+            parts,
+            queued: Vec::new(),
+        };
+        let mut session = ended("Done.", None);
+        session.inputs = vec![input(vec![
+            parts::frame("You are a worker.", None),
+            parts::from_orchestrator("Add a due date to each todo.", None),
+            task.clone(),
+        ])];
+        assert_eq!(
+            prompt(&session).as_deref(),
+            Some("Add a due date to each todo.\n\ntask-001 · Add due dates\n\nKind: building")
+        );
+
+        session.inputs = vec![input(vec![
+            parts::frame("You are a worker.", None),
+            parts::built_in("Review the change.", None),
+            task,
+        ])];
+        assert_eq!(
+            prompt(&session).as_deref(),
+            Some("task-001 · Add due dates\n\nKind: building")
+        );
+    }
+
     #[test]
     fn a_structured_result_reads_as_its_summary_never_as_json() {
         let json = r#"{"status":"done","summary":"Created hello.txt"}"#;
@@ -362,5 +532,35 @@ mod tests {
 
         let session = ended("All done.", None);
         assert_eq!(last_message(&session).as_deref(), Some("All done."));
+    }
+
+    #[test]
+    fn a_page_an_agent_published_leads_its_last_line() {
+        let said = || "Wrote the test report.".to_owned();
+        assert_eq!(with_artifact(None, said(), "⧉"), "Wrote the test report.");
+        assert_eq!(
+            with_artifact(Some("test-report"), said(), "⧉"),
+            "⧉ test-report · Wrote the test report."
+        );
+        assert_eq!(
+            with_artifact(Some("test-report"), String::new(), "⧉"),
+            "⧉ test-report"
+        );
+        assert_eq!(
+            with_artifact(Some("  "), said(), "⧉"),
+            "Wrote the test report."
+        );
+        // Where only plain characters draw, the mark is Claude Code's word for it.
+        let mut state = AppState::default();
+        assert_eq!(page_mark(&state), "⧉");
+        state.ui = Some(argonauts_core::settings::ui::UiSettings {
+            glyphs: argonauts_core::settings::ui::Glyphs::Ascii,
+            ..Default::default()
+        });
+        assert_eq!(page_mark(&state), "artifact");
+        assert_eq!(
+            with_artifact(Some("test-report"), said(), page_mark(&state)),
+            "artifact test-report · Wrote the test report."
+        );
     }
 }

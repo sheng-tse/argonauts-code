@@ -1,4 +1,4 @@
-# The fake Claude Code works slowly on the card, so you can move it to Codex mid-way.
+# The fake Claude Code works slowly on the task, so you can move it to Codex mid-way.
 
 [version]
 claude = "2.1.284 (Claude Code)"

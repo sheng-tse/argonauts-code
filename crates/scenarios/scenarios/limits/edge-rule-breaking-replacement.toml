@@ -1,5 +1,5 @@
 # The fake Claude Code hits its usage limit. Codex is the only fallback, and your rules don't
-# let it touch the card's files, so no valid replacement is left.
+# let it touch the task's files, so no valid fallback is left.
 
 [version]
 claude = "2.1.284 (Claude Code)"

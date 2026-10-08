@@ -1,6 +1,7 @@
-//! The goal view's data: what a goal-style run is trying to achieve and
-//! whether it's there yet, folded from its goal events. Every check audits every criterion
-//! again, so a criterion's state is the latest check's.
+//! The goal view's data: the goal around a run's workflow and whether it
+//! holds yet, folded from its goal events. Every check audits every line again, so a line's
+//! state is the latest check's. A task's own goal isn't here: `argonauts_crew::goal::report`
+//! reports every goal in the run, this one included, for the goal panels.
 
 use argonauts_core::events::goal::{Assumption, GoalEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
@@ -9,7 +10,7 @@ use argonauts_core::{RunId, Spend};
 
 use super::sessions::{RunFacts, add_spend};
 
-/// `None` until the run sets a goal: a workflow run has no goal view.
+/// `None` until the run sets a goal: a run without one has no goal view.
 pub(crate) fn goal_view(events: &[RunEvent], run: &RunId) -> Option<GoalView> {
     let mut view: Option<GoalView> = None;
     // The approved goal file's assumptions, which a goal run starts from.
@@ -20,7 +21,7 @@ pub(crate) fn goal_view(events: &[RunEvent], run: &RunId) -> Option<GoalView> {
         };
         match goal {
             GoalEvent::Approved { file, .. } => assumptions.clone_from(&file.assumptions),
-            GoalEvent::Set(set) => {
+            GoalEvent::Set(set) if set.task.is_none() => {
                 view = Some(GoalView {
                     run: run.clone(),
                     objective: set.objective.clone(),
@@ -36,7 +37,7 @@ pub(crate) fn goal_view(events: &[RunEvent], run: &RunId) -> Option<GoalView> {
                         })
                         .collect(),
                     attempts: set.attempts.clone(),
-                    max_attempts: set.max_attempts,
+                    max_rounds: set.max_rounds,
                     last_reason: None,
                     assumptions: assumptions.clone(),
                     spent: Spend::default(),
@@ -59,21 +60,24 @@ pub(crate) fn goal_view(events: &[RunEvent], run: &RunId) -> Option<GoalView> {
 
 fn apply(view: &mut GoalView, event: &GoalEvent) {
     match event {
-        GoalEvent::AttemptStarted { n, title, phase } => {
-            match view.attempts.iter_mut().find(|attempt| attempt.n == *n) {
-                Some(attempt) => {
-                    attempt.title.clone_from(title);
-                    attempt.phase = *phase;
-                }
-                None => view.attempts.push(argonauts_core::events::goal::Attempt {
-                    n: *n,
-                    title: title.clone(),
-                    phase: *phase,
-                    verdict: None,
-                }),
+        GoalEvent::AttemptStarted {
+            n,
+            title,
+            phase,
+            task: None,
+        } => match view.attempts.iter_mut().find(|attempt| attempt.n == *n) {
+            Some(attempt) => {
+                attempt.title.clone_from(title);
+                attempt.phase = *phase;
             }
-        }
-        GoalEvent::Checked(checked) => {
+            None => view.attempts.push(argonauts_core::events::goal::Attempt {
+                n: *n,
+                title: title.clone(),
+                phase: *phase,
+                verdict: None,
+            }),
+        },
+        GoalEvent::Checked(checked) if checked.task.is_none() => {
             if let Some(attempt) = view
                 .attempts
                 .iter_mut()
@@ -94,7 +98,9 @@ fn apply(view: &mut GoalView, event: &GoalEvent) {
             }
             view.last_reason = Some(checked.reason.clone());
         }
-        GoalEvent::StatusChanged { status, .. } => view.status = *status,
+        GoalEvent::StatusChanged {
+            status, task: None, ..
+        } => view.status = *status,
         GoalEvent::AssumptionChanged { id, to, by } => {
             let at = usize::try_from(*id).unwrap_or(usize::MAX).saturating_sub(1);
             if let Some(assumption) = view.assumptions.get_mut(at) {
@@ -113,6 +119,7 @@ mod tests {
     use argonauts_core::events::goal::{
         Criterion, CriterionState, CriterionVerdict, GoalChecked, GoalRun, GoalStatus, GoalVerdict,
     };
+    use argonauts_core::goal::{CheckWith, GoalFrom, GoalScope, GoalSpec, KeptBy};
 
     fn goal(seq: u64, event_kind: GoalEvent) -> RunEvent {
         event(seq, RunEventKind::Goal(event_kind))
@@ -121,16 +128,20 @@ mod tests {
     #[test]
     fn the_goal_view_follows_its_attempts_and_checks() {
         assert!(goal_view(&[], &run_id()).is_none());
-        let set = GoalRun {
-            objective: "Fix slugify and median in textkit, with tests".to_owned(),
-            criteria: vec![
-                Criterion::new("G1", "slugify(\"Hello, World!\") returns \"hello-world\""),
-                Criterion::new("G2", "median([]) raises ValueError"),
-            ],
-            attempts: Vec::new(),
-            status: GoalStatus::Pursuing,
-            max_attempts: 5,
-        };
+        let lines = vec![
+            Criterion::new("G1", "slugify(\"Hello, World!\") returns \"hello-world\""),
+            Criterion::new("G2", "median([]) raises ValueError"),
+        ];
+        let spec = GoalSpec::from_lines(
+            "Fix slugify and median in textkit, with tests",
+            lines,
+            CheckWith::Auto,
+            GoalFrom::Command,
+        );
+        let set = GoalRun::new(&spec, GoalScope::Workflow, KeptBy::Argonauts);
+        // A task's own goal, set and checked beside the run's, stays out of the run's view.
+        let mut of_a_task = set.clone();
+        of_a_task.task = Some(argonauts_core::CardId::new("task-001").unwrap());
         let events = vec![
             goal(0, GoalEvent::Set(Box::new(set))),
             goal(
@@ -139,8 +150,10 @@ mod tests {
                     n: 1,
                     title: "Both fixes".to_owned(),
                     phase: 1,
+                    task: None,
                 },
             ),
+            goal(1, GoalEvent::Set(Box::new(of_a_task))),
             goal(
                 2,
                 GoalEvent::Checked(Box::new(GoalChecked {
@@ -161,6 +174,8 @@ mod tests {
                     ],
                     overall: GoalVerdict::NotYet,
                     reason: "median([]) returns None".to_owned(),
+                    task: None,
+                    checks: Vec::new(),
                 })),
             ),
             goal(
@@ -169,6 +184,7 @@ mod tests {
                     n: 2,
                     title: "Empty list".to_owned(),
                     phase: 2,
+                    task: None,
                 },
             ),
         ];

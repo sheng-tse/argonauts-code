@@ -4,9 +4,7 @@
 
 use argonauts_core::events::run::{RunMode, TriageDecision};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::protocol::{
-    ForcedMode, SoloStyle, TriageMiddle, TriageSettings, TriageSoloStyle,
-};
+use argonauts_core::settings::protocol::{ForcedMode, SoloStyle, TriageMiddle, TriageSoloStyle};
 use argonauts_core::steps::intake::ChangeEstimate;
 use argonauts_learning::recipes::{LoadedRecipe, RecipeMode};
 
@@ -25,7 +23,7 @@ pub fn decide(estimate: &ChangeEstimate, settings: &Settings) -> TriageDecision 
 }
 
 /// Triage with the recipe whose `match` fits the task, as the app found it in the main
-/// checkout. With `triage.use_recipes`, a recipe that names a mode decides solo or crew. Your
+/// checkout. With `triage.use_learned`, a recipe that names a mode decides solo or crew. Your
 /// words beat every setting: All hands, a forced mode, and a recipe.
 pub fn decide_with(
     estimate: &ChangeEstimate,
@@ -46,7 +44,7 @@ pub fn decide_with(
     decision
 }
 
-const SOLO_THEN_CREW: &str = "solo first, then crew if the card escalates";
+const SOLO_THEN_CREW: &str = "solo first, then crew if the task needs you";
 const DIRECT_INSTEAD: &str = "solo in your checkout, so it won't become a crew run";
 
 /// Where a solo run works. Your words asking for a copy and solo settings that need a copy
@@ -84,7 +82,7 @@ fn by_the_rules(
     recipe: Option<&LoadedRecipe>,
 ) -> TriageDecision {
     let rules = &settings.triage;
-    if let Some(crew) = all_hands(rules) {
+    if let Some(crew) = ultracode(settings) {
         return crew;
     }
     if let Some(forced) = rules.force {
@@ -96,10 +94,10 @@ fn by_the_rules(
             mode,
             false,
             FORCE,
-            format!("triage.force is {}", name(mode)),
+            format!("solo_or_crew.force is {}", name(mode)),
         );
     }
-    if rules.use_recipes
+    if rules.use_learned
         && let Some(recipe) = recipe
         && let Some(mode) = recipe.recipe.mode
     {
@@ -111,8 +109,8 @@ fn by_the_rules(
         return decision(
             mode,
             false,
-            &format!("recipe:{}", reference.name),
-            format!("the {reference} recipe runs {}", name(mode)),
+            &format!("learned:{}", reference.name),
+            format!("the learned workflow {reference} runs {}", name(mode)),
         );
     }
 
@@ -168,23 +166,25 @@ fn by_the_rules(
             RunMode::Solo,
             true,
             "otherwise",
-            format!("{why}: solo first, then crew if the card escalates"),
+            format!("{why}: solo first, then crew if the task needs you"),
         ),
         TriageMiddle::Solo => decision(RunMode::Solo, false, "otherwise", why),
         TriageMiddle::Crew => decision(RunMode::Crew, false, "otherwise", why),
     }
 }
 
-/// The crew, while All hands is on, whatever else would decide: the chat's triage, a task from
-/// the command line, or a follow-up. You turned it on yourself, so it wins over a preset's
-/// forced mode and a recipe's.
-pub fn all_hands(rules: &TriageSettings) -> Option<TriageDecision> {
-    rules.all_hands.then(|| {
+/// The crew, while ultracode is on with a crew workflow in use, whatever else would decide:
+/// the chat's triage, a task from the command line, or a follow-up. You turned it on yourself,
+/// so it wins over a recipe's mode. In solo the CLI you chose keeps the work, and runs its own
+/// workflow, so solo stays solo.
+pub fn ultracode(settings: &Settings) -> Option<TriageDecision> {
+    let solo = settings.triage.force == Some(ForcedMode::Solo);
+    (settings.ultracode && !solo).then(|| {
         decision(
             RunMode::Crew,
             false,
-            "all_hands",
-            "All hands is on".to_owned(),
+            "ultracode",
+            "Ultracode is on".to_owned(),
         )
     })
 }
@@ -273,10 +273,12 @@ mod tests {
         middle_crew.triage.otherwise = TriageMiddle::Crew;
         let mut middle_solo = Settings::default();
         middle_solo.triage.otherwise = TriageMiddle::Solo;
-        let mut all_hands = Settings::default();
-        all_hands.triage.all_hands = true;
-        let mut all_hands_over_solo = forced_solo.clone();
-        all_hands_over_solo.triage.all_hands = true;
+        let ultracode = Settings {
+            ultracode: true,
+            ..Settings::default()
+        };
+        let mut ultracode_over_solo = forced_solo.clone();
+        ultracode_over_solo.ultracode = true;
 
         let table: Vec<Row> = vec![
             (
@@ -382,24 +384,24 @@ mod tests {
                 "otherwise",
             ),
             (&forced_crew, 1, true, &[], RunMode::Crew, false, "force"),
-            (&all_hands, 1, true, &[], RunMode::Crew, false, "all_hands"),
+            (&ultracode, 1, true, &[], RunMode::Crew, false, "ultracode"),
             (
-                &all_hands,
+                &ultracode,
                 30,
                 false,
                 &["security"],
                 RunMode::Crew,
                 false,
-                "all_hands",
+                "ultracode",
             ),
             (
-                &all_hands_over_solo,
+                &ultracode_over_solo,
                 1,
                 true,
                 &[],
-                RunMode::Crew,
+                RunMode::Solo,
                 false,
-                "all_hands",
+                "force",
             ),
             (
                 &forced_solo,
@@ -426,12 +428,14 @@ mod tests {
 
     /// Your words beat every setting that picks a mode: All hands, a forced mode, a recipe.
     #[test]
-    fn words_beat_all_hands_a_forced_mode_and_a_recipe() {
-        let mut all_hands = Settings::default();
-        all_hands.triage.all_hands = true;
+    fn words_beat_ultracode_a_forced_mode_and_a_recipe() {
+        let ultracode = Settings {
+            ultracode: true,
+            ..Settings::default()
+        };
         let mut forced_crew = Settings::default();
         forced_crew.triage.force = Some(ForcedMode::Crew);
-        let text = "recipe: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
+        let text = "name: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
                     match: { task_types: [bugfix] }\n";
         let path = std::path::Path::new("v1.yaml");
         let recipe = LoadedRecipe {
@@ -447,7 +451,7 @@ mod tests {
         let defaults = Settings::default();
         let small = estimate(1, true, &[]);
         for (settings, recipe) in [
-            (&all_hands, None),
+            (&ultracode, None),
             (&forced_crew, None),
             (&defaults, Some(&recipe)),
         ] {
@@ -512,17 +516,17 @@ mod tests {
     }
 
     #[test]
-    fn all_hands_has_the_lead_design_the_crews_workflow() {
+    fn ultracode_has_the_lead_design_the_crews_workflow() {
         let mut settings = Settings::default();
         settings.workflows.lead_designs = false.into();
         assert_eq!(settings.lead_designs(), LeadDesign::Off);
-        settings.triage.all_hands = true;
+        settings.ultracode = true;
         assert_eq!(settings.lead_designs(), LeadDesign::Size);
         settings.workflows.lead_designs = LeadDesigns::ANY;
         assert_eq!(settings.lead_designs(), LeadDesign::Any);
         assert_eq!(
             decide(&estimate(1, true, &[]), &settings).reason,
-            "All hands is on"
+            "Ultracode is on"
         );
     }
 
@@ -547,7 +551,7 @@ mod tests {
         );
         assert_eq!(
             decide(&estimate(1, false, &[]), &settings).reason,
-            "1 file, but no tests exist: solo first, then crew if the card escalates"
+            "1 file, but no tests exist: solo first, then crew if the task needs you"
         );
         assert_eq!(
             decide(&estimate(5, true, &["security"]), &settings).reason,

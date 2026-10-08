@@ -3,15 +3,15 @@ source: crates/tui/tests/snap_cards.rs
 expression: text(&lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────
-◆ Claude Code is back · card-002 (Redis store) was continued by codex/gpt-5.6
-  3 commits since handoff-1 · +84 -12 · tests passed
+◆ Claude Code is back · task-002 (Redis store) was continued by codex/gpt-5.6
+  3 commits since fallback-1 · +84 -12 · tests passed
   Needs review by Opus on Claude Code
 
   ❯ 1. Let claude-code/opus review codex's work
-    2. Give the card back to claude-code/opus
-    3. Redo from handoff-1 with claude-code/opus
+    2. Give the task back to claude-code/opus
+    3. Redo from fallback-1 with claude-code/opus
     4. Keep codex's work, and move on
     5. Take over myself
-    6. Show the diff since handoff-1
+    6. Show the diff since fallback-1
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Enter to choose · Tab to add a note · Esc to carry on without me

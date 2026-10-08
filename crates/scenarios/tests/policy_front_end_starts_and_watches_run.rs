@@ -65,7 +65,7 @@ fn policy_front_end_starts_and_watches_run() -> anyhow::Result<()> {
     let events = scenario.latest_run_events()?;
     assert_eq!(events[0].run_id.as_str(), run);
     let merge = opened_of_kind(&events, CheckpointKind::Merge);
-    let checkpoint = merge.first().expect("a merge checkpoint");
+    let checkpoint = merge.first().expect("a merge approval");
     assert!(decision.contains(checkpoint.id.as_str()), "{decision}");
     assert!(
         decision.contains(&checkpoint.evidence_sha256[..12]),
@@ -80,7 +80,7 @@ fn policy_front_end_starts_and_watches_run() -> anyhow::Result<()> {
         decisions(&events)
             .iter()
             .all(|decided| decided.id != checkpoint.id),
-        "the front end's session decided the checkpoint"
+        "the front end's session decided the approval"
     );
     Ok(())
 }

@@ -1,19 +1,13 @@
 //! How the main agent works for you in this app session, whatever CLI it is: `/fast` answers at
 //! the lowest effort its model takes, `/output-style` sets how answers are written, `/plan` has
-//! runs plan first and wait for you, and `/goal` sets a goal a crew run works toward.
+//! runs plan first and wait for you. `/goal` has its own file, `goal`.
 
 use argonauts_core::NoteLevel;
-use argonauts_core::RunId;
-use argonauts_core::app::{AppEvent, AppMode, UiCommand};
-use argonauts_core::events::goal::GoalAction;
-use argonauts_core::events::run::RunMode;
+use argonauts_core::app::AppEvent;
 use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::settings::workflows::RunStyle;
 
-use super::lifecycle::begin;
-use super::{ChatState, Queued, name_the_chat, planned, request_planned, run_request, styled};
-use crate::controller::instructions::{self, Command, Roster};
-use crate::controller::turn::{self, TurnStep, fast_choice};
+use super::{ChatState, request_planned};
+use crate::controller::turn::{self, fast_choice};
 use crate::controller::{Ctx, Effect};
 
 /// Kept across `/clear`, `/branch`, and `/resume` until the app closes.
@@ -107,7 +101,7 @@ pub(crate) fn fast(
     let on = on.unwrap_or(!chat.prefs.fast);
     chat.prefs.fast = on;
     let text = if on {
-        let (worker, _) = turn::chat_agent(ctx.settings(), &ctx.settings().default_agent);
+        let (worker, _) = turn::chat_agent(ctx.settings(), &ctx.settings().main_agent);
         match fast_choice(ctx, &worker) {
             Some((fast, effort)) => {
                 let name = ctx.names.worker(&fast);
@@ -191,152 +185,6 @@ pub(crate) fn plan(
     };
     ctx.notice(NoteLevel::Info, text);
     Ok(Vec::new())
-}
-
-/// What `/goal` set, and the run working toward it once it started.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct Goal {
-    text: String,
-    run: Option<RunId>,
-}
-
-/// `/goal <objective>` starts a crew run that's a goal, with your words as its objective. `/goal`
-/// shows it, `/goal pause` and `/goal resume` hold and release its run, and `/goal clear` stops
-/// pursuing it, landing what holds once every check passes.
-pub(crate) fn goal(
-    ctx: &mut Ctx,
-    chat: &mut ChatState,
-    text: Option<String>,
-) -> anyhow::Result<Vec<Effect>> {
-    let text = text.unwrap_or_default().trim().to_owned();
-    match text.as_str() {
-        "" => {
-            let shown = match &chat.goal {
-                None => "No goal is set. /goal <goal> sets one, and a crew run works toward it."
-                    .to_owned(),
-                Some(Goal {
-                    text,
-                    run: Some(run),
-                }) => format!("The goal: {text} ({run} works toward it)"),
-                Some(Goal { text, run: None }) => format!("The goal: {text}"),
-            };
-            ctx.notice(NoteLevel::Info, shown);
-            Ok(Vec::new())
-        }
-        "clear" => {
-            let text = match chat.goal.take() {
-                // Its run stops pursuing it, and Merge lands what holds once every check passes.
-                Some(Goal { run: Some(run), .. }) => {
-                    let clear = UiCommand::Goal {
-                        run: Some(run),
-                        action: GoalAction::Clear { land: true },
-                    };
-                    return Ok(vec![Effect::Input(Box::new(clear))]);
-                }
-                Some(_) => "Dropped the goal.".to_owned(),
-                None => "No goal is set.".to_owned(),
-            };
-            ctx.notice(NoteLevel::Info, text);
-            Ok(Vec::new())
-        }
-        "pause" | "resume" => Ok(hold(ctx, chat, text == "pause")),
-        _ => {
-            // Words that may say how to run it are read first, as `/workflow` reads them: the
-            // run stays a crew's goal, and the rest of what they say is checked and followed.
-            let reads = ctx.settings().triage.read_instructions
-                && instructions::might_say_how(&text, &Roster::new(ctx));
-            if reads && chat.turn.is_some() {
-                chat.queue(Queued::Goal(text));
-                return Ok(Vec::new());
-            }
-            let replaced = chat.goal.is_some();
-            chat.goal = Some(Goal {
-                text: text.clone(),
-                run: None,
-            });
-            set_notice(ctx, replaced);
-            if reads {
-                let effects = name_the_chat(chat, &text);
-                let command = Command {
-                    mode: RunMode::Crew,
-                    said: "you typed /goal".to_owned(),
-                    style: Some(RunStyle::Goal),
-                };
-                begin(ctx, chat, text, |record| TurnStep::Triage {
-                    uncommitted_note: record.uncommitted_note(),
-                    read_instructions: true,
-                    command: Some(command),
-                })?;
-                return Ok(effects);
-            }
-            // Your words are the objective, verbatim, and the run is a goal whoever leads.
-            let mut request = styled(
-                run_request(ctx, text, RunMode::Crew, None, None),
-                RunStyle::Goal,
-            );
-            if chat.prefs.plan_first {
-                request = planned(request);
-            }
-            Ok(vec![Effect::StartRun(Box::new(request))])
-        }
-    }
-}
-
-fn set_notice(ctx: &Ctx, replaced: bool) {
-    let set = if replaced {
-        "Replaced the goal"
-    } else {
-        "Goal set"
-    };
-    ctx.notice(
-        NoteLevel::Info,
-        format!(
-            "{set}. The crew pursues it in attempts until a check from another company finds \
-             every criterion met; /goal shows it, /goal pause and /goal resume hold it, and \
-             /goal clear drops it."
-        ),
-    );
-}
-
-/// Pauses or resumes the goal's run, which must be the one on screen to pause.
-fn hold(ctx: &Ctx, chat: &ChatState, pause: bool) -> Vec<Effect> {
-    let Some(goal) = &chat.goal else {
-        ctx.notice(NoteLevel::Info, "No goal is set. /goal <goal> sets one.");
-        return Vec::new();
-    };
-    let Some(run) = goal.run.clone() else {
-        ctx.notice(NoteLevel::Info, "The goal's run hasn't started.");
-        return Vec::new();
-    };
-    let on_screen = match &ctx.mode {
-        AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Parked { run, .. } => {
-            Some(run)
-        }
-        AppMode::Idle | AppMode::Answering { .. } => None,
-    };
-    let command = if pause {
-        if on_screen != Some(&run) {
-            ctx.notice(
-                NoteLevel::Info,
-                format!("{run} isn't on screen. /resume {run} opens it, then /goal pause."),
-            );
-            return Vec::new();
-        }
-        UiCommand::Pause { now: false }
-    } else {
-        UiCommand::Resume { run: Some(run) }
-    };
-    vec![Effect::Input(Box::new(command))]
-}
-
-/// A run just started; the goal waiting for one takes it.
-pub(crate) fn goal_run_started(chat: &mut ChatState, request: &str, run: Option<&RunId>) {
-    if let Some(goal) = chat.goal.as_mut()
-        && goal.run.is_none()
-        && goal.text == request
-    {
-        goal.run = run.cloned();
-    }
 }
 
 #[cfg(test)]

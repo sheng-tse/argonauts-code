@@ -28,16 +28,14 @@ use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::protocol::{ForcedMode, SoloStyle};
 use argonauts_core::settings::{SettingScope, Settings};
-use argonauts_core::steps::intake::{Instruction, InstructionKind};
 use argonauts_core::{Asks, NoteLevel};
 use serde_json::Value;
 
 pub(crate) use self::listen::Asked;
 use self::listen::Listener;
 use self::rewind::Snapshot;
-use super::{ChatState, Turn, lifecycle, run_request};
+use super::{ChatState, Turn, handover, lifecycle, run_request, standing, tools};
 use crate::choices::{self, option};
-use crate::controller::instructions::{self, Applied, Roster};
 use crate::controller::turn::{DirectWords, TurnStep, part};
 use crate::controller::{Ctx, Effect};
 use argonauts_conductor::handoff::shortlist::{Sources, shortlist as handoff_shortlist};
@@ -45,7 +43,6 @@ use argonauts_core::CardId;
 use argonauts_core::events::card::{CardBudget, CardKind, CardSpec};
 use argonauts_core::limits::{Candidate, CandidateQuery, TrackRecord, TrackRecords};
 use argonauts_core::names::RoleName;
-use argonauts_core::settings::handoff::HandoffSettings;
 
 const ANTIGRAVITY: &str = "antigravity-cli";
 
@@ -78,6 +75,9 @@ pub(crate) struct DirectState {
     /// Ignored files turns wrote, which snapshots keep from then on so `/rewind` can put them
     /// back.
     watched: BTreeSet<String>,
+    /// The setup line the conversation's session last heard, so it hears a new one only when
+    /// something changed.
+    pub(super) told_setup: Option<String>,
 }
 
 impl std::fmt::Debug for PendingHandoff {
@@ -150,6 +150,11 @@ pub(super) struct Running {
     unmade: Vec<String>,
     /// The folder it works in, whose files `/rewind` puts back.
     root: PathBuf,
+    /// The session has Argonauts' tools, so a setup you answered may write Argonauts' files.
+    has_tools: bool,
+    /// Files a setup you answered wrote during the turn, by path from your folder. The turn's
+    /// end leaves them as the setup wrote them.
+    setup_wrote: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -197,6 +202,11 @@ pub(crate) fn preset_is_direct(settings: &Settings) -> bool {
 
 pub(crate) fn set_approval(chat: &mut ChatState, mode: ApprovalMode) {
     chat.direct.approval = mode;
+}
+
+/// The approval mode on screen.
+pub(super) fn approval(chat: &ChatState) -> ApprovalMode {
+    chat.direct.approval
 }
 
 /// Starts a direct turn with your message. `asks` overrides what the mode says, as agy's
@@ -259,17 +269,15 @@ pub(super) fn go_ahead(
 /// is left out and a paid API needs your OK. A direct turn never falls back to the crew.
 pub(super) fn shortlist(ctx: &Ctx, stopped: &WorkerRef, tried: &[WorkerRef]) -> Vec<Candidate> {
     let settings = ctx.settings();
-    let role = settings
-        .roles
-        .get(&RoleName::Default)
-        .map(|role| &role.handoff);
-    let rules = HandoffSettings::applied(&settings.handoff, role, &stopped.vendor());
+    let rules = settings
+        .fallback
+        .applied_to(RoleName::Main, &stopped.vendor());
     if rules.candidates.is_empty() {
         return Vec::new();
     }
     let query = CandidateQuery {
         card: your_checkout(),
-        role: RoleName::Default,
+        role: RoleName::Main,
         stopped: stopped.clone(),
         exclude_families: Vec::new(),
         fallback: rules.candidates.clone(),
@@ -297,7 +305,7 @@ pub(super) fn shortlist(ctx: &Ctx, stopped: &WorkerRef, tried: &[WorkerRef]) -> 
 /// your checkout.
 fn your_checkout() -> CardSpec {
     CardSpec {
-        id: CardId::new("direct-001").expect("a valid card id"),
+        id: CardId::new("direct-001").expect("a valid task id"),
         title: String::new(),
         task: String::new(),
         kind: CardKind::Solo,
@@ -556,18 +564,18 @@ pub(super) fn begin_vendor(
 /// mode says.
 fn mode_asks(ctx: &Ctx, chat: &ChatState, words: &DirectWords) -> Asks {
     match chat.direct.approval {
-        ApprovalMode::Auto | ApprovalMode::FullAuto if !words.supervised => Asks::Never,
+        ApprovalMode::Auto | ApprovalMode::Autopilot if !words.supervised => Asks::Never,
         ApprovalMode::Auto
-        | ApprovalMode::FullAuto
+        | ApprovalMode::Autopilot
         | ApprovalMode::Supervised
-        | ApprovalMode::Shadow => ctx.settings().solo.asks,
+        | ApprovalMode::AutoPreview => ctx.settings().solo.asks,
     }
 }
 
 /// Codex, agy, and OpenCode can't be asked before each edit in stage 1, so `every_change` runs
 /// them in a checked copy, and a line says why.
 fn checked_instead(ctx: &Ctx, asks: Asks, text: &str) -> Option<Effect> {
-    let main = &ctx.settings().default_agent;
+    let main = &ctx.settings().main_agent;
     if asks != Asks::EveryChange || asks_each(&main.worker) {
         return None;
     }
@@ -578,13 +586,8 @@ fn checked_instead(ctx: &Ctx, asks: Asks, text: &str) -> Option<Effect> {
             "{cli} can't ask before each edit in a headless run, so this runs in a checked copy."
         ),
     );
-    Some(Effect::StartRun(Box::new(run_request(
-        ctx,
-        text.to_owned(),
-        RunMode::Solo,
-        None,
-        None,
-    ))))
+    let request = run_request(ctx, text.to_owned(), RunMode::Solo, None, None);
+    Some(handover::start(request))
 }
 
 fn start(
@@ -599,19 +602,27 @@ fn start(
         return Ok(());
     }
     let settings = ctx.settings();
-    let start_run = settings.solo.start_run_tool;
+    // What the session may call to make something happen outside itself, and the standing
+    // lines that tell it so.
+    let offered = tools::offered(ctx, chat);
+    let lines = standing::lines(&offered);
     let rewind = settings.solo.rewind.then(|| max_bytes(settings));
     let next = TurnId::numbered(chat.turns + 1);
-    let listener = if asks != Asks::Never || start_run {
+    let roles = crate::controller::ask_role::roles(settings);
+    let listener = if asks != Asks::Never || !offered.is_empty() || !roles.is_empty() {
         Some(listen::listen(ctx.internal.clone(), next)?)
     } else {
         None
     };
-    let asking = listener
-        .as_ref()
-        .map(|listener| listener.asking(asks, start_run));
+    let asking = listener.as_ref().map(|listener| {
+        let mut asking = listener.asking(asks, offered, lines);
+        asking.roles = roles;
+        asking
+    });
     let root = chat.folder(ctx).to_path_buf();
     let watched = chat.direct.watched.clone();
+    // A folder with no git keeps nothing to go back to until `/git` turns its history on.
+    let rewind = rewind.filter(|_| ctx.env.git().has_history() || root != ctx.env.repo_root);
     let before = rewind.and_then(|max| match rewind::take(&root, max, &watched) {
         Ok(snapshot) => Some(snapshot),
         Err(err) => {
@@ -637,6 +648,8 @@ fn start(
             written: BTreeSet::new(),
             unmade,
             root,
+            has_tools: turn.step.has_tools(),
+            setup_wrote: BTreeSet::new(),
         });
     }
     Ok(())
@@ -695,15 +708,26 @@ fn set_aside_planted(ctx: &Ctx, chat: &ChatState, running: &Running, turn: &Turn
     }
 }
 
-/// Notes a direct turn's prompt carries after your message: only what `/rewind` put back,
-/// since Argonauts adds no instructions of its own.
-pub(super) fn notes(chat: &mut ChatState) -> Vec<InputPart> {
-    chat.direct
+/// Notes a direct turn's prompt carries after your message: what `/rewind` put back, and for a
+/// session with Argonauts' tools, the setup in use when it hasn't heard it. Argonauts adds no
+/// instructions of its own beyond those.
+pub(super) fn notes(
+    ctx: &Ctx,
+    chat: &mut ChatState,
+    step: &TurnStep,
+    fresh: bool,
+) -> Vec<InputPart> {
+    let mut notes: Vec<InputPart> = chat
+        .direct
         .rewound
         .take()
         .map(|text| part(InputPartKind::Notes, "rewind", text))
         .into_iter()
-        .collect()
+        .collect();
+    if step.has_tools() {
+        notes.extend(standing::setup_note(ctx, chat, fresh));
+    }
+    notes
 }
 
 /// Follows the turn's events for what comes after it: agy's refused commands, and what the
@@ -872,7 +896,7 @@ pub(super) fn handoff(ctx: &Ctx, turn: &Turn) -> (String, Option<InputPart>) {
     if !running.said.trim().is_empty() {
         text.push_str(&format!("\n\nWhat it said:\n{}", running.said.trim()));
     }
-    (told, Some(part(InputPartKind::Handoff, "handoff", text)))
+    (told, Some(part(InputPartKind::Handoff, "fallback", text)))
 }
 
 /// The snapshot after the turn, kept when the turn changed something, and a line saying what
@@ -905,6 +929,7 @@ fn record(ctx: &Ctx, chat: &mut ChatState, running: &mut Running) -> Option<Stri
     if changed.is_empty() {
         return None;
     }
+    keep_setup_files(ctx, running, &before, &after, &changed, max);
     // Such as "app.py (+1 -1) changed · /rewind puts it back, except .env".
     let mut summary = rewind::summary(root, &before, &after, &changed);
     summary.push_str(" · /rewind puts it back");
@@ -920,6 +945,94 @@ fn record(ctx: &Ctx, chat: &mut ChatState, running: &mut Running) -> Option<Stri
         changed,
     });
     Some(summary)
+}
+
+/// Notes the files a setup you answered wrote in the turn `turn`, so its end keeps them.
+pub(in crate::controller::chat) fn setup_wrote(
+    chat: &mut super::ChatState,
+    turn: &TurnId,
+    paths: &[PathBuf],
+) {
+    let Some(running) = chat
+        .turn
+        .as_mut()
+        .filter(|running| &running.id == turn)
+        .and_then(|turn| turn.direct.as_mut())
+    else {
+        return;
+    };
+    let root = running.root.clone();
+    let from_root = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(&root).ok())
+        .filter_map(|path| path.to_str().map(str::to_owned));
+    running.setup_wrote.extend(from_root);
+}
+
+/// Whether one of the turn's shell commands names `path` in `.argonauts`: the path itself, or
+/// the folder and the file's name, as `cd .argonauts && sed -i … config.toml` does.
+fn named_by_command(running: &Running, path: &str) -> bool {
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path);
+    running
+        .commands
+        .values()
+        .any(|command| ask::names_setup_folder(command) && command.contains(name))
+}
+
+/// The main session never edits Argonauts' own files: a setup changes them, after you pick
+/// where. Our sandbox keeps `.argonauts/` closed to a direct turn. With it off,
+/// what the turn wrote there goes back at once: its own edits, and the files a shell command
+/// named, unless a setup you answered wrote them. Anything else that changed there is named,
+/// unless the session has Argonauts' tools, whose setups you answered write there.
+fn keep_setup_files(
+    ctx: &Ctx,
+    running: &Running,
+    before: &rewind::Snapshot,
+    after: &rewind::Snapshot,
+    changed: &[String],
+    max: u64,
+) {
+    if !ctx.settings().sandbox.mode.ours_off() {
+        return;
+    }
+    let (edited, other): (Vec<String>, Vec<String>) = changed
+        .iter()
+        .filter(|path| ask::in_setup_folder(path))
+        .filter(|path| !running.setup_wrote.contains(*path))
+        .cloned()
+        .partition(|path| running.written.contains(path) || named_by_command(running, path));
+    if !edited.is_empty() {
+        match rewind::restore(&running.root, before, after, &edited, max) {
+            Ok(restored) if !restored.put_back.is_empty() => ctx.notice(
+                NoteLevel::Warn,
+                format!(
+                    "This turn edited {}, which only a setup changes, so it's put back. Ask for \
+                     the change in words and a card asks where to keep it.",
+                    restored.put_back.join(", ")
+                ),
+            ),
+            Ok(_) => {}
+            Err(err) => ctx.notice(
+                NoteLevel::Warn,
+                format!(
+                    "This turn edited Argonauts' own files and they couldn't be put back: {err:#}"
+                ),
+            ),
+        }
+    }
+    if !other.is_empty() && !running.has_tools {
+        ctx.notice(
+            NoteLevel::Warn,
+            format!(
+                "{} changed during this turn. Only a setup should change Argonauts' files; \
+                 /rewind puts them back.",
+                other.join(", ")
+            ),
+        );
+    }
 }
 
 fn max_bytes(settings: &Settings) -> u64 {
@@ -974,93 +1087,25 @@ pub(crate) fn on_asked(
             ctx.send(AppEvent::Choice { choice });
             Ok(Vec::new())
         }
-        Ask::StartRun { how_to_run, .. } => {
-            Ok(start_run(ctx, chat, turn, &how_to_run, asked.reply))
+        Ask::Tool { name, arguments } => {
+            let call = tools::Call {
+                turn: turn.clone(),
+                arguments,
+                reply: asked.reply,
+            };
+            Ok(tools::call(ctx, chat, &name, call))
+        }
+        Ask::Role { role, what, .. } => {
+            let role_asked = crate::controller::ask_role::Asked {
+                role,
+                what,
+                request: current.text.clone(),
+                folder: chat.folder(ctx).to_path_buf(),
+            };
+            crate::controller::ask_role::answer(ctx, role_asked, asked.reply);
+            Ok(Vec::new())
         }
     }
-}
-
-/// `argonauts_start_run`: a run, when your message asked for one in its own words. The words
-/// go through the same checks as an estimate's do, against your message, and the run's request
-/// is your message as you typed it, so neither the agent's restatement nor a word it picked out
-/// can start anything. The run's Triage line says what was followed and what wasn't.
-fn start_run(
-    ctx: &mut Ctx,
-    chat: &mut ChatState,
-    turn: &TurnId,
-    how_to_run: &[Value],
-    reply: tokio::sync::oneshot::Sender<AskReply>,
-) -> Vec<Effect> {
-    let Some(current) = chat.turn.as_ref().filter(|current| &current.id == turn) else {
-        return Vec::new();
-    };
-    if current.run_began {
-        let _ = reply.send(AskReply::text(
-            "A run already started for this request. Stop here: the run does the work.",
-        ));
-        return Vec::new();
-    }
-    let text = current.text.clone();
-    let how_to_run: Vec<Instruction> = how_to_run
-        .iter()
-        .filter_map(|instruction| serde_json::from_value(instruction.clone()).ok())
-        .collect();
-    let applied = instructions::check(&how_to_run, &text, ctx.settings(), &Roster::new(ctx), None);
-    let Some(mode) = run_asked(&applied) else {
-        let _ = reply.send(AskReply::text(
-            "The user didn't ask for a run, so do it yourself.",
-        ));
-        return Vec::new();
-    };
-    if let Some(current) = chat.turn.as_mut() {
-        current.run_began = true;
-    }
-    let mut start = run_request(ctx, text, mode, None, Some(turn.clone()));
-    start.forced = false;
-    start.triage = Some(TriageDecision {
-        mode,
-        escalate_to_crew: false,
-        rule: TriageDecision::AS_YOU_ASKED.to_owned(),
-        reason: String::new(),
-        // A run is a copy, so solo that starts one is checked.
-        solo: (mode == RunMode::Solo).then_some(SoloStyle::Checked),
-    });
-    applied.apply_to(&mut start);
-    super::keep::offer(ctx, chat, &applied);
-    let _ = reply.send(AskReply::text(format!(
-        "Argonauts started a {} run for this request. Stop here: the run does the work, and \
-         the user sees it.",
-        crate::controller::recap::mode_name(mode)
-    )));
-    vec![Effect::StartRun(Box::new(start))]
-}
-
-/// The run your checked words ask for: the crew, a checked copy, or other agents in roles,
-/// which a turn of this session can't give. Solo in your checkout is this turn already, and a
-/// model, an effort, or a tightening alone changes nothing a run would add, so none of them
-/// starts one.
-fn run_asked(applied: &Applied) -> Option<RunMode> {
-    use InstructionKind as Kind;
-    let asked = applied.asked;
-    if asked.mode == Some(RunMode::Crew) {
-        return Some(RunMode::Crew);
-    }
-    let roles = applied.instructions.iter().any(|instruction| {
-        instruction.followed()
-            && matches!(
-                instruction.kind,
-                Kind::Lead
-                    | Kind::Coordinate
-                    | Kind::Build
-                    | Kind::Review
-                    | Kind::Plan
-                    | Kind::Check
-                    | Kind::Crew
-                    | Kind::Exclude
-                    | Kind::Style
-            )
-    });
-    (asked.solo == Some(SoloStyle::Checked) || roles).then_some(RunMode::Solo)
 }
 
 /// A question of `turn`'s is open on a card, so its CLI waits on you in silence.
@@ -1306,6 +1351,14 @@ fn answer_refused(
 /// `/rewind` in a direct conversation: your messages whose turns changed files, newest first.
 pub(crate) fn rewind(ctx: &mut Ctx, chat: &mut ChatState) -> bool {
     if chat.direct.turns.is_empty() {
+        if !ctx.env.git().has_history() && chat.place.is_none() {
+            ctx.notice(
+                NoteLevel::Info,
+                "This folder has no git, so nothing was kept to go back to. /git turns on a \
+                 hidden history, and /rewind works from then on.",
+            );
+            return true;
+        }
         return false;
     }
     let id = ctx.next_choice_id();
@@ -1402,79 +1455,4 @@ fn rewind_to(
         ));
     }
     Ok(Vec::new())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::controller::instructions::{Agent, AgentState};
-    use argonauts_core::steps::intake::InstructionScope;
-
-    fn roster() -> Roster {
-        let agent = |id: &str| Agent {
-            id: id.to_owned(),
-            name: id.to_owned(),
-            family: id.to_owned(),
-            state: AgentState::Ready,
-            ..Agent::default()
-        };
-        Roster {
-            agents: vec![
-                agent("claude-code"),
-                agent("codex"),
-                agent("antigravity-cli"),
-            ],
-        }
-    }
-
-    fn said(kind: InstructionKind, says: &str, who: &str, value: &str) -> Instruction {
-        Instruction {
-            says: says.to_owned(),
-            kind,
-            who: who.to_owned(),
-            model: String::new(),
-            effort: String::new(),
-            value: value.to_owned(),
-            scope: InstructionScope::ThisRequest,
-        }
-    }
-
-    /// Only words that ask for the crew, a checked copy, or other agents in roles start a run:
-    /// solo in your checkout, a model or an effort, and words you didn't write are this turn.
-    #[test]
-    fn a_run_starts_only_for_what_this_turn_cannot_do() {
-        use InstructionKind::{Crew, Effort, Mode, Review};
-        let settings = Settings::default();
-        let asked = |message: &str, list: &[Instruction]| {
-            run_asked(&instructions::check(
-                list,
-                message,
-                &settings,
-                &roster(),
-                None,
-            ))
-        };
-        let review = said(Review, "have codex review this", "codex", "");
-        assert_eq!(
-            asked("Have codex review this.", &[review]),
-            Some(RunMode::Solo)
-        );
-        let list = [
-            said(Crew, "use the crew", "", ""),
-            said(Review, "codex reviews", "codex", ""),
-        ];
-        assert_eq!(
-            asked("Use the crew, codex reviews.", &list),
-            Some(RunMode::Crew)
-        );
-        let solo = said(Mode, "just do it solo", "", "solo");
-        assert_eq!(asked("Just do it solo.", &[solo]), None);
-        let picked = said(Mode, "the", "", "crew");
-        assert_eq!(
-            asked("Fix the rounding in invoice/money.py", &[picked]),
-            None
-        );
-        let effort = said(Effort, "max effort", "", "max");
-        assert_eq!(asked("Fix it on max effort.", &[effort]), None);
-    }
 }

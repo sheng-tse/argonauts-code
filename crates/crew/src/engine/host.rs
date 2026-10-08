@@ -27,6 +27,8 @@ use argonauts_core::main_sessions::{MainSession, MainSessionLease};
 use argonauts_core::names::{PlanLabel, RoleName, SessionKey, WorkerRef};
 use argonauts_core::paths::create_private_dir_all;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit, OnHit};
 use argonauts_core::steps::{
     Step, StepError, StepName, StepObserver, StepOutcome, StepRequest, decode, output_schema,
 };
@@ -45,6 +47,8 @@ use crate::engine::stand_in::{self, Seat};
 use crate::error::{EngineError, EngineResult};
 use crate::git::Git;
 use crate::lifetime::{self, Reuse};
+use crate::prompts;
+use crate::prompts::instructions::Agent;
 use crate::spec::{self, SpecInput};
 use crate::state::RunState;
 use crate::state::ids::IdKind;
@@ -156,6 +160,9 @@ pub struct SessionPlan {
     pub resume: Option<SessionKey>,
     /// Counts up from 0 in start order, like [`Ask::slot`].
     pub slot: u32,
+    /// What its row is called when its step can't say, such as the label a workflow's script
+    /// gave the agent. Made unique in the run like any other.
+    pub label: Option<String>,
 }
 
 /// A started session. Steer or stop it with [`Host::control`]; its events are recorded as
@@ -208,6 +215,21 @@ struct Again {
     worker: WorkerRef,
 }
 
+impl Seat {
+    /// The seat of a planned session, which is never blind, so it loads your plugins as its
+    /// CLI does.
+    fn of(plan: &SessionPlan) -> Self {
+        Self {
+            at: plan.at.clone(),
+            role: plan.role,
+            step: plan.step,
+            card: plan.card.clone(),
+            independent_of: Vec::new(),
+            isolated: false,
+        }
+    }
+}
+
 /// What makes two sessions the same one for replay: the step and its round, the role, the
 /// card, the worker, the step name, and the slot.
 #[derive(Debug, Clone, PartialEq)]
@@ -220,6 +242,8 @@ struct Identity {
     slot: u32,
     /// Only for the label, when the card has no record yet.
     item: Option<String>,
+    /// The label its plan gave it, which wins over the step's pattern.
+    given_label: Option<String>,
 }
 
 impl Identity {
@@ -232,6 +256,7 @@ impl Identity {
             step: plan.step,
             slot: plan.slot,
             item: None,
+            given_label: plan.label.clone(),
         }
     }
 
@@ -282,6 +307,16 @@ pub(crate) fn round_window(state: &RunState, at: Option<&StepAt>) -> (u64, Optio
         .map(|step| step.since)
         .min();
     (from, until)
+}
+
+/// The starting agent as the prompt's assembly knows it.
+fn agent_of(identity: &Identity) -> Agent<'_> {
+    Agent {
+        role: identity.role,
+        step: identity.step,
+        at: identity.at.as_ref(),
+        card: identity.card.as_ref(),
+    }
 }
 
 /// Everything a session start needs, from an ask or a session plan.
@@ -408,6 +443,7 @@ impl Host {
         let Some(budget) = due else {
             return Ok(());
         };
+        let which = limit_words(budget.limit.as_ref());
         self.record(None, None, RunEventKind::Budget(BudgetEvent::Run(budget)))?;
         let settled = self.read(|state| {
             state.run.paused || state.run.pause_requested.is_some() || state.run.finished.is_some()
@@ -415,24 +451,39 @@ impl Host {
         if settled || !lock(&self.shared.run_meter).start_holding() {
             return Ok(());
         }
+        // On autopilot a reached limit never waits for you, and `stop` says
+        // to end there; otherwise the run pauses until you raise the limit.
+        let stops = self.approval_mode() == ApprovalMode::Autopilot
+            || self.settings().limits.budget.when_reached == OnHit::Stop;
         let host = self.clone();
         self.shared.tasks.spawn(async move {
-            let text = "The run's budget is spent, so the run pauses here. Raise budget.run_usd \
-                        (or the run limit you use) and resume it to carry on.";
+            let text = if stops {
+                format!(
+                    "The run reached {which}, so it ends here with its work kept. Raise the \
+                     limit with /limits and ask again for what's left."
+                )
+            } else {
+                format!(
+                    "The run reached {which}, so it pauses here with its work kept. Raise the \
+                     limit with /limits and resume it to carry on."
+                )
+            };
             let note = Note {
                 level: NoteLevel::Warn,
-                text: text.to_owned(),
+                text,
             };
-            let paused = host
-                .record(None, None, RunEventKind::Note(note))
-                .and_then(|_| commands::begin_pause_by(&host, false, Party::Rules));
-            let result = match paused {
-                Ok(true) => commands::finish_pause(&host).await,
-                Ok(false) => Ok(()),
+            let noted = host.record(None, None, RunEventKind::Note(note));
+            let result = match noted {
                 Err(err) => Err(err),
+                Ok(_) if stops => commands::stop_by(&host, Party::Rules).await,
+                Ok(_) => match commands::begin_pause_by(&host, false, Party::Rules) {
+                    Ok(true) => commands::finish_pause(&host).await,
+                    Ok(false) => Ok(()),
+                    Err(err) => Err(err),
+                },
             };
             if let Err(err) = result {
-                tracing::error!(%err, "the run's budget is spent, and pausing the run failed");
+                tracing::error!(%err, "the run's limit is spent, and settling the run failed");
             }
         });
         Ok(())
@@ -499,6 +550,7 @@ impl Host {
             step: Some(S::NAME),
             slot: ask.slot,
             item: ask.item.clone(),
+            given_label: None,
         };
         let seat = Seat {
             at: ask.at.clone(),
@@ -578,6 +630,9 @@ impl Host {
             part(InputPartKind::StepInput, "input", &ask.input),
         ];
         parts.extend(ask.parts.iter().cloned());
+        if earlier.is_none() {
+            parts = prompts::writer::written(self, agent_of(&identity), parts).await?;
+        }
         let launched = self.launch(Launch {
             asked: Some(ask.worker.clone()).filter(|asked| *asked != identity.worker),
             identity: identity.clone(),
@@ -608,6 +663,7 @@ impl Host {
             worker,
             spec,
             retries_on_mismatch: 1,
+            ask_limit: self.ask_limit(),
             control: Some(steering),
             cancel,
             normalize: S::normalize,
@@ -872,19 +928,54 @@ impl Host {
     /// has its seat taken at once. With `StandIns::None` the last vendor end comes back, for the
     /// card's own recovery to hand the card on. `Err(Stalled)` when nobody can take the seat.
     pub async fn run_session(&self, plan: SessionPlan, stand_ins: StandIns) -> EngineResult<Ran> {
-        let seat = Seat {
-            at: plan.at.clone(),
-            role: plan.role,
-            step: plan.step,
-            card: plan.card.clone(),
-            independent_of: Vec::new(),
-            // A planned session is never blind, so it loads your plugins as its CLI does.
-            isolated: false,
-        };
+        let seat = Seat::of(&plan);
         let allowed = stand_ins == StandIns::Allowed;
-        let mut running = self
+        let running = self
             .start_with(plan.clone(), None, allowed.then_some(&seat))
             .await?;
+        self.see_through(plan, seat, allowed, running).await
+    }
+
+    /// [`Self::run_session`] for sessions that start side by side under one step, as a workflow
+    /// script's agents do, where no count kept by the caller could tell them apart in the log.
+    /// The session takes the next free slot among those like it, and two that start together
+    /// each get their own. `known` is the session this very call started before the run
+    /// stopped, which carries on in place of a new one, and `started` hears the session's key
+    /// as soon as it has one, so the caller can keep it for that.
+    pub async fn run_session_in_turn(
+        &self,
+        mut plan: SessionPlan,
+        known: Option<&SessionKey>,
+        stand_ins: StandIns,
+        started: &(dyn Fn(&SessionKey) -> EngineResult<()> + Sync),
+    ) -> EngineResult<Ran> {
+        let seat = Seat::of(&plan);
+        let allowed = stand_ins == StandIns::Allowed;
+        let running = {
+            let _turn = self.shared.start_turn.lock().await;
+            let identity = Identity::of(&plan);
+            plan.slot = self.read(|state| {
+                let alike: Vec<&SessionRecord> = identity.alike(state).collect();
+                let place =
+                    known.and_then(|key| alike.iter().position(|session| session.key == *key));
+                u32::try_from(place.unwrap_or(alike.len())).unwrap_or(u32::MAX)
+            });
+            self.start_with(plan.clone(), None, allowed.then_some(&seat))
+                .await?
+        };
+        started(&running.key)?;
+        self.see_through(plan, seat, allowed, running).await
+    }
+
+    /// Waits for a started session's end, and has it go again while it ends for a vendor
+    /// reason and someone can take it.
+    async fn see_through(
+        &self,
+        plan: SessionPlan,
+        seat: Seat,
+        allowed: bool,
+        mut running: Running,
+    ) -> EngineResult<Ran> {
         loop {
             let (key, worker) = (running.key.clone(), running.worker.clone());
             let end = running.ended().await?;
@@ -953,6 +1044,10 @@ impl Host {
             identity.worker = taker;
         }
         self.admitted().await?;
+        let mut plan = plan;
+        if earlier.is_none() {
+            plan.parts = prompts::writer::written(self, agent_of(&identity), plan.parts).await?;
+        }
         let running = identity.worker.clone();
         let Launched {
             key,
@@ -1215,7 +1310,7 @@ impl Host {
         if matches!(access, Access::ReadOnly | Access::NoTools) {
             return Ok(());
         }
-        let (goal, plan, solo_card) = self.read(|state| {
+        let (goal, plan, solo_card, own_steps) = self.read(|state| {
             let plan = state
                 .checkpoints
                 .last_decided(CheckpointKind::Plan, None)
@@ -1229,15 +1324,24 @@ impl Host {
             let solo_card = card
                 .and_then(|card| state.cards.get(card))
                 .is_some_and(|record| record.spec.kind == CardKind::Solo);
-            (state.goal.approved.is_some(), plan, solo_card)
+            // A workflow run by its own steps carries its plan in its file or script, so no
+            // plan approval of the engine's stands before its workers.
+            let own_steps = state
+                .workflows
+                .root
+                .as_ref()
+                .and_then(|root| state.workflows.by_id.get(root))
+                .and_then(|record| record.from.as_ref())
+                .is_some_and(|from| from.as_str() == crate::script::PHASES_NAME);
+            (state.goal.approved.is_some(), plan, solo_card, own_steps)
         });
         if !goal {
             return Err(EngineError::Refused(
-                "build and spike sessions wait for the approved goal".to_owned(),
+                "build and experiment sessions wait for the approved goal".to_owned(),
             ));
         }
         let solo_run = self.shared.mode == RunMode::Solo;
-        if access == Access::Build && !solo_card && !solo_run && !plan {
+        if access == Access::Build && !solo_card && !solo_run && !plan && !own_steps {
             return Err(EngineError::Refused(
                 "build sessions wait for the approved plan".to_owned(),
             ));
@@ -1247,6 +1351,9 @@ impl Host {
 
     /// The session's label in the chat, the panel, and the views (`crate::labels`).
     fn agent_label(&self, key: &SessionKey, identity: &Identity, family: &str) -> String {
+        if let Some(given) = &identity.given_label {
+            return self.read(|state| crate::labels::given_label(state, key, given));
+        }
         self.read(|state| {
             crate::labels::session_label(
                 state,
@@ -1285,6 +1392,7 @@ impl Host {
         let settings = self.shared.settings.clone();
         let mut lease = None;
         let mut kept_label = None;
+        let mut carries_on_in_role = false;
         let (key, resume, continuing) = match &earlier {
             Some(record) => (
                 record.key.clone(),
@@ -1302,9 +1410,16 @@ impl Host {
                         if same && session.vendor_session.is_some() {
                             kept_label.clone_from(&session.started.label);
                         }
-                        session.vendor_session.clone()
+                        let in_role = session.started.role == identity.role;
+                        session
+                            .vendor_session
+                            .clone()
+                            .map(|vendor| (vendor, in_role))
                     })
                 });
+                // Asked to carry on in its own role, the session already read that role's frame.
+                carries_on_in_role = asked.as_ref().is_some_and(|(_, in_role)| *in_role);
+                let asked = asked.map(|(vendor, _)| vendor);
                 let vendor_session = match asked {
                     Some(vendor_session) => Some(vendor_session),
                     None => {
@@ -1420,6 +1535,12 @@ impl Host {
             viewer: viewer.clone(),
         });
         let status_part = status_part || status.is_none();
+        // A session carrying on already read its frame and instructions.
+        let parts = if continuing || carries_on_in_role {
+            parts
+        } else {
+            prompts::assemble::head(self, &agent_of(&identity), parts)
+        };
         let built = self
             .prompt(&key, &viewer, status_part, continuing, parts)
             .and_then(|(prompt, deliveries)| {
@@ -1450,8 +1571,32 @@ impl Host {
                         goal_sha256,
                         status_file,
                         blind,
+                        own_workflow: identity
+                            .card
+                            .as_ref()
+                            .is_some_and(|card| self.shared.may_run_its_own_workflow(card)),
+                        autopilot: self.approval_mode() == ApprovalMode::Autopilot,
                     },
                 )?;
+                let mut spec = spec;
+                let own = identity
+                    .card
+                    .as_ref()
+                    .and_then(|card| self.shared.claude_codes_own(card));
+                if let Some(own) = own.filter(|_| spec.access == Access::Build) {
+                    own.apply(&mut spec);
+                }
+                let solo_task = identity.card.as_ref().is_some_and(|card| {
+                    self.read(|state| {
+                        state
+                            .cards
+                            .get(card)
+                            .is_some_and(|record| record.spec.kind == CardKind::Solo)
+                    })
+                });
+                if solo_task {
+                    crate::ultra::in_solo(&settings, &mut spec);
+                }
                 Ok((spec, deliveries))
             });
         match built {
@@ -1493,8 +1638,9 @@ impl Host {
         limits
     }
 
-    /// The task's parts, the status summary when asked for, and the messages waiting for
-    /// this session. A resumed session gets a short note instead of its task again.
+    /// The task's parts, the word on questions while the run decides without you, the status
+    /// summary when asked for, and the messages waiting for this session. A resumed session
+    /// gets a short note instead of its task again.
     fn prompt(
         &self,
         key: &SessionKey,
@@ -1508,6 +1654,22 @@ impl Host {
         } else {
             task
         };
+        // Told up front, right after its instructions, so an agent decides where it would have
+        // ended its turn with a question. One that asks anyway is told again when it does
+        // (`ask_limit`), and a session carried on, which starts with no instructions, was told
+        // when it began.
+        let after_instructions = parts
+            .iter()
+            .take_while(|part| part.kind.instructs())
+            .count();
+        if !continuing && after_instructions > 0 && self.ask_limit().is_some() {
+            let text = crate::prompts::files::text(self, crate::prompts::board::DECIDE_FIRST);
+            let text = text.trim_end();
+            parts.insert(
+                after_instructions,
+                part(InputPartKind::Rules, "decide, don't ask", text),
+            );
+        }
         if status_part {
             let text = self.status_text(viewer);
             parts.push(part(InputPartKind::Status, "status", &text));
@@ -1517,6 +1679,22 @@ impl Host {
         let (messages, deliveries) = delivery::for_session_start(self, key)?;
         parts.extend(messages);
         Ok((parts, deliveries))
+    }
+
+    /// How many times an agent that ends its turn with a question is told to decide and carry
+    /// on: `approvals.ask_limit` while the run decides without you, in auto and on autopilot,
+    /// where 0 means take the recommended option at once. In supervised mode nobody replies
+    /// for you, so there is none.
+    pub(crate) fn ask_limit(&self) -> Option<u8> {
+        self.approval_mode()
+            .goes_ahead()
+            .then(|| u8::try_from(self.settings().approvals.ask_limit).unwrap_or(u8::MAX))
+    }
+
+    /// The run's own mode once Shift+Tab gave it one, else what your settings say.
+    fn approval_mode(&self) -> ApprovalMode {
+        self.read(|state| state.run.approval_mode)
+            .unwrap_or_else(|| self.settings().approvals.mode())
     }
 
     /// Gives the live session its control channel and writes its first status file. A session
@@ -1686,5 +1864,18 @@ pub fn crashed_end(message: &str) -> SessionEnd {
         structured: None,
         last_message: None,
         raw_log: None,
+    }
+}
+
+/// The run's limit in words, such as "its $5.00 spend limit".
+fn limit_words(limit: Option<&BudgetAmount>) -> String {
+    let Some(limit) = limit else {
+        return "the limit you set".to_owned();
+    };
+    match limit.unit {
+        BudgetUnit::Usd => format!("its ${:.2} spend limit", limit.amount),
+        BudgetUnit::Tokens => format!("its {} token limit", limit.amount.round()),
+        BudgetUnit::Quota => format!("its {:.0}% plan usage limit", limit.amount * 100.0),
+        BudgetUnit::Minutes => format!("its {} minute limit", limit.amount.round()),
     }
 }

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{QuotaBoard, QuotaReading};
+use argonauts_core::limits::{QuotaAnswer, QuotaBoard, QuotaReading};
 use argonauts_core::names::VendorId;
 use argonauts_core::{
     Adapter, CommandSpec, PARENT_SESSION_ENV_VARS, Paths, create_private_dir_all,
@@ -154,13 +154,13 @@ pub fn has_quota_probe(adapter: &dyn Adapter) -> bool {
 /// Why a probe gave no reading, so `doctor` can say why the chip shows `?`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProbeError {
-    #[error("{0} has no free way to read its quota")]
+    #[error("{0} has no free way to read its plan usage")]
     NoProbe(String),
     #[error("could not run {program}: {detail}")]
     Run { program: String, detail: String },
     #[error("{program} gave no answer within {seconds}s")]
     TimedOut { program: String, seconds: u64 },
-    #[error("{program} said nothing about quota ({status})")]
+    #[error("{program} said nothing about plan usage ({status})")]
     Unreadable { program: String, status: String },
 }
 
@@ -172,18 +172,38 @@ pub async fn run_probe(prober: &Prober) -> Option<QuotaReading> {
 
 /// Like [`run_probe`], with another timeout.
 pub async fn run_probe_within(prober: &Prober, timeout: Duration) -> Option<QuotaReading> {
-    match try_probe(prober, timeout).await {
-        Ok(reading) => Some(reading),
+    run_probe_answer(prober, timeout)
+        .await
+        .and_then(|answer| answer.binding().cloned())
+}
+
+/// Every window the probe read, and the plan.
+async fn run_probe_answer(prober: &Prober, timeout: Duration) -> Option<QuotaAnswer> {
+    match try_probe_answer(prober, timeout).await {
+        Ok(answer) => Some(answer),
         Err(err) => {
-            tracing::warn!("quota probe: {err}");
+            tracing::warn!("plan usage probe: {err}");
             None
         }
     }
 }
 
-/// Runs the probe and says why when there's no reading. The whole process group is killed
-/// once the adapter can read an answer, or at the timeout, so an app server never lingers.
+/// Runs the probe and says why when there's no reading. Gives the window that binds soonest.
 pub async fn try_probe(prober: &Prober, timeout: Duration) -> Result<QuotaReading, ProbeError> {
+    let program = prober.adapter.binary().to_owned();
+    let answer = try_probe_answer(prober, timeout).await?;
+    answer.binding().cloned().ok_or(ProbeError::Unreadable {
+        program,
+        status: "it reported no window".to_owned(),
+    })
+}
+
+/// Runs the probe and says why when there's no answer. The whole process group is killed
+/// once the adapter can read an answer, or at the timeout, so an app server never lingers.
+pub async fn try_probe_answer(
+    prober: &Prober,
+    timeout: Duration,
+) -> Result<QuotaAnswer, ProbeError> {
     let adapter = prober.adapter.as_ref();
     let folder = ProbeFolder::new(&prober.workdir).map_err(|detail| ProbeError::Run {
         program: adapter.binary().to_owned(),
@@ -245,7 +265,7 @@ pub async fn try_probe(prober: &Prober, timeout: Duration) -> Result<QuotaReadin
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 
     match answer {
-        Ok(Ok(reading)) => Ok(reading),
+        Ok(Ok(answer)) => Ok(answer),
         Ok(Err(status)) => Err(ProbeError::Unreadable {
             program: name,
             status,
@@ -285,7 +305,7 @@ async fn exchange(
     child: &mut Child,
     spec: &CommandSpec,
     adapter: &dyn Adapter,
-) -> Result<QuotaReading, String> {
+) -> Result<QuotaAnswer, String> {
     // An app server answers only while its stdin stays open, so it's held until the end.
     let mut input_pipe = child.stdin.take();
     if let (Some(stdin), Some(input)) = (input_pipe.as_mut(), &spec.stdin) {
@@ -307,15 +327,15 @@ async fn exchange(
     while let Ok(Some(line)) = lines.next_line().await {
         text.push_str(&line);
         text.push('\n');
-        if let Some(reading) = adapter.parse_quota_probe(&text) {
-            return Ok(reading);
+        if let Some(answer) = adapter.parse_quota_probe_answer(&text) {
+            return Ok(answer);
         }
     }
     let status = child
         .wait()
         .await
         .map_or_else(|err| err.to_string(), |status| status.to_string());
-    adapter.parse_quota_probe(&text).ok_or(status)
+    adapter.parse_quota_probe_answer(&text).ok_or(status)
 }
 
 fn write_spec_files(spec: &CommandSpec) -> Result<(), String> {
@@ -374,7 +394,7 @@ impl FileQuotaBoard {
         match self.store.read() {
             Ok(file) => Some(file),
             Err(err) => {
-                tracing::warn!("the quota board could not read vendors.json: {err}");
+                tracing::warn!("the plan usage board could not read vendors.json: {err}");
                 None
             }
         }
@@ -382,20 +402,15 @@ impl FileQuotaBoard {
 }
 
 impl QuotaBoard for FileQuotaBoard {
-    /// Keeps the newest reading, so a late one from another process never replaces it.
+    /// Keeps the newest reading of each window, so a late one from another process never
+    /// replaces it.
     fn observe(&self, reading: QuotaReading) {
         let stored = self.store.update(|file| {
             let entry = file.vendors.entry(reading.vendor.0.clone()).or_default();
-            let newer = entry
-                .quota
-                .as_ref()
-                .is_none_or(|old| old.observed_at <= reading.observed_at);
-            if newer {
-                entry.quota = Some(reading);
-            }
+            entry.observe_quota(reading);
         });
         if let Err(err) = stored {
-            tracing::warn!("the quota board could not write vendors.json: {err}");
+            tracing::warn!("the plan usage board could not write vendors.json: {err}");
         }
     }
 
@@ -414,27 +429,67 @@ impl QuotaBoard for FileQuotaBoard {
             .unwrap_or_default()
     }
 
-    /// Runs this board's prober for `vendor`, else the registered one, and records what it
-    /// reads. `None` means unknown, which the status line shows as `?`.
+    fn windows(&self, vendor: &VendorId) -> Vec<QuotaReading> {
+        self.read()
+            .and_then(|file| Some(file.vendors.get(&vendor.0)?.quota_windows()))
+            .unwrap_or_default()
+    }
+
+    fn plan(&self, vendor: &VendorId) -> Option<String> {
+        self.read()?.vendors.remove(&vendor.0)?.plan
+    }
+
+    fn observe_plan(&self, vendor: &VendorId, plan: String) {
+        let stored = self.store.update(|file| {
+            file.vendors.entry(vendor.0.clone()).or_default().plan = Some(plan);
+        });
+        if let Err(err) = stored {
+            tracing::warn!("the plan usage board could not write vendors.json: {err}");
+        }
+    }
+
+    /// Runs this board's prober for `vendor`, else the registered one, and records each window
+    /// it reads and the plan. Gives the window that binds soonest. `None` means unknown, which
+    /// the status line shows as `?`.
     fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>> {
         let prober = self.prober(vendor);
         let vendor = vendor.clone();
         Box::pin(async move {
-            let mut reading = run_probe_within(&prober?, self.probe_timeout).await?;
-            reading.vendor = vendor;
-            self.observe(reading.clone());
-            Some(reading)
+            let mut answer = run_probe_answer(&prober?, self.probe_timeout).await?;
+            for reading in &mut answer.windows {
+                reading.vendor = vendor.clone();
+            }
+            if let Some(plan) = answer.plan.take() {
+                self.observe_plan(&vendor, plan);
+            }
+            for reading in &answer.windows {
+                self.observe(reading.clone());
+            }
+            answer.binding().cloned()
         })
     }
 }
 
-/// Probes every vendor whose harness worker registered a free probe, so the status line and
-/// the planner start with readings instead of `?`. The app calls it once its workers exist. A
-/// vendor with a reading or a probe in the last [`PROBE_EVERY`] is skipped. Returns the new
-/// readings.
-pub async fn probe_at_start(board: &dyn QuotaBoard, home: &Paths) -> Vec<QuotaReading> {
-    let since = OffsetDateTime::now_utc() - PROBE_EVERY;
-    probe_each(board, &VendorsStore::new(home), &probed_vendors(), since).await
+/// Reads again, once at start, each of `vendors` whose harness worker registered a free probe
+/// and whose newest reading is older than `stale_after`, so the line doesn't open on an old
+/// reading. The app calls it once the crew's workers exist. A vendor never read is left to its
+/// first session, and one probed within `stale_after` by any process is skipped. Returns the
+/// new readings.
+pub async fn probe_at_start(
+    board: &dyn QuotaBoard,
+    home: &Paths,
+    vendors: &[VendorId],
+    stale_after: Duration,
+) -> Vec<QuotaReading> {
+    let free = probed_vendors();
+    let stale: Vec<VendorId> = vendors
+        .iter()
+        .filter(|vendor| free.contains(vendor))
+        .filter(|vendor| board.get(vendor).is_some() || !board.windows(vendor).is_empty())
+        .cloned()
+        .collect();
+    let since = OffsetDateTime::now_utc() - stale_after;
+    probe_each(board, &VendorsStore::new(home), &stale, since).await
 }
 
 async fn probe_each(
@@ -487,7 +542,7 @@ fn claim_probe(store: &VendorsStore, vendor: &VendorId, since: OffsetDateTime) -
     });
     claimed.unwrap_or_else(|err| {
         // The reading couldn't be recorded either, so there's no use probing.
-        tracing::warn!("could not claim a quota probe in vendors.json: {err}");
+        tracing::warn!("could not claim a plan usage probe in vendors.json: {err}");
         false
     })
 }
@@ -692,6 +747,81 @@ mod tests {
 
     fn vendor(id: &str) -> VendorId {
         VendorId(id.into())
+    }
+
+    fn window(vendor: &str, window: &str, used: f64, observed_at: OffsetDateTime) -> QuotaReading {
+        QuotaReading {
+            window: Some(window.into()),
+            ..reading(vendor, used, observed_at)
+        }
+    }
+
+    #[test]
+    fn the_board_keeps_one_reading_per_vendor_and_window() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::new(home.path());
+        let board = FileQuotaBoard::new(&paths);
+        let codex = vendor("codex");
+        let t = OffsetDateTime::now_utc();
+        board.observe(window("codex", "five_hour", 0.92, t));
+        board.observe(window("codex", "weekly", 0.41, t));
+        board.observe(window(
+            "codex",
+            "weekly",
+            0.43,
+            t + time::Duration::seconds(1),
+        ));
+        board.observe(window("claude-code", "five_hour", 0.2, t));
+        let windows: Vec<_> = FileQuotaBoard::new(&paths)
+            .windows(&codex)
+            .into_iter()
+            .map(|r| (r.window.unwrap(), r.used.unwrap()))
+            .collect();
+        assert_eq!(
+            windows,
+            [("five_hour".to_owned(), 0.92), ("weekly".to_owned(), 0.43)]
+        );
+        // What wants one number per vendor gets the fullest window.
+        assert_eq!(
+            board.get(&codex).unwrap().window.as_deref(),
+            Some("five_hour")
+        );
+        assert_eq!(board.all().len(), 2);
+        board.observe_plan(&codex, "plus".into());
+        assert_eq!(board.plan(&codex).as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn an_old_vendors_json_reads_as_one_window() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::new(home.path());
+        let t = OffsetDateTime::now_utc();
+        let old = serde_json::json!({"vendors": {"codex": {
+            "quota": reading("codex", 0.7, t), "health": null}}});
+        std::fs::create_dir_all(home.path()).unwrap();
+        std::fs::write(
+            VendorsStore::new(&paths).path(),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let board = FileQuotaBoard::new(&paths);
+        let codex = vendor("codex");
+        assert_eq!(board.get(&codex).unwrap().used, Some(0.7));
+        assert_eq!(board.windows(&codex).len(), 1);
+        // The old reading stays as its window when another window comes.
+        board.observe(window(
+            "codex",
+            "weekly",
+            0.2,
+            t + time::Duration::seconds(1),
+        ));
+        let windows: Vec<_> = board
+            .windows(&codex)
+            .into_iter()
+            .map(|r| r.window.unwrap())
+            .collect();
+        assert_eq!(windows, ["five_hour", "weekly"]);
+        assert_eq!(board.get(&codex).unwrap().used, Some(0.7));
     }
 
     #[test]
@@ -1040,6 +1170,42 @@ mod tests {
         assert_eq!(readings, vec![(read.clone(), Some(0.2))]);
         assert_eq!(lines(&log), 5);
         assert_eq!(app.get(&read).unwrap().used, Some(0.2));
+    }
+
+    #[tokio::test]
+    async fn at_start_only_a_stale_reading_with_a_free_probe_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("home"));
+        let log = dir.path().join("probes.log");
+        let (stale, fresh, unread) = (
+            vendor("start-stale"),
+            vendor("start-fresh"),
+            vendor("start-unread"),
+        );
+        for each in [&stale, &fresh, &unread] {
+            register_prober(each, logging_prober(dir.path(), &log, Some(0.4), 0));
+        }
+        let board = FileQuotaBoard::new(&paths);
+        let hours_ago = |hours: i64| OffsetDateTime::now_utc() - time::Duration::hours(hours);
+        for (each, at) in [(&stale, hours_ago(3)), (&fresh, hours_ago(0))] {
+            board.observe(reading(&each.0, 0.2, at));
+        }
+        let crew = [stale.clone(), fresh.clone(), unread.clone()];
+        let stale_after = Duration::from_secs(30 * 60);
+        let read = probe_at_start(&board, &paths, &crew, stale_after).await;
+        assert_eq!(read.len(), 1, "{read:?}");
+        assert_eq!(read[0].vendor, stale);
+        assert_eq!(
+            lines(&log),
+            1,
+            "the fresh one and the one never read weren't probed"
+        );
+        // Once read, a second start in the same half hour leaves it alone.
+        assert!(
+            probe_at_start(&board, &paths, &crew, stale_after)
+                .await
+                .is_empty()
+        );
     }
 
     #[test]

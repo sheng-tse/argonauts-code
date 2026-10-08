@@ -40,28 +40,30 @@ mod tests {
 
     #[test]
     fn context_rows_list_live_sessions_with_cap_calls_spend_and_rotations() {
-        let card = argonauts_core::CardId::new("card-001").unwrap();
+        let card = argonauts_core::CardId::new("task-001").unwrap();
         let first = SessionKey::numbered(1);
         let second = SessionKey::numbered(2);
         let reviewer = SessionKey::numbered(3);
         let events = vec![
-            session_started(0, &first, Some(&card), RoleName::Owner, "claude-code"),
+            session_started(0, &first, Some(&card), RoleName::Worker, "claude-code"),
             agent(
                 1,
                 &first,
                 AgentEvent::ContextFill {
                     used: 199_000,
                     size: Some(200_000),
+                    sent: None,
                 },
             ),
             session_ended(2, &first, EndReason::ContextFull, 1_000),
-            session_started(3, &second, Some(&card), RoleName::Owner, "claude-code"),
+            session_started(3, &second, Some(&card), RoleName::Worker, "claude-code"),
             agent(
                 4,
                 &second,
                 AgentEvent::ContextFill {
                     used: 42_000,
                     size: Some(1_000_000),
+                    sent: None,
                 },
             ),
             agent(
@@ -81,7 +83,7 @@ mod tests {
         assert_eq!(rows.len(), 2, "the rotated-away session is gone");
         let owner = &rows[0];
         assert_eq!(owner.session, second);
-        assert_eq!(owner.label, "owner · card-001");
+        assert_eq!(owner.label, "worker · task-001");
         assert_eq!(
             (owner.used, owner.window, owner.cap),
             (42_000, Some(1_000_000), Some(200_000))

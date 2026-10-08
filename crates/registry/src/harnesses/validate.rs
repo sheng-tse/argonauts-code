@@ -108,7 +108,7 @@ fn check_identity(manifest: &HarnessManifest, check: &mut ManifestCheck) {
         ));
     }
     if manifest.family.trim().is_empty() {
-        check.error("family is empty. Name the model family, or \"from-model\"");
+        check.error("provider is empty. Name the provider, or \"from-model\"");
     }
 }
 
@@ -451,14 +451,14 @@ fn check_acp(manifest: &HarnessManifest, acp: &AcpProfile, check: &mut ManifestC
     if let QuotaRoute::SameLoginAs(other) = &acp.quota
         && *other == manifest.id
     {
-        check.error("quota can't count against the profile's own login");
+        check.error("plan usage can't count against the profile's own login");
     }
     let role_lists = [&manifest.read_only_args, &manifest.build_args];
     if acp.model == ModelRoute::LaunchArg && role_lists.iter().any(|args| !uses(args, "model")) {
         check.error("model = \"launch-arg\" needs {model} in read_only_args and build_args");
     }
     if acp.modes.build.is_none() {
-        check.warn("[harness.acp] has no build mode, so this agent can't own a card");
+        check.warn("[harness.acp] has no build mode, so this agent can't own a task");
     }
     if acp.usage.is_empty() {
         check.warn("[harness.acp] reads no usage, so spend on this agent isn't counted");

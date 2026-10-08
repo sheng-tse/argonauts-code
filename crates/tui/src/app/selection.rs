@@ -466,7 +466,7 @@ mod tests {
         "",
         "      fn main() {}",
         "",
-        "⟦●⟧ GPT on Codex · owner",
+        "⟦●⟧ GPT on Codex · worker",
     ];
 
     #[test]

@@ -244,6 +244,37 @@ fn a_full_row_keeps_its_last_cell() {
     assert!(String::from_utf8(out).unwrap().ends_with("\x1b[K\x1b[0m"));
 }
 
+/// An artifact's whole address in a history row is a link the terminal can open (OSC 8),
+/// with the address as its text, so the row reads the same where links aren't known. One a
+/// narrow row cut short stays plain.
+#[test]
+fn an_artifacts_address_is_written_as_a_link() {
+    let url = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
+    let written = |text: &str| {
+        let mut out = Vec::new();
+        write_line(&mut out, &Line::from(text.to_owned()), 120).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let out = written(&format!("  ⎿  Published {url}"));
+    assert!(
+        out.contains(&format!(
+            "  ⎿  Published \x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\"
+        )),
+        "{out:?}"
+    );
+    let cut = written(&format!("  ⎿  Published {}", &url[..url.len() - 9]));
+    assert!(!cut.contains("\x1b]8"), "{cut:?}");
+    assert!(!written("see https://claude.ai/settings").contains("\x1b]8"));
+
+    // The screen shows the row as it would without the link.
+    let mut shown = vt100::Parser::new(2, 120, 0);
+    shown.process(out.as_bytes());
+    assert_eq!(
+        shown.screen().contents().trim_end(),
+        format!("  ⎿  Published {url}")
+    );
+}
+
 #[test]
 fn a_full_row_keeps_its_last_cell_on_screen() {
     let mut term = terminal(4, 2);

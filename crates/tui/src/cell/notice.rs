@@ -216,6 +216,31 @@ impl HistoryCell for ResultLine {
     }
 }
 
+/// A dim line hung under the result line before it, at its words' column, such as
+/// `     Carried over: the last 6 exchanges in full` under `  ⎿  Set model to …`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HungLine {
+    pub text: String,
+}
+
+impl HungLine {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+impl HistoryCell for HungLine {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let mut lines = text_rows(&self.text, Tone::Dim, ctx, vec![indent(BODY_COL)], BODY_COL);
+        fit_lines(&mut lines, usize::from(ctx.width));
+        lines
+    }
+
+    fn continues_previous(&self) -> bool {
+        true
+    }
+}
+
 /// The lines left in scrollback on exit, like `Reattach with: argonauts`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExitNote {
@@ -294,14 +319,14 @@ mod tests {
         let mut theme = Theme::dark();
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
-        let notice = Notice::new(Tone::Warning, "Merged card-002 into main")
+        let notice = Notice::new(Tone::Warning, "Merged task-002 into main")
             .with_glyph("◆")
             .with_detail("Interrupted · What should Argonauts do instead?")
             .with_detail("second");
         let lines = notice.lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "◆ Merged card-002 into main\n  ⎿  Interrupted · What should Argonauts\n     do instead?\n     second"
+            "◆ Merged task-002 into main\n  ⎿  Interrupted · What should Argonauts\n     do instead?\n     second"
         );
         assert_eq!(
             lines[0].spans[0].style,
@@ -330,10 +355,10 @@ mod tests {
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
         let lines =
-            Notice::answered("Merge card-002 into main?", "merged by you, 10:58").lines(&ctx);
+            Notice::answered("Merge task-002 into main?", "merged by you, 10:58").lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "◆ Merge card-002 into main? · merged by you, 10:58"
+            "◆ Merge task-002 into main? · merged by you, 10:58"
         );
         assert_eq!(
             lines[0].spans[0].style,

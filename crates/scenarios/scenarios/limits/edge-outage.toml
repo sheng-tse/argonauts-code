@@ -1,5 +1,5 @@
 # The fake Claude Code starts the work, then is overloaded: it retries twice, then gives up
-# with a 529, the way the real one ends a session in an outage. Codex can take its card.
+# with a 529, the way the real one ends a session in an outage. Codex can take its task.
 
 [version]
 claude = "2.1.284 (Claude Code)"

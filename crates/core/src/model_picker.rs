@@ -156,21 +156,20 @@ pub struct EffortSlider {
     /// The All hands toggle beside the slider, which Tab flips. Only the default agent's
     /// slider offers it, since it decides how every task runs, not how one role thinks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub all_hands: Option<AllHandsToggle>,
+    pub ultracode: Option<UltracodeToggle>,
 }
 
-/// `triage.all_hands` as `/effort` shows it: on or off now, and as the slider opened.
+/// `ultracode` as `/effort` shows it: on or off now, and as the slider opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AllHandsToggle {
+pub struct UltracodeToggle {
     pub on: bool,
     pub was: bool,
 }
 
-impl AllHandsToggle {
-    pub const NAME: &'static str = "All hands";
+impl UltracodeToggle {
+    pub const NAME: &'static str = "Ultracode";
     /// What it does, shown while it's on.
-    pub const MEANS: &'static str =
-        "every task goes to the crew, and the lead designs its workflow";
+    pub const MEANS: &'static str = "a workflow for every real request";
 
     pub fn new(on: bool) -> Self {
         Self { on, was: on }
@@ -218,7 +217,7 @@ impl EffortSlider {
             chosen,
             default,
             cli_default,
-            all_hands: None,
+            ultracode: None,
         })
     }
 
@@ -237,21 +236,21 @@ impl EffortSlider {
             chosen: 0,
             default: None,
             cli_default: false,
-            all_hands: None,
+            ultracode: None,
         }
     }
 
     /// Offers the All hands toggle, as it is now.
-    pub fn with_all_hands(self, on: bool) -> Self {
+    pub fn with_ultracode(self, on: bool) -> Self {
         Self {
-            all_hands: Some(AllHandsToggle::new(on)),
+            ultracode: Some(UltracodeToggle::new(on)),
             ..self
         }
     }
 
     /// Tab, where the slider offers the toggle.
-    pub fn toggle_all_hands(&mut self) {
-        if let Some(toggle) = self.all_hands.as_mut() {
+    pub fn toggle_ultracode(&mut self) {
+        if let Some(toggle) = self.ultracode.as_mut() {
             toggle.on = !toggle.on;
         }
     }
@@ -493,13 +492,13 @@ mod tests {
     fn a_model_with_no_levels_has_a_view_without_them() {
         let worker: WorkerRef = "claude-code/haiku".parse().unwrap();
         let mut view =
-            EffortSlider::without_levels(None, worker, "Haiku 4.5").with_all_hands(false);
+            EffortSlider::without_levels(None, worker, "Haiku 4.5").with_ultracode(false);
         assert_eq!((view.level(), view.description()), (None, None));
         assert!(!view.is_fixed() && !view.moves() && !view.is_default());
         assert!(!view.raise() && !view.lower());
-        view.toggle_all_hands();
+        view.toggle_ultracode();
         assert!(
-            view.all_hands
+            view.ultracode
                 .is_some_and(|toggle| toggle.on && toggle.changed())
         );
         let value = serde_json::to_value(&view).unwrap();

@@ -54,7 +54,7 @@ mod tests {
 
     const REVIEW_PANEL: &str = r#"
 name: review-panel
-description: Two reviewers from other families; an adjudicator only if they disagree
+description: Two reviewers from other providers; an adjudicator only if they disagree
 params: { target: diff, reviewers: 2 }
 phases:
   - name: Review

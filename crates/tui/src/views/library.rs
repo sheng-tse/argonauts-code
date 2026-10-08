@@ -1,10 +1,11 @@
 //! The workflow library: every workflow Argonauts can run, from the built-ins, your files, and
-//! the repo's. It shows one, copies one out to edit, and diffs your file with the built-in.
+//! the repo's. It shows one, copies one out to edit, diffs your file with the built-in, and
+//! opens your file's page.
 //! With no run to show, `/workflows` and Ctrl+T open it. The workflow view has no tab for it,
 //! as Claude Code's has none.
 
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
-use argonauts_core::input::WorkflowAction;
+use argonauts_core::input::{SlashCommand, WorkflowAction};
 use argonauts_core::views::{WorkflowFile, WorkflowOrigin};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -56,7 +57,7 @@ impl Library {
             Column::new("Workflow", cells(&|row| clean(&row.name))),
             Column::new("Notes", cells(&notes)).keep(2),
             Column::new("From", cells(&|row| clean(&row.source))).keep(1),
-            Column::new("Description", cells(&|row| clean(&row.description))).flex(),
+            Column::new("Description", cells(&|row| clean(about(row)))).flex(),
         ];
         fit_columns(columns, width, GAP)
     }
@@ -80,10 +81,10 @@ impl Library {
             heading.push(Span::styled(column.cell(column.heading), dim));
         }
         let mut lines = vec![Line::from(heading)];
-        for i in 0..rows.len() {
+        for (i, row) in rows.iter().enumerate() {
             let selected = i == self.list.selected;
             let mut spans = vec![if selected {
-                Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
+                Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
             } else {
                 Span::raw("  ")
             }];
@@ -92,8 +93,9 @@ impl Library {
                     spans.push(Span::raw(" ".repeat(GAP)));
                 }
                 let style = match column.heading {
-                    "Workflow" if selected => theme.style(Role::Label),
+                    "Workflow" if selected => theme.style(Role::Card),
                     "Workflow" => theme.style(Role::Text),
+                    "Description" if row.problem.is_some() => theme.style(Role::Warning),
                     _ => dim,
                 };
                 spans.push(Span::styled(column.cell(&column.cells[i]), style));
@@ -119,6 +121,7 @@ impl Library {
             ("c copy", 4),
             ("C copy to repo", 2),
             ("d diff", 3),
+            ("e edit", 4),
             (panes::ESC_BACK, 0),
         ])
     }
@@ -172,6 +175,7 @@ impl Library {
                 return self.file(WorkflowAction::CopyToProject);
             }
             KeyCode::Char('d') if plain => return self.diff(),
+            KeyCode::Char('e') if plain => return self.edit(),
             _ => {}
         }
         let len = self.rows().len();
@@ -202,6 +206,23 @@ impl Library {
             }),
             None => ViewOutcome::Consumed,
         }
+    }
+
+    /// Your file opens on its page. A built-in one has no file to change until you copy it.
+    fn edit(&mut self) -> ViewOutcome {
+        let Some(row) = self.selected() else {
+            return ViewOutcome::Consumed;
+        };
+        if row.origin == WorkflowOrigin::BuiltIn {
+            let name = clean(&row.name);
+            self.said = Some(format!("{name} is built in. c copies it to edit"));
+            return ViewOutcome::Consumed;
+        }
+        ViewOutcome::Send(UiCommand::Slash {
+            command: SlashCommand::WorkflowEdit {
+                name: row.name.clone(),
+            },
+        })
     }
 
     /// Only your file can differ from the built-in, so the others say why there's no diff at
@@ -263,6 +284,11 @@ fn notes(row: &WorkflowFile) -> String {
     notes.join(" · ")
 }
 
+/// What the row says of itself, or why `/<name>` won't run it.
+fn about(row: &WorkflowFile) -> &str {
+    row.problem.as_deref().unwrap_or(&row.description)
+}
+
 fn clean(text: &str) -> String {
     sanitize_line(text).trim().to_owned()
 }
@@ -311,22 +337,23 @@ mod tests {
             origin,
             source: match origin {
                 WorkflowOrigin::BuiltIn => "built in".to_owned(),
-                WorkflowOrigin::Yours => format!("~/.argonauts/workflows/{name}.yaml"),
-                WorkflowOrigin::Repo => format!(".argonauts/workflows/{name}.yaml"),
+                WorkflowOrigin::Yours => format!("~/.argonauts/workflows/{name}.toml"),
+                WorkflowOrigin::Repo => format!(".argonauts/workflows/{name}.toml"),
             },
             description: format!("The {name} workflow"),
-            text: format!("name: {name}\nphases: []\n"),
+            text: format!("name = \"{name}\"\n\n[[step]]\nname = \"Do\"\nrole = \"workers\"\n"),
             edited,
-            in_use: name == "coordinated-crew",
+            in_use: name == "orchestrator",
+            problem: None,
         }
     }
 
     fn view() -> LibraryView {
         LibraryView::new(vec![
             file("solo", WorkflowOrigin::BuiltIn, None),
-            file("coordinated-crew", WorkflowOrigin::Yours, Some(true)),
+            file("orchestrator", WorkflowOrigin::Yours, Some(true)),
             file("mine", WorkflowOrigin::Repo, None),
-            file("peer-crew", WorkflowOrigin::Yours, Some(false)),
+            file("council", WorkflowOrigin::Yours, Some(false)),
         ])
     }
 
@@ -353,10 +380,7 @@ mod tests {
         let mut view = view();
         assert_eq!(view.library.list.selected, 1);
         let copied = sent(press(&mut view, KeyCode::Char('c')));
-        assert_eq!(
-            copied,
-            ("coordinated-crew".to_owned(), WorkflowAction::Copy)
-        );
+        assert_eq!(copied, ("orchestrator".to_owned(), WorkflowAction::Copy));
         let to_repo = sent(press(&mut view, KeyCode::Char('C')));
         assert_eq!(to_repo.1, WorkflowAction::CopyToProject);
         let diffed = sent(press(&mut view, KeyCode::Char('d')));
@@ -370,7 +394,8 @@ mod tests {
             match press(&mut view, code) {
                 ViewOutcome::Open(pager) => {
                     let text = format!("{pager:?}");
-                    assert!(text.contains("name: coordinated-crew"), "{text}");
+                    assert!(text.contains("[[step]]"), "{text}");
+                    assert!(text.contains("orchestrator ·"), "{text}");
                 }
                 other => panic!("{other:?}"),
             }
@@ -403,7 +428,7 @@ mod tests {
         assert!(view.library.said.clone().unwrap().contains("no built-in"));
         press(&mut view, KeyCode::Down);
         let asked = sent(press(&mut view, KeyCode::Char('d')));
-        assert_eq!(asked, ("peer-crew".to_owned(), WorkflowAction::Diff));
+        assert_eq!(asked, ("council".to_owned(), WorkflowAction::Diff));
         assert!(view.library.said.is_none());
         let workflows = view.library.workflows.clone().unwrap();
         assert!(view.accept(&ViewData::WorkflowLibrary {
@@ -417,6 +442,24 @@ mod tests {
                 .unwrap()
                 .contains("matches the built-in")
         );
+    }
+
+    #[test]
+    fn e_opens_your_files_page_and_says_how_to_edit_a_built_in() {
+        let mut view = view();
+        match press(&mut view, KeyCode::Char('e')) {
+            ViewOutcome::Send(UiCommand::Slash {
+                command: SlashCommand::WorkflowEdit { name },
+            }) => assert_eq!(name, "orchestrator"),
+            other => panic!("{other:?}"),
+        }
+        press(&mut view, KeyCode::Up);
+        assert!(matches!(
+            press(&mut view, KeyCode::Char('e')),
+            ViewOutcome::Consumed
+        ));
+        let said = view.library.said.clone().unwrap();
+        assert_eq!(said, "solo is built in. c copies it to edit");
     }
 
     #[test]
@@ -448,7 +491,31 @@ mod tests {
             .collect();
         assert!(lines[0].contains("Workflow"), "{lines:?}");
         assert!(lines[2].contains("in use · edited"), "{lines:?}");
-        assert!(lines[2].contains("~/.argonauts/workflows/coordinated-crew.yaml"));
+        assert!(lines[2].contains("~/.argonauts/workflows/orchestrator.toml"));
         assert!(lines[1].contains("built in"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_workflow_named_like_a_command_says_so_in_the_warning_colour() {
+        let mut clash = file("simplify", WorkflowOrigin::Repo, None);
+        clash.problem = Some("/simplify is already a command".to_owned());
+        let library = LibraryView::new(vec![file("solo", WorkflowOrigin::BuiltIn, None), clash]);
+        let theme = Theme::dark();
+        let lines = library.library.lines(140, &theme);
+        let said = |line: &Line<'_>| -> String {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        };
+        assert!(said(&lines[2]).contains("/simplify is already a command"));
+        assert!(!said(&lines[2]).contains("The simplify workflow"));
+        let warned = lines[2]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("already a command"))
+            .unwrap();
+        assert_eq!(warned.style, theme.style(Role::Warning));
+        assert!(said(&lines[1]).contains("The solo workflow"));
     }
 }

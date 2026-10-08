@@ -50,7 +50,7 @@ pub fn with_run_owners(
 fn run_owner(run: Option<&RunState>, card: &CardId, owner: &WorkerRef) -> Option<WorkerRef> {
     run?.sessions
         .values()
-        .filter(|session| session.card.as_ref() == Some(card) && session.role == RoleName::Owner)
+        .filter(|session| session.card.as_ref() == Some(card) && session.role == RoleName::Worker)
         .filter(|session| session.worker.worker == owner.worker)
         .max_by_key(|session| session.started)
         .map(|session| session.worker.clone())
@@ -227,7 +227,7 @@ fn plan_item(plan: &PlanPacket, names: &DisplayNames) -> AboutCell {
 
     if !plan.graph.cards.is_empty() {
         item.blank();
-        item.dim("Cards");
+        item.dim("Tasks");
         for (card, depth) in by_depth(&plan.graph.cards) {
             item.push(card_line(card, names), Role::Text, depth + 1);
         }
@@ -240,21 +240,25 @@ fn plan_item(plan: &PlanPacket, names: &DisplayNames) -> AboutCell {
     );
 
     item.blank();
-    let mut budget = Table::new(vec![
-        Column::new("budget", 0).flex(),
-        Column::new("", 0).right(),
-    ]);
-    for line in &plan.budget.lines {
-        budget.row(vec![
-            TableCell::text(budget_line(line.line)),
-            TableCell::text(words::amount(&line.amount)),
+    if plan.budget.is_unlimited() {
+        item.dim("No limit set");
+    } else {
+        let mut budget = Table::new(vec![
+            Column::new("limit", 0).flex(),
+            Column::new("", 0).right(),
         ]);
+        for line in &plan.budget.lines {
+            budget.row(vec![
+                TableCell::text(budget_line(line.line)),
+                TableCell::text(words::amount(&line.amount)),
+            ]);
+        }
+        budget.row(vec![
+            TableCell::dim("total"),
+            TableCell::text(words::amount(&plan.budget.total)),
+        ]);
+        item.table(budget);
     }
-    budget.row(vec![
-        TableCell::dim("total"),
-        TableCell::text(words::amount(&plan.budget.total)),
-    ]);
-    item.table(budget);
     if plan.budget.estimate_high > 0.0 {
         item.dim(format!(
             "Estimated {} to {}",
@@ -338,12 +342,12 @@ fn merge_item(merge: &MergePacket, run: Option<&RunState>, names: &DisplayNames)
     // The branch's name is plumbing, so the heading names the run.
     let mut item = AboutCell::new(format!("Merge the run into {into}"));
     let mut table = Table::new(vec![
-        Column::new("card", 0),
+        Column::new("task", 0),
         Column::new("title", 0).flex(),
         Column::new("files", 4).right(),
         Column::new("lines", 0),
-        Column::new("owner", 3).cut_to(AGENT_FLOOR),
-        Column::new("gates", 0),
+        Column::new("worker", 3).cut_to(AGENT_FLOOR),
+        Column::new("checks", 0),
         Column::new("review", 1),
     ]);
     for row in &merge.rows {
@@ -390,7 +394,7 @@ fn merge_item(merge: &MergePacket, run: Option<&RunState>, names: &DisplayNames)
             TableCell::text("Run records"),
             TableCell::dim(merge.conductor.files_changed.to_string()),
             TableCell::text(words::lines(&merge.conductor)),
-            TableCell::dim("Argonauts"),
+            TableCell::dim("Argonauts Code"),
             TableCell::text(""),
             TableCell::text(""),
         ]);
@@ -423,8 +427,8 @@ fn handoff_item(plan: &HandoffPlan, names: &DisplayNames) -> AboutCell {
     let mut item = AboutCell::new(format!("Who can continue {} {}", plan.card, plan.title));
     let mut table = Table::new(vec![
         Column::new("candidate", 0).flex(),
-        Column::new("quota left", 0),
-        Column::new("cards like this", 1),
+        Column::new("plan usage left", 0),
+        Column::new("tasks like this", 1),
         Column::new("est. cost", 2),
     ]);
     for candidate in &plan.candidates {
@@ -445,7 +449,7 @@ fn handoff_item(plan: &HandoffPlan, names: &DisplayNames) -> AboutCell {
     if table.rows.is_empty() {
         item.dim("No other agent can take it under this role's rules.");
         item.dim(format!(
-            "To relax the rule for this card, /reassign {} <agent>.",
+            "To relax the rule for this task, /reassign {} <agent>.",
             plan.card
         ));
     }
@@ -458,7 +462,7 @@ fn vendor_down_item(down: &VendorDownPacket, offset: UtcOffset) -> AboutCell {
     item.line(&down.evidence);
     if let Some(at) = down.test_at {
         item.dim(format!(
-            "A test card tries it again at {}",
+            "A test task tries it again at {}",
             words::clock(at, offset)
         ));
     }
@@ -559,9 +563,9 @@ fn plan_name(label: PlanLabel) -> String {
 fn budget_line(line: BudgetLineKind) -> &'static str {
     match line {
         BudgetLineKind::GoalAndPlan => "goal and plan",
-        BudgetLineKind::Spikes => "spikes",
+        BudgetLineKind::Spikes => "experiments",
         BudgetLineKind::Contracts => "contracts",
-        BudgetLineKind::Cards => "cards",
+        BudgetLineKind::Cards => "tasks",
         BudgetLineKind::Review => "review",
         BudgetLineKind::Integration => "integration",
         BudgetLineKind::Reserve => "reserve",
@@ -624,7 +628,7 @@ fn by_depth(cards: &[CardSpec]) -> Vec<(&CardSpec, usize)> {
 fn totals(cards: usize, combined: &DiffStat) -> String {
     format!(
         "{} · {}",
-        words::plural(u32::try_from(cards).unwrap_or(u32::MAX), "card", "cards"),
+        words::plural(u32::try_from(cards).unwrap_or(u32::MAX), "task", "tasks"),
         words::diffstat(combined)
     )
 }

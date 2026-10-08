@@ -55,7 +55,7 @@ pub fn check_mutation(
     let problems = validate(new);
     if !problems.is_empty() {
         return Err(format!(
-            "the new version breaks a recipe rule: {}",
+            "the new version breaks a rule for learned workflows: {}",
             problems.join("; ")
         ));
     }
@@ -111,7 +111,7 @@ fn weakens(change: &Change) -> Option<String> {
     if by_name(&change.before) || by_name(&change.after) {
         return Some(
             "it swaps the whole workflow by name, so its steps can't be checked for a removed \
-             gate or reviewer"
+             check or reviewer"
                 .to_owned(),
         );
     }
@@ -120,7 +120,7 @@ fn weakens(change: &Change) -> Option<String> {
     for ((kind, was), (_, now)) in before.iter().zip(&after) {
         if now < was {
             return Some(format!(
-                "it removes a `{}` step; gates, reviewers, judges, and approvals can be added, \
+                "it removes a `{}` step; checks, reviewers, judges, and approvals can be added, \
                  never removed",
                 kind_name(*kind)
             ));
@@ -159,7 +159,7 @@ fn weakened_step(old: &Step, new: &Step) -> Option<&'static str> {
     }
     if old.different_family_from.is_some() && old.different_family_from != new.different_family_from
     {
-        return Some("drops the other-family rule");
+        return Some("drops the other-provider rule");
     }
     if old.role != new.role || old.roles != new.roles || old.workers != new.workers {
         return Some("replaces who does it");
@@ -189,30 +189,30 @@ fn kind_name(kind: argonauts_core::workflow::StepKind) -> String {
 
 /// A per-card budget or fan-out cap above the ceilings you set.
 fn over_ceiling(change: &Change, settings: &Settings) -> Option<String> {
-    if change.class != ChangeClass::CardBudget {
+    if change.class != ChangeClass::TaskBudget {
         return None;
     }
     let after = change.after.as_ref()?;
     let key = change.key.as_str();
-    let budget = &settings.budget;
+    let budget = &settings.limits.budget;
     let ceilings: Vec<(&str, Option<f64>)> = match key {
-        "budget.per_card_usd" => vec![
-            ("budget.run_usd", budget.run_usd),
-            ("limits.usd_per_day", settings.limits.usd_per_day),
+        "limits.per_task_usd" => vec![
+            ("limits.spend_per_run", budget.spend_per_run),
+            ("limits.spend_per_day", settings.limits.spend_per_day),
         ],
-        "budget.per_card_tokens" => {
-            vec![("budget.run_tokens", budget.run_tokens.map(|t| t as f64))]
+        "limits.per_task_tokens" => {
+            vec![("limits.run_tokens", budget.run_tokens.map(|t| t as f64))]
         }
-        "budget.per_card_quota" => vec![("budget.run_quota", budget.run_quota)],
-        "budget.per_card_minutes" => vec![("budget.run_minutes", budget.run_minutes)],
+        "limits.per_task_plan_usage" => vec![("limits.run_plan_usage", budget.run_plan_usage)],
+        "limits.per_task_minutes" => vec![("limits.run_minutes", budget.run_minutes)],
         _ => vec![("native_fanout", fanout_ceiling(settings.native_fanout))],
     };
     match after {
         Value::Number(number) => {
             let value = number.as_f64()?;
-            if value <= 0.0 && key.starts_with("budget.") {
+            if value <= 0.0 && key.starts_with("limits.") {
                 return Some(format!(
-                    "it sets `{key}` to {value}, and a budget must be above 0"
+                    "it sets `{key}` to {value}, and a limit must be above 0"
                 ));
             }
             ceilings.into_iter().find_map(|(ceiling, limit)| {
@@ -225,7 +225,7 @@ fn over_ceiling(change: &Change, settings: &Settings) -> Option<String> {
             })
         }
         Value::String(switch) if switch == "off" => None,
-        _ if key.starts_with("budget.") => Some(format!("`{key}` must be a number, not {after}")),
+        _ if key.starts_with("limits.") => Some(format!("`{key}` must be a number, not {after}")),
         _ => ceilings
             .into_iter()
             .find(|(_, limit)| limit.is_some())
@@ -263,8 +263,8 @@ fn mixes_families(change: &Change) -> Option<String> {
     for (i, family) in after.iter().enumerate() {
         if after[..i].contains(family) {
             return Some(format!(
-                "it puts two workers of the `{family}` family in the crew; crew members keep \
-                 distinct model families"
+                "it puts two agents from `{family}` in the crew; crew members keep \
+                 distinct providers"
             ));
         }
     }
@@ -277,7 +277,7 @@ fn mixes_families(change: &Change) -> Option<String> {
     };
     if distinct(&before) >= 2 && distinct(&after) < 2 {
         return Some(
-            "it leaves the crew a single model family, so nobody can review across families"
+            "it leaves the crew a single provider, so nobody can review across providers"
                 .to_owned(),
         );
     }

@@ -58,13 +58,13 @@ fn app_crash_recovery_rebuilds_from_log() -> anyhow::Result<()> {
     // When only the supervisor dies, its exit watcher stops the owner. A kill that
     // takes the watcher too, such as the OOM killer's, leaves the owner for recovery to find.
     let watchers = exit_watchers(supervisor)?;
-    assert!(!watchers.is_empty(), "no exit watcher guards the owner");
+    assert!(!watchers.is_empty(), "no exit watcher guards the worker");
     for watcher in watchers {
         kill_hard(watcher)?;
     }
     kill_hard(supervisor)?;
     wait_pid_gone(supervisor)?;
-    assert!(pid_alive(orphan), "the owner died with its supervisor");
+    assert!(pid_alive(orphan), "the worker died with its supervisor");
     let before = run_events(&run_dir)?;
     // A crash can tear the last line; recovery skips it.
     let mut journal = OpenOptions::new()
@@ -94,7 +94,7 @@ fn app_crash_recovery_rebuilds_from_log() -> anyhow::Result<()> {
         );
     }
 
-    let owners = wait_until("the owner's session to resume", || {
+    let owners = wait_until("the worker's session to resume", || {
         let owners = claude_sessions(&scenario, "acceptEdits")?;
         Ok((owners.len() >= 2).then_some(owners))
     })?;
@@ -106,7 +106,7 @@ fn app_crash_recovery_rebuilds_from_log() -> anyhow::Result<()> {
         .collect();
     assert!(
         live.len() <= 1,
-        "more than one process for one vendor session: {live:?}"
+        "more than one process for one agent session: {live:?}"
     );
     scenario.shot(&pty, "app_crash_recovery_rebuilds_from_log")?;
     Ok(())
@@ -141,7 +141,10 @@ fn app_parked_run_exits_and_restarts_on_answer() -> anyhow::Result<()> {
         )
     })?;
     if let Ok(pid) = supervisor_pid(&run_dir) {
-        assert_ne!(pid, parked_supervisor, "the parked supervisor never exited");
+        assert_ne!(
+            pid, parked_supervisor,
+            "the waiting supervisor never exited"
+        );
     }
     scenario.shot(&pty, "app_parked_run_exits_and_restarts_on_answer")?;
     Ok(())
@@ -175,13 +178,13 @@ fn app_doctor_lists_long_parked_runs() -> anyhow::Result<()> {
     let output = run_cli(&scenario, &["doctor"])?;
     let text = output_text(&output);
     assert!(
-        text.contains(&format!("! {} has been parked for 9 days", long.run)),
+        text.contains(&format!("! {} has been waiting for 9 days", long.run)),
         "{text}"
     );
-    assert!(text.contains("Parked runs never expire."), "{text}");
+    assert!(text.contains("Waiting runs never expire."), "{text}");
     assert!(
         !text.contains(recent.run.as_str()),
-        "a run parked for a day is listed:\n{text}"
+        "a run waiting for a day is listed:\n{text}"
     );
     // Reading journals starts nothing.
     let sessions = all_sessions(&scenario)?;

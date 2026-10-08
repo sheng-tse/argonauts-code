@@ -5,4 +5,4 @@ expression: text(&view.lines)
 ───────────────────────────────────────────────────────────────────────── solo ─
 ❯ Try "review the last commit"
 ────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ auto mode on (shift+tab to cycle)                 pr-tools: 檢查清單已載入
+  ⏵⏵ auto mode on               ● Claude 5h ▄▄▄▄▄▄ 53%  pr-tools: 檢查清單已載入

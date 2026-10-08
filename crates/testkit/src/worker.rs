@@ -487,6 +487,7 @@ pub struct FakeDirectory {
     uninstalled: Mutex<Vec<String>>,
     /// Worker ids whose CLI keeps your plugins out of an isolated session.
     isolating: Mutex<Vec<String>>,
+    taking_tools: Mutex<Vec<String>>,
 }
 
 impl FakeDirectory {
@@ -515,6 +516,12 @@ impl FakeDirectory {
     /// `worker`'s CLI keeps your plugins out of an isolated session, as Claude Code's does.
     pub fn isolating(&self, worker: &str) {
         lock(&self.isolating).push(worker.to_owned());
+    }
+
+    /// `worker`'s CLI takes Argonauts' tools when driven, as Claude Code's does, so a
+    /// conversation with it is the CLI itself.
+    pub fn taking_tools(&self, worker: &str) {
+        lock(&self.taking_tools).push(worker.to_owned());
     }
 
     pub fn fake(&self, worker: &str) -> Option<Arc<FakeWorker>> {
@@ -553,6 +560,10 @@ impl WorkerDirectory for FakeDirectory {
             .collect()
     }
 
+    fn takes_session_tools(&self, worker: &WorkerRef) -> bool {
+        lock(&self.taking_tools).contains(&worker.worker)
+    }
+
     /// As the real directory: a CLI marked [`FakeDirectory::isolating`], or an endpoint, which
     /// answers with no tools, so nothing of yours reaches it.
     fn isolates(&self, worker: &WorkerRef) -> bool {
@@ -572,7 +583,7 @@ pub fn session_spec(worker: &str, access: Access, workdir: &Path) -> SessionSpec
         run: None,
         card: None,
         key: SessionKey::numbered(1),
-        role: RoleName::Default,
+        role: RoleName::Main,
         step: None,
         worker: worker
             .parse()
@@ -584,7 +595,7 @@ pub fn session_spec(worker: &str, access: Access, workdir: &Path) -> SessionSpec
         prompt: Vec::new(),
         json_schema: None,
         resume: None,
-        lifetime: SessionLifetime::Card,
+        lifetime: SessionLifetime::Task,
         keep_input_open: false,
         limits: SessionLimits::default(),
         goal_sha256: None,
@@ -592,9 +603,11 @@ pub fn session_spec(worker: &str, access: Access, workdir: &Path) -> SessionSpec
         compaction: Compaction::Inherit,
         native_fanout: NativeFanout::default(),
         isolated: false,
+        autopilot: false,
         status_file: None,
         env: Vec::new(),
         asking: None,
+        cli_workflow: argonauts_core::worker::CliWorkflow::default(),
     }
 }
 

@@ -16,7 +16,7 @@ use crate::future::BoxFuture;
 use crate::handoff::CheckpointTag;
 use crate::names::{RoleName, SessionKey, VendorId, WorkerRef};
 use crate::settings::budget::{BudgetAmount, OnHit};
-use crate::settings::handoff::{FallbackEntry, HandoffStrategy};
+use crate::settings::handoff::{FallbackEntry, HandoffStrategy, Pick};
 use crate::steps::card::CardReport;
 use crate::worker::{SandboxProfile, SessionLimits};
 use crate::{CardId, ErrorCategory, RetryReason, RunId, TodoItem};
@@ -64,6 +64,82 @@ pub enum QuotaSource {
     AppServer,
     /// An endpoint's HTTP headers or errors.
     Http,
+}
+
+/// What a quota probe read: every window the vendor reports, and its plan when it names one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuotaAnswer {
+    pub windows: Vec<QuotaReading>,
+    pub plan: Option<String>,
+}
+
+impl QuotaAnswer {
+    /// The window that binds soonest, which is what one number per vendor shows.
+    pub fn binding(&self) -> Option<&QuotaReading> {
+        binding_reading(&self.windows)
+    }
+}
+
+/// A vendor's readings, the newest of each window. A reading that names no window speaks for
+/// the vendor as a whole, so it replaces every window, and the next windowed one replaces it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct QuotaWindows(Vec<QuotaReading>);
+
+impl QuotaWindows {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn readings(&self) -> &[QuotaReading] {
+        &self.0
+    }
+
+    /// Keeps `reading` unless its window has a newer one. Says whether it was kept.
+    pub fn observe(&mut self, reading: QuotaReading) -> bool {
+        let newer = self
+            .0
+            .iter()
+            .all(|known| !same_window(known, &reading) || known.observed_at <= reading.observed_at);
+        if newer {
+            self.put(reading);
+        }
+        newer
+    }
+
+    /// Keeps `reading` whatever its age.
+    pub fn put(&mut self, reading: QuotaReading) {
+        if reading.window.is_none() {
+            self.0.clear();
+        } else {
+            self.0
+                .retain(|known| known.window.is_some() && known.window != reading.window);
+        }
+        self.0.push(reading);
+    }
+
+    /// The window that binds soonest, as [`binding_reading`] picks it.
+    pub fn binding(&self) -> Option<&QuotaReading> {
+        binding_reading(&self.0)
+    }
+}
+
+fn same_window(a: &QuotaReading, b: &QuotaReading) -> bool {
+    a.window.is_none() || b.window.is_none() || a.window == b.window
+}
+
+/// The reading that binds soonest: one that refused work, else the fullest. Between two as
+/// full, the later reset is the one you'd wait for, then the newer reading.
+pub fn binding_reading(readings: &[QuotaReading]) -> Option<&QuotaReading> {
+    readings.iter().max_by(|a, b| {
+        let refused = |r: &QuotaReading| r.status == QuotaStatus::Rejected;
+        let used = |r: &QuotaReading| r.used.unwrap_or(-1.0);
+        refused(a)
+            .cmp(&refused(b))
+            .then(used(a).total_cmp(&used(b)))
+            .then(a.resets_at.cmp(&b.resets_at))
+            .then(a.observed_at.cmp(&b.observed_at))
+    })
 }
 
 /// Circuit-breaker states.
@@ -114,9 +190,25 @@ pub enum HealthSignal {
 
 /// Quota across every run and the app, persisted in `~/.argonauts/vendors.json`.
 pub trait QuotaBoard: Send + Sync {
+    /// Keeps the reading as its vendor's for its window.
     fn observe(&self, reading: QuotaReading);
+    /// The vendor's window that binds soonest, for what wants one number per vendor: the
+    /// handoff, the planner, and the mode line's chip.
     fn get(&self, vendor: &VendorId) -> Option<QuotaReading>;
+    /// One reading per vendor, as `get` gives it.
     fn all(&self) -> Vec<QuotaReading>;
+    /// Every window the vendor reported, one reading each.
+    fn windows(&self, vendor: &VendorId) -> Vec<QuotaReading> {
+        self.get(vendor).into_iter().collect()
+    }
+    /// The account's plan, as the CLI names it.
+    fn plan(&self, vendor: &VendorId) -> Option<String> {
+        let _ = vendor;
+        None
+    }
+    fn observe_plan(&self, vendor: &VendorId, plan: String) {
+        let _ = (vendor, plan);
+    }
     /// Reads quota without spending any, where the vendor allows it (agy `/usage`).
     fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>>;
 }
@@ -166,9 +258,10 @@ pub enum RecoveryAction {
         checkpoint: Option<CheckpointTag>,
     },
     /// Several workers at once, each in its own worktree, sharing the card's remaining budget.
-    /// The first that passes its gates and review wins.
+    /// `pick` says how their results combine.
     Race {
         to: Vec<WorkerRef>,
+        pick: Pick,
         packet: Box<HandoffPacket>,
         checkpoint: Option<CheckpointTag>,
     },
@@ -179,7 +272,7 @@ pub enum RecoveryAction {
         vendor: VendorId,
         until: Option<OffsetDateTime>,
     },
-    /// Apply `budget.on_hit`.
+    /// Apply `limits.when_reached`.
     BudgetHit(OnHit),
     /// Out of attempts.
     Escalate { reason: String },
@@ -250,6 +343,7 @@ pub trait HandoffPlanner: Send + Sync {
         Shortlist {
             strategy: HandoffStrategy::First,
             race_count: 1,
+            pick: Pick::default_for(query.role),
             candidates: self.candidates(query),
         }
     }
@@ -258,8 +352,10 @@ pub trait HandoffPlanner: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shortlist {
     pub strategy: HandoffStrategy,
-    /// Attempts at once for a race.
+    /// How many fallbacks take the task at once (`together`).
     pub race_count: u32,
+    /// How their results combine.
+    pub pick: Pick,
     pub candidates: Vec<Candidate>,
 }
 
@@ -340,4 +436,68 @@ pub struct GateRequest {
 /// Fails closed when the sandbox is missing.
 pub trait GateRunner: Send + Sync {
     fn run(&self, request: GateRequest) -> BoxFuture<'_, GateOutcome>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::datetime;
+
+    fn reading(window: Option<&str>, used: f64, minute: u8) -> QuotaReading {
+        QuotaReading {
+            vendor: VendorId("codex".into()),
+            status: QuotaStatus::Allowed,
+            used: Some(used),
+            resets_at: None,
+            window: window.map(str::to_owned),
+            source: QuotaSource::AppServer,
+            observed_at: datetime!(2026-10-04 12:00 UTC) + time::Duration::minutes(minute.into()),
+            detail: None,
+            wrap_up: false,
+        }
+    }
+
+    fn windows_of(windows: &QuotaWindows) -> Vec<(Option<&str>, Option<f64>)> {
+        windows
+            .readings()
+            .iter()
+            .map(|r| (r.window.as_deref(), r.used))
+            .collect()
+    }
+
+    #[test]
+    fn each_window_keeps_its_newest_reading() {
+        let mut windows = QuotaWindows::default();
+        assert!(windows.observe(reading(Some("five_hour"), 0.5, 1)));
+        assert!(windows.observe(reading(Some("weekly"), 0.4, 1)));
+        assert!(windows.observe(reading(Some("five_hour"), 0.6, 2)));
+        assert!(!windows.observe(reading(Some("five_hour"), 0.1, 0)));
+        assert_eq!(
+            windows_of(&windows),
+            [(Some("weekly"), Some(0.4)), (Some("five_hour"), Some(0.6))]
+        );
+        assert_eq!(windows.binding().unwrap().used, Some(0.6));
+    }
+
+    #[test]
+    fn a_reading_with_no_window_speaks_for_the_whole_vendor() {
+        let mut windows = QuotaWindows::default();
+        windows.observe(reading(Some("five_hour"), 0.5, 1));
+        windows.observe(reading(Some("weekly"), 0.4, 1));
+        windows.observe(reading(None, 1.0, 2));
+        assert_eq!(windows_of(&windows), [(None, Some(1.0))]);
+        windows.observe(reading(Some("weekly"), 0.2, 3));
+        assert_eq!(windows_of(&windows), [(Some("weekly"), Some(0.2))]);
+    }
+
+    #[test]
+    fn a_refused_window_binds_before_a_fuller_one() {
+        let mut refused = reading(Some("weekly"), 0.3, 1);
+        refused.status = QuotaStatus::Rejected;
+        let readings = [reading(Some("five_hour"), 0.9, 1), refused];
+        assert_eq!(
+            binding_reading(&readings).unwrap().window.as_deref(),
+            Some("weekly")
+        );
+    }
 }

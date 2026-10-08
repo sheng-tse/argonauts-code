@@ -127,8 +127,8 @@ fn is_known(family: &str) -> bool {
 /// reviewers, judges, the adjudicator, the approver, and the review ring. Each problem names
 /// the role and the worker.
 ///
-/// Reviewers and the ring compare families only while `review.other_family` is on, and the
-/// approver only while `approvals.approver.different_family` is.
+/// Reviewers and the ring compare families only while `review.other_provider` is on, and the
+/// approver only while `approvals.approver.different_provider` is.
 ///
 /// It asks only `registry.family`, so it agrees with every other family comparison.
 pub fn family_problems(settings: &Settings, registry: &dyn ModelRegistry) -> Vec<String> {
@@ -139,11 +139,11 @@ pub fn family_problems(settings: &Settings, registry: &dyn ModelRegistry) -> Vec
             .map(|r| r.workers.clone())
             .unwrap_or_default()
     };
-    let other_family = settings.review.other_family;
+    let other_provider = settings.review.other_provider;
     let approver = &settings.approvals.approver;
 
     let mut seats: Vec<(&str, WorkerRef)> = Vec::new();
-    if other_family {
+    if other_provider {
         seats.extend(
             role_workers(RoleName::Reviewer)
                 .into_iter()
@@ -160,17 +160,18 @@ pub fn family_problems(settings: &Settings, registry: &dyn ModelRegistry) -> Vec
             .into_iter()
             .map(|w| ("roles.adjudicator", w)),
     );
-    if approver.different_family {
+    if approver.different_provider {
         seats.extend(
             role_workers(RoleName::Approver)
                 .into_iter()
                 .map(|w| ("roles.approver", w)),
         );
         seats.extend(
-            approver
-                .model
-                .clone()
-                .map(|w| ("approvals.approver.model", w)),
+            settings
+                .approvals
+                .approver_model()
+                .cloned()
+                .map(|w| ("approvals.decides", w)),
         );
         seats.extend(
             approver
@@ -179,12 +180,12 @@ pub fn family_problems(settings: &Settings, registry: &dyn ModelRegistry) -> Vec
                 .map(|w| ("approvals.approver.second_model", w)),
         );
     }
-    if other_family && settings.review.assign == ReviewAssignment::Ring {
+    if other_provider && settings.review.assign == ReviewAssignment::Ring {
         seats.extend(
             settings
                 .crew
-                .iter()
-                .cloned()
+                .members()
+                .into_iter()
                 .map(|w| ("the review ring", w)),
         );
     }
@@ -196,8 +197,8 @@ pub fn family_problems(settings: &Settings, registry: &dyn ModelRegistry) -> Vec
         .filter(|(_, worker)| !is_known(&registry.family(worker)))
         .map(|(role, worker)| {
             format!(
-                "{role} has {worker}, whose model family is unknown, and this role compares \
-                 families. Add a `family` to its [[model]] entry in models.toml, or pick \
+                "{role} has {worker}, whose provider is unknown, and this role compares \
+                 providers. Add a `family` to its [[model]] entry in models.toml, or pick \
                  another worker."
             )
         })
@@ -206,6 +207,7 @@ pub fn family_problems(settings: &Settings, registry: &dyn ModelRegistry) -> Vec
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::settings::approvals::Decides;
     use argonauts_core::settings::roles::RoleSettings;
 
     use super::*;
@@ -301,12 +303,13 @@ mod tests {
             RoleName::Adjudicator,
             with_workers(&["opencode/openrouter/z-ai/glm-5", "my-acp-agent/mystery-1"]),
         );
-        settings.approvals.approver.model = Some("my-agent/whatever".parse().unwrap());
+        settings.approvals.decides = Decides::Model("my-agent/whatever".parse().unwrap());
         settings.review.assign = ReviewAssignment::Ring;
         settings.crew = vec![
             "claude-code".parse().unwrap(),
             "opencode/ollama/mystery-7b".parse().unwrap(),
-        ];
+        ]
+        .into();
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("models.toml");
         let harness = |id: &str, family: &str| {
@@ -363,7 +366,7 @@ mod tests {
         );
 
         // With cross-family review off, reviewers and the ring compare nothing.
-        settings.review.other_family = false;
+        settings.review.other_provider = false;
         let problems = family_problems(&settings, &registry);
         assert_eq!(problems.len(), 1, "{problems:#?}");
         assert!(problems[0].starts_with("roles.adjudicator has my-acp-agent/mystery-1, "));

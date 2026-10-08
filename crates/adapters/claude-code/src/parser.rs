@@ -62,6 +62,9 @@ pub struct ClaudeStreamParser {
     leak_checked: bool,
     /// Why Claude Code turned down a tool call, by call id, for the call's own row.
     denials: HashMap<String, String>,
+    /// Claude Code took this session's `initialize`, which says the screen stops background
+    /// tasks one by one. Only then does stopping a turn spare them.
+    spares_background: bool,
     finished: bool,
 }
 
@@ -98,7 +101,10 @@ impl ClaudeStreamParser {
             // the watchdog, so it needs no event, and as an unknown one it would pile up.
             "tool_progress" => Some(Vec::new()),
             // Replies to control requests, by the request each answers.
-            "control_response" => Some(control::from_response(line)),
+            "control_response" => {
+                self.spares_background |= control::opened_by(line);
+                Some(control::from_response(line))
+            }
             // A message's way through the queue: queued, started, completed.
             "command_lifecycle" => {
                 if let Some(uuid) = str_at(line, "command_uuid") {
@@ -270,9 +276,16 @@ impl ClaudeStreamParser {
                 detail: info.clone(),
             }];
         };
-        vec![AgentEvent::Quota {
+        let others = quota::other_windows(info, &reading);
+        let mut events = vec![AgentEvent::Quota {
             reading: self.limits.observe(reading),
-        }]
+        }];
+        events.extend(
+            others
+                .into_iter()
+                .map(|reading| AgentEvent::Quota { reading }),
+        );
+        events
     }
 
     fn on_stream_event(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
@@ -604,6 +617,14 @@ impl StreamParser for ClaudeStreamParser {
         };
         self.on_line(&value)
             .unwrap_or_else(|| vec![AgentEvent::Unknown { raw: value }])
+    }
+
+    fn stop_subagent_line(&self, id: &str) -> Option<String> {
+        self.subagents.task_of(id).map(control::stop_task_line)
+    }
+
+    fn stop_turn_line(&self) -> Option<String> {
+        self.spares_background.then(control::stop_turn_line)
     }
 
     fn parse_stderr_line(&mut self, line: &str) -> Vec<AgentEvent> {

@@ -30,7 +30,7 @@ pub fn check(
         violations.push(violation(
             HardLimit::HeadMoved,
             format!(
-                "the evidence is for a {:?} checkpoint, not this {:?} one",
+                "the evidence is for a {:?} approval, not this {:?} one",
                 evidence.kind, point.kind
             ),
             Vec::new(),
@@ -46,8 +46,8 @@ pub fn check(
     }
     if merge && facts.gates_passed != Some(true) {
         let detail = match facts.gates_passed {
-            Some(_) => "a gate failed",
-            None => "the gates didn't run",
+            Some(_) => "a check failed",
+            None => "the checks didn't run",
         };
         violations.push(violation(HardLimit::GatesFailed, detail, Vec::new()));
     }
@@ -82,7 +82,7 @@ pub fn check(
     let under = |ceiling: f64| {
         facts.spent_today_usd.partial_cmp(&ceiling) == Some(std::cmp::Ordering::Less)
     };
-    if let Some(ceiling) = settings.limits.usd_per_day
+    if let Some(ceiling) = settings.limits.spend_per_day
         && !under(ceiling)
     {
         violations.push(violation(
@@ -151,13 +151,13 @@ fn no_sandbox(settings: &Settings, run_start: &Settings) -> Option<Violation> {
     let detail = if now.ours_off() {
         format!(
             "you set sandbox.mode to {}, so this run's sessions have no sandbox of ours and \
-             every checkpoint asks you",
+             every approval asks you",
             now.as_str()
         )
     } else if started.ours_off() {
         format!(
             "this run started with sandbox.mode {}, so its earlier sessions had no sandbox of \
-             ours and every checkpoint asks you",
+             ours and every approval asks you",
             started.as_str()
         )
     } else {

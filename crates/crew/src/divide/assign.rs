@@ -82,7 +82,7 @@ pub fn assign(mut cards: Vec<CardSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
         let (algorithm, choice) = if settings.divide.single_owner && single.is_some() {
             let choice = single.clone().map(|mut choice| {
                 choice.explored = false;
-                choice.reason = "one owner builds the whole plan".to_owned();
+                choice.reason = "one worker builds the whole plan".to_owned();
                 choice
             });
             (settings.routing.algorithm, choice)
@@ -224,24 +224,24 @@ pub fn touches(owned: &[String], protected: &[String]) -> bool {
 }
 
 /// What the plan checkpoint should flag: cards without an owner, and cards with fewer
-/// reviewers than `review.per_card`.
+/// reviewers than `review.per_task`.
 pub fn shortfalls(graph: &TaskGraph, settings: &Settings) -> Vec<String> {
-    let per_card = settings.review.per_card as usize;
+    let per_task = settings.review.per_task as usize;
     let mut flags = Vec::new();
     for card in &graph.cards {
         if card.owner.is_none() {
             flags.push(format!(
-                "No agent is up and under its quota to own {} (\"{}\").",
+                "No agent is up and under its plan usage to own {} (\"{}\").",
                 card.id, card.title
             ));
-        } else if card.reviewers.len() < per_card {
-            let families = if settings.review.other_family {
-                " from another model family"
+        } else if card.reviewers.len() < per_task {
+            let families = if settings.review.other_provider {
+                " from another provider"
             } else {
                 ""
             };
             flags.push(format!(
-                "{} has {} of {per_card} reviewers{families}.",
+                "{} has {} of {per_task} reviewers{families}.",
                 card.id,
                 card.reviewers.len()
             ));
@@ -287,8 +287,8 @@ fn reviewers_for(
     ring::reviewers(
         &(crew.family)(owner),
         &candidates,
-        review.per_card as usize,
-        review.other_family,
+        review.per_task as usize,
+        review.other_provider,
         offset,
     )
 }
@@ -325,7 +325,8 @@ mod tests {
                 worker("claude-code/opus"),
                 worker("codex/gpt-5.6"),
                 worker("agy/gemini-3.6-pro"),
-            ],
+            ]
+            .into(),
             ..Settings::default()
         };
         settings.routing.explore_rate = 0.0;
@@ -359,12 +360,14 @@ mod tests {
         let owners = |_: &str| -> Vec<Candidate> {
             settings
                 .crew
+                .members()
                 .iter()
                 .map(|worker| Candidate {
                     worker: worker.clone(),
                     record: Some(TrackRecord { passed: 8, of: 10 }),
                     health: HealthState::Healthy,
                     quota_used: None,
+                    plan_limit: None,
                     cost: CostEstimate::Unknown,
                     running_cards: 0,
                     learned: None,
@@ -409,7 +412,7 @@ mod tests {
         let docs = &assignment
             .picks
             .iter()
-            .find(|p| p.card.as_str() == "card-004")
+            .find(|p| p.card.as_str() == "task-004")
             .unwrap();
         assert_eq!(docs.algorithm, RoutingAlgorithm::RoundRobin);
         assert_eq!(docs.choice.reason, "rotating chore, turn 1");
@@ -437,7 +440,7 @@ mod tests {
     #[test]
     fn a_one_family_crew_is_flagged() {
         let mut settings = settings();
-        settings.crew = vec![worker("claude-code/opus"), worker("claude-code/sonnet")];
+        settings.crew = vec![worker("claude-code/opus"), worker("claude-code/sonnet")].into();
         let assignment = assigned(&settings, 1);
         let graph = TaskGraph {
             cards: assignment.cards,
@@ -447,7 +450,7 @@ mod tests {
         assert!(
             flags
                 .iter()
-                .any(|flag| flag.contains("0 of 1 reviewers from another model family"))
+                .any(|flag| flag.contains("0 of 1 reviewers from another provider"))
         );
     }
 }

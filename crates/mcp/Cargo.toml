@@ -11,6 +11,7 @@ publish.workspace = true
 anyhow.workspace = true
 argonauts-core.workspace = true
 argonauts-policy.workspace = true
+argonauts-registry.workspace = true
 jsonschema.workspace = true
 rmcp.workspace = true
 schemars.workspace = true

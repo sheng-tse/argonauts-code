@@ -44,7 +44,7 @@ pub use run::{Flow, Host, StdoutWriter, run};
 const TITLE_PERIOD: Duration = Duration::from_millis(960);
 
 /// The title before a session has one.
-pub const DEFAULT_TITLE: &str = "Argonauts";
+pub const DEFAULT_TITLE: &str = "Argonauts Code";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
@@ -72,14 +72,16 @@ pub enum UiAction {
         card: u64,
         option: usize,
     },
-    /// Esc folded an expanded card into its pinned line.
-    SetAside {
+    /// Enter on a mod pinned above the input: open its tab of the Overview.
+    OpenTab(argonauts_core::settings::ui::WidgetName),
+    /// Esc took a card off the screen with nothing picked.
+    Dismiss {
         card: u64,
     },
     /// Already shown in the mode line.
     ModeChanged(ApprovalMode),
-    /// Esc while work runs. The host decides whether to interrupt a chat turn at once or pause a
-    /// run at a safe point.
+    /// Esc while work runs. The host stops the main agent's turn, or stops a pausing run now.
+    /// A run's agents keep going.
     Interrupt,
     /// ↑ on the first input row while messages are queued. The host puts them back in the
     /// composer once they are really taken back.
@@ -90,6 +92,24 @@ pub enum UiAction {
     StopAgent(crate::bottom::AgentRef),
     /// A second `x` on a run's panel row, with its run id.
     StopRun(String),
+    /// `p` on a run's panel row once a stop was asked: pause it instead, with its run id.
+    PauseRun(String),
+    /// Enter on a draft while an agent's row is selected in the list: the draft is a message
+    /// for that agent. `name` is what its row calls it.
+    MessageAgent {
+        agent: crate::bottom::AgentRef,
+        name: String,
+        text: String,
+    },
+    /// The stop-all chord, pressed twice: every agent running in the background stops.
+    StopAllAgents,
+    /// Ctrl+]: the most recent artifact, in the browser.
+    OpenArtifact,
+    /// A claude.ai page to open in the browser, such as the artifact picked in `/artifacts`.
+    OpenLink {
+        url: String,
+        name: String,
+    },
     OpenTree,
     /// Enter on a run's panel row, with its run id.
     OpenWorkflow(String),
@@ -145,6 +165,9 @@ pub struct Ui<W: Write> {
     overlay: Option<TranscriptOverlay>,
     /// The app's own views, the top one drawn. Esc pops one; an empty stack is the chat.
     views: Vec<Box<dyn crate::views::View>>,
+    /// The open views draw as a panel under the working line, since a command typed while an
+    /// answer ran opened the first of them, and the answer goes on above.
+    views_as_panel: bool,
     /// Whether the terminal shows the alternate screen now. Frames switch it to match what's
     /// open, so a switch's errors have a place to go.
     on_alternate: bool,
@@ -152,6 +175,8 @@ pub struct Ui<W: Write> {
     /// conversation the inline screen would have printed into the terminal's scrollback.
     scrollback: Option<Scrollback>,
     quit: Option<QuitArm>,
+    /// Until when a second press of the stop-all chord stops every background agent.
+    stop_all_armed: Option<Instant>,
     /// Until when a second Esc clears the input.
     clear_armed: Option<Instant>,
     /// The first key of a two-key binding, such as Ctrl+X, as written, and when it came.
@@ -181,6 +206,7 @@ impl<W: Write> Ui<W> {
     ) -> Self {
         let keymap = Keymap::default();
         model.bottom.menus.shortcuts = keymap.shortcut_hints();
+        model.bottom.band.keys = mod_keys(&keymap);
         Self {
             terminal,
             model,
@@ -190,9 +216,11 @@ impl<W: Write> Ui<W> {
             dirty: true,
             overlay: None,
             views: Vec::new(),
+            views_as_panel: false,
             on_alternate: false,
             scrollback: None,
             quit: None,
+            stop_all_armed: None,
             clear_armed: None,
             chord: None,
             modes: None,
@@ -213,6 +241,7 @@ impl<W: Write> Ui<W> {
 
     pub fn set_keymap(&mut self, keymap: Keymap) {
         self.model.bottom.menus.shortcuts = keymap.shortcut_hints();
+        self.model.bottom.band.keys = mod_keys(&keymap);
         self.keymap = keymap;
     }
 
@@ -247,9 +276,30 @@ impl<W: Write> Ui<W> {
         self.started
     }
 
+    /// Opens `view` over the chat, on a screen of its own unless it docks or the views under
+    /// it are a panel.
     pub fn push_view(&mut self, view: Box<dyn crate::views::View>) {
+        if self.views.is_empty() {
+            self.views_as_panel = false;
+        }
         self.views.push(view);
         self.dirty = true;
+    }
+
+    /// Opens `view` as a panel under the working line, as Claude Code's dialogs open: the
+    /// answer keeps running above it, and so does every view opened from it. Over views
+    /// already on their own screen it joins them there.
+    pub fn push_panel(&mut self, view: Box<dyn crate::views::View>) {
+        if self.views.is_empty() {
+            self.views_as_panel = true;
+        }
+        self.views.push(view);
+        self.dirty = true;
+    }
+
+    /// Whether the open views draw as a panel under the working line.
+    pub fn views_in_panel(&self) -> bool {
+        self.views_as_panel && !self.views.is_empty()
     }
 
     pub fn pop_view(&mut self) -> Option<Box<dyn crate::views::View>> {
@@ -325,10 +375,7 @@ impl<W: Write> Ui<W> {
             self.model.bottom.agents.blur();
         }
         self.settle_paste_burst(None, now);
-        // A card that waited for the input to go quiet takes the keys now that it has.
-        if self.model.bottom.hand_keys_to_card(now) {
-            self.dirty = true;
-        }
+        self.settle_card_keys(now);
         let mut wrote = self.update_title(now)?;
         let wanted = self.wants_alternate_screen();
         if wanted != self.on_alternate {
@@ -434,15 +481,23 @@ impl<W: Write> Ui<W> {
             || (!self.views.is_empty() && !self.docked())
     }
 
-    /// Whether the top view draws in the bottom region rather than on its own screen.
+    /// Whether the top view draws in the bottom region rather than on its own screen: one
+    /// that docks by itself, or any view opened as a panel.
     fn docked(&self) -> bool {
-        self.views.last().is_some_and(|view| view.docked())
+        self.views
+            .last()
+            .is_some_and(|view| view.docked() || self.views_as_panel)
     }
 
     /// The docked view's rows at this screen's size, or `None` when no view docks.
     fn dock_lines(&mut self, now: Instant, state: Option<&AppState>) -> Option<Vec<Line<'static>>> {
         let screen = self.terminal.screen_size();
-        let view = self.views.last_mut().filter(|view| view.docked())?;
+        let busy = self.is_busy();
+        let as_panel = self.views_as_panel;
+        let view = self
+            .views
+            .last_mut()
+            .filter(|view| view.docked() || as_panel)?;
         let empty;
         let state = match state {
             Some(state) => state,
@@ -456,14 +511,17 @@ impl<W: Write> Ui<W> {
             state,
             now,
         };
-        let area = Rect::new(
-            0,
-            0,
-            screen.width,
-            crate::views::dock::height(screen.height),
-        );
+        let rows = view
+            .dock_height(screen, &ctx)
+            .unwrap_or_else(|| crate::views::dock::height(screen.height))
+            .min(screen.height.saturating_sub(2));
+        let area = Rect::new(0, 0, screen.width, rows);
         let mut buffer = Buffer::empty(area);
-        view.render(area, &mut buffer, &ctx);
+        if view.docked() {
+            view.render(area, &mut buffer, &ctx);
+        } else {
+            crate::views::dock::render_in_panel(view.as_mut(), area, &mut buffer, &ctx, busy);
+        }
         Some(crate::views::dock::lines(&buffer))
     }
 
@@ -509,14 +567,6 @@ impl<W: Write> Ui<W> {
         }
         if let Some(at) = self.model.bottom.composer.paste_burst_due() {
             sooner(at);
-        }
-        if let Some(at) = self
-            .model
-            .bottom
-            .card_takes_keys_at()
-            .filter(|at| *at > now)
-        {
-            sooner(at.max(earliest));
         }
         next
     }
@@ -606,7 +656,7 @@ impl<W: Write> Ui<W> {
         self.model.is_working() || self.model.bottom.agents.any_working()
     }
 
-    /// A card waits here, even set aside, or somewhere else.
+    /// A card waits here or somewhere else.
     fn needs_you(&self) -> bool {
         self.model.bottom.card.is_some() || self.model.bottom.mode.needs_you > 0
     }
@@ -720,7 +770,7 @@ impl<W: Write> Ui<W> {
         let mut next = if let Some(view) = self.views.last() {
             // A docked view's working line still moves above it, and a notice over the view's
             // footer goes when it expires.
-            let working = view
+            let working = self
                 .docked()
                 .then(|| self.model.bottom.next_change(&ctx))
                 .flatten();
@@ -753,6 +803,17 @@ impl<W: Write> Ui<W> {
         }
         next
     }
+}
+
+/// Each mod's first key, as written, for the line it folds to above the input.
+fn mod_keys(keymap: &Keymap) -> Vec<(argonauts_core::settings::ui::WidgetName, String)> {
+    argonauts_core::settings::ui::WidgetName::ALL
+        .into_iter()
+        .filter_map(|name| {
+            let key = keymap.keys(Action::Widget(name)).into_iter().next()?;
+            Some((name, key))
+        })
+        .collect()
 }
 
 /// A view hides the mode line, so a notice from one of its keys, such as why it can't act

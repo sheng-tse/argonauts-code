@@ -42,6 +42,9 @@ pub struct WorkingLine {
     /// Starts the parentheses with the elapsed time. `Pausing… (esc again to stop now)`
     /// leaves it out and shows its words at once.
     pub timed: bool,
+    /// Esc stops what this line shows: a chat turn, or a run that's pausing. A run's agents
+    /// keep going past Esc, so the mode line makes no such offer for them.
+    pub esc_stops: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -109,6 +112,7 @@ impl WorkingLine {
             stalled_since: None,
             hide_while_text_streams: false,
             timed: true,
+            esc_stops: true,
         }
     }
 

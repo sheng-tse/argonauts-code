@@ -7,7 +7,7 @@ Notes the crew keeps, and the conventions       1 note · 1 flagged waits for yo
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │   Setting              Value  From                                           │
-│ ❯ memory.max_per_card  3      built-in                                       │
+│ ❯ memory.max_per_task  3      built-in                                       │
 │   memory.flagged       "ask"  built-in                                       │
 │                                                                              │
 │                                                                              │
@@ -22,7 +22,7 @@ Notes the crew keeps, and the conventions       1 note · 1 flagged waits for yo
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│   Notes a card may propose                                                   │
+│   Notes a task may propose                                                   │
 │   A safety key: changing it asks you to confirm.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ↑↓ select · tab next tab · ⏎ change · esc back

@@ -6,7 +6,7 @@ use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::DecideWith;
 use time::OffsetDateTime;
 
-use crate::approvals::in_full_auto;
+use crate::approvals::in_autopilot;
 use crate::parts::{Approve, ModelVerdict};
 use crate::rules::{self, RuleVerdict};
 
@@ -32,7 +32,7 @@ pub async fn decide(
     let by_rules = || rules::check(point, evidence, settings, now);
     let by_model = || approver.verdict(point, evidence, settings);
     // Full auto never waits for you, so when no model can check, your rules decide alone.
-    let unchecked = |model: &ModelVerdict| in_full_auto(point) && model.approver.is_none();
+    let unchecked = |model: &ModelVerdict| in_autopilot(point) && model.approver.is_none();
     match decide_with {
         DecideWith::Rules => from_rules(by_rules(), decide_with),
         DecideWith::Model => {

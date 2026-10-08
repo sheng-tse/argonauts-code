@@ -146,5 +146,5 @@ pub fn reply_to(state: &RunState, message: &BlackboardMessage) -> Recipient {
 }
 
 fn owns_card(role: RoleName) -> bool {
-    matches!(role, RoleName::Owner | RoleName::Default | RoleName::Spike)
+    matches!(role, RoleName::Worker | RoleName::Main | RoleName::Spike)
 }

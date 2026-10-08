@@ -75,7 +75,7 @@ pub(crate) async fn criteria_gate(
         title: format!("Goal criteria no acceptance test covers: {list}"),
         state: CardState::Waiting,
         attempts: Vec::new(),
-        last_failure: format!("no acceptance test covers {list}, so the build cards wait"),
+        last_failure: format!("no acceptance test covers {list}, so the build tasks wait"),
     };
     let request = CheckpointRequest {
         at: Some(at.clone()),
@@ -173,13 +173,13 @@ mod tests {
         let mut state = RunState::default();
         add(
             &mut state,
-            "card-001",
+            "task-001",
             CardKind::Build,
             CardState::Waiting,
             &[],
         );
         assert_eq!(phase_now(&state), RunPhase::Build);
-        let for_card = CardId::new("card-001").unwrap();
+        let for_card = CardId::new("task-001").unwrap();
         add(
             &mut state,
             "test-001",
@@ -202,9 +202,9 @@ mod tests {
         let mut state = RunState::default();
         assert!(
             uncovered(&state).is_empty(),
-            "no test cards, nothing to check"
+            "no test tasks, nothing to check"
         );
-        let for_card = CardId::new("card-001").unwrap();
+        let for_card = CardId::new("task-001").unwrap();
         add(
             &mut state,
             "test-001",
@@ -212,11 +212,11 @@ mod tests {
             CardState::Running,
             &["G1"],
         );
-        assert!(uncovered(&state).is_empty(), "not integrated yet");
-        let ready = [CardId::new("card-001").unwrap()];
+        assert!(uncovered(&state).is_empty(), "not merged into the run yet");
+        let ready = [CardId::new("task-001").unwrap()];
         add(
             &mut state,
-            "card-001",
+            "task-001",
             CardKind::Build,
             CardState::Waiting,
             &[],

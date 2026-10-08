@@ -88,7 +88,7 @@ fn app_approval_mode_logged_and_applied() -> anyhow::Result<()> {
     let merge_card = wait_checkpoint(&scenario, CheckpointKind::Merge)?;
     assert_eq!(
         merge_card.mode, mode,
-        "the next checkpoint ignored the change"
+        "the next approval ignored the change"
     );
     scenario.shot(&pty, "app_approval_mode_logged_and_applied")?;
     Ok(())

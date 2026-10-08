@@ -7,28 +7,38 @@
 //! ([`crate::stability`] checks it).
 
 pub mod agent;
+pub mod artifacts;
 pub mod columns;
-pub mod context;
 pub mod crew;
 pub mod dock;
 pub mod follow;
 pub mod goal;
+mod goal_keys;
+pub mod goal_panel;
 pub mod help;
 pub mod layout;
 pub mod learning;
 pub mod library;
+mod line_edit;
 pub mod list;
 pub mod pager;
 pub mod panes;
+pub mod prompts;
 pub mod resume;
 pub mod rewind;
 pub mod session;
 pub mod settings;
-pub mod status;
+pub mod states;
+mod structured;
 #[cfg(test)]
 mod vim_tests;
 pub mod waiting;
 pub mod workflow;
+pub mod workflow_page;
+#[cfg(test)]
+mod workflow_row_tests;
+#[cfg(test)]
+mod workflow_tests;
 
 use std::fmt;
 use std::time::Instant;
@@ -56,6 +66,13 @@ pub trait View: fmt::Debug + Send {
     /// line, and the panel were, rather than on a screen of its own.
     fn docked(&self) -> bool {
         false
+    }
+
+    /// The rows a docked view takes on a screen of this size, when it knows better than the
+    /// usual half: a panel of cards takes only what they need. The caller keeps it on screen.
+    fn dock_height(&mut self, screen: ratatui::layout::Size, ctx: &ViewCtx<'_>) -> Option<u16> {
+        let _ = (screen, ctx);
+        None
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome;
@@ -124,6 +141,13 @@ pub enum ViewOutcome {
     },
     /// A short line in the notice slot, such as why a key did nothing.
     Notice(String),
+    /// Text for the system clipboard, such as an artifact's link.
+    Copy(String),
+    /// A claude.ai page to open in the browser, by the name the notice says it by.
+    OpenLink {
+        url: String,
+        name: String,
+    },
     /// Back to the chat, where the answer shows, sending this on the way.
     SendToChat(UiCommand),
 }
@@ -211,7 +235,7 @@ pub(crate) fn take_over(state: &AppState, run: &RunId, session: &SessionKey) -> 
             run: run.clone(),
             card,
         },
-        None => ViewOutcome::Notice("This agent has no card to take over".to_owned()),
+        None => ViewOutcome::Notice("This agent has no task to take over".to_owned()),
     }
 }
 
@@ -255,7 +279,14 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::Agent { view } => cx
             .out
             .open(agent::AgentView::new((**view).clone()).following(refresh.follower())),
-        ViewData::Context { view } => cx.out.open(context::ContextView::new(view.clone())),
+        // Under its tab of the Overview, beside Status and Usage.
+        ViewData::Context { view } => cx.out.open(
+            crate::overview::OverviewView::new(
+                crate::overview::Tab::Context,
+                cx.model.bottom.band.watch.clone(),
+            )
+            .with_context(view.clone()),
+        ),
         ViewData::Runs {
             runs,
             chats,
@@ -269,6 +300,9 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         // For a picker that closed before they came.
         ViewData::AgentSessions { .. } => {}
         ViewData::Diff { diff } => cx.out.open(pager::Pager::diff(diff.clone())),
+        // A refresh is for a /mods that closed before it came.
+        ViewData::Mods { view } if view.refresh => {}
+        ViewData::Mods { view } => cx.out.open(crate::mods::ModsScreen::new((**view).clone())),
         ViewData::Goal { view } => cx.out.open(goal::GoalView::new((**view).clone())),
         ViewData::Raw { raw } => cx.out.open(pager::Pager::raw(raw.clone())),
         // The crew panel lists every repo's runs itself now.
@@ -285,6 +319,12 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::WorkflowLibrary { workflows, .. } => {
             cx.out.open(library::LibraryView::new(workflows.clone()));
         }
+        // A refresh is for a workflow's page that closed before it came.
+        ViewData::WorkflowPage { page } if page.refresh => {}
+        ViewData::WorkflowPage { page } => {
+            cx.out
+                .open(workflow_page::WorkflowPageView::new((**page).clone()));
+        }
         ViewData::Checkpoints {
             run,
             card,
@@ -294,11 +334,17 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             card.clone(),
             checkpoints.clone(),
         )),
+        // A refresh is for a list of prompts that closed before it came.
+        ViewData::Prompts { view } if view.refresh => {}
+        ViewData::Prompts { view } => {
+            cx.out.open(prompts::PromptsView::new((**view).clone()));
+        }
         // A refresh is for a picker that closed before it came.
         ViewData::Learning { view } if view.refresh => {}
         ViewData::Learning { view } => {
             cx.out.open(learning::LearningPicker::new((**view).clone()));
         }
-        ViewData::Status { .. } => {}
+        // The state keeps it for the Usage tab and the cards above the input.
+        ViewData::Status { .. } | ViewData::Usage { .. } => {}
     }
 }

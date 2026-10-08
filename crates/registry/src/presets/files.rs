@@ -17,11 +17,21 @@ use crate::resolve::leaves;
 use crate::write::{io_error, lock_folder, real_path, write_replacing};
 use crate::{PresetUpgrade, PresetUpgradeOutcome, SettingsError};
 
-/// The keys a preset file shows, in the order the protocol runs. `workflow` is a top-level key,
+/// The keys a preset file shows, in the order the protocol runs. `phases` is a top-level key,
 /// so it comes before any table.
 const PROTOCOL: &[&str] = &[
-    "workflow", "triage", "solo", "goal", "drafting", "mapping", "critique", "spikes", "judging",
-    "divide", "review", "routing",
+    "phases",
+    "solo_or_crew",
+    "solo",
+    "goal",
+    "drafting",
+    "mapping",
+    "critique",
+    "experiments",
+    "judging",
+    "divide",
+    "review",
+    "routing",
 ];
 
 /// The header's last line. Everything above it is the header, and everything below is what the
@@ -45,7 +55,11 @@ pub fn builtin_preset(name: &str) -> Result<String, SettingsError> {
 
 /// The file's text and the hash it records.
 fn render(preset: &BuiltinPreset) -> Result<(String, String), SettingsError> {
-    let body = body(preset)?;
+    let settings = body(preset)?;
+    let body = match preset.steps {
+        Some(steps) => with_steps(steps, &settings),
+        None => settings,
+    };
     let hash = body_hash(&body);
     let text = format!("{}{HASH_LINE}{hash}\n{body}", header(preset));
     Ok((text, hash))
@@ -62,7 +76,7 @@ pub fn write_preset(name: &str, dir: &Path) -> Result<PathBuf, SettingsError> {
         && PresetFile::parse(&existing).is_none_or(|file| file.edited())
     {
         return Err(SettingsError::Refused(format!(
-            "{} has your edits, so it wasn't replaced. /preset diff {name} compares it with the \
+            "{} has your edits, so it wasn't replaced. /workflow diff {name} compares it with the \
              built-in",
             path.display()
         )));
@@ -177,6 +191,27 @@ impl<'a> PresetFile<'a> {
 
 /// The hash a file records: its body, with line endings and the blank lines around it evened
 /// out, since an editor may change those without you editing anything.
+/// The file's own keys and its steps around the settings it carries. TOML reads a key below a
+/// table as that table's, so what sits at the top level comes first: the workflow's name and
+/// how its steps are followed, then the top-level settings, then the steps, then the settings
+/// that have tables.
+fn with_steps(steps: &str, settings: &str) -> String {
+    let (about, step_tables) = match steps.find("[[step]]") {
+        Some(at) => steps.split_at(at),
+        None => (steps, ""),
+    };
+    let (top_level, tables) = match settings.find("\n[") {
+        Some(at) => settings.split_at(at),
+        None => (settings, ""),
+    };
+    format!(
+        "\n{}\n{}\n\n{}\n{tables}",
+        about.trim(),
+        top_level.trim_end(),
+        step_tables.trim()
+    )
+}
+
 fn body_hash(body: &str) -> String {
     sha256_hex(body.replace("\r\n", "\n").trim().as_bytes())
 }
@@ -185,21 +220,21 @@ fn header(preset: &BuiltinPreset) -> String {
     let name = preset.name;
     let what = if name == DEFAULT_PRESET {
         format!(
-            "The {name} preset, the default. The built-in defaults are {name}, so this file sets \
-             no key: the default preset sits above your settings files, and a key set here would \
+            "The {name} workflow, the default. The built-in defaults are {name}, so this file sets \
+             no key: the default workflow sits above your settings files, and a key set here would \
              hide your own. The protocol keys are below, commented out at their defaults."
         )
     } else {
         format!(
-            "The {name} preset. {DEFAULT_PRESET} is the default. This file sets only the keys \
+            "The {name} workflow. {DEFAULT_PRESET} is the default. This file sets only the keys \
              {name} changes. What you set in the file that picks it, or in a later one, wins over \
              it, and a key set here hides the same key in the files before that. The other \
              protocol keys are below, commented out at their defaults."
         )
     };
     let upgrades = format!(
-        "Argonauts wrote this file from its built-in preset. Until you edit it, upgrades keep it \
-         the same as the built-in. Once you do, they keep your edits, and /preset diff {name} \
+        "Argonauts wrote this file from its built-in workflow. Until you edit it, upgrades keep it \
+         the same as the built-in. Once you do, they keep your edits, and /workflow diff {name} \
          compares the two."
     );
     let mut text = comment(preset.description);
@@ -239,7 +274,7 @@ struct Shown {
 /// out at their defaults, grouped by table.
 fn body(preset: &BuiltinPreset) -> Result<String, SettingsError> {
     let invalid = |message: String| SettingsError::Invalid {
-        layer: format!("the built-in {} preset", preset.name),
+        layer: format!("the built-in {} workflow", preset.name),
         message,
     };
     let set = leaves(
@@ -328,9 +363,9 @@ fn read_if_there(path: &Path) -> Result<Option<String>, SettingsError> {
 fn unknown(name: &str) -> SettingsError {
     let names: Vec<&str> = BUILTIN.iter().map(|preset| preset.name).collect();
     SettingsError::Invalid {
-        layer: "the built-in presets".to_owned(),
+        layer: "the built-in workflows".to_owned(),
         message: format!(
-            "there's no built-in preset named {name:?}; the built-ins are {}",
+            "there's no built-in workflow named {name:?}; the built-ins are {}",
             names.join(", ")
         ),
     }
@@ -370,6 +405,15 @@ mod tests {
         })
     }
 
+    /// The settings a written file sets, without the keys that describe the workflow itself.
+    fn settings_in(text: &str) -> Table {
+        let mut table = text.parse::<Table>().unwrap();
+        for key in argonauts_core::settings::workflows::WORKFLOW_FILE_KEYS {
+            table.remove(key);
+        }
+        table
+    }
+
     fn settings_for(home: &Path, repo_config: Option<&Path>) -> Result<Settings, SettingsError> {
         let sources = SettingsSources {
             global: Some(home.join("config.toml")),
@@ -393,22 +437,46 @@ mod tests {
                 "{name}"
             );
             assert_eq!(file.header[0], format!("# {}", preset.description));
-            let header = file.header.join(" ");
+            // The header wraps, so a phrase may straddle two of its comment lines.
+            let header = file
+                .header
+                .iter()
+                .map(|line| line.trim_start_matches('#').trim())
+                .collect::<Vec<_>>()
+                .join(" ");
             if name == DEFAULT_PRESET {
-                assert!(header.contains("preset, the default"), "{header}");
+                assert!(header.contains("workflow, the default"), "{header}");
             } else {
-                assert!(header.contains("peer-crew is the default"), "{header}");
+                assert!(header.contains("council is the default"), "{header}");
             }
-            assert!(header.contains(&format!("/preset diff {name}")), "{header}");
+            assert!(
+                header.contains(&format!("/workflow diff {name}")),
+                "{header}"
+            );
 
             // It sets exactly what the built-in sets, and every key sits under its description.
             // Its table headers stay, so a key you uncomment lands in the right table.
-            let written = leaves(&text.parse::<Table>().unwrap());
+            let written = leaves(&settings_in(&text));
             let built = leaves(&preset.toml.parse::<Table>().unwrap());
             assert_eq!(written, built, "{name}");
+            // The workflow's own lines are its steps file word for word, and say what they are
+            // in comments of their own.
+            let own: Vec<&str> = preset.steps.unwrap_or_default().lines().collect();
+            if preset.steps.is_some() {
+                let about = text.parse::<Table>().unwrap()["about"]
+                    .as_str()
+                    .map(str::to_owned);
+                assert_eq!(about.as_deref(), Some(preset.description), "{name}");
+            }
+            for line in &own {
+                assert!(file.body.contains(line), "{name}: {line}");
+            }
             let lines: Vec<&str> = file.body.lines().collect();
             let mut keys = 0;
             for (at, line) in lines.iter().enumerate() {
+                if own.contains(line) {
+                    continue;
+                }
                 if is_key_line(line) {
                     keys += 1;
                     let above = lines[at - 1];
@@ -429,16 +497,23 @@ mod tests {
             }
         }
 
-        let peer = builtin_preset("peer-crew").unwrap();
-        assert!(leaves(&peer.parse::<Table>().unwrap()).is_empty(), "{peer}");
-        assert!(peer.contains("\n# workflow = \"peer-crew\"\n"), "{peer}");
+        let peer = builtin_preset("council").unwrap();
+        assert!(leaves(&settings_in(&peer)).is_empty(), "{peer}");
+        // Its steps read back as the runner's own built-in file.
+        let steps = peer.parse::<Table>().unwrap()["step"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(steps, 6, "{peer}");
+        assert!(peer.contains("\nname  = \"council\"\n"), "{peer}");
+        assert!(peer.contains("\n# phases = \"council\"\n"), "{peer}");
         assert!(peer.contains("\n[critique]\n"), "{peer}");
         assert!(peer.contains("\n# rounds = 1\n"), "{peer}");
         let solo = builtin_preset("solo").unwrap();
-        assert!(solo.contains("\n[triage]\n# Force a mode"), "{solo}");
+        assert!(solo.contains("\n[solo_or_crew]\n# Force a mode"), "{solo}");
         assert!(solo.contains("\nforce = \"solo\"\n"), "{solo}");
         assert!(solo.starts_with("# One agent does every task\n"), "{solo}");
-        let coordinated = builtin_preset("coordinated-crew").unwrap();
+        let coordinated = builtin_preset("orchestrator").unwrap();
         assert!(
             coordinated.contains("\n[roles.adjudicator]\n"),
             "{coordinated}"
@@ -448,13 +523,13 @@ mod tests {
             Err(SettingsError::Invalid { .. })
         ));
 
-        // The written peer-crew sets nothing, so your own project setting still shows through.
+        // The written council sets nothing, so your own project setting still shows through.
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        write_preset("peer-crew", &home.join("presets")).unwrap();
-        let listed = crate::presets_in(&home.join("presets"), None);
+        write_preset("council", &home.join("workflows")).unwrap();
+        let listed = crate::presets_in(&home.join("workflows"), None);
         assert_eq!(listed[0].description, BUILTIN[0].description);
-        assert!(listed[0].source.ends_with("peer-crew.toml"));
+        assert!(listed[0].source.ends_with("council.toml"));
         assert!(listed[0].keys.is_empty());
         let project = dir.path().join("repo/.argonauts/config.toml");
         fs::create_dir_all(project.parent().unwrap()).unwrap();
@@ -469,9 +544,9 @@ mod tests {
             let without = dir.path().join(format!("without-{name}"));
             for home in [&with_file, &without] {
                 fs::create_dir_all(home).unwrap();
-                fs::write(home.join("config.toml"), format!("preset = {name:?}\n")).unwrap();
+                fs::write(home.join("config.toml"), format!("workflow = {name:?}\n")).unwrap();
             }
-            write_preset(name, &with_file.join("presets")).unwrap();
+            write_preset(name, &with_file.join("workflows")).unwrap();
             let written = settings_for(&with_file, None);
             assert!(written.is_ok(), "{name}: {written:?}");
             assert_eq!(written, settings_for(&without, None), "{name}");
@@ -481,18 +556,18 @@ mod tests {
     #[test]
     fn write_preset_keeps_your_edits() {
         let dir = tempfile::tempdir().unwrap();
-        let presets = dir.path().join("presets");
-        let name = "coordinated-crew";
+        let presets = dir.path().join("workflows");
+        let name = "orchestrator";
         let built = builtin_preset(name).unwrap();
         let path = write_preset(name, &presets).unwrap();
-        assert_eq!(path, presets.join("coordinated-crew.toml"));
+        assert_eq!(path, presets.join("orchestrator.toml"));
         assert_eq!(fs::read_to_string(&path).unwrap(), built);
 
         // Unedited, whether current or from an older built-in, it's replaced.
         write_preset(name, &presets).unwrap();
         fs::write(
             &path,
-            from_older_builtin(&built, "[review]\nper_card = 1\n"),
+            from_older_builtin(&built, "[review]\nper_task = 1\n"),
         )
         .unwrap();
         write_preset(name, &presets).unwrap();
@@ -501,7 +576,7 @@ mod tests {
         // The header isn't yours: a changed description is still an unedited file.
         fs::write(
             &path,
-            built.replacen("# One coordinator", "# My coordinator", 1),
+            built.replacen("# One orchestrator", "# My orchestrator", 1),
         )
         .unwrap();
         write_preset(name, &presets).unwrap();
@@ -509,19 +584,16 @@ mod tests {
 
         // Any change below the header is an edit, a comment included.
         for edited in [
-            built.replace("per_card = 2", "per_card = 3"),
+            built.replace("per_task = 2", "per_task = 3"),
             built.replace("\n[review]\n", "\n[review]\n# two is plenty\n"),
             format!("{built}\n[critique]\nrounds = 2\n"),
-            "[review]\nper_card = 3\n".to_owned(),
+            "[review]\nper_task = 3\n".to_owned(),
         ] {
             fs::write(&path, &edited).unwrap();
             let err = write_preset(name, &presets).unwrap_err();
             match &err {
                 SettingsError::Refused(message) => {
-                    assert!(
-                        message.contains("/preset diff coordinated-crew"),
-                        "{message}"
-                    );
+                    assert!(message.contains("/workflow diff orchestrator"), "{message}");
                 }
                 other => panic!("{other:?}"),
             }
@@ -543,9 +615,9 @@ mod tests {
     #[test]
     fn preset_upgrade_updates_unedited_keeps_edited() {
         let dir = tempfile::tempdir().unwrap();
-        let presets = dir.path().join("presets");
+        let presets = dir.path().join("workflows");
         assert!(upgrade_presets(&presets).unwrap().is_empty());
-        for name in ["peer-crew", "solo", "coordinated-crew", "best-of-n"] {
+        for name in ["council", "solo", "orchestrator", "best-of-n"] {
             write_preset(name, &presets).unwrap();
         }
         let file = |name: &str| presets.join(format!("{name}.toml"));
@@ -554,20 +626,20 @@ mod tests {
         // solo came from an older built-in and you never touched it.
         fs::write(
             file("solo"),
-            from_older_builtin(&current("solo"), "[triage]\nforce = \"crew\"\n"),
+            from_older_builtin(&current("solo"), "[solo_or_crew]\nforce = \"crew\"\n"),
         )
         .unwrap();
-        // coordinated-crew came from an older built-in and you edited it.
+        // orchestrator came from an older built-in and you edited it.
         let edited = recording(
-            &current("coordinated-crew").replace("per_card = 2", "per_card = 3"),
+            &current("orchestrator").replace("per_task = 2", "per_task = 3"),
             &body_hash("an older built-in"),
         );
-        fs::write(file("coordinated-crew"), &edited).unwrap();
+        fs::write(file("orchestrator"), &edited).unwrap();
         // best-of-n is edited, but the built-in hasn't changed since.
         let tuned = current("best-of-n").replace("attempts = 3", "attempts = 5");
         fs::write(file("best-of-n"), &tuned).unwrap();
         // Your own presets are never touched, even one named like a built-in.
-        fs::write(file("my-team"), "[review]\nper_card = 2\n").unwrap();
+        fs::write(file("my-team"), "[review]\nper_task = 2\n").unwrap();
         fs::write(file("draft-and-vote"), "[judging]\nmethod = \"vote\"\n").unwrap();
 
         let outcomes = |report: Vec<PresetUpgrade>| -> Vec<(String, PresetUpgradeOutcome)> {
@@ -584,22 +656,22 @@ mod tests {
             outcomes(upgrade_presets(&presets).unwrap()),
             [
                 ("best-of-n".to_owned(), kept(false)),
-                ("coordinated-crew".to_owned(), kept(true)),
-                ("peer-crew".to_owned(), PresetUpgradeOutcome::Current),
+                ("council".to_owned(), PresetUpgradeOutcome::Current),
+                ("orchestrator".to_owned(), kept(true)),
                 ("solo".to_owned(), PresetUpgradeOutcome::Updated),
             ]
         );
         assert_eq!(fs::read_to_string(file("solo")).unwrap(), current("solo"));
         assert_eq!(fs::read_to_string(file("best-of-n")).unwrap(), tuned);
-        let kept_file = fs::read_to_string(file("coordinated-crew")).unwrap();
+        let kept_file = fs::read_to_string(file("orchestrator")).unwrap();
         assert_eq!(
             PresetFile::parse(&kept_file).unwrap().body,
             PresetFile::parse(&edited).unwrap().body
         );
-        assert!(kept_file.contains("per_card = 3"));
+        assert!(kept_file.contains("per_task = 3"));
         assert_eq!(
             fs::read_to_string(file("my-team")).unwrap(),
-            "[review]\nper_card = 2\n"
+            "[review]\nper_task = 2\n"
         );
 
         // You're told once; the edit stays, and so does the rest of the report.
@@ -607,18 +679,15 @@ mod tests {
             outcomes(upgrade_presets(&presets).unwrap()),
             [
                 ("best-of-n".to_owned(), kept(false)),
-                ("coordinated-crew".to_owned(), kept(false)),
-                ("peer-crew".to_owned(), PresetUpgradeOutcome::Current),
+                ("council".to_owned(), PresetUpgradeOutcome::Current),
+                ("orchestrator".to_owned(), kept(false)),
                 ("solo".to_owned(), PresetUpgradeOutcome::Current),
             ]
         );
-        assert_eq!(
-            fs::read_to_string(file("coordinated-crew")).unwrap(),
-            kept_file
-        );
+        assert_eq!(fs::read_to_string(file("orchestrator")).unwrap(), kept_file);
         // It's remembered in the header, for this built-in only.
         let kept = PresetFile::parse(&kept_file).unwrap();
-        let newest = current("coordinated-crew");
+        let newest = current("orchestrator");
         let newest = PresetFile::parse(&newest).unwrap();
         assert_eq!(kept.told, Some(newest.recorded.as_str()));
         assert_eq!(kept.recorded, body_hash("an older built-in"));

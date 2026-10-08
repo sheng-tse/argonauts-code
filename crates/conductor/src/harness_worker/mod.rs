@@ -7,6 +7,7 @@
 mod boards;
 pub mod capabilities;
 mod context;
+mod context_watch;
 mod diffs;
 mod driven;
 pub mod end;
@@ -126,7 +127,7 @@ impl HarnessWorker {
         match self.home() {
             Ok(home) => Some(QuotaWatch::new(self.quota.clone(), &home, self.vendor())),
             Err(err) => {
-                tracing::warn!("no quota probes for this session: {err}");
+                tracing::warn!("no plan usage probes for this session: {err}");
                 None
             }
         }
@@ -178,7 +179,7 @@ fn register_quota_prober(adapter: &Arc<dyn Adapter>, worker: &WorkerRef, setting
             },
         ),
         Err(problem) => tracing::debug!(
-            "{}'s quota can't be probed: {problem}",
+            "{}'s plan usage can't be probed: {problem}",
             adapter.display_name()
         ),
     }

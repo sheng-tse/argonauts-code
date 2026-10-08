@@ -41,7 +41,7 @@ fn session() -> ToolCall {
     let mut session = ToolCall::agent(
         "Opus 5.5 on Claude Code",
         None,
-        "owner · card-002",
+        "worker · task-002",
         "Add the JSON writer",
     );
     session.push_call(
@@ -159,7 +159,7 @@ fn stopping_a_call_stops_what_runs_inside_it() {
     let mut session = ToolCall::agent(
         "GPT-5.6 on Codex",
         None,
-        "owner · card-003",
+        "worker · task-003",
         "Wire --json into the CLI",
     );
     session.push_call(ToolCall::call(ToolKind::Shell, "Bash", "cargo test"));
@@ -182,7 +182,7 @@ fn stopping_a_call_stops_what_runs_inside_it() {
     let header = text(&session.lines(&ctx(&plain, 80)));
     assert!(
         header.starts_with(
-            "● GPT-5.6 on Codex · owner · card-003 (Wire --json into the CLI) stopped"
+            "● GPT-5.6 on Codex · worker · task-003 (Wire --json into the CLI) stopped"
         ),
         "{header}"
     );
@@ -275,7 +275,7 @@ fn nested_calls_sit_three_columns_further_in() {
     let lines = session().lines(&ctx(&theme, 80));
     assert_eq!(
         text(&lines),
-        "● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)\n  ⎿  Read 1 file (ctrl+o to expand)\n     Update(src/export.rs)\n        Added 2 lines, removed 1 line\n         41      fn write(&self) -> Result<()> {\n         42 -        self.write_csv(out)\n         42 +        match self.format {\n         43 +            Format::Json => self.write_json(out),\n     Running 2 shell commands…\n        $ cargo clippy"
+        "● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)\n  ⎿  Read 1 file (ctrl+o to expand)\n     Update(src/export.rs)\n        Added 2 lines, removed 1 line\n         41      fn write(&self) -> Result<()> {\n         42 -        self.write_csv(out)\n         42 +        match self.format {\n         43 +            Format::Json => self.write_json(out),\n     Running 2 shell commands…\n        $ cargo clippy"
     );
     assert_eq!(column_of(&lines, "Update("), 5);
     assert_eq!(column_of(&lines, "Added 2 lines"), 8);
@@ -362,7 +362,7 @@ fn a_finished_session_folds_into_one_line() {
     let summary = session.summarized(Some("18.1k tokens · 4m 12s"));
     assert_eq!(
         text(&summary.lines(&ctx(&theme, 80))),
-        "● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)\n  ⎿  Done · 4 tool uses · 18.1k tokens · 4m 12s"
+        "● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)\n  ⎿  Done · 4 tool uses · 18.1k tokens · 4m 12s"
     );
     let failed = ToolCall::described(ToolKind::Agent, "x")
         .with_state(ToolState::Failed)
@@ -502,12 +502,12 @@ fn squeezing_keeps_what_matters_and_never_exceeds_the_budget() {
     let six = call.lines_within(&ctx, 6);
     assert_eq!(
         text(&six),
-        "● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)\n  ⎿  … +9 lines (ctrl+o to expand)\n     Running 2 shell commands…\n        $ cargo clippy\n     Then the flag, and then the tests that cover both.\n     ◧ Writing the JSON writer · 1/3 done"
+        "● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)\n  ⎿  … +9 lines (ctrl+o to expand)\n     Running 2 shell commands…\n        $ cargo clippy\n     Then the flag, and then the tests that cover both.\n     ◧ Writing the JSON writer · 1/3 done"
     );
     let two = call.lines_within(&ctx, 2);
     assert_eq!(
         text(&two),
-        "● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)\n  ⎿  ◧ Writing the JSON writer · 1/3 done"
+        "● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)\n  ⎿  ◧ Writing the JSON writer · 1/3 done"
     );
     assert_eq!(call.lines_within(&ctx, 1).len(), 1);
 }
@@ -553,7 +553,7 @@ fn a_summarized_session_prints_one_line_and_shows_whole_in_the_overlay() {
     let session = ToolCall::agent(
         "GPT-5.6 on Codex",
         None,
-        "owner · card-003",
+        "worker · task-003",
         "Wire --json into the CLI",
     )
     .with_stamp("10:58 AM codex/gpt-5.6")
@@ -562,7 +562,7 @@ fn a_summarized_session_prints_one_line_and_shows_whole_in_the_overlay() {
     let summary = session.summarized(Some("12.9k tokens · 3m 41s"));
     assert_eq!(
         text(&summary.lines(&ctx(&theme, 80))),
-        "● GPT-5.6 on Codex · owner · card-003 (Wire --json into the CLI)\n  ⎿  Done · 0 tool uses · 12.9k tokens · 3m 41s"
+        "● GPT-5.6 on Codex · worker · task-003 (Wire --json into the CLI)\n  ⎿  Done · 0 tool uses · 12.9k tokens · 3m 41s"
     );
     let overlay = ctx(&theme, 80).with_expanded(true);
     let whole = text(&summary.lines(&overlay));
@@ -578,7 +578,7 @@ fn agent_headers_side_by_side_cut_their_tasks_alike() {
     let theme = theme();
     let start = Instant::now();
     let header = |name: &str, task: &str, width: u16| {
-        let call = ToolCall::agent(name, None, "owner · card-002", task).with_stats(ToolStats {
+        let call = ToolCall::agent(name, None, "worker · task-002", task).with_stats(ToolStats {
             started_at: Some(start),
             ended_at: None,
             tokens_down: 18_600,
@@ -596,11 +596,11 @@ fn agent_headers_side_by_side_cut_their_tasks_alike() {
             header("GPT-5.6 on Codex", "Wire --json into the CLI", width),
         ]
     };
-    for row in both(62) {
+    for row in both(63) {
         assert!(!row.contains('('), "{row}");
         assert!(row.ends_with("· 4m18s · ↓ 18.6k"), "{row}");
     }
-    for row in both(78) {
+    for row in both(79) {
         assert!(row.contains('(') && row.contains('…'), "{row}");
         assert!(row.ends_with("· 4m18s · ↓ 18.6k"), "{row}");
     }
@@ -614,7 +614,7 @@ fn a_retry_counts_down_and_gives_way_before_the_stats() {
     let mut call = ToolCall::agent(
         "Opus 5.5 on Claude Code",
         None,
-        "owner · card-003",
+        "worker · task-003",
         "Middleware",
     )
     .with_stats(ToolStats {
@@ -629,21 +629,21 @@ fn a_retry_counts_down_and_gives_way_before_the_stats() {
     };
     assert_eq!(
         row(120, 252),
-        "● Opus 5.5 on Claude Code · owner · card-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)"
+        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)"
     );
     assert_eq!(
         row(120, 260),
-        "● Opus 5.5 on Claude Code · owner · card-003 (Middleware) · 4m20s · ↓ 18.1k · retrying in 4s (attempt 2)"
+        "● Opus 5.5 on Claude Code · worker · task-003 (Middleware) · 4m20s · ↓ 18.1k · retrying in 4s (attempt 2)"
     );
     assert!(row(120, 300).ends_with("· 5m0s · ↓ 18.1k · retrying (attempt 2)"));
     assert_eq!(
-        row(82, 252),
-        "● Opus 5.5 on Claude Code · owner · card-003 · 4m12s · ↓ 18.1k · retrying in 12s"
+        row(83, 252),
+        "● Opus 5.5 on Claude Code · worker · task-003 · 4m12s · ↓ 18.1k · retrying in 12s"
     );
     // The warning outlasts the time and tokens.
     assert_eq!(
-        row(62, 252),
-        "● Opus 5.5 on Claude Code · owner · card-003 · retrying in 12s"
+        row(63, 252),
+        "● Opus 5.5 on Claude Code · worker · task-003 · retrying in 12s"
     );
 }
 
@@ -652,7 +652,7 @@ fn a_quiet_spell_shows_after_a_while_and_warns_later() {
     let mut theme = theme();
     theme.reduced_motion = true;
     let start = Instant::now();
-    let mut call = ToolCall::agent("Antigravity CLI", None, "owner", "");
+    let mut call = ToolCall::agent("Antigravity CLI", None, "worker", "");
     call.quiet_since(start);
     let at = |seconds| {
         RenderCtx::new(
@@ -663,18 +663,18 @@ fn a_quiet_spell_shows_after_a_while_and_warns_later() {
     };
     assert_eq!(
         plain_text(&call.header(&at(20))),
-        "● Antigravity CLI · owner"
+        "● Antigravity CLI · worker"
     );
     let lines = call.header(&at(45));
     assert_eq!(
         plain_text(&lines),
-        "● Antigravity CLI · owner · quiet 45s · may be waiting on a limit"
+        "● Antigravity CLI · worker · quiet 45s · may be waiting on a limit"
     );
     assert_eq!(lines[0].spans.last().unwrap().style, theme.style(Role::Dim));
     let lines = call.header(&at(150));
     assert_eq!(
         plain_text(&lines),
-        "● Antigravity CLI · owner · quiet 2m · may be waiting on a limit"
+        "● Antigravity CLI · worker · quiet 2m · may be waiting on a limit"
     );
     assert_eq!(
         lines[0].spans.last().unwrap().style,
@@ -724,4 +724,109 @@ fn streaming_text_shows_its_newest_row_with_a_cursor() {
     let empty =
         ToolCall::described(ToolKind::Agent, "agent").with_item(ToolItem::Streaming(String::new()));
     assert_eq!(text(&empty.lines(&ctx(&theme, 40))), "● agent\n  ⎿  ▎");
+}
+
+fn phase(title: &str, detail: &str, required: bool) -> PhaseLine {
+    PhaseLine {
+        title: title.into(),
+        detail: detail.into(),
+        required,
+    }
+}
+
+fn workflow(phases: Vec<PhaseLine>) -> ToolCall {
+    ToolCall::call(ToolKind::Other, "Workflow", "switch-reads").with_item(ToolItem::Phases(phases))
+}
+
+/// A step you require carries the mark, in the accent color, and a line under the phases
+/// says what the mark means. The first phase is the one under way.
+#[test]
+fn phases_mark_the_steps_you_require() {
+    let theme = theme();
+    let call = workflow(vec![
+        phase("Plan", "the orchestrator plans", false),
+        phase(
+            "Secrets scan",
+            "the reviewers scan the change for keys",
+            true,
+        ),
+        phase("Sign off", "", false),
+    ]);
+    let lines = call.lines(&ctx(&theme, 80));
+    assert_eq!(
+        text(&lines),
+        "● Workflow(switch-reads)\n  ⎿  ◐ Plan · ★ Secrets scan · Sign off\n     ★ a step you require"
+    );
+    let star = lines[1]
+        .spans
+        .iter()
+        .find(|span| span.content.contains('★'))
+        .unwrap();
+    assert_eq!(star.style.fg, theme.style(Role::Accent).fg);
+    let under_way = lines[1]
+        .spans
+        .iter()
+        .find(|span| span.content == "Plan")
+        .unwrap();
+    assert_eq!(under_way.style.fg, theme.style(Role::Card).fg);
+
+    let mut plain = theme.clone();
+    plain.glyphs = Glyphs::ASCII;
+    let said = text(&call.lines(&ctx(&plain, 80)));
+    assert!(
+        said.contains("> Plan · * Secrets scan · Sign off"),
+        "{said}"
+    );
+    assert!(said.ends_with("* a step you require"), "{said}");
+}
+
+/// The phases read on one line, and say nothing of the
+/// mark when none is yours. The words after the title give way on a narrow screen.
+#[test]
+fn phases_read_on_one_line_and_the_tail_gives_way() {
+    let theme = theme();
+    let call = workflow(vec![
+        phase("Fix", "one worker per function", false),
+        phase("Merge", "the final check, then the merge", false),
+    ])
+    .with_tail(" · council · ctrl+t to open");
+    assert_eq!(
+        text(&call.lines(&ctx(&theme, 80))),
+        "● Workflow(switch-reads) · council · ctrl+t to open\n  ⎿  ◐ Fix · Merge"
+    );
+    assert_eq!(
+        text(&call.lines(&ctx(&theme, 40))),
+        "● Workflow(switch-reads)\n  ⎿  ◐ Fix · Merge"
+    );
+}
+
+/// Whatever a workflow declares is listed: one phase, or twelve, which wrap under the first,
+/// or none.
+#[test]
+fn phases_are_listed_however_many_there_are() {
+    let theme = theme();
+    let one = workflow(vec![phase("Translate the changelog", "", false)]);
+    assert_eq!(
+        text(&one.lines(&ctx(&theme, 80))),
+        "● Workflow(switch-reads)\n  ⎿  ◐ Translate the changelog"
+    );
+
+    let twelve = workflow(
+        (1..=12)
+            .map(|n| phase(&format!("Step {n}"), "does its part", n == 12))
+            .collect(),
+    );
+    let said = text(&twelve.lines(&ctx(&theme, 80)));
+    assert!(said.contains("◐ Step 1 · Step 2"), "{said}");
+    assert!(said.contains("★ Step 12"), "{said}");
+    assert!(
+        said.lines().skip(2).all(|line| line.starts_with("     ")),
+        "the rest wrap under the first: {said}"
+    );
+
+    let none = workflow(Vec::new());
+    assert_eq!(
+        text(&none.lines(&ctx(&theme, 80))),
+        "● Workflow(switch-reads)"
+    );
 }

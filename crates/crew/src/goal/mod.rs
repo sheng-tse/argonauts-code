@@ -1,6 +1,12 @@
 //! Goal alignment: restatements in parallel, differs comparing them, materiality rules in code,
 //! the goal file, and the goal checkpoint. Until the goal is approved only read-only and
 //! no-tools sessions start; once approved it's frozen by its hash.
+//!
+//! And goals as conditions, "keep going until this is true": `check` decides whether one holds
+//! (one entry point, [`check::goal`]), `pursue` keeps one around a run's workflow, `task` keeps
+//! one around a single task, `cli` hands one to a CLI that has a goal of its own, `now` runs
+//! a task's checks when you ask, beside its try, and `until` answers a workflow whose own
+//! steps make the tries: a step's `until`, or the `goal` at the top of its file.
 
 use argonauts_core::events::checkpoint::CheckpointKind;
 use argonauts_core::events::run::RunMode;
@@ -17,15 +23,20 @@ use crate::workflow::{StepCall, StepDone};
 pub mod changes;
 pub mod check;
 pub mod checkpoint;
+pub mod cli;
 pub mod context;
 pub mod differ;
 pub mod draft;
 pub mod file;
 pub mod lead;
 pub mod materiality;
+pub mod now;
 pub mod pursue;
+pub mod report;
 pub mod restate;
 pub mod round;
+pub mod task;
+pub mod until;
 
 /// `restate`: every restater (every crew member unless `understand.readers`) in parallel, fresh,
 /// read-only, in the base worktree. In solo it records the prompt as the goal instead, unless
@@ -52,7 +63,7 @@ pub async fn restate_step(host: &Host, call: &StepCall) -> EngineResult<StepDone
     if mode == RunMode::Solo {
         // The default agent's one restatement is the draft; there is nothing to compare.
         settle_alone(host, &restated, 1).await?;
-        return Ok(StepDone::done("The default agent restated the goal"));
+        return Ok(StepDone::done("The main agent restated the goal"));
     }
     Ok(StepDone::done(match restated.len() {
         1 => "1 agent restated the goal".to_owned(),
@@ -93,8 +104,8 @@ pub async fn differ_step(host: &Host, call: &StepCall) -> EngineResult<StepDone>
 
     let listings = differ::compare(host, call).await?;
     let outputs: Vec<DifferOutput> = listings.into_iter().map(|(_, output)| output).collect();
-    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
-    let goal_settings = materiality::goal_settings(host.settings(), full_auto);
+    let autopilot = checkpoints::autopilot::applies_now(host, CheckpointKind::Goal);
+    let goal_settings = materiality::goal_settings(host.settings(), autopilot);
     let settled = materiality::settle(&outputs, restated.len(), &goal_settings);
     let request = host.read(round::request)?;
     round::settle_and_draft(host, host.run_id(), &request, &restated, &settled, enough).await?;
@@ -146,7 +157,7 @@ pub fn required_hash(state: &RunState) -> EngineResult<String> {
         .map(str::to_owned)
         .ok_or_else(|| {
             EngineError::Refused(
-                "a build or spike session needs the approved goal's hash, and the goal isn't \
+                "a build or experiment session needs the approved goal's hash, and the goal isn't \
                  approved yet"
                     .to_owned(),
             )

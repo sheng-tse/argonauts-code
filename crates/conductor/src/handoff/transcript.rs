@@ -33,9 +33,9 @@ pub const OUTPUT_LINES: usize = 40;
 pub const MAX_BYTES: usize = 400 * 1024;
 pub const FILE_NAME: &str = "transcript.md";
 /// The worktree's folder for handoff files, which every harness reads without extra flags.
-pub const WORKTREE_FOLDER: &str = ".argonauts/handoff";
+pub const WORKTREE_FOLDER: &str = ".argonauts/fallback";
 /// The git exclude entry that keeps that folder out of every commit.
-pub const EXCLUDE_ENTRY: &str = "/.argonauts/handoff/";
+pub const EXCLUDE_ENTRY: &str = "/.argonauts/fallback/";
 
 /// One output line longer than this is cut, so a minified file can't fill the budget alone.
 const LINE_CHARS: usize = 1_000;
@@ -104,7 +104,7 @@ pub fn worktree_path(worktree: &Path, number: u32) -> PathBuf {
 /// `runs/<run>/cards/<card>/handoff-<n>/transcript.md`, the run's own copy, kept for you.
 pub fn run_path(run_dir: &Path, card: &CardId, number: u32) -> PathBuf {
     layout::card_dir(run_dir, card)
-        .join(format!("handoff-{number}"))
+        .join(format!("fallback-{number}"))
         .join(FILE_NAME)
 }
 

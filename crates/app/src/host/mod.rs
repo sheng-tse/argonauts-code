@@ -15,7 +15,7 @@ mod start;
 mod time_budget;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
@@ -25,7 +25,7 @@ use argonauts_core::engine::{
 };
 use argonauts_core::events::run::{ParkReason, RunLifecycle, RunMode, RunOutcome};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal::{Journal, RunLock, read_since_snapshot};
+use argonauts_core::journal::{Journal, RunLock, read_all, read_since_snapshot};
 use argonauts_core::layout::run_files;
 use argonauts_core::paths::write_private_file;
 use argonauts_core::settings::Settings;
@@ -45,6 +45,7 @@ use crate::ancestry::{self, AgentMarkers};
 use crate::env::AppEnv;
 use crate::live_registry::{self, LiveSupervisor};
 use crate::run_files::{self as files, SettingsRecord, StartRecord};
+use crate::usage_ledger::UsageLedger;
 
 const SOURCE: &str = "conductor";
 /// Live events kept for a slow subscriber before it reads the rest from the journal.
@@ -69,6 +70,9 @@ pub(crate) struct HostOptions {
     /// Cancelled on SIGTERM: the engine stops its sessions after their tool call and parks, and
     /// the host exits without waiting out the grace.
     pub shutdown: CancellationToken,
+    /// Hold the computer's sleep off while this process hosts the run, when the run's
+    /// settings say so. Off for tests, which host runs in their own process.
+    pub keep_awake: bool,
 }
 
 impl HostOptions {
@@ -84,6 +88,7 @@ impl HostOptions {
             park_grace: None,
             check_ancestry: true,
             shutdown: CancellationToken::new(),
+            keep_awake: true,
         })
     }
 }
@@ -135,8 +140,14 @@ pub(crate) async fn supervise_with(
     };
     let recorded = files::read_settings(&run_dir)?;
     let start = files::read_start(&run_dir)?;
+    let keep_awake = options.keep_awake;
     let (host, mut queue) =
         Host::open(env, run.clone(), run_dir, &lock, &recorded, start, options)?;
+    // The run works for as long as this process hosts it, and the hold ends with the
+    // process however it ends.
+    let _awake = (keep_awake && host.settings.awake.while_working)
+        .then(crate::keep_awake::while_hosting)
+        .flatten();
     // Clients get their Welcome now, and their requests queue while the slow start runs.
     let serving = Serving::start(&host);
     let exit = match (host.begin(&recorded).await, &serving) {
@@ -148,6 +159,9 @@ pub(crate) async fn supervise_with(
     // the start failed first.
     let failed = HostExit::Crashed(String::new());
     host.settle(&mut queue, exit.as_ref().unwrap_or(&failed));
+    if let Ok(HostExit::Finished(_)) = &exit {
+        host.record_usage();
+    }
     if let Ok(serving) = serving {
         serving.stop().await;
     }
@@ -190,6 +204,10 @@ struct Host {
     journal: PathBuf,
     /// No events yet, so `begin` records `RunStarted`.
     fresh: bool,
+    /// What a new run says about where it starts from, held until the engine has read its
+    /// history: an engine that finds more than `RunStarted` there takes the run for a resumed
+    /// one.
+    start_notes: Mutex<Vec<String>>,
     start: StartRecord,
     settings: Arc<Settings>,
     turned_on: Vec<String>,
@@ -253,6 +271,7 @@ impl Host {
             sink: Arc::new(sink),
             journal: journal_path,
             fresh,
+            start_notes: Mutex::new(Vec::new()),
             env,
             run,
             run_dir,
@@ -268,10 +287,14 @@ impl Host {
     /// there's no run to record a failure in, so it's an error.
     async fn begin(&self, recorded: &SettingsRecord) -> anyhow::Result<()> {
         if self.fresh {
-            let started = off_the_runtime(|| {
-                start::run_started(&self.env, &self.run_dir, &self.start, recorded)
+            let (started, notes) = off_the_runtime(|| {
+                start::run_started(&self.env, &self.run, &self.run_dir, &self.start, recorded)
             })?;
             self.record(RunEventKind::Run(RunLifecycle::Started(Box::new(started))))?;
+            *self
+                .start_notes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = notes;
         }
         let killed = orphans::kill_orphans(&self.run_dir, &self.options.paths).await?;
         let stopped = match killed.len() {
@@ -312,6 +335,15 @@ impl Host {
             Ok(history) => history,
             Err(reason) => return self.crash(reason),
         };
+        let start_notes = std::mem::take(
+            &mut *self
+                .start_notes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for text in start_notes {
+            self.note(NoteLevel::Info, text);
+        }
         let (repo, services) = match off_the_runtime(|| self.workspace(&started.base_commit)) {
             Ok(workspace) => workspace,
             Err(reason) => return self.crash(reason),
@@ -541,6 +573,20 @@ impl Host {
         }
     }
 
+    /// The finished run's spend goes to the usage ledger, by agent and model, from its whole
+    /// log.
+    fn record_usage(&self) {
+        match read_all(&self.journal) {
+            Ok(back) => UsageLedger::new(&self.options.paths).run_ended(
+                &self.env.repo_root,
+                &self.run,
+                &back.events,
+                OffsetDateTime::now_utc(),
+            ),
+            Err(err) => tracing::warn!("couldn't add run {} to the usage ledger: {err}", self.run),
+        }
+    }
+
     /// The log from its latest snapshot. Unreadable lines, such as a torn last one, are skipped.
     fn history(&self) -> Result<Vec<RunEvent>, String> {
         let back = read_since_snapshot(&self.journal)
@@ -674,7 +720,7 @@ mod tests {
     use argonauts_core::future::BoxFuture;
     use argonauts_core::input::MentionTarget;
     use argonauts_core::journal::read_all;
-    use argonauts_core::names::{SessionKey, WorkerRef};
+    use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_testkit::TempRepo;
 
@@ -725,11 +771,12 @@ mod tests {
                     continues: None,
                     overrides: Vec::new(),
                     include_uncommitted: false,
-                    default_agent: None,
+                    main_agent: None,
                     approval_mode: None,
                     front_end: None,
                     instructions: Vec::new(),
                     request_settings: Vec::new(),
+                    required_steps: Vec::new(),
                 },
                 overrides: Vec::new(),
                 interactive: true,
@@ -769,6 +816,7 @@ mod tests {
                 park_grace: Some(grace),
                 check_ancestry: false,
                 shutdown: CancellationToken::new(),
+                keep_awake: false,
             }
         }
 
@@ -843,7 +891,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_pending_frame_kind_is_applied_first_then_removed() {
         let test = TestRun::new();
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let session = SessionKey::numbered(1);
         let mut pending = vec![
             answer(TOKEN),
@@ -865,7 +913,7 @@ mod tests {
             ControlRequest::Reassign {
                 card: card.clone(),
                 to: WorkerRef::new("codex", None),
-                rule_override: Some("review.other_family".to_owned()),
+                rule_override: Some("review.other_provider".to_owned()),
                 token: Some(TOKEN.to_owned()),
             },
             ControlRequest::ApprovalMode {
@@ -1104,7 +1152,7 @@ mod tests {
         start.request.front_end = Some("other-tool".to_owned());
         files::write_start(&test.run_dir, &start).unwrap();
         let mut recorded = files::read_settings(&test.run_dir).unwrap();
-        recorded.settings.mcp.run_budget = argonauts_core::settings::Span::new("1s");
+        recorded.settings.mcp.run_limit = argonauts_core::settings::Span::new("1s");
         files::write_settings(&test.run_dir, &recorded).unwrap();
         let script: Script = Arc::new(|_, mut context: EngineContext| {
             Box::pin(async move {
@@ -1126,7 +1174,7 @@ mod tests {
         assert!(
             notes
                 .iter()
-                .any(|note| note.text.contains("time budget of 1s is spent")),
+                .any(|note| note.text.contains("time limit of 1s is spent")),
             "{notes:?}"
         );
     }
@@ -1304,6 +1352,36 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_run_goes_to_the_usage_ledger_by_agent() {
+        use crate::client::test_support::{session_started, usage};
+        let test = TestRun::new();
+        let script: Script = Arc::new(move |_, context: EngineContext| {
+            Box::pin(async move {
+                let key = SessionKey::numbered(1);
+                let started = session_started(0, &key, None, RoleName::Worker, "codex");
+                let spent = usage(1, &key, 2000, 100, 0.25);
+                for event in [started, spent] {
+                    context
+                        .sink
+                        .record(None, Some(&key), "test", event.kind)
+                        .unwrap();
+                }
+                EngineExit::Finished(RunOutcome::Merged)
+            })
+        });
+        let options = test.options(Duration::ZERO, script);
+        assert_eq!(
+            test.supervise(options).await,
+            HostExit::Finished(RunOutcome::Merged)
+        );
+        let lines = UsageLedger::new(&test.paths).read_since(None);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].run.as_ref(), Some(&test.run));
+        assert_eq!(lines[0].agent, "codex");
+        assert!((lines[0].cost - 0.25).abs() < 1e-9);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

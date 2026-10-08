@@ -53,7 +53,7 @@ fn overrides(args: &RunArgs, set: &[String]) -> anyhow::Result<Vec<String>> {
         None if args.needs_agent() => {
             argonauts_app::current_settings(None, set.to_vec())
                 .map_err(usage)?
-                .default_agent
+                .main_agent
                 .worker
         }
         None => String::new(),
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(finished(RunOutcome::Stopped), ExitCode::from(130));
         let waiting = RunCommandExit::Waiting {
             run: run_id(),
-            checkpoint: "the plan checkpoint".to_owned(),
+            checkpoint: "the plan approval".to_owned(),
         };
         assert_eq!(exit_code(&waiting), ExitCode::from(WAITING_EXIT));
         assert_eq!(
@@ -198,11 +198,11 @@ mod tests {
     fn a_parked_run_says_how_to_resume_it() {
         let waiting = RunCommandExit::Waiting {
             run: run_id(),
-            checkpoint: "the plan\u{1b}[2J checkpoint".to_owned(),
+            checkpoint: "the plan\u{1b}[2J approval".to_owned(),
         };
         assert_eq!(
             closing_line(&waiting, false).unwrap(),
-            "waiting for you: the plan checkpoint · argonauts resume run-03"
+            "waiting for you: the plan approval · argonauts resume run-03"
         );
         let detached = RunCommandExit::Detached(run_id());
         assert_eq!(closing_line(&detached, true).unwrap(), "run-03");
@@ -234,9 +234,9 @@ mod tests {
                 run: run_id(),
                 title: "Add a flag".to_owned(),
                 mode: RunMode::Crew,
-                preset: "peer-crew".to_owned(),
+                workflow: "council".to_owned(),
                 state: RunState::Parked,
-                stopped_at: "the plan checkpoint".to_owned(),
+                stopped_at: "the plan approval".to_owned(),
                 updated: time::OffsetDateTime::UNIX_EPOCH,
                 spent: Spend::default(),
                 sessions_to_resume: 0,
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(
             status_text(&report),
             "Running across your repos:\n  run-03 · /code/app · 2 sessions\nThis repo:\n  \
-             run-03 · parked · the plan checkpoint · Add a flag\n"
+             run-03 · waiting · the plan approval · Add a flag\n"
         );
     }
 }

@@ -18,7 +18,8 @@ use argonauts_core::journal::JournalError;
 use argonauts_core::limits::{
     Candidate, CandidateQuery, CostEstimate, GateRequest, GateRunner, HandoffPacket,
     HandoffPlanner, HealthBoard, HealthSignal, HealthState, LimitsService, QuotaBoard,
-    QuotaReading, RecoveryAction, StopContext, TrackRecord, TrackRecords, VendorHealth, WorkSoFar,
+    QuotaReading, QuotaWindows, RecoveryAction, StopContext, TrackRecord, TrackRecords,
+    VendorHealth, WorkSoFar,
 };
 use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
 use argonauts_core::policy::{
@@ -355,8 +356,8 @@ impl HardLimits for ScriptedHardLimits {
 }
 
 /// A simple recovery table: vendor trouble asks you, a full context rotates, a stuck or crashed
-/// session goes to another agent once and then escalates, and a budget hit applies
-/// `on_hit = ask`. `set_next` overrides the next answer.
+/// session goes to another agent once and then escalates, and a reached limit applies
+/// `when_reached = fallback`. `set_next` overrides the next answer.
 #[derive(Default)]
 pub struct TableLimits {
     overrides: Mutex<VecDeque<RecoveryAction>>,
@@ -408,7 +409,7 @@ impl TableLimits {
                 RecoveryAction::Proceed
             }
             EndReason::ContextFull => RecoveryAction::Rotate { packet: packet() },
-            EndReason::BudgetHit { .. } => RecoveryAction::BudgetHit(OnHit::Ask),
+            EndReason::BudgetHit { .. } => RecoveryAction::BudgetHit(OnHit::Fallback),
             EndReason::Stuck { .. } | EndReason::Crashed { .. } | EndReason::StartFailed { .. } => {
                 match lock(&self.fallback).clone() {
                     Some(to) if !context.reassigned_once => RecoveryAction::HandOff {
@@ -514,22 +515,46 @@ impl HandoffPlanner for FakeHandoff {
     }
 }
 
+/// The last reading of each vendor's window wins, whatever its age, so a test sets what it
+/// wants.
 #[derive(Default)]
 pub struct MemoryQuotaBoard {
-    readings: Mutex<BTreeMap<VendorId, QuotaReading>>,
+    readings: Mutex<BTreeMap<VendorId, QuotaWindows>>,
+    plans: Mutex<BTreeMap<VendorId, String>>,
 }
 
 impl QuotaBoard for MemoryQuotaBoard {
     fn observe(&self, reading: QuotaReading) {
-        lock(&self.readings).insert(reading.vendor.clone(), reading);
+        lock(&self.readings)
+            .entry(reading.vendor.clone())
+            .or_default()
+            .put(reading);
     }
 
     fn get(&self, vendor: &VendorId) -> Option<QuotaReading> {
-        lock(&self.readings).get(vendor).cloned()
+        lock(&self.readings).get(vendor)?.binding().cloned()
     }
 
     fn all(&self) -> Vec<QuotaReading> {
-        lock(&self.readings).values().cloned().collect()
+        lock(&self.readings)
+            .values()
+            .filter_map(|windows| windows.binding().cloned())
+            .collect()
+    }
+
+    fn windows(&self, vendor: &VendorId) -> Vec<QuotaReading> {
+        lock(&self.readings)
+            .get(vendor)
+            .map(|windows| windows.readings().to_vec())
+            .unwrap_or_default()
+    }
+
+    fn plan(&self, vendor: &VendorId) -> Option<String> {
+        lock(&self.plans).get(vendor).cloned()
+    }
+
+    fn observe_plan(&self, vendor: &VendorId, plan: String) {
+        lock(&self.plans).insert(vendor.clone(), plan);
     }
 
     fn probe(&self, vendor: &VendorId) -> BoxFuture<'_, Option<QuotaReading>> {
@@ -645,7 +670,7 @@ impl HealthBoard for MemoryHealthBoard {
         } else {
             HealthState::Down
         };
-        self.set(vendor, state, (!ok).then_some("the test card failed"));
+        self.set(vendor, state, (!ok).then_some("the test task failed"));
     }
 }
 

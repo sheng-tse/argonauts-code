@@ -267,7 +267,7 @@ pub fn approve_command(run: &RunId, checkpoint: &CheckpointOpened) -> String {
 /// answer and never answers anything.
 pub fn decision(run: &RunId, waiting: &[CheckpointOpened], share: Share) -> (String, Value) {
     let how = format!(
-        "Answer it in the Argonauts app, or run `argonauts approve {run} <checkpoint>` in a \
+        "Answer it in the Argonauts app, or run `argonauts approve {run} <approval>` in a \
          terminal. This server can't answer it."
     );
     let items: Vec<Value> = waiting

@@ -166,6 +166,7 @@ mod tests {
                 phases_started: Default::default(),
                 phases_ended: Default::default(),
                 phases_skipped: Default::default(),
+                left: Vec::new(),
             });
         record.steps.push(StepProgress {
             step: review_step(),

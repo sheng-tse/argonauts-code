@@ -47,7 +47,7 @@ fn policy_mcp_start_and_watch_run() -> anyhow::Result<()> {
         anyhow::Ok(run)
     })?;
 
-    let events = wait_for_events(&scenario, "the merge checkpoint", RUN_WAIT, merge_opened)?;
+    let events = wait_for_events(&scenario, "the merge approval", RUN_WAIT, merge_opened)?;
     let started = run_started(&events).expect("RunStarted");
     assert_eq!(events[0].run_id.as_str(), run);
     assert_eq!(started.front_end.as_deref(), Some("openclaw"));

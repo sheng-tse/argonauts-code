@@ -116,7 +116,7 @@ pub(crate) fn session_started(
         role,
         step: None,
         access: Access::Build,
-        lifetime: SessionLifetime::Card,
+        lifetime: SessionLifetime::Task,
         resumed_from: None,
         follow_key: None,
         workflow_step: None,
@@ -192,7 +192,7 @@ pub(crate) fn run_started(seq: u64, request: &str, front_end: Option<&str>) -> R
         title: request.to_owned(),
         mode: RunMode::Solo,
         forced: false,
-        preset: "solo".to_owned(),
+        workflow: "solo".to_owned(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -209,6 +209,7 @@ pub(crate) fn run_started(seq: u64, request: &str, front_end: Option<&str>) -> R
         version: "0.0.1".to_owned(),
         front_end: front_end.map(str::to_owned),
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     };
     event(
         seq,
@@ -230,8 +231,8 @@ pub(crate) fn queued(seq: u64, text: &str, from: Party) -> RunEvent {
 
 pub(crate) fn card_spec(n: usize) -> CardSpec {
     CardSpec {
-        id: CardId::new(format!("card-{n:03}")).unwrap(),
-        title: format!("Card {n}"),
+        id: CardId::new(format!("task-{n:03}")).unwrap(),
+        title: format!("Task {n}"),
         task: String::new(),
         kind: CardKind::Build,
         owned_paths: Vec::new(),

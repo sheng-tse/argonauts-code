@@ -51,7 +51,7 @@ pub fn prompt_part(packet: &HandoffPacket) -> InputPart {
     let text = render(packet);
     InputPart {
         kind: InputPartKind::Handoff,
-        label: "handoff".to_owned(),
+        label: "fallback".to_owned(),
         approx_tokens: u32::try_from(text.chars().count().div_ceil(4)).unwrap_or(u32::MAX),
         text,
         source: Some(packet.card.id.to_string()),
@@ -412,12 +412,12 @@ fn render(packet: &HandoffPacket) -> String {
         out.push('\n');
     };
     line(format!(
-        "Handoff · {} {}",
+        "Fallback · {} {}",
         card.id,
         one_line(&card.title, RESULT_CHARS)
     ));
     line(
-        "Another agent started this card and stopped. Its work so far is committed on your \
+        "Another agent started this task and stopped. Its work so far is committed on your \
          branch. Continue from there."
             .to_owned(),
     );
@@ -472,7 +472,7 @@ fn render(packet: &HandoffPacket) -> String {
         }
     }
     if !packet.gates.is_empty() {
-        line("Gates:".to_owned());
+        line("Checks:".to_owned());
         for gate in &packet.gates {
             let verdict = if gate.passed { "passed" } else { "failed" };
             line(format!(
@@ -497,7 +497,7 @@ fn render(packet: &HandoffPacket) -> String {
         line(format!("Its last message: {message}"));
     }
     if let Some(left) = packet.budget_left {
-        line(format!("Budget left: {}", amount(left)));
+        line(format!("Limit left: {}", amount(left)));
     }
     out
 }
@@ -511,7 +511,7 @@ fn amount(amount: BudgetAmount) -> String {
         BudgetUnit::Usd => format!("${:.2}", amount.amount),
         BudgetUnit::Tokens => format!("{:.0} tokens", amount.amount),
         BudgetUnit::Minutes => format!("{:.0} minutes", amount.amount),
-        BudgetUnit::Quota => format!("{:.0}% of quota", amount.amount * 100.0),
+        BudgetUnit::Quota => format!("{:.0}% of plan usage", amount.amount * 100.0),
     }
 }
 

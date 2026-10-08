@@ -6,20 +6,20 @@ argonauts › crew                                                    Claude 72%
   Needs you 2    Working 2    Ready 2    Done 2  [ All 8 ]
 
 ~/code/export
-  Add a --json flag to export
-  ❯ ◆ Add the JSON writer            GPT 5.6 on Codex         asks: Keep a CSV fallback?      2m ago
-    ● Wire the --json flag           Opus on Claude Code      Update(src/mw/limit.ts)         5m ago
-    ○ Wire the --json flag           Gemini 3.6 Pro on Anti…  waiting on other work           1m ago
-    ✓ Rename the CSV writer          GPT 5.6 on Codex         Integrated card-001.            3m ago
-  Conversations and CLI sessions
-    ◎ How does the export pick a f…  Opus on Claude Code      It reads --format, then the …  40m ago
-    ◎ Explain the input handling     GPT 5.6 on Codex         It reads keys in one loop.      1d ago
+◆ Add a --json flag to export · needs you
+  ❯ ◆ build:json-writer   asks: Keep a CSV fallback?      GPT 5.6 on Codex                    2m ago
+    ● build:json-flag     Update(src/mw/limit.ts)         Opus on Claude Code                 5m ago
+    ○ review:json-flag    waiting on other work           Gemini 3.6 Pro on Antigravity CLI   1m ago
+    ✓ build:csv-writer    Integrated task-001.            GPT 5.6 on Codex                    3m ago
+Sessions
+    ◎ How does the expo…  Claude Code · enter continues                                      40m ago
+    ◎ Explain the input…  Codex · enter continues                                             1d ago
 
 ~/code/api
-  Fix the login redirect
-    ◆ Fix the login redirect                                  plan checkpoint, waiting for…   1d ago
-  Tidy the README
-    ✓ Tidy the README                                         merged                          2d ago
+◆ Fix the login redirect · plan approval, waiting for you · $0.46
+✓ tidy-readme · merged 2d ago
+
+
 
 
 

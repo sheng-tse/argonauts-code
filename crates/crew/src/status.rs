@@ -61,7 +61,7 @@ pub fn render(summary: &StatusSummary) -> String {
     );
     section(
         &mut out,
-        "Cards",
+        "Tasks",
         summary.cards.iter().map(|card| {
             let mut row = format!(
                 "{} [{}] {}",
@@ -85,7 +85,7 @@ pub fn render(summary: &StatusSummary) -> String {
             Some(limit) => format!("{spent} of {}", amount(limit.unit, limit.amount)),
             None => spent,
         };
-        let _ = writeln!(out, "\nBudget: {line}");
+        let _ = writeln!(out, "\nLimit: {line}");
     }
     section(
         &mut out,
@@ -120,7 +120,7 @@ fn amount(unit: BudgetUnit, amount: f64) -> String {
     match unit {
         BudgetUnit::Usd => format!("${amount:.2}"),
         BudgetUnit::Tokens => format!("{amount:.0} tokens"),
-        BudgetUnit::Quota => format!("{:.0}% of the quota window", amount * 100.0),
+        BudgetUnit::Quota => format!("{:.0}% of the plan usage window", amount * 100.0),
         BudgetUnit::Minutes => format!("{amount:.0} minutes"),
     }
 }
@@ -145,13 +145,13 @@ mod tests {
             plan: Some("Redis counters behind auth".to_owned()),
             decisions: vec![(DecisionId::numbered(1), "Store: Redis".to_owned())],
             cards: vec![CardBrief {
-                card: CardId::new("card-002").unwrap(),
+                card: CardId::new("task-002").unwrap(),
                 title: "The Redis store".to_owned(),
                 state: CardState::Running,
                 owner: Some(WorkerRef::new("codex", None)),
                 note: String::new(),
             }],
-            recent: vec!["card-001 merged into the integration branch".to_owned()],
+            recent: vec!["task-001 merged into the integration branch".to_owned()],
             waiting: vec!["Merge this run into main?".to_owned()],
             ..StatusSummary::default()
         };
@@ -160,7 +160,7 @@ mod tests {
         assert!(text.contains("\nGoal: Rate limit the API\n  G1: 429 past the limit\n"));
         assert!(text.contains("\nPlan: Redis counters behind auth\n"));
         assert!(text.contains("  D-001 Store: Redis\n"));
-        assert!(text.contains("  card-002 [running] The Redis store · codex\n"));
+        assert!(text.contains("  task-002 [running] The Redis store · codex\n"));
         assert!(text.contains("\nWaiting on you:\n  Merge this run into main?\n"));
         assert!(!text.contains("Quotas"));
         assert_eq!(render(&StatusSummary::default()), "No run is going.\n");

@@ -4,7 +4,7 @@ expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────
  argonauts-ui-kit
- Build a standalone Rust UI kit prototype that match… 8/12 agents · 2h44m
+ Build a standalone Rust UI kit prot… 8/12 agents · 2h44m · ↓ 1.4M tokens
 
  ╭ Build · 7 agents ────────┬ build:a-terminal-bottom ──────────────────╮
  │ ❯✔ build:a-terminal-bot… │ ✔ Completed · Opus on Claude Code · 6m02s │
@@ -23,6 +23,6 @@ expression: "screen(&mut view, width, height, &state)"
  │                          │ Diff · 4 files · +120 -18 · ↵open         │
  │                          │                                           │
  │                          │ Subagents · 4 · structure not exposed · … │
- │                          │   ✓ explorer  done · Found 14 call sites  │
+ │                          │   ✔ explorer  done · Found 14 call sites  │
  ╰──────────────────────────┴──────────────────────────── 1–17 of 29 ↓ ─╯
  ↑↓ agent · j/k scroll · ⏎ expand · p pause · esc back · s save

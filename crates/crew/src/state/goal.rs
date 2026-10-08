@@ -1,16 +1,20 @@
 //! Goal alignment: restatements, differences, what was settled, the drafted and approved goal
-//! file, and goal changes.
+//! file, and goal changes. And the goals being kept: the run's own, which its workflow goes
+//! round until it holds, and each task's, when its role works a task as a goal.
 //!
 //! A round is restatements, then listings, then one `Settled`, then drafts. A restatement or a
 //! listing that arrives after a round settled starts the next round (a send back), and so does a
 //! second `Settled`, which is how a round with no restatements left still shows up.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
+use argonauts_core::CardId;
 use argonauts_core::events::RunEvent;
 use argonauts_core::events::goal::{
-    Assumption, Attempt, Decider, GoalChangeResolution, GoalChecked, GoalEvent, GoalFile,
-    GoalQuestion, GoalRun, GoalStatus,
+    Assumption, Attempt, CliGoalSaid, Decider, GoalChangeResolution, GoalChecked, GoalEvent,
+    GoalFile, GoalQuestion, GoalRun, GoalStatus,
 };
 use argonauts_core::events::run::Party;
 use argonauts_core::names::{MessageId, WorkerRef};
@@ -33,19 +37,41 @@ pub struct GoalState {
     pub approved: Option<GoalFile>,
     pub approved_by: Option<Party>,
     pub changes: Vec<GoalChange>,
-    /// A goal-style run's goal, with its attempts and status as they stand.
+    /// The run's own goal, with its rounds and status as they stand.
     #[serde(default)]
     pub pursuit: Option<GoalRun>,
-    /// Every check, oldest first.
+    /// Every check, oldest first: the run's goal's and each task's.
     #[serde(default)]
     pub checks: Vec<GoalChecked>,
     /// `(question, answer, who)` for each question answered, oldest first.
     #[serde(default)]
     pub answers: Vec<(String, String, Decider)>,
-    /// The attempts after whose check the goal was stuck, so the next one goes to another
-    /// company's model.
+    /// The rounds after whose check the run's goal changed approach, so the next one goes to
+    /// another provider's model.
     #[serde(default)]
     pub stuck_at: Vec<u32>,
+    /// Why the run's goal ended short of holding.
+    #[serde(default)]
+    pub ended_because: Option<String>,
+    /// The goals of the tasks worked as goals.
+    #[serde(default)]
+    pub tasks: BTreeMap<CardId, TaskGoal>,
+}
+
+/// One task's goal as it's kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskGoal {
+    pub goal: GoalRun,
+    /// The try after whose check it changed approach, which happens once.
+    pub approach_changed_after: Option<u32>,
+    /// Why it ended short of holding.
+    pub ended_because: Option<String>,
+    /// The CLI's own account of the goal, when the CLI keeps it, with the turns it has reported
+    /// on so far.
+    pub cli_says: Option<CliGoalSaid>,
+    /// Turns in a row, in this try, that the CLI ended with its goal still active.
+    #[serde(default)]
+    pub continues: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -173,9 +199,31 @@ impl GoalState {
                     }
                 }
             }
-            GoalEvent::Set(goal) => self.pursuit = Some((**goal).clone()),
-            GoalEvent::AttemptStarted { n, title, phase } => {
-                if let Some(goal) = &mut self.pursuit {
+            GoalEvent::Set(goal) => match &goal.task {
+                Some(task) => {
+                    let kept = self.tasks.remove(task);
+                    self.tasks.insert(
+                        task.clone(),
+                        TaskGoal {
+                            goal: (**goal).clone(),
+                            approach_changed_after: kept
+                                .as_ref()
+                                .and_then(|kept| kept.approach_changed_after),
+                            ended_because: None,
+                            continues: kept.as_ref().map_or(0, |kept| kept.continues),
+                            cli_says: kept.and_then(|kept| kept.cli_says),
+                        },
+                    );
+                }
+                None => self.pursuit = Some((**goal).clone()),
+            },
+            GoalEvent::AttemptStarted {
+                n,
+                title,
+                phase,
+                task,
+            } => {
+                if let Some(goal) = self.goal_mut(task.as_ref()) {
                     goal.attempts.push(Attempt {
                         n: *n,
                         title: title.clone(),
@@ -183,9 +231,12 @@ impl GoalState {
                         verdict: None,
                     });
                 }
+                if let Some(kept) = task.as_ref().and_then(|task| self.tasks.get_mut(task)) {
+                    kept.continues = 0;
+                }
             }
             GoalEvent::Checked(checked) => {
-                if let Some(attempt) = self.pursuit.as_mut().and_then(|goal| {
+                if let Some(attempt) = self.goal_mut(checked.task.as_ref()).and_then(|goal| {
                     goal.attempts
                         .iter_mut()
                         .find(|attempt| attempt.n == checked.attempt)
@@ -194,15 +245,50 @@ impl GoalState {
                 }
                 self.checks.push((**checked).clone());
             }
-            GoalEvent::StatusChanged { status, .. } => {
-                if let Some(goal) = &mut self.pursuit {
+            GoalEvent::StatusChanged {
+                status, task, why, ..
+            } => {
+                if let Some(goal) = self.goal_mut(task.as_ref()) {
                     goal.status = *status;
-                    if *status == GoalStatus::Stuck
-                        && let Some(last) = goal.attempts.last()
-                        && !self.stuck_at.contains(&last.n)
-                    {
-                        self.stuck_at.push(last.n);
+                }
+                let because = match status {
+                    GoalStatus::Pursuing | GoalStatus::Met => None,
+                    _ => why.clone(),
+                };
+                match task {
+                    Some(task) => {
+                        if let Some(kept) = self.tasks.get_mut(task) {
+                            kept.ended_because = because;
+                        }
                     }
+                    None if self.pursuit.is_some() => self.ended_because = because,
+                    None => {}
+                }
+            }
+            GoalEvent::ApproachChanged { after, task, .. } => match task {
+                Some(task) => {
+                    if let Some(kept) = self.tasks.get_mut(task) {
+                        kept.approach_changed_after = Some(*after);
+                    }
+                }
+                None => {
+                    if !self.stuck_at.contains(after) {
+                        self.stuck_at.push(*after);
+                    }
+                }
+            },
+            GoalEvent::CliSaid { task, said } => {
+                if let Some(kept) = task.as_ref().and_then(|task| self.tasks.get_mut(task)) {
+                    let turns = kept.cli_says.as_ref().and_then(|said| said.turns);
+                    kept.continues = if crate::goal::cli::still_going(said) {
+                        kept.continues + 1
+                    } else {
+                        0
+                    };
+                    kept.cli_says = Some(CliGoalSaid {
+                        turns: Some(turns.unwrap_or(0) + 1),
+                        ..said.clone()
+                    });
                 }
             }
             GoalEvent::Answered {
@@ -212,11 +298,58 @@ impl GoalState {
             } => self.answers.push((question.clone(), answer.clone(), *by)),
             // The changed assumption reaches the goal file as its next version.
             GoalEvent::AssumptionChanged { .. } => {}
+            // A check you asked for decides nothing, so it stays out of `checks`, which says
+            // what follows each try.
+            GoalEvent::CheckingNow { .. }
+            | GoalEvent::CheckedNow(_)
+            | GoalEvent::CheckNowDropped { .. } => {}
         }
     }
 
     pub fn approved_sha256(&self) -> Option<&str> {
         self.approved.as_ref().map(|file| file.sha256.as_str())
+    }
+
+    /// The goal `task` is worked as, or the run's own for `None`.
+    pub fn goal_of(&self, task: Option<&CardId>) -> Option<&GoalRun> {
+        match task {
+            Some(task) => self.tasks.get(task).map(|kept| &kept.goal),
+            None => self.pursuit.as_ref(),
+        }
+    }
+
+    fn goal_mut(&mut self, task: Option<&CardId>) -> Option<&mut GoalRun> {
+        match task {
+            Some(task) => self.tasks.get_mut(task).map(|kept| &mut kept.goal),
+            None => self.pursuit.as_mut(),
+        }
+    }
+
+    /// The newest check of each try of that goal, oldest try first.
+    pub fn checks_of(&self, task: Option<&CardId>) -> Vec<&GoalChecked> {
+        let Some(goal) = self.goal_of(task) else {
+            return Vec::new();
+        };
+        goal.attempts
+            .iter()
+            .filter_map(|attempt| {
+                self.checks
+                    .iter()
+                    .rev()
+                    .find(|checked| checked.attempt == attempt.n && checked.task.as_ref() == task)
+            })
+            .collect()
+    }
+
+    /// Whether that goal already changed approach, which it does once.
+    pub fn approach_changed(&self, task: Option<&CardId>) -> bool {
+        match task {
+            Some(task) => self
+                .tasks
+                .get(task)
+                .is_some_and(|kept| kept.approach_changed_after.is_some()),
+            None => !self.stuck_at.is_empty(),
+        }
     }
 
     pub fn change(&self, id: &MessageId) -> Option<&GoalChange> {

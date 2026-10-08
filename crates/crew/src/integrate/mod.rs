@@ -7,15 +7,18 @@ use argonauts_core::CardId;
 use crate::engine::host::Host;
 use crate::error::EngineResult;
 
+pub mod absorb;
 pub mod branch;
 pub mod card_merge;
 pub mod conductor;
+pub mod deliver;
 pub mod diff;
 pub mod final_check;
 pub mod in_the_way;
 pub mod land;
 pub mod merge;
 pub mod merge_packet;
+pub mod unborn;
 
 /// What merging one approved card came to.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -139,13 +139,18 @@ pub(crate) fn allowed(tool: &str, input: &Value, edits_allowed: bool, patterns: 
         return false;
     }
     if EDIT_TOOLS.contains(&tool) {
-        return edits_allowed;
+        // Argonauts' own files change through a setup you pick a place for, never through an
+        // edit you allowed for the code, so such an edit always asks.
+        let file = text(input, &["file_path", "notebook_path", "path"]);
+        return edits_allowed && !in_setup_folder(&file);
     }
     if tool == COMMAND_TOOL {
+        // A command that reaches into Argonauts' own files asks each time, as their edits do.
         let command = text(input, &["command"]);
-        return patterns
-            .iter()
-            .any(|pattern| command_matches(pattern, &command));
+        return !names_setup_folder(&command)
+            && patterns
+                .iter()
+                .any(|pattern| command_matches(pattern, &command));
     }
     patterns.iter().any(|pattern| pattern == tool)
 }
@@ -250,6 +255,18 @@ fn capped(mut rows: Vec<String>) -> Vec<String> {
         rows.push(format!("… +{hidden} lines"));
     }
     rows
+}
+
+/// Whether a shell command names a `.argonauts` folder anywhere in it.
+pub(crate) fn names_setup_folder(command: &str) -> bool {
+    command.contains(".argonauts")
+}
+
+/// A path in a `.argonauts` folder, the project's or yours.
+pub(crate) fn in_setup_folder(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .any(|part| part.as_os_str() == ".argonauts")
 }
 
 fn text(value: &Value, keys: &[&str]) -> String {
@@ -367,8 +384,22 @@ mod tests {
             false,
             &patterns
         ));
+        // A command into Argonauts' own files asks each time, whatever was allowed before.
+        let into_settings = json!({"command": "cargo test --manifest-path .argonauts/x.toml"});
+        assert!(!allowed("Bash", &into_settings, true, &patterns));
         assert!(allowed("WebFetch", &json!({}), false, &patterns));
         assert!(!allowed("Edit", &json!({}), false, &patterns));
         assert!(allowed("Write", &json!({}), true, &patterns));
+        // Edits allowed for the code never reach Argonauts' own files.
+        let settings = json!({"file_path": "/repo/.argonauts/config.toml"});
+        assert!(!allowed("Write", &settings, true, &patterns));
+        let role = json!({"file_path": ".argonauts/roles/reviewers.md"});
+        assert!(!allowed("Edit", &role, true, &patterns));
+        assert!(allowed(
+            "Edit",
+            &json!({"file_path": "src/app.rs"}),
+            true,
+            &patterns
+        ));
     }
 }

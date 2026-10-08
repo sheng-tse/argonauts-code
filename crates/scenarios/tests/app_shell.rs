@@ -21,7 +21,7 @@ fn finished(event: &AppEvent) -> bool {
 fn app_shell_mode_runs_echo_hi() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let mut pty = start(&scenario)?;
-    pty.wait_for(r"Argonauts v?\d+\.\d+\.\d+", WAIT)?;
+    pty.wait_for(r"Argonauts Code v?\d+\.\d+\.\d+", WAIT)?;
 
     check_mode_line(&pty)?;
     pty.send("!")?;

@@ -20,7 +20,7 @@ Answer with:
     - `scope`: what the work covers or leaves out.
     - `security`: who may do what, secrets, or exposure.
     - `data`: stored data, its format, or a migration.
-    - `cost`: money, time, or a performance budget.
+    - `cost`: money, time, or a performance limit.
   - `question`: a multiple-choice question the person who asked could answer in one key, with
     two to four `options`, the index of the one you `recommended`, and its `basis`, such as
     "2 of 3 restatements read it this way". Give one for every difference that isn't wording.

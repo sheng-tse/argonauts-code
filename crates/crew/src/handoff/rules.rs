@@ -7,7 +7,7 @@ use argonauts_core::CardId;
 use argonauts_core::events::card::{CardSpec, CardState};
 use argonauts_core::limits::{HealthState, QuotaReading, QuotaStatus};
 use argonauts_core::names::{RoleName, VendorId, WorkerRef};
-use argonauts_core::settings::handoff::{AppliedHandoff, HandoffSettings};
+use argonauts_core::settings::handoff::AppliedHandoff;
 
 use crate::card::machine::Trigger;
 use crate::card::pipeline;
@@ -17,22 +17,20 @@ use crate::state::RunState;
 use crate::state::cards::CardRecord;
 use crate::workflow::StepAt;
 
-/// The handoff rules for `role` when `vendor` stops, walked from the most specific table.
+/// The fallback rules for `role` when `vendor` stops, walked from the most specific table.
 pub fn applied(host: &Host, role: RoleName, vendor: &VendorId) -> AppliedHandoff {
-    let settings = host.settings();
-    let role_table = settings.roles.get(&role).map(|role| &role.handoff);
-    HandoffSettings::applied(&settings.handoff, role_table, vendor)
+    host.settings().fallback.applied_to(role, vendor)
 }
 
 /// The rules for this card's owner role, with the vendor of `worker`. A solo card's owner fills
 /// the owner role too, as its sessions and the recovery read it.
 pub fn applied_for(host: &Host, _card: &CardSpec, worker: &WorkerRef) -> AppliedHandoff {
-    applied(host, RoleName::Owner, &worker.vendor())
+    applied(host, RoleName::Worker, &worker.vendor())
 }
 
 pub fn record(host: &Host, card: &CardId) -> EngineResult<CardRecord> {
     host.read(|state| state.cards.get(card).cloned())
-        .ok_or_else(|| EngineError::Refused(format!("{card} is not a card of this run")))
+        .ok_or_else(|| EngineError::Refused(format!("{card} is not a task of this run")))
 }
 
 /// Who owns the card now: the latest reassignment, else the owner it was planned with.
@@ -73,7 +71,7 @@ pub fn current_step(state: &RunState) -> Option<StepAt> {
 
 pub fn step_now(host: &Host) -> EngineResult<StepAt> {
     host.read(current_step)
-        .ok_or_else(|| EngineError::Refused("no step is running for this handoff".to_owned()))
+        .ok_or_else(|| EngineError::Refused("no step is running for this fallback".to_owned()))
 }
 
 /// Whether a session of this card is running now.

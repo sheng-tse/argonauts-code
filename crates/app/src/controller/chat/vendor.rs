@@ -92,7 +92,7 @@ fn adapter(ctx: &Ctx, vendor: &str) -> Option<Arc<dyn Adapter>> {
 /// The main agent's own sessions for this repo, newest first. A store that can't be read lists
 /// none, since the rest of `/resume` still works.
 pub(crate) async fn list(ctx: &Ctx) -> Vec<VendorSession> {
-    let vendor = ctx.settings().default_agent.worker.clone();
+    let vendor = ctx.settings().main_agent.worker.clone();
     let (Some(adapter), Some(scan)) = (adapter(ctx, &vendor), scan(ctx)) else {
         return Vec::new();
     };

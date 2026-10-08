@@ -13,11 +13,12 @@ use argonauts_core::limits::{HealthState, QuotaReading, QuotaSource, QuotaStatus
 use argonauts_core::names::{CheckpointId, RoleName, SessionKey, TurnId, VendorId, WorkerRef};
 use argonauts_core::policy::{NarratorLine, NarratorLineKind, NarratorStatus};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+use argonauts_core::settings::bottom_line::BottomLineSettings;
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::ui::{NarratorMode, Theme as ThemeChoice, UiSettings};
 use argonauts_core::views::ContextUse;
 use argonauts_core::{CardId, KeyScheme, RunId, Spend};
-use argonauts_tui::bottom::status_line;
+use argonauts_tui::bottom::{LinePart, ModeState, PartBody};
 use argonauts_tui::bridge::settings::theme_for;
 use argonauts_tui::bridge::{Cx, Effects, status};
 use argonauts_tui::model::{ViewModel, VimMode};
@@ -44,7 +45,7 @@ fn worker(name: &str, model: &str) -> WorkerRef {
 
 fn session(n: u32, who: WorkerRef, tokens_out: u64) -> SessionState {
     let vendor = who.worker.clone();
-    let mut session = SessionState::new(SessionKey::numbered(n), who, vendor, RoleName::Owner, T0);
+    let mut session = SessionState::new(SessionKey::numbered(n), who, vendor, RoleName::Worker, T0);
     session.follow = Some(n as u8);
     session.status = argonauts_tui::state::SessionStatus::Working;
     session.tokens_out = tokens_out;
@@ -55,15 +56,17 @@ fn status_line_with(quotas: Vec<QuotaChip>) -> StatusLine {
     StatusLine {
         title: "Fix the export race".into(),
         repo: "~/argonauts".into(),
-        preset: "peer-crew".into(),
-        all_hands: false,
+        workflow: "council".into(),
+        ultracode: false,
         run: None,
-        default_agent: worker("claude-code", "opus"),
+        main_agent: worker("claude-code", "opus"),
         quotas,
+        line: Default::default(),
         spent: None,
         limit: None,
         narrator: NarratorMode::OnDemand,
         approval_mode: ApprovalMode::Supervised,
+        awake: None,
     }
 }
 
@@ -86,6 +89,7 @@ fn chip(label: &str, reading: Option<QuotaReading>) -> QuotaChip {
         label: label.into(),
         reading,
         health: HealthState::Healthy,
+        windows: Vec::new(),
     }
 }
 
@@ -96,12 +100,12 @@ fn crew() -> AppState {
     let mut run = RunState::new(id.clone());
     run.title = "Fix the export race".into();
     run.mode = Some(RunMode::Crew);
-    run.preset = Some("peer-crew".into());
+    run.workflow = Some("council".into());
     run.phase = Some(RunPhase::Build);
     run.started = Some(T0);
     run.updated = Some(T0 + Duration::seconds(252));
     for n in 1..=5 {
-        let card = CardId::new(format!("card-{n:03}")).unwrap();
+        let card = CardId::new(format!("task-{n:03}")).unwrap();
         let mut row = CardRow::new(card.clone(), "Card");
         row.state = Some(if n <= 2 {
             CardState::Integrated
@@ -159,6 +163,26 @@ fn synced(state: &AppState, ui: &UiSettings, seconds: f64) -> ViewModel {
     model
 }
 
+/// The bottom line as the sync set it up, with the mode at its left.
+fn bottom_row(model: &ViewModel, theme: &argonauts_tui::theme::Theme, width: u16) -> Line<'static> {
+    let state = ModeState {
+        line: Some(&model.bottom.line),
+        ..ModeState::default()
+    };
+    model.bottom.mode.line(&ctx(theme, width, NOW), state)
+}
+
+/// The status with these parts on its bottom line's right side.
+fn with_right_parts(mut status: StatusLine, parts: &[&str]) -> StatusLine {
+    let right = parts
+        .iter()
+        .map(|part| format!("{part:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    status.line.settings = BottomLineSettings::from_toml(&format!("right = [{right}]")).unwrap();
+    status
+}
+
 fn assert_stable(render: impl Fn(u16) -> Vec<Line<'static>>) {
     for width in stability::WIDTHS {
         stability::assert_lines(&render(width), width);
@@ -206,9 +230,16 @@ fn palette_roles_dark_and_light() {
     assert_eq!(theme_for(&auto, &env, Some(false)), dark);
 }
 
+/// The spend and context parts are yours to add: the run's spend against its limit, and the
+/// busiest session's context as a small bar.
 #[test]
-fn budget_meter_context_size() {
+fn spend_and_context_parts() {
     let mut state = crew();
+    let status = state
+        .status
+        .clone()
+        .unwrap_or_else(|| status_line_with(Vec::new()));
+    state.status = Some(with_right_parts(status, &["spend", "context"]));
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     let contexts = [(1, 150_000), (2, 90_000), (3, 40_000)];
     for (n, used) in contexts {
@@ -218,22 +249,19 @@ fn budget_meter_context_size() {
     let ui = UiSettings::default();
     let model = synced(&state, &ui, NOW);
     let theme = theme();
-    let render = |width| {
-        status_line(&model.bottom.status_line, &ctx(&theme, width, NOW))
-            .into_iter()
-            .collect::<Vec<_>>()
-    };
+    let render = |width| vec![bottom_row(&model, &theme, width)];
     assert_stable(render);
     for width in [80, 120] {
         insta::assert_snapshot!(
-            format!("budget_meter_context_size_{width}"),
+            format!("spend_and_context_parts_{width}"),
             styled(&render(width))
         );
     }
     let row = text(&render(120));
-    assert!(row.contains("$0.21/$5.00 · ctx 150k/200k"), "{row}");
+    assert!(row.contains("$0.21/$5.00  context "), "{row}");
+    assert!(row.ends_with(" 75%"), "{row}");
 
-    // A session near its cap turns the meter the warning color.
+    // A session near its cap turns the bar the warning color.
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     let session = run.sessions.get_mut(&SessionKey::numbered(2)).unwrap();
     session.context = Some(ContextUse {
@@ -241,11 +269,21 @@ fn budget_meter_context_size() {
         cap: 200_000,
     });
     let model = synced(&state, &ui, NOW);
-    let line = status_line(&model.bottom.status_line, &ctx(&theme, 120, NOW)).unwrap();
-    assert_eq!(
-        style_of(&[line], "ctx 185k/200k").and_then(|style| style.fg),
-        fg(Role::Warning)
-    );
+    let fills: Vec<Role> = model
+        .bottom
+        .line
+        .right
+        .iter()
+        .filter_map(|part| match part {
+            LinePart::Added(part) => match &part.body {
+                PartBody::Meter { fill, .. } => Some(*fill),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills, [Role::Warning]);
+    assert!(text(&[bottom_row(&model, &theme, 120)]).ends_with(" 93%"));
 }
 
 #[test]
@@ -315,7 +353,7 @@ fn working_line_states() {
     }
     let crew_text = text(&[line(&crew, NOW, 120)]);
     assert!(
-        crew_text.ends_with("(4m 12s · ↓ 48.2k tokens · Build · 2/5 cards · 3 agents · $0.21)"),
+        crew_text.ends_with("(4m 12s · ↓ 48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)"),
         "{crew_text}"
     );
     assert_eq!(
@@ -373,7 +411,7 @@ fn mode_line_states() {
 
     let mut shadow_state = crew();
     if let Some(status) = shadow_state.status.as_mut() {
-        status.approval_mode = ApprovalMode::Shadow;
+        status.approval_mode = ApprovalMode::AutoPreview;
     }
     let insert = synced(&shadow_state, &vim, NOW);
 
@@ -398,13 +436,20 @@ fn mode_line_states() {
         let view = model.bottom.render(&ctx(&theme, width, NOW));
         view.lines
             .into_iter()
-            .find(|line| text(std::slice::from_ref(line)).contains("mode on"))
+            .find(|line| {
+                // The mode's sign stays at every width, whatever its words give up.
+                let row = text(std::slice::from_ref(line));
+                row.contains('ǁ') || row.contains("⏵⏵")
+            })
             .expect("a mode line")
     };
     let rows = |width| {
         vec![
             ("idle", row(&idle, width)),
-            ("vim insert, shadow, agents running", row(&insert, width)),
+            (
+                "vim insert, auto preview, agents running",
+                row(&insert, width),
+            ),
             ("vim normal, auto", row(&normal, width)),
         ]
     };
@@ -418,8 +463,9 @@ fn mode_line_states() {
         idle_row.starts_with("  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts  "),
         "{idle_row:?}"
     );
-    assert!(idle_row.ends_with("  Opus on Claude Code"), "{idle_row:?}");
-    assert!(text(&[row(&insert, 120)]).contains("-- INSERT -- ǁ shadow mode on"));
+    // The rule names the model, so the line only marks its CLI.
+    assert!(idle_row.ends_with("  ● Claude"), "{idle_row:?}");
+    assert!(text(&[row(&insert, 120)]).contains("-- INSERT -- ǁ auto preview mode on"));
     assert!(text(&[row(&insert, 120)]).contains("← 3 agents"));
     let normal_row = row(&normal, 120);
     assert!(text(std::slice::from_ref(&normal_row)).starts_with("  -- NORMAL -- ⏵⏵ auto mode on"));
@@ -429,34 +475,38 @@ fn mode_line_states() {
     );
 }
 
+/// The rule names the model, so the bottom line never does. It marks the CLI
+/// the main session is on, which always has a chip, and moves the mark with `/model`.
 #[test]
-fn the_status_line_shows_only_what_the_header_lacks() {
+fn the_bottom_line_marks_the_main_cli_and_never_names_the_model() {
     let mut state = AppState::default();
     state.mode = Some(AppMode::Idle);
     state.apply(&AppEvent::Welcome {
         version: "0.0.1".into(),
         repo: "~/argonauts".into(),
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         agents: Vec::new(),
         runs_going: 0,
         runs_need_you: 0,
         example_prompt: None,
-        default_agent: None,
+        main_agent: None,
         effort: None,
     });
     let theme = theme();
     let ui = UiSettings::default();
-    let row = |state: &AppState| {
+    let chips = |state: &AppState| {
         let model = synced(state, &ui, NOW);
-        status_line(&model.bottom.status_line, &ctx(&theme, 120, NOW)).map(|line| text(&[line]))
+        let row = text(&[bottom_row(&model, &theme, 120)]);
+        let (_, chips) = row.split_once("? for shortcuts").expect("the mode's hints");
+        chips.trim().to_owned()
     };
 
-    // The header already names the agent and the preset, so with no quotas there's no row.
+    // Nothing read yet: the CLI in use still has its mark.
     let status = status_line_with(Vec::new());
     state.apply(&AppEvent::Status {
         status: status.clone(),
     });
-    assert_eq!(row(&state), None);
+    assert_eq!(chips(&state), "● Claude");
 
     let quotas = vec![chip(
         "Claude",
@@ -465,27 +515,25 @@ fn the_status_line_shows_only_what_the_header_lacks() {
     state.apply(&AppEvent::Status {
         status: status_line_with(quotas.clone()),
     });
-    assert_eq!(row(&state).as_deref(), Some("  Claude 5h 57% used"));
-
-    // A default agent that differs from the header's comes back. The preset never does, since
-    // the input's top rule names it.
-    let mut changed = status_line_with(quotas);
-    changed.default_agent = worker("codex", "gpt-5.6");
-    changed.preset = "solo".into();
-    state.apply(&AppEvent::Status { status: changed });
-    assert_eq!(
-        row(&state).as_deref(),
-        Some("  GPT 5.6 on Codex · Claude 5h 57% used")
+    assert!(
+        chips(&state).starts_with("● Claude 5h "),
+        "{}",
+        chips(&state)
     );
+    assert!(chips(&state).ends_with(" 57%"), "{}", chips(&state));
 
-    // Without a header, as when nothing welcomed us, the status line names the agent.
-    state.welcome = None;
-    state.apply(&AppEvent::Status { status });
-    assert_eq!(row(&state).as_deref(), Some("  Opus on Claude Code"));
+    // After /model to another CLI the mark moves, and no model's name comes with it.
+    let mut changed = status_line_with(quotas);
+    changed.main_agent = worker("codex", "gpt-5.6");
+    changed.workflow = "solo".into();
+    state.apply(&AppEvent::Status { status: changed });
+    let moved = chips(&state);
+    assert!(moved.starts_with("● Codex  ○ Claude 5h "), "{moved}");
+    assert!(!moved.contains("GPT"), "{moved}");
 }
 
 #[test]
-fn status_line_chips() {
+fn bottom_line_chips() {
     let mut state = AppState::default();
     state.mode = Some(AppMode::Idle);
     let out_until = QuotaReading {
@@ -500,11 +548,12 @@ fn status_line_chips() {
         chip("OpenCode", None),
         QuotaChip {
             health: HealthState::Down,
+            windows: Vec::new(),
             ..chip("OpenRouter", None)
         },
         chip("Local", None),
     ];
-    let mut status = status_line_with(quotas);
+    let mut status = with_right_parts(status_line_with(quotas), &["plan-usage", "spend"]);
     status.spent = Some(Spend {
         cost_usd: 0.46,
         ..Spend::default()
@@ -523,27 +572,28 @@ fn status_line_chips() {
     });
     let model = synced(&state, &UiSettings::default(), NOW);
     let theme = theme();
-    let render = |width| {
-        status_line(&model.bottom.status_line, &ctx(&theme, width, NOW))
-            .into_iter()
-            .collect::<Vec<_>>()
-    };
+    let render = |width| vec![bottom_row(&model, &theme, width)];
     assert_stable(render);
     for width in [40, 80, 120, 200] {
-        insta::assert_snapshot!(format!("status_line_chips_{width}"), styled(&render(width)));
+        insta::assert_snapshot!(format!("bottom_line_chips_{width}"), styled(&render(width)));
     }
     let wide = text(&render(200));
-    assert_eq!(
-        wide,
-        "  Opus on Claude Code · Claude 5h 71% used · Codex 5h 92% used · \
-         agy out until Tue 3:45 PM · OpenCode · OpenRouter down · Local · $0.46 · \
-         narrator $0.06/$0.50"
+    assert!(wide.contains("● Claude 5h "), "{wide}");
+    assert!(wide.contains(" 92%  ○ agy "), "{wide}");
+    assert!(
+        wide.ends_with(
+            "out until Tue 3:45pm  ○ OpenCode  ○ OpenRouter down  ○ Local  $0.46  \
+             narrator $0.06/$0.50"
+        ),
+        "{wide}"
     );
-    // A narrow screen keeps the chips that warn, and the model.
+    // A narrow screen keeps every CLI, and in words the ones that need you.
     let narrow = text(&render(80));
-    assert!(narrow.contains("Codex 5h 92% used"), "{narrow}");
-    assert!(narrow.contains("agy out until"), "{narrow}");
-    assert!(!narrow.contains("Claude 5h"), "{narrow}");
+    assert!(narrow.contains("○ Codex 92%"), "{narrow}");
+    assert!(narrow.contains("○ agy out"), "{narrow}");
+    assert!(narrow.contains("○ OpenRouter down"), "{narrow}");
+    assert!(narrow.contains("● Claude"), "{narrow}");
+    assert_eq!(narrow.matches(['●', '○']).count(), 6, "{narrow}");
 }
 
 #[test]
@@ -553,7 +603,7 @@ fn narrator_live_line() {
         ts: T0,
         run: Some(run_id(1)),
         kind: NarratorLineKind::Update,
-        text: "Codex took over card-003 while Claude waits for its 5h reset; two cards are merged."
+        text: "Codex took over task-003 while Claude waits for its 5h reset; two tasks are merged."
             .into(),
         model: worker("claude-code", "haiku"),
         spend: Spend::default(),
@@ -590,7 +640,7 @@ fn narrator_live_line() {
 }
 
 fn question() -> CheckpointOpened {
-    let card = CardId::new("card-001").unwrap();
+    let card = CardId::new("task-001").unwrap();
     CheckpointOpened {
         id: CheckpointId::numbered(1),
         kind: CheckpointKind::Question,
@@ -643,17 +693,17 @@ fn the_working_line_steps_aside_while_the_run_waits_on_you() {
     for session in run.sessions.values_mut() {
         session.status = argonauts_tui::state::SessionStatus::Done;
     }
-    card_state(&mut state, "card-003", CardState::Blocked);
-    card_state(&mut state, "card-004", CardState::Integrated);
-    card_state(&mut state, "card-005", CardState::Waiting);
+    card_state(&mut state, "task-003", CardState::Blocked);
+    card_state(&mut state, "task-004", CardState::Integrated);
+    card_state(&mut state, "task-005", CardState::Waiting);
     assert!(!working(&state));
     open(&mut state, true, true);
     assert!(!working(&state));
 
     // Gates running for another card are work too.
-    card_state(&mut state, "card-004", CardState::Gating);
+    card_state(&mut state, "task-004", CardState::Gating);
     assert!(working(&state));
-    card_state(&mut state, "card-004", CardState::Integrated);
+    card_state(&mut state, "task-004", CardState::Integrated);
 
     // While the policy still decides, something is at work.
     open(&mut state, false, false);
@@ -703,7 +753,7 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     let mut model = synced(&state, &ui, NOW);
     let bottom = &model.bottom;
     assert_eq!(model.title, "Fix the export race");
-    assert_eq!(bottom.composer.label.as_deref(), Some("peer-crew"));
+    assert_eq!(bottom.composer.label.as_deref(), Some("council · Opus"));
     assert_eq!(bottom.queued, vec!["check the retry path", "and the docs"]);
     assert_eq!(
         bottom.queued_where,
@@ -720,9 +770,9 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     assert_eq!(bottom.mode.background_agents, 3);
 
     // Shift+Tab changed the mode on screen; syncing again keeps it until the controller moves.
-    model.bottom.mode.approval = ScreenMode::Shadow;
+    model.bottom.mode.approval = ScreenMode::AutoPreview;
     sync(&mut model, &state, &ui, NOW + 1.0);
-    assert_eq!(model.bottom.mode.approval, ScreenMode::Shadow);
+    assert_eq!(model.bottom.mode.approval, ScreenMode::AutoPreview);
     if let Some(status) = state.status.as_mut() {
         status.approval_mode = ApprovalMode::Auto;
     }
@@ -735,7 +785,10 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     run.mode = Some(RunMode::Solo);
     run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
     sync(&mut model, &state, &ui, NOW + 3.0);
-    assert_eq!(model.bottom.composer.label.as_deref(), Some("peer-crew"));
+    assert_eq!(
+        model.bottom.composer.label.as_deref(),
+        Some("council · Opus")
+    );
     assert!(model.bottom.working.is_none());
     assert_eq!(model.bottom.exit_note, None);
 }

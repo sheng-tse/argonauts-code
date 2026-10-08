@@ -3,7 +3,6 @@
 //! the working tree's changes, and the reviews read the changes from here.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, bail};
 use argonauts_core::CardId;
@@ -69,12 +68,7 @@ pub(crate) fn cd(
     if !dir.is_dir() {
         bail!("{} isn't a folder.", ctx.env.display(&dir));
     }
-    let root = git::toplevel(&dir).with_context(|| {
-        format!(
-            "Argonauts works in a git repository, and {} isn't in one",
-            ctx.env.display(&dir)
-        )
-    })?;
+    let root = git::project_root(&dir);
     let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
@@ -194,9 +188,7 @@ pub(crate) fn working_tree_diff(root: &Path) -> anyhow::Result<String> {
         std::fs::copy(&index, &scratch.0).context("copying the index")?;
     }
     let with_scratch = |args: &[&str]| -> anyhow::Result<String> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(root)
+        let output = crate::git::command(root)
             .args(args)
             .env("GIT_INDEX_FILE", &scratch.0)
             .output()
@@ -386,8 +378,13 @@ mod tests {
         assert_eq!(ctx.reopen().lock().unwrap().as_deref(), Some(other.root()));
         let plain = other.scratch().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        let err = cd(ctx, Some(plain), true).unwrap_err();
-        assert!(format!("{err:#}").contains("isn't in one"), "{err:#}");
+        // A folder outside any repository opens like any other.
+        let effects = cd(ctx, Some(plain.clone()), true).unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::Exit]), "{effects:?}");
+        assert_eq!(
+            ctx.reopen().lock().unwrap().as_deref(),
+            Some(plain.as_path())
+        );
         let mut said = Vec::new();
         while let Ok(event) = parts.events.try_recv() {
             said.push(event);

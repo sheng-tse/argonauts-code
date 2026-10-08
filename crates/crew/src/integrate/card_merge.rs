@@ -13,6 +13,7 @@ use argonauts_core::steps::card::{ReportStatus, ResolveConflict};
 use argonauts_core::steps::{StepName, output_schema};
 use argonauts_core::worker::Access;
 
+use crate::card::claims;
 use crate::card::gates::{self, BuiltinChecks};
 use crate::card::pipeline::dependencies_done;
 use crate::card::prompt;
@@ -22,7 +23,7 @@ use crate::card::worktree::{self, CardTree};
 use crate::engine::host::{Host, Ran, SessionPlan, StandIns};
 use crate::engine::stand_in::{self, Seat};
 use crate::error::{EngineError, EngineResult};
-use crate::git::StagedMerge;
+use crate::git::{Git, StagedMerge};
 use crate::idempotency;
 use crate::integrate::CardMerge;
 use crate::integrate::branch::{
@@ -59,6 +60,7 @@ pub async fn merge(host: &Host, card: &CardId) -> EngineResult<CardMerge> {
             note_merged(host, card, &sha)?;
             return Ok(CardMerge::Integrated { sha });
         }
+        clear_leftovers(git, &integration, &head).await?;
         match git.merge_staged(&integration, &head, false).await? {
             StagedMerge::UpToDate => {
                 let sha = git.head_commit(&integration).await?.unwrap_or(head);
@@ -79,8 +81,12 @@ pub async fn merge(host: &Host, card: &CardId) -> EngineResult<CardMerge> {
                     git.abort_merge(&integration).await?;
                     return Ok(CardMerge::TestsFailed { output });
                 }
-                let sha = git
-                    .finish_merge(&integration, &merge_message(host, &record))
+                let (sha, _) = git
+                    .finish_merge_work(
+                        &integration,
+                        &merge_message(host, &record),
+                        claims::of_a_merge(host).as_ref(),
+                    )
                     .await?;
                 note_merged(host, card, &sha)?;
                 return Ok(CardMerge::Integrated { sha });
@@ -94,6 +100,21 @@ pub async fn merge(host: &Host, card: &CardId) -> EngineResult<CardMerge> {
         }
     }
     Ok(CardMerge::Conflict { files: conflicted })
+}
+
+/// Removes what earlier checks left in the run's own worktree at a path `head` brings a file
+/// to. Git refuses a merge over such a file, and nothing of yours is ever in this worktree:
+/// it's Argonauts' own, and a merge commit there never takes what a check left behind.
+async fn clear_leftovers(git: &Git, integration: &Path, head: &str) -> EngineResult<()> {
+    for path in git.in_the_way(integration, "HEAD", head).await? {
+        let at = integration.join(path.trim_end_matches('/'));
+        // If it can't be removed, git's own refusal says so next.
+        let _ = match path.ends_with('/') {
+            true => std::fs::remove_dir_all(&at),
+            false => std::fs::remove_file(&at),
+        };
+    }
+    Ok(())
 }
 
 /// The merge the log already records for this card, when it holds the card's current head.
@@ -183,7 +204,7 @@ async fn affected_tests(
     }
     let expected = gates::expected_failures(host, card, host.git(), integration).await?;
     let mut failed = Vec::new();
-    for command in &host.settings().gates.run {
+    for command in &host.settings().checks.run {
         let mut request = gates::request(host, card, command, integration, false)?;
         request.name = format!("affected: {}", command.name);
         let outcome = host.services().gates.run(request).await;
@@ -247,7 +268,7 @@ async fn resolve(host: &Host, card: &CardId, files: &[String]) -> EngineResult<b
         }
         let seat = Seat {
             at: None,
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             step: Some(StepName::ResolveConflict),
             card: Some(card.clone()),
             independent_of: Vec::new(),
@@ -257,7 +278,7 @@ async fn resolve(host: &Host, card: &CardId, files: &[String]) -> EngineResult<b
         match stand_in::after(host, &seat, &worker, &failed, &reason).await {
             Ok(taker) => resolvers.push(taker),
             Err(EngineError::Stalled(stall)) => {
-                let line = format!("{} The card's owner resolves it instead.", stall.line);
+                let line = format!("{} The task's worker resolves it instead.", stall.line);
                 crate::plan::context::warn(host, Some(card), line)?;
                 return Ok(false);
             }
@@ -283,7 +304,7 @@ fn conflict_owner(host: &Host, card: &CardId) -> WorkerRef {
             .or_else(|| owner_of_kind(|kind| *kind == CardKind::Chore))
             .or_else(|| lead::phase_lead(state, host.settings()))
             .or_else(|| state.cards.get(card).map(|record| owner_of(host, record)))
-            .unwrap_or_else(|| host.settings().default_agent.clone())
+            .unwrap_or_else(|| host.settings().main_agent.clone())
     })
 }
 
@@ -298,16 +319,17 @@ async fn resolve_with(
     let record = record_of(host, card)?;
     let mut plan = SessionPlan {
         at: None,
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         worker: worker.clone(),
         card: Some(card.clone()),
         access: Access::Build,
         step: Some(StepName::ResolveConflict),
         workdir: tree.path.clone(),
-        parts: resolver_parts(&record, files),
+        parts: resolver_parts(host, &record, files),
         json_schema: Some(output_schema::<ResolveConflict>()),
         resume: None,
         slot: 0,
+        label: None,
     };
     plan.slot = host.slot_for(&plan);
     // A resolver that a pause or a crash cut off picks up its own half-done merge.
@@ -373,6 +395,7 @@ async fn resolution_is_clean(host: &Host, card: &CardId, tree: &CardTree) -> Eng
 }
 
 fn resolver_parts(
+    host: &Host,
     record: &CardRecord,
     files: &[String],
 ) -> Vec<argonauts_core::events::session::InputPart> {
@@ -400,7 +423,12 @@ fn resolver_parts(
             format!("Files with conflicts:\n{list}"),
             None,
         ),
-        part(InputPartKind::Schema, "report", prompts::card::BUILD, None),
+        part(
+            InputPartKind::Schema,
+            "report",
+            prompts::files::text(host, prompts::card::BUILD),
+            None,
+        ),
     ]
 }
 

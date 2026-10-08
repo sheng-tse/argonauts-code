@@ -1,0 +1,4 @@
+{"_t": 0.0, "type": "control_request", "request_id": "init-1", "request": {"subtype": "initialize"}}
+{"_t": 0.55, "type": "user", "message": {"role": "user", "content": "Reply with only the word: ready"}, "parent_tool_use_id": null, "session_id": "", "uuid": "9b4ef878-51cf-4c76-8219-7a3bbeda72d3", "origin": {"kind": "human"}}
+{"_t": 1.51, "type": "control_request", "request_id": "ctx-1", "request": {"subtype": "get_context_usage", "detail": "summary"}}
+{"_t": 6.53, "_stdin": "closed"}

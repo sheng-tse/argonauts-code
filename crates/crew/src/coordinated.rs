@@ -1,8 +1,10 @@
 //! The coordinated crew: the coordinator runs `Coordinate` (plan, cards, owners, reviewers) in a
-//! run-lifetime session. Code checks it against the rules (review ring families, owned paths,
-//! budget, roles allowed, the task graph); a broken rule is rejected with the reason and retried
-//! once, then the plan checkpoint asks you. The coordinator can't raise a budget or approve
-//! anything. Dividing the work takes its cards and assignments as they are.
+//! run-lifetime session, told first who may own and who may review. Code checks its cards
+//! against the rules (owned paths, budget, the task graph); a broken rule is rejected with the
+//! reason and retried once, then the plan checkpoint decides. When the cards are sound, an owner
+//! or reviewer the rules don't allow is moved by code to one they do, by the router's ranking,
+//! and one note says what moved. The coordinator can't raise a budget or approve anything.
+//! Dividing the work takes its cards and assignments as they are.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -21,18 +23,21 @@ use argonauts_core::settings::protocol::{RoutingAlgorithm, TestAuthor};
 use argonauts_core::steps::plan::{
     Assignment, CardProposal, Coordinate, CoordinateInput, CoordinateOutput, TaskGraphProposal,
 };
+use argonauts_core::text::clause_case;
 use argonauts_core::worker::Access;
-use argonauts_core::write_private_file;
+use argonauts_core::{Note, NoteLevel, write_private_file};
 
-use crate::divide::assign::Pick;
-use crate::divide::router::Choice;
+use crate::checkpoints::autopilot;
+use crate::divide::assign::{self as divide_assign, Pick};
+use crate::divide::router::{self, Choice};
 use crate::divide::{self, ring};
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
-use crate::plan::context::{self, crew_for, families};
+use crate::plan::context::{self, families};
 use crate::plan::drafts;
 use crate::prompts::plan::COORDINATE;
-use crate::roles;
+use crate::roles::cards::{CardRoles, named_in};
+use crate::roles::{self, display_name};
 use crate::state::RunState;
 use crate::state::plan::{self, CoordinatedRecord, SealedDraft};
 use crate::workflow::{StepCall, StepDone};
@@ -57,10 +62,14 @@ pub struct Rejected {
 
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     context::phase_started(host)?;
-    let coordinator = context::workers_for(call, host.settings(), RoleName::Coordinator, Some(1))
+    let coordinator = context::workers_for(call, host.settings(), RoleName::Orchestrator, Some(1))
         .into_iter()
         .next()
-        .unwrap_or_else(|| host.settings().default_agent.clone());
+        .unwrap_or_else(|| host.settings().main_agent.clone());
+    let family = families(host);
+    let card_roles = roles::cards::for_run(host);
+    card_roles.announce(host)?;
+    let settings = card_roles.apply(host.settings());
     loop {
         // A plan you sent back gets two new tries, in the coordinator's own session, with your
         // note. A settled plan sent back starts a new planning round.
@@ -79,11 +88,15 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             )
         });
         if records.iter().any(|record| record.rejection.is_none()) {
-            return Ok(StepDone::done("The coordinator's plan follows the rules"));
+            return Ok(StepDone::done("The orchestrator's plan follows the rules"));
         }
         if records.len() >= ATTEMPTS {
-            let summary =
-                "The coordinator's plan broke the rules twice; the plan checkpoint asks you";
+            let summary = if autopilot::applies_now(host, CheckpointKind::Plan) {
+                "The orchestrator's plan broke the rules twice; autopilot settles the plan \
+                 approval"
+            } else {
+                "The orchestrator's plan broke the rules twice; the plan approval asks you"
+            };
             context::phase_finished(host, summary)?;
             return Ok(StepDone::done(summary));
         }
@@ -96,13 +109,13 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         };
         let input = host.read(|state| CoordinateInput {
             goal: context::goal_brief(state),
-            crew: crew_lines(host),
-            rules: rules(host.settings()),
+            crew: card_roles.lines(&family),
+            rules: rules(&settings),
             rejection,
         });
         let mut ask = Ask::new(
             Some(call.at.clone()),
-            RoleName::Coordinator,
+            RoleName::Orchestrator,
             coordinator.clone(),
             COORDINATE,
             input,
@@ -112,7 +125,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         ask.slot = asked as u32;
         ask.resume = session;
         ask.parts
-            .push(context::status_part(host, RoleName::Coordinator, None));
+            .push(context::status_part(host, RoleName::Orchestrator, None));
         let answered = match host.ask::<Coordinate>(ask).await {
             Ok(answered) => answered,
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
@@ -126,9 +139,20 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
                 continue;
             }
         };
-        let mut broken = check(&answered.output, host.settings(), &families(host));
+        let mut output = answered.output;
+        let mut broken = card_problems(&output.cards, &settings);
         if broken.is_empty() {
-            broken = graph_problems(host, &answered.output.cards);
+            broken = graph_problems(host, &output.cards);
+        }
+        if broken.is_empty() {
+            let moved = repair(
+                &mut output,
+                &card_roles,
+                &ranking(host, &card_roles),
+                &family,
+            );
+            moved_note(host, &moved)?;
+            broken = assignment_problems(&output, &card_roles, &family);
         }
         if !broken.is_empty() {
             reject(
@@ -145,15 +169,15 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             1,
             &coordinator,
             round,
-            &answered.output.plan,
+            &output.plan,
             Some(&answered.session),
         )?;
         let sealed = host
             .read(|state| state.plan.drafts.iter().find(|d| d.draft == draft).cloned())
             .ok_or_else(|| EngineError::Refused(format!("draft {draft} was not recorded")))?;
         let cards = CoordinatedCards {
-            cards: answered.output.cards.clone(),
-            assignments: answered.output.assignments.clone(),
+            cards: output.cards,
+            assignments: output.assignments,
         };
         write_private_file(
             &cards_path(&sealed.path),
@@ -168,7 +192,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             }),
         )?;
         let summary = format!(
-            "The coordinator planned {} card{}",
+            "The orchestrator planned {} task{}",
             cards.cards.len(),
             if cards.cards.len() == 1 { "" } else { "s" }
         );
@@ -305,11 +329,11 @@ pub fn delegate(
             .collect();
         picks.push(Pick {
             card: card.id.clone(),
-            algorithm: RoutingAlgorithm::Coordinator,
+            algorithm: RoutingAlgorithm::Orchestrator,
             choice: Choice {
                 worker: owner,
                 explored: false,
-                reason: "the coordinator's assignment".to_owned(),
+                reason: "the orchestrator's assignment".to_owned(),
             },
         });
     }
@@ -335,10 +359,23 @@ pub fn delegate(
             continue;
         };
         card.owner = Some(writer.clone());
-        card.reviewers = test_reviewers(writer, owner, &pool, settings, family, offset);
+        let mut reviewers = test_reviewers(writer, owner, &pool, settings, family, offset);
+        let per_task = settings.review.per_task as usize;
+        if reviewers.len() < per_task {
+            // The writer is the build card's reviewer, often the only one allowed, so the agents
+            // that may own cards review its tests.
+            let builders: Vec<WorkerRef> = roles::candidates(settings, RoleName::Worker)
+                .into_iter()
+                .filter(|builder| !reviewers.contains(builder))
+                .collect();
+            let more = test_reviewers(writer, owner, &builders, settings, family, offset);
+            let short = per_task - reviewers.len();
+            reviewers.extend(more.into_iter().take(short));
+        }
+        card.reviewers = reviewers;
         picks.push(Pick {
             card: card.id.clone(),
-            algorithm: RoutingAlgorithm::Coordinator,
+            algorithm: RoutingAlgorithm::Orchestrator,
             choice: Choice {
                 worker: writer.clone(),
                 explored: false,
@@ -369,58 +406,67 @@ fn test_reviewers(
     ring::reviewers(
         &family(writer),
         &candidates,
-        settings.review.per_card as usize,
-        settings.review.other_family,
+        settings.review.per_task as usize,
+        settings.review.other_provider,
         offset,
     )
 }
 
-/// `worker/model (family)` for everyone the coordinator may assign.
-fn crew_lines(host: &Host) -> Vec<String> {
-    let settings = host.settings();
-    let mut workers = crew_for(settings, RoleName::Owner);
-    workers.extend(crew_for(settings, RoleName::Reviewer));
-    let mut seen = BTreeSet::new();
-    workers
+/// Everyone who may own or review, best first by the router's ranking for the run's task type.
+fn ranking(host: &Host, card_roles: &CardRoles) -> Vec<WorkerRef> {
+    let run_task_type = host.read(|state| {
+        state
+            .run
+            .started
+            .as_ref()
+            .and_then(|started| started.estimate.as_ref())
+            .map(|estimate| estimate.task_type.clone())
+    });
+    let task_type = divide_assign::task_type(&CardKind::Build, run_task_type.as_deref());
+    let book = divide::track_records(host);
+    let candidates: Vec<router::Candidate> = card_roles
+        .listed()
         .into_iter()
-        .filter(|worker| seen.insert(worker.clone()))
-        .map(|worker| format!("{worker} ({})", crate::roles::family(host, &worker)))
-        .collect()
+        .map(|worker| divide::candidate(host, worker, &task_type, book.as_ref()))
+        .collect();
+    router::rank(&candidates)
 }
 
 /// The rules code checks the coordinator's output against, as the coordinator reads them.
 pub fn rules(settings: &Settings) -> Vec<String> {
     let mut rules = vec![
         format!(
-            "At most {} cards, each with a unique key.",
-            settings.divide.max_cards
+            "At most {} tasks, each with a unique key.",
+            settings.divide.max_tasks
         ),
-        "A card depends only on other cards' keys, with no cycles.".to_owned(),
-        "No two cards own the same path, and every card owns at least one path.".to_owned(),
+        "A task depends only on other tasks' keys, with no cycles.".to_owned(),
+        "No two tasks own the same path, and every task owns at least one path.".to_owned(),
         format!(
-            "No card owns a protected path: .argonauts/**, {}.",
+            "No task owns a protected path: .argonauts/**, {}.",
             settings.limits.protected_paths.join(", ")
         ),
-        "Every card has exactly one assignment, with an owner from the crew list.".to_owned(),
+        "Every task has exactly one assignment, with a worker the crew list says may own tasks."
+            .to_owned(),
         format!(
-            "Every card has at least {} reviewers from the crew list, never its owner{}.",
-            settings.review.per_card,
-            if settings.review.other_family {
-                ", each from another model family than the owner"
+            "Every task has at least {} reviewers the crew list says may review, never its \
+             worker{}.",
+            settings.review.per_task,
+            if settings.review.other_provider {
+                ", each from another provider than the worker"
             } else {
                 ""
             }
         ),
-        "You can't raise a budget or approve anything.".to_owned(),
+        "You can't raise a limit or approve anything.".to_owned(),
     ];
     if settings.divide.contracts_first {
         rules.push(
-            "Exactly one card has kind interface: the stubs every build card codes against."
+            "Exactly one task has kind interface: the stubs every build task codes against."
                 .to_owned(),
         );
         if settings.divide.acceptance_tests_by == TestAuthor::Reviewer {
             rules.push(
-                "Code adds an acceptance-test card for each build card, written by its first \
+                "Code adds an acceptance-test task for each build task, written by its first \
                  reviewer."
                     .to_owned(),
             );
@@ -428,9 +474,9 @@ pub fn rules(settings: &Settings) -> Vec<String> {
     }
     if let Some(limit) = card_limit(settings) {
         rules.push(format!(
-            "Each card gets ${:.2} of the run's ${:.2}, so at most {limit} cards fit.",
-            settings.budget.per_card_usd.unwrap_or_default(),
-            settings.budget.run_usd.unwrap_or_default(),
+            "Each task gets ${:.2} of the run's ${:.2}, so at most {limit} tasks fit.",
+            settings.limits.budget.per_task_usd.unwrap_or_default(),
+            settings.limits.budget.spend_per_run.unwrap_or_default(),
         ));
     }
     rules
@@ -438,9 +484,9 @@ pub fn rules(settings: &Settings) -> Vec<String> {
 
 /// How many cards the run budget holds at the per-card budget, when both are in dollars.
 fn card_limit(settings: &Settings) -> Option<usize> {
-    let budget = &settings.budget;
-    match (budget.enabled, budget.run_usd, budget.per_card_usd) {
-        (true, Some(run), Some(card)) if card > 0.0 => Some((run / card).floor() as usize),
+    let budget = &settings.limits.budget;
+    match (budget.spend_per_run, budget.per_task_usd) {
+        (Some(run), Some(card)) if card > 0.0 => Some((run / card).floor() as usize),
         _ => None,
     }
 }
@@ -452,36 +498,43 @@ pub fn check(
     settings: &Settings,
     families: &dyn Fn(&WorkerRef) -> String,
 ) -> Vec<String> {
+    let card_roles = roles::cards::settle(settings, Default::default(), families);
+    let mut broken = card_problems(&output.cards, settings);
+    broken.extend(assignment_problems(output, &card_roles, families));
+    broken
+}
+
+/// Every rule the cards break, whoever they go to.
+fn card_problems(cards: &[CardProposal], settings: &Settings) -> Vec<String> {
     let mut broken = Vec::new();
-    check_cards(&output.cards, settings, &mut broken);
-    check_paths(&output.cards, settings, &mut broken);
-    check_assignments(output, settings, families, &mut broken);
+    check_cards(cards, settings, &mut broken);
+    check_paths(cards, settings, &mut broken);
     broken
 }
 
 fn check_cards(cards: &[CardProposal], settings: &Settings, broken: &mut Vec<String>) {
     if cards.is_empty() {
-        broken.push("The plan has no cards.".to_owned());
+        broken.push("The plan has no tasks.".to_owned());
     }
-    if cards.len() > settings.divide.max_cards as usize {
+    if cards.len() > settings.divide.max_tasks as usize {
         broken.push(format!(
-            "{} cards is more than the {} allowed.",
+            "{} tasks is more than the {} allowed.",
             cards.len(),
-            settings.divide.max_cards
+            settings.divide.max_tasks
         ));
     }
     if let Some(limit) = card_limit(settings)
         && cards.len() > limit
     {
         broken.push(format!(
-            "{} cards don't fit the run budget, which holds {limit}.",
+            "{} tasks don't fit the run limit, which holds {limit}.",
             cards.len()
         ));
     }
     let mut keys = BTreeSet::new();
     for card in cards {
         if card.key.trim().is_empty() {
-            broken.push(format!("Card \"{}\" has an empty key.", card.title));
+            broken.push(format!("Task \"{}\" has an empty key.", card.title));
         } else if !keys.insert(card.key.as_str()) {
             broken.push(format!("The key {} is used twice.", card.key));
         }
@@ -489,14 +542,14 @@ fn check_cards(cards: &[CardProposal], settings: &Settings, broken: &mut Vec<Str
     for card in cards {
         for dep in &card.depends_on {
             if dep == &card.key {
-                broken.push(format!("Card {} depends on itself.", card.key));
+                broken.push(format!("Task {} depends on itself.", card.key));
             } else if !keys.contains(dep.as_str()) {
-                broken.push(format!("Card {} depends on unknown card {dep}.", card.key));
+                broken.push(format!("Task {} depends on unknown task {dep}.", card.key));
             }
         }
     }
     if let Some(key) = first_cycle(cards) {
-        broken.push(format!("Card {key} is part of a dependency cycle."));
+        broken.push(format!("Task {key} is part of a dependency cycle."));
     }
 }
 
@@ -544,21 +597,21 @@ fn check_paths(cards: &[CardProposal], settings: &Settings, broken: &mut Vec<Str
     let mut owners: Vec<(&str, String)> = Vec::new();
     for card in cards {
         if card.owned_paths.is_empty() && cards.len() > 1 {
-            broken.push(format!("Card {} owns no path.", card.key));
+            broken.push(format!("Task {} owns no path.", card.key));
         }
         for path in &card.owned_paths {
             let base = path_base(path);
             let probe = format!("{base}/file");
             if base.is_empty() || base.starts_with('/') || base.split('/').any(|c| c == "..") {
-                broken.push(format!("Card {} owns an invalid path {path}.", card.key));
+                broken.push(format!("Task {} owns an invalid path {path}.", card.key));
                 continue;
             }
             if protected.is_match(&base) || protected.is_match(&probe) {
-                broken.push(format!("Card {} owns protected path {path}.", card.key));
+                broken.push(format!("Task {} owns protected path {path}.", card.key));
             }
             for (other, other_base) in &owners {
                 if *other != card.key.as_str() && overlaps(&base, other_base) {
-                    broken.push(format!("Cards {other} and {} both own {path}.", card.key));
+                    broken.push(format!("Tasks {other} and {} both own {path}.", card.key));
                 }
             }
         }
@@ -595,71 +648,235 @@ fn protected_set(settings: &Settings) -> GlobSet {
     builder.build().unwrap_or_else(|_| GlobSet::empty())
 }
 
-fn check_assignments(
+/// Every rule the assignments break, in plain words with names: "Antigravity CLI can't own card
+/// `tests`: only Claude Code and Codex may own cards."
+fn assignment_problems(
     output: &CoordinateOutput,
-    settings: &Settings,
+    card_roles: &CardRoles,
     families: &dyn Fn(&WorkerRef) -> String,
-    broken: &mut Vec<String>,
-) {
-    let owners = crew_for(settings, RoleName::Owner);
-    let reviewers = crew_for(settings, RoleName::Reviewer);
+) -> Vec<String> {
+    let mut broken = Vec::new();
     let keys: BTreeSet<&str> = output.cards.iter().map(|c| c.key.as_str()).collect();
     let mut assigned: BTreeMap<&str, u32> = BTreeMap::new();
     for assignment in &output.assignments {
         let key = assignment.card.as_str();
         if !keys.contains(key) {
-            broken.push(format!("An assignment names unknown card {key}."));
+            broken.push(format!(
+                "An assignment names task `{key}`, which the plan doesn't have."
+            ));
             continue;
         }
         *assigned.entry(key).or_default() += 1;
-        let owner = match assignment.owner.parse::<WorkerRef>() {
-            Ok(owner) if owners.contains(&owner) => owner,
-            Ok(owner) => {
-                broken.push(format!("{owner} may not own card {key}."));
-                owner
-            }
-            Err(_) => {
-                broken.push(format!(
-                    "Card {key} has an invalid owner {}.",
-                    assignment.owner
-                ));
-                continue;
-            }
+        let Ok(owner) = assignment.owner.parse::<WorkerRef>() else {
+            broken.push(format!(
+                "Task `{key}` names `{}` as its worker, which is no agent.",
+                assignment.owner
+            ));
+            continue;
         };
-        let owner_family = families(&owner);
+        if !card_roles.may_own(&owner) {
+            broken.push(format!(
+                "{} can't own task `{key}`: {}.",
+                display_name(&owner),
+                clause_case(&card_roles.why_not_owner(&owner))
+            ));
+        }
         let mut seen = BTreeSet::new();
         for text in &assignment.reviewers {
             let Ok(reviewer) = text.parse::<WorkerRef>() else {
-                broken.push(format!("Card {key} has an invalid reviewer {text}."));
+                broken.push(format!(
+                    "Task `{key}` names `{text}` as a reviewer, which is no agent."
+                ));
                 continue;
             };
+            let name = display_name(&reviewer);
             if !seen.insert(reviewer.clone()) {
-                broken.push(format!("{reviewer} reviews card {key} twice."));
+                broken.push(format!("{name} reviews task `{key}` twice."));
             } else if reviewer == owner {
-                broken.push(format!("{reviewer} would review its own card {key}."));
-            } else if !reviewers.contains(&reviewer) {
-                broken.push(format!("{reviewer} may not review card {key}."));
-            } else if settings.review.other_family && families(&reviewer) == owner_family {
+                broken.push(format!("{name} would review its own task `{key}`."));
+            } else if !card_roles
+                .reviewers_for(&owner, families)
+                .contains(&reviewer)
+            {
                 broken.push(format!(
-                    "{reviewer} is of the owner's family {owner_family} on card {key}."
+                    "{name} can't review task `{key}`: {}.",
+                    card_roles.why_not_reviewer(&reviewer, &owner, families)
                 ));
             }
         }
-        if (seen.len() as u32) < settings.review.per_card {
+        if (seen.len() as u32) < card_roles.per_task {
             broken.push(format!(
-                "Card {key} has {} reviewers; it needs {}.",
+                "Task `{key}` has {} reviewer{}; it needs {}.",
                 seen.len(),
-                settings.review.per_card
+                if seen.len() == 1 { "" } else { "s" },
+                card_roles.per_task
             ));
         }
     }
     for key in &keys {
         match assigned.get(key).copied().unwrap_or(0) {
-            0 => broken.push(format!("Card {key} has no assignment.")),
+            0 => broken.push(format!("Task `{key}` has no assignment.")),
             1 => {}
-            n => broken.push(format!("Card {key} has {n} assignments.")),
+            n => broken.push(format!("Task `{key}` has {n} assignments.")),
         }
     }
+    broken
+}
+
+/// Gives each card one assignment the rules allow: the coordinator's owner and reviewers where
+/// they may take it, else whoever may, the least busy first and then the best by `ranked`.
+/// Returns a line for each card whose owner or reviewers moved, saying who and why. A name the
+/// crew list spells another way, such as `codex/gpt` for `codex`, is the same agent, not a move.
+pub fn repair(
+    output: &mut CoordinateOutput,
+    card_roles: &CardRoles,
+    ranked: &[WorkerRef],
+    family: &dyn Fn(&WorkerRef) -> String,
+) -> Vec<String> {
+    let rank = |worker: &WorkerRef| {
+        ranked
+            .iter()
+            .position(|ranked| ranked == worker)
+            .unwrap_or(usize::MAX)
+    };
+    let pick = |pool: &[WorkerRef], load: &BTreeMap<WorkerRef, usize>| {
+        pool.iter()
+            .min_by_key(|worker| (load.get(*worker).copied().unwrap_or(0), rank(worker)))
+            .cloned()
+    };
+    let mut owning: BTreeMap<WorkerRef, usize> = BTreeMap::new();
+    let mut reviewing: BTreeMap<WorkerRef, usize> = BTreeMap::new();
+    let mut assignments = Vec::new();
+    let mut moved = Vec::new();
+    for card in &output.cards {
+        let key = card.key.trim();
+        let given = output
+            .assignments
+            .iter()
+            .find(|assignment| assignment.card.trim() == key);
+        let named = given.and_then(|given| named_in(&given.owner, &card_roles.owners));
+        let Some(owner) = named.clone().or_else(|| pick(&card_roles.owners, &owning)) else {
+            assignments.extend(given.cloned());
+            continue;
+        };
+        *owning.entry(owner.clone()).or_default() += 1;
+
+        let allowed = card_roles.reviewers_for(&owner, family);
+        let mut reviewers: Vec<WorkerRef> = Vec::new();
+        for text in given
+            .map(|given| given.reviewers.as_slice())
+            .unwrap_or_default()
+        {
+            if let Some(reviewer) = named_in(text, &allowed)
+                && !reviewers.contains(&reviewer)
+            {
+                reviewers.push(reviewer);
+            }
+        }
+        while reviewers.len() < card_roles.per_task as usize {
+            let open: Vec<WorkerRef> = allowed
+                .iter()
+                .filter(|worker| !reviewers.contains(worker))
+                .cloned()
+                .collect();
+            let Some(next) = pick(&open, &reviewing) else {
+                break;
+            };
+            reviewers.push(next);
+        }
+        for reviewer in &reviewers {
+            *reviewing.entry(reviewer.clone()).or_default() += 1;
+        }
+
+        let mut changes = Vec::new();
+        if named.is_none() {
+            let was = given.and_then(|given| card_roles.named(&given.owner));
+            changes.push(match was {
+                Some(was) => format!(
+                    "{} owns it, not {}, since {}",
+                    display_name(&owner),
+                    display_name(&was),
+                    clause_case(&card_roles.why_not_owner(&was))
+                ),
+                None => format!("{} owns it", display_name(&owner)),
+            });
+        }
+        let dropped: Vec<WorkerRef> = given
+            .map(|given| given.reviewers.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .filter(|text| named_in(text, &allowed).is_none())
+            .filter_map(|text| card_roles.named(text))
+            .collect();
+        let added: Vec<WorkerRef> = reviewers
+            .iter()
+            .filter(|reviewer| {
+                !given
+                    .map(|given| given.reviewers.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|text| named_in(text, &allowed).as_ref() == Some(*reviewer))
+            })
+            .cloned()
+            .collect();
+        let reviews = |workers: &[WorkerRef]| {
+            let verb = if workers.len() == 1 {
+                "reviews"
+            } else {
+                "review"
+            };
+            format!("{} {verb} it", roles::cards::names(workers))
+        };
+        match (dropped.first(), added.is_empty()) {
+            (Some(first), false) => changes.push(format!(
+                "{}, not {}, since {}",
+                reviews(&added),
+                roles::cards::names(&dropped),
+                card_roles.why_not_reviewer(first, &owner, family)
+            )),
+            (Some(first), true) => changes.push(format!(
+                "{} doesn't review it, since {}",
+                roles::cards::names(&dropped),
+                card_roles.why_not_reviewer(first, &owner, family)
+            )),
+            (None, false) => changes.push(reviews(&added)),
+            (None, true) => {}
+        }
+        if !changes.is_empty() {
+            moved.push(format!("`{key}`: {}.", changes.join("; ")));
+        }
+        assignments.push(Assignment {
+            card: card.key.clone(),
+            owner: owner.to_string(),
+            reviewers: reviewers.iter().map(ToString::to_string).collect(),
+        });
+    }
+    output.assignments = assignments;
+    moved
+}
+
+/// One note for what [`repair`] moved: the line says how many cards, and Ctrl+O shows each.
+fn moved_note(host: &Host, moved: &[String]) -> EngineResult<()> {
+    if moved.is_empty() {
+        return Ok(());
+    }
+    let cards = if moved.len() == 1 {
+        "1 of the orchestrator's tasks".to_owned()
+    } else {
+        format!("{} of the orchestrator's tasks", moved.len())
+    };
+    host.record(
+        None,
+        None,
+        RunEventKind::Note(Note {
+            level: NoteLevel::Info,
+            text: format!(
+                "Code moved who owns or reviews {cards} to agents your rules allow.\n{}",
+                moved.join("\n")
+            ),
+        }),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -685,7 +902,7 @@ mod tests {
                 .collect(),
             ..Settings::default()
         };
-        settings.review.per_card = 2;
+        settings.review.per_task = 2;
         settings
     }
 
@@ -712,7 +929,7 @@ mod tests {
 
     fn plan() -> PlanDraft {
         PlanDraft {
-            summary: "two cards".to_owned(),
+            summary: "two tasks".to_owned(),
             approach: String::new(),
             pieces: Vec::new(),
             choices: Vec::new(),
@@ -751,14 +968,16 @@ mod tests {
         output.assignments[1] = assign("api", "codex", &["opencode", "codex"]);
         let broken = broken(&output);
         assert!(
-            broken
-                .iter()
-                .any(|b| b.contains("opencode is of the owner's family gpt"))
+            broken.contains(
+                &"OpenCode can't review task `api`: OpenCode is from the provider of the task's \
+                  worker, Codex."
+                    .to_owned()
+            ),
+            "{broken:?}"
         );
         assert!(
-            broken
-                .iter()
-                .any(|b| b.contains("codex would review its own card api"))
+            broken.contains(&"Codex would review its own task `api`.".to_owned()),
+            "{broken:?}"
         );
     }
 
@@ -787,7 +1006,7 @@ mod tests {
         output.cards.push(card("web", &["src/web2.rs"], &[]));
         let broken = broken(&output);
         assert!(broken.iter().any(|b| b.contains("key web is used twice")));
-        assert!(broken.iter().any(|b| b.contains("unknown card ghost")));
+        assert!(broken.iter().any(|b| b.contains("unknown task ghost")));
         assert!(broken.iter().any(|b| b.contains("dependency cycle")));
     }
 
@@ -798,14 +1017,16 @@ mod tests {
         output.assignments.pop();
         let broken = broken(&output);
         assert!(
-            broken
-                .iter()
-                .any(|b| b.contains("stranger may not own card store"))
+            broken.contains(
+                &"stranger can't own task `store`: only Claude Code, Codex, Antigravity CLI and \
+                  OpenCode may own tasks."
+                    .to_owned()
+            ),
+            "{broken:?}"
         );
         assert!(
-            broken
-                .iter()
-                .any(|b| b.contains("Card api has no assignment"))
+            broken.contains(&"Task `api` has no assignment.".to_owned()),
+            "{broken:?}"
         );
     }
 
@@ -821,12 +1042,21 @@ mod tests {
                 .assignments
                 .push(assign(&key, "claude-code", &["codex", "antigravity-cli"]));
         }
-        let broken = broken(&output);
-        assert_eq!(broken, ["8 cards don't fit the run budget, which holds 6."]);
+        // With no limits set, any number of tasks fits.
+        assert_eq!(broken(&output), Vec::<String>::new());
+        assert!(!rules(&settings()).iter().any(|r| r.contains("tasks fit")));
+
+        let mut limited = settings();
+        limited.limits.budget.spend_per_run = Some(20.0);
+        limited.limits.budget.per_task_usd = Some(3.0);
+        assert_eq!(
+            check(&output, &limited, &family),
+            ["8 tasks don't fit the run limit, which holds 6."]
+        );
         assert!(
-            rules(&settings())
+            rules(&limited)
                 .iter()
-                .any(|r| r.contains("at most 6 cards fit"))
+                .any(|r| r.contains("at most 6 tasks fit"))
         );
     }
 
@@ -834,6 +1064,110 @@ mod tests {
     fn too_few_reviewers_are_rejected() {
         let mut output = good();
         output.assignments[0].reviewers.pop();
-        assert_eq!(broken(&output), ["Card store has 1 reviewers; it needs 2."]);
+        assert_eq!(
+            broken(&output),
+            ["Task `store` has 1 reviewer; it needs 2."]
+        );
+    }
+
+    /// The sample repo's run: Claude Code and Codex may own, Antigravity CLI alone reviews, and
+    /// the coordinator wrote each agent with its family where a model goes and rotated them
+    /// through every role.
+    fn trial_roles() -> CardRoles {
+        let mut settings = Settings {
+            crew: ["claude-code", "codex", "antigravity-cli"]
+                .iter()
+                .map(|w| w.parse().unwrap())
+                .collect(),
+            ..Settings::default()
+        };
+        settings.review.per_task = 1;
+        let worker = |text: &str| text.parse::<WorkerRef>().unwrap();
+        settings.roles.entry(RoleName::Worker).or_default().workers =
+            vec![worker("claude-code"), worker("codex")];
+        settings
+            .roles
+            .entry(RoleName::Reviewer)
+            .or_default()
+            .workers = vec![worker("antigravity-cli")];
+        roles::cards::settle(&settings, Default::default(), &family)
+    }
+
+    fn trial_output() -> CoordinateOutput {
+        let mut cards = vec![
+            card("iface", &["src/types.js"], &[]),
+            card("impl", &["src/store.js"], &["iface"]),
+            card("tests", &["test/"], &["impl"]),
+            card("review", &["docs/"], &["impl"]),
+        ];
+        cards[0].kind = ProposedKind::Interface;
+        CoordinateOutput {
+            plan: plan(),
+            cards,
+            assignments: vec![
+                assign("iface", "codex/gpt", &["claude-code/claude"]),
+                assign("impl", "claude-code/claude", &["antigravity-cli/gemini"]),
+                assign("tests", "antigravity-cli/gemini", &["codex/gpt"]),
+                assign("review", "antigravity-cli/gemini", &["claude-code/claude"]),
+            ],
+        }
+    }
+
+    #[test]
+    fn assignments_that_break_the_rules_move_to_agents_that_may_take_them() {
+        let card_roles = trial_roles();
+        let mut output = trial_output();
+        let ranked: Vec<WorkerRef> = ["codex", "claude-code", "antigravity-cli"]
+            .iter()
+            .map(|w| w.parse().unwrap())
+            .collect();
+        let moved = repair(&mut output, &card_roles, &ranked, &family);
+        assert_eq!(
+            assignment_problems(&output, &card_roles, &family),
+            Vec::<String>::new()
+        );
+        let given: Vec<(&str, &str, Vec<&str>)> = output
+            .assignments
+            .iter()
+            .map(|a| {
+                let reviewers = a.reviewers.iter().map(String::as_str).collect();
+                (a.card.as_str(), a.owner.as_str(), reviewers)
+            })
+            .collect();
+        assert_eq!(
+            given,
+            [
+                ("iface", "codex", vec!["antigravity-cli"]),
+                ("impl", "claude-code", vec!["antigravity-cli"]),
+                ("tests", "codex", vec!["antigravity-cli"]),
+                ("review", "claude-code", vec!["antigravity-cli"]),
+            ]
+        );
+        assert_eq!(
+            moved,
+            [
+                "`iface`: Antigravity CLI reviews it, not Claude Code, since only Antigravity CLI \
+                 may review tasks.",
+                "`tests`: Codex owns it, not Antigravity CLI, since only Claude Code and Codex may \
+                 own tasks; Antigravity CLI reviews it, not Codex, since only Antigravity CLI may \
+                 review tasks.",
+                "`review`: Claude Code owns it, not Antigravity CLI, since only Claude Code and \
+                 Codex may own tasks; Antigravity CLI reviews it, not Claude Code, since only \
+                 Antigravity CLI may review tasks.",
+            ]
+        );
+        // The same plan moves the same way every time.
+        let mut again = trial_output();
+        assert_eq!(repair(&mut again, &card_roles, &ranked, &family), moved);
+        assert_eq!(again, output);
+    }
+
+    #[test]
+    fn a_plan_that_keeps_the_rules_moves_nothing() {
+        let card_roles = roles::cards::settle(&settings(), Default::default(), &family);
+        let mut output = good();
+        let ranked = card_roles.owners.clone();
+        assert!(repair(&mut output, &card_roles, &ranked, &family).is_empty());
+        assert_eq!(output, good());
     }
 }

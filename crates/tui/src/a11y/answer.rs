@@ -54,7 +54,11 @@ impl Reader {
                 None => self.pick(card, pick, said),
             },
             (_, Typed::Warning(warning)) => said.lines.push(format!("warning: {warning}")),
-            _ => said.commands.push(UiCommand::Submit { text }),
+            // The plain screen has no key to ignore the word, so the word alone decides.
+            _ => said.commands.push(UiCommand::Submit {
+                workflow_requested: argonauts_core::keywords::asks_for_workflow(&text),
+                text,
+            }),
         }
     }
 

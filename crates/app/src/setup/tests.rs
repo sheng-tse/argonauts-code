@@ -264,7 +264,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
     assert_eq!(
         titles,
         vec![
-            "Welcome to Argonauts",
+            "Welcome to Argonauts Code",
             "Your agents",
             "Who you chat with",
             "How the crew works",
@@ -274,15 +274,17 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         ]
     );
     let text = fixture.global();
-    let mut expected = vec!["crew", "default_agent", "preset"];
+    let mut expected = vec!["crew", "main_agent", "workflow"];
     expected.extend([
         "approvals.goal.mode",
         "approvals.plan.mode",
         "approvals.merge.mode",
-        "approvals.escalation.mode",
-        "approvals.budget.mode",
+        "approvals.stuck.mode",
+        "approvals.limit.mode",
         "approvals.change_request.mode",
-        "approvals.full_auto",
+        "approvals.autopilot",
+        // The limits section ends on its default, which keeps its commented limits inside it.
+        "limits.when_reached",
     ]);
     let mut keys = written_keys(&text);
     keys.sort();
@@ -293,8 +295,8 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         text.contains(r#"crew = ["claude-code", "codex"]"#),
         "{text}"
     );
-    assert!(text.contains(r#"default_agent = "claude-code""#), "{text}");
-    assert!(text.contains(r#"preset = "peer-crew""#), "{text}");
+    assert!(text.contains(r#"main_agent = "claude-code""#), "{text}");
+    assert!(text.contains(r#"workflow = "council""#), "{text}");
 
     let closing = notices(&seen)
         .into_iter()
@@ -303,7 +305,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
     for command in [
         "/model",
         "/effort",
-        "/preset",
+        "/workflow",
         "/agents",
         "/approvals",
         "/permissions",
@@ -326,10 +328,38 @@ async fn guided_setup_without_a_terminal_writes_no_safety_key_and_finishes_at_on
     let text = fixture.global();
     assert_eq!(
         written_keys(&text),
-        vec!["crew", "default_agent", "preset"],
+        vec!["crew", "main_agent", "workflow", "limits.when_reached"],
         "{text}"
     );
     assert!(!text.contains("approvals"), "{text}");
+}
+
+#[tokio::test]
+async fn guided_setup_writes_the_starter_mods_and_a_readme_in_every_place_you_can_change() {
+    let mut fixture = Fixture::new(false);
+    let (_setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
+    assert!(finished(&effects));
+    let home = fixture.repo.home();
+    for file in [
+        "README.md",
+        "workflows/README.md",
+        "roles/README.md",
+        "mods/README.md",
+        "mods/stats.toml",
+        "mods/bottom-line.toml",
+        "mods/branch.toml",
+        "mods/checks.toml",
+    ] {
+        assert!(home.join(file).is_file(), "{file}");
+    }
+    // A built-in card draws from its own settings, so no file of its name is written.
+    for card in ["mods/context.toml", "mods/plan-usage.toml"] {
+        assert!(!home.join(card).exists(), "{card}");
+    }
+    // What it wrote loads: no starter is a file with a problem.
+    let set = argonauts_core::settings::mods::ModSet::load(Some(&home.join("mods")), None);
+    assert!(set.problems.is_empty(), "{:?}", set.problems);
+    assert!(set.get("checks").is_some());
 }
 
 #[tokio::test]
@@ -339,12 +369,12 @@ async fn guided_setup_rerun_preselects_your_values() {
         std::fs::write(repo.home().join("terms-note-shown"), "").unwrap();
         std::fs::write(
             repo.global_config(),
-            "default_agent = \"codex/gpt-5.6-luna\"\npreset = \"peer-crew\"\n\n\
+            "main_agent = \"codex/gpt-5.6-luna\"\nworkflow = \"council\"\n\n\
              [approvals.goal]\nmode = \"auto\"\n\n[approvals.merge]\nmode = \"supervised\"\n",
         )
         .unwrap();
     });
-    // With Claude Code logged out, solo would be recommended, but your file says peer-crew.
+    // With Claude Code logged out, solo would be recommended, but your file says council.
     let logins = vec![("claude-code".to_owned(), LoginState::LoggedOut)];
     let (mut setup, effects) = start(&mut fixture, two_ready(), logins, Vec::new()).await;
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, enter).await;
@@ -357,8 +387,8 @@ async fn guided_setup_rerun_preselects_your_values() {
 
     let text = fixture.global();
     let settings: argonauts_core::settings::Settings = toml::from_str(&text).unwrap();
-    assert_eq!(settings.default_agent.to_string(), "codex/gpt-5.6-luna");
-    assert_eq!(settings.preset, "peer-crew");
+    assert_eq!(settings.main_agent.to_string(), "codex/gpt-5.6-luna");
+    assert_eq!(settings.workflow, "council");
     assert_eq!(settings.approvals.goal.mode, ApprovalMode::Auto, "{text}");
     assert_eq!(
         settings.approvals.merge.mode,
@@ -381,13 +411,13 @@ async fn guided_setup_esc_takes_the_recommendations_for_the_rest() {
     let effects = setup.set_aside(&mut fixture.ctx, &agents.id).await.unwrap();
     assert!(finished(&effects));
     let text = fixture.global();
-    assert!(text.contains(r#"preset = "peer-crew""#), "{text}");
+    assert!(text.contains(r#"workflow = "council""#), "{text}");
     assert!(text.contains(r#"mode = "auto""#), "{text}");
     let outcome = fixture.drain().into_iter().find_map(|event| match event {
         AppEvent::ChoiceClosed { id, outcome } if id == agents.id => Some(outcome),
         _ => None,
     });
-    let outcome = outcome.expect("the card closes");
+    let outcome = outcome.expect("the task closes");
     assert!(outcome.contains("recommended answers"), "{outcome}");
     assert!(
         outcome.contains("/setup") && outcome.contains("argonauts init"),
@@ -400,7 +430,7 @@ async fn guided_setup_esc_takes_the_recommendations_for_the_rest() {
 #[tokio::test]
 async fn guided_setup_prints_the_header_again_with_the_new_agent_and_preset() {
     let mut fixture = Fixture::new(true);
-    let before = fixture.ctx.settings().default_agent.worker.clone();
+    let before = fixture.ctx.settings().main_agent.worker.clone();
     let agents = vec![
         agent("claude-code", "Claude Code", AgentStatus::NotInstalled),
         agent("codex", "Codex", AgentStatus::Tested),
@@ -423,8 +453,8 @@ async fn guided_setup_prints_the_header_again_with_the_new_agent_and_preset() {
         at(&|event| matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Saved to")));
     assert!(closed < header && header < saved, "{events:#?}");
     let AppEvent::Welcome {
-        default_agent,
-        preset,
+        main_agent,
+        workflow,
         agents,
         ..
     } = &events[header]
@@ -432,8 +462,8 @@ async fn guided_setup_prints_the_header_again_with_the_new_agent_and_preset() {
         unreachable!()
     };
     assert_ne!(before, "codex");
-    assert_eq!(default_agent.as_ref().unwrap().worker, "codex");
-    assert_eq!(preset, &fixture.ctx.settings().preset);
+    assert_eq!(main_agent.as_ref().unwrap().worker, "codex");
+    assert_eq!(workflow, &fixture.ctx.settings().workflow);
     let codex = agents.iter().find(|agent| agent.id == "codex").unwrap();
     assert!(codex.ready, "{agents:?}");
 }
@@ -457,7 +487,7 @@ async fn guided_setup_leaves_a_logged_out_agent_out_of_the_crew() {
     );
     let text = fixture.global();
     assert!(text.contains(r#"crew = ["claude-code"]"#), "{text}");
-    assert!(text.contains(r#"preset = "solo""#), "{text}");
+    assert!(text.contains(r#"workflow = "solo""#), "{text}");
 }
 
 #[tokio::test]
@@ -520,7 +550,7 @@ async fn guided_setup_asks_who_coordinates_a_coordinated_crew() {
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, pick).await;
     assert!(asked.iter().any(|choice| choice.title == "Who coordinates"));
     let text = fixture.global();
-    assert!(text.contains(r#"preset = "coordinated-crew""#), "{text}");
+    assert!(text.contains(r#"workflow = "orchestrator""#), "{text}");
     assert!(text.contains(r#"workers = ["codex"]"#), "{text}");
 }
 
@@ -566,8 +596,8 @@ async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
         .collect();
     assert_eq!(labels[0], "Keep them all");
     for role in [
-        "Default agent",
-        "coordinator",
+        "Main agent",
+        "orchestrator",
         "reviewer",
         "narrator",
         "approver",
@@ -617,8 +647,8 @@ async fn guided_setup_with_no_agent_ready_still_finishes_and_says_what_to_instal
     );
     let text = fixture.global();
     assert!(!text.contains("crew ="), "{text}");
-    assert!(!text.contains("default_agent"), "{text}");
-    assert!(text.contains(r#"preset = "solo""#), "{text}");
+    assert!(!text.contains("main_agent"), "{text}");
+    assert!(text.contains(r#"workflow = "solo""#), "{text}");
     let warned = notices(&seen)
         .into_iter()
         .any(|line| line.contains("install claude-code"));
@@ -714,7 +744,7 @@ async fn guided_setup_leaves_a_file_that_needs_a_fix_untrusted_and_says_what_to_
             .unwrap();
         repo.write(
             ".argonauts/config.local.toml",
-            "[gates]\nrun = [\"cargo test\"]\n",
+            "[checks]\nrun = [\"cargo test\"]\n",
         )
         .unwrap();
     });
@@ -738,7 +768,7 @@ async fn guided_setup_leaves_a_file_that_needs_a_fix_untrusted_and_says_what_to_
     let notices = notices(&seen);
     assert!(
         notices.iter().any(|notice| notice.starts_with(
-            ".argonauts/config.local.toml needs a fix before you can trust it: gates.run can't \
+            ".argonauts/config.local.toml needs a fix before you can trust it: checks.run can't \
              be a list of strings"
         )),
         "{notices:#?}"

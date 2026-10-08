@@ -75,11 +75,11 @@ mod tests {
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
         let message = AssistantMessage::new(
-            "Hi! I'm the default agent (Claude Code, haiku). Ask me about this repo.",
+            "Hi! I'm the main agent (Claude Code, haiku). Ask me about this repo.",
         );
         assert_eq!(
             plain_text(&message.lines(&ctx)),
-            "● Hi! I'm the default agent (Claude\n  Code, haiku). Ask me about this repo."
+            "● Hi! I'm the main agent (Claude Code,\n  haiku). Ask me about this repo."
         );
         assert!(AssistantMessage::new("").lines(&ctx).is_empty());
     }

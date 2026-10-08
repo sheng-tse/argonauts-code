@@ -14,7 +14,7 @@ pub fn stop_line(reason: &EndReason) -> String {
     match reason {
         EndReason::Completed => "it finished".to_owned(),
         EndReason::BudgetHit { dimension } => match dimension {
-            BudgetDimension::Spend => "it used its whole budget".to_owned(),
+            BudgetDimension::Spend => "it used its whole limit".to_owned(),
             BudgetDimension::Minutes => "it reached its time limit".to_owned(),
             BudgetDimension::ToolCalls => "it reached its tool-call limit".to_owned(),
         },
@@ -30,7 +30,7 @@ pub fn stop_line(reason: &EndReason) -> String {
             resets_at: Some(at),
         } => format!("usage limit, resets at {}", clock(*at)),
         EndReason::UsageLimit { resets_at: None } => "usage limit".to_owned(),
-        EndReason::RateLimited => "rate limited for longer than its time budget allows".to_owned(),
+        EndReason::RateLimited => "rate limited for longer than its time limit allows".to_owned(),
         EndReason::VendorError {
             category,
             message: text,
@@ -70,7 +70,7 @@ pub fn category_words(category: ErrorCategory) -> &'static str {
         ErrorCategory::ModelUnavailable => "model unavailable",
         ErrorCategory::InvalidRequest => "invalid request",
         ErrorCategory::Permission => "permission denied",
-        ErrorCategory::Budget => "native budget cap",
+        ErrorCategory::Budget => "native limit cap",
         ErrorCategory::Timeout => "timed out",
         ErrorCategory::Interrupted => "interrupted",
         ErrorCategory::Cli => "CLI error",

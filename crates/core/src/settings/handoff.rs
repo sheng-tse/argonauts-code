@@ -1,35 +1,189 @@
-//! Handoffs: who continues when an agent stops for a limit, an outage, a logout, or a billing
-//! cap. The top-level `[handoff]` holds the defaults, `[roles.<role>.handoff]` overrides them,
-//! and either can name replacements per vendor. [`HandoffSettings::applied`] walks the order.
+//! Fallbacks: who continues when a model can't be reached, its plan ran out, or a limit you
+//! set was reached. The top-level `[fallback]` holds the defaults, `[fallback.<role>]` overrides
+//! them for one of the crew's five roles, and either can name fallbacks per agent.
+//! [`HandoffSettings::applied`] walks the order.
 
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::Span;
-use crate::names::{VendorId, WorkerRef};
+use crate::names::{RoleName, VendorId, WorkerRef};
 
-/// One `[handoff]` table, top-level or a role's.
+/// One of the five roles a crew has. Each finer role follows one of them, and
+/// `[fallback.<role>]` is written for these.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CrewRole {
+    Main,
+    Orchestrator,
+    Workers,
+    Reviewers,
+    Judge,
+}
+
+impl CrewRole {
+    pub const ALL: [Self; 5] = [
+        Self::Main,
+        Self::Orchestrator,
+        Self::Workers,
+        Self::Reviewers,
+        Self::Judge,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Orchestrator => "orchestrator",
+            Self::Workers => "workers",
+            Self::Reviewers => "reviewers",
+            Self::Judge => "judge",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.as_str() == name)
+    }
+
+    /// The crew role a finer role follows: those that make something follow the workers,
+    /// those that check or compare follow the reviewers, and those that decide the judge.
+    pub fn of(role: RoleName) -> Self {
+        match role {
+            RoleName::Main | RoleName::Consultant | RoleName::Narrator => Self::Main,
+            RoleName::Orchestrator | RoleName::PhaseLead => Self::Orchestrator,
+            RoleName::Worker | RoleName::Drafter | RoleName::Restater | RoleName::Spike => {
+                Self::Workers
+            }
+            RoleName::Reviewer
+            | RoleName::Critic
+            | RoleName::Differ
+            | RoleName::Mapper
+            | RoleName::Adjudicator
+            | RoleName::Retro => Self::Reviewers,
+            RoleName::Judge | RoleName::Approver => Self::Judge,
+        }
+    }
+}
+
+/// How the results combine when several fallbacks do the same task at once (`together` of 2
+/// or more).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Pick {
+    /// The first result that passes your checks wins, and the others stop.
+    FirstPassing,
+    /// The judge picks the best result.
+    Judge,
+    /// Every finding from all of them is kept, duplicates folded.
+    Merge,
+}
+
+impl Pick {
+    /// What a role's fallbacks do unless you say: plans and designs go to the judge, reviews
+    /// are merged, and for everything built the first to pass wins.
+    pub fn default_for(role: RoleName) -> Self {
+        match role {
+            RoleName::Drafter | RoleName::Restater => Self::Judge,
+            _ => match CrewRole::of(role) {
+                CrewRole::Reviewers => Self::Merge,
+                _ => Self::FirstPassing,
+            },
+        }
+    }
+}
+
+/// All of `[fallback]`: the table for every role, and `[fallback.<role>]` for each of the
+/// crew's five that you wrote one for.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct FallbackSettings {
+    #[serde(flatten)]
+    pub every_role: HandoffSettings,
+    #[serde(flatten, deserialize_with = "role_tables")]
+    pub roles: BTreeMap<CrewRole, HandoffSettings>,
+}
+
+/// The role tables among whatever else a `[fallback]` table holds. A key that names no role
+/// is passed over, as an unknown key is anywhere else, so the resolver can say it's unknown
+/// rather than serde refusing it as a misspelt role.
+fn role_tables<'de, D>(deserializer: D) -> Result<BTreeMap<CrewRole, HandoffSettings>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let others = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    others
+        .into_iter()
+        .filter_map(|(name, table)| Some((CrewRole::named(&name)?, table)))
+        .map(|(role, table)| {
+            let table = HandoffSettings::deserialize(table).map_err(D::Error::custom)?;
+            Ok((role, table))
+        })
+        .collect()
+}
+
+impl FallbackSettings {
+    /// The built-in table for every role, and no role's own.
+    pub fn built_in() -> Self {
+        Self {
+            every_role: HandoffSettings::built_in(),
+            roles: BTreeMap::new(),
+        }
+    }
+
+    /// The table of the crew role that `role` follows, when you wrote one.
+    pub fn for_role(&self, role: RoleName) -> Option<&HandoffSettings> {
+        self.roles.get(&CrewRole::of(role))
+    }
+
+    /// What applies when `vendor` stops a task in `role`, from the table for every role and
+    /// the role's own.
+    pub fn applied_to(&self, role: RoleName, vendor: &VendorId) -> AppliedHandoff {
+        let mut applied = HandoffSettings::applied(&self.every_role, self.for_role(role), vendor);
+        applied.pick.get_or_insert(Pick::default_for(role));
+        applied
+    }
+}
+
+/// The table for every role is what nearly every reader wants, so `settings.fallback.mode`
+/// reads it. A role's own table is asked for by name.
+impl std::ops::Deref for FallbackSettings {
+    type Target = HandoffSettings;
+
+    fn deref(&self) -> &HandoffSettings {
+        &self.every_role
+    }
+}
+
+impl std::ops::DerefMut for FallbackSettings {
+    fn deref_mut(&mut self) -> &mut HandoffSettings {
+        &mut self.every_role
+    }
+}
+
+/// One `[fallback]` table, the top-level one or a role's.
 ///
-/// Candidates come from the most specific list that isn't empty: your pick for the card, then
-/// `roles.<role>.handoff.replace.<vendor>`, `roles.<role>.handoff.fallback`,
-/// `handoff.replace.<vendor>`, and `handoff.fallback`. Lists never merge across tables. When
-/// all are empty, the candidates are the other installed and logged-in CLIs, which the policy
-/// builder fills in for each run, since what's installed and logged in changes.
+/// Candidates come from the most specific list that isn't empty: your pick for the task, then
+/// `fallback.<role>.replace.<agent>`, `fallback.<role>.order`, `fallback.replace.<agent>`, and
+/// `fallback.order`. Lists never merge across tables. When all are empty, the candidates are
+/// the other installed and logged-in CLIs, which the policy builder fills in for each run,
+/// since what's installed and logged in changes.
 ///
 /// The optional keys stay `None` when a table doesn't set them, so the walk can tell unset
 /// from a default. They follow the same order, key by key. `mode`, `ask_timeout`,
-/// `allow_api_billing`, and `broken_work` have no per-vendor form, so the resolver copies them
+/// `allow_api_billing`, and `broken_work` have no per-agent form, so the resolver copies them
 /// from the top-level table into each role table that doesn't set them. It copies nothing else.
-/// `broken_work` decides whether the code carries over, and `context` what the replacement is
+/// `broken_work` decides whether the code carries over, and `context` what the fallback is
 /// told about it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct HandoffSettings {
     pub mode: HandoffMode,
     /// Tried in order.
-    pub fallback: Vec<FallbackEntry>,
+    pub order: Vec<FallbackEntry>,
     /// How long an ask waits before falling back to auto: `"none"` or a span.
     pub ask_timeout: Span,
     /// Moving to a paid API needs your OK unless this is set.
@@ -39,11 +193,16 @@ pub struct HandoffSettings {
     pub broken_work: BrokenWork,
     /// What an agent on its CLI's wrap-up allowance does, as Claude Code gives at a limit.
     pub wrap_up: WrapUp,
+    /// How one agent's stopped tasks are shared out when each goes to one fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub strategy: Option<HandoffStrategy>,
-    /// Attempts at once with `strategy = "race"`.
+    pub strategy: Option<OrderStrategy>,
+    /// How many fallbacks take over at once. With 2 or more they do the same task side by
+    /// side, each in its own worktree.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub race_count: Option<u32>,
+    pub together: Option<u32>,
+    /// How their results combine. Unset is [`Pick::default_for`] the role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pick: Option<Pick>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_return: Option<OnReturn>,
     /// Tag the card's state `argonauts/<run>/<card>/handoff-<n>` at every handoff.
@@ -56,7 +215,7 @@ pub struct HandoffSettings {
     pub unknown_tier: Option<UnknownTier>,
     /// Per card, before it escalates to you instead of bouncing between vendors.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_handoffs: Option<u32>,
+    pub max_fallbacks: Option<u32>,
     /// What a replacement is told, also when a full session rotates to a fresh one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<HandoffContext>,
@@ -73,19 +232,20 @@ impl Default for HandoffSettings {
     fn default() -> Self {
         Self {
             mode: HandoffMode::Auto,
-            fallback: Vec::new(),
+            order: Vec::new(),
             ask_timeout: Span::new("none"),
             allow_api_billing: false,
             return_to_original: false,
             broken_work: BrokenWork::Continue,
             wrap_up: WrapUp::LetFinish,
             strategy: None,
-            race_count: None,
+            together: None,
+            pick: None,
             on_return: None,
             checkpoint: None,
             merge_rule: None,
             unknown_tier: None,
-            max_handoffs: None,
+            max_fallbacks: None,
             context: None,
             summarizer: None,
             replace: BTreeMap::new(),
@@ -98,13 +258,13 @@ impl HandoffSettings {
     pub fn built_in() -> Self {
         let rules = AppliedHandoff::default();
         Self {
-            strategy: Some(rules.strategy),
-            race_count: Some(rules.race_count),
+            strategy: Some(OrderStrategy::First),
+            together: Some(rules.together),
             on_return: Some(rules.on_return),
             checkpoint: Some(rules.checkpoint),
             merge_rule: Some(rules.merge_rule),
             unknown_tier: Some(rules.unknown_tier),
-            max_handoffs: Some(rules.max_handoffs),
+            max_fallbacks: Some(rules.max_fallbacks),
             context: Some(rules.context),
             ..Self::default()
         }
@@ -121,9 +281,9 @@ impl HandoffSettings {
         let top_replace = top.replace.get(vendor);
         let lists = [
             role_replace.map(|entry| &entry.with),
-            role.map(|role| &role.fallback),
+            role.map(|role| &role.order),
             top_replace.map(|entry| &entry.with),
-            Some(&top.fallback),
+            Some(&top.order),
         ];
         let candidates = lists
             .into_iter()
@@ -142,18 +302,27 @@ impl HandoffSettings {
         }
         let built_in = AppliedHandoff::default();
         let own = role.unwrap_or(top);
+        let together = set(role, top, |table| table.together)
+            .unwrap_or(built_in.together)
+            .max(1);
         AppliedHandoff {
             candidates,
             mode: own.mode,
             ask_timeout: own.ask_timeout.clone(),
             allow_api_billing: own.allow_api_billing,
             broken_work: own.broken_work,
-            strategy: role_replace
-                .and_then(|entry| entry.strategy)
-                .or_else(|| role.and_then(|role| role.strategy))
-                .or_else(|| top_replace.and_then(|entry| entry.strategy))
-                .or(top.strategy)
-                .unwrap_or(built_in.strategy),
+            strategy: if together >= 2 {
+                HandoffStrategy::Race
+            } else {
+                role_replace
+                    .and_then(|entry| entry.strategy)
+                    .or_else(|| role.and_then(|role| role.strategy))
+                    .or_else(|| top_replace.and_then(|entry| entry.strategy))
+                    .or(top.strategy)
+                    .map_or(built_in.strategy, HandoffStrategy::from)
+            },
+            together,
+            pick: set(role, top, |table| table.pick),
             on_return: role_replace
                 .and_then(|entry| entry.on_return)
                 .or_else(|| role.and_then(HandoffSettings::own_on_return))
@@ -166,13 +335,12 @@ impl HandoffSettings {
                 .or_else(|| top_replace.and_then(|entry| entry.context))
                 .or(top.context)
                 .unwrap_or(built_in.context),
-            race_count: set(role, top, |table| table.race_count).unwrap_or(built_in.race_count),
             checkpoint: set(role, top, |table| table.checkpoint).unwrap_or(built_in.checkpoint),
             merge_rule: set(role, top, |table| table.merge_rule).unwrap_or(built_in.merge_rule),
             unknown_tier: set(role, top, |table| table.unknown_tier)
                 .unwrap_or(built_in.unknown_tier),
-            max_handoffs: set(role, top, |table| table.max_handoffs)
-                .unwrap_or(built_in.max_handoffs),
+            max_fallbacks: set(role, top, |table| table.max_fallbacks)
+                .unwrap_or(built_in.max_fallbacks),
             summarizer: set(role, top, |table| table.summarizer.clone()),
         }
     }
@@ -193,13 +361,17 @@ pub struct AppliedHandoff {
     pub ask_timeout: Span,
     pub allow_api_billing: bool,
     pub broken_work: BrokenWork,
+    /// `Race` when `together` is 2 or more, else how the order is walked.
     pub strategy: HandoffStrategy,
-    pub race_count: u32,
+    /// How many fallbacks take over at once.
+    pub together: u32,
+    /// `None` is [`Pick::default_for`] the role, which [`HandoffSettings::applied_to`] fills.
+    pub pick: Option<Pick>,
     pub on_return: OnReturn,
     pub checkpoint: bool,
     pub merge_rule: MergeRule,
     pub unknown_tier: UnknownTier,
-    pub max_handoffs: u32,
+    pub max_fallbacks: u32,
     pub context: HandoffContext,
     /// `None` uses the replacement's own harness with its cheapest model.
     pub summarizer: Option<WorkerRef>,
@@ -214,12 +386,13 @@ impl Default for AppliedHandoff {
             allow_api_billing: false,
             broken_work: BrokenWork::Continue,
             strategy: HandoffStrategy::First,
-            race_count: 2,
+            together: 1,
+            pick: None,
             on_return: OnReturn::Ask,
             checkpoint: true,
             merge_rule: MergeRule::UpgradeReview,
             unknown_tier: UnknownTier::Weaker,
-            max_handoffs: 3,
+            max_fallbacks: 3,
             context: HandoffContext::NoteAndTranscript,
             summarizer: None,
         }
@@ -241,14 +414,14 @@ pub enum HandoffMode {
 #[serde(untagged)]
 pub enum FallbackEntry {
     Worker(WorkerRef),
-    /// `{ worker = "openrouter/<model>", max_budget_usd = 2, instructions = "..." }`.
+    /// `{ worker = "openrouter/<model>", max_spend_usd = 2, instructions = "..." }`.
     WithRules(FallbackRules),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FallbackRules {
     pub worker: WorkerRef,
-    #[serde(default)]
+    #[serde(default, rename = "max_spend_usd")]
     pub max_budget_usd: Option<f64>,
     #[serde(default)]
     pub instructions: Option<String>,
@@ -295,11 +468,34 @@ pub enum WrapUp {
 #[serde(default)]
 pub struct VendorReplacement {
     pub with: Vec<FallbackEntry>,
-    pub strategy: Option<HandoffStrategy>,
+    pub strategy: Option<OrderStrategy>,
     pub on_return: Option<OnReturn>,
     pub context: Option<HandoffContext>,
 }
 
+/// How one agent's stopped tasks are shared out when each goes to one fallback
+/// (`strategy`). Several fallbacks on one task is `together`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderStrategy {
+    /// Each stopped task goes to the first valid fallback, then the next if that one runs out.
+    #[default]
+    First,
+    /// The stopped agent's tasks are spread across every valid fallback, balanced by plan
+    /// left, free slots, and track record.
+    Spread,
+}
+
+impl From<OrderStrategy> for HandoffStrategy {
+    fn from(order: OrderStrategy) -> Self {
+        match order {
+            OrderStrategy::First => Self::First,
+            OrderStrategy::Spread => Self::Spread,
+        }
+    }
+}
+
+/// How the engine moves a stopped task, as the fallback rules settle it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffStrategy {
@@ -309,9 +505,8 @@ pub enum HandoffStrategy {
     /// The stopped vendor's cards are spread across every valid candidate, balanced by quota
     /// left, free slots, and track record. Each card still has one owner at a time.
     Spread,
-    /// One card goes to `race_count` candidates at once, each in its own worktree. The first
-    /// that passes its gates and review wins, and the others' work stays on side branches.
-    /// In `auto` mode a race starts only when a list that applies sets it.
+    /// One task goes to `together` candidates at once, each in its own worktree, and `pick`
+    /// says how their results combine. The others' work stays on side branches.
     Race,
 }
 
@@ -368,7 +563,7 @@ impl HandoffContext {
 #[serde(rename_all = "snake_case")]
 pub enum MergeRule {
     /// A card with debt merges only after the original, or a model at least as strong,
-    /// reviewed it. Merging anyway needs you unless `approvals.merge.rules.allow_debt` is set.
+    /// reviewed it. Merging anyway needs you unless `approvals.rules.merge.allow_debt` is set.
     #[default]
     UpgradeReview,
     /// Debt is shown, never enforced.

@@ -71,7 +71,7 @@ pub fn prediction(n: u32, owner: &str, task_type: &str, p_first_try: f64) -> Pre
         run: RunId::new("run-01").unwrap(),
         card: CardId::numbered(n),
         worker: worker(owner),
-        role: Predictor::Owner,
+        role: Predictor::Worker,
         task_type: task_type.to_owned(),
         at: days_ago(1.0),
         p_pass_gates_first_try: Some(p_first_try),

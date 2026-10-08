@@ -1,6 +1,0 @@
----
-source: crates/tui/tests/snap_live.rs
-assertion_line: 517
-expression: styled(&render(width))
----
-  [fg=#999999]Opus on Claude Code[/][fg=#999999] · [/]Claude 5h 71% used[fg=#999999] · [/][fg=#ffc107]Codex 5h 92% used[/][fg=#999999] · [/][fg=#ffc107]agy out until Tue 3:45 PM[/][fg=#999999] · [/][fg=#999999]OpenCode[/][fg=#999999] · [/][fg=#ffc107]OpenRouter down[/][fg=#999999] · [/][fg=#999999]Local[/][fg=#999999] · [/][fg=#999999]$0.46[/][fg=#999999] · [/][fg=#999999]narrator $0.06/$0.50[/]

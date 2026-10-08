@@ -173,7 +173,7 @@ mod tests {
             Some(other),
             "two workers in one role keep their own sessions"
         );
-        assert!(store.get(RoleName::Owner, &claude).is_none());
+        assert!(store.get(RoleName::Worker, &claude).is_none());
 
         let file = dir
             .path()
@@ -194,11 +194,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MainSessions::open(dir.path());
         let worker: WorkerRef = "codex".parse().unwrap();
-        let mut owner = session(RoleName::Owner, "codex");
+        let mut owner = session(RoleName::Worker, "codex");
         store.put(&owner).unwrap();
         owner.runs = 3;
         store.put(&owner).unwrap();
-        assert_eq!(store.get(RoleName::Owner, &worker).unwrap().runs, 3);
+        assert_eq!(store.get(RoleName::Worker, &worker).unwrap().runs, 3);
         let leftovers: Vec<_> = std::fs::read_dir(dir.path().join("sessions"))
             .unwrap()
             .filter_map(|entry| entry.ok())
@@ -207,11 +207,11 @@ mod tests {
         assert!(leftovers.is_empty(), "temp files are renamed away");
 
         std::fs::write(
-            dir.path().join("sessions").join("owner--codex.json"),
+            dir.path().join("sessions").join("worker--codex.json"),
             "{ torn",
         )
         .unwrap();
-        assert!(store.get(RoleName::Owner, &worker).is_none());
+        assert!(store.get(RoleName::Worker, &worker).is_none());
     }
 
     // The lock belongs to the open file, so two opens conflict even inside one process.
@@ -222,14 +222,14 @@ mod tests {
         let second = MainSessions::open(dir.path());
         let worker: WorkerRef = "claude-code/opus".parse().unwrap();
 
-        let lease = first.lease(RoleName::Owner, &worker).unwrap().unwrap();
-        assert_eq!(lease.role(), RoleName::Owner);
-        assert!(second.lease(RoleName::Owner, &worker).unwrap().is_none());
+        let lease = first.lease(RoleName::Worker, &worker).unwrap().unwrap();
+        assert_eq!(lease.role(), RoleName::Worker);
+        assert!(second.lease(RoleName::Worker, &worker).unwrap().is_none());
         assert!(
             second.lease(RoleName::Reviewer, &worker).unwrap().is_some(),
             "another role is free"
         );
         drop(lease);
-        assert!(second.lease(RoleName::Owner, &worker).unwrap().is_some());
+        assert!(second.lease(RoleName::Worker, &worker).unwrap().is_some());
     }
 }

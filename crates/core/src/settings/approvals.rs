@@ -7,13 +7,16 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::names::WorkerRef;
+use crate::settings::asking::DEFAULT_ASK_LIMIT;
+pub use crate::settings::asking::{Decides, WhenDeclined};
+use crate::settings::budget::BudgetSettings;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ApprovalSettings {
     /// Full auto for every checkpoint a run opens that its own mode leaves to auto. One you
     /// keep supervised, or in shadow, stays yours. Off, each checkpoint keeps its own mode.
-    pub full_auto: bool,
+    pub autopilot: bool,
     /// Who answers the crew's questions: the open questions from Understand, the go-ahead,
     /// a stuck goal, "keep going as a goal", and in full auto the agents' questions meant for
     /// you. `you`, `lead`, or a model such as `codex/gpt-5.6`. Unset follows the mode, so the
@@ -21,31 +24,47 @@ pub struct ApprovalSettings {
     /// mode. A model answers in the lead's place in full auto only, where nothing waits for
     /// you; elsewhere the mode decides, as when it's unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub answered_by: Option<Answerer>,
+    pub answers: Option<Answerer>,
+    /// Who settles what your rules can't. `judge` is the cheapest model you can run from
+    /// another provider than the work it judges. A model you name, such as
+    /// `antigravity-cli/gemini-3.6-flash`, judges in its place.
+    pub decides: Decides,
     /// Topics that come to you even when the lead answers, such as `security`. Full auto
     /// answers them too, since nothing waits for you there.
     pub ask_you_about: Vec<String>,
+    /// What Esc on a question or an approval does: `decide` hands it to the agent that asked,
+    /// the main agent, or your rules and the judge, and `stop` ends that part of the work.
+    pub when_declined: WhenDeclined,
+    /// How many times an agent that ends its turn with a question is told to decide and carry
+    /// on. After that many it is told to take the option it recommended, so 0 tells it that
+    /// at once.
+    pub ask_limit: u32,
     pub goal_changes: GoalChanges,
     /// Share of auto-approvals queued for your spot check.
     pub spot_check_sample: f64,
     pub pause_auto_when_spot_checks_waiting: u32,
-    /// Suggest auto after this many shadow matches in a row.
+    /// Suggest auto after this many auto preview matches in a row.
     pub suggest_auto_after_matches: u32,
-    pub goal: CheckpointSettings<GoalRules>,
-    pub plan: CheckpointSettings<PlanRules>,
-    pub merge: CheckpointSettings<MergeRules>,
-    pub recipe_promotion: PromotionSettings,
-    pub escalation: CheckpointSettings<EscalationRules>,
-    /// Budget increases from the run's reserve.
-    pub budget: CheckpointSettings<BudgetRules>,
-    pub change_request: CheckpointSettings<NoRules>,
+    /// What "your rules" means at each approval: the numbers that let it go ahead in auto.
+    pub rules: ApprovalRules,
+    pub goal: CheckpointSettings,
+    pub plan: CheckpointSettings,
+    pub merge: CheckpointSettings,
+    pub workflow_promotion: PromotionSettings,
+    /// A task that is stuck: sent back, failing, or out of its limit.
+    #[serde(rename = "stuck")]
+    pub escalation: CheckpointSettings,
+    /// More limit from the run's reserve.
+    #[serde(rename = "limit")]
+    pub budget: CheckpointSettings,
+    pub change_request: CheckpointSettings,
     pub approver: ApproverSettings,
     /// What an always-on agent running as you, such as Hermes or OpenClaw, changes.
     pub presence: Presence,
     /// Variables that mark another agent's shell. A caller with one in its ancestry is refused
     /// every approval, like one with `ARGONAUTS_SESSION`.
     pub refuse_ancestor_env: Vec<String>,
-    /// Commands a direct turn runs without asking, saved from its cards' "don't ask again". A
+    /// Commands a direct turn runs without asking, saved from its questions' "don't ask again". A
     /// pattern ending in `*` covers every command it starts.
     pub allow_commands: Vec<String>,
 }
@@ -53,19 +72,23 @@ pub struct ApprovalSettings {
 impl Default for ApprovalSettings {
     fn default() -> Self {
         Self {
-            full_auto: false,
-            answered_by: None,
+            autopilot: false,
+            answers: None,
+            decides: Decides::Judge,
             ask_you_about: Vec::new(),
+            when_declined: WhenDeclined::default(),
+            ask_limit: DEFAULT_ASK_LIMIT,
             goal_changes: GoalChanges::Ask,
             spot_check_sample: 0.1,
             pause_auto_when_spot_checks_waiting: 5,
             suggest_auto_after_matches: 20,
+            rules: ApprovalRules::default(),
             goal: CheckpointSettings::auto(DecideWith::RulesAndModel),
             plan: CheckpointSettings::auto(DecideWith::RulesAndModel),
             merge: CheckpointSettings::auto(DecideWith::Rules),
             // The evolution loop is autonomous by default: replay and holdout checks pass first,
             // and the canary watches what's promoted.
-            recipe_promotion: PromotionSettings::default(),
+            workflow_promotion: PromotionSettings::default(),
             escalation: CheckpointSettings::auto(DecideWith::RulesAndModel),
             budget: CheckpointSettings::auto(DecideWith::RulesAndModel),
             change_request: CheckpointSettings::auto(DecideWith::RulesAndModel),
@@ -82,35 +105,42 @@ impl ApprovalSettings {
     /// never has you answer, so there the model you picked answers, else the lead. A model
     /// you picked answers in full auto only, so elsewhere the mode decides, as when unset.
     pub fn answerer(&self, mode: ApprovalMode) -> Answerer {
-        match (mode, &self.answered_by) {
-            (ApprovalMode::FullAuto, Some(Answerer::Model(model))) => {
+        match (mode, &self.answers) {
+            (ApprovalMode::Autopilot, Some(Answerer::Model(model))) => {
                 Answerer::Model(model.clone())
             }
-            (ApprovalMode::FullAuto, _) => Answerer::Lead,
+            (ApprovalMode::Autopilot, _) => Answerer::Main,
             (_, Some(Answerer::You)) => Answerer::You,
-            (_, Some(Answerer::Lead)) => Answerer::Lead,
-            (ApprovalMode::Auto, Some(Answerer::Model(_)) | None) => Answerer::Lead,
-            (ApprovalMode::Supervised | ApprovalMode::Shadow, Some(Answerer::Model(_)) | None) => {
-                Answerer::You
-            }
+            (_, Some(Answerer::Main)) => Answerer::Main,
+            (ApprovalMode::Auto, Some(Answerer::Model(_)) | None) => Answerer::Main,
+            (
+                ApprovalMode::Supervised | ApprovalMode::AutoPreview,
+                Some(Answerer::Model(_)) | None,
+            ) => Answerer::You,
         }
     }
 
-    /// A run checkpoint's mode once the `full_auto` switch applies: full auto while it's on,
+    /// A run checkpoint's mode once the `autopilot` switch applies: full auto while it's on,
     /// unless the checkpoint's `own` mode keeps it for you (supervised or shadow), which no
-    /// switch takes away. Off, its own. A recipe promotion is decided outside runs, so it
+    /// switch takes away. Off, its own. A learned workflow promotion is decided outside runs, so it
     /// keeps its own.
     pub fn run_mode(&self, own: ApprovalMode) -> ApprovalMode {
-        if self.full_auto && own.goes_ahead() {
-            ApprovalMode::FullAuto
+        if self.autopilot && own.goes_ahead() {
+            ApprovalMode::Autopilot
         } else {
             own
         }
     }
 
+    /// The model you named to settle what your rules can't. `None` is the judge: the first
+    /// judge you named that may check the work, else one the policy picks for it.
+    pub fn approver_model(&self) -> Option<&WorkerRef> {
+        self.decides.model()
+    }
+
     /// One mode for a run's checkpoints: theirs when they agree, else the least autonomous of
     /// them, since that one still waits for you. The kinds without settings of their own, such
-    /// as an agent's question, follow it. A recipe promotion is decided outside runs, so it
+    /// as an agent's question, follow it. A learned workflow promotion is decided outside runs, so it
     /// isn't one of them.
     pub fn mode(&self) -> ApprovalMode {
         [
@@ -137,7 +167,7 @@ pub enum Answerer {
     /// The lead answers, and its answers become assumptions you can review. The approvals
     /// after them still follow their mode and rules, so in auto the approver model checks
     /// them, and a question it can't answer comes to you.
-    Lead,
+    Main,
     /// A model you picked answers in the lead's place, the same way: its answers become
     /// assumptions, and the approvals after them check them.
     Model(WorkerRef),
@@ -153,7 +183,7 @@ impl Answerer {
     pub fn model(&self) -> Option<&WorkerRef> {
         match self {
             Answerer::Model(model) => Some(model),
-            Answerer::You | Answerer::Lead => None,
+            Answerer::You | Answerer::Main => None,
         }
     }
 }
@@ -162,7 +192,7 @@ impl fmt::Display for Answerer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Answerer::You => f.write_str("you"),
-            Answerer::Lead => f.write_str("lead"),
+            Answerer::Main => f.write_str("main"),
             Answerer::Model(model) => fmt::Display::fmt(model, f),
         }
     }
@@ -176,11 +206,11 @@ impl TryFrom<String> for Answerer {
         if value.eq_ignore_ascii_case("you") {
             return Ok(Answerer::You);
         }
-        if value.eq_ignore_ascii_case("lead") {
-            return Ok(Answerer::Lead);
+        if value.eq_ignore_ascii_case("main") {
+            return Ok(Answerer::Main);
         }
         value.parse().map(Answerer::Model).map_err(|_| {
-            format!("expected `you`, `lead`, or a model such as `codex/gpt-5.6`, not {value:?}")
+            format!("expected `you`, `main`, or a model such as `codex/gpt-5.6`, not {value:?}")
         })
     }
 }
@@ -202,16 +232,15 @@ impl JsonSchema for Answerer {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
-pub struct CheckpointSettings<R: Default> {
+pub struct CheckpointSettings {
     pub mode: ApprovalMode,
     pub decide_with: DecideWith,
-    pub rules: R,
     pub otherwise: Otherwise,
     /// In full auto, what a hard limit at this checkpoint does, since no one is there to ask.
     pub at_hard_limit: AtHardLimit,
 }
 
-impl<R: Default> CheckpointSettings<R> {
+impl CheckpointSettings {
     /// Auto mode, where `decide_with` approves and anything it doesn't goes to you.
     pub fn auto(decide_with: DecideWith) -> Self {
         Self {
@@ -228,29 +257,29 @@ pub enum ApprovalMode {
     #[default]
     Supervised,
     /// Waits for you, and records what auto would have decided.
-    Shadow,
+    AutoPreview,
     /// Your settings decide; what they can't settle waits for you.
     Auto,
     /// Nothing waits for you. The lead answers every question, the topics
     /// `approvals.ask_you_about` names too, and your rules and the approver decide as in auto.
     /// What they can't approve, or a hard limit, ends that part safely, keeps the work, and is
     /// reported instead of asking.
-    FullAuto,
+    Autopilot,
 }
 
 impl ApprovalMode {
     /// Auto and full auto decide without you; supervised and shadow wait.
     pub fn goes_ahead(self) -> bool {
-        matches!(self, ApprovalMode::Auto | ApprovalMode::FullAuto)
+        matches!(self, ApprovalMode::Auto | ApprovalMode::Autopilot)
     }
 
     /// Higher decides more without you.
     pub fn autonomy(self) -> u8 {
         match self {
             ApprovalMode::Supervised => 0,
-            ApprovalMode::Shadow => 1,
+            ApprovalMode::AutoPreview => 1,
             ApprovalMode::Auto => 2,
-            ApprovalMode::FullAuto => 3,
+            ApprovalMode::Autopilot => 3,
         }
     }
 
@@ -258,9 +287,9 @@ impl ApprovalMode {
     pub fn label(self) -> &'static str {
         match self {
             ApprovalMode::Supervised => "supervised",
-            ApprovalMode::Shadow => "shadow",
+            ApprovalMode::AutoPreview => "auto preview",
             ApprovalMode::Auto => "auto",
-            ApprovalMode::FullAuto => "full auto",
+            ApprovalMode::Autopilot => "autopilot",
         }
     }
 }
@@ -330,12 +359,19 @@ pub enum GoalChanges {
     Deny,
 }
 
-/// Goal rules have no numbers: auto approves only when no question is open.
+/// `[approvals.rules.<approval>]`: what "your rules" means for each approval that has numbers
+/// to check. A goal has none: auto approves one only when no question is open.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
-pub struct GoalRules {}
-
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
-pub struct NoRules {}
+#[serde(default)]
+pub struct ApprovalRules {
+    pub plan: PlanRules,
+    pub merge: MergeRules,
+    pub workflow_promotion: PromotionRules,
+    #[serde(rename = "stuck")]
+    pub escalation: EscalationRules,
+    #[serde(rename = "limit")]
+    pub budget: BudgetRules,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -357,9 +393,10 @@ impl Default for PlanRules {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MergeRules {
-    /// Share of changed lines covered by tests.
-    pub min_changed_line_coverage: f64,
-    pub max_combined_diff_lines: u32,
+    /// The share of changed lines the tests must cover, from 0 to 1.
+    pub min_test_coverage_of_changed_lines: f64,
+    /// The most lines the run's combined diff may have.
+    pub max_changed_lines: u32,
     /// Auto may merge a card whose quality debt no strong enough model reviewed.
     pub allow_debt: bool,
 }
@@ -367,21 +404,20 @@ pub struct MergeRules {
 impl Default for MergeRules {
     fn default() -> Self {
         Self {
-            min_changed_line_coverage: 0.8,
-            max_combined_diff_lines: 400,
+            min_test_coverage_of_changed_lines: 0.8,
+            max_changed_lines: 400,
             allow_debt: false,
         }
     }
 }
 
-/// Promoting a recipe change. It's decided outside runs, so the `full_auto` switch and what a
+/// Promoting a learned workflow change. It's decided outside runs, so the `autopilot` switch and what a
 /// hard limit does there never reach it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct PromotionSettings {
     pub mode: ApprovalMode,
     pub decide_with: DecideWith,
-    pub rules: PromotionRules,
     pub otherwise: Otherwise,
 }
 
@@ -393,23 +429,21 @@ impl Default for PromotionSettings {
 
 impl PromotionSettings {
     /// As the table every checkpoint shares, for what reads them all alike.
-    pub fn as_checkpoint(&self) -> CheckpointSettings<PromotionRules> {
+    pub fn as_checkpoint(&self) -> CheckpointSettings {
         CheckpointSettings {
             mode: self.mode,
             decide_with: self.decide_with,
-            rules: self.rules.clone(),
             otherwise: self.otherwise,
             at_hard_limit: AtHardLimit::default(),
         }
     }
 }
 
-impl From<CheckpointSettings<PromotionRules>> for PromotionSettings {
-    fn from(table: CheckpointSettings<PromotionRules>) -> Self {
+impl From<CheckpointSettings> for PromotionSettings {
+    fn from(table: CheckpointSettings) -> Self {
         Self {
             mode: table.mode,
             decide_with: table.decide_with,
-            rules: table.rules,
             otherwise: table.otherwise,
         }
     }
@@ -419,7 +453,7 @@ impl From<CheckpointSettings<PromotionRules>> for PromotionSettings {
 #[serde(default)]
 pub struct PromotionRules {
     pub change_classes: Vec<String>,
-    /// Days between promotions or canaries of one recipe.
+    /// Days between promotions or canaries of one learned workflow.
     pub min_days_between: u32,
 }
 
@@ -431,8 +465,8 @@ impl Default for PromotionRules {
                 "checklist_item",
                 "critique_rounds",
                 "drafting_prompt",
-                "card_split",
-                "card_budget",
+                "task_split",
+                "task_limit",
             ]
             .map(str::to_owned)
             .to_vec(),
@@ -472,13 +506,10 @@ impl Default for BudgetRules {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ApproverSettings {
-    /// Unset means the cheapest model from another company than the work it judges, which the
-    /// policy builder picks from the models you can run.
-    pub model: Option<WorkerRef>,
-    /// Your rules for it, in `.argonauts/`.
+    /// Your rules for the model `approvals.decides` names, in `.argonauts/`.
     pub model_rules: String,
     /// Require a model family different from every author and owner.
-    pub different_family: bool,
+    pub different_provider: bool,
     /// A second approver from another vendor that must also approve.
     pub second_model: Option<WorkerRef>,
 }
@@ -486,15 +517,15 @@ pub struct ApproverSettings {
 impl Default for ApproverSettings {
     fn default() -> Self {
         Self {
-            model: None,
             model_rules: "approval-rules.md".to_owned(),
-            different_family: true,
+            different_provider: true,
             second_model: None,
         }
     }
 }
 
-/// Hard limits. Your rules can't loosen them.
+/// The `[limits]` table: the hard limits, which your rules can't loosen, and beside them the run
+/// and task limits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct HardLimitSettings {
@@ -502,11 +533,15 @@ pub struct HardLimitSettings {
     pub protected_paths: Vec<String>,
     /// Packages a plan may add. The conductor adds them itself, with install scripts off.
     pub dependency_allowlist: Vec<String>,
-    pub usd_per_day: Option<f64>,
+    /// Dollars all runs and chats together may spend in a day. Unset, there is no limit.
+    pub spend_per_day: Option<f64>,
     pub auto_merges_per_day: u32,
     /// Irreversible outside actions you allow, such as `publish`.
     pub irreversible_allowlist: Vec<String>,
     pub evolution_usd_per_month: f64,
+    /// The run and task limits. Their keys sit in this table too, such as `limits.spend_per_run`.
+    #[serde(flatten)]
+    pub budget: BudgetSettings,
 }
 
 impl Default for HardLimitSettings {
@@ -523,10 +558,11 @@ impl Default for HardLimitSettings {
             .map(str::to_owned)
             .to_vec(),
             dependency_allowlist: Vec::new(),
-            usd_per_day: Some(40.0),
+            spend_per_day: None,
             auto_merges_per_day: 3,
             irreversible_allowlist: Vec::new(),
             evolution_usd_per_month: 1000.0,
+            budget: BudgetSettings::default(),
         }
     }
 }
@@ -535,17 +571,17 @@ impl Default for HardLimitSettings {
 #[serde(default)]
 pub struct SandboxSettings {
     /// Whose rules guard the agents. A role's `[roles.<role>.sandbox]` can set this, `network`,
-    /// `agents_see_other_copies`, and `agents_commit` for its own agents, as [`RoleSandbox`]
+    /// `agents_see_other_worktrees`, and `agents_commit` for its own agents, as [`RoleSandbox`]
     /// says.
     pub mode: SandboxChoice,
     /// Network for commands agents run.
     pub network: bool,
     /// Whether an agent may read the other agents' copies of the repo, not only its own.
-    pub agents_see_other_copies: bool,
+    pub agents_see_other_worktrees: bool,
     /// Whether agents commit their own work. Off, git's files stay read-only to them and
     /// Argonauts commits for them.
     pub agents_commit: bool,
-    /// Refuse to start a harness session when no sandbox works.
+    /// Refuse to start an agent's session when no sandbox works.
     pub fail_closed: bool,
     pub extra_writable: Vec<String>,
     /// Hosts sessions may reach through the Argonauts proxy, on top of their harness's own
@@ -555,7 +591,7 @@ pub struct SandboxSettings {
     pub untrusted_repos: UntrustedRepos,
     /// The image container sessions run in, with the harness installed. Empty refuses them.
     pub container_image: String,
-    /// Whether your own harness hooks run in Argonauts sessions, where the harness allows a choice.
+    /// Whether your own CLI hooks run in Argonauts sessions, where the CLI allows a choice.
     pub user_hooks: UserHooks,
     /// What happens to an isolated session that loaded your plugins or synced skills anyway.
     pub isolated_leak: IsolatedLeak,
@@ -568,7 +604,7 @@ impl Default for SandboxSettings {
             // Agents that evolve themselves need packages and docs from the internet, and the
             // sandbox still keeps them out of your other files.
             network: true,
-            agents_see_other_copies: false,
+            agents_see_other_worktrees: false,
             agents_commit: true,
             fail_closed: true,
             extra_writable: Vec::new(),
@@ -591,9 +627,9 @@ impl SandboxSettings {
         SandboxSettings {
             mode: role.mode.unwrap_or(self.mode),
             network: role.network.unwrap_or(self.network),
-            agents_see_other_copies: role
-                .agents_see_other_copies
-                .unwrap_or(self.agents_see_other_copies),
+            agents_see_other_worktrees: role
+                .agents_see_other_worktrees
+                .unwrap_or(self.agents_see_other_worktrees),
             agents_commit: role.agents_commit.unwrap_or(self.agents_commit),
             ..self.clone()
         }
@@ -612,7 +648,7 @@ pub struct RoleSandbox {
     pub network: Option<bool>,
     /// Whether this role's agents may read the other agents' copies of the repo.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agents_see_other_copies: Option<bool>,
+    pub agents_see_other_worktrees: Option<bool>,
     /// Whether this role's agents commit their own work.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agents_commit: Option<bool>,
@@ -678,7 +714,7 @@ pub enum IsolatedLeak {
 #[serde(rename_all = "snake_case")]
 pub enum UserHooks {
     Inherit,
-    /// Turned off for Argonauts sessions where the harness allows it; `doctor` says where not.
+    /// Turned off for Argonauts sessions where the CLI allows it; `doctor` says where not.
     Disable,
 }
 
@@ -687,55 +723,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_auto_has_the_lead_answer_and_is_the_most_autonomous() {
+    fn autopilot_has_the_lead_answer_and_is_the_most_autonomous() {
         let mut approvals = ApprovalSettings {
-            answered_by: Some(Answerer::You),
+            answers: Some(Answerer::You),
             ..ApprovalSettings::default()
         };
         assert_eq!(approvals.answerer(ApprovalMode::Auto), Answerer::You);
-        assert_eq!(approvals.answerer(ApprovalMode::FullAuto), Answerer::Lead);
-        approvals.answered_by = None;
-        assert_eq!(approvals.answerer(ApprovalMode::Shadow), Answerer::You);
+        assert_eq!(approvals.answerer(ApprovalMode::Autopilot), Answerer::Main);
+        approvals.answers = None;
+        assert_eq!(approvals.answerer(ApprovalMode::AutoPreview), Answerer::You);
 
         assert_eq!(approvals.mode(), ApprovalMode::Auto);
-        approvals.goal.mode = ApprovalMode::FullAuto;
+        approvals.goal.mode = ApprovalMode::Autopilot;
         assert_eq!(
             approvals.mode(),
             ApprovalMode::Auto,
             "the others still stop at auto"
         );
         // The six a run opens decide it; the setup's answer sets them all.
-        approvals.plan.mode = ApprovalMode::FullAuto;
-        approvals.merge.mode = ApprovalMode::FullAuto;
-        approvals.escalation.mode = ApprovalMode::FullAuto;
-        approvals.budget.mode = ApprovalMode::FullAuto;
-        approvals.change_request.mode = ApprovalMode::FullAuto;
-        approvals.recipe_promotion.mode = ApprovalMode::Supervised;
-        assert_eq!(approvals.mode(), ApprovalMode::FullAuto);
+        approvals.plan.mode = ApprovalMode::Autopilot;
+        approvals.merge.mode = ApprovalMode::Autopilot;
+        approvals.escalation.mode = ApprovalMode::Autopilot;
+        approvals.budget.mode = ApprovalMode::Autopilot;
+        approvals.change_request.mode = ApprovalMode::Autopilot;
+        approvals.workflow_promotion.mode = ApprovalMode::Supervised;
+        assert_eq!(approvals.mode(), ApprovalMode::Autopilot);
         approvals.merge.mode = ApprovalMode::Supervised;
         assert_eq!(approvals.mode(), ApprovalMode::Supervised);
 
         let written: toml::Value = toml::Value::try_from(&approvals).expect("written");
-        assert_eq!(written["goal"]["mode"].as_str(), Some("full_auto"));
+        assert_eq!(written["goal"]["mode"].as_str(), Some("autopilot"));
     }
 
     /// A picked model answers in full auto only; in supervised and auto the mode decides, as
     /// when nothing is picked, so `approvals.ask_you_about` topics stay yours there.
     #[test]
-    fn a_picked_model_answers_in_full_auto_only() {
+    fn a_picked_model_answers_in_autopilot_only() {
         let model: WorkerRef = "openrouter/z-ai/glm-5".parse().expect("a worker");
         let approvals = ApprovalSettings {
-            answered_by: Some(Answerer::Model(model.clone())),
+            answers: Some(Answerer::Model(model.clone())),
             ..ApprovalSettings::default()
         };
         assert_eq!(
-            approvals.answerer(ApprovalMode::FullAuto),
+            approvals.answerer(ApprovalMode::Autopilot),
             Answerer::Model(model.clone())
         );
-        assert_eq!(approvals.answerer(ApprovalMode::Auto), Answerer::Lead);
+        assert_eq!(approvals.answerer(ApprovalMode::Auto), Answerer::Main);
         assert_eq!(approvals.answerer(ApprovalMode::Supervised), Answerer::You);
-        assert_eq!(approvals.answerer(ApprovalMode::Shadow), Answerer::You);
-        assert!(Answerer::Lead.answers_for_you());
+        assert_eq!(approvals.answerer(ApprovalMode::AutoPreview), Answerer::You);
+        assert!(Answerer::Main.answers_for_you());
         assert!(!Answerer::You.answers_for_you());
     }
 
@@ -745,19 +781,19 @@ mod tests {
         for (word, answerer) in [
             ("You", Answerer::You),
             (" YOU ", Answerer::You),
-            ("Lead", Answerer::Lead),
-            ("LEAD", Answerer::Lead),
+            ("Main", Answerer::Main),
+            ("MAIN", Answerer::Main),
         ] {
             assert_eq!(Answerer::try_from(word.to_owned()), Ok(answerer), "{word}");
         }
     }
 
-    /// `answered_by`, `full_auto`, and each checkpoint's `at_hard_limit` read back as written.
+    /// `answers`, `autopilot`, and each checkpoint's `at_hard_limit` read back as written.
     #[test]
-    fn full_auto_settings_round_trip() {
+    fn autopilot_settings_round_trip() {
         let file = r#"
-            full_auto = true
-            answered_by = "openrouter/z-ai/glm-5"
+            autopilot = true
+            answers = "openrouter/z-ai/glm-5"
 
             [merge]
             at_hard_limit = "open_pull_request"
@@ -766,9 +802,9 @@ mod tests {
             at_hard_limit = "park"
         "#;
         let approvals: ApprovalSettings = toml::from_str(file).expect("read");
-        assert!(approvals.full_auto);
+        assert!(approvals.autopilot);
         assert_eq!(
-            approvals.answered_by,
+            approvals.answers,
             Some(Answerer::Model(WorkerRef::new(
                 "openrouter",
                 Some("z-ai/glm-5".to_owned())
@@ -782,30 +818,68 @@ mod tests {
         let again: ApprovalSettings = toml::from_str(&written).expect("read again");
         assert_eq!(again, approvals);
 
-        for word in ["you", "lead"] {
-            let file = format!("answered_by = {word:?}");
+        for word in ["you", "main"] {
+            let file = format!("answers = {word:?}");
             let read: ApprovalSettings = toml::from_str(&file).expect("read");
-            let answerer = read.answered_by.expect("set");
+            let answerer = read.answers.expect("set");
             assert_eq!(answerer.to_string(), word);
             assert_eq!(answerer.model(), None);
         }
-        assert!(toml::from_str::<ApprovalSettings>("answered_by = \"the lead\"").is_err());
+        assert!(toml::from_str::<ApprovalSettings>("answers = \"the main agent\"").is_err());
         assert!(toml::from_str::<ApprovalSettings>("[goal]\nat_hard_limit = \"ask\"").is_err());
+    }
+
+    /// Who decides when you don't, as the settings template writes it: the four keys under
+    /// `[approvals]`, and a merge's rules under `[approvals.rules.merge]`.
+    #[test]
+    fn who_decides_when_you_dont_reads_as_the_template_writes_it() {
+        let file = r#"
+            answers       = "main"
+            decides       = "judge"
+            when_declined = "decide"
+            ask_limit     = 2
+
+            [rules.merge]
+            min_test_coverage_of_changed_lines = 0.9
+            max_changed_lines                  = 250
+        "#;
+        let approvals: ApprovalSettings = toml::from_str(file).expect("read");
+        assert_eq!(approvals.answers, Some(Answerer::Main));
+        assert_eq!(approvals.decides, Decides::Judge);
+        assert_eq!(approvals.approver_model(), None);
+        assert_eq!(approvals.when_declined, WhenDeclined::Decide);
+        assert_eq!(approvals.ask_limit, 2);
+        assert_eq!(
+            approvals.rules.merge.min_test_coverage_of_changed_lines,
+            0.9
+        );
+        assert_eq!(approvals.rules.merge.max_changed_lines, 250);
+        // What the file leaves out keeps its default, rule by rule.
+        assert!(!approvals.rules.merge.allow_debt);
+        assert_eq!(approvals.rules.plan, PlanRules::default());
+
+        // A model you name judges in the judge's place, and Esc can end the part instead.
+        let named: ApprovalSettings =
+            toml::from_str("decides = \"codex/gpt-5.6\"\nwhen_declined = \"stop\"").expect("read");
+        let model: WorkerRef = "codex/gpt-5.6".parse().expect("a worker");
+        assert_eq!(named.approver_model(), Some(&model));
+        assert_eq!(named.when_declined, WhenDeclined::Stop);
+        assert!(toml::from_str::<ApprovalSettings>("decides = \"the judge model\"").is_err());
     }
 
     /// The switch puts every checkpoint a run opens in full auto, except one you keep
     /// supervised or in shadow, and off each keeps its own.
     #[test]
-    fn the_full_auto_switch_covers_every_run_checkpoint_you_dont_keep() {
+    fn the_autopilot_switch_covers_every_run_checkpoint_you_dont_keep() {
         let mut approvals = ApprovalSettings {
-            full_auto: true,
+            autopilot: true,
             ..ApprovalSettings::default()
         };
-        assert_eq!(approvals.mode(), ApprovalMode::FullAuto);
-        assert_eq!(approvals.answerer(approvals.mode()), Answerer::Lead);
+        assert_eq!(approvals.mode(), ApprovalMode::Autopilot);
+        assert_eq!(approvals.answerer(approvals.mode()), Answerer::Main);
         assert_eq!(
             approvals.run_mode(ApprovalMode::Auto),
-            ApprovalMode::FullAuto
+            ApprovalMode::Autopilot
         );
 
         approvals.merge.mode = ApprovalMode::Supervised;
@@ -815,10 +889,10 @@ mod tests {
         );
         assert_eq!(approvals.mode(), ApprovalMode::Supervised);
         assert_eq!(
-            approvals.run_mode(ApprovalMode::Shadow),
-            ApprovalMode::Shadow
+            approvals.run_mode(ApprovalMode::AutoPreview),
+            ApprovalMode::AutoPreview
         );
-        approvals.full_auto = false;
+        approvals.autopilot = false;
         assert_eq!(approvals.run_mode(ApprovalMode::Auto), ApprovalMode::Auto);
     }
 }

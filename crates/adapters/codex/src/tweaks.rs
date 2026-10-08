@@ -1,6 +1,7 @@
 //! Per-launch settings as Codex flags. Every key here was checked against codex-cli 0.158.0,
 //! which validates `-c` overrides before it reads the prompt.
 
+use argonauts_core::settings::context::ContextAsk;
 use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout};
 use argonauts_core::{LaunchTweak, TweakEffect};
 
@@ -29,6 +30,27 @@ pub fn compaction(setting: Compaction) -> LaunchTweak {
             },
             ..LaunchTweak::default()
         },
+    }
+}
+
+/// `model_context_window`, the window Codex gives the session. Left alone, Codex uses the
+/// model's default, 272k for most where its own model list says the model takes 872k, and
+/// compacts there. The setting moves where Codex compacts and what it counts against, and
+/// nothing else: it isn't what lets a large turn through. Checked live against codex-cli
+/// 0.160.0 with `gpt-5.6-luna` on 2026-10-07: one turn of 290k input tokens was answered
+/// with the window set to 872000, one of 282k with nothing set, and one of 53k with the
+/// window set to 30000.
+pub fn context_window(ask: ContextAsk) -> Vec<String> {
+    let tokens = match ask {
+        ContextAsk::Largest { known } => known,
+        ContextAsk::Held { tokens } => Some(tokens),
+        ContextAsk::AsItIs => None,
+    };
+    match tokens {
+        Some(tokens) => config_override(&format!("model_context_window={tokens}")),
+        // Codex has no word for "the largest", so a model the registry doesn't list is left
+        // at its default.
+        None => Vec::new(),
     }
 }
 
@@ -82,6 +104,23 @@ fn config_override(key_value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_goes_as_a_config_override_when_its_size_is_known() {
+        let largest = ContextAsk::Largest {
+            known: Some(872_000),
+        };
+        assert_eq!(
+            context_window(largest),
+            ["-c", "model_context_window=872000"]
+        );
+        assert_eq!(
+            context_window(ContextAsk::Held { tokens: 200_000 }),
+            ["-c", "model_context_window=200000"]
+        );
+        assert!(context_window(ContextAsk::Largest { known: None }).is_empty());
+        assert!(context_window(ContextAsk::AsItIs).is_empty());
+    }
 
     #[test]
     fn inherit_passes_nothing() {

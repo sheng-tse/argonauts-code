@@ -224,12 +224,12 @@ fn header() -> SessionHeader {
         note: Some(note.into()),
     };
     SessionHeader {
-        app: "Argonauts".into(),
+        app: "Argonauts Code".into(),
         version: "0.0.1".into(),
-        default_agent: Some("Claude Code".into()),
+        main_agent: Some("Claude Code".into()),
         model: Some("Opus 5.5".into()),
         effort: Some("xhigh".into()),
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         folder: "~/github/argonauts".into(),
         agents: vec![ready("Claude Code", "2.1.284"), ready("Codex", "0.158.0")],
         runs_going: 0,
@@ -250,7 +250,7 @@ fn conversation(f: &mut Fullscreen) {
              `--pretty` indents it.\n\n- It reads the store\n- It writes each row\n- It flushes"
         )));
     }
-    let mut block = ToolCall::agent("GPT on Codex", None, "owner", "Wire --json");
+    let mut block = ToolCall::agent("GPT on Codex", None, "worker", "Wire --json");
     block.push(ToolItem::text("step one"));
     history.push_active(block);
     f.ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", f.now));
@@ -272,12 +272,12 @@ fn frames_stay_on_the_alternate_screen_and_the_main_one_is_never_written() {
     // A card, the transcript, and a view all draw on the same alternate screen.
     f.ui.model_mut().bottom.card = Some(CardPrompt::new(
         1,
-        "Merge card-002 into main?",
-        "Merge card-002?",
+        "Merge task-002 into main?",
+        "Merge task-002?",
         vec![CardOption::new("Merge")],
     ));
     f.frame();
-    assert!(f.shown().contains("Merge card-002"), "{}", f.shown());
+    assert!(f.shown().contains("Merge task-002"), "{}", f.shown());
     f.ui.model_mut().bottom.card = None;
     f.ui.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
@@ -397,7 +397,7 @@ fn a_drag_selects_and_copies_the_text_without_the_screens_glyphs() {
     let actions = f.drag((79, tool), (0, tool - 1));
     assert_eq!(
         copied(&actions),
-        Some("GPT on Codex · owner (Wire --json)\n   step one")
+        Some("GPT on Codex · worker (Wire --json)\n   step one")
     );
 }
 

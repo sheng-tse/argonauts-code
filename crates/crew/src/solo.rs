@@ -58,7 +58,7 @@ pub fn card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
         .as_ref()
         .ok_or_else(|| EngineError::Refused("the run hasn't started".to_owned()))?;
     let settings = host.settings();
-    let owner = settings.default_agent.clone();
+    let owner = settings.main_agent.clone();
     let reviewers = if settings.solo.review {
         vec![reviewer(host, &owner)?]
     } else {
@@ -109,7 +109,7 @@ fn reviewer(host: &Host, owner: &WorkerRef) -> EngineResult<WorkerRef> {
         })
         .ok_or_else(|| {
             EngineError::Refused(format!(
-                "solo.review needs a reviewer from another model family than {owner} \
+                "solo.review needs a reviewer from another provider than {owner} \
                  ({owner_family}), and none is available"
             ))
         })

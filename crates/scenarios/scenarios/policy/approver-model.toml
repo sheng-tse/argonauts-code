@@ -1,4 +1,4 @@
-# The fake Claude Code owns a solo card and writes hello.txt; the fake Codex is the approver
+# The fake Claude Code owns a solo task and writes hello.txt; the fake Codex is the approver
 # model and approves the merge. Codex plays no other part here, so every Codex call is the
 # approver's.
 

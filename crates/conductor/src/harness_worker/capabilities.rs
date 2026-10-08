@@ -36,6 +36,19 @@ pub fn capabilities_for(adapter: &dyn Adapter) -> WorkerCapabilities {
     }
 }
 
+/// Whether the main session's tools can be given to this CLI's sessions while Argonauts
+/// drives it: only where the per-run MCP config that carries them is verified, which is Claude
+/// Code. A CLI without them keeps the verdict at the end of each chat reply.
+pub fn takes_session_tools(adapter: &dyn Adapter) -> bool {
+    adapter.id() == CLAUDE_CODE
+}
+
+/// Whether the CLI has a place of its own for a few standing lines at the end of its
+/// instructions. Claude Code takes them with `--append-system-prompt`.
+pub fn takes_a_standing_note(adapter: &dyn Adapter) -> bool {
+    adapter.id() == CLAUDE_CODE
+}
+
 /// Open input where the adapter makes input lines; otherwise interrupt and resume, which needs
 /// a harness that can resume.
 pub fn steer_support(adapter: &dyn Adapter) -> SteerSupport {

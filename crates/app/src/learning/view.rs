@@ -22,7 +22,7 @@ use argonauts_learning::sync::{self, SyncMode};
 
 use super::or_empty;
 
-/// What a picker opens on: the agent `/records <agent>` names, the recipe `/recipes <name>`
+/// What a picker opens on: the agent `/records <agent>` names, the recipe `/learned <name>`
 /// names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Focus {
@@ -139,12 +139,12 @@ fn records(
                     "Cost",
                     "Time",
                     "Predictions",
-                    "Cards",
+                    "Tasks",
                 ]
                 .map(str::to_owned)
                 .to_vec(),
                 rows,
-                empty: "No outcomes yet. Each finished run adds its cards.".to_owned(),
+                empty: "No outcomes yet. Each finished run adds its tasks.".to_owned(),
             },
             LearningTab {
                 title: "Predictions".to_owned(),
@@ -174,7 +174,7 @@ fn record_row(record: &Record, book: &Book, settings: &Settings) -> LearningRow 
     }
     if let Some(group) = &record.pooled_from {
         detail.push(format!(
-            "Scored with {group} until it has {} cards of its own",
+            "Scored with {group} until it has {} tasks of its own",
             settings.routing.own_type_after
         ));
     }
@@ -350,7 +350,7 @@ fn recipes(
                     candidate
                         .from_run
                         .as_ref()
-                        .map(|run| format!("Proposed by the retro of {run}"))
+                        .map(|run| format!("Proposed by the run review of {run}"))
                         .unwrap_or_default(),
                 ],
                 actions,
@@ -419,12 +419,12 @@ fn recipes(
     Ok((
         vec![
             LearningTab {
-                title: "Recipes".to_owned(),
-                columns: ["Recipe", "Runs", "Versions", "Mode", "Matches"]
+                title: "Workflows".to_owned(),
+                columns: ["Workflow", "Runs", "Versions", "Mode", "Matches"]
                     .map(str::to_owned)
                     .to_vec(),
                 rows: recipe_rows,
-                empty: "No recipes yet. A run that merges and passes first time proposes one."
+                empty: "No learned workflows yet. A run that merges and passes first time proposes one."
                     .to_owned(),
             },
             LearningTab {
@@ -433,7 +433,7 @@ fn recipes(
                     .map(str::to_owned)
                     .to_vec(),
                 rows: candidate_rows,
-                empty: "No candidates. The retro proposes one change per run.".to_owned(),
+                empty: "No candidates. The run review proposes one change per run.".to_owned(),
             },
             LearningTab {
                 title: "Replay set".to_owned(),
@@ -552,7 +552,7 @@ fn skill_tabs(store: &Store) -> anyhow::Result<(Vec<LearningTab>, String)> {
             }
         })
         .collect();
-    let branches = branches(store, &["argonauts/skills/", "argonauts/recipes/"]);
+    let branches = branches(store, &["argonauts/skills/", "argonauts/learned/"]);
     let summary = format!(
         "{} · {}",
         count(rows.len(), "skill", "skills"),
@@ -678,7 +678,7 @@ fn memory(store: &Store) -> anyhow::Result<(Vec<LearningTab>, String)> {
                 title: "Notes".to_owned(),
                 columns: columns.clone(),
                 rows: note_rows,
-                empty: "No notes yet. Notes a card's reviewer accepts land with the run."
+                empty: "No notes yet. Notes a task's reviewer accepts merge with the run."
                     .to_owned(),
             },
             LearningTab {

@@ -96,9 +96,9 @@ fn config_view_layers() {
     let rows = vec![
         setting_row("ui.keys", "\"vim\"", "global", &[]),
         setting_row("ui.theme", "\"auto\"", "built-in", &[]),
-        setting_row("budget.run_usd", "30.0", "project", &[]),
+        setting_row("limits.spend_per_run", "30.0", "project", &[]),
         setting_row("roles.reviewer.effort", "\"high\"", "project-local", &[]),
-        setting_row("approvals.merge.mode", "\"shadow\"", "session", &[]),
+        setting_row("approvals.merge.mode", "\"auto_preview\"", "session", &[]),
     ];
     let mut harness = Harness::start(pickers(vec![settings_view("config", rows)]));
     harness.wait_visible(MODE_IDLE);
@@ -110,7 +110,7 @@ fn config_view_layers() {
     for (key, layer) in [
         ("ui.keys", "global"),
         ("ui.theme", "built-in"),
-        ("budget.run_usd", "project"),
+        ("limits.spend_per_run", "project"),
         ("roles.reviewer.effort", "project-local"),
         ("approvals.merge.mode", "session"),
     ] {

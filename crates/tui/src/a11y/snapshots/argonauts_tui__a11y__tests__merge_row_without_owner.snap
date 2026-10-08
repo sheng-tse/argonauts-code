@@ -4,15 +4,15 @@ expression: "said.lines.join(\"\\n\")"
 ---
 needs you: merge, run-01
   Merge the run into main
-  card: card-002, title: Add the JSON writer, files: 2, lines: +30 -4, gates: passed, review: approved
-  card: card-003, title: Wire the --json flag, files: 2, lines: +30 -4, owner: GPT 5.6 on Codex, gates: passed, review: approved
-  2 cards, 4 files, +60 -8
+  task: task-002, title: Add the JSON writer, files: 2, lines: +30 -4, checks: passed, review: approved
+  task: task-003, title: Wire the --json flag, files: 2, lines: +30 -4, worker: GPT 5.6 on Codex, checks: passed, review: approved
+  2 tasks, 4 files, +60 -8
   Suite passed on the latest main
-  2 cards, 4 files, +60 -8, suite passed on the latest main, every review approved, $0.46 spent
+  2 tasks, 4 files, +60 -8, suite passed on the latest main, every review approved, $0.46 spent
   1. Merge
   2. Open a pull request
-  3. Request changes on some cards
+  3. Request changes on some tasks
   4. Keep the branch
   5. Abandon the run
   6. Show the diff
-answer: type a number. To add a note, type it after a colon, as in 1: the note. To send back only some cards, name them after 3, as in 3 card-002: what to change.
+answer: type a number. To add a note, type it after a colon, as in 1: the note. To send back only some tasks, name them after 3, as in 3 task-002: what to change.

@@ -43,6 +43,10 @@ pub struct SpecInput {
     /// Blind reviewers and judges never get native fan-out, nor the CLI's own MCP servers,
     /// plugins, or project settings.
     pub blind: bool,
+    /// Its step lets it run a workflow of its own, so its CLI fans out as it sees fit.
+    pub own_workflow: bool,
+    /// The run is on autopilot.
+    pub autopilot: bool,
     /// Paths the session must never read: the state directory, other worktrees, `~/.ssh`.
     pub deny_read: Vec<PathBuf>,
 }
@@ -51,7 +55,7 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
     let builds = matches!(input.access, Access::Build | Access::Spike);
     if builds && input.goal_sha256.is_none() {
         return Err(EngineError::Refused(
-            "a build or spike session needs the approved goal's hash".to_owned(),
+            "a build or experiment session needs the approved goal's hash".to_owned(),
         ));
     }
     let temp = input.session_dir.join("tmp");
@@ -65,6 +69,9 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
     let role = settings.roles.get(&input.role);
     let native_fanout = if input.blind {
         NativeFanout::Switch(FanoutSwitch::Off)
+    } else if input.own_workflow {
+        // A workflow of its own starts agents of its own, so no cap of ours fits it.
+        NativeFanout::Switch(FanoutSwitch::On)
     } else {
         role.and_then(|role| role.native_fanout)
             .unwrap_or(settings.native_fanout)
@@ -94,9 +101,11 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
             .unwrap_or(settings.compaction),
         native_fanout,
         isolated: input.blind,
+        autopilot: input.autopilot,
         status_file: input.status_file,
         env: Vec::new(),
         asking: None,
+        cli_workflow: argonauts_core::worker::CliWorkflow::default(),
     })
 }
 
@@ -212,7 +221,7 @@ mod tests {
             effort: Some("high".to_owned()),
             ..RoleSettings::default()
         };
-        settings.roles.insert(RoleName::Owner, owner);
+        settings.roles.insert(RoleName::Worker, owner);
         let codex = AgentSettings {
             effort: Some("low".to_owned()),
             model: Some("gpt-x".to_owned()),
@@ -252,7 +261,7 @@ mod tests {
         let codex = WorkerRef::new("codex", None);
         let claude = WorkerRef::new("claude-code", None);
         assert_eq!(
-            effort(&settings, RoleName::Owner, &codex).as_deref(),
+            effort(&settings, RoleName::Worker, &codex).as_deref(),
             Some("high")
         );
         assert_eq!(
@@ -295,17 +304,32 @@ mod tests {
             prompt: Vec::new(),
             json_schema: None,
             resume: None,
-            lifetime: SessionLifetime::Card,
+            lifetime: SessionLifetime::Task,
             limits: SessionLimits::default(),
             goal_sha256: None,
             status_file: None,
             blind,
+            own_workflow: false,
+            autopilot: false,
             deny_read: Vec::new(),
         };
         let settings = Settings::default();
         let blind = build(&settings, input(true)).unwrap();
         assert!(blind.isolated);
         assert_eq!(blind.native_fanout, NativeFanout::Switch(FanoutSwitch::Off));
+        // A step that lets its worker run a workflow of its own lifts the cap, never for a
+        // blind session.
+        let own = |blind: bool| SpecInput {
+            own_workflow: true,
+            ..input(blind)
+        };
+        let free = build(&settings, own(false)).unwrap();
+        assert_eq!(free.native_fanout, NativeFanout::Switch(FanoutSwitch::On));
+        let still_blind = build(&settings, own(true)).unwrap();
+        assert_eq!(
+            still_blind.native_fanout,
+            NativeFanout::Switch(FanoutSwitch::Off)
+        );
         let seeing = build(&settings, input(false)).unwrap();
         assert!(
             !seeing.isolated,

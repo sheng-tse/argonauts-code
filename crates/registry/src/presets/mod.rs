@@ -8,5 +8,6 @@ mod name;
 
 pub(crate) use builtin::{DEFAULT_PRESET, builtin};
 pub use files::{builtin_preset, upgrade_presets, write_preset};
+pub(crate) use list::SCRIPT_EXTENSIONS;
 pub use list::{presets, presets_in};
 pub(crate) use name::{is_preset_name, not_a_preset_name};

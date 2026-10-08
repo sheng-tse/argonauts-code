@@ -1,4 +1,4 @@
-# Direct solo: in the solo preset your message goes to Claude Code in your
+# Direct solo: in the solo workflow your message goes to Claude Code in your
 # checkout. The turn plays the live recording of a direct turn on 2.1.289: an edit, a shell
 # command, and Claude Code's own last message, with no Argonauts schema.
 

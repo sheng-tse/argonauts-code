@@ -44,7 +44,7 @@ pub fn line(event: &RunEvent) -> Option<String> {
         RunEventKind::Card(card) => card_line(event, card)?,
         RunEventKind::Agent(agent) => agent_line(event, agent)?,
         RunEventKind::Gate(gate) => format!(
-            "{}: gate {} {}: {}",
+            "{}: check {} {}: {}",
             who(event),
             short(&gate.name, SHORT_MAX),
             if gate.passed { "passed" } else { "failed" },
@@ -134,7 +134,7 @@ fn run_line(lifecycle: &RunLifecycle) -> Option<String> {
         RunLifecycle::ApprovalModeChanged { mode, .. } => {
             format!("approval mode is now {}", name(mode))
         }
-        RunLifecycle::Parked { reason, .. } => format!("the run parked: {}", name(reason)),
+        RunLifecycle::Parked { reason, .. } => format!("the run is waiting: {}", name(reason)),
         RunLifecycle::Finished { outcome, .. } => format!("the run finished: {}", name(outcome)),
         RunLifecycle::PauseCancelled
         | RunLifecycle::Snapshot(_)
@@ -350,7 +350,7 @@ fn checkpoint_line(checkpoint: &CheckpointEvent) -> Option<String> {
                 ""
             };
             format!(
-                "{} checkpoint {} opened{waits}",
+                "{} approval {} opened{waits}",
                 name(&opened.kind),
                 opened.id
             )
@@ -376,7 +376,7 @@ fn checkpoint_line(checkpoint: &CheckpointEvent) -> Option<String> {
 fn handoff_line(handoff: &HandoffEvent) -> Option<String> {
     Some(match handoff {
         HandoffEvent::Needed(plan) => format!(
-            "{}: {} stopped ({}), so it needs a handoff",
+            "{}: {} stopped ({}), so it needs a fallback",
             plan.card,
             plan.stopped,
             short(&plan.reason, SHORT_MAX)
@@ -398,8 +398,8 @@ fn vendor_line(vendor: &VendorEvent) -> Option<String> {
                 .map(|used| format!(", {:.0}% used", used * 100.0))
                 .unwrap_or_default();
             match reading.status {
-                QuotaStatus::Warning => format!("{} is low on quota{used}", reading.vendor),
-                QuotaStatus::Rejected => format!("{} is out of quota{used}", reading.vendor),
+                QuotaStatus::Warning => format!("{} is low on plan usage{used}", reading.vendor),
+                QuotaStatus::Rejected => format!("{} is out of plan usage{used}", reading.vendor),
                 QuotaStatus::Allowed | QuotaStatus::Unknown => return None,
             }
         }
@@ -412,12 +412,12 @@ fn vendor_line(vendor: &VendorEvent) -> Option<String> {
             match health.state {
                 HealthState::Down => format!("{} is down{reason}", health.vendor),
                 HealthState::Degraded => format!("{} is degraded{reason}", health.vendor),
-                HealthState::Testing => format!("{} gets one test card", health.vendor),
+                HealthState::Testing => format!("{} gets one test task", health.vendor),
                 HealthState::Healthy => format!("{} is healthy again", health.vendor),
             }
         }
         VendorEvent::Disabled { vendor, reason } => format!(
-            "{vendor} is disabled for new cards: {}",
+            "{vendor} is disabled for new tasks: {}",
             short(reason, SHORT_MAX)
         ),
     })
@@ -432,12 +432,12 @@ fn budget_line(budget: &BudgetEvent) -> Option<String> {
         ),
         BudgetEvent::Hit {
             card, dimension, ..
-        } => format!("{card} hit its {} budget", name(dimension)),
+        } => format!("{card} hit its {} limit", name(dimension)),
         BudgetEvent::Extended { card, by, .. } => {
-            format!("{card} got more budget from {}", party(by))
+            format!("{card} got more limit from {}", party(by))
         }
         BudgetEvent::Deferred { cards } => {
-            format!("{} cards wait for budget", cards.len())
+            format!("{} tasks wait for limit", cards.len())
         }
     })
 }
@@ -453,11 +453,11 @@ fn who(event: &RunEvent) -> String {
 
 fn party(party: &Party) -> String {
     match party {
-        Party::User => "you".to_owned(),
+        Party::User | Party::Declined => "you".to_owned(),
         Party::Rules => "your rules".to_owned(),
         Party::Approver { model } => format!("the approver {model}"),
         Party::Config => "a setting".to_owned(),
-        Party::FullAuto => "full auto".to_owned(),
+        Party::Autopilot => "autopilot".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => worker.to_string(),
         // The name is the client's own, so code says it's a front end: a client calling
@@ -613,9 +613,9 @@ mod tests {
         ] {
             assert!(!all.contains(hidden), "{hidden:?} leaked into:\n{all}");
         }
-        assert!(all.contains("card-001 ran Read"), "{all}");
+        assert!(all.contains("task-001 ran Read"), "{all}");
         assert!(
-            all.contains("gate tests failed: 41 passed, 1 failed"),
+            all.contains("check tests failed: 41 passed, 1 failed"),
             "{all}"
         );
         assert!(all.contains("[redacted"), "{all}");
@@ -716,7 +716,7 @@ mod tests {
         };
         assert_eq!(
             line(&quota(QuotaStatus::Warning)).as_deref(),
-            Some("codex is low on quota, 92% used")
+            Some("codex is low on plan usage, 92% used")
         );
         assert_eq!(line(&quota(QuotaStatus::Allowed)), None);
         let handed = event(RunEventKind::Handoff(HandoffEvent::HandedOff {
@@ -728,7 +728,7 @@ mod tests {
         }));
         assert_eq!(
             line(&handed).as_deref(),
-            Some("card-002 handed off to claude-code/haiku by your rules")
+            Some("task-002 handed off to claude-code/haiku by your rules")
         );
     }
 
@@ -739,7 +739,7 @@ mod tests {
             "title": "Fix login test",
             "mode": "solo",
             "forced": false,
-            "preset": "default",
+            "workflow": "default",
             "repo_root": "/repo",
             "base_commit": "abc",
             "uncommitted": [],

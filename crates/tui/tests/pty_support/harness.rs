@@ -120,12 +120,12 @@ impl Launch {
     }
 
     pub fn start(self) -> Harness {
-        let dir = tempfile::tempdir().expect("making the harness folder");
+        let dir = tempfile::tempdir().expect("making the CLI folder");
         let home = dir.path().join("home");
         let work = dir.path().join("work");
         let signals = dir.path().join("signals");
         for folder in [&home, &work, &signals] {
-            fs::create_dir_all(folder).expect("making the harness folders");
+            fs::create_dir_all(folder).expect("making the CLI folders");
         }
         for (path, contents) in &self.home_files {
             let file = home.join(path);
@@ -185,7 +185,7 @@ impl Launch {
         if self.unanswered {
             command = command.unanswered();
         }
-        let pty = Pty::spawn(command).expect("starting the harness in a pty");
+        let pty = Pty::spawn(command).expect("starting the CLI in a pty");
         let name = self.name.unwrap_or_else(test_name);
         Harness {
             pty,
@@ -261,7 +261,7 @@ impl Harness {
     }
 
     pub fn send(&mut self, text: &str) {
-        self.pty.send(text).expect("typing into the harness");
+        self.pty.send(text).expect("typing into the CLI");
     }
 
     pub fn press(&mut self, key: Key) {
@@ -284,9 +284,7 @@ impl Harness {
 
     /// Writes the text in one go, as a terminal without bracketed paste delivers a paste.
     pub fn send_at_once(&mut self, text: &str) {
-        self.pty
-            .send_at_once(text)
-            .expect("typing into the harness");
+        self.pty.send_at_once(text).expect("typing into the CLI");
     }
 
     pub fn screen(&self) -> Screen {
@@ -390,7 +388,7 @@ impl Harness {
         if Instant::now() >= deadline {
             Some("timed out")
         } else if self.exited() {
-            Some("the harness exited")
+            Some("the CLI exited")
         } else {
             None
         }
@@ -421,7 +419,7 @@ impl Harness {
         let text = fs::read_to_string(&self.commands).unwrap_or_default();
         text.lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).expect("the harness writes JSON lines"))
+            .map(|line| serde_json::from_str(line).expect("the CLI writes JSON lines"))
             .collect()
     }
 
@@ -492,7 +490,7 @@ impl Harness {
 
     /// The harness's process id. Started from a shell, it is the shell's.
     pub fn pid(&self) -> u32 {
-        self.pty.pid().expect("the harness has a process id")
+        self.pty.pid().expect("the CLI has a process id")
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {

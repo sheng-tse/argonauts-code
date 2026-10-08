@@ -6,14 +6,14 @@ expression: "picker_lines(picker, width)"
   Permissions
   For every agent, unless its role sets its own. Pick one, then where to save it
 
-  ❯ 1. Whose rules guard the agents          Argonauts' (OS sandbox) · built-in
-    2. Internet for agents' commands         on · built-in
-    3. Agents can open each other's copies   no · built-in
-    4. Agents make their own commits         yes · built-in
-    5. Refuse to start without a sandbox     yes · built-in
-    6. Daily spend cap                       50.0 · everywhere (global)
-    7. Default agent                         same as every agent
-  ↓ 8. owner                                 Its own: rules each AI tool's own · internet off
+  ❯ 1. Whose rules guard the agents        Argonauts' (OS sandbox) · built-in
+    2. Internet for agents' commands       on · built-in
+    3. Agents see each other's worktrees   no · built-in
+    4. Agents make their own commits       yes · built-in
+    5. Refuse to start without a sandbox   yes · built-in
+    6. Daily spend cap                     50.0 · everywhere (global)
+    7. Main agent                          same as every agent
+  ↓ 8. worker                              Its own: rules each AI tool's own · internet off
     … +1 more
 
   Enter to choose · ↑↓ to move · type to filter · Esc to close

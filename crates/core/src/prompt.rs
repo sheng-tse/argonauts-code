@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::card::Card;
 
 /// The fixed message the conductor sends when a card's budget is nearly spent.
-pub const WRAP_UP_MESSAGE: &str = "Your budget for this task is almost used up. Don't start anything new. \
+pub const WRAP_UP_MESSAGE: &str = "Your limit for this task is almost used up. Don't start anything new. \
 Finish the step you are on, then end with your final report as one JSON object that matches the report schema.";
 
 /// Renders a solo card's prompt from the task, the rules, and the report schema.

@@ -2,7 +2,7 @@
 //!
 //! Every step is idempotent, so a replayed log never merges twice or sends a message twice.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -77,6 +77,22 @@ pub struct RepoContext {
     /// `<worktrees>/base`, detached at the run's base commit, where every read-only session
     /// works. The main checkout, with its uncommitted files, is only for chat and triage.
     pub base_worktree: PathBuf,
+}
+
+impl RepoContext {
+    /// `~/.argonauts/state/<repo>`, which holds the run's folder.
+    pub fn state_dir(&self) -> &Path {
+        self.run_dir
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(&self.run_dir)
+    }
+
+    /// The hidden history `root` works with when it has no git of its own. Git calls for
+    /// `root` must name it, since nothing in the folder points there.
+    pub fn hidden_git(&self) -> Option<PathBuf> {
+        crate::hidden_git::of(&self.root, self.state_dir())
+    }
 }
 
 /// Trait objects so tests can swap in fakes.

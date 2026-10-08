@@ -1,0 +1,37 @@
+# Council: no single planner. Also called multi-agent debate.
+name  = "council"
+about = "No single planner: everyone proposes and challenges, the judge decides (the default)"
+adapt = true
+
+[[step]]
+name        = "Propose"
+role        = "workers"
+count       = "all"          # every worker writes a plan
+independent = true           # without seeing the others'
+
+[[step]]
+name  = "Challenge"
+role  = "workers"
+count = "all"
+does  = "Argue against the other proposals. Their authors are hidden."
+
+[[step]]
+name = "Decide"
+role = "judge"
+does = "Pick the strongest plan or join the best parts. Split it into tasks."
+
+[[step]]
+name     = "Build"
+role     = "workers"
+for_each = "task"
+
+[[step]]
+name           = "Cross-review"
+role           = "workers"
+for_each       = "task"
+not_the_author = true        # each task goes to a worker who didn't build it
+send_back_to   = "Build"
+
+[[step]]
+name = "Sign off"
+role = "judge"

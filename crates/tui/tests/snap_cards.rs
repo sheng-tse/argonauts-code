@@ -51,7 +51,7 @@ fn run_id() -> RunId {
 }
 
 fn card(n: u32) -> CardId {
-    CardId::new(format!("card-{n:03}")).unwrap()
+    CardId::new(format!("task-{n:03}")).unwrap()
 }
 
 fn worker(text: &str) -> WorkerRef {
@@ -419,7 +419,7 @@ fn merge() -> CheckpointOpened {
             option('p', "Open a pull request", AnswerAction::PullRequest),
             option(
                 'b',
-                "Request changes on some cards",
+                "Request changes on some tasks",
                 AnswerAction::RequestChanges,
             ),
             option('k', "Keep the branch", AnswerAction::KeepBranch),
@@ -462,7 +462,7 @@ fn handoff() -> CheckpointOpened {
                     worker: worker("codex/gpt-5.6"),
                 },
             ),
-            "62% left · 9 of 11 passed · ~6% of quota",
+            "62% left · 9 of 11 passed · ~6% of plan usage",
         ),
         detailed(
             option(
@@ -472,7 +472,7 @@ fn handoff() -> CheckpointOpened {
                     worker: worker("antigravity-cli/gemini-3.6"),
                 },
             ),
-            "10% left · 4 of 6 passed · ~9% of quota, may run out",
+            "10% left · 4 of 6 passed · ~9% of plan usage, may run out",
         ),
         detailed(
             option(
@@ -491,7 +491,7 @@ fn handoff() -> CheckpointOpened {
     ];
     let mut opened = checkpoint(
         CheckpointKind::Handoff,
-        "Handoff · card-003 Middleware · needs you",
+        "Fallback · task-003 Middleware · needs you",
         CheckpointPacket::Handoff(HandoffPlan {
             card: card(3),
             title: "Middleware".into(),
@@ -526,17 +526,17 @@ fn vendor_down() -> CheckpointOpened {
             evidence: "overload errors on 3 sessions in 2 min".into(),
             test_at: Some(datetime!(2026-09-30 14:40 UTC)),
             paused: vec![
-                paused(3, "Middleware", RoleName::Owner),
+                paused(3, "Middleware", RoleName::Worker),
                 paused(2, "Redis store", RoleName::Reviewer),
             ],
         }),
         vec![
             option(
                 'a',
-                "One agent for every paused card",
+                "One agent for every paused task",
                 AnswerAction::OneForAll,
             ),
-            option('e', "Choose per card", AnswerAction::PerCard),
+            option('e', "Choose per task", AnswerAction::PerTask),
             option('w', "Wait for Claude Code", AnswerAction::Wait),
         ],
     )
@@ -557,7 +557,7 @@ fn budget() -> CheckpointOpened {
     };
     checkpoint(
         CheckpointKind::Budget,
-        "card-002 reached its budget",
+        "task-002 reached its limit",
         CheckpointPacket::Budget(BudgetPacket {
             card: Some(card(2)),
             status,
@@ -565,10 +565,10 @@ fn budget() -> CheckpointOpened {
             reserve_left: Some(usd(1.0)),
         }),
         vec![
-            option('m', "More budget", AnswerAction::MoreBudget),
+            option('m', "More limit", AnswerAction::MoreBudget),
             option('h', "Hand it off", AnswerAction::HandOff),
             option('t', "Take over myself", AnswerAction::TakeOver),
-            option('x', "Stop and escalate", AnswerAction::Escalate),
+            option('x', "Stop and ask me", AnswerAction::Escalate),
             option('d', "Show the details", AnswerAction::ShowDiff),
         ],
     )
@@ -577,7 +577,7 @@ fn budget() -> CheckpointOpened {
 fn escalation() -> CheckpointOpened {
     checkpoint(
         CheckpointKind::Escalation,
-        "card-004 is stuck after 3 attempts",
+        "task-004 is stuck after 3 attempts",
         CheckpointPacket::Escalation(EscalationPacket {
             card: card(4),
             title: "Parser".into(),
@@ -595,7 +595,7 @@ fn escalation() -> CheckpointOpened {
             option('s', "Split", AnswerAction::Split),
             option('t', "Take over myself", AnswerAction::TakeOver),
             option('f', "Defer it", AnswerAction::Defer),
-            option('x', "Cancel the card", AnswerAction::Cancel),
+            option('x', "Cancel the task", AnswerAction::Cancel),
             option('d', "Show the details", AnswerAction::ShowDiff),
         ],
     )
@@ -604,7 +604,7 @@ fn escalation() -> CheckpointOpened {
 fn original_returned() -> CheckpointOpened {
     let mut opened = checkpoint(
         CheckpointKind::OriginalReturned,
-        "Claude Code is back · card-002 (Redis store) was continued by codex/gpt-5.6",
+        "Claude Code is back · task-002 (Redis store) was continued by codex/gpt-5.6",
         CheckpointPacket::OriginalReturned(OriginalReturnedPacket {
             card: card(2),
             title: "Redis store".into(),
@@ -628,12 +628,12 @@ fn original_returned() -> CheckpointOpened {
             ),
             option(
                 'o',
-                "Give the card back to claude-code/opus",
+                "Give the task back to claude-code/opus",
                 AnswerAction::HandBack,
             ),
             option(
                 'u',
-                "Redo from handoff-1 with claude-code/opus",
+                "Redo from fallback-1 with claude-code/opus",
                 AnswerAction::Redo,
             ),
             option(
@@ -642,7 +642,11 @@ fn original_returned() -> CheckpointOpened {
                 AnswerAction::KeepReplacement,
             ),
             option('t', "Take over myself", AnswerAction::TakeOver),
-            option('d', "Show the diff since handoff-1", AnswerAction::ShowDiff),
+            option(
+                'd',
+                "Show the diff since fallback-1",
+                AnswerAction::ShowDiff,
+            ),
         ],
     );
     opened.card = Some(card(2));
@@ -719,7 +723,7 @@ fn choices() -> Vec<AppChoice> {
         ),
         app_choice(
             ChoiceKind::DetectedGates,
-            "Use these gate commands?",
+            "Use these check commands?",
             &[
                 "cargo fmt --check",
                 "cargo clippy -- -D warnings",
@@ -733,24 +737,24 @@ fn choices() -> Vec<AppChoice> {
         ),
         app_choice(
             ChoiceKind::TermsNote,
-            "Welcome to Argonauts",
+            "Welcome to Argonauts Code",
             &["Argonauts runs the coding agents you already use as one crew."],
             vec![option('c', "Continue", AnswerAction::Approve)],
         ),
         app_choice(
             ChoiceKind::Init,
             "How should the crew work?",
-            &["You can change it later with /preset."],
+            &["You can change it later with /workflow."],
             vec![
-                recommended(choose('a', "peer-crew", "peer-crew")),
-                choose('b', "coordinated-crew", "coordinated-crew"),
+                recommended(choose('a', "council", "council")),
+                choose('b', "orchestrator", "orchestrator"),
                 choose('c', "solo", "solo"),
             ],
         ),
         app_choice(
             ChoiceKind::ConfirmRevert,
-            "Revert card-002 to handoff-1?",
-            &["3 commits since handoff-1 move to argonauts/run-01/card-002-replaced-1"],
+            "Revert task-002 to fallback-1?",
+            &["3 commits since fallback-1 move to argonauts/run-01/task-002-replaced-1"],
             vec![
                 option('y', "Revert", AnswerAction::Approve),
                 option('d', "Show the diff", AnswerAction::ShowDiff),
@@ -772,7 +776,7 @@ fn guided_steps() -> Vec<AppChoice> {
         vec![
             recommended(detailed(
                 choose('a', "Auto", "auto"),
-                "Rules and a reviewer from another AI company decide, and you're asked when a \
+                "Rules and a reviewer from another provider decide, and you're asked when a \
                  rule fails.",
             )),
             detailed(
@@ -780,7 +784,7 @@ fn guided_steps() -> Vec<AppChoice> {
                 "You approve the goal, the plan, and every merge.",
             ),
             detailed(
-                choose('c', "Shadow", "shadow"),
+                choose('c', "Shadow", "auto_preview"),
                 "You approve, and Argonauts learns what it would have decided.",
             ),
         ],
@@ -904,7 +908,7 @@ fn goal_card() {
 /// The bottom region with a goal question in it, under an input labeled with your preset.
 fn bottom_with(card: CardPrompt) -> argonauts_tui::bottom::BottomState {
     let mut bottom = argonauts_tui::bottom::BottomState::new();
-    bottom.composer.label = Some("peer-crew · all hands".into());
+    bottom.composer.label = Some("council · ultracode".into());
     bottom.card = Some(card);
     bottom
 }
@@ -915,8 +919,8 @@ fn bottom_lines(bottom: &argonauts_tui::bottom::BottomState, width: u16) -> Vec<
 }
 
 /// While a goal question holds the keys it stands in for the input, as Claude Code's
-/// permission prompts do: the input's rules and prompt line go, and nothing else moves. Set
-/// aside, it shrinks to one line and the input comes back.
+/// permission prompts do: the input's rules and prompt line go, and nothing else moves. Handed
+/// on, it leaves the screen and the input comes back.
 #[test]
 fn a_goal_question_holding_the_keys_stands_in_for_the_input() {
     let opened = goal_question();
@@ -925,7 +929,7 @@ fn a_goal_question_holding_the_keys_stands_in_for_the_input() {
     let mut aside = focused(checkpoint_card(1, &opened, None));
     let esc = crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Esc);
     aside.handle_key(esc);
-    assert!(aside.pinned);
+    assert!(aside.dismissed);
     let aside = bottom_with(aside);
     for width in WIDTHS {
         for bottom in [&holding, &waiting, &aside] {
@@ -935,8 +939,8 @@ fn a_goal_question_holding_the_keys_stands_in_for_the_input() {
         }
         let held = text(&bottom_lines(&holding, width));
         let input = text(&bottom_lines(&waiting, width));
-        assert!(!held.contains("peer-crew · all hands ─"), "{held}");
-        assert!(input.contains("peer-crew · all hands ─"), "{input}");
+        assert!(!held.contains("council · ultracode ─"), "{held}");
+        assert!(input.contains("council · ultracode ─"), "{input}");
         // Only the input's rows go: its two rules and its prompt line.
         assert_eq!(
             input.lines().count() - held.lines().count(),
@@ -1075,10 +1079,10 @@ fn plan_with_workflow() -> CheckpointOpened {
 
     let mut opened = plan();
     let CheckpointPacket::Plan(packet) = &mut opened.packet else {
-        unreachable!("a plan checkpoint")
+        unreachable!("a plan approval")
     };
     let workflow = serde_json::from_value(serde_json::json!({
-        "name": "peer-crew",
+        "name": "council",
         "description": "Peers draft plans blind and debate only where they disagree",
         "phases": [
             {"name": "Goal", "standard": "understand", "steps": [{
@@ -1097,13 +1101,13 @@ fn plan_with_workflow() -> CheckpointOpened {
                     {"kind": "checkpoint", "checkpoint": "plan"}
                 ]
             }]},
-            {"name": "Build", "standard": "do", "steps": [{"kind": "build", "role": "owner"}]},
+            {"name": "Build", "standard": "do", "steps": [{"kind": "build", "role": "worker"}]},
             {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
         ]
     }))
     .expect("a workflow");
     packet.workflow = Some(PlanWorkflow {
-        from: Some(WorkflowRef::new("peer-crew")),
+        from: Some(WorkflowRef::new("council")),
         why: Some("A security-labeled API feature: blind drafts and cross-judging fit it.".into()),
         workflow,
     });
@@ -1336,7 +1340,7 @@ fn money_run() -> RunState {
         key.clone(),
         worker("claude-code/claude-haiku-4-5"),
         "claude-code",
-        RoleName::Owner,
+        RoleName::Worker,
         datetime!(2026-10-04 9:00 UTC),
     );
     session.card = Some(card(1));
@@ -1361,7 +1365,7 @@ fn agent_question(choices: &[&str], own_answer: bool) -> CheckpointOpened {
     }
     let mut opened = checkpoint(
         CheckpointKind::Question,
-        "Question from card-001",
+        "Question from task-001",
         CheckpointPacket::Question(QuestionPacket {
             from: worker("claude-code"),
             card: card(1),
@@ -1405,8 +1409,8 @@ fn an_agent_question_shows_only_what_answers_it() {
         }
         for width in [80, 100, 120] {
             let shown = text(&bottom_lines(&holding, width));
-            assert!(!shown.contains("card-001"), "{shown}");
-            assert!(!shown.contains("peer-crew · all hands"), "{shown}");
+            assert!(!shown.contains("task-001"), "{shown}");
+            assert!(!shown.contains("council · ultracode"), "{shown}");
             insta::assert_snapshot!(format!("{name}_{width}"), shown);
         }
     }
@@ -1444,23 +1448,23 @@ fn an_agent_question_shows_only_what_answers_it() {
 fn the_go_ahead_holds_the_keys_with_the_input_hidden() {
     let mut opened = goal_approval();
     opened.title = "Run this workflow?".into();
-    opened.mode = ApprovalMode::FullAuto;
+    opened.mode = ApprovalMode::Autopilot;
     opened.decide_with = DecideWith::RulesAndModel;
     opened.free_text = FreeText::None;
     opened.options = vec![
         option('y', "Yes, run it", AnswerAction::Approve),
         choose(
             'l',
-            "Yes, and let the lead answer",
-            "Yes, and let the lead answer",
+            "Yes, and let the main agent answer",
+            "Yes, and let the main agent answer",
         ),
         option('b', "Send back for another round", AnswerAction::SendBack),
         option('d', "Show the goal", AnswerAction::ShowDiff),
         option('x', "No, stop here", AnswerAction::Abandon),
     ];
     let mut bottom = argonauts_tui::model::BottomState::new();
-    bottom.composer.label = Some("peer-crew".into());
-    bottom.mode.approval = argonauts_tui::bottom::ApprovalMode::FullAuto;
+    bottom.composer.label = Some("council".into());
+    bottom.mode.approval = argonauts_tui::bottom::ApprovalMode::Autopilot;
     bottom.card = Some(checkpoint_card(1, &opened, None));
     assert!(bottom.hand_keys_to_card(std::time::Instant::now()));
     let theme = theme();
@@ -1468,7 +1472,7 @@ fn the_go_ahead_holds_the_keys_with_the_input_hidden() {
         let view = bottom.render(&still(&theme, width));
         assert_fits(&view.lines, width);
         let shown = text(&view.lines);
-        assert!(!shown.contains("to answer the card"), "{shown}");
+        assert!(!shown.contains("to answer the question"), "{shown}");
         assert!(!shown.lines().any(|row| row.starts_with('❯')), "{shown}");
         assert!(shown.contains("❯ 1. Yes, run it"), "{shown}");
         insta::assert_snapshot!(format!("go_ahead_holds_the_keys_{width}"), shown);

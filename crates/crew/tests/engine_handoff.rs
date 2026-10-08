@@ -3,7 +3,7 @@
 //! is back. Each test drives the handoff code on a real temp repo through the engine's `Host`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, bail, ensure};
@@ -35,12 +35,12 @@ use argonauts_core::names::{CheckpointId, RoleName, WorkerRef, WorkflowId};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::handoff::{
-    FallbackEntry, HandoffMode, HandoffSettings, HandoffStrategy, OnReturn, UnknownTier,
-    VendorReplacement,
+    CrewRole, FallbackEntry, FallbackSettings, HandoffMode, HandoffSettings, HandoffStrategy,
+    OnReturn, Pick, UnknownTier, VendorReplacement,
 };
-use argonauts_core::settings::roles::RoleSettings;
+use argonauts_core::worker::WorkerEvent;
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
-use argonauts_core::{CardId, CommitInfo, DiffStat, RepoId, RunId, Spend};
+use argonauts_core::{AgentEvent, CardId, CommitInfo, DiffStat, RepoId, RunId, Spend};
 use argonauts_crew::checkpoints;
 use argonauts_crew::engine::commands;
 use argonauts_crew::engine::host::Host;
@@ -200,6 +200,17 @@ impl Bench {
             .read(|state| state.cards.get(card).and_then(|record| record.debt.clone()))
     }
 
+    fn notes(&self) -> Vec<String> {
+        self.sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                RunEventKind::Note(note) => Some(note.text),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn card_events(&self) -> Vec<CardEvent> {
         self.sink
             .events()
@@ -315,7 +326,7 @@ impl Bench {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        bail!("no {kind:?} checkpoint opened")
+        bail!("no {kind:?} approval opened")
     }
 
     fn answer(&self, opened: &CheckpointOpened, action: AnswerAction) -> anyhow::Result<()> {
@@ -352,7 +363,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         // Solo, so build sessions need only the approved goal, not a plan as well.
         mode: RunMode::Solo,
         forced: true,
-        preset: "default".to_owned(),
+        workflow: "default".to_owned(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -369,6 +380,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         version: "0.0.1".to_owned(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     })))
 }
 
@@ -426,7 +438,7 @@ fn build_step() -> anyhow::Result<RunEventKind> {
 fn spec(n: u32) -> CardSpec {
     CardSpec {
         id: card(n),
-        title: format!("Card {n}"),
+        title: format!("Task {n}"),
         task: "Build the Redis store".to_owned(),
         kind: CardKind::Build,
         owned_paths: Vec::new(),
@@ -476,7 +488,7 @@ fn tag(card: &CardId, n: u32) -> CheckpointTag {
 fn packet(card: &CardId) -> HandoffPacket {
     let spec = spec(
         card.as_str()
-            .trim_start_matches("card-")
+            .trim_start_matches("task-")
             .parse()
             .unwrap_or(1),
     );
@@ -551,12 +563,9 @@ struct WalkingPlanner {
 
 impl WalkingPlanner {
     fn applied(&self, query: &CandidateQuery) -> argonauts_core::settings::handoff::AppliedHandoff {
-        let role = self
-            .settings
-            .roles
-            .get(&query.role)
-            .map(|role| &role.handoff);
-        HandoffSettings::applied(&self.settings.handoff, role, &query.stopped.vendor())
+        self.settings
+            .fallback
+            .applied_to(query.role, &query.stopped.vendor())
     }
 }
 
@@ -577,7 +586,8 @@ impl HandoffPlanner for WalkingPlanner {
         let applied = self.applied(query);
         Shortlist {
             strategy: self.strategy.unwrap_or(applied.strategy),
-            race_count: applied.race_count,
+            race_count: applied.together,
+            pick: Pick::FirstPassing,
             candidates: self.candidates(query),
         }
     }
@@ -588,13 +598,6 @@ fn entries(workers: &[&str]) -> Vec<FallbackEntry> {
         .iter()
         .map(|name| FallbackEntry::Worker(worker(name)))
         .collect()
-}
-
-fn owner_table(handoff: HandoffSettings) -> RoleSettings {
-    RoleSettings {
-        handoff,
-        ..RoleSettings::default()
-    }
 }
 
 fn report(summary: &str) -> FakeSession {
@@ -632,7 +635,11 @@ fn verdict(verdict: &str, summary: &str) -> FakeSession {
 fn slow_candidate(name: &str, family: &str, file: &'static str) -> FakeWorker {
     FakeWorker::harness(name, family).respond_with(move |spec| {
         let _ = std::fs::write(spec.workdir.join(file), "// half done\n");
-        FakeSession::until_stopped(Vec::new())
+        // Written with its edit tool, as a CLI reports it.
+        FakeSession::until_stopped(vec![WorkerEvent::Agent(AgentEvent::FileChanged {
+            path: file.to_owned(),
+            kind: "add".to_owned(),
+        })])
     })
 }
 
@@ -654,7 +661,7 @@ async fn handoff_strategy_first() -> anyhow::Result<()> {
         }
     )));
     // An unknown tier counts as weaker, so the card owes a review by its original.
-    let debt = bench.debt(&c1).context("debt after the first handoff")?;
+    let debt = bench.debt(&c1).context("debt after the first fallback")?;
     assert_eq!(
         (debt.since, &debt.by, &debt.needs),
         (1, &worker(CODEX), &worker(OPUS))
@@ -666,7 +673,7 @@ async fn handoff_strategy_first() -> anyhow::Result<()> {
     bench.stop_again(&c1)?;
     bench.hand_off(&c1, AGY).await?;
     assert_eq!(bench.owner(&c1), Some(worker(AGY)));
-    let debt = bench.debt(&c1).context("debt after the second handoff")?;
+    let debt = bench.debt(&c1).context("debt after the second fallback")?;
     assert_eq!(
         (debt.since, &debt.by, &debt.needs),
         (1, &worker(AGY), &worker(OPUS))
@@ -677,11 +684,10 @@ async fn handoff_strategy_first() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn handoff_strategy_spread() -> anyhow::Result<()> {
+    let mut fallback = FallbackSettings::built_in();
+    fallback.order = entries(&[CODEX, AGY]);
     let settings = Settings {
-        handoff: HandoffSettings {
-            fallback: entries(&[CODEX, AGY]),
-            ..HandoffSettings::built_in()
-        },
+        fallback,
         ..Settings::default()
     };
     let mut setup = Setup::new(settings.clone());
@@ -715,6 +721,7 @@ async fn handoff_strategy_race() -> anyhow::Result<()> {
     let c1 = card(1);
     let action = RecoveryAction::Race {
         to: vec![worker(CODEX), worker(AGY)],
+        pick: Pick::FirstPassing,
         packet: Box::new(packet(&c1)),
         checkpoint: Some(tag(&c1, 1)),
     };
@@ -752,6 +759,7 @@ async fn handoff_race_winner_passes_gates_and_review() -> anyhow::Result<()> {
     let c1 = card(1);
     let action = RecoveryAction::Race {
         to: vec![worker(CODEX), worker(AGY)],
+        pick: Pick::FirstPassing,
         packet: Box::new(packet(&c1)),
         checkpoint: None,
     };
@@ -761,6 +769,126 @@ async fn handoff_race_winner_passes_gates_and_review() -> anyhow::Result<()> {
     assert_eq!(
         bench.reviewed_by(&c1),
         vec![worker(GEMINI_REVIEWER), worker(GPT_REVIEWER)]
+    );
+    // The transcript says who took it together, and who passed.
+    let said = bench.notes();
+    let both = said
+        .iter()
+        .find(|note| note.contains("both take"))
+        .context("no line on who takes it")?;
+    assert!(
+        both.ends_with("· the first to pass the checks wins · /fallback changes this"),
+        "{both}"
+    );
+    assert!(
+        said.iter()
+            .any(|note| note.contains("passed first") && note.ends_with("attempt stopped")),
+        "{said:?}"
+    );
+    Ok(())
+}
+
+/// `pick = "judge"`: every fallback runs to its end, and the judge picks among those that
+/// passed. It reads their diffs by number, never by name.
+#[tokio::test]
+async fn together_with_a_judge_keeps_the_attempt_the_judge_picks() -> anyhow::Result<()> {
+    let mut settings = Settings::default();
+    settings.roles.entry(RoleName::Judge).or_default().workers = vec![worker(OPUS)];
+    let bench = Bench::with(Setup::new(settings)).await?;
+    // Codex passes first, and the judge still prefers the slower attempt.
+    let codex = FakeWorker::harness(CODEX, "gpt").then(report("Store done fast"));
+    let agy = FakeWorker::harness(AGY, "gemini")
+        .then(report("Store done").with_delay(Duration::from_millis(300)));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let judge = FakeWorker::harness(OPUS, "claude").respond_with({
+        let asked = asked.clone();
+        move |spec| {
+            let labels: Vec<String> = spec.prompt.iter().map(|part| part.label.clone()).collect();
+            asked.lock().unwrap().push((spec.step, labels));
+            FakeSession::structured(json!({"pick": 2, "why": "It keeps writes in order."}))
+        }
+    });
+    bench.services.workers.add(codex);
+    bench.services.workers.add(agy);
+    bench.services.workers.add(judge);
+    bench
+        .services
+        .workers
+        .add(FakeWorker::harness(GEMINI_REVIEWER, "gemini").then(approval()));
+    bench
+        .services
+        .workers
+        .add(FakeWorker::harness(GPT_REVIEWER, "gpt").then(approval()));
+
+    let c1 = card(1);
+    let action = RecoveryAction::Race {
+        to: vec![worker(CODEX), worker(AGY)],
+        pick: Pick::Judge,
+        packet: Box::new(packet(&c1)),
+        checkpoint: None,
+    };
+    handoff::apply(&bench.host, &c1, action).await?;
+
+    assert_eq!(bench.owner(&c1), Some(worker(AGY)));
+    let asked = asked.lock().unwrap();
+    let [(step, labels)] = asked.as_slice() else {
+        anyhow::bail!("the judge was asked {} times", asked.len());
+    };
+    assert_eq!(*step, Some(argonauts_core::steps::StepName::PickAttempt));
+    // Each attempt's diff is a part of its own, numbered and not named.
+    let attempts: Vec<&str> = labels
+        .iter()
+        .map(String::as_str)
+        .filter(|label| label.starts_with("attempt"))
+        .collect();
+    assert_eq!(attempts, ["attempt 1", "attempt 2"], "{labels:?}");
+    let said = bench.notes();
+    assert!(
+        said.iter().any(|note| note.contains("the judge")
+            && note.contains("out of 2 that passed")
+            && note.contains("It keeps writes in order.")),
+        "{said:?}"
+    );
+    Ok(())
+}
+
+/// With no judge to ask, the first attempt that passed is kept, and a note says why.
+#[tokio::test]
+async fn a_judge_that_cannot_answer_leaves_the_first_to_pass() -> anyhow::Result<()> {
+    let mut settings = Settings::default();
+    settings.roles.entry(RoleName::Judge).or_default().workers = vec![worker(OPUS)];
+    let bench = Bench::with(Setup::new(settings)).await?;
+    let codex = FakeWorker::harness(CODEX, "gpt").then(report("Store done fast"));
+    let agy = FakeWorker::harness(AGY, "gemini")
+        .then(report("Store done").with_delay(Duration::from_millis(300)));
+    let judge = FakeWorker::harness(OPUS, "claude").then(FakeSession::ended(EndReason::Crashed {
+        message: "segfault".to_owned(),
+    }));
+    for fake in [
+        codex,
+        agy,
+        judge,
+        FakeWorker::harness(GEMINI_REVIEWER, "gemini").then(approval()),
+        FakeWorker::harness(GPT_REVIEWER, "gpt").then(approval()),
+    ] {
+        bench.services.workers.add(fake);
+    }
+
+    let c1 = card(1);
+    let action = RecoveryAction::Race {
+        to: vec![worker(CODEX), worker(AGY)],
+        pick: Pick::Judge,
+        packet: Box::new(packet(&c1)),
+        checkpoint: None,
+    };
+    handoff::apply(&bench.host, &c1, action).await?;
+
+    assert_eq!(bench.owner(&c1), Some(worker(CODEX)));
+    let said = bench.notes();
+    assert!(
+        said.iter()
+            .any(|note| note.contains("attempt passed first and is kept, since")),
+        "{said:?}"
     );
     Ok(())
 }
@@ -781,6 +909,7 @@ async fn handoff_race_keeps_loser_work() -> anyhow::Result<()> {
 
     let action = RecoveryAction::Race {
         to: vec![worker(CODEX), worker(AGY)],
+        pick: Pick::FirstPassing,
         packet: Box::new(packet(&c1)),
         checkpoint: None,
     };
@@ -830,6 +959,7 @@ async fn a_second_race_never_reuses_attempt_trees() -> anyhow::Result<()> {
     bench.services.workers.add(reviewer);
     let race = || RecoveryAction::Race {
         to: vec![worker(CODEX), worker(AGY)],
+        pick: Pick::FirstPassing,
         packet: Box::new(packet(&c1)),
         checkpoint: None,
     };
@@ -856,7 +986,7 @@ async fn handoff_precedence_every_level_set() -> anyhow::Result<()> {
     let every_level = || {
         let mut settings = Settings::default();
         let mut top = HandoffSettings::built_in();
-        top.fallback = entries(&[&level(5)]);
+        top.order = entries(&[&level(5)]);
         top.replace.insert(
             claude.clone(),
             VendorReplacement {
@@ -865,7 +995,7 @@ async fn handoff_precedence_every_level_set() -> anyhow::Result<()> {
             },
         );
         let mut role = HandoffSettings {
-            fallback: entries(&[&level(3)]),
+            order: entries(&[&level(3)]),
             ..HandoffSettings::default()
         };
         role.replace.insert(
@@ -875,8 +1005,8 @@ async fn handoff_precedence_every_level_set() -> anyhow::Result<()> {
                 ..VendorReplacement::default()
             },
         );
-        settings.handoff = top;
-        settings.roles.insert(RoleName::Owner, owner_table(role));
+        settings.fallback.every_role = top;
+        settings.fallback.roles.insert(CrewRole::Workers, role);
         settings
     };
 
@@ -885,15 +1015,15 @@ async fn handoff_precedence_every_level_set() -> anyhow::Result<()> {
     for expected in 2..=5 {
         let mut settings = every_level();
         if expected > 2
-            && let Some(role) = settings.roles.get_mut(&RoleName::Owner)
+            && let Some(role) = settings.fallback.roles.get_mut(&CrewRole::Workers)
         {
-            role.handoff.replace.clear();
+            role.replace.clear();
         }
         if expected > 3 {
-            settings.roles.remove(&RoleName::Owner);
+            settings.fallback.roles.remove(&CrewRole::Workers);
         }
         if expected > 4 {
-            settings.handoff.replace.clear();
+            settings.fallback.replace.clear();
         }
         let planner = Arc::new(WalkingPlanner {
             settings: settings.clone(),
@@ -903,7 +1033,7 @@ async fn handoff_precedence_every_level_set() -> anyhow::Result<()> {
         setup.planner = Some(planner.clone());
         let bench = Bench::with(setup).await?;
         let record = bench.host.read(|state| state.cards.get(&card(1)).cloned());
-        let record = record.context("card-001")?;
+        let record = record.context("task-001")?;
         let query =
             argonauts_crew::handoff::choose::query(&bench.host, &record, &worker(OPUS), false);
         let proposed = planner.shortlist(&query).candidates;
@@ -925,7 +1055,7 @@ async fn handoff_precedence_every_level_set() -> anyhow::Result<()> {
     let id = CheckpointId::numbered(900);
     let plan = HandoffPlan {
         card: card(1),
-        title: "Card 1".to_owned(),
+        title: "Task 1".to_owned(),
         stopped: worker(OPUS),
         reason: "usage limit".to_owned(),
         resets_at: None,
@@ -942,7 +1072,7 @@ async fn handoff_precedence_every_level_set() -> anyhow::Result<()> {
         RunEventKind::Checkpoint(CheckpointEvent::Opened(Box::new(CheckpointOpened {
             id: id.clone(),
             kind: CheckpointKind::Handoff,
-            title: "claude-code/opus stopped · card-001".to_owned(),
+            title: "claude-code/opus stopped · task-001".to_owned(),
             card: Some(card(1)),
             packet: CheckpointPacket::Handoff(plan),
             evidence_sha256: "e".repeat(64),
@@ -1130,7 +1260,7 @@ async fn revert_undoes_an_integrated_card_on_the_run_branch() -> anyhow::Result<
         &["log", "-1", "--format=%B", &undo],
     )?;
     assert!(
-        message.starts_with("Revert card-001 to handoff-1") && message.contains("Conductor"),
+        message.starts_with("Revert task-001 to fallback-1") && message.contains("Conductor"),
         "{message}"
     );
     assert_eq!(bench.state(&c1), Some(CardState::Integrated));
@@ -1202,7 +1332,7 @@ async fn integrate(bench: &Bench) -> anyhow::Result<PathBuf> {
         "--no-ff",
         "--quiet",
         "-m",
-        "Merge card-001",
+        "Merge task-001",
         &branch(1),
     ];
     git_in(&bench.repo, &integration, &merge)?;
@@ -1294,14 +1424,14 @@ async fn revert_refused_unless_the_card_is_at_rest() -> anyhow::Result<()> {
 /// Hands card-001 to Codex (with debt), and sets the return rule.
 async fn handed_to_codex(on_return: Option<OnReturn>) -> anyhow::Result<Bench> {
     let mut settings = Settings {
-        handoff: HandoffSettings::built_in(),
+        fallback: FallbackSettings::built_in(),
         ..Settings::default()
     };
-    settings.handoff.on_return = on_return.or(settings.handoff.on_return);
+    settings.fallback.on_return = on_return.or(settings.fallback.on_return);
     let bench = Bench::with(Setup::new(settings)).await?;
     bench.hand_off(&card(1), CODEX).await?;
     bench.work("codex.rs", Some(CODEX))?;
-    ensure!(bench.debt(&card(1)).is_some(), "the handoff left no debt");
+    ensure!(bench.debt(&card(1)).is_some(), "the fallback left no debt");
     Ok(bench)
 }
 
@@ -1311,14 +1441,17 @@ async fn handed_to_codex(on_return: Option<OnReturn>) -> anyhow::Result<Bench> {
 #[tokio::test]
 async fn original_back_after_its_quota_reset_leaves_a_notice() -> anyhow::Result<()> {
     let mut settings = Settings {
-        handoff: HandoffSettings::built_in(),
+        fallback: FallbackSettings::built_in(),
         ..Settings::default()
     };
-    settings.handoff.unknown_tier = Some(UnknownTier::Equal);
+    settings.fallback.unknown_tier = Some(UnknownTier::Equal);
     let bench = Bench::with(Setup::new(settings)).await?;
     let c1 = card(1);
     bench.hand_off(&c1, CODEX).await?;
-    ensure!(bench.debt(&c1).is_none(), "a handoff to an equal left debt");
+    ensure!(
+        bench.debt(&c1).is_none(),
+        "a fallback to an equal left debt"
+    );
     let claude = worker(OPUS).vendor();
     let rejected = |resets_at| QuotaReading {
         vendor: claude.clone(),
@@ -1358,7 +1491,7 @@ async fn original_back_after_its_quota_reset_leaves_a_notice() -> anyhow::Result
     assert_eq!(
         notes(),
         [format!(
-            "Claude Code is back · card-001 stays with {CODEX} · /reassign card-001 {OPUS} moves it back"
+            "Claude Code is back · task-001 stays with {CODEX} · /reassign task-001 {OPUS} moves it back"
         )]
     );
     assert_eq!(bench.owner(&c1), Some(worker(CODEX)));

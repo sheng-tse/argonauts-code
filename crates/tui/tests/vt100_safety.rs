@@ -95,7 +95,7 @@ fn agent_escape_cannot_set_title_or_clear() {
     model
         .history
         .push(AssistantMessage::new(format!("Answer {HOSTILE}")));
-    let mut block = ToolCall::agent("GPT on Codex", None, "owner", HOSTILE);
+    let mut block = ToolCall::agent("GPT on Codex", None, "worker", HOSTILE);
     block.push(ToolItem::text(format!("output {HOSTILE}")));
     model.history.push_active(block);
     let mut ui = Ui::new(terminal, theme(), model, now);

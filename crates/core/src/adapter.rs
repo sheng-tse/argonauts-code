@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::driver::SessionDriver;
 use crate::event::AgentEvent;
+use crate::events::context::ContextDetail;
 use crate::keywords::Keyword;
-use crate::limits::QuotaReading;
+use crate::limits::{QuotaAnswer, QuotaReading};
 use crate::screen::ScreenRequest;
 use crate::session::{CommandSpec, SessionRequest};
 use crate::settings::sessions::{Compaction, NativeFanout};
@@ -26,6 +27,21 @@ pub trait StreamParser: Send {
     fn parse_stderr_line(&mut self, line: &str) -> Vec<AgentEvent>;
     /// Called once after the process exits, to flush state or report a missing result.
     fn finish(&mut self, exit_code: Option<i32>) -> Vec<AgentEvent>;
+    /// The stdin line that stops one of the session's own subagents, by the id its
+    /// `Subagent` updates carry. `None` where the CLI has no way to stop one alone, or the
+    /// subagent isn't one it can stop yet. The parser answers because it's what has seen the
+    /// ids the CLI knows its subagents by.
+    fn stop_subagent_line(&self, id: &str) -> Option<String> {
+        let _ = id;
+        None
+    }
+    /// The stdin line that stops the running turn alone, so what the CLI runs in the
+    /// background, its own subagents and workflows, goes on. `None` where the CLI has no such
+    /// request or this session couldn't spare them, and the whole session stops instead. The
+    /// parser answers because it's what has seen how the session opened.
+    fn stop_turn_line(&self) -> Option<String> {
+        None
+    }
 }
 
 /// One vendor CLI, described well enough to run it headlessly.
@@ -99,6 +115,12 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// The line that asks for the context by category. `None` where the CLI can't say.
+    fn context_usage_line(&self, detail: ContextDetail) -> Option<String> {
+        let _ = detail;
+        None
+    }
+
     /// A command that reads quota without spending any, such as `agy -p "/usage"`. `model` is
     /// the one the vendor's sessions use, for a CLI that names a model on every call.
     fn quota_probe(&self, workdir: &Path, model: Option<&str>) -> Option<CommandSpec> {
@@ -111,12 +133,22 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// Every window the probe's answer reports, one reading each, and the plan when it names
+    /// one. By default, the one reading `parse_quota_probe` gives.
+    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+        let reading = self.parse_quota_probe(stdout)?;
+        Some(QuotaAnswer {
+            windows: vec![reading],
+            plan: None,
+        })
+    }
+
     fn compaction(&self, setting: Compaction) -> LaunchTweak {
         match setting {
             Compaction::Inherit => LaunchTweak::default(),
             _ => LaunchTweak {
                 effect: TweakEffect::NotPossible {
-                    note: "this harness has no per-launch compaction control".to_owned(),
+                    note: "this CLI has no per-launch compaction control".to_owned(),
                 },
                 ..LaunchTweak::default()
             },
@@ -135,7 +167,7 @@ pub trait Adapter: Send + Sync {
     fn user_hooks_off(&self) -> LaunchTweak {
         LaunchTweak {
             effect: TweakEffect::NotPossible {
-                note: "this harness can't skip user hooks per launch".to_owned(),
+                note: "this CLI can't skip user hooks per launch".to_owned(),
             },
             ..LaunchTweak::default()
         }
@@ -163,6 +195,12 @@ pub trait Adapter: Send + Sync {
     /// The default knows none, so the setup claims no login state.
     fn setup_hints(&self) -> SetupHints {
         SetupHints::default()
+    }
+
+    /// Arguments that run the CLI's own updater, such as `["update"]` for `claude update`.
+    /// `None` when Argonauts knows of none, so `/update` leaves the CLI as it is.
+    fn update_args(&self) -> Option<&'static [&'static str]> {
+        None
     }
 
     fn transport(&self) -> Transport {

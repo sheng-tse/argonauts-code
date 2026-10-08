@@ -170,9 +170,9 @@ fn session_responder(
     let fake = crew.services.workers.add(fake);
     let reference = fake.worker_ref().clone();
     if crew.settings.crew.is_empty() {
-        crew.settings.default_agent = reference.clone();
+        crew.settings.main_agent = reference.clone();
     }
-    crew.settings.crew.push(reference);
+    crew.settings.crew.add(reference);
     fake
 }
 
@@ -192,10 +192,10 @@ fn designing_crew_with(sessions: Vec<FakeSession>) -> anyhow::Result<(Crew, Arc<
         sessions,
         Vec::new(),
     );
-    crew.settings.workflow = WorkflowRef::new("look-then-look");
+    crew.settings.phases = WorkflowRef::new("look-then-look");
     crew.settings.workflows.lead_designs = LeadDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = false;
-    crew.settings.understand.when = UnderstandWhen::Lead;
+    crew.settings.understand.when = UnderstandWhen::Main;
     crew.repo
         .write(".argonauts/workflows/one-look.yaml", ONE_LOOK)?;
     crew.repo
@@ -230,16 +230,16 @@ async fn lead_picks_a_template_with_params() -> anyhow::Result<()> {
         asked
             .prompt
             .iter()
-            .any(|part| part.text.contains("peer-crew"))
+            .any(|part| part.text.contains("council"))
     );
     Ok(())
 }
 
 #[tokio::test]
 async fn lead_composes_a_workflow_that_runs() -> anyhow::Result<()> {
-    let composed = "name: composed-look\ndescription: A look\nphases:\n  - title: Look\n    detail: the gates, once\n    standard: check\n    steps:\n      - kind: gate\n        label: \"look:gates\"\n";
+    let composed = "name: composed-look\ndescription: A look\nphases:\n  - title: Look\n    detail: the checks, once\n    standard: check\n    steps:\n      - kind: gate\n        label: \"look:checks\"\n";
     // Without a detail on its phase, the brief goes back to the lead with the error.
-    let bare = composed.replace("    detail: the gates, once\n", "");
+    let bare = composed.replace("    detail: the checks, once\n", "");
     let (crew, lead) = designing_crew(vec![
         design(None, json!([]), Some(&bare)),
         design(None, json!([]), Some(composed)),
@@ -264,7 +264,7 @@ async fn lead_composes_a_workflow_that_runs() -> anyhow::Result<()> {
             .prompt
             .iter()
             .any(|part| part.text.contains("phase 1 (Look) has no `detail`")),
-        "the error goes back to the lead"
+        "the error goes back to the main agent"
     );
     assert!(
         workflow_events(&outcome.events)
@@ -296,10 +296,10 @@ async fn two_invalid_designs_fall_back_with_a_note() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Haiku's first brief for a peer-crew run on 10-04, as its session's result held it. Code
+/// Haiku's first brief for a council run on 10-04, as its session's result held it. Code
 /// refused it for its name, `rate-limiter-per-api-key`, in five words, with no note, and a new
 /// session started over and read the repository again, so the run's workflow began at 2m06s.
-const LOGGED_BRIEF: &str = r#"{"based_on":"peer-crew","description":"Make rate limiter per API key with Retry-After headers and tests.","done_when":[{"id":"G1","short":"Per-API-key buckets","text":"Rate limiter creates separate buckets for each X-Api-Key value.","check":"review"},{"id":"G2","short":"Shared bucket for no header","text":"Requests without the X-Api-Key header share a single rate limit bucket.","check":"review"},{"id":"G3","short":"Capped refills","text":"Refills are capped at capacity, making the previously failing test pass.","check":{"test":"test passes"}},{"id":"G4","short":"Retry-After header","text":"429 responses include a Retry-After header with whole seconds remaining.","check":"review"},{"id":"G5","short":"New tests","text":"Tests cover per-API-key buckets, shared bucket behavior, and Retry-After headers.","check":{"test":"test passes"}}],"first_attempt":{"title":"Rate Limiter","detail":"Owner implements per-API-key rate limiting with Retry-After headers and tests","steps":"- kind: build\n  label: build:rate-limiter\n  role: owner\n  input: plan"},"name":"rate-limiter-per-api-key","params":[],"plan":[],"questions":[],"why":"Standard peer-crew without modifications; multiple perspectives help with implementation decisions.","workflow":null}"#;
+const LOGGED_BRIEF: &str = r#"{"based_on":"council","description":"Make rate limiter per API key with Retry-After headers and tests.","done_when":[{"id":"G1","short":"Per-API-key buckets","text":"Rate limiter creates separate buckets for each X-Api-Key value.","check":"review"},{"id":"G2","short":"Shared bucket for no header","text":"Requests without the X-Api-Key header share a single rate limit bucket.","check":"review"},{"id":"G3","short":"Capped refills","text":"Refills are capped at capacity, making the previously failing test pass.","check":{"test":"test passes"}},{"id":"G4","short":"Retry-After header","text":"429 responses include a Retry-After header with whole seconds remaining.","check":"review"},{"id":"G5","short":"New tests","text":"Tests cover per-API-key buckets, shared bucket behavior, and Retry-After headers.","check":{"test":"test passes"}}],"first_attempt":{"title":"Rate Limiter","detail":"Owner implements per-API-key rate limiting with Retry-After headers and tests","steps":"- kind: build\n  label: build:rate-limiter\n  role: worker\n  input: plan"},"name":"rate-limiter-per-api-key","params":[],"plan":[],"questions":[],"why":"Standard council without modifications; multiple perspectives help with implementation decisions.","workflow":null}"#;
 
 fn design_sessions(spec_of: &FakeWorker) -> Vec<argonauts_core::worker::SessionSpec> {
     spec_of
@@ -333,10 +333,10 @@ async fn the_logged_brief_runs_once_its_session_names_its_checks() -> anyhow::Re
     fixed["done_when"][2]["check"] = json!({"test": "test_never_holds_more_than_capacity"});
     fixed["done_when"][4]["check"] = json!({"command": "python -m pytest tests/"});
     let (crew, lead) = designing_crew(vec![logged, fixed])?;
-    // peer-crew as a file of yours, so the run stays short.
+    // council as a file of yours, so the run stays short.
     crew.repo.write(
-        ".argonauts/workflows/peer-crew.yaml",
-        &ONE_LOOK.replace("one-look", "peer-crew"),
+        ".argonauts/workflows/council.yaml",
+        &ONE_LOOK.replace("one-look", "council"),
     )?;
     let outcome = crew.start(RunMode::Crew, "rate limit per API key").await?;
     let asked = design_sessions(&lead);
@@ -354,7 +354,7 @@ async fn the_logged_brief_runs_once_its_session_names_its_checks() -> anyhow::Re
     assert!(told.contains("criterion G5:"), "{told}");
     assert!(!told.contains("words; use two to four"), "{told}");
     let said = notes(&outcome.events, NoteLevel::Info);
-    let why = "The lead's brief gave a check a test name that isn't one; it's fixing that.";
+    let why = "The main agent's brief gave a check a test name that isn't one; it's fixing that.";
     assert!(
         said.iter().any(|text| text.lines().next() == Some(why)),
         "{said:?}"
@@ -366,7 +366,7 @@ async fn the_logged_brief_runs_once_its_session_names_its_checks() -> anyhow::Re
         "{:?}",
         notes(&outcome.events, NoteLevel::Warn)
     );
-    assert_eq!(started[0].from, Some(WorkflowRef::new("peer-crew")));
+    assert_eq!(started[0].from, Some(WorkflowRef::new("council")));
     assert_eq!(started[0].workflow.name, "rate-limiter-api-key");
     let checks: Vec<String> = outcome
         .events
@@ -450,12 +450,12 @@ async fn a_refused_brief_goes_back_to_the_same_session() -> anyhow::Result<()> {
     let said = notes(&outcome.events, NoteLevel::Info);
     let note = said
         .iter()
-        .find(|text| text.starts_with("The lead's brief"))
+        .find(|text| text.starts_with("The main agent's brief"))
         .unwrap_or_else(|| panic!("{said:?}"));
     let mut lines = note.lines();
     assert_eq!(
         lines.next(),
-        Some("The lead's brief named the run in 5 words; it's fixing that.")
+        Some("The main agent's brief named the run in 5 words; it's fixing that.")
     );
     assert!(lines.any(|line| line.contains("has 5 words")), "{note}");
     let started = workflows_started(&outcome.events);
@@ -473,7 +473,7 @@ async fn a_replayed_fix_says_why_once() -> anyhow::Result<()> {
     let valid = design(Some("one-look"), json!([]), None);
     let (crew, _lead) = designing_crew(vec![long, valid.clone(), valid.clone(), valid])?;
     let outcome = crew.start(RunMode::Crew, "look once").await?;
-    let why = "The lead's brief named the run in 5 words";
+    let why = "The main agent's brief named the run in 5 words";
     let noted = cut_after(
         &outcome.events,
         |event| matches!(event, RunEventKind::Note(note) if note.text.starts_with(why)),
@@ -519,7 +519,7 @@ async fn a_crashed_lead_designs_again_on_its_own_session() -> anyhow::Result<()>
     assert!(
         !said
             .iter()
-            .any(|text| text.starts_with("The lead's session stopped")),
+            .any(|text| text.starts_with("The main agent's session stopped")),
         "{said:?}"
     );
     let started = workflows_started(&outcome.events);
@@ -551,12 +551,12 @@ async fn a_lead_whose_context_filled_gets_a_new_session_with_a_note() -> anyhow:
     let said = notes(&outcome.events, NoteLevel::Info);
     let note = said
         .iter()
-        .find(|text| text.starts_with("The lead's session stopped"))
+        .find(|text| text.starts_with("The main agent's session stopped"))
         .unwrap_or_else(|| panic!("{said:?}"));
     assert_eq!(
         note.lines().next(),
         Some(
-            "The lead's session stopped before its brief was done, so a new session is \
+            "The main agent's session stopped before its brief was done, so a new session is \
              writing it."
         )
     );
@@ -624,7 +624,7 @@ async fn solo_run_never_adapts() -> anyhow::Result<()> {
 async fn crew_run_in_a_solo_workflow_never_adapts() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
     let lead = crew.answering_worker("claude-code/opus", "anthropic");
-    crew.settings.workflow = WorkflowRef::new("solo");
+    crew.settings.phases = WorkflowRef::new("solo");
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.settings.workflows.lead_designs = false.into();
     let outcome = crew.start(RunMode::Crew, "fix the typo").await?;
@@ -652,15 +652,15 @@ async fn project_file_replaces_a_builtin() -> anyhow::Result<()> {
         Vec::new(),
         Vec::new(),
     );
-    let mine = LOOK_THEN_LOOK.replace("look-then-look", "peer-crew");
+    let mine = LOOK_THEN_LOOK.replace("look-then-look", "council");
     crew.repo
-        .write(".argonauts/workflows/peer-crew.yaml", &mine)?;
-    crew.settings.workflow = WorkflowRef::new("peer-crew");
+        .write(".argonauts/workflows/council.yaml", &mine)?;
+    crew.settings.phases = WorkflowRef::new("council");
     crew.settings.workflows.adapt_at_phase_ends = false;
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
     let started = workflows_started(&outcome.events);
     assert_eq!(started[0].workflow.phases, parse(&mine).phases);
-    assert_eq!(started[0].workflow.based_on.as_deref(), Some("peer-crew"));
+    assert_eq!(started[0].workflow.based_on.as_deref(), Some("council"));
     Ok(())
 }
 
@@ -679,7 +679,7 @@ async fn loop_out_of_rounds_stops_the_run() -> anyhow::Result<()> {
     );
     crew.repo
         .write(".argonauts/workflows/waits-for-a-plan.yaml", text)?;
-    crew.settings.workflow = WorkflowRef::new("waits-for-a-plan");
+    crew.settings.phases = WorkflowRef::new("waits-for-a-plan");
     crew.settings.workflows.adapt_at_phase_ends = false;
     let outcome = crew.start(RunMode::Crew, "plan it").await?;
     ended(&outcome, RunOutcome::Failed);
@@ -714,7 +714,7 @@ async fn goal_loop_out_of_rounds_stops_after_a_crash() -> anyhow::Result<()> {
     );
     crew.repo
         .write(".argonauts/workflows/goal-unasked.yaml", GOAL_UNASKED)?;
-    crew.settings.workflow = WorkflowRef::new("goal-unasked");
+    crew.settings.phases = WorkflowRef::new("goal-unasked");
     crew.settings.workflows.adapt_at_phase_ends = false;
     let outcome = crew.start(RunMode::Crew, "rate limit the API").await?;
     ended(&outcome, RunOutcome::Stopped);
@@ -754,7 +754,7 @@ fn goal_crew() -> anyhow::Result<Crew> {
     crew.repo
         .write(".argonauts/workflows/goal-then-look.yaml", GOAL_THEN_LOOK)?;
     crew.repo.commit_all("Add the workflow")?;
-    crew.settings.workflow = WorkflowRef::new("goal-then-look");
+    crew.settings.phases = WorkflowRef::new("goal-then-look");
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.understand.comparers = 3;
     let listing = json!({"agreements": ["The public API gets a rate limit."], "differences": []});
@@ -862,7 +862,7 @@ async fn goal_last_round_offers_no_send_back() -> anyhow::Result<()> {
     Ok(())
 }
 
-const PLAN_THEN_LOOK: &str = "name: plan-then-look\ndescription: The plan checkpoint, then a look\nphases:\n  - name: Plan\n    standard: plan\n    steps:\n      - kind: checkpoint\n        checkpoint: plan\n  - name: Look\n    standard: check\n    steps:\n      - kind: gate\n";
+const PLAN_THEN_LOOK: &str = "name: plan-then-look\ndescription: The plan approval, then a look\nphases:\n  - name: Plan\n    standard: plan\n    steps:\n      - kind: checkpoint\n        checkpoint: plan\n  - name: Look\n    standard: check\n    steps:\n      - kind: gate\n";
 
 /// A run's log that ends right after its first step finished, with `middle` logged while the
 /// step ran.
@@ -1056,7 +1056,7 @@ const INNER: &str = "name: inner\ndescription: Two looks one level down\nphases:
 #[tokio::test]
 async fn nested_workflow_keeps_its_id_after_a_change() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    crew.settings.workflow = WorkflowRef::new("outer");
+    crew.settings.phases = WorkflowRef::new("outer");
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.repo.write(".argonauts/workflows/outer.yaml", OUTER)?;
     crew.repo.write(".argonauts/workflows/inner.yaml", INNER)?;
@@ -1107,7 +1107,7 @@ async fn nested_workflow_keeps_its_id_after_a_change() -> anyhow::Result<()> {
 #[tokio::test]
 async fn change_to_a_phase_that_ran_is_refused() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    crew.settings.workflow = WorkflowRef::new("look-then-look");
+    crew.settings.phases = WorkflowRef::new("look-then-look");
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.repo
         .write(".argonauts/workflows/look-then-look.yaml", LOOK_THEN_LOOK)?;
@@ -1130,7 +1130,7 @@ async fn change_to_a_phase_that_ran_is_refused() -> anyhow::Result<()> {
         Some("fake-session")
     );
     let said = notes(&outcome.events, NoteLevel::Info);
-    let why = "The lead's change after phase 1 wrote a workflow that breaks its rules; it's \
+    let why = "The main agent's change after phase 1 wrote a workflow that breaks its rules; it's \
                fixing that.";
     let told = said
         .iter()
@@ -1168,7 +1168,7 @@ async fn change_to_a_phase_that_ran_is_refused() -> anyhow::Result<()> {
 #[tokio::test]
 async fn your_proposal_and_the_leads_change_both_stay_open() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    crew.settings.workflow = WorkflowRef::new("look-then-look");
+    crew.settings.phases = WorkflowRef::new("look-then-look");
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.repo
         .write(".argonauts/workflows/look-then-look.yaml", LOOK_THEN_LOOK)?;
@@ -1244,7 +1244,7 @@ async fn the_lead_designs_first_and_understand_opens_the_run() -> anyhow::Result
     ];
     let lead = responder(&mut crew, "claude-code/opus", "anthropic", picks, goal());
     responder(&mut crew, "codex", "openai", Vec::new(), goal());
-    crew.settings.workflow = WorkflowRef::new("goal-then-look");
+    crew.settings.phases = WorkflowRef::new("goal-then-look");
     crew.settings.workflows.lead_designs = LeadDesigns::ANY;
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.repo
@@ -1270,7 +1270,7 @@ async fn the_lead_designs_first_and_understand_opens_the_run() -> anyhow::Result
         .specs()
         .into_iter()
         .find(|spec| spec.step == Some(StepName::DesignWorkflow))
-        .expect("the lead designed");
+        .expect("the main agent designed");
     assert!(
         asked
             .prompt

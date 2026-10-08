@@ -18,7 +18,7 @@ pub const SESSION_TRAILER: &str = "Argonauts-Session";
 /// The trailer counting a resumed session's starts, left out on its first start.
 pub const START_TRAILER: &str = "Argonauts-Start";
 /// The trailer naming the card a merge commit brings in.
-pub const CARD_TRAILER: &str = "Argonauts-Card";
+pub const CARD_TRAILER: &str = "Argonauts-Task";
 
 pub fn session_line(session: &SessionKey) -> String {
     format!("{SESSION_TRAILER}: {session}")
@@ -154,7 +154,7 @@ mod tests {
             None
         );
         repo.write("a.txt", "a");
-        let message = format!("card-001: work\n\n{}", session_line(&key));
+        let message = format!("task-001: work\n\n{}", session_line(&key));
         let sha = git.commit_all(&repo.root, &message).await.unwrap().unwrap();
         assert_eq!(
             commit_for_session(&git, &repo.root, &range, &key, 1)
@@ -178,7 +178,7 @@ mod tests {
             "a resumed start commits again"
         );
         repo.write("b.txt", "b");
-        let message = format!("card-001: work\n\n{}", session_lines(&key, 2));
+        let message = format!("task-001: work\n\n{}", session_lines(&key, 2));
         let resumed = git.commit_all(&repo.root, &message).await.unwrap().unwrap();
         assert_eq!(
             commit_for_session(&git, &repo.root, &range, &key, 2)
@@ -193,7 +193,7 @@ mod tests {
         let repo = TestRepo::new();
         let git = git();
         let base = git.head_commit(&repo.root).await.unwrap().unwrap();
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let range = format!("{base}..HEAD");
 
         // A plain commit that mentions the card is not a merge.
@@ -209,14 +209,14 @@ mod tests {
         );
 
         let tree = repo.dir.path().join("tree");
-        git.add_worktree(&repo.root, &tree, "argonauts/r/card-001", &base)
+        git.add_worktree(&repo.root, &tree, "argonauts/r/task-001", &base)
             .await
             .unwrap();
         std::fs::write(tree.join("a.txt"), "a").unwrap();
         let head = git.commit_all(&tree, "work").await.unwrap().unwrap();
-        let message = format!("Merge card-001\n\n{}", card_line(&card));
+        let message = format!("Merge task-001\n\n{}", card_line(&card));
         let MergeOutcome::Merged(merge) = git
-            .merge_no_ff(&repo.root, "argonauts/r/card-001", &message)
+            .merge_no_ff(&repo.root, "argonauts/r/task-001", &message)
             .await
             .unwrap()
         else {

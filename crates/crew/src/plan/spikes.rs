@@ -1,4 +1,4 @@
-//! Spikes: the phase lead proposes; code checks each proposal against `spikes.budget_usd` and
+//! Spikes: the phase lead proposes; code checks each proposal against `experiments.limit_usd` and
 //! `time_box_min`. A fitting one becomes spike cards, one per option, in sandboxed worktrees,
 //! ending with a `SpikeReport`. Spike worktrees are never integrated.
 
@@ -84,7 +84,7 @@ fn card_limits_usd(proposals: &[SpikeProposal], budget_usd: f64) -> Vec<f64> {
 /// Proposes spikes once per run when topics are still disputed, runs every fitting one as
 /// spike cards (one per option), and returns every spike report the run has.
 pub async fn run(host: &Host, call: &StepCall) -> EngineResult<Vec<SpikeReport>> {
-    let settings = host.settings().spikes.clone();
+    let settings = host.settings().experiments.clone();
     let (proposed, disputed) = host.read(|state| {
         (
             state.plan.spikes.clone(),
@@ -121,7 +121,7 @@ async fn propose(
 ) -> EngineResult<()> {
     let lead = host
         .read(|state| lead::phase_lead(state, host.settings()))
-        .unwrap_or_else(|| host.settings().default_agent.clone());
+        .unwrap_or_else(|| host.settings().main_agent.clone());
     let input = ProposeSpikeInput {
         disputed,
         budget_usd: settings.budget_usd,
@@ -143,7 +143,7 @@ async fn propose(
             return warn(
                 host,
                 None,
-                format!("No spikes: the proposal failed: {error}"),
+                format!("No experiments: the proposal failed: {error}"),
             );
         }
     };
@@ -178,7 +178,7 @@ async fn build(host: &Host, call: &StepCall, settings: &SpikeSettings) -> Engine
         return warn(
             host,
             None,
-            "No spike worker is available; the disputes stay open".to_owned(),
+            "No experiment worker is available; the disputes stay open".to_owned(),
         );
     }
     let mut limits = card_limits_usd(&proposals, settings.budget_usd).into_iter();
@@ -252,7 +252,7 @@ async fn prepare(
     if !created {
         let spec = CardSpec {
             id: card.clone(),
-            title: format!("Spike: {}: {}", experiment.topic, option.label),
+            title: format!("Experiment: {}: {}", experiment.topic, option.label),
             task: format!(
                 "{}\n\nBuild: {}\nMeasure: {}\nDecides by: {}",
                 experiment.question, option.build, experiment.measure, experiment.decides_by
@@ -292,7 +292,7 @@ async fn prepare(
             RunEventKind::Card(CardEvent::State {
                 from: None,
                 to: CardState::Running,
-                reason: "spike started".to_owned(),
+                reason: "experiment started".to_owned(),
             }),
         )?;
     }
@@ -327,6 +327,7 @@ async fn spike(
         json_schema: Some(output_schema::<SpikeReportStep>()),
         resume: None,
         slot: 0,
+        label: None,
     };
     // A vendor error has the spike go again, or to another agent; when nobody can run it, the
     // dispute stays open, as without a report.
@@ -363,7 +364,7 @@ async fn spike(
         None => warn(
             host,
             Some(card),
-            format!("{card} gave no spike report; the dispute stays open"),
+            format!("{card} gave no experiment report; the dispute stays open"),
         )?,
     }
     // Spike worktrees are never integrated; only the report is kept.
@@ -373,7 +374,7 @@ async fn spike(
         RunEventKind::Card(CardEvent::State {
             from: Some(CardState::Running),
             to: CardState::Cancelled,
-            reason: "spike done; spikes are never integrated".to_owned(),
+            reason: "experiment done; experiments are never merged into the run".to_owned(),
         }),
     )?;
     Ok(())

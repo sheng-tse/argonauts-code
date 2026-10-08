@@ -5,6 +5,7 @@
 use argonauts_core::app::ChoiceKind;
 use argonauts_core::model_catalog::display_name_from_id;
 use argonauts_core::names::WorkerRef;
+use argonauts_core::settings::approvals::Decides;
 
 use super::questions::{Question, SetupView, agent_answers, described, kept_or_new};
 use super::steps::{Answers, COORDINATED_CREW};
@@ -14,9 +15,9 @@ use crate::choices::{InitAnswer, init_options};
 pub(crate) const KEEP: &str = "keep";
 /// The model an agent's CLI runs when none is named.
 const CLI_DEFAULT: &str = "cli-default";
-pub(crate) const COORDINATOR_KEY: &str = "roles.coordinator.workers";
+pub(crate) const COORDINATOR_KEY: &str = "roles.orchestrator.workers";
 pub(crate) const REVIEWER_KEY: &str = "roles.reviewer.workers";
-const DEFAULT_AGENT_KEY: &str = "default_agent";
+const DEFAULT_AGENT_KEY: &str = "main_agent";
 
 /// One of an agent's models, as the setup offers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,11 +142,13 @@ pub(crate) fn worker_for(view: &SetupView, answers: &Answers, key: &str) -> Opti
     match key {
         DEFAULT_AGENT_KEY => {
             return answers
-                .default_agent
+                .main_agent
                 .clone()
                 .or_else(|| view.current_str(key)?.parse().ok());
         }
-        COORDINATOR_KEY if answers.preset == COORDINATED_CREW && answers.coordinator.is_some() => {
+        COORDINATOR_KEY
+            if answers.workflow == COORDINATED_CREW && answers.coordinator.is_some() =>
+        {
             return answers.coordinator.clone();
         }
         _ => {}
@@ -165,13 +168,20 @@ pub(crate) fn worker_for(view: &SetupView, answers: &Answers, key: &str) -> Opti
         Some(one) => Some(one.to_owned()),
         None => view.current_list(key).into_iter().next(),
     };
-    named?.parse().ok()
+    let named = named?;
+    // Left to the judge, the row names nobody.
+    if key == "approvals.decides" && named.trim().eq_ignore_ascii_case(Decides::JUDGE) {
+        return None;
+    }
+    named.parse().ok()
 }
 
 fn set_worker(answers: &mut Answers, key: &str, worker: WorkerRef) {
     match key {
-        DEFAULT_AGENT_KEY => answers.default_agent = Some(worker),
-        COORDINATOR_KEY if answers.preset == COORDINATED_CREW => answers.coordinator = Some(worker),
+        DEFAULT_AGENT_KEY => answers.main_agent = Some(worker),
+        COORDINATOR_KEY if answers.workflow == COORDINATED_CREW => {
+            answers.coordinator = Some(worker)
+        }
         _ => {
             answers.roles.insert(key.to_owned(), worker);
         }
@@ -183,8 +193,8 @@ fn now_words(view: &SetupView, answers: &Answers, key: &str) -> String {
     match worker_for(view, answers, key) {
         Some(worker) => worker_words(view, &worker),
         None => match key {
-            "narrator.model" => "your default agent".to_owned(),
-            "approvals.approver.model" => "the cheapest model from another company".to_owned(),
+            "narrator.model" => "your main agent".to_owned(),
+            "approvals.decides" => "the cheapest model from another provider".to_owned(),
             _ => "anyone in your crew".to_owned(),
         },
     }
@@ -212,9 +222,9 @@ fn worker_words(view: &SetupView, worker: &WorkerRef) -> String {
 /// The row's name, as `/model` writes it.
 fn label(key: &str) -> String {
     match key {
-        DEFAULT_AGENT_KEY => "Default agent".to_owned(),
+        DEFAULT_AGENT_KEY => "Main agent".to_owned(),
         "narrator.model" => "narrator".to_owned(),
-        "approvals.approver.model" => "approver".to_owned(),
+        "approvals.decides" => "approver".to_owned(),
         _ => key
             .strip_prefix("roles.")
             .and_then(|rest| rest.strip_suffix(".workers"))
@@ -226,7 +236,7 @@ fn label(key: &str) -> String {
 /// `The reviewer`, or `Your default agent`, to start a sentence.
 fn subject(key: &str) -> String {
     match key {
-        DEFAULT_AGENT_KEY => "Your default agent".to_owned(),
+        DEFAULT_AGENT_KEY => "Your main agent".to_owned(),
         _ => format!("The {}", label(key)),
     }
 }
@@ -291,12 +301,12 @@ mod tests {
     fn the_coordinators_model_is_one_of_its_agents_and_sets_it() {
         let view = codex_view();
         let mut answers = Answers {
-            preset: COORDINATED_CREW.to_owned(),
+            workflow: COORDINATED_CREW.to_owned(),
             coordinator: Some(WorkerRef::new("codex", None)),
             ..Answers::default()
         };
         let question = model_question(&view, &answers, COORDINATOR_KEY).unwrap();
-        assert_eq!(question.title, "The coordinator's model");
+        assert_eq!(question.title, "The orchestrator's model");
         let values: Vec<String> = question
             .options
             .iter()
@@ -304,7 +314,7 @@ mod tests {
             .collect();
         assert_eq!(values, [CLI_DEFAULT, "gpt-5.6-luna"]);
         let line = chose_model(&view, &mut answers, COORDINATOR_KEY, "gpt-5.6-luna");
-        assert_eq!(line, "The coordinator runs GPT-5.6 Luna on Codex.");
+        assert_eq!(line, "The orchestrator runs GPT-5.6 Luna on Codex.");
         assert_eq!(
             answers.coordinator,
             Some(WorkerRef::new("codex", Some("gpt-5.6-luna".to_owned())))
@@ -361,13 +371,32 @@ mod tests {
         );
     }
 
+    /// The settings template writes `decides = "judge"`, which names nobody: the approver's
+    /// row reads as the judge the policy picks, never as a CLI called judge.
+    #[test]
+    fn an_approver_left_to_the_judge_names_nobody() {
+        const KEY: &str = "approvals.decides";
+        let mut view = codex_view();
+        let answers = Answers::default();
+        view.current = toml::from_str("[approvals]\ndecides = \"judge\"\n").unwrap();
+        assert_eq!(worker_for(&view, &answers, KEY), None);
+        assert_eq!(
+            now_words(&view, &answers, KEY),
+            "the cheapest model from another provider"
+        );
+        view.current = toml::from_str("[approvals]\ndecides = \"codex/gpt-5.6-luna\"\n").unwrap();
+        let luna = WorkerRef::new("codex", Some("gpt-5.6-luna".to_owned()));
+        assert_eq!(worker_for(&view, &answers, KEY), Some(luna));
+        assert_eq!(now_words(&view, &answers, KEY), "GPT-5.6 Luna on Codex");
+    }
+
     #[test]
     fn rows_read_as_model_names_them() {
-        assert_eq!(label("default_agent"), "Default agent");
+        assert_eq!(label("main_agent"), "Main agent");
         assert_eq!(label("roles.reviewer.workers"), "reviewer");
-        assert_eq!(label("approvals.approver.model"), "approver");
+        assert_eq!(label("approvals.decides"), "approver");
         assert_eq!(subject("roles.phase-lead.workers"), "The phase-lead");
-        assert_eq!(subject("default_agent"), "Your default agent");
+        assert_eq!(subject("main_agent"), "Your main agent");
     }
 
     #[test]

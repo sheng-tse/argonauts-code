@@ -54,7 +54,7 @@ pub fn disable_scope(reason: &str) -> DisableScope {
 /// The disable a billing cap sets. It lasts until a session on the vendor succeeds, such as the
 /// retry after you top up, or until you enable the vendor.
 pub fn billing_disable() -> String {
-    format!("{BILLING_CAP}. Cards billed to its API key go to other agents until a retry works")
+    format!("{BILLING_CAP}. Tasks billed to its API key go to other agents until a retry works")
 }
 
 /// One error or retry the breaker counts, persisted so every process counts the same ones.
@@ -268,7 +268,7 @@ impl Breaker {
                 let minutes = TEST_CARD_LIMIT.as_secs() / 60;
                 self.go_down(
                     now,
-                    format!("no test card finished within {minutes} minutes"),
+                    format!("no test task finished within {minutes} minutes"),
                 )
             }
             HealthState::Degraded => self.recover_if_quiet(now),
@@ -284,7 +284,7 @@ impl Breaker {
         }
         self.testing_card = true;
         self.since = now;
-        self.reason = Some("a test card is running".to_owned());
+        self.reason = Some("a test task is running".to_owned());
         true
     }
 
@@ -298,10 +298,10 @@ impl Breaker {
             self.set(
                 HealthState::Healthy,
                 now,
-                Some("the test card succeeded".to_owned()),
+                Some("the test task succeeded".to_owned()),
             );
         } else {
-            self.go_down(now, "the test card failed".to_owned());
+            self.go_down(now, "the test task failed".to_owned());
         }
         self.state
     }
@@ -513,7 +513,7 @@ impl FileHealthBoard {
         let owner = match Owner::this_process(Some(session.to_owned())) {
             Ok(owner) => owner,
             Err(err) => {
-                tracing::warn!("could not claim {vendor}'s test card: {err}");
+                tracing::warn!("could not claim {vendor}'s test task: {err}");
                 return false;
             }
         };
@@ -579,7 +579,7 @@ impl FileHealthBoard {
             return;
         };
         let owner = Owner::this_process(Some(session.to_string()))
-            .map_err(|err| tracing::warn!("could not claim a test card: {err}"))
+            .map_err(|err| tracing::warn!("could not claim a test task: {err}"))
             .ok();
         let holds = match (&entry.test_card, &owner) {
             (Some(card), Some(owner)) => card == owner,
@@ -709,11 +709,11 @@ fn pin_suggestion(vendor: &VendorId) -> String {
         .and_then(|prober| prober.adapter.tested_versions().last().copied());
     match tested {
         Some(version) => format!(
-            "New cards go to other agents. To pin a tested version, install {version} and set \
+            "New tasks go to other agents. To pin a tested version, install {version} and set \
              agents.{vendor}.version_pin = \"{version}\""
         ),
         None => format!(
-            "New cards go to other agents. To pin a tested version, install one and set \
+            "New tasks go to other agents. To pin a tested version, install one and set \
              agents.{vendor}.version_pin"
         ),
     }
@@ -944,7 +944,7 @@ mod tests {
         let test_at = test_at + Delta::minutes(5);
         assert_eq!(breaker.tick(test_at), Some(HealthState::Testing));
         assert_eq!(breaker.test_result(false, test_at), HealthState::Down);
-        assert_eq!(breaker.reason(), Some("the test card failed"));
+        assert_eq!(breaker.reason(), Some("the test task failed"));
         assert_eq!(breaker.next_test_at(), Some(test_at + Delta::minutes(5)));
 
         // A reported reset replaces the cool-down.
@@ -1034,7 +1034,7 @@ mod tests {
         assert!(!supervisor.claim_test_card(&codex(), "s-005"));
         assert_eq!(
             app.state(&codex()).reason.as_deref(),
-            Some("a test card is running")
+            Some("a test task is running")
         );
         app.test_result(&codex(), true);
         assert_eq!(
@@ -1054,7 +1054,7 @@ mod tests {
             panic!("expected a disable, got {events:?}");
         };
         assert_eq!(vendor, &codex());
-        assert!(reason.starts_with("unknown events piled up. New cards go to other agents."));
+        assert!(reason.starts_with("unknown events piled up. New tasks go to other agents."));
         assert!(reason.contains("agents.codex.version_pin"));
         let health = app.state(&codex());
         assert_eq!(health.state, HealthState::Healthy);
@@ -1157,7 +1157,7 @@ mod tests {
         assert_eq!(test_card(&board).as_deref(), Some("s-004"));
         assert_eq!(
             board.state(&codex()).reason.as_deref(),
-            Some("a test card is running")
+            Some("a test task is running")
         );
         assert!(!board.claim_test_card(&codex(), "s-005"));
         board.observe(error(5, ErrorCategory::Server));
@@ -1173,7 +1173,7 @@ mod tests {
         board.observe(error(6, ErrorCategory::Overloaded));
         let health = board.state(&codex());
         assert_eq!(health.state, HealthState::Down);
-        assert_eq!(health.reason.as_deref(), Some("the test card failed"));
+        assert_eq!(health.reason.as_deref(), Some("the test task failed"));
         assert_eq!(test_card(&board), None);
     }
 
@@ -1187,18 +1187,18 @@ mod tests {
         assert_eq!(breaker.tick(test_at), Some(HealthState::Testing));
         let claimed_at = test_at + Delta::minutes(20);
         assert!(breaker.start_test(claimed_at));
-        assert!(!breaker.start_test(claimed_at), "one test card at a time");
+        assert!(!breaker.start_test(claimed_at), "one test task at a time");
         // The limit runs from the claim.
         let limit = claimed_at + TEST_CARD_LIMIT;
         assert_eq!(breaker.tick(limit - Delta::seconds(1)), None);
         assert_eq!(breaker.tick(limit), Some(HealthState::Down));
         assert_eq!(
             breaker.reason(),
-            Some("no test card finished within 60 minutes")
+            Some("no test task finished within 60 minutes")
         );
         assert_eq!(breaker.next_test_at(), Some(limit + Delta::minutes(5)));
         assert!(!breaker.testing_card());
-        assert!(!breaker.start_test(limit), "only Testing takes a test card");
+        assert!(!breaker.start_test(limit), "only Testing takes a test task");
 
         // On the board, a test card that never reports lets go of the vendor too.
         let home = tempfile::tempdir().unwrap();

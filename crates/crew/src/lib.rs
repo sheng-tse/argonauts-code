@@ -9,6 +9,7 @@ use argonauts_core::settings::Settings;
 pub mod blackboard;
 pub mod card;
 pub mod checkpoints;
+pub mod claude_codes;
 pub mod closing;
 pub mod consultant;
 pub mod coordinated;
@@ -29,12 +30,15 @@ pub mod replay_terms;
 pub mod retro;
 pub mod review;
 pub mod roles;
+pub mod script;
 pub mod solo;
 pub mod spec;
 pub mod state;
 pub mod status;
 pub mod triage;
+pub mod ultra;
 pub mod workflow;
+pub mod workflow_size;
 
 #[cfg(test)]
 mod testutil;

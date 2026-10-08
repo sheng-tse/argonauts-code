@@ -67,7 +67,7 @@ impl HarnessEntries {
         let id = &manifest.id;
         if !check.is_ok() {
             self.warnings.push(format!(
-                "{source}: harness {id} is left out: {}",
+                "{source}: CLI {id} is left out: {}",
                 check.errors.join("; ")
             ));
             return;
@@ -76,7 +76,7 @@ impl HarnessEntries {
             check
                 .warnings
                 .iter()
-                .map(|warning| format!("{source}: harness {id}: {warning}")),
+                .map(|warning| format!("{source}: CLI {id}: {warning}")),
         );
         match self.manifests.iter_mut().find(|kept| kept.id == *id) {
             Some(earlier) => *earlier = manifest,
@@ -99,10 +99,9 @@ impl HarnessEntries {
                     let check = check_manifest(&manifest, repo_root);
                     self.add(&source, manifest, check);
                 }
-                Err(err) => self.warnings.push(format!(
-                    "{source}: harness {id} is left out: {}",
-                    err.message()
-                )),
+                Err(err) => self
+                    .warnings
+                    .push(format!("{source}: CLI {id} is left out: {}", err.message())),
             }
         }
     }
@@ -113,8 +112,8 @@ impl HarnessEntries {
         };
         let count = match items.len() {
             0 => return,
-            1 => "its harness entry is".to_owned(),
-            n => format!("its {n} harness entries are"),
+            1 => "its CLI entry is".to_owned(),
+            n => format!("its {n} CLI entries are"),
         };
         self.warnings.push(format!(
             "{}: {count} ignored until you trust the file (/setup, or the trust question when \
@@ -139,7 +138,7 @@ impl HarnessEntries {
             Ok(table) => table,
             Err(err) => {
                 self.warnings.push(format!(
-                    "{source} doesn't parse, so its harness entries are left out: {}",
+                    "{source} doesn't parse, so its CLI entries are left out: {}",
                     err.message()
                 ));
                 return None;
@@ -150,7 +149,7 @@ impl HarnessEntries {
             Some(toml::Value::Array(items)) => Some(items),
             Some(_) => {
                 self.warnings.push(format!(
-                    "{source}: harness must be a list of [[harness]] tables"
+                    "{source}: CLI must be a list of [[harness]] tables"
                 ));
                 None
             }

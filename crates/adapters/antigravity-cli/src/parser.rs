@@ -111,7 +111,11 @@ impl AgyStreamParser {
             return None;
         }
         self.last_fill = Some(used);
-        Some(AgentEvent::ContextFill { used, size: None })
+        Some(AgentEvent::ContextFill {
+            used,
+            size: None,
+            sent: None,
+        })
     }
 
     /// Keys the step by conversation and index, adopting its conversation as root if none is set.
@@ -919,6 +923,7 @@ mod tests {
             AgentEvent::ContextFill {
                 used: 10_302 + 8113 + 582 - 551,
                 size: None,
+                sent: None,
             }
         );
         assert_eq!(
@@ -1581,6 +1586,7 @@ mod tests {
             [&AgentEvent::ContextFill {
                 used: 100 + 50 + 5,
                 size: None,
+                sent: None,
             }]
         );
     }

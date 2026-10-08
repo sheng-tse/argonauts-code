@@ -16,7 +16,7 @@ use argonauts_core::worker::Access;
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::git::GitError;
-use crate::integrate::{conductor, merge_packet};
+use crate::integrate::{conductor, merge_packet, unborn};
 
 /// Used when `gates.timeout` doesn't parse or says `none`.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -110,7 +110,7 @@ async fn heads(host: &Host, worktree: &Path) -> EngineResult<(String, Option<Str
     let git = host.git();
     let head = git.resolve(worktree, "HEAD").await?;
     let target = match target(host) {
-        Some(target) => Some(git.resolve(&host.repo().root, &target).await?),
+        Some(target) => Some(main_commit(host, &target).await?),
         None => None,
     };
     Ok((head, target))
@@ -133,6 +133,25 @@ pub fn target(host: &Host) -> Option<String> {
     })
 }
 
+/// What the run is said to merge into: its target branch, or, when it started before your
+/// branch had a commit, your files or the branch its first commit goes on.
+pub async fn lands_on(host: &Host) -> Result<Option<String>, GitError> {
+    match unborn::lands(host).await? {
+        Some(lands) => Ok(Some(lands.target().to_owned())),
+        None => Ok(target(host)),
+    }
+}
+
+/// Where `target` stands for this run: the branch's tip, or the snapshot the run started from
+/// when the branch had no commit then. That snapshot stays the run's main whatever you commit
+/// meanwhile, since your first commit shares no history with it.
+pub async fn main_commit(host: &Host, target: &str) -> Result<String, GitError> {
+    match unborn::base(host).await? {
+        Some(snapshot) => Ok(snapshot),
+        None => host.git().resolve(&host.repo().root, target).await,
+    }
+}
+
 /// Merges the target into the integration branch when it moved. `Ok(Err(why))` when it
 /// conflicts; the merge is then aborted and the branch left as it was.
 pub async fn bring_in_main(host: &Host, worktree: &Path) -> EngineResult<Result<bool, String>> {
@@ -140,7 +159,7 @@ pub async fn bring_in_main(host: &Host, worktree: &Path) -> EngineResult<Result<
         return Ok(Ok(false));
     };
     let git = host.git();
-    let main = git.resolve(&host.repo().root, &target).await?;
+    let main = main_commit(host, &target).await?;
     let head = git.resolve(worktree, "HEAD").await?;
     if git.is_ancestor(worktree, &main, &head).await? {
         return Ok(Ok(false));
@@ -196,16 +215,16 @@ pub fn run_base(host: &Host) -> Option<String> {
 
 async fn run_suite(host: &Host, worktree: &Path) -> EngineResult<Vec<GateOutcome>> {
     let settings = host.settings();
-    let commands = if settings.gates.full_suite.is_empty() {
-        &settings.gates.run
+    let commands = if settings.checks.full_suite.is_empty() {
+        &settings.checks.run
     } else {
-        &settings.gates.full_suite
+        &settings.checks.full_suite
     };
     if commands.is_empty() {
         return Ok(Vec::new());
     }
     let timeout = settings
-        .gates
+        .checks
         .timeout
         .parse()
         .ok()

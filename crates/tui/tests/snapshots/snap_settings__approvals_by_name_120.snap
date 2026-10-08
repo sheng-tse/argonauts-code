@@ -3,31 +3,31 @@ source: crates/tui/tests/snap_settings.rs
 expression: "&shown"
 ---
 Approvals
-Who decides each checkpoint, and how auto matched you
+Who decides each approval, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Full auto                                                                    off: each checkpoint keeps its own mode │
-│ ❯ For every checkpoint        off                      built-in             Full auto for every checkpoint a run op… │
-│   Who answers questions       GPT 5.6 on Codex         everywhere (global)  Who answers the crew's questions in you… │
-│     In full auto only; elsewhere you or the lead, by mode                                                            │
+│ Autopilot                                                                      off: each approval keeps its own mode │
+│ ❯ For every approval          off                       built-in             Autopilot for every approval a run ope… │
+│   Who answers questions       GPT 5.6 on Codex          everywhere (global)  Who answers the crew's questions in yo… │
+│     On autopilot only; elsewhere you or main, by mode                                                                │
 │                                                                                                                      │
-│ Who checks                                                                   the cheapest model from another company │
-│   Approver model              cheapest, other company  built-in             The approver model, any model in the re… │
-│   Second approver             none, one approver       built-in             A second approver, from another vendor,… │
+│ Who checks                                                                  the cheapest model from another provider │
+│   The judge                   cheapest, other provider  built-in             Who settles what your rules can't deci… │
+│   Second approver             none, one approver        built-in             A second approver, from another agent,… │
 │                                                                                                                      │
 │ Plan · auto · rules and approver both agree                                            0 matches in a row · 0 misses │
-│   How it's decided            auto                     everywhere (global)  The plan checkpoint: supervised waits f… │
-│   Who decides in auto         both agree               built-in             The plan checkpoint: who decides in aut… │
-│   When auto doesn't approve   ask you                  built-in             The plan checkpoint: what happens when … │
-│   Hard limit in full auto     stop safely              built-in             The plan checkpoint: what a hard limit … │
-│   Judge's widest score gap    1.0                      built-in             Plan rules: the largest gap between one… │
+│   How it's decided            auto                      everywhere (global)  The plan approval: supervised waits fo… │
+│   Who decides in auto         both agree                built-in             The plan approval: who decides in auto… │
+│   When auto doesn't approve   ask you                   built-in             The plan approval: what happens when a… │
+│   Hard limit on autopilot     stop safely               built-in             The plan approval: what a hard limit d… │
+│   Judge's widest score gap    1.0                       built-in             Plan rules: the largest gap between on… │
 │                                                                                                                      │
 │ Merge · auto · your rules decide                                                       0 matches in a row · 0 misses │
-│   How it's decided            auto                     everywhere (global)  The merge checkpoint: supervised waits … │
-│   Who decides in auto         your rules               built-in             The merge checkpoint: who decides in au… │
-│   When auto doesn't approve   ask you                  built-in             The merge checkpoint: what happens when… │
-│   Hard limit in full auto     stop safely              built-in             The merge checkpoint: what a hard limit… │
-│   Merge with unreviewed debt  no                       built-in             Merge rules: whether auto may merge a c… │
+│   How it's decided            auto                      everywhere (global)  The merge approval: supervised waits f… │
+│   Who decides in auto         your rules                built-in             The merge approval: who decides in aut… │
+│   When auto doesn't approve   ask you                   built-in             The merge approval: what happens when … │
+│   Hard limit on autopilot     stop safely               built-in             The merge approval: what a hard limit … │
+│   Merge with unreviewed debt  no                        built-in             Merge rules: whether auto may merge a … │
 │                                                                                                                      │
 │ Spot checks                                                                                                          │
 │   None waiting                                                                                                       │

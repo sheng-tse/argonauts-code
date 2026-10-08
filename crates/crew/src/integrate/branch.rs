@@ -97,12 +97,12 @@ mod tests {
     #[test]
     fn branch_names_use_argonauts_prefix() {
         let run = RunId::new("run-01").unwrap();
-        let card = CardId::new("card-003").unwrap();
+        let card = CardId::new("task-003").unwrap();
         assert_eq!(integration_branch(&run), "argonauts/run-01/integration");
-        assert_eq!(card_branch(&run, &card), "argonauts/run-01/card-003");
+        assert_eq!(card_branch(&run, &card), "argonauts/run-01/task-003");
         assert_eq!(
             attempt_branch(&run, &card, 2),
-            "argonauts/run-01/card-003-attempt-2"
+            "argonauts/run-01/task-003-attempt-2"
         );
         for name in [
             integration_branch(&run),

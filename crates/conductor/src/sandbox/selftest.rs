@@ -23,7 +23,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 const RETRY_FAILURE_AFTER: Duration = Duration::from_secs(30);
 
 const HOW_TO_FIX: &str =
-    "Harness sessions are refused until it passes. Run `argonauts doctor` to see why.";
+    "CLI sessions are refused until it passes. Run `argonauts doctor` to see why.";
 
 /// Tries each operation on its argument and prints what happened: `$1` must be writable, `$2`
 /// must not be, `$3` must be unreadable, the socket at `$4` must take a connection, and the one

@@ -1,4 +1,4 @@
-# A solo card owned by the fake Claude Code, which writes hello.txt and plays the recorded
+# A solo task owned by the fake Claude Code, which writes hello.txt and plays the recorded
 # build run that answered the same task. The reviewer is an endpoint, so no other fake runs.
 
 [version]

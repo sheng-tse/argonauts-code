@@ -138,7 +138,7 @@ fn with_binary(
     let check = check_manifest(&manifest, repo_root);
     if !check.is_ok() {
         tracing::warn!(
-            "agents.{}.binary: harness {} is left out: {}",
+            "agents.{}.binary: CLI {} is left out: {}",
             manifest.id,
             manifest.id,
             check.errors.join("; ")
@@ -167,7 +167,7 @@ impl HarnessAdapters {
             .into_iter()
             .map(|manifest| {
                 if let Err(err) = install_home_template(home, &manifest) {
-                    tracing::warn!("harness {}: {err:#}", manifest.id);
+                    tracing::warn!("CLI {}: {err:#}", manifest.id);
                 }
                 if let Some((_, adapter)) = self.made.iter().find(|(made, _)| *made == manifest) {
                     return Arc::clone(adapter);

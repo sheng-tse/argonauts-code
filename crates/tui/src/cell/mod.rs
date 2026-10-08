@@ -26,10 +26,11 @@ pub use crew::{AgentsStarted, StartedAgent};
 pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView};
 pub use group::CollapsedGroup;
 pub use header::{AgentReady, SessionHeader};
-pub use notice::{ExitNote, Notice, ResultLine};
+pub use notice::{ExitNote, HungLine, Notice, ResultLine};
 pub use shell::{ShellEnd, ShellRun};
 pub use tool::{
-    BLINK_PERIOD, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState, ToolStats, ToolTitle,
+    BLINK_PERIOD, PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState, ToolStats,
+    ToolTitle,
 };
 pub use turn::{Recap, TurnEnd};
 pub use user::UserMessage;
@@ -278,10 +279,10 @@ mod tests {
             SessionHeader {
                 app: long.into(),
                 version: "0.0.1".into(),
-                default_agent: Some(long.into()),
+                main_agent: Some(long.into()),
                 model: Some(long.into()),
                 effort: Some(long.into()),
-                preset: long.into(),
+                workflow: long.into(),
                 folder: long.into(),
                 agents: vec![AgentReady {
                     name: long.into(),

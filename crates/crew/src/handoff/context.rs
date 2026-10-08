@@ -87,7 +87,7 @@ pub async fn prepare(
         }
         Err(why) => {
             let fallback = HandoffContext::NoteAndTranscript;
-            let text = format!("{card}'s handoff goes on as {}: {why}", fallback.label());
+            let text = format!("{card}'s fallback goes on as {}: {why}", fallback.label());
             host.record(
                 Some(card),
                 None,
@@ -112,7 +112,7 @@ pub fn tell(context: HandoffContext, mut packet: HandoffPacket) -> EngineResult<
     }
     let json = serde_json::to_string_pretty(&packet)?;
     let mut text = format!(
-        "You're taking over this card from another session. It stopped because: {}. \
+        "You're taking over this task from another session. It stopped because: {}. \
          Its work so far is committed on your branch. Here is what it did:\n\n{json}",
         packet.why_stopped
     );
@@ -169,7 +169,7 @@ mod tests {
             goal_sha256: None,
             notes: Vec::new(),
             work: WorkSoFar {
-                branch: "argonauts/run/card-003".to_owned(),
+                branch: "argonauts/run/task-003".to_owned(),
                 commit: None,
                 stat: DiffStat::default(),
             },
@@ -181,8 +181,8 @@ mod tests {
             last_message: None,
             budget_left: None,
             transcript: Some(TranscriptPaths {
-                worktree: PathBuf::from("/tree/.argonauts/handoff/1/transcript.md"),
-                run: PathBuf::from("/runs/run/cards/card-003/handoff-1/transcript.md"),
+                worktree: PathBuf::from("/tree/.argonauts/fallback/1/transcript.md"),
+                run: PathBuf::from("/runs/run/cards/task-003/fallback-1/transcript.md"),
             }),
             summary: Some("It tried a token bucket.".to_owned()),
         }
@@ -228,7 +228,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(told.text.ends_with(
-            "The old session's whole transcript is at /tree/.argonauts/handoff/1/transcript.md. \
+            "The old session's whole transcript is at /tree/.argonauts/fallback/1/transcript.md. \
              Read it only if you need more detail than this note gives."
         ));
         assert!(!told.text.contains("/runs/"));

@@ -98,7 +98,7 @@ pub enum VendorEvent {
 pub enum BudgetEvent {
     /// Throttled to once a second.
     Run(RunBudget),
-    /// A card hit a limit; its work is committed and `budget.on_hit` decides.
+    /// A card hit a limit; its work is committed and `limits.when_reached` decides.
     Hit {
         card: CardId,
         dimension: BudgetDimension,

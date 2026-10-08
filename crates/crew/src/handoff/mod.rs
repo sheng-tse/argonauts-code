@@ -19,6 +19,7 @@ pub mod choose;
 pub mod context;
 pub mod debt;
 pub mod defaults;
+pub mod judge;
 pub mod merge_return;
 pub mod merge_rule;
 pub mod notes;
@@ -47,6 +48,7 @@ pub async fn apply(host: &Host, card: &CardId, action: RecoveryAction) -> Engine
         }
         RecoveryAction::Race {
             to,
+            pick,
             packet,
             checkpoint,
         } => {
@@ -61,7 +63,7 @@ pub async fn apply(host: &Host, card: &CardId, action: RecoveryAction) -> Engine
                 checkpoint.is_some(),
             )
             .await?;
-            match race::run(host, card, &to, &packet).await? {
+            match race::run(host, card, &to, pick, &packet).await? {
                 Some(winner) => {
                     let since = tag.map_or(record.handoffs, |tag| tag.n);
                     let record = rules::record(host, card)?;
@@ -78,7 +80,7 @@ pub async fn apply(host: &Host, card: &CardId, action: RecoveryAction) -> Engine
                     host,
                     card,
                     Trigger::Escalate,
-                    "no race attempt passed its gates and review",
+                    "no fallback's attempt passed its checks and review",
                 )
                 .map(drop),
             }
@@ -86,7 +88,7 @@ pub async fn apply(host: &Host, card: &CardId, action: RecoveryAction) -> Engine
         RecoveryAction::Ask(plan) => ask::ask(host, card, *plan).await,
         RecoveryAction::Wait { vendor, until } => ask::wait(host, card, vendor, until),
         other => Err(EngineError::Refused(format!(
-            "a handoff can't apply {}",
+            "a fallback can't apply {}",
             action_name(&other)
         ))),
     }
@@ -101,7 +103,7 @@ fn action_name(action: &RecoveryAction) -> &'static str {
         RecoveryAction::Race { .. } => "race",
         RecoveryAction::Ask(_) => "ask",
         RecoveryAction::Wait { .. } => "wait",
-        RecoveryAction::BudgetHit(_) => "a budget hit",
+        RecoveryAction::BudgetHit(_) => "a limit hit",
         RecoveryAction::Escalate { .. } => "escalate",
         RecoveryAction::Park(_) => "park",
     }

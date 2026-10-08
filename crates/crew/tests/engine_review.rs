@@ -48,13 +48,13 @@ impl Bench {
     ) -> anyhow::Result<Self> {
         let services = FakeServices::new();
         let mut all = Settings {
-            default_agent: CLAUDE.parse()?,
-            crew: Vec::new(),
+            main_agent: CLAUDE.parse()?,
+            crew: Vec::new().into(),
             ..Settings::default()
         };
         for worker in workers {
             let added = services.workers.add(worker);
-            all.crew.push(added.worker_ref().clone());
+            all.crew.add(added.worker_ref().clone());
         }
         settings(&mut all);
         let repo = TempRepo::new()?;
@@ -115,7 +115,7 @@ fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
         "title": "Rate limit the API",
         "mode": "crew",
         "forced": true,
-        "preset": "peer-crew",
+        "workflow": "council",
         "estimate": null,
         "triage": null,
         "chat_turn": null,
@@ -172,7 +172,7 @@ fn created(seq: u64, spec: CardSpec) -> anyhow::Result<RunEvent> {
 
 fn card(id: &str, kind: CardKind, owner: &str, reviewers: &[&str], owned: &[&str]) -> CardSpec {
     CardSpec {
-        id: CardId::new(id).expect("card id"),
+        id: CardId::new(id).expect("task id"),
         title: format!("{id} title"),
         task: "Rate limit the API with a token bucket.".to_owned(),
         kind,
@@ -223,7 +223,7 @@ async fn review_disagreement_goes_to_a_fresh_adjudicator() -> anyhow::Result<()>
         reviewer(LLAMA, "llama", "approve", "unused"),
     ];
     let build = card(
-        "card-001",
+        "task-001",
         CardKind::Build,
         CLAUDE,
         &[CODEX, AGY],
@@ -232,12 +232,12 @@ async fn review_disagreement_goes_to_a_fresh_adjudicator() -> anyhow::Result<()>
     let bench = Bench::new(
         workers,
         |settings| {
-            settings.review.per_card = 2;
+            settings.review.per_task = 2;
             settings.review.blind = true;
         },
         vec![created(0, build)?],
     )?;
-    let card = CardId::new("card-001")?;
+    let card = CardId::new("task-001")?;
     let verdict = review::review_card(&bench.host, &card, 1).await?;
     assert_eq!(verdict, Verdict::Approved);
 
@@ -270,7 +270,7 @@ async fn review_disagreement_goes_to_a_fresh_adjudicator() -> anyhow::Result<()>
     assert!(prompt_text(ruling).contains("CHANGES-SUMMARY"));
     assert!(
         bench.specs_of(CLAUDE, StepName::Review).is_empty(),
-        "the owner never reviews"
+        "the worker never reviews"
     );
     Ok(())
 }
@@ -297,7 +297,7 @@ async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
         endpoint,
     ];
     let build = card(
-        "card-001",
+        "task-001",
         CardKind::Build,
         CODEX,
         &[ENDPOINT],
@@ -306,7 +306,7 @@ async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
     let tests = card(
         "test-001",
         CardKind::AcceptanceTests {
-            for_card: CardId::new("card-001")?,
+            for_card: CardId::new("task-001")?,
         },
         ENDPOINT,
         &[],
@@ -354,7 +354,7 @@ async fn endpoint_tests_outside_owned_paths_rejected() -> anyhow::Result<()> {
         } = review
         {
             assert_eq!(files, ["tests/limit/bucket_test.rs"]);
-            assert_eq!(for_card.as_str(), "card-001");
+            assert_eq!(for_card.as_str(), "task-001");
         }
     }
     Ok(())
@@ -368,14 +368,14 @@ async fn a_reviewer_of_the_owners_family_is_skipped() -> anyhow::Result<()> {
         FakeWorker::harness("opencode/gpt-oss", "gpt"),
     ];
     let build = card(
-        "card-001",
+        "task-001",
         CardKind::Build,
         "opencode/gpt-oss",
         &[CODEX, CLAUDE],
         &["src/limit.rs"],
     );
     let bench = Bench::new(workers, |_| {}, vec![created(0, build)?])?;
-    let verdict = review::review_card(&bench.host, &CardId::new("card-001")?, 1).await?;
+    let verdict = review::review_card(&bench.host, &CardId::new("task-001")?, 1).await?;
     assert_eq!(verdict, Verdict::Approved);
     assert!(bench.specs_of(CODEX, StepName::Review).is_empty());
     assert_eq!(bench.specs_of(CLAUDE, StepName::Review).len(), 1);
@@ -417,7 +417,7 @@ async fn review_panel_adjudicates_disagreeing_reviewers() -> anyhow::Result<()> 
     assert_eq!(done.summary.as_deref(), Some("The reviewers disagree"));
     assert!(
         bench.specs_of(CLAUDE, StepName::Review).is_empty(),
-        "the author's family"
+        "the author's provider"
     );
 
     let adjudicate = step_call(

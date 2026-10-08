@@ -6,10 +6,10 @@ Workflow library
 A repo file wins over yours in ~/.argonauts/workflows, which wins …  3 workflows
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│   Workflow          Notes            Description                             │
-│   solo                               How the solo workflow runs              │
-│ ❯ coordinated-crew  in use · edited  How the coordinated-crew workflow runs  │
-│   release                            How the release workflow runs           │
+│   Workflow      Notes            Description                                 │
+│   solo                           How the solo workflow runs                  │
+│ ❯ orchestrator  in use · edited  How the orchestrator workflow runs          │
+│   release                        How the release workflow runs               │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -25,4 +25,4 @@ A repo file wins over yours in ~/.argonauts/workflows, which wins …  3 workflo
 │                                                                              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ select · ⏎ show · c copy · C copy to repo · d diff · esc back
+↑↓ select · ⏎ show · c copy · C copy to repo · d diff · e edit · esc back

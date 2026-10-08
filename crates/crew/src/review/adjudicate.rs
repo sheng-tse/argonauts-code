@@ -24,7 +24,7 @@ pub async fn adjudicate(host: &Host, card: &CardId) -> EngineResult<Verdict> {
         host.read(|state| (state.cards.get(card).cloned(), context::goal_text(state)));
     let Some(record) = record else {
         return Err(EngineError::Refused(format!(
-            "{card} is not a card of this run"
+            "{card} is not a task of this run"
         )));
     };
     let mut round = 0;
@@ -56,7 +56,7 @@ pub async fn adjudicate(host: &Host, card: &CardId) -> EngineResult<Verdict> {
     let reviewers: Vec<WorkerRef> = reviews.iter().map(|(r, _)| r.clone()).collect();
     let Some(adjudicator) = pick(host, owner.as_ref(), &reviewers, &family) else {
         return Ok(Verdict::Escalated {
-            reasons: vec!["No adjudicator outside the owner and reviewers".to_owned()],
+            reasons: vec!["No adjudicator outside the worker and reviewers".to_owned()],
         });
     };
     let diff = match (&record.worktree, &record.base) {

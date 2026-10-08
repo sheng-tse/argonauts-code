@@ -5,15 +5,19 @@ use std::time::Duration;
 
 use argonauts_core::RunId;
 use argonauts_core::app::{AppMode, UiCommand, ViewRequest};
+use argonauts_core::events::session::SubagentStatus;
+use argonauts_core::input::{SlashCommand, ViewAction, WidgetsAction};
 use argonauts_core::names::{SessionKey, WorkflowId};
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::ui::WidgetName;
 use argonauts_core::views::{conversation_run, vendor_workflow_id};
 
 use crate::app::UiAction;
 use crate::bottom::{AgentRef, ApprovalMode as ShownMode, ModeNotice};
 use crate::cell::Tone;
 use crate::format;
-use crate::keymap::Keymap;
+use crate::keymap::{Action, Keymap};
+use crate::overview::{OverviewView, Tab};
 use crate::state::{AppState, RunState, SessionState, SessionStatus};
 use crate::text::sanitize_line;
 use crate::views::waiting::{self, RunEntry, WaitingView};
@@ -28,10 +32,10 @@ const NOTICE_FOR: Duration = Duration::from_secs(4);
 pub struct KeyActions {}
 
 impl KeyActions {
-    /// Takes `Interrupt` (CancelTurn, then Pause, then Pause now, by the app mode), `ModeChanged`,
+    /// Takes `Interrupt` (CancelTurn, or Pause now for a run that's pausing), `ModeChanged`,
     /// `Focus`, `Quit`, `OpenCrewView`, `OpenAgent`, `OpenTree`, `OpenWorkflow`, `Follow`,
     /// `OpenHelp`, `EditDraft`, `Command`, `Request`, `Notice`, `Copy`, `Picker`, `StopAgent`,
-    /// and `StopRun`. The panel already asked for the stop with its first `x`.
+    /// `StopRun`, and `PauseRun`. The panel already asked for the stop with its first `x`.
     pub fn on_action(&mut self, action: &UiAction, cx: &mut Cx<'_>) -> bool {
         match action {
             UiAction::Interrupt => interrupt(cx),
@@ -46,6 +50,29 @@ impl KeyActions {
             }
             UiAction::OpenTree => open_tree(cx),
             UiAction::OpenWorkflow(key) => open_row(key, cx),
+            // The tab that shows the mod at full size opens at once, and what it draws follows
+            // from the controller.
+            // The stats card opens its tab for the period its file sets, as `/stats` does.
+            UiAction::OpenTab(WidgetName::Stats) => open_stats(cx, false),
+            UiAction::OpenTab(name) => {
+                let watch = cx.model.bottom.band.watch.clone();
+                let tab = Tab::showing(*name);
+                cx.out.open(OverviewView::new(tab, watch));
+                cx.out.send(match tab {
+                    Tab::Status => UiCommand::Request {
+                        view: ViewRequest::Status,
+                    },
+                    Tab::Context => UiCommand::Request {
+                        view: ViewRequest::Context,
+                    },
+                    _ => UiCommand::Slash {
+                        command: SlashCommand::Usage {
+                            period: None,
+                            action: ViewAction::Open,
+                        },
+                    },
+                });
+            }
             UiAction::OpenCrewView => {
                 cx.out.open(CrewView::opened_left(cx.state));
                 // Conversations, the CLIs' own sessions, and other repos' runs come from the
@@ -54,10 +81,23 @@ impl KeyActions {
                     view: ViewRequest::Crew,
                 });
             }
+            // A subagent of the main agent's own CLI has no view of its own: what it does
+            // shows in the conversation, in full with the transcript key.
+            UiAction::OpenAgent(agent) if of_conversation(agent) => {
+                notice(
+                    "Its steps are in the conversation · ctrl+o shows them all",
+                    cx,
+                );
+            }
             UiAction::OpenAgent(agent) => match find_agent(cx.state, agent) {
                 Some((run, session)) => cx.out.open(SessionView::new(run, session.key.clone())),
                 None => notice(&format!("No agent named {}.", agent.session), cx),
             },
+            UiAction::StopAgent(agent) if of_conversation(agent) => {
+                cx.out.send(UiCommand::StopSubagent {
+                    id: agent.session.clone(),
+                });
+            }
             UiAction::StopAgent(agent) => match find_agent(cx.state, agent) {
                 Some((run, session)) => cx.out.send(UiCommand::StopAgent {
                     run,
@@ -65,7 +105,18 @@ impl KeyActions {
                 }),
                 None => notice(&format!("No agent named {}.", agent.session), cx),
             },
+            UiAction::OpenArtifact => match cx.state.artifacts.latest() {
+                Some(latest) => {
+                    let (url, name) = (latest.artifact.url.clone(), latest.artifact.name.clone());
+                    open_link(&url, &name, cx);
+                }
+                None => notice(crate::views::artifacts::NONE_YET, cx),
+            },
+            UiAction::OpenLink { url, name } => open_link(url, name, cx),
+            UiAction::MessageAgent { agent, name, text } => message_agent(agent, name, text, cx),
+            UiAction::StopAllAgents => stop_all_agents(cx),
             UiAction::StopRun(run) => stop_run(run, cx),
+            UiAction::PauseRun(run) => pause_run(run, cx),
             UiAction::Follow(n) => match cx.state.follow(*n) {
                 Some((run, session)) => {
                     let view = SessionView::new(run.clone(), session.key.clone());
@@ -79,6 +130,17 @@ impl KeyActions {
                     .open(HelpView::new(keymap).with_commands(cx.state.vendor_commands.clone()));
             }
             UiAction::EditDraft => cx.out.edit_draft = true,
+            // `,` on the pinned stats card: its page is the Stats tab's own.
+            UiAction::Command(UiCommand::Slash {
+                command:
+                    SlashCommand::Widgets {
+                        action:
+                            WidgetsAction::Page {
+                                widget: WidgetName::Stats,
+                            },
+                        ..
+                    },
+            }) => open_stats(cx, true),
             UiAction::Command(command) => cx.out.send(command.clone()),
             UiAction::Request(view) => cx.out.send(UiCommand::Request { view: view.clone() }),
             UiAction::Notice(text) => notice(text, cx),
@@ -93,16 +155,120 @@ impl KeyActions {
     }
 }
 
-/// Esc while work runs: a chat turn stops at once, a run pauses at its next safe point, and a
-/// run already pausing stops now.
+/// Hands a claude.ai page to the browser and says so, in Claude Code's words. Anything else
+/// is refused: the address came out of a tool's result, and only an artifact's is opened.
+fn open_link(url: &str, name: &str, cx: &mut Cx<'_>) {
+    if !argonauts_core::artifacts::is_link(url) {
+        notice("That isn't a claude.ai link, so it wasn't opened", cx);
+        return;
+    }
+    cx.out.open_link = Some(url.to_owned());
+    notice(
+        &format!("Opened {} in your browser", sanitize_line(name).trim()),
+        cx,
+    );
+}
+
+/// A row of the main agent's own CLI: one of its subagents.
+fn of_conversation(agent: &AgentRef) -> bool {
+    agent.run.as_deref() == Some(conversation_run().as_str())
+}
+
+/// Enter on a draft with an agent's row selected. An agent a run started is steered directly,
+/// and reads the message at its next step. A subagent of the main agent's own CLI has no line
+/// of its own when Argonauts drives that CLI, so the message goes to the main agent to pass
+/// on, and the conversation says so.
+fn message_agent(agent: &AgentRef, name: &str, text: &str, cx: &mut Cx<'_>) {
+    let name = sanitize_line(name).trim().to_owned();
+    if of_conversation(agent) {
+        cx.out.send(UiCommand::MessageSubagent {
+            name: name.clone(),
+            text: text.trim().to_owned(),
+        });
+        notice(
+            &format!("Sent through the main agent, which passes it on to {name}"),
+            cx,
+        );
+        return;
+    }
+    match find_agent(cx.state, agent) {
+        Some((run, session)) => {
+            cx.out.send(UiCommand::Steer {
+                run,
+                session: session.key.clone(),
+                text: text.to_owned(),
+                now: false,
+            });
+            notice(
+                &format!("Sent to {name}, which reads it at its next step"),
+                cx,
+            );
+        }
+        None => notice(&format!("No agent named {name}."), cx),
+    }
+}
+
+/// The stop-all chord, confirmed: every subagent of the main agent's own CLI, and every agent
+/// still going in the runs this screen holds. Each keeps what it did.
+fn stop_all_agents(cx: &mut Cx<'_>) {
+    let mut stopped = 0;
+    for subagent in &cx.state.chat.subagents {
+        let ended = matches!(
+            subagent.status,
+            SubagentStatus::Done | SubagentStatus::Failed
+        );
+        if !ended {
+            cx.out.send(UiCommand::StopSubagent {
+                id: subagent.id.clone(),
+            });
+            stopped += 1;
+        }
+    }
+    for run in cx.state.runs.values() {
+        for session in run
+            .sessions_in_order()
+            .filter(|session| session.is_running())
+        {
+            cx.out.send(UiCommand::StopAgent {
+                run: run.id.clone(),
+                session: session.key.clone(),
+            });
+            stopped += 1;
+        }
+    }
+    let said = match stopped {
+        0 => "No background agents running".to_owned(),
+        1 => "Stopping 1 agent".to_owned(),
+        n => format!("Stopping {n} agents"),
+    };
+    notice(&said, cx);
+}
+
+/// Esc while work runs stops the main agent's turn and nothing else, as on Claude Code's
+/// screen: the agents a run started keep going, and stop from the list, one by
+/// one or all at once. A run that's already pausing stops now.
 fn interrupt(cx: &mut Cx<'_>) {
     let command = match cx.state.mode {
         Some(AppMode::Answering { .. }) => UiCommand::CancelTurn,
-        Some(AppMode::Working { .. }) => UiCommand::Pause { now: false },
+        Some(AppMode::Working { .. }) if cx.state.chat.turn.is_some() => UiCommand::CancelTurn,
+        Some(AppMode::Working { .. }) => {
+            let said = run_keeps_going(cx);
+            notice(&said, cx);
+            return;
+        }
         Some(AppMode::Pausing { .. }) => UiCommand::Pause { now: true },
         Some(AppMode::Idle | AppMode::Parked { .. }) | None => return,
     };
     cx.out.send(command);
+}
+
+/// What Esc says with only a run at work: it keeps going, and the chord that stops its
+/// agents, in the list's own words. Short enough to show whole beside the mode at 100 columns.
+fn run_keeps_going(cx: &Cx<'_>) -> String {
+    let (keymap, _) = Keymap::with_overrides(&cx.settings.keymap);
+    let chord = keymap.keys(Action::StopAgents);
+    let chord = chord.first().map_or("ctrl+x ctrl+k", String::as_str);
+    format!("The run keeps going · {chord} to stop all agents")
 }
 
 /// `Stop` acts on the run on screen, so for any other run you're told how to get there.
@@ -127,13 +293,53 @@ fn stop_run(run: &str, cx: &mut Cx<'_>) {
     }
 }
 
+/// `Pause` acts on the run on screen too: it stops at its next safe point, and `/resume`
+/// carries it on.
+fn pause_run(run: &str, cx: &mut Cx<'_>) {
+    if run.contains('#') {
+        notice(
+            "This workflow is an agent's own; stop it from that agent",
+            cx,
+        );
+        return;
+    }
+    match RunId::new(run) {
+        Ok(run) if cx.state.attached.as_ref() == Some(&run) => {
+            cx.out.send(UiCommand::Pause { now: false });
+        }
+        Ok(run) => notice(
+            &format!(
+                "Only the run on screen can be paused. Resume {} first, then pause it",
+                sanitize_line(run.as_str())
+            ),
+            cx,
+        ),
+        Err(_) => notice(&format!("No run named {}.", sanitize_line(run)), cx),
+    }
+}
+
 fn approval_mode(mode: ShownMode) -> ApprovalMode {
     match mode {
         ShownMode::Supervised => ApprovalMode::Supervised,
-        ShownMode::Shadow => ApprovalMode::Shadow,
+        ShownMode::AutoPreview => ApprovalMode::AutoPreview,
         ShownMode::Auto => ApprovalMode::Auto,
-        ShownMode::FullAuto => ApprovalMode::FullAuto,
+        ShownMode::Autopilot => ApprovalMode::Autopilot,
     }
+}
+
+/// The Stats tab for the period `mods/stats.toml` sets, with the stats mod's page over it
+/// when `page`. The numbers, which carry the file's settings, follow from the controller.
+pub(super) fn open_stats(cx: &mut Cx<'_>, page: bool) {
+    let watch = cx.model.bottom.band.watch.clone();
+    let view = OverviewView::new(Tab::Stats, watch).with_stats_period_from_file();
+    cx.out
+        .open(if page { view.with_stats_page() } else { view });
+    cx.out.send(UiCommand::Slash {
+        command: SlashCommand::Stats {
+            period: None,
+            action: ViewAction::Open,
+        },
+    });
 }
 
 /// Ctrl+T and `/workflows`: the run's workflow view, or its Library tab alone when there's no
@@ -385,11 +591,270 @@ mod tests {
     }
 
     #[test]
+    fn comma_on_the_pinned_stats_card_opens_its_page_over_the_stats_tab() {
+        use argonauts_core::settings::ui::WidgetName;
+
+        let page = |widget| {
+            UiAction::Command(UiCommand::Slash {
+                command: SlashCommand::Widgets {
+                    action: WidgetsAction::Page { widget },
+                    scope: None,
+                },
+            })
+        };
+        let state = AppState::default();
+        let (out, _) = act(&state, &page(WidgetName::Stats));
+        assert_eq!(out.views.len(), 1);
+        assert_eq!(
+            out.commands,
+            [UiCommand::Slash {
+                command: SlashCommand::Stats {
+                    period: None,
+                    action: ViewAction::Open,
+                },
+            }]
+        );
+        let (out, _) = act(&state, &page(WidgetName::Spend));
+        assert!(out.views.is_empty());
+        assert_eq!(out.commands.len(), 1);
+    }
+
+    #[test]
+    fn enter_on_a_pinned_mod_opens_the_tab_that_shows_it_whole() {
+        use argonauts_core::settings::ui::WidgetName;
+
+        let state = AppState::default();
+        let request = |view| UiCommand::Request { view };
+        let (out, _) = act(&state, &UiAction::OpenTab(WidgetName::Run));
+        assert_eq!(out.views.len(), 1);
+        assert_eq!(out.commands, [request(ViewRequest::Status)]);
+        let (out, _) = act(&state, &UiAction::OpenTab(WidgetName::Context));
+        assert_eq!(out.commands, [request(ViewRequest::Context)]);
+        let (out, _) = act(&state, &UiAction::OpenTab(WidgetName::Spend));
+        assert_eq!(out.views.len(), 1);
+        assert!(
+            matches!(
+                out.commands[..],
+                [UiCommand::Slash {
+                    command: SlashCommand::Usage { .. }
+                }]
+            ),
+            "{:?}",
+            out.commands
+        );
+        // Stats asks as `/stats` does, for the period its file sets.
+        let (out, _) = act(&state, &UiAction::OpenTab(WidgetName::Stats));
+        assert_eq!(out.views.len(), 1);
+        assert_eq!(
+            out.commands,
+            [UiCommand::Slash {
+                command: SlashCommand::Stats {
+                    period: None,
+                    action: ViewAction::Open,
+                },
+            }]
+        );
+    }
+
+    #[test]
     fn a_selection_goes_to_the_clipboard_with_a_short_notice() {
         let (out, model) = act(&AppState::default(), &UiAction::Copy("a word".into()));
         assert_eq!(out.clipboard.as_deref(), Some("a word"));
         let notice = model.bottom.mode.notice.expect("a notice");
         assert_eq!(notice.text, "Copied");
+    }
+
+    fn subagent(id: &str, label: &str, status: SubagentStatus) -> argonauts_core::AgentEvent {
+        argonauts_core::AgentEvent::Subagent {
+            update: argonauts_core::events::session::SubagentUpdate {
+                id: id.into(),
+                parent: None,
+                kind: argonauts_core::events::session::SubagentKind::Subagent,
+                label: Some(label.into()),
+                prompt: None,
+                status,
+                last_message: None,
+                log_uri: None,
+                steps_visible: true,
+                tokens: None,
+            },
+        }
+    }
+
+    /// The conversation's own turn with two subagents, one of them finished.
+    fn chatting() -> AppState {
+        use argonauts_core::app::{AppEvent, ChatEvent};
+        let turn = TurnId::numbered(1);
+        let mut state = AppState::default();
+        state.apply(&AppEvent::Chat {
+            event: ChatEvent::TurnStarted {
+                turn: turn.clone(),
+                text: "split the checks".into(),
+                worker: "claude-code/opus".parse().unwrap(),
+                read_only: true,
+                commit: String::new(),
+                uncommitted: Vec::new(),
+                settings_sha256: None,
+                continues: false,
+            },
+        });
+        for event in [
+            subagent("toolu_a", "Count slowly", SubagentStatus::Running),
+            subagent("toolu_b", "Read the readme", SubagentStatus::Done),
+        ] {
+            state.apply(&AppEvent::Chat {
+                event: ChatEvent::Agent {
+                    turn: turn.clone(),
+                    event,
+                },
+            });
+        }
+        state
+    }
+
+    fn of_main(id: &str) -> AgentRef {
+        AgentRef {
+            run: Some(conversation_run().to_string()),
+            session: id.into(),
+        }
+    }
+
+    /// A message for a subagent of the main agent's own CLI goes to the main agent to pass
+    /// on, as a command of its own that no mention parsing reads, and the screen says it went
+    /// that way.
+    #[test]
+    fn a_message_for_a_subagent_goes_through_the_main_agent_and_says_so() {
+        let state = chatting();
+        let message = UiAction::MessageAgent {
+            agent: of_main("toolu_a"),
+            name: "Count slowly".into(),
+            text: " also check the tests ".into(),
+        };
+        let (out, model) = act(&state, &message);
+        assert_eq!(
+            out.commands,
+            [UiCommand::MessageSubagent {
+                name: "Count slowly".into(),
+                text: "also check the tests".into(),
+            }]
+        );
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "Sent through the main agent, which passes it on to Count slowly"
+        );
+    }
+
+    /// `x` twice on a subagent's row stops that one, and the stop-all chord stops every one
+    /// still running, in the conversation and in the runs on screen.
+    #[test]
+    fn one_subagent_stops_alone_and_the_chord_stops_every_one_still_running() {
+        let mut state = chatting();
+        let (out, _) = act(&state, &UiAction::StopAgent(of_main("toolu_a")));
+        assert_eq!(
+            out.commands,
+            [UiCommand::StopSubagent {
+                id: "toolu_a".into()
+            }]
+        );
+        state.runs = crate::mentions::fixture::working_state().runs;
+        let running: Vec<_> = state
+            .runs
+            .values()
+            .flat_map(|run| run.sessions_in_order().filter(|s| s.is_running()))
+            .map(|session| session.key.clone())
+            .collect();
+        assert!(!running.is_empty());
+        let (out, model) = act(&state, &UiAction::StopAllAgents);
+        assert_eq!(
+            out.commands[0],
+            UiCommand::StopSubagent {
+                id: "toolu_a".into()
+            },
+            "the finished one is left alone"
+        );
+        let stopped: Vec<_> = out.commands[1..]
+            .iter()
+            .map(|command| match command {
+                UiCommand::StopAgent { session, .. } => session.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(stopped, running);
+        let said = model.bottom.mode.notice.expect("a notice").text;
+        assert_eq!(said, format!("Stopping {} agents", running.len() + 1));
+
+        let (out, model) = act(&AppState::default(), &UiAction::StopAllAgents);
+        assert!(out.commands.is_empty());
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "No background agents running"
+        );
+    }
+
+    /// Ctrl+] opens the most recent artifact in the browser and says so, and only a
+    /// claude.ai page is ever handed over.
+    #[test]
+    fn the_open_artifact_key_opens_the_most_recent_one() {
+        use argonauts_core::app::{AppEvent, ChatEvent};
+        let url = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
+        let (out, model) = act(&AppState::default(), &UiAction::OpenArtifact);
+        assert_eq!(out.open_link, None);
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "No artifacts yet. Publish one with the Artifact tool."
+        );
+
+        let mut state = chatting();
+        let turn = TurnId::numbered(1);
+        for event in [
+            argonauts_core::AgentEvent::ToolStarted {
+                id: "toolu_p".into(),
+                name: "Artifact".into(),
+                input: serde_json::json!({"file_path": "out/weekly-usage-chart.html"}),
+                parent: None,
+            },
+            argonauts_core::AgentEvent::ToolFinished {
+                id: "toolu_p".into(),
+                ok: true,
+                output: Some(format!("Published out/weekly-usage-chart.html at {url}")),
+                parent: None,
+            },
+        ] {
+            state.apply(&AppEvent::Chat {
+                event: ChatEvent::Agent {
+                    turn: turn.clone(),
+                    event,
+                },
+            });
+        }
+        let (out, model) = act(&state, &UiAction::OpenArtifact);
+        assert_eq!(out.open_link.as_deref(), Some(url));
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "Opened weekly-usage-chart in your browser"
+        );
+
+        let elsewhere = UiAction::OpenLink {
+            url: "https://example.com/artifact/1".into(),
+            name: "x".into(),
+        };
+        let (out, model) = act(&state, &elsewhere);
+        assert_eq!(out.open_link, None);
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "That isn't a claude.ai link, so it wasn't opened"
+        );
+    }
+
+    /// A subagent of the main agent's own CLI has no view of its own.
+    #[test]
+    fn enter_on_a_subagent_says_where_its_steps_are() {
+        let (out, model) = act(&chatting(), &UiAction::OpenAgent(of_main("toolu_a")));
+        assert!(out.commands.is_empty() && out.views.is_empty());
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "Its steps are in the conversation · ctrl+o shows them all"
+        );
     }
 
     #[test]
@@ -402,10 +867,8 @@ mod tests {
                 }),
                 vec![UiCommand::CancelTurn],
             ),
-            (
-                Some(AppMode::Working { run: run.clone() }),
-                vec![UiCommand::Pause { now: false }],
-            ),
+            // A run's agents keep going past Esc.
+            (Some(AppMode::Working { run: run.clone() }), Vec::new()),
             (
                 Some(AppMode::Pausing { run: run.clone() }),
                 vec![UiCommand::Pause { now: true }],
@@ -419,6 +882,29 @@ mod tests {
             let (out, _) = act(&state, &UiAction::Interrupt);
             assert_eq!(out.commands, sent, "{mode:?}");
         }
+        // With only a run at work Esc says it keeps going, and how to stop its agents.
+        let mut state = AppState::default();
+        state.mode = Some(AppMode::Working { run: run.clone() });
+        let (_, model) = act(&state, &UiAction::Interrupt);
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "The run keeps going · ctrl+x ctrl+k to stop all agents"
+        );
+        // A turn the main agent answers meanwhile is what Esc stops.
+        state.chat.turn = Some(TurnId::numbered(1));
+        let (out, model) = act(&state, &UiAction::Interrupt);
+        assert_eq!(out.commands, [UiCommand::CancelTurn]);
+        assert!(model.bottom.mode.notice.is_none());
+        // The list pauses the run on screen, and says so of any other.
+        state.attached = Some(run.clone());
+        let (out, _) = act(&state, &UiAction::PauseRun(run.as_str().to_owned()));
+        assert_eq!(out.commands, [UiCommand::Pause { now: false }]);
+        let (out, model) = act(&state, &UiAction::PauseRun("run-02".into()));
+        assert!(out.commands.is_empty());
+        assert_eq!(
+            model.bottom.mode.notice.expect("a notice").text,
+            "Only the run on screen can be paused. Resume run-02 first, then pause it"
+        );
     }
 
     #[test]
@@ -452,7 +938,7 @@ mod tests {
                 run: run_id(),
                 title: "hi".into(),
                 mode: argonauts_core::events::run::RunMode::Solo,
-                preset: "peer-crew".into(),
+                workflow: "council".into(),
                 state: argonauts_core::api::RunState::Parked,
                 stopped_at: String::new(),
                 updated: time::OffsetDateTime::UNIX_EPOCH,
@@ -522,7 +1008,7 @@ mod tests {
         assert!(commands.is_empty(), "{commands:?}");
         assert!(views[0].starts_with("WaitingView"), "{views:?}");
 
-        log.design("s-001", "lead:design");
+        log.design("s-001", "main:design");
         let (views, commands) = opened(&log, &enter);
         assert!(commands.is_empty(), "{commands:?}");
         assert!(
@@ -535,7 +1021,7 @@ mod tests {
         assert!(views[0].contains("s-001"), "{views:?}");
 
         log.ended("s-001");
-        log.design("s-002", "lead:design-2");
+        log.design("s-002", "main:design-2");
         let (views, _) = opened(&log, &enter);
         assert!(views[0].contains("s-002"), "the design at work: {views:?}");
 

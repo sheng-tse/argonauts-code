@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use argonauts_core::keywords::Keyword;
-use argonauts_core::limits::QuotaReading;
+use argonauts_core::limits::{QuotaAnswer, QuotaReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
 use argonauts_core::vendor_commands::{BuiltinCommand, VendorCommand};
 use argonauts_core::vendor_sessions::{VendorScan, VendorSession, VendorTurn};
@@ -26,7 +26,7 @@ pub const CHEAPEST_EFFORT: &str = "low";
 
 pub const OUTPUT_SCHEMA_FILE: &str = "codex-output-schema.json";
 
-pub const TESTED_VERSIONS: &[&str] = &["0.158.0"];
+pub const TESTED_VERSIONS: &[&str] = &["0.158.0", "0.160.0"];
 
 /// Words Codex treats specially in a prompt: none in 0.160.0. Its `ultra` is a reasoning level
 /// picked in the model menu, not a word you type.
@@ -112,6 +112,10 @@ impl Adapter for CodexAdapter {
         probe::parse(stdout, OffsetDateTime::now_utc())
     }
 
+    fn parse_quota_probe_answer(&self, stdout: &str) -> Option<QuotaAnswer> {
+        probe::answer(stdout, OffsetDateTime::now_utc())
+    }
+
     fn compaction(&self, setting: Compaction) -> LaunchTweak {
         tweaks::compaction(setting)
     }
@@ -174,6 +178,11 @@ impl Adapter for CodexAdapter {
             // Exits 0 when logged in and 1 when not, without a model call (codex-cli 0.158.0).
             login_check: Some(vec!["login".to_owned(), "status".to_owned()]),
         }
+    }
+
+    // `codex update` updates a standalone install where the install supports it.
+    fn update_args(&self) -> Option<&'static [&'static str]> {
+        Some(&["update"])
     }
 
     fn builtin_commands(&self) -> &'static [BuiltinCommand] {
@@ -297,7 +306,7 @@ mod tests {
         // Flags that loosen the sandbox or pick a session by recency are refused.
         for extra in [
             "-a",
-            "--full-auto",
+            "--autopilot",
             "--last",
             "--sandbox=danger-full-access",
             "-sdanger-full-access",
@@ -358,7 +367,7 @@ mod tests {
         let spec = command(&request(SessionRole::ReadOnly));
         assert_eq!(value_after(&spec.args, "--sandbox"), "read-only");
         assert!(!spec.args.iter().any(|a| a.contains("workspace-write")));
-        assert!(!spec.args.iter().any(|a| a == "-a" || a == "--full-auto"));
+        assert!(!spec.args.iter().any(|a| a == "-a" || a == "--autopilot"));
 
         // A read-only session that must not fan out, such as a judge, also turns agents off.
         let judge = SessionRequest {
@@ -665,11 +674,11 @@ mod tests {
     fn schema_is_written_to_the_scratch_dir() {
         let req = SessionRequest {
             json_schema: Some(report_json_schema()),
-            scratch_dir: Some(PathBuf::from("/state/cards/card-001")),
+            scratch_dir: Some(PathBuf::from("/state/cards/task-001")),
             ..request(SessionRole::Build)
         };
         let spec = command(&req);
-        let path = output_schema_path(Path::new("/state/cards/card-001"));
+        let path = output_schema_path(Path::new("/state/cards/task-001"));
         assert_eq!(
             value_after(&spec.args, "--output-schema"),
             path.to_str().unwrap()
@@ -747,7 +756,7 @@ mod tests {
             Some("0.158.0")
         );
         assert_eq!(adapter.parse_version("codex-cli"), None);
-        assert_eq!(adapter.tested_versions(), ["0.158.0"]);
+        assert_eq!(adapter.tested_versions(), ["0.158.0", "0.160.0"]);
         assert!(adapter.wrap_up_input("wrap up").is_none());
         assert_eq!(adapter.stop_plan(), StopPlan::default());
         let caps = adapter.capabilities();

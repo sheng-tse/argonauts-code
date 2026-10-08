@@ -238,7 +238,12 @@ impl Session {
             tokio::select! {
                 biased;
                 message = control.recv() => match message {
-                    None | Some(SessionControl::Stop | SessionControl::WrapUp) => {
+                    // A reply is one request with nothing in the background, so stopping
+                    // the turn alone is stopping.
+                    None
+                    | Some(
+                        SessionControl::Stop | SessionControl::StopTurn | SessionControl::WrapUp,
+                    ) => {
                         return Waited::Halted(EndReason::Stopped);
                     }
                     // No tool is ever running, so "after the tool call" is now.
@@ -257,7 +262,10 @@ impl Session {
                     Some(
                         SessionControl::SendNow { .. }
                         | SessionControl::TakeBack { .. }
-                        | SessionControl::Screen(_),
+                        | SessionControl::Screen(_)
+                        | SessionControl::AskContext(_)
+                        | SessionControl::WatchContext(_)
+                        | SessionControl::StopSubagent { .. },
                     ) => {}
                 },
                 output = &mut future => return Waited::Done(output),
@@ -1025,7 +1033,7 @@ mod tests {
         let err = reqwest::Client::new().post(&url).send().await.unwrap_err();
         let secrets = Secrets::new(vec!["hunter22".into()]);
         let EndReason::VendorError { message, .. } = transport_failure(err, &url, &secrets) else {
-            panic!("expected a vendor error");
+            panic!("expected an agent error");
         };
         assert!(!message.contains("hunter22"), "{message}");
         assert!(!message.contains("q-secret"), "{message}");

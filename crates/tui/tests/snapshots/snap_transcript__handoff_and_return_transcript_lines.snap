@@ -3,14 +3,14 @@ source: crates/tui/tests/snap_transcript.rs
 expression: text(&lines)
 ---
 ● build:redis-store handed to GPT 5.6 on Codex · note + transcript · checkpoint
-  handoff-1 · Claude Code out until 3:45 PM
+  fallback-1 · Claude Code out until 3:45 PM
 
-● Handoff(build:limiter Middleware · auto)
+● Fallback(build:limiter Middleware · auto)
   ⎿  Gemini 3.6 Pro on agy took it · note + summary
      Claude Code stopped: usage limit
 
-● Reverted build:redis-store to checkpoint handoff-1
-  ⎿  The later work is kept on argonauts/run-01/card-002-after-handoff-1
+● Reverted build:redis-store to checkpoint fallback-1
+  ⎿  The later work is kept on argonauts/run-01/task-002-after-fallback-1
 
 ● Claude Code is back · build:redis-store stays with GPT 5.6 on Codex ·
-  /reassign card-002 claude-code/opus moves it back
+  /reassign task-002 claude-code/opus moves it back

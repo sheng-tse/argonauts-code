@@ -240,7 +240,7 @@ fn daily_refusal(error: DailyError, limit: HardLimit) -> Refusal {
     }
 }
 
-const AUTO_IS_OFF: &str = "auto is off, so every checkpoint asks";
+const AUTO_IS_OFF: &str = "auto is off, so every approval asks";
 
 fn unavailable(err: io::Error) -> Refusal {
     Refusal::Unavailable(records_error(&err))
@@ -262,7 +262,7 @@ impl Autonomy for StateAutonomy {
         let tally = scoring::tally(&records, point.kind, scope, None, self.clock.now());
         // Full auto stays itself: nobody answers spot checks there to win autonomy back.
         if configured == ApprovalMode::Auto && tally.demoted {
-            ApprovalMode::Shadow
+            ApprovalMode::AutoPreview
         } else {
             configured
         }
@@ -309,20 +309,20 @@ impl Autonomy for StateAutonomy {
         // another run, can land while the approver model is deciding. Full auto goes on past
         // both, since nobody answers spot checks there; its daily caps below still hold.
         let scope = Scope::Recipe(point.recipe.as_deref());
-        let full_auto = crate::approvals::in_full_auto(point);
-        if !full_auto && scoring::tally(locked.records(), point.kind, scope, None, now).demoted {
+        let autopilot = crate::approvals::in_autopilot(point);
+        if !autopilot && scoring::tally(locked.records(), point.kind, scope, None, now).demoted {
             return Err(Refusal::Paused(
-                "a wrong spot check or a revert put this kind of checkpoint back in shadow \
+                "a wrong spot check or a revert put this kind of approval back in auto preview \
                  until you reinstate auto for it"
                     .to_owned(),
             ));
         }
-        if let Some(reason) = spot_check_pause(locked.records(), settings).filter(|_| !full_auto) {
+        if let Some(reason) = spot_check_pause(locked.records(), settings).filter(|_| !autopilot) {
             return Err(Refusal::Paused(reason));
         }
         let limits = &settings.limits;
         let spent = &evidence.facts.spent;
-        if limits.usd_per_day.is_some() && spent.cost_partial {
+        if limits.spend_per_day.is_some() && spent.cost_partial {
             return Err(Refusal::Unavailable(format!(
                 "some of this run's usage has no cost, so its spend of at least ${:.2} can't be \
                  checked against the daily ceiling",
@@ -334,7 +334,7 @@ impl Autonomy for StateAutonomy {
         let ledger = self.ledger().map_err(unavailable)?;
         let spend_key = format!("{repo}/{}", point.run);
         ledger
-            .record_spend(&spend_key, spent.cost_usd, limits.usd_per_day, now)
+            .record_spend(&spend_key, spent.cost_usd, limits.spend_per_day, now)
             .map_err(|err| daily_refusal(err, HardLimit::Ceiling))?;
         let merge_key = if point.kind == CheckpointKind::Merge {
             let key = format!("{repo}/{}/{}", point.run, point.checkpoint);
@@ -392,7 +392,7 @@ impl Autonomy for StateAutonomy {
         };
         let rules = scoring::rules_document(&settings.approvals, &current, evidence);
         let now = self.clock.now();
-        self.write("a shadow verdict", |records| {
+        self.write("an auto preview verdict", |records| {
             let log = records::checkpoint_log(records, &point.run, &point.checkpoint);
             if log.scored || log.shadow.is_some() {
                 return Vec::new();
@@ -430,7 +430,7 @@ impl Autonomy for StateAutonomy {
     fn landing_refused(&self, point: &DecisionPoint) {
         let now = self.clock.now();
         let mut released: Option<String> = None;
-        self.write("a refused landing", |records| {
+        self.write("a refused merge", |records| {
             let log = records::checkpoint_log(records, &point.run, &point.checkpoint);
             match log.reservation.and_then(|reserved| reserved.merge_key) {
                 Some(key) => {
@@ -709,10 +709,10 @@ mod tests {
         f.autonomy.spot_checked(&goal_point, false, &f.settings);
         assert_eq!(
             f.autonomy.effective_mode(&goal_point, ApprovalMode::Auto),
-            ApprovalMode::Shadow
+            ApprovalMode::AutoPreview
         );
         let demoted = row(&f, goal);
-        assert_eq!(demoted.mode, ApprovalMode::Shadow);
+        assert_eq!(demoted.mode, ApprovalMode::AutoPreview);
         assert_eq!((demoted.matches_in_a_row, demoted.misses), (0, 1));
         // Never more autonomous than configured, and other kinds keep their mode.
         assert_eq!(
@@ -732,10 +732,10 @@ mod tests {
         }
         assert_eq!(
             f.autonomy.effective_mode(&goal_point, ApprovalMode::Auto),
-            ApprovalMode::Shadow
+            ApprovalMode::AutoPreview
         );
         let earned_back = row(&f, goal);
-        assert_eq!(earned_back.mode, ApprovalMode::Shadow);
+        assert_eq!(earned_back.mode, ApprovalMode::AutoPreview);
         assert_eq!(earned_back.matches_in_a_row, N);
         assert!(earned_back.suggest_auto);
         f.autonomy.reinstate(goal).expect("reinstate");
@@ -753,7 +753,7 @@ mod tests {
             f.autonomy.auto_paused(&f.settings).as_deref(),
             Some(AUTO_IS_OFF)
         );
-        for configured in [ApprovalMode::Auto, ApprovalMode::Shadow] {
+        for configured in [ApprovalMode::Auto, ApprovalMode::AutoPreview] {
             assert_eq!(
                 f.autonomy.effective_mode(&plan_point, configured),
                 ApprovalMode::Supervised
@@ -812,10 +812,10 @@ mod tests {
         f.autonomy.spot_checked(&auto_merge, false, &f.settings);
         assert_eq!(
             f.autonomy.effective_mode(&auto_merge, ApprovalMode::Auto),
-            ApprovalMode::Shadow
+            ApprovalMode::AutoPreview
         );
         let reverted = row(&f, merge);
-        assert_eq!(reverted.mode, ApprovalMode::Shadow);
+        assert_eq!(reverted.mode, ApprovalMode::AutoPreview);
         assert_eq!((reverted.matches_in_a_row, reverted.misses), (0, 1));
         let goal = point("run-auto", 1, CheckpointKind::Goal);
         assert_eq!(
@@ -923,11 +923,11 @@ mod tests {
         let mut partial = evidence(plan);
         partial.facts.spent.cost_usd = 1.0;
         partial.facts.spent.cost_partial = true;
-        f.settings.limits.usd_per_day = None;
+        f.settings.limits.spend_per_day = None;
         let first = point("run-a", 1, plan);
         assert!(f.autonomy.reserve(&first, &partial, &f.settings).is_ok());
 
-        f.settings.limits.usd_per_day = Some(100.0);
+        f.settings.limits.spend_per_day = Some(100.0);
         let second = point("run-a", 2, plan);
         let refused = f.autonomy.reserve(&second, &partial, &f.settings);
         assert!(
@@ -1010,7 +1010,7 @@ mod tests {
         assert_eq!(row(&f, merge).matches_in_a_row, 1);
 
         // The day's spend ceiling refuses any auto-approval.
-        f.settings.limits.usd_per_day = Some(5.0);
+        f.settings.limits.spend_per_day = Some(5.0);
         let mut costly = evidence(CheckpointKind::Plan);
         costly.facts.spent.cost_usd = 6.0;
         let plan = point("run-c", 1, CheckpointKind::Plan);

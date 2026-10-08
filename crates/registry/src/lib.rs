@@ -1,7 +1,9 @@
 //! Settings resolution, presets, workflow files, harness profiles, the model registry, and
 //! the plan-terms note.
 
+mod always;
 mod catalog;
+mod form;
 pub mod harnesses;
 pub mod models;
 mod presets;
@@ -17,16 +19,19 @@ use argonauts_core::app::ConfigEntry;
 use argonauts_core::events::run::OverrideRecord;
 use argonauts_core::settings::Settings;
 
+pub use always::save_required_steps;
 pub use catalog::{setting_meta, settings_catalog};
+pub use form::settings_form;
 pub use harnesses::{HarnessEntries, builtin_harnesses, harness_manifests};
 pub use models::{family_from_model_id, family_problems, registry};
 pub use presets::{builtin_preset, presets, presets_in, upgrade_presets, write_preset};
 pub use resolve::resolve;
+pub use settings::crew::seat_problems;
 pub use settings::plain::gate_commands;
 pub use settings::tighten::tightens;
 pub use terms::TERMS_NOTE;
 pub use workflows::{WorkflowError, WorkflowInfo, find_workflow, workflows_in};
-pub use write::{remove_setting, safety_keys_in, write_setting};
+pub use write::{check_settings, remove_setting, safety_keys_in, write_setting};
 
 /// Later layers win key by key: built-in, `global`, `project`, `project_local`, the preset with
 /// the run's recipe over it, then `overrides`. Preset files are looked up in
@@ -53,6 +58,10 @@ pub struct SettingsSources {
     /// `key=value` settings a request asked for, above every other layer, for one run. A
     /// safety key among them must only tighten what the other layers say.
     pub request: Vec<String>,
+    /// The project's files that came with the repository and wait for your trust. The
+    /// workflow's settings layer passes them over, so one named after a built-in leaves it in
+    /// place until you trust it.
+    pub waiting: Vec<PathBuf>,
 }
 
 /// A recipe version's protocol settings, as learning's `recipes::settings_overlay` gives them.
@@ -68,7 +77,7 @@ pub struct RecipeOverlay {
     /// a pull request (`merge.mode = "pull_request"`).
     pub canary: bool,
     /// A replay of this version in an isolated repo, which never merges (`merge.mode =
-    /// "leave"`) and spends at most this much (`budget.run_usd`).
+    /// "leave"`) and spends at most this much (`limits.spend_per_run`).
     pub replay_budget_usd: Option<u64>,
 }
 

@@ -8,6 +8,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::names::{CheckpointId, SessionKey, TurnId, VendorId, WorkerRef};
+use crate::required::RequiredStep;
 use crate::settings::approvals::ApprovalMode;
 use crate::settings::protocol::SoloStyle;
 use crate::settings::workflows::RunStyle;
@@ -71,8 +72,9 @@ pub enum RunLifecycle {
 pub struct RunNamed {
     /// Two to four task words joined with `-`, such as `fix-slugify-median`.
     pub name: String,
-    /// One line, the task in plain words. In a goal run, the objective.
+    /// One line, the task in plain words.
     pub description: String,
+    /// Always `workflow` now: a goal is a condition around the run, in `Goal::Set`.
     pub style: RunStyle,
     /// The example the workflow started from, shown once at the end of the start item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,7 +106,7 @@ pub struct RunStarted {
     pub mode: RunMode,
     /// Whether `/solo`, `/crew`, `--solo`, or `--crew` forced the mode.
     pub forced: bool,
-    pub preset: String,
+    pub workflow: String,
     /// The default agent's estimate, unless the mode was forced.
     pub estimate: Option<ChangeEstimate>,
     pub triage: Option<TriageDecision>,
@@ -132,6 +134,9 @@ pub struct RunStarted {
     /// What the request said about how to run it, and what came of each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<CheckedInstruction>,
+    /// Steps a setup kept for the conversation or the request that started the run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_steps: Vec<RequiredStep>,
 }
 
 /// One instruction from a request, after code checked it.
@@ -232,7 +237,7 @@ pub struct TriageDecision {
     pub mode: RunMode,
     /// Solo first, then crew if the solo card escalates.
     pub escalate_to_crew: bool,
-    /// The rule that fired, such as `solo_max_files` or `recipe:api-feature`.
+    /// The rule that fired, such as `solo_max_files` or `learned:api-feature`.
     pub rule: String,
     /// One line for you, such as "at most 3 files, and tests exist". Empty when your words
     /// chose the mode.
@@ -344,7 +349,10 @@ pub enum Party {
     Config,
     /// Full auto, in your place: nothing waits for you there, so what your rules and the
     /// approver couldn't settle takes its safe option.
-    FullAuto,
+    Autopilot,
+    /// You pressed Esc on it, which means "carry on without me": the option was
+    /// taken in your place, as `approvals.when_declined` says.
+    Declined,
     /// By a fixed rule.
     Conductor,
     Agent {

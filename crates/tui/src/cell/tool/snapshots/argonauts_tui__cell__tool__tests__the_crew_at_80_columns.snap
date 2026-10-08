@@ -5,7 +5,7 @@ expression: text(&rows)
 ● Goal(Add a --json flag to export)
   ⎿  Agreed by 3 agents · 1 question answered
 
-● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)
+● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)
   ⎿  Read 1 file (ctrl+o to expand)
      Update(src/export.rs)
         Added 2 lines, removed 1 line

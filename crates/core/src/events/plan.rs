@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::card::CardSpec;
 use crate::CardId;
 use crate::names::{DecisionId, DraftId, PlanLabel, WorkerRef};
-use crate::settings::budget::{BudgetAmount, BudgetLineKind};
+use crate::settings::budget::{BudgetAmount, BudgetLineKind, BudgetUnit};
 use crate::settings::protocol::{JudgingMethod, RoutingAlgorithm};
 use crate::steps::card::Predictions;
 use crate::steps::plan::{CritiquePoint, SpikeProposal, SpikeReport};
@@ -48,7 +48,7 @@ pub enum PlanEvent {
     },
     SpikeProposed {
         proposal: SpikeProposal,
-        /// Code's check against `spikes.budget_usd`.
+        /// Code's check against `experiments.limit_usd`.
         fits_budget: bool,
     },
     SpikeFinished {
@@ -73,7 +73,7 @@ pub enum PlanEvent {
     Judged(JudgingResult),
     /// A decision record, also written to `.argonauts/decisions/`.
     Decided(DesignDecision),
-    /// The coordinator's plan was accepted or rejected by code (`coordinated-crew`).
+    /// The coordinator's plan was accepted or rejected by code (`orchestrator`).
     Coordinated {
         coordinator: WorkerRef,
         /// Accepted, or the rule it broke.
@@ -178,6 +178,26 @@ pub struct BudgetPlan {
     /// An estimate range for the plan checkpoint, such as $9 to $12.
     pub estimate_low: f64,
     pub estimate_high: f64,
+}
+
+impl BudgetPlan {
+    /// The plan of a run with no limit: no lines, and nothing to add up.
+    pub fn unlimited() -> Self {
+        Self {
+            lines: Vec::new(),
+            total: BudgetAmount {
+                unit: BudgetUnit::Usd,
+                amount: 0.0,
+            },
+            estimate_low: 0.0,
+            estimate_high: 0.0,
+        }
+    }
+
+    /// Whether the run has no limit, so there is no total to show or to fit into.
+    pub fn is_unlimited(&self) -> bool {
+        self.lines.is_empty() && self.total.amount == 0.0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -187,7 +187,7 @@ impl SandboxWrap for Seatbelt {
     ) -> Result<CommandSpec, SandboxError> {
         if !Path::new(&self.program).is_file() {
             return Err(SandboxError::Unavailable(format!(
-                "{} is missing, so Seatbelt can't run here and harness sessions are refused",
+                "{} is missing, so Seatbelt can't run here and CLI sessions are refused",
                 self.program
             )));
         }
@@ -418,13 +418,13 @@ mod tests {
         let argonauts = home.join(".argonauts");
         let run_dir = argonauts.join("state/repo/runs/run-1");
         let session = run_dir.join("sessions/s-2");
-        let tree = argonauts.join("worktrees/repo/run-1/card-003");
-        let transcript = tree.join(".argonauts/handoff/1/transcript.md");
-        let kept = run_dir.join("cards/card-003/handoff-1/transcript.md");
+        let tree = argonauts.join("worktrees/repo/run-1/task-003");
+        let transcript = tree.join(".argonauts/fallback/1/transcript.md");
+        let kept = run_dir.join("cards/task-003/fallback-1/transcript.md");
         std::fs::create_dir_all(&session).unwrap();
         for path in [&transcript, &kept] {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, "# card-003").unwrap();
+            std::fs::write(path, "# task-003").unwrap();
         }
         for vendor in ["claude-code", "codex", "antigravity-cli", "opencode"] {
             let input = ProfileInput {
@@ -737,8 +737,8 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let home = root.join("home");
         let argonauts = home.join(".argonauts");
         let session = argonauts.join("state/repo/runs/run-1/sessions/s-1");
-        let tree = argonauts.join("worktrees/repo/run-1/card-a");
-        let other = argonauts.join("worktrees/repo/run-1/card-b");
+        let tree = argonauts.join("worktrees/repo/run-1/task-a");
+        let other = argonauts.join("worktrees/repo/run-1/task-b");
         for dir in [&session, &tree, &other] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -765,7 +765,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let out = run(&profile, &tree, script, &[&other.join("hidden.rs")]);
         assert_eq!(out, "?? f\nother-blocked\n");
 
-        // With `sandbox.agents_see_other_copies` on, the other copy reads but never changes.
+        // With `sandbox.agents_see_other_worktrees` on, the other copy reads but never changes.
         let open = session_profile(
             &SandboxProfile::default(),
             &ProfileInput {
@@ -841,7 +841,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let home = root.join("home");
         let argonauts = home.join(".argonauts");
         let session = argonauts.join("state/repo/runs/run-1/sessions/s-1");
-        let tree = argonauts.join("worktrees/repo/run-1/card-a");
+        let tree = argonauts.join("worktrees/repo/run-1/task-a");
         let bin = home.join(".gemini/antigravity-cli/bin");
         for dir in [&session, &tree, &bin] {
             std::fs::create_dir_all(dir).unwrap();
@@ -866,7 +866,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let home = root.join("home");
         let argonauts = home.join(".argonauts");
         let session = argonauts.join("state/repo/runs/run-1/sessions/s-1");
-        let tree = argonauts.join("worktrees/repo/run-1/card-a");
+        let tree = argonauts.join("worktrees/repo/run-1/task-a");
         for dir in [&session, &tree] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -900,7 +900,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let argonauts = home.join(".argonauts");
         let session = argonauts.join("state/repo/runs/run-1/sessions/s-1");
         let repo = root.join("repo");
-        let tree = argonauts.join("worktrees/repo/run-1/card-a");
+        let tree = argonauts.join("worktrees/repo/run-1/task-a");
         for dir in [&session, &repo, tree.parent().unwrap()] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -909,7 +909,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         git(&repo, &["add", "lib.rs"]);
         git(&repo, &["commit", "-qm", "base"]);
         let tree_arg = tree.to_string_lossy().into_owned();
-        git(&repo, &["worktree", "add", "-q", "-b", "card-a", &tree_arg]);
+        git(&repo, &["worktree", "add", "-q", "-b", "task-a", &tree_arg]);
 
         let profile = session_profile(
             &SandboxProfile::default(),
@@ -939,7 +939,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         let argonauts = home.join(".argonauts");
         let session = argonauts.join("state/repo/runs/run-1/sessions/s-1");
         let repo = root.join("repo");
-        let tree = argonauts.join("worktrees/repo/run-1/card-a");
+        let tree = argonauts.join("worktrees/repo/run-1/task-a");
         for dir in [&session, &repo, tree.parent().unwrap()] {
             std::fs::create_dir_all(dir).unwrap();
         }
@@ -950,7 +950,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
         git(&repo, &["branch", "argonauts/run-1/integration"]);
         git(&repo, &["gc", "-q"]);
         let tree_arg = tree.to_string_lossy().into_owned();
-        let branch = "argonauts/run-1/card-a";
+        let branch = "argonauts/run-1/task-a";
         git(&repo, &["worktree", "add", "-q", "-b", branch, &tree_arg]);
         let common = repo.join(".git");
         let head_of = |name: &str| {
@@ -978,7 +978,7 @@ socket.create_connection(server.getsockname(), timeout=3); print("loopback")' 2>
             if git update-ref refs/heads/argonauts/run-1/integration HEAD 2>/dev/null; then echo integration-moved; else echo integration-blocked; fi
             if git symbolic-ref HEAD refs/heads/main 2>/dev/null; then echo head-moved; else echo head-blocked; fi
             if (: > "$1/objects/pack/planted") 2>/dev/null; then echo pack-planted; else echo pack-blocked; fi
-            if (printf '/tmp\n' > "$1/worktrees/card-a/commondir") 2>/dev/null; then echo commondir-changed; else echo commondir-blocked; fi
+            if (printf '/tmp\n' > "$1/worktrees/task-a/commondir") 2>/dev/null; then echo commondir-changed; else echo commondir-blocked; fi
         "#;
         let out = run(&profile, &tree, script, &[&common]);
         assert_eq!(

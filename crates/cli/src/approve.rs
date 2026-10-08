@@ -21,7 +21,7 @@ pub async fn run(
     let run = RunId::new(run).map_err(usage)?;
     let checkpoint = CheckpointId::parse(checkpoint).ok_or_else(|| {
         usage(anyhow!(
-            "{checkpoint:?} isn't a checkpoint id, such as cp-001"
+            "{checkpoint:?} isn't an approval id, such as cp-001"
         ))
     })?;
     // An agent can fake a terminal, so its markers and ancestry count first.
@@ -67,7 +67,7 @@ mod tests {
             run: RunId::new(run).unwrap(),
             title: "Add a flag".to_owned(),
             mode: RunMode::Crew,
-            preset: "peer-crew".to_owned(),
+            workflow: "council".to_owned(),
             state: RunState::Parked,
             stopped_at: String::new(),
             updated: time::OffsetDateTime::UNIX_EPOCH,

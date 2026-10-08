@@ -28,7 +28,7 @@ const NOT_NOW: &str = "not-now";
 const KEEP: &str = "keep";
 
 const ABOUT: &str = "Argonauts runs your coding-agent CLIs as one crew, each in its own git \
-                     worktree, and lands only the work that passes your rules.";
+                     worktree, and merges only the work that passes your rules.";
 
 /// What the recommended approvals mean, in one line on that question.
 pub(crate) const AUTONOMY: &str = "With auto, the agents work and merge on their own under the \
@@ -118,13 +118,13 @@ impl SetupView {
     }
 
     /// Your default agent now, when its harness is ready.
-    fn current_default_agent(&self) -> Option<WorkerRef> {
-        self.ready_worker(self.current_str("default_agent")?)
+    fn current_main_agent(&self) -> Option<WorkerRef> {
+        self.ready_worker(self.current_str("main_agent")?)
     }
 
     /// Your coordinator now, when its harness is ready.
     fn current_coordinator(&self) -> Option<WorkerRef> {
-        let workers = self.current_list("roles.coordinator.workers");
+        let workers = self.current_list("roles.orchestrator.workers");
         self.ready_worker(workers.first()?)
     }
 
@@ -140,9 +140,9 @@ impl SetupView {
     /// checkpoint your file leaves out has its built-in mode, and the full auto switch puts
     /// them all in full auto.
     fn current_approvals(&self) -> Option<ApprovalMode> {
-        let switch = self.current_value("approvals.full_auto");
+        let switch = self.current_value("approvals.autopilot");
         if switch.and_then(toml::Value::as_bool) == Some(true) {
-            return Some(ApprovalMode::FullAuto);
+            return Some(ApprovalMode::Autopilot);
         }
         let mut modes = APPROVAL_POINTS.iter().map(|point| {
             match self.current_value(&format!("approvals.{point}.mode")) {
@@ -233,14 +233,14 @@ pub(crate) fn question(step: &Step, view: &SetupView, answers: &Answers) -> Opti
     match step {
         Step::Terms => Some(Question {
             kind: ChoiceKind::TermsNote,
-            title: "Welcome to Argonauts".to_owned(),
+            title: "Welcome to Argonauts Code".to_owned(),
             body: vec![ABOUT.to_owned(), TERMS_NOTE.to_owned()],
             options: options(ChoiceKind::TermsNote),
         }),
         Step::Agents => Some(agents_question(view)),
         Step::Servers => None,
         Step::Server(server) => Some(server_question(server, view)),
-        Step::DefaultAgent => default_agent_question(view),
+        Step::DefaultAgent => main_agent_question(view),
         Step::Preset => Some(preset_question(view)),
         Step::Coordinator => coordinator_question(view, answers),
         Step::WhoDoesWhat => Some(roles::who_does_what(view, answers)),
@@ -334,8 +334,8 @@ fn server_question(server: &LocalServer, view: &SetupView) -> Question {
     }
 }
 
-fn default_agent_question(view: &SetupView) -> Option<Question> {
-    let current = view.current_default_agent();
+fn main_agent_question(view: &SetupView) -> Option<Question> {
+    let current = view.current_main_agent();
     let first = current
         .as_ref()
         .map(|worker| worker.worker.clone())
@@ -401,28 +401,31 @@ fn preset_question(view: &SetupView) -> Question {
     } else {
         SOLO
     };
-    let first = view.current_str("preset").unwrap_or(recommended).to_owned();
+    let first = view
+        .current_str("workflow")
+        .unwrap_or(recommended)
+        .to_owned();
     let mut answers = vec![
         described(
             PEER_CREW,
-            "Peer crew",
-            "The agents plan and judge as peers.",
+            "Council",
+            "No single planner: the agents propose, challenge, and review each other.",
         ),
         described(
             COORDINATED_CREW,
-            "Coordinated crew",
-            "One coordinator you pick plans and delegates.",
+            "Orchestrator",
+            "One orchestrator you pick plans and delegates.",
         ),
         described(SOLO, "Solo", "One agent at a time."),
     ];
     if !answers.iter().any(|answer| answer.value == first) {
-        answers.push(described(&first, &first, "Your preset now."));
+        answers.push(described(&first, &first, "Your workflow now."));
     }
     answers.sort_by_key(|answer| answer.value != first);
     Question {
         kind: ChoiceKind::Init,
         title: "How the crew works".to_owned(),
-        body: vec!["Change it any time with /preset.".to_owned()],
+        body: vec!["Change it any time with /workflow.".to_owned()],
         options: init_options(&answers),
     }
 }
@@ -439,7 +442,7 @@ fn coordinator_question(view: &SetupView, answers: &Answers) -> Option<Question>
     let current = view.current_coordinator();
     let first = current
         .as_ref()
-        .or(answers.default_agent.as_ref())
+        .or(answers.main_agent.as_ref())
         .map(|worker| worker.worker.clone());
     let choices = agent_answers(view, first.as_deref(), current.as_ref());
     if choices.is_empty() {
@@ -448,7 +451,7 @@ fn coordinator_question(view: &SetupView, answers: &Answers) -> Option<Question>
     Some(Question {
         kind: ChoiceKind::Init,
         title: "Who coordinates".to_owned(),
-        body: vec!["The coordinator plans the work and hands it out.".to_owned()],
+        body: vec!["The orchestrator plans the work and hands it out.".to_owned()],
         options: init_options(&choices),
     })
 }
@@ -459,7 +462,7 @@ fn approvals_question(view: &SetupView) -> Question {
     let mut body = Vec::new();
     if now.is_none() {
         body.push(
-            "Your checkpoints use different modes now. Picking a mode sets it for every one."
+            "Your approvals use different modes now. Picking a mode sets it for every one."
                 .to_owned(),
         );
     }
@@ -468,14 +471,14 @@ fn approvals_question(view: &SetupView) -> Question {
         described(
             "auto",
             "Auto",
-            "Rules and a reviewer from another AI company decide, and you're asked when a \
+            "Rules and a reviewer from another provider decide, and you're asked when a \
              rule fails.",
         ),
         described(
-            "full_auto",
-            "Full auto",
-            "Nothing waits for you: the lead answers every question, a reviewer from another \
-             AI company checks, and what can't be approved ends safely.",
+            "autopilot",
+            "Autopilot",
+            "Nothing waits for you: the main agent answers every question, a reviewer from another \
+             provider checks, and what can't be approved ends safely.",
         ),
         described(
             "supervised",
@@ -483,8 +486,8 @@ fn approvals_question(view: &SetupView) -> Question {
             "You approve the goal, the plan, and every merge.",
         ),
         described(
-            "shadow",
-            "Shadow",
+            "auto_preview",
+            "Auto preview",
             "You approve, and Argonauts learns what it would have decided.",
         ),
     ];
@@ -492,7 +495,7 @@ fn approvals_question(view: &SetupView) -> Question {
         answers.push(described(
             KEEP,
             "Keep them as they are",
-            "Each checkpoint keeps its mode.",
+            "Each approval keeps its mode.",
         ));
     }
     answers.sort_by_key(|answer| answer.value != first);
@@ -591,14 +594,14 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
             )
         }
         Step::DefaultAgent => {
-            let agent = kept_or_new(view.current_default_agent(), value);
+            let agent = kept_or_new(view.current_main_agent(), value);
             let line = format!("You chat with {}.", view.name_of(&agent));
-            answers.default_agent = Some(agent);
+            answers.main_agent = Some(agent);
             line
         }
         Step::Preset => {
-            answers.preset = value.to_owned();
-            format!("Preset: {value}.")
+            answers.workflow = value.to_owned();
+            format!("Workflow: {value}.")
         }
         Step::Coordinator => {
             let agent = kept_or_new(view.current_coordinator(), value);
@@ -614,7 +617,7 @@ pub(crate) fn apply(step: &Step, value: &str, view: &SetupView, answers: &mut An
             answers.approvals = approval_mode_from(value);
             match answers.approvals {
                 Some(_) => format!("Approvals: {value}."),
-                None => "Approvals: each checkpoint keeps its mode.".to_owned(),
+                None => "Approvals: each approval keeps its mode.".to_owned(),
             }
         }
         Step::Trust => {
@@ -689,7 +692,7 @@ mod tests {
             agent("antigravity-cli", "Antigravity CLI", AgentStatus::Untested),
             agent("opencode", "OpenCode", AgentStatus::Tested),
         ]);
-        let question = default_agent_question(&view).unwrap();
+        let question = main_agent_question(&view).unwrap();
         assert_eq!(
             values(&question),
             vec!["codex", "antigravity-cli", "opencode"]
@@ -712,7 +715,7 @@ mod tests {
                 "None is ready yet. Install one, then run /setup again.",
             ]
         );
-        assert!(default_agent_question(&view).is_none());
+        assert!(main_agent_question(&view).is_none());
         let kept = apply(&Step::Agents, "c", &view, &mut Answers::default());
         assert_eq!(
             kept,
@@ -737,37 +740,37 @@ mod tests {
             agent("claude-code", "Claude Code", AgentStatus::Tested),
             agent("codex", "Codex", AgentStatus::Tested),
         ]);
-        let mut file = "default_agent = \"codex\"\npreset = \"best-of-n\"\n".to_owned();
+        let mut file = "main_agent = \"codex\"\nworkflow = \"best-of-n\"\n".to_owned();
         for point in APPROVAL_POINTS {
-            file.push_str(&format!("[approvals.{point}]\nmode = \"shadow\"\n"));
+            file.push_str(&format!("[approvals.{point}]\nmode = \"auto_preview\"\n"));
         }
         view.current = toml::from_str(&file).unwrap();
-        assert_eq!(values(&default_agent_question(&view).unwrap())[0], "codex");
+        assert_eq!(values(&main_agent_question(&view).unwrap())[0], "codex");
         let presets = values(&preset_question(&view));
         assert_eq!(presets[0], "best-of-n");
         assert_eq!(presets.len(), 4);
         assert_eq!(
             values(&approvals_question(&view)),
-            vec!["shadow", "auto", "full_auto", "supervised"]
+            vec!["auto_preview", "auto", "autopilot", "supervised"]
         );
     }
 
     /// Full auto is one answer away: picking it makes every checkpoint a run opens full auto,
     /// so the kinds without settings of their own follow too, and a rerun offers it first.
     #[test]
-    fn full_auto_is_one_answer_for_every_checkpoint() {
+    fn autopilot_is_one_answer_for_every_checkpoint() {
         let mut view = view(Vec::new());
         let mut answers = Answers::default();
-        let line = apply(&Step::Approvals, "full_auto", &view, &mut answers);
-        assert_eq!(answers.approvals, Some(ApprovalMode::FullAuto));
-        assert_eq!(line, "Approvals: full_auto.");
+        let line = apply(&Step::Approvals, "autopilot", &view, &mut answers);
+        assert_eq!(answers.approvals, Some(ApprovalMode::Autopilot));
+        assert_eq!(line, "Approvals: autopilot.");
         // What the setup writes for it: the switch, over auto.
-        let mut file = "[approvals]\nfull_auto = true\n".to_owned();
+        let mut file = "[approvals]\nautopilot = true\n".to_owned();
         for point in APPROVAL_POINTS {
             file.push_str(&format!("[approvals.{point}]\nmode = \"auto\"\n"));
         }
         view.current = toml::from_str(&file).unwrap();
-        assert_eq!(values(&approvals_question(&view))[0], "full_auto");
+        assert_eq!(values(&approvals_question(&view))[0], "autopilot");
         let settings: argonauts_core::settings::approvals::ApprovalSettings =
             toml::from_str::<toml::Value>(&file)
                 .unwrap()
@@ -776,7 +779,7 @@ mod tests {
                 .unwrap()
                 .try_into()
                 .unwrap();
-        assert_eq!(settings.mode(), ApprovalMode::FullAuto);
+        assert_eq!(settings.mode(), ApprovalMode::Autopilot);
     }
 
     #[test]
@@ -789,12 +792,12 @@ mod tests {
         let question = approvals_question(&view);
         assert_eq!(
             values(&question),
-            vec![KEEP, "auto", "full_auto", "supervised", "shadow"]
+            vec![KEEP, "auto", "autopilot", "supervised", "auto_preview"]
         );
         let mut answers = Answers::default();
         let line = apply(&Step::Approvals, KEEP, &view, &mut answers);
         assert_eq!(answers.approvals, None);
-        assert_eq!(line, "Approvals: each checkpoint keeps its mode.");
+        assert_eq!(line, "Approvals: each approval keeps its mode.");
         apply(&Step::Approvals, "auto", &view, &mut answers);
         assert_eq!(answers.approvals, Some(ApprovalMode::Auto));
     }
@@ -813,7 +816,7 @@ mod tests {
         }
         view.current = toml::from_str(&file).unwrap();
         assert_eq!(values(&approvals_question(&view))[0], "supervised");
-        view.current = toml::from_str("[approvals.goal]\nmode = \"shadow\"\n").unwrap();
+        view.current = toml::from_str("[approvals.goal]\nmode = \"auto_preview\"\n").unwrap();
         assert_eq!(values(&approvals_question(&view))[0], KEEP);
         view.current = toml::from_str("[approvals.merge]\nmode = \"sometimes\"\n").unwrap();
         assert_eq!(values(&approvals_question(&view))[0], KEEP);
@@ -826,11 +829,11 @@ mod tests {
             agent("codex", "Codex", AgentStatus::Tested),
         ]);
         view.current = toml::from_str(
-            "default_agent = \"codex/gpt-5.6-luna\"\n\
-             [roles.coordinator]\nworkers = [\"claude-code/opus\"]\n",
+            "main_agent = \"codex/gpt-5.6-luna\"\n\
+             [roles.orchestrator]\nworkers = [\"claude-code/opus\"]\n",
         )
         .unwrap();
-        let question = default_agent_question(&view).unwrap();
+        let question = main_agent_question(&view).unwrap();
         assert_eq!(values(&question), vec!["codex", "claude-code"]);
         assert_eq!(
             question.options[0].detail.as_deref(),
@@ -839,7 +842,7 @@ mod tests {
         let mut answers = Answers::default();
         let line = apply(&Step::DefaultAgent, "codex", &view, &mut answers);
         assert_eq!(
-            answers.default_agent.as_ref().map(ToString::to_string),
+            answers.main_agent.as_ref().map(ToString::to_string),
             Some("codex/gpt-5.6-luna".to_owned())
         );
         assert_eq!(line, "You chat with Codex (gpt-5.6-luna).");
@@ -854,7 +857,7 @@ mod tests {
 
         apply(&Step::DefaultAgent, "claude-code", &view, &mut answers);
         assert_eq!(
-            answers.default_agent,
+            answers.main_agent,
             Some(WorkerRef::new("claude-code", None))
         );
     }

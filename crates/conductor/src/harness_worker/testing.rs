@@ -10,6 +10,7 @@ use argonauts_core::adapter::Transport;
 use argonauts_core::driver::{
     DriverControl, DriverEnd, DriverIo, DriverStart, DriverStop, RawFrame, SessionDriver,
 };
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::run::Party;
 use argonauts_core::events::session::{
     Delivery, InputPartKind, QueuedMessage, SessionEnd, SessionEvent,
@@ -60,6 +61,9 @@ pub(crate) struct TestAdapter {
     card_home: bool,
     heartbeat: Option<Duration>,
     isolates: bool,
+    /// Asks for the context by category with a line of its own, as Claude Code's
+    /// `get_context_usage`.
+    context_asks: bool,
 }
 
 impl TestAdapter {
@@ -81,7 +85,13 @@ impl TestAdapter {
             card_home: false,
             heartbeat: None,
             isolates: false,
+            context_asks: false,
         }
+    }
+
+    pub(crate) fn with_context_asks(mut self) -> Self {
+        self.context_asks = true;
+        self
     }
 
     /// Keeps your plugins out of an isolated session and reports any that load, as Claude
@@ -273,6 +283,10 @@ impl Adapter for TestAdapter {
         self.send_now
             .then(|| format!("{}\n", json!({ "send_now": uuid })))
     }
+    fn context_usage_line(&self, detail: ContextDetail) -> Option<String> {
+        self.context_asks
+            .then(|| format!("{}\n", json!({ "context": detail.as_str() })))
+    }
     fn interactive_resume(&self, session_id: &str, workdir: &Path) -> Option<CommandSpec> {
         self.takeover
             .then(|| CommandSpec::new("/bin/sh", workdir).arg(session_id))
@@ -415,7 +429,7 @@ pub(crate) fn spec_in(workdir: &Path, session_dir: &Path, prompt: &str) -> Sessi
         run: None,
         card: None,
         key: unique_key(),
-        role: RoleName::Default,
+        role: RoleName::Main,
         step: None,
         worker: WorkerRef::new("fake", None),
         effort: None,
@@ -425,7 +439,7 @@ pub(crate) fn spec_in(workdir: &Path, session_dir: &Path, prompt: &str) -> Sessi
         prompt: vec![part(InputPartKind::Prompt, "prompt", prompt, None)],
         json_schema: None,
         resume: None,
-        lifetime: SessionLifetime::Card,
+        lifetime: SessionLifetime::Task,
         keep_input_open: false,
         limits: SessionLimits::default(),
         goal_sha256: None,
@@ -433,9 +447,11 @@ pub(crate) fn spec_in(workdir: &Path, session_dir: &Path, prompt: &str) -> Sessi
         compaction: Compaction::Inherit,
         native_fanout: NativeFanout::default(),
         isolated: false,
+        autopilot: false,
         status_file: None,
         env: Vec::new(),
         asking: None,
+        cli_workflow: argonauts_core::worker::CliWorkflow::default(),
     }
 }
 

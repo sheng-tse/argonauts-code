@@ -1,0 +1,28 @@
+---
+source: crates/tui/tests/snap_learning.rs
+expression: "screen(&mut picker, 80, HEIGHT)"
+---
+Learned workflows                Workflows  Candidates  Replay set  [ Settings ]
+Workflows learned from your runs              stage auto · $41.20 of $1000/month
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   Setting                         Value     From                             │
+│ ❯ evolution.stage                 "evolve"  built-in                         │
+│   limits.evolution_usd_per_month  1000.0    built-in                         │
+│   solo_or_crew.use_learned        true      built-in                         │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│   How far the loop goes alone                                                │
+│   A safety key: changing it asks you to confirm.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+↑↓ select · tab next tab · ⏎ change · esc back

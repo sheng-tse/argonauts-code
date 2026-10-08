@@ -35,8 +35,20 @@ use crate::views::{View, ViewCtx, ViewOutcome};
 /// Where rows start, after the pointer.
 const INDENT: usize = 2;
 
-const FULL_AUTO: &str = "approvals.full_auto";
-const ANSWERED_BY: &str = "approvals.answered_by";
+const AUTOPILOT: &str = "approvals.autopilot";
+const ANSWERED_BY: &str = "approvals.answers";
+/// What decides when you don't, right under the switch: who answers, what Esc on a question
+/// does, and how often an agent that asks is told to decide.
+const WITHOUT_YOU: [&str; 4] = [
+    AUTOPILOT,
+    ANSWERED_BY,
+    "approvals.when_declined",
+    "approvals.ask_limit",
+];
+/// Who settles what your rules can't. It leads the `Who checks` group.
+const DECIDES: &str = "approvals.decides";
+/// The judge when your crew names none: the policy picks one for each piece of work.
+const UNNAMED_JUDGE: &str = "cheapest, other provider";
 
 #[derive(Debug)]
 pub struct ApprovalsView {
@@ -158,14 +170,14 @@ impl ApprovalsView {
         let mut items = Vec::new();
         // Full auto comes first: its switch and who answers in your place decide whether a run
         // asks you anything at all.
-        let top: Vec<usize> = [FULL_AUTO, ANSWERED_BY]
+        let top: Vec<usize> = WITHOUT_YOU
             .iter()
             .filter_map(|key| self.rows.iter().position(|row| row.key == *key))
             .collect();
         if !top.is_empty() {
             items.push(Item::Heading {
-                name: "Full auto".to_owned(),
-                note: self.full_auto_note(),
+                name: "Autopilot".to_owned(),
+                note: self.autopilot_note(),
             });
             for warning in &self.data.warnings {
                 items.push(Item::Warning(warning.clone()));
@@ -191,7 +203,7 @@ impl ApprovalsView {
             .as_ref()
             .map(|worker| names.worker(worker))
             // Unset, the policy picks one for each piece of work it judges.
-            .unwrap_or_else(|| "the cheapest model from another company".to_owned());
+            .unwrap_or_else(|| "the cheapest model from another provider".to_owned());
         self.push_group(&mut items, "Who checks".to_owned(), approver, "approver");
 
         let mut checkpoints: Vec<String> = self.data.points.iter().map(kind_name).collect();
@@ -227,7 +239,7 @@ impl ApprovalsView {
             .enumerate()
             .filter(|(_, row)| {
                 row.key.starts_with("approvals.")
-                    && ![FULL_AUTO, ANSWERED_BY].contains(&row.key.as_str())
+                    && !WITHOUT_YOU.contains(&row.key.as_str())
                     && split_key(&row.key).is_none()
             })
             .map(|(index, row)| Item::Setting {
@@ -276,25 +288,25 @@ impl ApprovalsView {
     fn switch_on(&self) -> bool {
         self.rows
             .iter()
-            .find(|row| row.key == FULL_AUTO)
+            .find(|row| row.key == AUTOPILOT)
             .is_some_and(|row| row.value.trim() == "true")
     }
 
     /// Whether full auto covers every checkpoint, by the switch or by each one's own mode, and
     /// what still waits for you: a checkpoint you keep, or one that parks at a hard limit.
-    fn full_auto_note(&self) -> String {
+    fn autopilot_note(&self) -> String {
         let run_points: Vec<&ApprovalRow> = self
             .data
             .points
             .iter()
-            .filter(|point| kind_name(point) != "recipe_promotion")
+            .filter(|point| kind_name(point) != "workflow_promotion")
             .collect();
         let each = !run_points.is_empty()
             && run_points.iter().all(|point| {
-                point.mode == argonauts_core::settings::approvals::ApprovalMode::FullAuto
+                point.mode == argonauts_core::settings::approvals::ApprovalMode::Autopilot
             });
         if !self.switch_on() && !each {
-            return "off: each checkpoint keeps its own mode".to_owned();
+            return "off: each approval keeps its own mode".to_owned();
         }
         let mut waits: Vec<String> = run_points
             .iter()
@@ -321,6 +333,13 @@ impl ApprovalsView {
         if let Some(note) = self.switch_note(row) {
             cells.value = note;
         }
+        // Left to the judge, the row names the one your crew set, when it set one.
+        if row.key == DECIDES
+            && cells.value == UNNAMED_JUDGE
+            && let Some(judge) = &self.data.approver
+        {
+            cells.value = names.worker(judge);
+        }
         cells
     }
 
@@ -329,12 +348,12 @@ impl ApprovalsView {
         let (group, "mode") = split_key(&row.key)? else {
             return None;
         };
-        if group == "recipe_promotion" || !self.switch_on() {
+        if group == "workflow_promotion" || !self.switch_on() {
             return None;
         }
         // A mode you keep stays yours, and the heading names it.
         let words = row_value_words(&row.key, &row.value);
-        (words == "auto").then(|| "full auto by the switch".to_owned())
+        (words == "auto").then(|| "autopilot by the switch".to_owned())
     }
 
     /// A heading, then the settings under `approvals.<group>.`.
@@ -444,7 +463,7 @@ impl View for ApprovalsView {
         };
         let header = Header {
             title: Line::from(Span::styled("Approvals", theme.style(Role::Label))),
-            description: "Who decides each checkpoint, and how auto matched you".to_owned(),
+            description: "Who decides each approval, and how auto matched you".to_owned(),
             summary,
         };
         let panes = panes::split(area, 0);
@@ -593,7 +612,7 @@ impl View for ApprovalsView {
                 refreshing,
                 update,
             } => {
-                let role = role.filter(|role| *role != RoleName::Default);
+                let role = role.filter(|role| *role != RoleName::Main);
                 let Some(editor) = self.editor.as_mut() else {
                     return false;
                 };
@@ -699,28 +718,30 @@ fn setting_name(leaf: &str) -> String {
         "mode" => "How it's decided",
         "decide_with" => "Who decides in auto",
         "otherwise" => "When auto doesn't approve",
-        "rules.max_score_spread" => "Judge's widest score gap",
-        "rules.min_winner_margin" => "Winning plan's lead",
-        "rules.min_changed_line_coverage" => "Changed lines tests cover",
-        "rules.max_combined_diff_lines" => "Most lines in the diff",
-        "rules.allow_debt" => "Merge with unreviewed debt",
-        "rules.max_extra_attempts" => "Extra attempts auto grants",
-        "rules.use_reserve" => "Auto may use the reserve",
-        "rules.change_classes" => "Changes auto may promote",
-        "rules.min_days_between" => "Days between promotions",
-        "model" => "Approver model",
+        "max_score_spread" => "Judge's widest score gap",
+        "min_winner_margin" => "Winning plan's lead",
+        "min_test_coverage_of_changed_lines" => "Changed lines tests cover",
+        "max_changed_lines" => "Most lines in the diff",
+        "allow_debt" => "Merge with unreviewed debt",
+        "max_extra_attempts" => "Extra attempts auto grants",
+        "use_reserve" => "Auto may use the reserve",
+        "change_classes" => "Changes auto may promote",
+        "min_days_between" => "Days between promotions",
+        "decides" => "The judge",
         "model_rules" => "Rules file",
-        "different_family" => "From a family not yet used",
+        "different_provider" => "From a provider not yet used",
         "second_model" => "Second approver",
         "spot_check_sample" => "Share of auto calls to check",
         "pause_auto_when_spot_checks_waiting" => "Spot checks that pause auto",
         "goal_changes" => "Changes to an approved goal",
-        "answered_by" => "Who answers questions",
-        "full_auto" => "For every checkpoint",
-        "at_hard_limit" => "Hard limit in full auto",
+        "answers" => "Who answers questions",
+        "when_declined" => "When you press Esc on a question",
+        "ask_limit" => "Times an agent that asks is told to decide",
+        "autopilot" => "For every approval",
+        "at_hard_limit" => "Hard limit on autopilot",
         "presence" => "Check on always-on agents",
         "refuse_ancestor_env" => "Shells refused approval",
-        other => return words_of(other.trim_start_matches("rules.")),
+        other => return words_of(other),
     };
     name.to_owned()
 }
@@ -730,10 +751,14 @@ fn setting_name(leaf: &str) -> String {
 fn value_words(row: &SettingRow, names: &DisplayNames) -> String {
     let words = row_value_words(&row.key, &row.value);
     let leaf = row.key.rsplit('.').next().unwrap_or_default();
-    if leaf == "answered_by" {
+    if leaf == "answers" {
         return answerer_words(&words, names);
     }
-    if matches!(leaf, "model" | "second_model")
+    // Left to the judge, the row says who that is.
+    if leaf == "decides" && words.eq_ignore_ascii_case("judge") {
+        return UNNAMED_JUDGE.to_owned();
+    }
+    if matches!(leaf, "decides" | "second_model")
         && let Ok(worker) = words.parse::<WorkerRef>()
     {
         return names.worker(&worker);
@@ -750,10 +775,12 @@ fn value_words(row: &SettingRow, names: &DisplayNames) -> String {
         ("decide_with", "model") => "the approver",
         ("decide_with", "rules_and_model") => "both agree",
         ("decide_with", "rules_or_model") => "rules, then approver",
-        ("full_auto", "true") => "on",
-        ("full_auto", "false") => "off",
+        ("autopilot", "true") => "on",
+        ("autopilot", "false") => "off",
         ("at_hard_limit", "stop") => "stop safely",
         ("at_hard_limit", "park") => "leave it to you",
+        ("when_declined", "decide") => "the agent or main decides",
+        ("when_declined", "stop") => "that part ends",
         (_, "ask") => "ask you",
         (_, "send_back") => "send it back",
         (_, "open_pull_request") => "open a pull request",
@@ -769,7 +796,7 @@ fn value_words(row: &SettingRow, names: &DisplayNames) -> String {
 fn answerer_words(words: &str, names: &DisplayNames) -> String {
     match words.trim() {
         word if word.eq_ignore_ascii_case("you") => "you".to_owned(),
-        word if word.eq_ignore_ascii_case("lead") => "the lead".to_owned(),
+        word if word.eq_ignore_ascii_case("main") => "the main agent".to_owned(),
         model => match model.parse::<WorkerRef>() {
             Ok(worker) => names.worker(&worker),
             Err(_) => model.to_owned(),
@@ -781,16 +808,16 @@ fn answerer_words(words: &str, names: &DisplayNames) -> String {
 /// and full auto never waits for you.
 fn answerer_modes(value: &str) -> &'static str {
     match value.trim().trim_matches('"').trim() {
-        "" => "You in supervised, the lead in auto and full auto",
+        "" => "You in supervised, the main agent in auto and autopilot",
         word if word.eq_ignore_ascii_case("you") => {
-            "Full auto never waits for you, so the lead answers there"
+            "Autopilot never waits for you, so the main agent answers there"
         }
-        word if word.eq_ignore_ascii_case("lead") => "In every mode, goal.always_ask questions too",
-        _ => "In full auto only; elsewhere you or the lead, by mode",
+        word if word.eq_ignore_ascii_case("main") => "In every mode, goal.always_ask questions too",
+        _ => "On autopilot only; elsewhere you or main, by mode",
     }
 }
 
-/// A recipe change class as people say it: `checklist items` for `checklist_item`.
+/// A workflow change class as people say it: `checklist items` for `checklist_item`.
 fn change_class_words(class: &str) -> String {
     let words = match class {
         "checklist_item" => "checklist items",
@@ -798,8 +825,8 @@ fn change_class_words(class: &str) -> String {
         "critic_policy" => "who critiques",
         "drafting_prompt" => "drafting prompt",
         "build_prompt" => "build prompt",
-        "card_split" => "how cards split",
-        "card_budget" => "card budgets",
+        "task_split" => "how tasks split",
+        "task_limit" => "task limits",
         "crew_composition" => "who is in the crew",
         "step_graph" => "workflow steps",
         "setting" => "other settings",
@@ -808,9 +835,17 @@ fn change_class_words(class: &str) -> String {
     words.to_owned()
 }
 
-/// `merge` and `mode` for `approvals.merge.mode`; `None` for a key right under `approvals.`.
+/// The approval a key belongs under and its name there: `merge` and `mode` for
+/// `approvals.merge.mode`, and `merge` and `max_changed_lines` for
+/// `approvals.rules.merge.max_changed_lines`, since an approval's rules show under it. `None`
+/// for a key right under `approvals.`, but for who settles what your rules can't, which
+/// belongs with the approver's settings.
 fn split_key(key: &str) -> Option<(&str, &str)> {
-    key.strip_prefix("approvals.")?.split_once('.')
+    if key == DECIDES {
+        return Some(("approver", "decides"));
+    }
+    let rest = key.strip_prefix("approvals.")?;
+    rest.strip_prefix("rules.").unwrap_or(rest).split_once('.')
 }
 
 fn kind_name(point: &ApprovalRow) -> String {
@@ -820,7 +855,7 @@ fn kind_name(point: &ApprovalRow) -> String {
         .unwrap_or_default()
 }
 
-/// `Recipe promotion` for `recipe_promotion`.
+/// `Workflow promotion` for `workflow_promotion`.
 fn words_of(name: &str) -> String {
     capitalized(&name.replace('_', " "))
 }
@@ -948,14 +983,14 @@ mod tests {
     }
 
     /// Every row full auto takes, the way `/approvals` lists them from the catalog.
-    fn full_auto_rows() -> Vec<SettingRow> {
+    fn autopilot_rows() -> Vec<SettingRow> {
         vec![
-            row("approvals.full_auto", "false"),
+            row("approvals.autopilot", "false"),
             row(ANSWERED_BY, ""),
             words_row(
                 "approvals.plan.mode",
                 "auto",
-                &["supervised", "auto", "full_auto"],
+                &["supervised", "auto", "autopilot"],
             ),
             words_row(
                 "approvals.plan.decide_with",
@@ -977,20 +1012,21 @@ mod tests {
                 "open_pull_request",
                 &["stop", "send_back", "open_pull_request", "park"],
             ),
-            row("approvals.approver.model", ""),
+            row("approvals.decides", "\"judge\""),
             row("approvals.approver.second_model", ""),
-            row("approvals.plan.rules.max_score_spread", "1.0"),
-            row("approvals.plan.rules.min_winner_margin", "1.5"),
+            row("approvals.rules.plan.max_score_spread", "1.0"),
+            row("approvals.rules.plan.min_winner_margin", "1.5"),
             row("approvals.spot_check_sample", "0.1"),
         ]
     }
 
-    /// Full auto comes first, its switch and who answers; then who checks; then each
-    /// checkpoint with who decides, what a hard limit does, and its rules' numbers.
+    /// Autopilot comes first, its switch and who answers; then who checks, led by who settles
+    /// what your rules can't; then each approval with who decides, what a hard limit does, and
+    /// its rules' numbers, though their keys live under `approvals.rules`.
     #[test]
-    fn full_auto_comes_first_then_who_checks_then_each_checkpoints_rules() {
+    fn autopilot_comes_first_then_who_checks_then_each_checkpoints_rules() {
         let names = DisplayNames::default();
-        let view = ApprovalsView::with_rows(full_auto_rows());
+        let view = ApprovalsView::with_rows(autopilot_rows());
         let items = view.items(&names);
         let lines: Vec<String> = items
             .iter()
@@ -1003,33 +1039,34 @@ mod tests {
         assert_eq!(
             lines[..15],
             [
-                "# Full auto",
-                "For every checkpoint",
+                "# Autopilot",
+                "For every approval",
                 "Who answers questions",
                 "# Who checks",
-                "Approver model",
+                "The judge",
                 "Second approver",
                 "# Plan",
                 "How it's decided",
                 "Who decides in auto",
                 "When auto doesn't approve",
-                "Hard limit in full auto",
+                "Hard limit on autopilot",
                 "Judge's widest score gap",
                 "Winning plan's lead",
                 "# Merge",
-                "Hard limit in full auto",
+                "Hard limit on autopilot",
             ]
         );
         assert!(matches!(
             &items[0],
-            Item::Heading { note, .. } if note == "off: each checkpoint keeps its own mode"
+            Item::Heading { note, .. } if note == "off: each approval keeps its own mode"
         ));
 
         let mut view = view;
         let shown = screen(&mut view);
         for (label, value) in [
-            ("For every checkpoint", "off"),
-            ("Who answers questions", "you or the lead, by mode"),
+            ("For every approval", "off"),
+            ("Who answers questions", "you or main, by mode"),
+            ("The judge", "cheapest, other provider"),
             ("Second approver", "none, one approver"),
             ("Who decides in auto", "both agree"),
             ("Judge's widest score gap", "1.0"),
@@ -1043,17 +1080,76 @@ mod tests {
         }
         let limits: Vec<&str> = shown
             .lines()
-            .filter(|line| line.contains("Hard limit in full auto"))
+            .filter(|line| line.contains("Hard limit on autopilot"))
             .collect();
         assert_eq!(limits.len(), 2, "{shown}");
         assert!(limits[0].contains("stop safely"), "{limits:?}");
         assert!(limits[1].contains("open a pull request"), "{limits:?}");
     }
 
+    /// A judge your crew names is who the judge row and "Who checks" name.
     #[test]
-    fn full_auto_values_read_as_words() {
+    fn the_judge_row_names_the_crew_s_judge() {
         let names = DisplayNames::default();
-        let on = row("approvals.full_auto", "true");
+        let judge: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+        let mut view = ApprovalsView::with_rows(autopilot_rows());
+        view.data.approver = Some(judge.clone());
+        let shown = screen(&mut view);
+        let line = shown
+            .lines()
+            .find(|line| line.contains("The judge"))
+            .unwrap_or_else(|| panic!("no judge row:\n{shown}"));
+        assert!(line.contains(&names.worker(&judge)), "{line}");
+        assert!(!shown.contains(UNNAMED_JUDGE), "{shown}");
+    }
+
+    /// What Esc on a question does, and how often an agent that asks is told to decide, sit
+    /// with who answers: together they are what decides when you don't.
+    #[test]
+    fn what_decides_without_you_sits_under_the_switch() {
+        let mut view = ApprovalsView::with_rows(vec![
+            row("approvals.spot_check_sample", "0.1"),
+            row("approvals.ask_limit", "2"),
+            words_row("approvals.when_declined", "stop", &["decide", "stop"]),
+            row(ANSWERED_BY, "\"main\""),
+            row("approvals.autopilot", "true"),
+        ]);
+        let names = DisplayNames::default();
+        let labels: Vec<String> = view
+            .items(&names)
+            .iter()
+            .filter_map(|item| match item {
+                Item::Heading { name, .. } => Some(format!("# {name}")),
+                Item::Setting { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels[..5],
+            [
+                "# Autopilot",
+                "For every approval",
+                "Who answers questions",
+                "When you press Esc on a question",
+                "Times an agent that asks is told to decide",
+            ]
+        );
+        let shown = screen(&mut view);
+        let line = |label: &str| {
+            shown
+                .lines()
+                .find(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("{label} isn't shown:\n{shown}"))
+                .to_owned()
+        };
+        assert!(line("When you press Esc").contains("that part ends"));
+        assert!(line("Times an agent that asks").contains('2'));
+    }
+
+    #[test]
+    fn autopilot_values_read_as_words() {
+        let names = DisplayNames::default();
+        let on = row("approvals.autopilot", "true");
         assert_eq!(value_words(&on, &names), "on");
         let park = row("approvals.goal.at_hard_limit", "\"park\"");
         assert_eq!(value_words(&park, &names), "leave it to you");
@@ -1072,7 +1168,7 @@ mod tests {
     /// The one switch edits as yes or no, and a hard limit's row offers its checkpoint's words.
     #[test]
     fn the_switch_and_a_hard_limit_edit_from_their_words() {
-        let mut rows = full_auto_rows();
+        let mut rows = autopilot_rows();
         rows[0].allowed = vec!["true".to_owned(), "false".to_owned()];
         let mut view = ApprovalsView::with_rows(rows);
         press(&mut view, &[KeyCode::Enter]);
@@ -1082,7 +1178,7 @@ mod tests {
             matches!(
                 &outcome,
                 ViewOutcome::Send(UiCommand::SetSetting { key, value, scope })
-                    if key == "approvals.full_auto"
+                    if key == "approvals.autopilot"
                         && value == "true"
                         && *scope == SettingScope::Project
             ),
@@ -1090,7 +1186,7 @@ mod tests {
         );
 
         // The plan's hard limit is the seventh row you can act on.
-        let mut view = ApprovalsView::with_rows(full_auto_rows());
+        let mut view = ApprovalsView::with_rows(autopilot_rows());
         press(&mut view, &[KeyCode::Down; 7]);
         press(&mut view, &[KeyCode::Enter]);
         assert_eq!(editor_rows(&view), ["stop", "send_back", "park"]);
@@ -1102,16 +1198,19 @@ mod tests {
             .iter()
             .map(|row| row.description.clone())
             .collect();
-        assert_eq!(notes[2], "Leave the card for you; the run waits");
+        assert_eq!(notes[2], "Leave the approval for you; the run waits");
     }
 
     /// Who answers offers you, the lead, or any model from the model picker, and saves the pick
     /// to its own key.
     #[test]
     fn who_answers_picks_you_the_lead_or_any_model() {
-        let mut view = ApprovalsView::with_rows(full_auto_rows());
+        let mut view = ApprovalsView::with_rows(autopilot_rows());
         press(&mut view, &[KeyCode::Down, KeyCode::Enter]);
-        assert_eq!(editor_rows(&view), ["You", "The lead", "Pick a model…"]);
+        assert_eq!(
+            editor_rows(&view),
+            ["You", "The main agent", "Pick a model…"]
+        );
         let asked = press(&mut view, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
         assert!(
             matches!(
@@ -1142,7 +1241,10 @@ mod tests {
         assert_eq!(editor_rows(&view).len(), 2, "one row per CLI");
         // Esc goes back to who answers' own rows, and in again.
         press(&mut view, &[KeyCode::Esc]);
-        assert_eq!(editor_rows(&view), ["You", "The lead", "Pick a model…"]);
+        assert_eq!(
+            editor_rows(&view),
+            ["You", "The main agent", "Pick a model…"]
+        );
         press(&mut view, &[KeyCode::Enter]);
         assert!(view.accept(&listed));
 
@@ -1161,7 +1263,7 @@ mod tests {
     /// the model it holds is the one marked.
     #[test]
     fn the_second_approver_comes_from_the_model_picker() {
-        let mut rows = full_auto_rows();
+        let mut rows = autopilot_rows();
         rows[8] = SettingRow {
             layer: "project".to_owned(),
             ..row("approvals.approver.second_model", "\"codex/gpt-x\"")
@@ -1213,25 +1315,25 @@ mod tests {
     fn change_classes_read_as_words() {
         let names = DisplayNames::default();
         let classes = row(
-            "approvals.recipe_promotion.rules.change_classes",
-            r#"["checklist_item", "critique_rounds", "card_budget", "new_class"]"#,
+            "approvals.rules.workflow_promotion.change_classes",
+            r#"["checklist_item", "critique_rounds", "task_limit", "new_class"]"#,
         );
         assert_eq!(
             value_words(&classes, &names),
-            "checklist items, critique rounds, card budgets, new class"
+            "checklist items, critique rounds, task limits, new class"
         );
-        let none = row("approvals.recipe_promotion.rules.change_classes", "[]");
+        let none = row("approvals.rules.workflow_promotion.change_classes", "[]");
         assert_eq!(value_words(&none, &names), "none");
     }
 
     #[test]
-    fn who_answers_the_crews_questions_comes_under_full_auto_in_words() {
+    fn who_answers_the_crews_questions_comes_under_autopilot_in_words() {
         let names = DisplayNames::default();
         let unset = row(ANSWERED_BY, "");
-        assert_eq!(value_words(&unset, &names), "you or the lead, by mode");
+        assert_eq!(value_words(&unset, &names), "you or main, by mode");
         assert_eq!(
-            value_words(&row(ANSWERED_BY, "\"lead\""), &names),
-            "the lead"
+            value_words(&row(ANSWERED_BY, "\"main\""), &names),
+            "the main agent"
         );
         assert_eq!(value_words(&row(ANSWERED_BY, "\"you\""), &names), "you");
 
@@ -1241,7 +1343,7 @@ mod tests {
             unset,
         ]);
         let items = view.items(&names);
-        assert!(matches!(&items[0], Item::Heading { name, .. } if name == "Full auto"));
+        assert!(matches!(&items[0], Item::Heading { name, .. } if name == "Autopilot"));
         assert!(matches!(
             &items[1],
             Item::Setting { index: 2, label } if label == "Who answers questions"
@@ -1268,19 +1370,19 @@ mod tests {
         };
         assert_eq!(
             under("\"codex/gpt-5.6\""),
-            "In full auto only; elsewhere you or the lead, by mode"
+            "On autopilot only; elsewhere you or main, by mode"
         );
         assert_eq!(
             under("\"you\""),
-            "Full auto never waits for you, so the lead answers there"
+            "Autopilot never waits for you, so the main agent answers there"
         );
         assert_eq!(
-            under("\"lead\""),
+            under("\"main\""),
             "In every mode, goal.always_ask questions too"
         );
         assert_eq!(
             under(""),
-            "You in supervised, the lead in auto and full auto"
+            "You in supervised, the main agent in auto and autopilot"
         );
     }
 
@@ -1293,8 +1395,8 @@ mod tests {
         use argonauts_core::settings::approvals::ApprovalMode;
 
         let names = DisplayNames::default();
-        let mut rows = full_auto_rows();
-        rows[0] = row("approvals.full_auto", "true");
+        let mut rows = autopilot_rows();
+        rows[0] = row("approvals.autopilot", "true");
         rows.push(words_row(
             "approvals.goal.at_hard_limit",
             "park",
@@ -1310,12 +1412,12 @@ mod tests {
         };
         let data = ApprovalsData {
             points: vec![
-                point(CheckpointKind::Plan, ApprovalMode::FullAuto),
+                point(CheckpointKind::Plan, ApprovalMode::Autopilot),
                 point(CheckpointKind::Merge, ApprovalMode::Supervised),
             ],
             warnings: vec![
-                "approvals.full_auto is on, but approvals.merge.mode = \"supervised\" keeps that \
-                 checkpoint for you, so a run still waits there"
+                "approvals.autopilot is on, but approvals.merge.mode = \"supervised\" keeps that \
+                 approval for you, so a run still waits there"
                     .to_owned(),
             ],
             ..ApprovalsData::default()
@@ -1336,7 +1438,7 @@ mod tests {
             .clone();
         assert_eq!(
             view.cells("How it's decided", &mode, &names).value,
-            "full auto by the switch"
+            "autopilot by the switch"
         );
         // Wrapped, never cut.
         let warning = view.data.warnings[0].clone();
@@ -1358,6 +1460,6 @@ mod tests {
             .flat_map(|line| line.split_whitespace())
             .collect();
         assert_eq!(words.join(" "), warning);
-        assert!(screen(&mut view).contains("approvals.full_auto is on"));
+        assert!(screen(&mut view).contains("approvals.autopilot is on"));
     }
 }

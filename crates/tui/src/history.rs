@@ -460,12 +460,12 @@ mod tests {
 
     fn header(agent: &str) -> SessionHeader {
         SessionHeader {
-            app: "Argonauts".to_owned(),
+            app: "Argonauts Code".to_owned(),
             version: "0.0.1".to_owned(),
-            default_agent: Some(agent.to_owned()),
+            main_agent: Some(agent.to_owned()),
             model: None,
             effort: None,
-            preset: "solo".to_owned(),
+            workflow: "solo".to_owned(),
             folder: "~/repo".to_owned(),
             agents: Vec::new(),
             runs_going: 0,
@@ -749,7 +749,7 @@ mod tests {
                 .with_item(ToolItem::text("Agreed by 3 agents · 1 question answered")),
         );
         let stream = history.start_stream();
-        history.push_stream(stream, "Merged card-002.\n\n- 3 files\n- tests pass\n");
+        history.push_stream(stream, "Merged task-002.\n\n- 3 files\n- tests pass\n");
         history.finish_stream(stream);
         insta::assert_snapshot!(drain(&mut history, &theme));
     }

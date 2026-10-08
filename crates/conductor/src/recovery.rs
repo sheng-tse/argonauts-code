@@ -20,7 +20,7 @@ use argonauts_core::limits::{
 use argonauts_core::names::{RoleName, VendorId, WorkerRef};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetSettings, BudgetUnit};
+use argonauts_core::settings::budget::BudgetUnit;
 use argonauts_core::settings::handoff::{AppliedHandoff, HandoffMode, HandoffStrategy, OnReturn};
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::worker::{SessionLimits, WorkerDirectory};
@@ -28,7 +28,7 @@ use argonauts_core::{AgentEvent, CardId, DEFAULT_SOFT_RATIO, ErrorCategory, RunI
 use time::OffsetDateTime;
 
 use crate::handoff::history::{CardLog, History, Placements, card_log};
-use crate::handoff::shortlist::{auto_check, balance, out_of_quota};
+use crate::handoff::shortlist::{at_plan_limit, auto_check, balance, out_of_quota};
 use crate::handoff::why::{one_line, stop_line};
 use crate::handoff::{applied, entry_rules};
 use crate::health::cooldown;
@@ -43,7 +43,7 @@ const MAX_SUCCESSOR_HOPS: usize = 5;
 const NO_AGENT_ISOLATES: &str = "no other agent keeps your plugins out of a blind role";
 
 const RESUME_MESSAGE: &str =
-    "The run was paused and is resuming. Continue the card from where you stopped.";
+    "The run was paused and is resuming. Continue the task from where you stopped.";
 
 /// A card `spread` handed to a worker, and the newest log event read when it did.
 type Picks = HashMap<CardId, (WorkerRef, u64)>;
@@ -119,7 +119,7 @@ impl Limits {
                 tracing::warn!(
                     path = %context.events.display(),
                     %error,
-                    "the handoff packet has only the card, since the event log couldn't be read"
+                    "the fallback packet has only the task, since the event log couldn't be read"
                 );
                 (CardLog::default(), Some(error.to_string()))
             }
@@ -161,7 +161,7 @@ impl Limits {
         }
         if let Some(error) = unread {
             packet.notes.push(format!(
-                "The run's event log couldn't be read ({}), so this packet has only the card.",
+                "The run's event log couldn't be read ({}), so this packet has only the task.",
                 one_line(&error, 160)
             ));
         }
@@ -235,7 +235,9 @@ impl Limits {
             EndReason::Stuck { .. } | EndReason::StartFailed { .. } | EndReason::Crashed { .. } => {
                 self.ladder(stop)
             }
-            EndReason::BudgetHit { .. } => RecoveryAction::BudgetHit(self.settings.budget.on_hit),
+            EndReason::BudgetHit { .. } => {
+                RecoveryAction::BudgetHit(self.settings.limits.budget.when_reached)
+            }
         }
     }
 
@@ -254,7 +256,9 @@ impl Limits {
                 packet: Box::new(stop.packet.clone()),
             },
             ErrorCategory::ModelUnavailable => self.successor(stop),
-            ErrorCategory::Budget => RecoveryAction::BudgetHit(self.settings.budget.on_hit),
+            ErrorCategory::Budget => {
+                RecoveryAction::BudgetHit(self.settings.limits.budget.when_reached)
+            }
             ErrorCategory::InvalidRequest
             | ErrorCategory::Permission
             | ErrorCategory::Interrupted
@@ -276,7 +280,7 @@ impl Limits {
             Out::Outage => self.health.state(&vendor).next_test_at,
         };
         let mode = stop.mode();
-        if mode != HandoffMode::Wait && stop.handed_off >= stop.rules.max_handoffs {
+        if mode != HandoffMode::Wait && stop.handed_off >= stop.rules.max_fallbacks {
             return too_many_handoffs(stop);
         }
         let reason = stop.reason();
@@ -307,8 +311,8 @@ impl Limits {
 
     /// The crew the run draws on: your `crew`, the default agent, and the worker that stopped.
     fn crew(&self, stop: &Stop<'_>) -> Vec<WorkerRef> {
-        let mut workers = self.settings.crew.clone();
-        for worker in [&self.settings.default_agent, &stop.context.worker] {
+        let mut workers = self.settings.crew.members();
+        for worker in [&self.settings.main_agent, &stop.context.worker] {
             if !workers.contains(worker) {
                 workers.push(worker.clone());
             }
@@ -364,7 +368,7 @@ impl Limits {
                 checkpoint: stop.checkpoint(),
             },
             None => {
-                let reason = format!("{}, with no successor in its family", stop.reason());
+                let reason = format!("{}, with no successor in its provider", stop.reason());
                 self.ask_until_timeout(stop, reason, self.shortlist(stop, false, Vec::new()))
             }
         }
@@ -372,7 +376,7 @@ impl Limits {
 
     /// The vendor stays disabled until you pin a working version, so waiting doesn't help.
     fn adapter_broken(&self, stop: &Stop<'_>) -> RecoveryAction {
-        if stop.handed_off >= stop.rules.max_handoffs {
+        if stop.handed_off >= stop.rules.max_fallbacks {
             return too_many_handoffs(stop);
         }
         let reason = stop.reason();
@@ -386,7 +390,7 @@ impl Limits {
     /// as for a broken adapter, but only one whose CLI keeps your plugins out. Handing it to one
     /// that loads everything would undo the stop.
     fn isolation_broken(&self, stop: &Stop<'_>) -> RecoveryAction {
-        if stop.handed_off >= stop.rules.max_handoffs {
+        if stop.handed_off >= stop.rules.max_fallbacks {
             return too_many_handoffs(stop);
         }
         let mut shortlist = self.others(stop);
@@ -430,7 +434,7 @@ impl Limits {
                 checkpoint: stop.checkpoint(),
             },
             None => RecoveryAction::Escalate {
-                reason: format!("{why}, and no agent of another family can retry it"),
+                reason: format!("{why}, and no agent of another provider can retry it"),
             },
         }
     }
@@ -485,6 +489,7 @@ impl Limits {
             return RecoveryAction::Race {
                 packet: Box::new(self.packet_for(stop, &to)),
                 to,
+                pick: shortlist.pick,
                 checkpoint: stop.checkpoint(),
             };
         }
@@ -581,7 +586,7 @@ impl Limits {
         }
         // Unless the reason already says why no one is left.
         let reason = if shortlist.candidates.is_empty() && !reason.ends_with(NO_AGENT_ISOLATES) {
-            format!("{reason} · no valid replacement")
+            format!("{reason} · no valid fallback")
         } else {
             reason
         };
@@ -621,7 +626,7 @@ impl Limits {
             if rules.read_only {
                 packet
                     .notes
-                    .push(format!("Read-only{whom}: don't edit files on this card."));
+                    .push(format!("Read-only{whom}: don't edit files on this task."));
             }
         }
         packet
@@ -665,7 +670,7 @@ impl Limits {
             cards.entry(card.clone()).or_default().follow(&event.kind);
         }
         // Handoffs move a card's owner, so the owner's rules decide.
-        let on_return = applied(&self.settings, RoleName::Owner, vendor).on_return;
+        let on_return = applied(&self.settings, RoleName::Worker, vendor).on_return;
         cards
             .into_iter()
             .filter(|(_, away)| !away.done)
@@ -759,26 +764,25 @@ impl LimitsService for Limits {
             .and_then(|role| role.lifetime)
             .unwrap_or(settings.sessions.lifetime);
         // A session that lives past one card answers to the run's budget lines, not a card's.
-        let per_card = card.is_some() || lifetime == SessionLifetime::Card;
+        let per_task = card.is_some() || lifetime == SessionLifetime::Task;
         let own = card.map(|card| &card.budget);
-        let budget = if per_card {
+        let budget = if per_task {
             own.and_then(|budget| budget.limit)
-                .or_else(|| per_card_budget(&settings.budget))
-                .filter(|_| settings.budget.enabled)
+                .or_else(|| settings.limits.budget.task_limit())
         } else {
             None
         };
         let watchdogs = &settings.watchdogs;
         SessionLimits {
             budget,
-            soft_stop: soft_stop(settings.budget.soft_stop),
+            soft_stop: soft_stop(settings.limits.budget.soft_stop),
             max_minutes: own
                 .and_then(|budget| budget.max_minutes)
-                .or(per_card.then_some(watchdogs.wall_clock_min))
+                .or(watchdogs.wall_clock_min.filter(|_| per_task))
                 .filter(|minutes| *minutes > 0.0),
             max_tool_calls: own
                 .and_then(|budget| budget.max_tool_calls)
-                .or(per_card.then_some(watchdogs.max_tool_calls))
+                .or(watchdogs.max_tool_calls.filter(|_| per_task))
                 .filter(|calls| *calls > 0),
             inactivity_min: own
                 .and_then(|budget| budget.inactivity_min)
@@ -808,10 +812,10 @@ impl LimitsService for Limits {
         let mut until: Option<OffsetDateTime> = None;
         for vendor in &vendors {
             let health = self.health.state(vendor);
-            let rejected = self
-                .quota
-                .get(vendor)
-                .filter(|reading| out_of_quota(reading, now));
+            // Out of plan: its provider refused it, or it is as full as you let it get.
+            let rejected = self.quota.get(vendor).filter(|reading| {
+                out_of_quota(reading, now) || at_plan_limit(reading, &self.settings, now)
+            });
             let down = health.state == HealthState::Down;
             if !down && rejected.is_none() {
                 return None;
@@ -886,26 +890,6 @@ fn successor_ref(entry: &ModelEntry) -> Option<WorkerRef> {
             None
         }
     }
-}
-
-/// A card's budget from the `per_card_*` key that's set, when budgets are on.
-pub fn per_card_budget(budget: &BudgetSettings) -> Option<BudgetAmount> {
-    if !budget.enabled {
-        return None;
-    }
-    let amount = |unit, amount| Some(BudgetAmount { unit, amount });
-    if let Some(usd) = budget.per_card_usd {
-        return amount(BudgetUnit::Usd, usd);
-    }
-    if let Some(tokens) = budget.per_card_tokens {
-        return amount(BudgetUnit::Tokens, tokens as f64);
-    }
-    if let Some(share) = budget.per_card_quota {
-        return amount(BudgetUnit::Quota, share);
-    }
-    budget
-        .per_card_minutes
-        .and_then(|minutes| amount(BudgetUnit::Minutes, minutes))
 }
 
 /// A ratio at or below zero would send the wrap-up at the start, so it falls back too.
@@ -987,7 +971,7 @@ fn overlay(log: &Placements, picks: &mut Picks) -> Placements {
 fn too_many_handoffs(stop: &Stop<'_>) -> RecoveryAction {
     RecoveryAction::Escalate {
         reason: format!(
-            "\"{}\" stopped after {} handoffs, the most /handoff allows",
+            "\"{}\" stopped after {} fallbacks, the most /fallback allows",
             stop.context.card.title.trim(),
             stop.handed_off
         ),

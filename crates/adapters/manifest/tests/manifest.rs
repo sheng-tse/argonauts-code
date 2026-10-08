@@ -646,7 +646,7 @@ fn a_harness_without_a_schema_flag_gets_the_schema_in_its_prompt() {
     assert!(stdin.contains("\"status\""), "{stdin}");
     assert!(
         on_stdin.files.is_empty(),
-        "no schema file for a harness that can't take one"
+        "no schema file for a CLI that can't take one"
     );
 
     let in_a_file = HarnessManifest {

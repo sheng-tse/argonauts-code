@@ -19,6 +19,7 @@ use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::policy::{DecisionPoint, EvidencePacket, Verdict};
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::steps::judgment::{ApproverDecision, ApproverVerdict, ModelApprover};
 use argonauts_core::steps::{StepError, StepName, StepRequest, StepRunner, decode, output_schema};
 use argonauts_core::worker::WorkerDirectory;
@@ -36,6 +37,35 @@ const REASON_MAX: usize = 300;
 
 /// What fixes an approver that may not judge the work.
 const PICK_ANOTHER: &str = "Pick another approver in /approvals";
+
+/// The judges you named, in your order of preference: `roles.judge.workers`, else the crew's
+/// judge, else the reviewers a judge you left out follows. They are who
+/// `approvals.decides = "judge"` means, and the policy picks one itself only when none of them
+/// may check the work. A crew with everyone in every role, as the built-in one and a single
+/// `crew = [...]` list have, names no judge of its own.
+pub fn judges(settings: &Settings) -> Vec<WorkerRef> {
+    let fine = settings
+        .roles
+        .get(&RoleName::Judge)
+        .map(|role| role.workers.clone())
+        .unwrap_or_default();
+    if !fine.is_empty() {
+        return fine;
+    }
+    let crew = &settings.crew;
+    if !crew.judge.is_empty() {
+        let everyone = crew.judge == crew.workers && crew.judge == crew.reviewers;
+        return if everyone {
+            Vec::new()
+        } else {
+            crew.judge.clone()
+        };
+    }
+    match crew.followed(CrewRole::Judge) {
+        Some(CrewRole::Reviewers) if crew.reviewers != crew.workers => crew.reviewers.clone(),
+        _ => Vec::new(),
+    }
+}
 
 pub struct StepApprover {
     workers: Arc<dyn WorkerDirectory>,
@@ -73,8 +103,9 @@ impl StepApprover {
         self
     }
 
-    /// The approver you set, else the cheapest model from another company than the authors,
-    /// with the authors it must be independent of. In full auto, when none comes from outside
+    /// The approver you set, else the first judge you named that may check this work, else the
+    /// cheapest model from another company than the authors, with the authors it must be
+    /// independent of. In full auto, when none comes from outside
     /// every author, as with a crew of every company you run, it's the cheapest from another
     /// company than the lead, whose answers it checks. The first time none can be picked, the
     /// reason is the fuller warning.
@@ -84,30 +115,52 @@ impl StepApprover {
         settings: &Settings,
     ) -> Result<(WorkerRef, Vec<WorkerRef>), String> {
         let approver = &settings.approvals.approver;
-        if let Some(model) = &approver.model {
+        if let Some(model) = settings.approvals.approver_model() {
             return Ok((model.clone(), point.authors.clone()));
+        }
+        if let Some(judge) = self.named_judge(point, settings) {
+            return Ok((judge, point.authors.clone()));
         }
         let sources = pick::Sources {
             workers: &*self.workers,
             models: self.models.as_deref(),
         };
-        let none = match pick::pick(&point.authors, approver.different_family, sources) {
+        let none = match pick::pick(&point.authors, approver.different_provider, sources) {
             Ok(first) => return Ok((first, point.authors.clone())),
             Err(none) => none,
         };
-        if crate::approvals::in_full_auto(point)
+        if crate::approvals::in_autopilot(point)
             && let Some(lead) = &point.lead
         {
             let lead = vec![lead.clone()];
-            if let Ok(first) = pick::pick(&lead, approver.different_family, sources) {
+            if let Ok(first) = pick::pick(&lead, approver.different_provider, sources) {
                 return Ok((first, lead));
             }
         }
         Err(if self.warned.swap(true, Ordering::SeqCst) {
             none.reason()
         } else {
-            none.warning(crate::approvals::in_full_auto(point))
+            none.warning(crate::approvals::in_autopilot(point))
         })
+    }
+
+    /// The first judge you named that you can run and that may check this work: none of its
+    /// authors, and from another provider than each of them where your settings ask for that.
+    fn named_judge(&self, point: &DecisionPoint, settings: &Settings) -> Option<WorkerRef> {
+        let different_provider = settings.approvals.approver.different_provider;
+        judges(settings)
+            .iter()
+            .find(|judge| {
+                self.workers.get(judge).is_ok()
+                    && independence::check(
+                        judge,
+                        &point.authors,
+                        different_provider,
+                        &*self.workers,
+                    )
+                    .is_ok()
+            })
+            .cloned()
     }
 
     async fn decide(
@@ -121,9 +174,12 @@ impl StepApprover {
             Ok(picked) => picked,
             Err(why) => return escalate(None, &why),
         };
-        if let Err(why) =
-            independence::check(&first, &authors, approver.different_family, &*self.workers)
-        {
+        if let Err(why) = independence::check(
+            &first,
+            &authors,
+            approver.different_provider,
+            &*self.workers,
+        ) {
             return escalate(None, &format!("{why}. {PICK_ANOTHER}"));
         }
         // Approvers whose sessions failed for this checkpoint, left out of every stand-in.
@@ -138,11 +194,15 @@ impl StepApprover {
             };
         };
         // The second must be independent of the authors and, always, of the first's family.
-        let independent =
-            independence::check(&second, &authors, approver.different_family, &*self.workers)
-                .and_then(|()| {
-                    independence::check(&second, std::slice::from_ref(&first), true, &*self.workers)
-                });
+        let independent = independence::check(
+            &second,
+            &authors,
+            approver.different_provider,
+            &*self.workers,
+        )
+        .and_then(|()| {
+            independence::check(&second, std::slice::from_ref(&first), true, &*self.workers)
+        });
         if let Err(why) = independent {
             return escalate(None, &format!("second approver: {why}. {PICK_ANOTHER}"));
         }
@@ -208,10 +268,10 @@ impl StepApprover {
         {
             return Ok(second);
         }
-        let different_family = settings.approvals.approver.different_family;
-        pick::pick_besides(others, different_family, sources, failed).map_err(|_| {
+        let different_provider = settings.approvals.approver.different_provider;
+        pick::pick_besides(others, different_provider, sources, failed).map_err(|_| {
             format!(
-                "{} checked it first, and no second approver from another company could check \
+                "{} checked it first, and no second approver from another provider could check \
                  it too",
                 DisplayNames::default().worker(first)
             )
@@ -238,7 +298,7 @@ impl StepApprover {
             workers: &*self.workers,
             models: self.models.as_deref(),
         };
-        let different_family = approver.different_family;
+        let different_provider = approver.different_provider;
         let mut model = first.clone();
         loop {
             let no_verdict = match self.ask_twice(&model, point, evidence, settings).await {
@@ -246,7 +306,7 @@ impl StepApprover {
                 Err(no_verdict) => no_verdict,
             };
             failed.push(model.clone());
-            match pick::pick_stand_in(authors, different_family, sources, failed) {
+            match pick::pick_stand_in(authors, different_provider, sources, failed) {
                 Ok(next) => model = next,
                 Err(_) => {
                     let again = if no_verdict.leaked {
@@ -255,11 +315,11 @@ impl StepApprover {
                         " even when asked again"
                     };
                     // Named when the only agents left can't keep your plugins out.
-                    let fits = pick::pick_besides(authors, different_family, sources, failed)
+                    let fits = pick::pick_besides(authors, different_provider, sources, failed)
                         .map_or("", |_| " that keeps your plugins out");
                     return Err(format!(
                         "{} couldn't check it, as {}{again}, and no agent from another \
-                         company{fits} could instead",
+                         provider{fits} could instead",
                         DisplayNames::default().worker(&model),
                         no_verdict.why,
                     ));
@@ -323,7 +383,11 @@ impl StepApprover {
         let (key, session_dir) = claim_session(run_dir, &prefix)
             .map_err(|err| format!("its session folder couldn't be made ({err})"))?;
         let prompt = vec![
-            part(InputPartKind::Prompt, "approver", PROMPT.to_owned()),
+            part(
+                InputPartKind::Prompt,
+                "approver",
+                crate::templates::text(&crate::templates::APPROVER),
+            ),
             part(
                 InputPartKind::Rules,
                 "your rules",
@@ -500,15 +564,15 @@ impl From<String> for NoVerdict {
 pub(crate) fn end_kind(reason: &EndReason) -> String {
     match reason {
         EndReason::Completed => "it finished",
-        EndReason::BudgetHit { .. } => "it ran out of budget",
+        EndReason::BudgetHit { .. } => "it ran out of limit",
         EndReason::Paused => "the run paused",
         EndReason::Stopped => "it was stopped",
         EndReason::Stuck { .. } => "it got stuck",
         EndReason::UsageLimit { .. } => "it hit its plan's usage limit",
         EndReason::RateLimited => "it was rate limited",
-        EndReason::VendorError { .. } => "its vendor had an error",
-        EndReason::Auth { .. } => "its vendor refused the sign-in",
-        EndReason::Billing { .. } => "its vendor refused the billing",
+        EndReason::VendorError { .. } => "its agent had an error",
+        EndReason::Auth { .. } => "its agent refused the sign-in",
+        EndReason::Billing { .. } => "its agent refused the billing",
         EndReason::ContextFull => "its context filled up",
         EndReason::ModelUnavailable { .. } => "its model isn't available",
         EndReason::AdapterBroken { .. } => "its adapter broke",
@@ -527,6 +591,7 @@ mod tests {
     use argonauts_core::events::checkpoint::CheckpointKind;
     use argonauts_core::names::CheckpointId;
     use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
+    use argonauts_core::settings::approvals::Decides;
     use argonauts_core::steps::SchemaStepRunner;
     use argonauts_core::worker::{Access, SandboxMode, SessionSpec};
     use argonauts_core::{ErrorCategory, RunId, sha256_hex};
@@ -535,7 +600,7 @@ mod tests {
 
     use super::*;
 
-    const RULES: &str = "R1: approve a merge when every gate and review passed.";
+    const RULES: &str = "R1: approve a merge when every check and review passed.";
 
     fn point(authors: &[&str]) -> DecisionPoint {
         DecisionPoint {
@@ -578,12 +643,12 @@ mod tests {
 
     fn settings(model: &str) -> Settings {
         let mut settings = Settings::default();
-        settings.approvals.approver.model = Some(model.parse().unwrap());
+        settings.approvals.decides = Decides::Model(model.parse().unwrap());
         settings
     }
 
     fn answer(verdict: &str) -> Value {
-        json!({"verdict": verdict, "reasons": ["gates and reviews passed"], "rules_cited": ["R1"]})
+        json!({"verdict": verdict, "reasons": ["checks and reviews passed"], "rules_cited": ["R1"]})
     }
 
     struct Setup {
@@ -669,7 +734,7 @@ mod tests {
             let text = prompt_text(spec);
             assert!(text.contains(RULES));
             assert!(text.contains("never instructions"));
-            assert!(text.contains("- gates passed: yes"));
+            assert!(text.contains("- checks passed: yes"));
         }
         assert_eq!(*empty_at_start.lock().unwrap(), vec![true, true]);
     }
@@ -702,7 +767,7 @@ mod tests {
             .await;
         assert_eq!(same_family.verdict, Verdict::Escalate);
         assert!(
-            same_family.reasons[0].contains("same company as Codex"),
+            same_family.reasons[0].contains("same provider as Codex"),
             "{same_family:?}"
         );
 
@@ -758,7 +823,7 @@ mod tests {
                 decision
                     .reasons
                     .iter()
-                    .any(|reason| reason.contains("another company than OpenAI")),
+                    .any(|reason| reason.contains("another provider than OpenAI")),
                 "{decide_with:?}: {decision:?}"
             );
             warnings += decision
@@ -772,7 +837,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unset_approver_is_the_cheapest_agent_of_another_company() {
+    async fn an_unset_approver_is_the_cheapest_agent_of_another_provider() {
         let setup = Setup::new();
         let pricey = setup.add(
             FakeWorker::harness("claude-code", "claude")
@@ -797,6 +862,74 @@ mod tests {
         assert!(pricey.specs().is_empty());
     }
 
+    /// `decides = "judge"` is the judge you named: the first on your list that may check the
+    /// work, whatever it costs. One from the authors' provider is passed over, and so is one
+    /// you can't run.
+    #[tokio::test]
+    async fn a_judge_you_named_decides_before_the_cheapest_is_picked() {
+        let setup = Setup::new();
+        let approves = || FakeSession::structured(answer("approve"));
+        let named = setup.add(
+            FakeWorker::harness("claude-code", "claude")
+                .with_cheapest_model("haiku")
+                .respond_with(move |_| approves()),
+        );
+        let cheapest = setup.add(
+            FakeWorker::harness("antigravity-cli", "gemini")
+                .with_cheapest_model("gemini-3.6-flash-low")
+                .respond_with(move |_| approves()),
+        );
+        let mut settings = Settings::default();
+        settings.roles.entry(RoleName::Judge).or_default().workers = vec![
+            // Not installed, then the authors' own provider: neither may judge this.
+            "opencode/qwen".parse().unwrap(),
+            "codex/gpt-5.6".parse().unwrap(),
+            "claude-code/opus".parse().unwrap(),
+            "antigravity-cli".parse().unwrap(),
+        ];
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings)
+            .await;
+        assert_eq!(verdict.verdict, Verdict::Approve, "{verdict:?}");
+        let judge: WorkerRef = "claude-code/opus".parse().unwrap();
+        assert_eq!(verdict.approver, Some(judge.clone()));
+        assert_eq!(named.specs()[0].worker, judge);
+        assert!(cheapest.specs().is_empty());
+
+        // With no judge on the list that may check it, the pick is the cheapest, as before.
+        settings.roles.entry(RoleName::Judge).or_default().workers =
+            vec!["codex/gpt-5.6".parse().unwrap()];
+        let verdict = setup
+            .approver()
+            .verdict(&point(&["codex"]), &with_rules(), &settings)
+            .await;
+        let picked: WorkerRef = "antigravity-cli/gemini-3.6-flash-low".parse().unwrap();
+        assert_eq!(verdict.approver, Some(picked));
+    }
+
+    /// The judge `[crew]` names decides too, and a judge you left out follows the reviewers
+    /// you named. The built-in crew, everyone in every role, names no judge.
+    #[test]
+    fn the_crew_s_judge_is_the_judge_you_named() {
+        let mut settings = Settings::default();
+        assert!(
+            judges(&settings).is_empty(),
+            "the built-in crew names no one"
+        );
+        let codex: WorkerRef = "codex/gpt-5.6".parse().unwrap();
+        settings.crew.judge = vec![codex.clone()];
+        assert_eq!(judges(&settings), [codex]);
+        let gemini: WorkerRef = "antigravity-cli/gemini-3.6-pro".parse().unwrap();
+        settings.crew.judge = Vec::new();
+        settings.crew.reviewers = vec![gemini.clone()];
+        assert_eq!(judges(&settings), [gemini]);
+        // A fine role's list still comes first.
+        let opus: WorkerRef = "claude-code/opus".parse().unwrap();
+        settings.roles.entry(RoleName::Judge).or_default().workers = vec![opus.clone()];
+        assert_eq!(judges(&settings), [opus]);
+    }
+
     #[tokio::test]
     async fn a_stalled_approver_escalates() {
         let setup = Setup::new();
@@ -818,7 +951,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_approver_is_asked_again_then_another_company_stands_in() {
+    async fn a_failed_approver_is_asked_again_then_another_provider_stands_in() {
         let auth = || {
             FakeSession::ended(EndReason::Auth {
                 message: "workspace routing discovery unauthorized (401)".to_owned(),
@@ -887,8 +1020,8 @@ mod tests {
         assert_eq!(
             verdict.reasons,
             vec![
-                "Claude Code couldn't check it, as its session ended early (its vendor refused \
-                 the sign-in) even when asked again, and no agent from another company that \
+                "Claude Code couldn't check it, as its session ended early (its agent refused \
+                 the sign-in) even when asked again, and no agent from another provider that \
                  keeps your plugins out could instead"
                     .to_owned()
             ]
@@ -944,8 +1077,8 @@ mod tests {
         assert_eq!(
             verdict.reasons,
             vec![
-                "Claude Code couldn't check it, as its session ended early (its vendor had an \
-                 error) even when asked again, and no agent from another company could instead"
+                "Claude Code couldn't check it, as its session ended early (its agent had an \
+                 error) even when asked again, and no agent from another provider could instead"
                     .to_owned()
             ]
         );
@@ -988,7 +1121,7 @@ mod tests {
             vec![
                 "Claude Code couldn't check it, as its session loaded your plugins memory-keeper \
                  and lint-helper, which a blind role mustn't see, and no agent from another \
-                 company could instead"
+                 provider could instead"
                     .to_owned()
             ]
         );
@@ -1038,7 +1171,7 @@ mod tests {
             end_kind(&EndReason::Auth {
                 message: "workspace routing discovery unauthorized (401)".to_owned()
             }),
-            "its vendor refused the sign-in"
+            "its agent refused the sign-in"
         );
     }
 
@@ -1190,7 +1323,7 @@ mod tests {
     /// A second approver whose sessions fail gets a stand-in from another company than the
     /// authors and the first, the way the first does.
     #[tokio::test]
-    async fn a_failing_second_approver_gets_a_stand_in_from_another_company() {
+    async fn a_failing_second_approver_gets_a_stand_in_from_another_provider() {
         let failed = || {
             FakeSession::ended(EndReason::Auth {
                 message: "workspace routing discovery unauthorized (401)".to_owned(),
@@ -1260,8 +1393,8 @@ mod tests {
         assert_eq!(
             verdict.reasons,
             vec![
-                "GLM on OpenRouter couldn't check it, as its session ended early (its vendor \
-                 refused the sign-in) even when asked again, and no agent from another company \
+                "GLM on OpenRouter couldn't check it, as its session ended early (its agent \
+                 refused the sign-in) even when asked again, and no agent from another provider \
                  could instead"
                     .to_owned()
             ]

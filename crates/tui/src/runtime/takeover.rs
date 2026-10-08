@@ -13,7 +13,7 @@ use argonauts_core::settings::ui::TakeoverWhere;
 use tokio::process::Command;
 
 pub const ENDPOINT_REFUSAL: &str =
-    "A direct endpoint has no UI to hand over. /reassign the card instead.";
+    "A direct endpoint has no UI to hand over. /reassign the task instead.";
 const NOT_IN_TMUX: &str = "Not inside tmux, so the session runs here.";
 const NO_TABS: &str = "This terminal can't open a tab from here, so the session runs here.";
 /// How often a tmux pane is checked for its program's exit.
@@ -239,15 +239,15 @@ mod tests {
 
     fn ticket(command: Option<CommandSpec>, vendor: &str) -> TakeOverTicket {
         TakeOverTicket {
-            card: CardId::new("card-002").unwrap(),
+            card: CardId::new("task-002").unwrap(),
             command,
-            worktree: PathBuf::from("/work/card-002"),
+            worktree: PathBuf::from("/work/task-002"),
             vendor: vendor.to_owned(),
         }
     }
 
     fn claude() -> CommandSpec {
-        let mut spec = CommandSpec::new("claude", "/work/card-002").args([
+        let mut spec = CommandSpec::new("claude", "/work/task-002").args([
             "--resume",
             "abc",
             "fix it; rm -rf ~",
@@ -285,7 +285,7 @@ mod tests {
             plan_take_over_in(&with_command, TakeoverWhere::Here, &tmux),
             TakeOverPlan::Here {
                 argv: child.clone(),
-                cwd: "/work/card-002".into(),
+                cwd: "/work/task-002".into(),
                 notice: None,
             }
         );
@@ -304,14 +304,14 @@ mod tests {
                 "-F",
                 "#{pane_id}",
                 "-c",
-                "/work/card-002"
+                "/work/task-002"
             ]
         );
         assert_eq!(argv[8], "--");
         // Each argument stays one argument; only a trailing `;` is escaped for tmux.
         assert_eq!(argv[9..argv.len() - 1], child[..child.len() - 1]);
         assert_eq!(argv.last().unwrap(), "stop\\;");
-        assert!(sentinel.starts_with("argonauts-takeover-card-002-"));
+        assert!(sentinel.starts_with("argonauts-takeover-task-002-"));
         assert!(
             sentinel
                 .chars()
@@ -379,7 +379,7 @@ mod tests {
             plan_take_over_in(&ticket(None, "codex"), TakeoverWhere::Here, &env),
             TakeOverPlan::Here {
                 argv: vec!["/bin/zsh".into()],
-                cwd: "/work/card-002".into(),
+                cwd: "/work/task-002".into(),
                 notice: None,
             }
         );

@@ -63,6 +63,7 @@ pub(crate) fn same_session(cause: AttemptCause) -> bool {
         cause,
         AttemptCause::GateRetry
             | AttemptCause::ReviewChanges
+            | AttemptCause::GoalRetry
             | AttemptCause::IntegrationFailed
             | AttemptCause::Resumed
     )
@@ -122,7 +123,7 @@ pub(crate) async fn run(host: &Host, call: SessionCall<'_>) -> EngineResult<Ende
     };
     let mut plan = SessionPlan {
         at: Some(at.clone()),
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         worker: owner.clone(),
         card: Some(card.clone()),
         access: Access::Build,
@@ -132,6 +133,7 @@ pub(crate) async fn run(host: &Host, call: SessionCall<'_>) -> EngineResult<Ende
         json_schema: Some(output_schema::<Build>()),
         resume,
         slot: 0,
+        label: None,
     };
     plan.slot = slot.unwrap_or_else(|| host.slot_for(&plan));
     // A vendor error has the owner go again once on its own session; when it fails again, the

@@ -1,5 +1,5 @@
 # The four states a session shows at every capture width: a chat answer, a run at work,
-# its merge checkpoint, and the finished run. The owner sleeps before it edits, so the busy
+# its merge approval, and the finished run. The worker sleeps before it edits, so the busy
 # screen stays up long enough to capture.
 
 [version]

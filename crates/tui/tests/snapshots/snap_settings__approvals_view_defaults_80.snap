@@ -3,21 +3,21 @@ source: crates/tui/tests/snap_settings.rs
 expression: "screen(&mut autonomous_approvals(), width, height, &state)"
 ---
 Approvals
-Who decides each checkpoint, and how auto matched you
+Who decides each approval, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Who checks                           the cheapest model from another company │
-│ ❯ Approver model             cheapest, other company  built-in               │
+│ Who checks                          the cheapest model from another provider │
+│ ❯ The judge                  cheapest, other provider  built-in              │
 │                                                                              │
 │ Goal · auto · rules and approver both agree    0 matches in a row · 0 misses │
-│   How it's decided           auto                     built-in               │
-│   Who decides in auto        both agree               built-in               │
-│   When auto doesn't approve  ask you                  built-in               │
+│   How it's decided           auto                      built-in              │
+│   Who decides in auto        both agree                built-in              │
+│   When auto doesn't approve  ask you                   built-in              │
 │                                                                              │
 │ Merge · auto · your rules decide               0 matches in a row · 0 misses │
-│   How it's decided           auto                     built-in               │
-│   Who decides in auto        your rules               built-in               │
-│   When auto doesn't approve  ask you                  built-in               │
+│   How it's decided           auto                      built-in              │
+│   Who decides in auto        your rules                built-in              │
+│   When auto doesn't approve  ask you                   built-in              │
 │                                                                              │
 │ Spot checks                                                                  │
 │   None waiting                                                               │

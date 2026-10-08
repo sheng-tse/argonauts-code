@@ -1,5 +1,6 @@
 //! The spot check of an auto decision: Agree `y`, Overrule `n`, Show the evidence `d`. It
-//! answers with `UiCommand::SpotCheck`, never rings, and can be set aside like a run's card.
+//! answers with `UiCommand::SpotCheck` and never rings. Nothing waits on it, so Esc closes it,
+//! and `/approvals` still lists it.
 
 use argonauts_core::RunId;
 use argonauts_core::display_names::DisplayNames;
@@ -36,6 +37,7 @@ pub fn spot_check_card(
     card.question = Some("Was this the right call?".into());
     // Nothing waits on it, but it asks you, so it takes the keys as every card that asks does.
     card.needs_you = true;
+    card.esc_hint = "Esc to skip".to_owned();
     card
 }
 

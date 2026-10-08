@@ -6,11 +6,13 @@ use std::path::{Component, Path, PathBuf};
 use argonauts_core::names::WorkerRef;
 use argonauts_core::settings::approvals::Otherwise;
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
+use argonauts_core::settings::handoff::CrewRole;
 use argonauts_core::settings::sessions::NativeFanout;
 use argonauts_core::settings::{Settings, Span};
 use toml::{Table, Value};
 
-use super::full_auto;
+use super::autopilot;
+use super::crew;
 use super::handoff;
 use super::plain;
 use super::roles::{self, Workers};
@@ -67,7 +69,8 @@ pub(crate) fn validate(
     let workers = Workers::new(settings).resolving(context.harness_ids, turned_on(context));
     let mut warnings = roles::warnings(settings, &workers);
     warnings.extend(handoff::warnings(settings, &workers));
-    warnings.extend(full_auto::warnings(settings, &workers));
+    warnings.extend(crew::warnings(settings, &workers));
+    warnings.extend(autopilot::warnings(settings, &workers));
     Ok(warnings)
 }
 
@@ -105,14 +108,56 @@ pub(crate) fn type_message(err: &toml::de::Error, written: &Table) -> (Option<St
         .rsplit_once("in `")
         .and_then(|(_, rest)| rest.split_once('`'))
         .map(|(key, _)| key.to_owned());
+    let (key, problem) = match key {
+        Some(key) => match refused_entry(&key, written) {
+            Some((entry, problem)) => (Some(entry), problem),
+            None => (Some(key), err.message().to_owned()),
+        },
+        None => (None, String::new()),
+    };
     let message = match &key {
-        Some(key) => match untagged_form(err.message()) {
+        Some(key) => match untagged_form(&problem) {
             Some(form) => format!("{key}: {form}"),
-            None => plain::type_message(key, err.message(), plain::written_at(written, key)),
+            None => plain::type_message(key, &problem, plain::written_at(written, key)),
         },
         None => text.trim().to_owned(),
     };
     (key, message)
+}
+
+/// `[limits]` and `[fallback]` are each read as groups of keys laid side by side (the hard
+/// limits beside the run and task limits, the table for every role beside each role's own),
+/// so serde names the table and not the key in it. Reading each entry alone finds the one it
+/// refused, with what it said. A role's own `[fallback.<role>]` is searched one level down.
+fn refused_entry(key: &str, written: &Table) -> Option<(String, String)> {
+    if !matches!(key, "limits" | "fallback") {
+        return None;
+    }
+    let Value::Table(entries) = plain::written_at(written, key)? else {
+        return None;
+    };
+    entries.iter().find_map(|(name, value)| {
+        let refused = refusal(&[key, name], value)?;
+        let own = match value {
+            Value::Table(own) if key == "fallback" && CrewRole::named(name).is_some() => {
+                own.iter().find_map(|(inner, value)| {
+                    let refused = refusal(&[key, name, inner], value)?;
+                    Some((format!("{key}.{name}.{inner}"), refused))
+                })
+            }
+            _ => None,
+        };
+        own.or(Some((format!("{key}.{name}"), refused)))
+    })
+}
+
+/// What serde says about `value` alone at `path`, when it refuses it.
+fn refusal(path: &[&str], value: &Value) -> Option<String> {
+    let alone = path.iter().rev().fold(value.clone(), |inner, name| {
+        Value::Table(Table::from_iter([((*name).to_owned(), inner)]))
+    });
+    let refused = alone.try_into::<Settings>().err()?;
+    Some(refused.message().to_owned())
 }
 
 /// Serde names the type of a key that takes several forms, not the forms themselves.
@@ -183,14 +228,20 @@ const MIN_ROTATE_TOKENS: u64 = 1_000;
 
 fn numbers(settings: &Settings) -> Vec<Problem> {
     let mut problems = Vec::new();
-    let soft_stop = settings.budget.soft_stop;
+    let soft_stop = settings.limits.budget.soft_stop;
     if soft_stop.is_nan() || soft_stop <= 0.0 || soft_stop > 1.0 {
         problems.push(Problem::new(
-            "budget.soft_stop",
-            format!("budget.soft_stop must be more than 0 and at most 1 (it's {soft_stop})"),
+            "limits.soft_stop",
+            format!("limits.soft_stop must be more than 0 and at most 1 (it's {soft_stop})"),
         ));
     }
     problems.extend(dollars(settings));
+    if let Err(message) = settings.sessions.context.cap() {
+        problems.push(Problem::new(
+            "sessions.context",
+            format!("sessions.{message}"),
+        ));
+    }
     match settings.sessions.rotate_at.tokens(None) {
         Err(message) => problems.push(Problem::new(
             "sessions.rotate_at",
@@ -234,12 +285,12 @@ fn numbers(settings: &Settings) -> Vec<Problem> {
 /// A dollar amount that's NaN, infinite, or below zero never trips a cap, or makes paid work
 /// look free.
 fn dollars(settings: &Settings) -> Vec<Problem> {
-    let budget = &settings.budget;
+    let budget = &settings.limits.budget;
     let limits = &settings.limits;
     let mut amounts = vec![
-        ("budget.run_usd".to_owned(), budget.run_usd),
-        ("budget.per_card_usd".to_owned(), budget.per_card_usd),
-        ("limits.usd_per_day".to_owned(), limits.usd_per_day),
+        ("limits.spend_per_run".to_owned(), budget.spend_per_run),
+        ("limits.per_task_usd".to_owned(), budget.per_task_usd),
+        ("limits.spend_per_day".to_owned(), limits.spend_per_day),
         (
             "limits.evolution_usd_per_month".to_owned(),
             Some(limits.evolution_usd_per_month),
@@ -267,7 +318,8 @@ fn dollars(settings: &Settings) -> Vec<Problem> {
 }
 
 fn budget_lines(settings: &Settings) -> Vec<Problem> {
-    let Ok(serde_json::Value::Object(shares)) = serde_json::to_value(&settings.budget.lines) else {
+    let Ok(serde_json::Value::Object(shares)) = serde_json::to_value(&settings.limits.budget.lines)
+    else {
         return Vec::new();
     };
     let mut problems = Vec::new();
@@ -276,7 +328,7 @@ fn budget_lines(settings: &Settings) -> Vec<Problem> {
         // NaN, which TOML allows, serializes as null.
         let share = share.as_f64().unwrap_or(f64::NAN);
         if !(0.0..=1.0).contains(&share) {
-            let key = format!("budget.lines.{name}");
+            let key = format!("limits.lines.{name}");
             problems.push(Problem::new(
                 &key,
                 format!("{key} is a share from 0 to 1 (it's {share})"),
@@ -286,8 +338,8 @@ fn budget_lines(settings: &Settings) -> Vec<Problem> {
     }
     if sum.is_nan() || (sum - 1.0).abs() > 0.001 {
         problems.push(Problem::new(
-            "budget.lines",
-            format!("budget.lines shares add up to {sum:.3}, and must add up to 1"),
+            "limits.lines",
+            format!("limits.lines shares add up to {sum:.3}, and must add up to 1"),
         ));
     }
     problems
@@ -295,13 +347,13 @@ fn budget_lines(settings: &Settings) -> Vec<Problem> {
 
 fn spans(settings: &Settings) -> Vec<Problem> {
     let fixed: [(&str, &Span); 7] = [
-        ("gates.timeout", &settings.gates.timeout),
-        ("mcp.run_budget", &settings.mcp.run_budget),
+        ("checks.timeout", &settings.checks.timeout),
+        ("mcp.run_limit", &settings.mcp.run_limit),
         ("ui.recap_after", &settings.ui.recap_after),
         ("narrator.interval", &settings.narrator.interval),
         ("health.window", &settings.health.window),
         ("health.cooldown", &settings.health.cooldown),
-        ("supervisor.park_grace", &settings.supervisor.park_grace),
+        ("supervisor.wait_grace", &settings.supervisor.park_grace),
     ];
     // Handoff tables check their own `ask_timeout`.
     let endpoints = settings
@@ -336,8 +388,8 @@ fn approvals(settings: &Settings) -> Vec<Problem> {
     let shares = [
         ("approvals.spot_check_sample", approvals.spot_check_sample),
         (
-            "approvals.merge.rules.min_changed_line_coverage",
-            approvals.merge.rules.min_changed_line_coverage,
+            "approvals.rules.merge.min_test_coverage_of_changed_lines",
+            approvals.rules.merge.min_test_coverage_of_changed_lines,
         ),
     ];
     for (key, share) in shares {
@@ -351,16 +403,16 @@ fn approvals(settings: &Settings) -> Vec<Problem> {
 
     let approver = &approvals.approver;
     let second = "approvals.approver.second_model";
-    match (&approver.model, &approver.second_model) {
+    match (approvals.approver_model(), &approver.second_model) {
         (None, Some(_)) => problems.push(Problem::new(
             second,
-            format!("{second} needs approvals.approver.model, the first approver"),
+            format!("{second} needs approvals.decides to name a model, the first approver"),
         )),
         (Some(first), Some(other)) if first.worker == other.worker => {
             problems.push(Problem::new(
                 second,
                 format!(
-                    "{second} must come from another vendor than approvals.approver.model, and \
+                    "{second} must come from another agent than approvals.decides, and \
                      both are {}",
                     first.worker
                 ),
@@ -374,7 +426,7 @@ fn approvals(settings: &Settings) -> Vec<Problem> {
             let key = format!("approvals.{name}.otherwise");
             problems.push(Problem::new(
                 &key,
-                format!("{key} = \"open_pull_request\" is for the merge checkpoint only"),
+                format!("{key} = \"open_pull_request\" is for the merge approval only"),
             ));
         }
     }
@@ -387,15 +439,15 @@ fn otherwise_by_checkpoint(settings: &Settings) -> [(&'static str, Otherwise); 7
         ("goal", approvals.goal.otherwise),
         ("plan", approvals.plan.otherwise),
         ("merge", approvals.merge.otherwise),
-        ("recipe_promotion", approvals.recipe_promotion.otherwise),
-        ("escalation", approvals.escalation.otherwise),
-        ("budget", approvals.budget.otherwise),
+        ("workflow_promotion", approvals.workflow_promotion.otherwise),
+        ("stuck", approvals.escalation.otherwise),
+        ("limit", approvals.budget.otherwise),
         ("change_request", approvals.change_request.otherwise),
     ]
 }
 
 /// Names that may be your own files, so no fixed list covers them.
-const OPEN_NAMES: [&str; 2] = ["preset", "workflow"];
+const OPEN_NAMES: [&str; 3] = ["workflow", "phases", "ui.theme"];
 
 /// Values a key's picker doesn't offer, for the keys a layer set.
 fn allowed_values(context: &Context<'_>) -> Vec<Problem> {
@@ -518,9 +570,9 @@ mod tests {
     fn dollar_amounts_must_be_real() {
         assert!(dollars(&Settings::default()).is_empty());
         let mut settings = Settings::default();
-        settings.budget.run_usd = Some(f64::NAN);
-        settings.budget.per_card_usd = Some(-1.0);
-        settings.limits.usd_per_day = Some(f64::INFINITY);
+        settings.limits.budget.spend_per_run = Some(f64::NAN);
+        settings.limits.budget.per_task_usd = Some(-1.0);
+        settings.limits.spend_per_day = Some(f64::INFINITY);
         settings.limits.evolution_usd_per_month = -5.0;
         settings.agents.insert(
             "codex".to_owned(),
@@ -537,29 +589,33 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "budget.run_usd",
-                "budget.per_card_usd",
-                "limits.usd_per_day",
+                "limits.spend_per_run",
+                "limits.per_task_usd",
+                "limits.spend_per_day",
                 "limits.evolution_usd_per_month",
                 "agents.codex.price.output_per_mtok",
                 "agents.codex.price.cached_input_per_mtok",
             ]
         );
-        settings.budget.run_usd = Some(0.0);
-        assert!(!dollars(&settings).iter().any(|p| p.key == "budget.run_usd"));
+        settings.limits.budget.spend_per_run = Some(0.0);
+        assert!(
+            !dollars(&settings)
+                .iter()
+                .any(|p| p.key == "limits.spend_per_run")
+        );
     }
 
     #[test]
     fn settings_refuse_fixed_core_on_evolvable() {
         assert!(evolvable(&Settings::default()).is_empty());
         for key in [
-            "review.per_card",
+            "review.per_task",
             "judging.judges",
             "evolution.min_gain_points",
             "memory.max_chars",
             "drafting.blind",
             "approvals.merge.mode",
-            "limits.usd_per_day",
+            "limits.spend_per_day",
             "sandbox.network",
             "merge.mode",
             "review",
@@ -581,7 +637,7 @@ mod tests {
         let global = dir.path().join("config.toml");
         std::fs::write(
             &global,
-            "[evolution]\nevolvable = [\"critique.rounds\", \"review.per_card\"]\n",
+            "[evolution]\nevolvable = [\"critique.rounds\", \"review.per_task\"]\n",
         )
         .unwrap();
         let sources = crate::SettingsSources {
@@ -589,6 +645,6 @@ mod tests {
             ..crate::SettingsSources::default()
         };
         let err = crate::resolve(&sources).unwrap_err().to_string();
-        assert!(err.contains("review.per_card"), "{err}");
+        assert!(err.contains("review.per_task"), "{err}");
     }
 }

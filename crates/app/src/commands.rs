@@ -181,7 +181,9 @@ fn size_of(path: &Path) -> u64 {
 
 /// Runs in this repo that wait for you, newest first.
 pub async fn inbox(repo: Option<&Path>) -> anyhow::Result<Vec<RunSummary>> {
-    let env = required(repo)?;
+    let Some(env) = here(repo)? else {
+        return Ok(Vec::new());
+    };
     let runs = crate::conductor(&env.repo_root)?.list().await?;
     Ok(waiting_for_you(runs))
 }
@@ -236,7 +238,7 @@ pub async fn approvals_report(repo: Option<&Path>) -> anyhow::Result<ApprovalsRe
     let mut notes = vec!["CI failures wait for a CI integration.".to_owned()];
     if env.paths.home().join(user_files::AUTO_OFF).exists() {
         notes.push(
-            "Auto is off everywhere since `argonauts auto off`: every checkpoint waits for you."
+            "Auto is off everywhere since `argonauts auto off`: every approval waits for you."
                 .to_owned(),
         );
     }
@@ -343,7 +345,7 @@ struct Saved {
     note: Option<String>,
 }
 
-/// `env` is `None` outside a git repository, where only the global file can be set.
+/// `env` is `None` when no project is at hand, where only the global file can be set.
 fn config_set_in(
     env: Option<&AppEnv>,
     paths: &Paths,
@@ -363,7 +365,7 @@ fn config_set_in(
             "{key} is saved for one app session by default; pick a file with --local, \
              --project, or --global"
         ),
-        (_, None) => bail!("{key} goes in a project file, so run this inside a git repository"),
+        (_, None) => bail!("{key} goes in a project file, so run this in the project's folder"),
         (SettingScope::Project, Some(env)) => (env, env.project_config()),
         (SettingScope::ProjectLocal, Some(env)) => (env, env.project_local_config()),
     };
@@ -536,13 +538,14 @@ pub fn current_settings(repo: Option<&Path>, overrides: Vec<String>) -> anyhow::
     resolve_here(repo, overrides).map(|(_, resolved)| resolved.settings)
 }
 
-/// The top of the git repository holding `dir`, or the current directory.
+/// The project holding `dir`, or the current directory: the top of its git repository, or the
+/// folder itself outside one.
 pub fn repo_root(dir: Option<&Path>) -> anyhow::Result<PathBuf> {
     let start = match dir {
         Some(dir) => dir.to_owned(),
         None => std::env::current_dir().context("reading the current directory")?,
     };
-    crate::git::toplevel(&start)
+    Ok(crate::git::project_root(&start))
 }
 
 /// The JSON Schema of every settings file.
@@ -554,19 +557,21 @@ fn home() -> anyhow::Result<Paths> {
     Paths::from_env().map_err(|_| anyhow!("can't find your home directory; set ARGONAUTS_HOME"))
 }
 
-/// This repo's environment, or `None` outside a git repository when no repo was named.
+/// This project's environment. `None` when no folder was named and the current one is neither
+/// a git repository nor a folder Argonauts has worked in: nothing of a project's is there to
+/// read, and a command that only looks must not start keeping state for it.
 fn here(repo: Option<&Path>) -> anyhow::Result<Option<AppEnv>> {
-    if repo.is_none() {
-        let cwd = std::env::current_dir().context("reading the current directory")?;
-        if crate::git::toplevel(&cwd).is_err() {
-            return Ok(None);
-        }
-    }
-    AppEnv::discover(repo).map(Some)
+    let env = AppEnv::discover(repo)?;
+    let a_project = repo.is_some()
+        || env.git().has_history()
+        || env.state_dir.is_dir()
+        || env.repo_root.join(".argonauts").is_dir();
+    Ok(a_project.then_some(env))
 }
 
+/// For the commands that act on this folder as a project, whatever it has been so far.
 fn required(repo: Option<&Path>) -> anyhow::Result<AppEnv> {
-    here(repo)?.ok_or_else(|| anyhow!("run this inside a git repository"))
+    AppEnv::discover(repo)
 }
 
 /// The settings for this repo with each project file's trust, or the global file alone outside
@@ -663,7 +668,7 @@ mod tests {
             "[sandbox]\nnetwork = true\n",
         )
         .unwrap();
-        let saved = set(&env, "default_agent", "codex", None).unwrap();
+        let saved = set(&env, "main_agent", "codex", None).unwrap();
         assert_eq!(saved.file, local);
         let note = saved.note.unwrap();
         assert!(note.contains("stays untrusted"), "{note}");
@@ -678,8 +683,8 @@ mod tests {
         repo.write(".argonauts/config.local.toml", "[ui]\nbell = true\n")
             .unwrap();
         for (key, value, file) in [
-            ("triage.solo_max_files", "5", &project),
-            ("default_agent", "codex", &local),
+            ("solo_or_crew.solo_max_files", "5", &project),
+            ("main_agent", "codex", &local),
         ] {
             let saved = set(&env, key, value, None).unwrap();
             assert_eq!((&saved.file, saved.note), (file, None), "{key}");
@@ -699,10 +704,10 @@ mod tests {
                 .contains("bell = false")
         );
         for scope in [None, Some(SettingScope::Project)] {
-            let err = config_set_in(None, &paths, "triage.solo_max_files", "5", scope)
+            let err = config_set_in(None, &paths, "solo_or_crew.solo_max_files", "5", scope)
                 .unwrap_err()
                 .to_string();
-            assert!(err.contains("git repository"), "{err}");
+            assert!(err.contains("the project's folder"), "{err}");
         }
     }
 
@@ -712,7 +717,7 @@ mod tests {
         let env = env_for(&repo, false);
         for (key, value, file, scope) in [
             (
-                "default_agent",
+                "main_agent",
                 "codex",
                 env.project_local_config(),
                 SettingScope::ProjectLocal,
@@ -724,7 +729,7 @@ mod tests {
                 SettingScope::Global,
             ),
             (
-                "triage.solo_max_files",
+                "solo_or_crew.solo_max_files",
                 "5",
                 env.project_config(),
                 SettingScope::Project,
@@ -777,14 +782,14 @@ mod tests {
         set(
             &at_terminal,
             "approvals.merge.mode",
-            "\"shadow\"",
+            "\"auto_preview\"",
             Some(SettingScope::Global),
         )
         .unwrap();
         assert!(
             std::fs::read_to_string(env.global_config())
                 .unwrap()
-                .contains("shadow")
+                .contains("auto_preview")
         );
     }
 
@@ -804,9 +809,9 @@ mod tests {
             run: RunId::new(run).unwrap(),
             title: run.to_owned(),
             mode: RunMode::Crew,
-            preset: "peer-crew".to_owned(),
+            workflow: "council".to_owned(),
             state: RunState::Parked,
-            stopped_at: "the plan checkpoint".to_owned(),
+            stopped_at: "the plan approval".to_owned(),
             updated: OffsetDateTime::now_utc() - time::Duration::days(days_ago),
             spent: Spend::default(),
             sessions_to_resume: 0,
@@ -831,7 +836,7 @@ mod tests {
         let names: Vec<&str> = reminders.iter().map(|r| r.run.as_str()).collect();
         assert_eq!(names, vec!["run-03", "run-04"]);
         assert_eq!(reminders[0].days, 9);
-        assert_eq!(reminders[0].stopped_at, "the plan checkpoint");
+        assert_eq!(reminders[0].stopped_at, "the plan approval");
         assert_eq!(
             (reminders[0].worktrees, reminders[0].worktree_bytes),
             (2, 4096)
@@ -842,11 +847,11 @@ mod tests {
     fn worktree_usage_counts_each_card_and_its_bytes() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(worktree_usage(&dir.path().join("none")), (0, 0));
-        for card in ["card-1", "card-2"] {
+        for card in ["task-1", "task-2"] {
             std::fs::create_dir_all(dir.path().join(card).join("src")).unwrap();
             std::fs::write(dir.path().join(card).join("src").join("a.rs"), "12345").unwrap();
         }
-        std::os::unix::fs::symlink("/", dir.path().join("card-1").join("root")).unwrap();
+        std::os::unix::fs::symlink("/", dir.path().join("task-1").join("root")).unwrap();
         let (count, bytes) = worktree_usage(dir.path());
         assert_eq!(count, 2);
         assert!((10..10_000).contains(&bytes), "{bytes}");
@@ -867,8 +872,11 @@ mod tests {
     #[test]
     fn config_show_is_toml_headed_by_its_files_and_flags() {
         let repo = TempRepo::new().unwrap();
-        repo.write(".argonauts/config.toml", "[triage]\nsolo_max_files = 5\n")
-            .unwrap();
+        repo.write(
+            ".argonauts/config.toml",
+            "[solo_or_crew]\nsolo_max_files = 5\n",
+        )
+        .unwrap();
         let env = env_for(&repo, false);
         let flags = vec!["ui.bell=false".to_owned()];
         let settings = AppSettings::load(&env, flags.clone(), false).unwrap();
@@ -890,7 +898,7 @@ mod tests {
     fn the_schema_describes_the_settings() {
         let schema = config_schema();
         let properties = schema["properties"].as_object().unwrap();
-        for key in ["preset", "default_agent", "crew", "approvals"] {
+        for key in ["workflow", "main_agent", "crew", "approvals"] {
             assert!(properties.contains_key(key), "{key}");
         }
     }

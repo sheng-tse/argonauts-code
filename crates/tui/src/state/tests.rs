@@ -39,14 +39,12 @@ use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 use argonauts_core::{AgentEvent, CardId, DiffStat, Note, NoteLevel, PhaseStatus, Spend};
 use crossterm::event::{KeyCode, KeyEvent};
 use time::macros::datetime;
-use time::{Duration, OffsetDateTime, UtcOffset};
+use time::{Duration, OffsetDateTime};
 
 use super::*;
 use crate::app::UiAction;
-use crate::bridge::status::{ChipFacts, quota_part};
 use crate::bridge::{Cx, Effects};
 use crate::cards::{CardTarget, Cards};
-use crate::cell::Tone;
 use crate::model::ViewModel;
 use crate::theme::Theme;
 use crate::views::settings::approvals::ApprovalsView;
@@ -59,7 +57,7 @@ fn run_id() -> RunId {
 }
 
 fn card_id(n: u32) -> CardId {
-    CardId::new(format!("card-{n:03}")).unwrap()
+    CardId::new(format!("task-{n:03}")).unwrap()
 }
 
 fn key(n: u32) -> SessionKey {
@@ -128,7 +126,7 @@ fn started(title: &str, mode: RunMode) -> RunEventKind {
         title: title.into(),
         mode,
         forced: false,
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -145,6 +143,7 @@ fn started(title: &str, mode: RunMode) -> RunEventKind {
         version: "0.1.0".into(),
         front_end: Some("slack".into()),
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     })))
 }
 
@@ -154,10 +153,10 @@ fn session_started(who: WorkerRef, follow: u8) -> SessionEvent {
         worker: who,
         family: "claude".into(),
         kind: WorkerKind::Harness,
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         step: None,
         access: Access::Build,
-        lifetime: SessionLifetime::Card,
+        lifetime: SessionLifetime::Task,
         resumed_from: None,
         follow_key: Some(follow),
         workflow_step: None,
@@ -243,7 +242,7 @@ fn summary() -> RunSummary {
         run: run_id(),
         title: "Fix the export race".into(),
         mode: RunMode::Crew,
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         state: argonauts_core::api::RunState::Running,
         stopped_at: String::new(),
         updated: T0,
@@ -293,7 +292,7 @@ fn state_folds_run() {
     assert_eq!(folded.title, "Fix the export race");
     assert_eq!(folded.mode, Some(RunMode::Crew));
     assert_eq!(folded.front_end.as_deref(), Some("slack"));
-    assert_eq!(folded.preset.as_deref(), Some("peer-crew"));
+    assert_eq!(folded.workflow.as_deref(), Some("council"));
     assert_eq!(folded.started, Some(T0));
 
     let pause = RunLifecycle::PauseRequested {
@@ -636,6 +635,7 @@ fn state_folds_agent() {
         AgentEvent::ContextFill {
             used: 150_000,
             size: Some(1_000_000),
+            sent: None,
         },
     ];
     for event in events {
@@ -648,9 +648,10 @@ fn state_folds_agent() {
     assert!((folded.cost_usd.unwrap() - 0.03).abs() < 1e-9);
     assert_eq!(
         folded.context,
+        // A session starts fresh near the end of the window it reports.
         Some(argonauts_core::views::ContextUse {
             used: 150_000,
-            cap: 200_000
+            cap: 900_000
         })
     );
 
@@ -686,6 +687,7 @@ fn state_folds_agent() {
                 last_message: None,
                 log_uri: None,
                 steps_visible: true,
+                tokens: None,
             },
         },
         AgentEvent::Unknown {
@@ -1045,46 +1047,49 @@ fn state_folds_welcome_status_and_mode() {
     state.apply(&AppEvent::Welcome {
         version: "0.1.0".into(),
         repo: "~/argonauts".into(),
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         agents: Vec::new(),
         runs_going: 0,
         runs_need_you: 0,
         example_prompt: None,
-        default_agent: None,
+        main_agent: None,
         effort: None,
     });
     assert_eq!(
-        state.welcome.as_ref().map(|w| w.preset.as_str()),
-        Some("peer-crew")
+        state.welcome.as_ref().map(|w| w.workflow.as_str()),
+        Some("council")
     );
 
     let status = argonauts_core::app::StatusLine {
         title: "export race".into(),
         repo: "~/argonauts".into(),
-        preset: "peer-crew".into(),
-        all_hands: false,
+        workflow: "council".into(),
+        ultracode: false,
         run: None,
-        default_agent: worker("claude-code", "opus"),
+        main_agent: worker("claude-code", "opus"),
         quotas: vec![QuotaChip {
             label: "Claude".into(),
             reading: None,
             health: HealthState::Healthy,
+            windows: Vec::new(),
         }],
+        line: Default::default(),
         spent: None,
         limit: None,
         narrator: NarratorMode::Live,
-        approval_mode: ApprovalMode::Shadow,
+        approval_mode: ApprovalMode::AutoPreview,
+        awake: None,
     };
     state.apply(&AppEvent::Status {
         status: status.clone(),
     });
     assert_eq!(state.status, Some(status.clone()));
     // The header waited for this agent, and later ones don't change what it printed.
-    let header_agent = |state: &AppState| state.welcome.as_ref()?.default_agent.clone();
+    let header_agent = |state: &AppState| state.welcome.as_ref()?.main_agent.clone();
     assert_eq!(header_agent(&state), Some(worker("claude-code", "opus")));
     state.apply(&AppEvent::Status {
         status: argonauts_core::app::StatusLine {
-            default_agent: worker("codex", "gpt-5.6"),
+            main_agent: worker("codex", "gpt-5.6"),
             ..status
         },
     });
@@ -1106,6 +1111,52 @@ fn state_folds_welcome_status_and_mode() {
         mode: AppMode::Working { run: run_id() },
     });
     assert_eq!(run(&state).parked, None);
+}
+
+/// The conversation's context by category stays known between turns, since there's no
+/// session to ask then, and goes when another model answers.
+#[test]
+fn the_chats_context_breakdown_is_kept_until_another_model_answers() {
+    use argonauts_core::events::context::{ContextCategory, ContextPart};
+
+    let mut state = AppState::default();
+    let chat = |event| AppEvent::Chat { event };
+    let started = |n: u32, model: &str| ChatEvent::TurnStarted {
+        turn: TurnId::numbered(n),
+        text: "why?".into(),
+        worker: worker("claude-code", model),
+        read_only: true,
+        commit: "abc".into(),
+        uncommitted: Vec::new(),
+        settings_sha256: None,
+        continues: false,
+    };
+    state.apply(&chat(started(1, "opus")));
+    state.apply(&chat(ChatEvent::Agent {
+        turn: TurnId::numbered(1),
+        event: AgentEvent::ContextBreakdown {
+            categories: vec![ContextCategory {
+                part: ContextPart::Messages,
+                tokens: 186_000,
+            }],
+            auto_compact_at: Some(950_000),
+            window: 1_000_000,
+            model: None,
+            memory_files: Vec::new(),
+            mcp_tools: Vec::new(),
+            agents: Vec::new(),
+            skills: Vec::new(),
+        },
+    }));
+    let kept = state.chat.context.clone().expect("the breakdown");
+    assert_eq!(kept.window, 1_000_000);
+    assert_eq!(kept.auto_compact_at, Some(950_000));
+    assert_eq!(kept.categories[0].tokens, 186_000);
+
+    state.apply(&chat(started(2, "opus")));
+    assert_eq!(state.chat.context.as_ref(), Some(&kept));
+    state.apply(&chat(started(3, "sonnet")));
+    assert_eq!(state.chat.context, None);
 }
 
 #[test]
@@ -1269,7 +1320,7 @@ fn state_folds_narrator() {
         ts: T0,
         run: Some(run_id()),
         kind: NarratorLineKind::Update,
-        text: "Codex took over card-002.".into(),
+        text: "Codex took over task-002.".into(),
         model: worker("claude-code", "haiku"),
         spend: Spend::default(),
     };
@@ -1410,7 +1461,7 @@ fn snapshot_seeds_long_run() {
             quotas: Vec::new(),
             waiting: Vec::new(),
         },
-        open_checkpoints: vec![question(3, "Merge card-004?", true)],
+        open_checkpoints: vec![question(3, "Merge task-004?", true)],
         running: vec![key(8)],
     };
     let mut log = Log::new();
@@ -1477,105 +1528,6 @@ fn follow_finds_the_attached_runs_agent() {
     assert_eq!(*id, run_id());
     assert_eq!(folded.key, key(1));
     assert!(state.follow(2).is_none());
-}
-
-#[test]
-fn quota_chip_words() {
-    let now = T0 + Duration::minutes(1);
-    let facts = ChipFacts {
-        now,
-        utc_offset: UtcOffset::UTC,
-        spend_usd: None,
-    };
-    let chip = |label: &str, reading: Option<QuotaReading>, health| QuotaChip {
-        label: label.into(),
-        reading,
-        health,
-    };
-    let words = |chip: &QuotaChip, facts: &ChipFacts| {
-        let part = quota_part(chip, facts).expect("a chip");
-        (part.text, part.tone)
-    };
-    let healthy = HealthState::Healthy;
-    let claude = reading("claude-code", "five_hour", 0.71, QuotaStatus::Allowed);
-    assert_eq!(
-        words(&chip("Claude", Some(claude.clone()), healthy), &facts),
-        ("Claude 5h 71% used".into(), Tone::Normal)
-    );
-    let near = QuotaReading {
-        used: Some(0.92),
-        ..claude.clone()
-    };
-    let part = quota_part(&chip("Claude", Some(near), healthy), &facts).unwrap();
-    assert_eq!(
-        (part.text.as_str(), part.tone, part.rank),
-        ("Claude 5h 92% used", Tone::Warning, crate::text::KEEP)
-    );
-    assert_eq!(
-        words(&chip("Codex", None, HealthState::Down), &facts),
-        ("Codex down".into(), Tone::Warning)
-    );
-    let out = QuotaReading {
-        status: QuotaStatus::Rejected,
-        resets_at: Some(datetime!(2026-09-30 15:45 UTC)),
-        ..reading("antigravity-cli", "daily", 1.0, QuotaStatus::Rejected)
-    };
-    assert_eq!(
-        words(&chip("agy", Some(out.clone()), healthy), &facts),
-        ("agy out until 3:45 PM".into(), Tone::Warning)
-    );
-    // On the wrap-up allowance the agent finishes, so the chip says so rather than out.
-    let wrapping_up = QuotaReading {
-        wrap_up: true,
-        ..out.clone()
-    };
-    assert_eq!(
-        words(&chip("Claude", Some(wrapping_up), healthy), &facts),
-        ("Claude wrapping up".into(), Tone::Warning)
-    );
-    let tomorrow = QuotaReading {
-        resets_at: Some(datetime!(2026-10-01 09:00 UTC)),
-        ..out.clone()
-    };
-    assert_eq!(
-        words(&chip("agy", Some(tomorrow), healthy), &facts).0,
-        "agy out until Thu 9:00 AM"
-    );
-    let no_reset = QuotaReading {
-        resets_at: None,
-        ..out
-    };
-    assert_eq!(
-        words(&chip("agy", Some(no_reset), healthy), &facts).0,
-        "agy out"
-    );
-    // A quota not read yet leaves its chip out rather than show `Codex ?`.
-    assert_eq!(quota_part(&chip("Codex", None, healthy), &facts), None);
-    let unreadable = QuotaReading {
-        used: None,
-        ..reading("codex", "five_hour", 0.0, QuotaStatus::Unknown)
-    };
-    assert_eq!(
-        quota_part(&chip("Codex", Some(unreadable), healthy), &facts),
-        None
-    );
-    let spent = ChipFacts {
-        spend_usd: Some(0.06),
-        ..facts
-    };
-    assert_eq!(
-        words(&chip("OpenRouter", None, healthy), &spent).0,
-        "OpenRouter $0.06"
-    );
-    assert_eq!(words(&chip("Local", None, healthy), &spent).0, "Local");
-    let stale = ChipFacts {
-        now: T0 + Duration::hours(1),
-        ..facts
-    };
-    assert_eq!(
-        words(&chip("Claude", Some(claude), healthy), &stale),
-        ("Claude 5h 71% used".into(), Tone::Dim)
-    );
 }
 
 #[test]
@@ -1992,4 +1944,304 @@ fn a_vendor_workflow_leaves_the_panel_when_its_session_ends() {
             .iter()
             .all(|agent| agent.state != argonauts_core::events::session::VendorAgentState::Running)
     );
+}
+
+/// The conversation's own turn keeps the latest state of each subagent its CLI started, for
+/// the list under the input. A workflow has a row of its own, and the turn's end clears them.
+#[test]
+fn a_chat_turn_keeps_its_subagents_until_it_ends() {
+    let chat = |event| AppEvent::Chat { event };
+    let turn = TurnId::numbered(1);
+    let mut state = AppState::default();
+    state.apply(&chat(ChatEvent::TurnStarted {
+        turn: turn.clone(),
+        text: "split the checks".into(),
+        worker: worker("claude-code", "opus"),
+        read_only: true,
+        commit: "abc".into(),
+        uncommitted: Vec::new(),
+        settings_sha256: None,
+        continues: false,
+    }));
+    let update = |id: &str, kind, status, said: Option<&str>| {
+        chat(ChatEvent::Agent {
+            turn: turn.clone(),
+            event: AgentEvent::Subagent {
+                update: SubagentUpdate {
+                    id: id.into(),
+                    parent: None,
+                    kind,
+                    label: Some("Count slowly".into()),
+                    prompt: None,
+                    status,
+                    last_message: said.map(str::to_owned),
+                    log_uri: None,
+                    steps_visible: true,
+                    tokens: None,
+                },
+            },
+        })
+    };
+    let agent = SubagentKind::Subagent;
+    state.apply(&update("toolu_a", agent, SubagentStatus::Started, None));
+    state.apply(&update("toolu_b", agent, SubagentStatus::Running, None));
+    state.apply(&update(
+        "toolu_w",
+        SubagentKind::Workflow,
+        SubagentStatus::Running,
+        None,
+    ));
+    state.apply(&update(
+        "toolu_a",
+        agent,
+        SubagentStatus::Done,
+        Some("DONE-A"),
+    ));
+    let seen: Vec<(&str, SubagentStatus, Option<&str>)> = state
+        .chat
+        .subagents
+        .iter()
+        .map(|known| {
+            (
+                known.id.as_str(),
+                known.status,
+                known.last_message.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("toolu_a", SubagentStatus::Done, Some("DONE-A")),
+            ("toolu_b", SubagentStatus::Running, None),
+        ]
+    );
+    state.apply(&chat(ChatEvent::TurnCancelled { turn }));
+    assert!(state.chat.subagents.is_empty());
+}
+
+/// A turn waits on the background once its main agent has a result while its CLI still runs
+/// something, whether the turn ended by itself or Esc stopped it. The main
+/// agent starting again, the last task ending, and the turn's end each end the wait.
+#[test]
+fn a_chat_turn_waits_on_the_background_while_its_main_agent_rests() {
+    let turn = TurnId::numbered(1);
+    let said = |event| AppEvent::Chat {
+        event: ChatEvent::Agent {
+            turn: TurnId::numbered(1),
+            event,
+        },
+    };
+    let running = |tasks: &[&str]| {
+        said(AgentEvent::BackgroundTasks {
+            running: tasks.iter().map(|&task| task.to_owned()).collect(),
+            ended: tasks.is_empty(),
+        })
+    };
+    let result = || {
+        said(AgentEvent::Result {
+            text: None,
+            structured: None,
+            is_error: true,
+        })
+    };
+    let writes = || {
+        said(AgentEvent::TextDelta {
+            text: "Both are done.".into(),
+            parent: None,
+        })
+    };
+    let mut state = AppState::default();
+    state.apply(&AppEvent::Chat {
+        event: ChatEvent::TurnStarted {
+            turn: turn.clone(),
+            text: "count in the background".into(),
+            worker: worker("claude-code", "opus"),
+            read_only: true,
+            commit: "abc".into(),
+            uncommitted: Vec::new(),
+            settings_sha256: None,
+            continues: false,
+        },
+    });
+    let agent = |status| {
+        said(AgentEvent::Subagent {
+            update: SubagentUpdate {
+                id: "toolu_a".into(),
+                parent: None,
+                kind: SubagentKind::Subagent,
+                label: Some("Count slowly".into()),
+                prompt: None,
+                status,
+                last_message: None,
+                log_uri: None,
+                steps_visible: true,
+                tokens: None,
+            },
+        })
+    };
+    state.apply(&writes());
+    state.apply(&running(&["task-a"]));
+    state.apply(&result());
+    assert!(
+        !state.chat.waits_on_background(),
+        "a command left running is no agent, and Esc still stops the turn"
+    );
+    state.apply(&writes());
+    state.apply(&agent(SubagentStatus::Running));
+    assert!(!state.chat.waits_on_background(), "the main agent works");
+    state.apply(&result());
+    assert!(state.chat.waits_on_background());
+    // A subagent's own text doesn't wake the main agent.
+    state.apply(&said(AgentEvent::TextDelta {
+        text: "three hundred".into(),
+        parent: Some("toolu_a".into()),
+    }));
+    assert!(state.chat.waits_on_background());
+    state.apply(&writes());
+    assert!(!state.chat.waits_on_background(), "it started again");
+    state.apply(&result());
+    state.apply(&running(&[]));
+    assert!(!state.chat.waits_on_background(), "nothing runs now");
+    state.apply(&running(&["task-b"]));
+    assert!(state.chat.waits_on_background());
+    state.apply(&agent(SubagentStatus::Done));
+    assert!(
+        !state.chat.waits_on_background(),
+        "its agent is done, and only a command runs"
+    );
+    state.apply(&agent(SubagentStatus::Running));
+    state.apply(&AppEvent::Chat {
+        event: ChatEvent::TurnCancelled { turn },
+    });
+    assert!(!state.chat.waits_on_background());
+    assert_eq!(state.chat.background, 0);
+}
+
+/// A page published with Claude Code's Artifact tool is recorded when its call finishes, by
+/// the main agent in the conversation or by an agent inside a run, and stays past the turn.
+/// The bottom line's part names one and counts several.
+#[test]
+fn published_artifacts_are_kept_with_who_published_them() {
+    let overview = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
+    let report = "https://claude.ai/code/artifact/7d2c4b18-93aa-4e0f-8c61-5b0e9f1a2c33";
+    let started = |id: &str, file: &str| AgentEvent::ToolStarted {
+        id: id.into(),
+        name: "Artifact".into(),
+        input: serde_json::json!({"file_path": file, "icon": "document"}),
+        parent: None,
+    };
+    let finished = |id: &str, ok: bool, output: String| AgentEvent::ToolFinished {
+        id: id.into(),
+        ok,
+        output: Some(output),
+        parent: None,
+    };
+    let published = |file: &str, url: &str| format!("Published {file} at {url} (Version 1)");
+
+    let chat = |event| AppEvent::Chat { event };
+    let turn = |n: u32| ChatEvent::TurnStarted {
+        turn: TurnId::numbered(n),
+        text: "write it up".into(),
+        worker: worker("claude-code", "opus"),
+        read_only: false,
+        commit: "abc".into(),
+        uncommitted: Vec::new(),
+        settings_sha256: None,
+        continues: false,
+    };
+    let said = |n: u32, event| {
+        chat(ChatEvent::Agent {
+            turn: TurnId::numbered(n),
+            event,
+        })
+    };
+    let mut state = AppState::default();
+    assert_eq!(state.artifacts.line_part(), None);
+    state.apply(&chat(turn(1)));
+    state.apply(&said(1, started("t1", "out/weekly-usage-chart.html")));
+    assert!(state.artifacts.is_empty(), "nothing until it's published");
+    let refused = finished(
+        "t1",
+        false,
+        published("out/weekly-usage-chart.html", overview),
+    );
+    state.apply(&said(1, refused));
+    assert!(
+        state.artifacts.is_empty(),
+        "a call that failed published none"
+    );
+    state.apply(&said(1, started("t2", "out/weekly-usage-chart.html")));
+    let done = finished(
+        "t2",
+        true,
+        published("out/weekly-usage-chart.html", overview),
+    );
+    state.apply(&said(1, done));
+    assert_eq!(state.artifacts.line_part(), Some(("weekly-usage-chart", 0)));
+    // The next turn forgets the last one's calls, and the page stays.
+    state.apply(&chat(turn(2)));
+    assert_eq!(state.artifacts.all().len(), 1);
+    assert_eq!(state.artifacts.all()[0].by, None);
+
+    // An agent inside a run publishes one, which is its row's too.
+    let mut log = Log::new();
+    for event in crew(&mut log) {
+        state.apply(&event);
+    }
+    state.apply(&log.agent(1, started("t9", "out/test-report.html")));
+    let done = finished("t9", true, published("out/test-report.html", report));
+    state.apply(&log.agent(1, done));
+    assert_eq!(state.artifacts.line_part(), Some(("test-report", 1)));
+    let latest = state.artifacts.latest().expect("the newest");
+    assert_eq!(latest.artifact.name, "test-report");
+    let (run_id, session) = latest.by.clone().expect("an agent's");
+    assert_eq!(session, key(1));
+    assert_eq!(
+        state
+            .artifacts
+            .by_agent(&run_id, &session)
+            .map(|artifact| artifact.url.as_str()),
+        Some(report)
+    );
+
+    // Published again, the first is the most recent, and still one page.
+    state.apply(&said(2, started("t3", "out/weekly-usage-chart.html")));
+    let again = finished(
+        "t3",
+        true,
+        published("out/weekly-usage-chart.html", overview),
+    );
+    state.apply(&said(2, again));
+    let names: Vec<&str> = state
+        .artifacts
+        .all()
+        .iter()
+        .map(|published| published.artifact.name.as_str())
+        .collect();
+    assert_eq!(names, ["test-report", "weekly-usage-chart"]);
+
+    state.apply(&AppEvent::ChatCleared);
+    assert!(state.artifacts.is_empty(), "a new conversation has none");
+
+    // A conversation carried on brings its own pages back, in place of what was held.
+    state.apply(&said(3, started("t4", "out/test-report.html")));
+    let done = finished("t4", true, published("out/test-report.html", report));
+    state.apply(&said(3, done));
+    state.apply(&AppEvent::ChatResumed {
+        chat: argonauts_core::names::ChatId::numbered(1),
+        title: "write it up".into(),
+        worker: None,
+        earlier: Vec::new(),
+        turns: Vec::new(),
+        artifacts: vec![argonauts_core::artifacts::Artifact {
+            url: overview.into(),
+            name: "weekly-usage-chart".into(),
+            title: None,
+            file: Some("out/weekly-usage-chart.html".into()),
+            updated: false,
+        }],
+    });
+    assert_eq!(state.artifacts.line_part(), Some(("weekly-usage-chart", 0)));
+    assert_eq!(state.artifacts.latest().expect("its page").by, None);
 }

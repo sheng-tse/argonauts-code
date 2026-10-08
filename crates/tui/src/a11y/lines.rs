@@ -32,12 +32,12 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         AppEvent::Run { event } => run_lines(event, state),
         AppEvent::Chat { event } => chat_lines(event, state),
         AppEvent::Choice { choice } => CardList::choice(choice).lines(),
-        AppEvent::ChoiceClosed { outcome, .. } => labeled("card", outcome),
+        AppEvent::ChoiceClosed { outcome, .. } => labeled("question", outcome),
         AppEvent::Narrator { line } => labeled("narrator", &line.text),
         AppEvent::Notice { .. } if state.notice_repeated => Vec::new(),
         AppEvent::Notice { level, text } => {
             let label = match level {
-                NoteLevel::Info => "notice",
+                NoteLevel::Info | NoteLevel::Aside => "notice",
                 NoteLevel::Warn => "warning",
                 NoteLevel::Error => "error",
             };
@@ -106,6 +106,13 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             said.extend(lines.iter().cloned());
             said
         }
+        // A reader can't unfold it, so the whole text is read.
+        AppEvent::Folded { title, lines, more } => {
+            let mut said = labeled("report", title);
+            said.extend(lines.iter().chain(more).cloned());
+            said
+        }
+        AppEvent::Continued { text } => vec![text.clone()],
         AppEvent::Shell { event } => shell_lines(event),
         // A line-mode screen never gives the terminal away, so you run it yourself.
         AppEvent::RunInTerminal { argv, .. } => labeled(
@@ -152,8 +159,8 @@ fn welcome_lines(state: &AppState) -> Vec<String> {
         return Vec::new();
     };
     let mut lines = vec![format!(
-        "Argonauts {}, {}, preset {}",
-        welcome.version, welcome.repo, welcome.preset
+        "Argonauts Code {}, {}, workflow {}",
+        welcome.version, welcome.repo, welcome.workflow
     )];
     for agent in &welcome.agents {
         let mut line = format!("agent: {}", state.names.harness(&agent.id));

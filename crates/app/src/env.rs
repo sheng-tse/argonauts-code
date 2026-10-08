@@ -3,17 +3,39 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, anyhow};
-use argonauts_core::layout::repo_state;
+use anyhow::{Context as _, anyhow, bail};
+use argonauts_core::layout::{project_files, repo_state};
 use argonauts_core::paths::{project_config_path, project_local_config_path};
 use argonauts_core::{Paths, RepoId, RunId};
+
+use crate::{git, hidden_git};
 
 /// Set in every agent session Argonauts starts.
 pub(crate) const SESSION_ENV: &str = "ARGONAUTS_SESSION";
 
+/// Where a folder's history lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FolderGit {
+    /// The folder is a git repository.
+    Repository,
+    /// No `.git` in the folder. Argonauts keeps its history at this path under its own home.
+    Hidden(PathBuf),
+    /// No git at all. Chat and solo write your files directly, and the first workflow that
+    /// needs branches turns the hidden history on.
+    Off,
+}
+
+impl FolderGit {
+    /// Git has commits, branches and worktrees for this folder.
+    pub(crate) fn has_history(&self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AppEnv {
     pub paths: Paths,
+    /// The project's folder: a git repository's top, or any folder that isn't in one.
     pub repo_root: PathBuf,
     pub repo_id: RepoId,
     /// `~/.argonauts/state/<repo>/`.
@@ -27,7 +49,8 @@ pub(crate) struct AppEnv {
 }
 
 impl AppEnv {
-    /// For the repository holding `dir`, or the current directory, under `ARGONAUTS_HOME`.
+    /// For the project holding `dir`, or the current directory, under `ARGONAUTS_HOME`. Any
+    /// folder is a project: git is only needed where work runs side by side.
     pub(crate) fn discover(dir: Option<&Path>) -> anyhow::Result<Self> {
         let paths = Paths::from_env()
             .map_err(|_| anyhow!("can't find your home directory; set ARGONAUTS_HOME"))?;
@@ -35,7 +58,10 @@ impl AppEnv {
             Some(dir) => dir.to_owned(),
             None => std::env::current_dir().context("reading the current directory")?,
         };
-        let root = crate::git::toplevel(&start)?;
+        if !start.is_dir() {
+            bail!("{} isn't a folder", start.display());
+        }
+        let root = git::project_root(&start);
         let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
         Self::for_repo(paths, &root, interactive)
     }
@@ -51,6 +77,7 @@ impl AppEnv {
             .with_context(|| format!("opening {}", repo_root.display()))?;
         let repo_id = RepoId::for_repo(&repo_root)?;
         let state_dir = paths.state_dir(&repo_id);
+        git::know_folder(&repo_root, &hidden_git::dir(&state_dir));
         Ok(Self {
             paths,
             repo_root,
@@ -78,12 +105,40 @@ impl AppEnv {
         self.paths.global_config()
     }
 
-    pub(crate) fn project_config(&self) -> PathBuf {
-        project_config_path(&self.repo_root)
+    /// What the folder has for git right now: its own `.git`, else the hidden history when
+    /// it's on. Read each time, since `/git`, a run, or your own `git init` can change it.
+    pub(crate) fn git(&self) -> FolderGit {
+        let hidden = hidden_git::dir(&self.state_dir);
+        if self.repo_root.join(".git").exists() {
+            FolderGit::Repository
+        } else if hidden_git::is_on(&hidden) {
+            FolderGit::Hidden(hidden)
+        } else {
+            FolderGit::Off
+        }
     }
 
+    /// The settings a project shares. Started in your home folder, that path is your own
+    /// settings file, which is read as yours already, so the project's is kept with its state.
+    pub(crate) fn project_config(&self) -> PathBuf {
+        let shared = project_config_path(&self.repo_root);
+        let own = self.global_config();
+        let folder = |file: &Path| file.parent().and_then(|dir| dir.canonicalize().ok());
+        if folder(&shared).is_some_and(|dir| Some(dir) == folder(&own)) {
+            return self.state_dir.join(project_files::CONFIG);
+        }
+        shared
+    }
+
+    /// The settings that are just yours for this project. A repository hides the file through
+    /// `.git/info/exclude`. A folder without git has nothing to hide it with, and stays as it
+    /// is, so the file is kept with the folder's state.
     pub(crate) fn project_local_config(&self) -> PathBuf {
-        project_local_config_path(&self.repo_root)
+        if self.git() == FolderGit::Repository {
+            project_local_config_path(&self.repo_root)
+        } else {
+            self.state_dir.join(project_files::CONFIG_LOCAL)
+        }
     }
 
     /// `path` with the user's home shown as `~`.
@@ -196,8 +251,58 @@ mod tests {
             assert!(!path.starts_with(&env.repo_root), "{}", path.display());
         }
         assert!(env.run_dir(&run).starts_with(env.runs_dir()));
-        for path in [env.project_config(), env.project_local_config()] {
-            assert!(path.starts_with(&env.repo_root), "{}", path.display());
-        }
+        assert!(env.project_config().starts_with(&env.repo_root));
+    }
+
+    #[test]
+    fn a_repository_keeps_your_own_settings_in_it_and_a_plain_folder_with_its_state() {
+        let repo = argonauts_testkit::TempRepo::new().unwrap();
+        let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), false).unwrap();
+        assert_eq!(env.git(), FolderGit::Repository);
+        assert!(env.project_local_config().starts_with(&env.repo_root));
+
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let env = AppEnv::for_repo(Paths::new(home.path()), folder.path(), false).unwrap();
+        assert_eq!(env.git(), FolderGit::Off);
+        assert!(!env.git().has_history());
+        assert!(env.project_config().starts_with(&env.repo_root));
+        assert!(env.project_local_config().starts_with(&env.state_dir));
+    }
+
+    #[test]
+    fn started_in_your_home_the_project_settings_are_not_your_own_file() {
+        let account = tempfile::tempdir().unwrap();
+        let paths = Paths::new(account.path().join(".argonauts"));
+        std::fs::create_dir_all(paths.home()).unwrap();
+        let env = AppEnv::for_repo(paths, account.path(), false).unwrap();
+        assert_ne!(env.project_config(), env.global_config());
+        assert!(env.project_config().starts_with(&env.state_dir));
+    }
+
+    #[test]
+    fn any_folder_is_a_project_and_a_repository_is_one_from_its_top() {
+        let repo = argonauts_testkit::TempRepo::new().unwrap();
+        let top = repo.root().canonicalize().unwrap();
+        let inside = top.join("src/deep");
+        std::fs::create_dir_all(&inside).unwrap();
+        assert_eq!(git::project_root(&inside), top);
+
+        // A folder its repository ignores would show a run none of its files.
+        repo.write(".gitignore", "scratch/\n").unwrap();
+        let scratch = top.join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        assert_eq!(git::project_root(&scratch), scratch);
+        let env = AppEnv::for_repo(Paths::new(repo.home()), &scratch, false).unwrap();
+        assert_eq!(env.git(), FolderGit::Off);
+        assert!(
+            !git::has_git(&env.repo_root),
+            "git must not walk up into the repository that ignores the folder"
+        );
+        assert!(git::has_git(&top));
+
+        let plain = tempfile::tempdir().unwrap();
+        let plain = plain.path().canonicalize().unwrap();
+        assert_eq!(git::project_root(&plain), plain);
     }
 }

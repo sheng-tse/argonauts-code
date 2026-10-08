@@ -12,24 +12,24 @@ pub fn check(facts: Option<&BudgetFacts>, rules: &BudgetRules) -> RuleVerdict {
     }
     let Some(facts) = facts else {
         return RuleVerdict::escalate(
-            "the evidence doesn't show what the remaining cards cost or how much reserve is left",
+            "the evidence doesn't show what the remaining tasks cost or how much reserve is left",
         );
     };
     let (needed, left) = (facts.remaining_cards, facts.reserve_left);
     if needed.unit != left.unit {
         return RuleVerdict::escalate(
-            "the remaining cards and the reserve are counted in different units",
+            "the remaining tasks and the reserve are counted in different units",
         );
     }
     // Written so a NaN fails it, and a shortfall asks rather than stops the run.
     if needed.amount <= left.amount {
         RuleVerdict::approve(format!(
-            "the remaining cards need {:.2} and the reserve has {:.2} left",
+            "the remaining tasks need {:.2} and the reserve has {:.2} left",
             needed.amount, left.amount
         ))
     } else {
         RuleVerdict::escalate(format!(
-            "the remaining cards need {:.2}, more than the {:.2} left in the reserve",
+            "the remaining tasks need {:.2}, more than the {:.2} left in the reserve",
             needed.amount, left.amount
         ))
     }

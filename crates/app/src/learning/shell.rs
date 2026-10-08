@@ -149,11 +149,11 @@ pub async fn learning(
                 }));
             }
             if sets.is_empty() {
-                text.push_str("No recipes yet.\n");
+                text.push_str("No learned workflows yet.\n");
             }
             Ok(ShellOutput {
                 text,
-                json: json!({ "recipes": rows }),
+                json: json!({ "workflows": rows }),
             })
         }
         LearningShell::RecipesShow { name } => {
@@ -161,7 +161,7 @@ pub async fn learning(
             let set = sets
                 .iter()
                 .find(|set| set.name == name)
-                .ok_or_else(|| anyhow::anyhow!("no recipe is named {name}"))?;
+                .ok_or_else(|| anyhow::anyhow!("no learned workflow is named {name}"))?;
             let evolution = argonauts_learning::evolution::Evolution::open(&store)?;
             let current = set
                 .version(running(&evolution, set)?)
@@ -169,7 +169,7 @@ pub async fn learning(
             Ok(ShellOutput {
                 text: current.text.clone(),
                 json: json!({
-                    "recipe": current.recipe,
+                    "workflow": current.recipe,
                     "path": current.path,
                     "sha256": current.sha256,
                 }),
@@ -180,7 +180,7 @@ pub async fn learning(
             let set = sets
                 .iter()
                 .find(|set| set.name == name)
-                .ok_or_else(|| anyhow::anyhow!("no recipe is named {name}"))?;
+                .ok_or_else(|| anyhow::anyhow!("no learned workflow is named {name}"))?;
             let to = to.unwrap_or(set.current);
             let from = from
                 .or_else(|| set.version(to).and_then(|loaded| loaded.recipe.parent))
@@ -241,7 +241,7 @@ pub async fn learning(
             }))
         }
         LearningShell::RecipesPromote { candidate } => {
-            needs_you("promoting a recipe")?;
+            needs_you("promoting a learned workflow")?;
             let said = act::act(
                 &env,
                 &settings,
@@ -397,7 +397,7 @@ fn records(
     for record in book.rows() {
         let _ = writeln!(
             text,
-            "{} {}: first pass {:.0}%, approved {:.0}%, cost {:.2}×, time {:.2}×, predictions {:+.2}, {:.0} cards",
+            "{} {}: first pass {:.0}%, approved {:.0}%, cost {:.2}×, time {:.2}×, predictions {:+.2}, {:.0} tasks",
             record.worker,
             record.task_type,
             record.pass.mean() * 100.0,
@@ -493,9 +493,9 @@ fn retro(
         }
     }
     if lines.is_empty() && report.memory.is_empty() {
-        anyhow::bail!("{run} has no retro yet");
+        anyhow::bail!("{run} has no run review yet");
     }
-    let mut text = format!("Retro of {run}\n");
+    let mut text = format!("Run review of {run}\n");
     if let Some(outcome) = &report.outcome {
         let _ = writeln!(
             text,
@@ -584,7 +584,7 @@ pub fn learning_inbox(repo: Option<&Path>) -> anyhow::Result<Vec<String>> {
     for candidate in or_empty(evolution.candidates())? {
         if candidate.state == argonauts_learning::evolution::CandidateState::AwaitingPromotion {
             lines.push(format!(
-                "{} changes {} in {}: promote or reject it in /recipes",
+                "{} changes {} in {}: promote or reject it in /learned",
                 candidate.id, candidate.change.key, candidate.parent
             ));
         }
@@ -602,7 +602,7 @@ pub fn learning_inbox(repo: Option<&Path>) -> anyhow::Result<Vec<String>> {
     let replay = argonauts_learning::replay::ReplaySet::open(&store)?;
     for proposal in or_empty(replay.proposals())? {
         lines.push(format!(
-            "replay task {} from {} waits to join the replay set: accept or reject it in /recipes",
+            "replay task {} from {} waits to join the replay set: accept or reject it in /learned",
             proposal.entry.id, proposal.entry.run
         ));
     }
@@ -611,7 +611,7 @@ pub fn learning_inbox(repo: Option<&Path>) -> anyhow::Result<Vec<String>> {
         &[
             "for-each-ref",
             "--format=%(refname:short)",
-            "refs/heads/argonauts/recipes/",
+            "refs/heads/argonauts/learned/",
             "refs/heads/argonauts/skills/",
             "refs/heads/argonauts/notes/",
             "refs/heads/argonauts/conventions/",

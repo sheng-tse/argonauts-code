@@ -1,11 +1,12 @@
-//! One line in scrollback after a card is answered or withdrawn, such as
-//! `◆ Approved merging card-002 into main · you, 10:58 AM`.
+//! One line in scrollback after a card is answered, handed on, or withdrawn, such as
+//! `◆ Approved merging build:redis into main · you, 10:58 AM`.
 
 use argonauts_core::app::NOT_CHANGED;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::checkpoint::{
     AnswerAction, CheckpointDecided, CheckpointKind, CheckpointOpened, CheckpointPacket,
 };
+use argonauts_core::events::run::Party;
 use argonauts_core::{CardId, RunId};
 use ratatui::text::{Line, Span};
 use time::{OffsetDateTime, UtcOffset};
@@ -52,6 +53,19 @@ pub fn record(
     if let Some(at) = at {
         who.push_str(&format!(", {}", words::clock(at, offset)));
     }
+    // Esc: "carry on without me". What the agent was told isn't your words, so it isn't quoted.
+    if decided.by == Party::Declined {
+        let left = match opened.kind {
+            CheckpointKind::Question | CheckpointKind::Goal => {
+                "Question left to the agent".to_owned()
+            }
+            _ => format!(
+                "Left without you: {}",
+                outcome(opened, decided, run, names, cards)
+            ),
+        };
+        return Notice::answered(left, who);
+    }
     let mut notice = Notice::answered(outcome(opened, decided, run, names, cards), who);
     let own_words = decided.action == AnswerAction::Answer;
     if let Some(text) = decided.text.as_deref().map(str::trim)
@@ -86,7 +100,7 @@ pub fn outcome(
         (A::Merge, _) => format!("Approved merging {subject} into {}", merge_target(opened)),
         (A::PullRequest, _) => format!("Opened a pull request for {subject}"),
         (A::RequestChanges, _) if decided.cards.is_empty() => {
-            "Sent every card back with changes".to_owned()
+            "Sent every task back with changes".to_owned()
         }
         (A::RequestChanges, _) => {
             let sent: Vec<String> = decided.cards.iter().map(cards).collect();
@@ -99,7 +113,7 @@ pub fn outcome(
         (A::Approve, K::Plan) => "Plan approved".to_owned(),
         (A::Approve, K::GoalChange) => "Goal change accepted".to_owned(),
         (A::Approve, K::ChangeRequest) => format!("Change to {card} accepted"),
-        (A::Approve, K::RecipePromotion) => "Recipe promoted".to_owned(),
+        (A::Approve, K::WorkflowPromotion) => "Workflow promoted".to_owned(),
         (A::Approve, _) => format!("{title} · approved"),
         (A::ApproveWithEdits, K::Goal) => "Goal approved with edits".to_owned(),
         (A::ApproveWithEdits, K::Plan) => "Plan approved with edits".to_owned(),
@@ -122,11 +136,11 @@ pub fn outcome(
         (A::Wait, K::VendorDown) => format!("Waiting for {}", vendor(opened, names)),
         (A::Wait, K::Merge) => "The merge waits for a stronger review".to_owned(),
         (A::Wait, _) => format!("{title} · waiting"),
-        (A::OneForAll, _) => "One agent takes every paused card".to_owned(),
-        (A::PerCard, _) => "Choosing an agent per paused card".to_owned(),
-        (A::MoreBudget, _) => format!("More budget for {card}"),
+        (A::OneForAll, _) => "One agent takes every paused task".to_owned(),
+        (A::PerTask, _) => "Choosing an agent per paused task".to_owned(),
+        (A::MoreBudget, _) => format!("More limit for {card}"),
         (A::HandOff, _) => format!("{card} handed off"),
-        (A::Escalate, _) => format!("Stopped and escalated {card}"),
+        (A::Escalate, _) => format!("Stopped and needs you {card}"),
         (A::Retry, _) => format!("Retrying {card}"),
         (A::Split, _) => format!("Splitting {card}"),
         (A::Cancel, K::GoalChange) => "Kept the goal".to_owned(),
@@ -156,7 +170,7 @@ pub fn outcome(
         },
         (A::Redo, _) => match &opened.packet {
             CheckpointPacket::OriginalReturned(back) => format!(
-                "{} redoes {card} from handoff-{}",
+                "{} redoes {card} from fallback-{}",
                 names.worker(&back.original),
                 back.since
             ),
@@ -166,9 +180,28 @@ pub fn outcome(
             CheckpointPacket::OriginalReturned(back) => {
                 format!("{} keeps {card}", names.worker(&back.replacement))
             }
-            _ => format!("{card} keeps its owner"),
+            _ => format!("{card} keeps its worker"),
         },
+        // Esc is never recorded as itself: the option taken in your place is.
+        (A::CarryOn, _) => format!("Left {title} without you"),
     }
+}
+
+/// Esc on a question or an approval a run waits on: who decides it now, and when you said
+/// so. An agent's own question goes back to that agent, and the rest to the main agent. The
+/// `◆` stays dim, since nothing is settled yet.
+pub fn handed_on_cell(kind: CheckpointKind, at: OffsetDateTime, offset: UtcOffset) -> Cell {
+    let what = match kind {
+        CheckpointKind::Question => "Question left to the agent".to_owned(),
+        CheckpointKind::Goal => "Goal question left to the main agent".to_owned(),
+        CheckpointKind::Plan => "Plan approval left to the main agent".to_owned(),
+        CheckpointKind::Merge => "Merge approval left to the main agent".to_owned(),
+        _ => "Question left to the main agent".to_owned(),
+    };
+    Cell::Notice(Notice {
+        tone: Tone::Dim,
+        ..Notice::answered(what, format!("you, {}", words::clock(at, offset)))
+    })
 }
 
 /// The dim line left when a card no longer applies.
@@ -261,6 +294,6 @@ fn merge_target(opened: &CheckpointOpened) -> String {
 fn vendor(opened: &CheckpointOpened, names: &DisplayNames) -> String {
     match &opened.packet {
         CheckpointPacket::VendorDown(down) => names.harness(&down.vendor.0),
-        _ => "the vendor".into(),
+        _ => "the agent".into(),
     }
 }

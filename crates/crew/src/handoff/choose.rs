@@ -49,7 +49,7 @@ pub fn query(
         .collect();
     CandidateQuery {
         card: record.spec.clone(),
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         stopped: stopped.clone(),
         exclude_families,
         fallback,

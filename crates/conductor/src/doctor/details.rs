@@ -111,7 +111,7 @@ pub async fn doctor_details(adapters: &[Arc<dyn Adapter>], settings: &Settings) 
     if !sandbox.ok {
         warnings.push(if settings.sandbox.fail_closed {
             format!(
-                "The sandbox self-test failed, so harness sessions are refused: {}",
+                "The sandbox self-test failed, so CLI sessions are refused: {}",
                 sandbox.detail
             )
         } else {
@@ -265,7 +265,7 @@ async fn codex_quota_probe(adapter: &Arc<dyn Adapter>, binary: &Path) -> ProbeCh
     if adapter.quota_probe(&workdir, None).is_none() {
         return ProbeCheck {
             ok: false,
-            detail: "this Codex adapter has no quota probe".to_owned(),
+            detail: "this Codex adapter has no plan usage probe".to_owned(),
         };
     }
     let prober = Prober {
@@ -364,7 +364,7 @@ impl fmt::Display for HarnessDetails {
         writeln!(f, "  user hooks   {hooks}")?;
         if let Some(probe) = &self.quota_probe {
             let mark = if probe.ok { "ok" } else { "failed" };
-            writeln!(f, "  quota probe  {mark}, {}", probe.detail)?;
+            writeln!(f, "  plan usage probe  {mark}, {}", probe.detail)?;
         }
         if !self.roles.is_empty() {
             writeln!(f, "  compaction and fan-out, per role")?;
@@ -500,7 +500,7 @@ esac"#;
         );
         let probe = codex.quota_probe.as_ref().unwrap();
         assert!(!probe.ok);
-        assert_eq!(probe.detail, "this Codex adapter has no quota probe");
+        assert_eq!(probe.detail, "this Codex adapter has no plan usage probe");
         // The fake's default compaction can't turn off, so the consultant isn't warned about.
         let consultant = codex
             .roles
@@ -509,7 +509,7 @@ esac"#;
             .unwrap();
         assert!(!consultant.compaction_off);
         assert!(consultant.compaction.starts_with("off → not possible"));
-        assert!(details.to_string().contains("  quota probe  failed, "));
+        assert!(details.to_string().contains("  plan usage probe  failed, "));
     }
 
     #[tokio::test]

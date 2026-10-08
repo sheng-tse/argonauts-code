@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::agent_goal::AgentGoal;
 use crate::events::goal::{Assumption, Attempt, Criterion, CriterionState, GoalStatus};
 use crate::events::session::{
     SubagentStatus, SubagentUpdate, VendorAgent, VendorAgentState, VendorWorkflow,
@@ -39,6 +40,16 @@ pub struct WorkflowView {
     pub elapsed_ms: u64,
     pub spent: Spend,
     pub phases: Vec<PhaseRow>,
+    /// What kind of workflow it is, read after its name: such as `orchestrator workflow`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// The names of the steps you require of every workflow, or of this request. A phase by
+    /// one of these names carries a mark, so you can see it is yours.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    /// Each agent that works toward a goal, found by its session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub goals: Vec<AgentGoal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +144,11 @@ pub struct AgentRow {
     pub context: Option<ContextUse>,
     /// Who it stands in for after a handoff, drawn `↷`.
     pub standing_in_for: Option<WorkerRef>,
+    /// A step of a CLI's own workflow that a role answered through Argonauts:
+    /// `asked through Argonauts` while it runs, then the verdict, such as `accepted`, which
+    /// takes the tokens' place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,6 +247,7 @@ impl WorkflowView {
             subagents: 0,
             context: None,
             standing_in_for: None,
+            answered: None,
         };
         let phases: Vec<PhaseRow> = workflow
             .phases
@@ -275,7 +292,44 @@ impl WorkflowView {
             elapsed_ms: workflow.elapsed_ms(now_ms),
             spent: Spend::default(),
             phases,
+            notes: Vec::new(),
+            required: Vec::new(),
+            goals: Vec::new(),
         }
+    }
+
+    /// Whether you require the step this phase is, whatever case its name is written in.
+    pub fn requires(&self, phase: &PhaseRow) -> bool {
+        let name = phase.name.trim();
+        self.required
+            .iter()
+            .any(|required| required.trim().eq_ignore_ascii_case(name))
+    }
+
+    /// The goal `agent` works toward, when it has one. Agents that their CLI runs itself share
+    /// its session, so the label tells their goals apart.
+    pub fn goal_of(&self, agent: &AgentRow) -> Option<&AgentGoal> {
+        self.goals.iter().find(|goal| {
+            let label = goal.label.trim();
+            goal.session == agent.session && (label.is_empty() || label == agent.label.trim())
+        })
+    }
+
+    /// Tokens across the workflow: what was metered, and for a workflow whose CLI meters
+    /// nothing through Argonauts, what its agents reported.
+    pub fn tokens(&self) -> u64 {
+        let metered = self.spent.total_tokens();
+        if metered > 0 {
+            return metered;
+        }
+        self.phases
+            .iter()
+            .flat_map(|phase| &phase.rows)
+            .map(|row| match row {
+                WorkflowRow::Agent(agent) => agent.tokens,
+                _ => 0,
+            })
+            .sum()
     }
 }
 
@@ -301,7 +355,7 @@ fn vendor_phase_status(rows: &[WorkflowRow]) -> RowStatus {
     }
 }
 
-/// A goal-style run's goal (`/goal`, or Tab in the workflow view).
+/// The goal around a run's workflow (Tab in the workflow view).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GoalView {
     pub run: RunId,
@@ -309,7 +363,9 @@ pub struct GoalView {
     pub status: GoalStatus,
     pub criteria: Vec<CriterionRow>,
     pub attempts: Vec<Attempt>,
-    pub max_attempts: u32,
+    /// The most rounds, when you set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
     /// The last check's reason, once there's been one.
     pub last_reason: Option<String>,
     pub assumptions: Vec<Assumption>,
@@ -344,6 +400,13 @@ pub struct AgentView {
     pub subagents: Option<SubagentsSection>,
     /// The report or final message, as Markdown.
     pub outcome: Option<String>,
+    /// The goal it works toward, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<Box<AgentGoal>>,
+    /// The plan it ended with, as it reported it: its tasks, and who does and who reviews
+    /// each. The view draws it as a table above the outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -407,6 +470,9 @@ pub struct WorkflowFile {
     /// The one the `workflow` setting names.
     #[serde(default)]
     pub in_use: bool,
+    /// Why `/<name>` doesn't run it, as when a command already has the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 /// Where a workflow comes from. A repo file wins over yours, which wins over the built-in.
@@ -438,7 +504,7 @@ pub struct CheckpointRow {
     pub reverted_here: bool,
 }
 
-/// The four Learning pickers: `/records`, `/recipes`, `/skills`, and `/memory`.
+/// The four Learning pickers: `/records`, `/learned`, `/skills`, and `/memory`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LearningArea {
@@ -460,7 +526,7 @@ impl LearningArea {
     pub fn command(self) -> &'static str {
         match self {
             LearningArea::Records => "records",
-            LearningArea::Recipes => "recipes",
+            LearningArea::Recipes => "learned",
             LearningArea::Skills => "skills",
             LearningArea::Memory => "memory",
         }
@@ -469,7 +535,7 @@ impl LearningArea {
     pub fn title(self) -> &'static str {
         match self {
             LearningArea::Records => "Records",
-            LearningArea::Recipes => "Recipes",
+            LearningArea::Recipes => "Learned workflows",
             LearningArea::Skills => "Skills",
             LearningArea::Memory => "Memory",
         }
@@ -480,7 +546,7 @@ impl LearningArea {
     pub fn description(self) -> &'static str {
         match self {
             LearningArea::Records => "Who is good at what, by kind of work",
-            LearningArea::Recipes => "Recipes and how they evolve",
+            LearningArea::Recipes => "Workflows learned from your runs",
             LearningArea::Skills => "Exported and imported skills, and any drift",
             LearningArea::Memory => "Notes the crew keeps, and the conventions",
         }
@@ -492,10 +558,10 @@ impl LearningArea {
             LearningArea::Records => &["routing", "outcomes.share"],
             LearningArea::Recipes => &[
                 "evolution",
-                "approvals.recipe_promotion",
+                "approvals.workflow_promotion",
                 "limits.evolution_usd_per_month",
                 "prompts",
-                "triage.use_recipes",
+                "solo_or_crew.use_learned",
             ],
             LearningArea::Skills => &["skills"],
             LearningArea::Memory => &["memory"],

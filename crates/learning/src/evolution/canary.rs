@@ -121,7 +121,7 @@ impl Evolution {
             .find(|c| c.id == canary.candidate)
             .map(|c| c.why.clone())
             .unwrap_or_default();
-        let title = format!("Promote recipe {name} v{version}");
+        let title = format!("Promote workflow {name} v{version}");
         let body = format!(
             "{why}\n\nIt beat v{} on replay, held on the holdout, and passed {} canary runs. \
              Argonauts already runs it; merging this records it in git.",
@@ -239,7 +239,7 @@ impl Evolution {
 
         let Some(current) = self.running_version(recipe)? else {
             return Err(LearningError::Refused(format!(
-                "there's no recipe named `{recipe}`"
+                "there's no learned workflow named `{recipe}`"
             )));
         };
         let previous = self
@@ -266,7 +266,7 @@ impl Evolution {
         self.save_candidates(&candidates)?;
 
         // The rollback already holds; the branch only records it in git for you to merge.
-        let branch = format!("argonauts/recipes/{recipe}-rollback-v{previous}");
+        let branch = format!("argonauts/learned/{recipe}-rollback-v{previous}");
         let mut entries = vec![(
             recipes::repo_path(recipe, recipes::CURRENT_FILE),
             git::Entry::File(format!("{previous}\n")),
@@ -278,7 +278,7 @@ impl Evolution {
                 git::Entry::File(loaded.text),
             ));
         }
-        let message = format!("Roll back recipe {recipe} to v{previous}\n\n{reason}");
+        let message = format!("Roll back workflow {recipe} to v{previous}\n\n{reason}");
         let proposed =
             git::commit_on_branch(&self.store.repo_root, "HEAD", &branch, &entries, &message);
         let text = match proposed {
@@ -307,7 +307,7 @@ impl Evolution {
 fn describe(trip: &Tripwire, parent: u32, baseline: usize) -> String {
     match trip {
         Tripwire::Escalations => format!(
-            "its runs escalated more than v{parent}'s last {baseline} runs can explain by chance"
+            "its runs needed you more than v{parent}'s last {baseline} runs can explain by chance"
         ),
         Tripwire::FailedFinalChecks => format!(
             "its final checks failed more often than v{parent}'s last {baseline} runs can explain \
@@ -316,7 +316,7 @@ fn describe(trip: &Tripwire, parent: u32, baseline: usize) -> String {
         Tripwire::Cost => format!(
             "it cost more per run than v{parent}'s last {baseline} runs can explain by chance"
         ),
-        Tripwire::Rejected => "you rejected one of its checkpoints".to_owned(),
+        Tripwire::Rejected => "you rejected one of its approvals".to_owned(),
         Tripwire::Reverted => {
             "you reverted one of its merges or closed its pull request".to_owned()
         }

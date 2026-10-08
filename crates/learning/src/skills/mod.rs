@@ -29,8 +29,8 @@ pub use document::{MAX_COMPATIBILITY, MAX_DESCRIPTION, MAX_NAME};
 pub use import::without_credentials;
 
 /// The metadata keys an export writes, all strings.
-pub const META_RECIPE: &str = "argonauts-recipe";
-pub const META_VERSION: &str = "argonauts-recipe-version";
+pub const META_RECIPE: &str = "argonauts-workflow";
+pub const META_VERSION: &str = "argonauts-workflow-version";
 /// The SHA-256 of the exported body, which drift checks compare.
 pub const META_SHA256: &str = "argonauts-sha256";
 
@@ -116,16 +116,18 @@ pub fn propose_export(store: &Store, recipe: &LoadedRecipe, claude_link: bool) -
     );
     let branch = format!("argonauts/skills/{name}");
     let version = recipe.recipe.version;
-    let title = format!("Export the {name} recipe as a skill");
+    let title = format!("Export the {name} workflow as a skill");
     let commit = git::commit_on_branch(
         &store.repo_root,
         "HEAD",
         &branch,
         &entries,
-        &format!("{title}\n\nVersion {version} of the recipe, as `{SKILLS_DIR}/{name}/SKILL.md`."),
+        &format!(
+            "{title}\n\nVersion {version} of the workflow, as `{SKILLS_DIR}/{name}/SKILL.md`."
+        ),
     )?;
     let mut description = format!(
-        "Exports version {version} of the `{name}` recipe as the skill \
+        "Exports version {version} of the `{name}` workflow as the skill \
          `{SKILLS_DIR}/{name}/SKILL.md`"
     );
     if claude_link {

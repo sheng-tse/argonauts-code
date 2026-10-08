@@ -131,7 +131,7 @@ impl CardList {
                         let known: Vec<String> =
                             self.checklist.iter().map(ToString::to_string).collect();
                         format!(
-                            "{} isn't one of this merge's cards ({}), so nothing was sent.",
+                            "{} isn't one of this merge's tasks ({}), so nothing was sent.",
                             spoken(name),
                             known.join(", ")
                         )

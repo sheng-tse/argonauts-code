@@ -155,8 +155,8 @@ pub async fn run(host: &Host) -> EngineResult<()> {
         outcomes::append_lines(&state_dir, run_id, &[outcomes::LogLine::Run(run)])?;
     }
     let summary = host.read(|state| match state.retro.mean_brier() {
-        Some(mean) => format!("{} cards logged, mean Brier score {mean:.2}", records.len()),
-        None => format!("{} cards logged", records.len()),
+        Some(mean) => format!("{} tasks logged, mean Brier score {mean:.2}", records.len()),
+        None => format!("{} tasks logged", records.len()),
     });
     phase(host, PhaseStatus::Finished, Some(&summary))
 }
@@ -178,8 +178,8 @@ pub async fn notes_before_merge(host: &Host) -> EngineResult<()> {
             let note = Note {
                 level: NoteLevel::Warn,
                 text: format!(
-                    "The run's notes weren't committed before the merge checkpoint: {err}. \
-                     The retro commits them after."
+                    "The run's notes weren't committed before the merge approval: {err}. \
+                     The run review commits them after."
                 ),
             };
             host.record(None, None, RunEventKind::Note(note))?;
@@ -264,7 +264,7 @@ fn scan_proposals(host: &Host) -> EngineResult<()> {
             Ok(()) => match memory::check(&proposal, index, &settings.memory) {
                 memory::Verdict::Pass if reviewed => Ok(()),
                 memory::Verdict::Pass => {
-                    Err("its card's reviewer didn't approve the card that carried it".to_owned())
+                    Err("its task's reviewer didn't approve the task that carried it".to_owned())
                 }
                 memory::Verdict::Reject { reasons } => Err(reasons.join("; ")),
                 memory::Verdict::Flag { findings } => {
@@ -309,7 +309,7 @@ fn scan_proposals(host: &Host) -> EngineResult<()> {
 struct Proposed {
     from: WorkerRef,
     card: CardId,
-    /// Its place among the card's proposals, for `memory.max_per_card`.
+    /// Its place among the card's proposals, for `memory.max_per_task`.
     index: usize,
     proposal: MemoryProposal,
     /// The card's reviewer approved it, or with review off, it integrated.
@@ -378,6 +378,11 @@ async fn commit_notes(host: &Host) -> EngineResult<()> {
     let Some(landed) = landed else {
         return Ok(());
     };
+    // A run that only wrote your files left your branch where it was, and the notes stay
+    // with the run's commits, on its branch.
+    if !landed.fast_forward {
+        return Ok(());
+    }
     let outcome = match kept {
         Some(why) => landing::NotesLanding::Kept(why),
         None => landing::land(git, &host.repo().root, &worktree, &landed).await?,
@@ -386,12 +391,15 @@ async fn commit_notes(host: &Host) -> EngineResult<()> {
         landing::NotesLanding::Nothing => return Ok(()),
         landing::NotesLanding::Landed(sha) => Note {
             level: NoteLevel::Info,
-            text: format!("The retro's notes landed on {} at {sha}.", landed.target),
+            text: format!(
+                "The run review's notes merged into {} at {sha}.",
+                landed.target
+            ),
         },
         landing::NotesLanding::Kept(why) => Note {
             level: NoteLevel::Warn,
             text: format!(
-                "The retro's notes stay on {}, since {why}. Merge that branch to keep them for \
+                "The run review's notes stay on {}, since {why}. Merge that branch to keep them for \
                  later runs.",
                 branch::integration_branch(host.run_id())
             ),
@@ -442,7 +450,7 @@ async fn commit_notes_in(host: &Host, worktree: &Path) -> EngineResult<()> {
         return Ok(());
     }
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    let sha = conductor::commit(host, worktree, &refs, "Retro: decisions").await?;
+    let sha = conductor::commit(host, worktree, &refs, "Run review: decisions").await?;
     host.record(
         None,
         None,
@@ -548,11 +556,11 @@ fn evolve(host: &Host, run: &RunRecord) -> EngineResult<()> {
 pub fn action_note(action: &Action) -> Note {
     let text = match action {
         Action::Replay { candidate } => {
-            format!("Recipe candidate {candidate} is queued for a replay test.")
+            format!("Workflow candidate {candidate} is queued for a replay test.")
         }
         Action::AskPromotion { candidate, .. } => {
             format!(
-                "Recipe candidate {candidate} passed its replays and waits for you in /recipes."
+                "Workflow candidate {candidate} passed its replays and waits for you in /learned."
             )
         }
         Action::Promoted { recipe, branch, .. } => {
@@ -563,7 +571,9 @@ pub fn action_note(action: &Action) -> Note {
         }
         // Its branch is plumbing, so the line names the recipe alone.
         Action::Recorded { recipe, .. } => {
-            format!("This run's workflow was saved as the recipe {recipe}, for you to review.")
+            format!(
+                "This run's workflow was saved as {recipe}, a learned workflow for you to review."
+            )
         }
         Action::Tell { text } => text.clone(),
     };
@@ -592,7 +602,7 @@ async fn propose(host: &Host, facts: &[facts::CardFacts], settings: &Settings) -
     let worker = roles::candidates(settings, RoleName::Retro)
         .into_iter()
         .next()
-        .unwrap_or_else(|| settings.default_agent.clone());
+        .unwrap_or_else(|| settings.main_agent.clone());
     let mut ask = Ask::new(
         None,
         RoleName::Retro,
@@ -610,7 +620,7 @@ async fn propose(host: &Host, facts: &[facts::CardFacts], settings: &Settings) -
         RunEventKind::Note(Note {
             level: NoteLevel::Warn,
             text: format!(
-                "The retro proposed changing {}, which isn't on the evolvable list, so it was dropped.",
+                "The run review proposed changing {}, which isn't on the evolvable list, so it was dropped.",
                 change.setting
             ),
         })
@@ -642,11 +652,11 @@ mod tests {
                 name: "api-feature".into(),
                 version: 1,
             },
-            branch: "argonauts/recipes/api-feature-v1".into(),
+            branch: "argonauts/learned/api-feature-v1".into(),
         });
         assert_eq!(
             note.text,
-            "This run's workflow was saved as the recipe api-feature v1, for you to review."
+            "This run's workflow was saved as api-feature v1, a learned workflow for you to review."
         );
     }
 }

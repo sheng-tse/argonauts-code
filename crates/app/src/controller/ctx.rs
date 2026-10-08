@@ -65,10 +65,18 @@ pub(crate) enum Internal {
     Chat(TurnUpdate),
     Run(RunUpdate),
     Setup(SetupUpdate),
+    /// A mod file changed, or a mod's command printed something new.
+    Mods,
     /// A `!` command printed or ended.
     Shell(super::shell::ShellUpdate),
     /// The CLIs' model lists were read again.
     ModelsRefreshed,
+    /// The workflow file `/workflow edit` watches was saved.
+    WorkflowSaved {
+        name: String,
+    },
+    /// The check of the goal the main agent works toward alone came back.
+    Goal(super::chat::GoalChecked),
 }
 
 /// What one part of the controller asks of another. The loop applies them in order.
@@ -76,8 +84,11 @@ pub(crate) enum Internal {
 pub(crate) enum Effect {
     /// Start this run and attach to it. The detected gates are offered first, once.
     StartRun(Box<StartRun>),
-    /// The default agent changed: start a fresh chat session primed with an excerpt.
+    /// The main agent changed: its session carries on, or another CLI starts from what carries
+    /// over.
     FreshChat,
+    /// A workflow of yours was written or removed, so the `/` menu lists the commands again.
+    CommandsChanged,
     /// Settings in effect changed: the narrator hears of it and a new status line goes out.
     SettingsApplied { keys: Vec<String> },
     /// Ask where to save a setting, as an argument like `/effort high` does.
@@ -129,6 +140,8 @@ pub(crate) struct Ctx {
     pub names: super::names::NamesSent,
     /// The runs' agents' sessions as their journals were last read, for `/resume`.
     pub agent_sessions: Arc<super::chat::SessionCache>,
+    /// Holds the computer's sleep off while anything works, and for `/awake`.
+    pub awake: crate::keep_awake::KeepAwake,
 }
 
 /// Shared with whoever started the app, which outlives the controller.
@@ -153,6 +166,8 @@ impl Ctx {
             reopen: Reopen::default(),
             names: super::names::NamesSent::default(),
             agent_sessions: Arc::default(),
+            // The app's own start gives it this computer's way to hold sleep off.
+            awake: crate::keep_awake::KeepAwake::never(),
         }
     }
 
@@ -197,6 +212,13 @@ impl Ctx {
     /// Sends `Mode` only when it changed.
     pub(crate) fn set_mode(&mut self, mode: AppMode) {
         if self.mode != mode {
+            // An answer or a run you watch is under way, so the computer stays awake.
+            let working = matches!(
+                mode,
+                AppMode::Answering { .. } | AppMode::Working { .. } | AppMode::Pausing { .. }
+            );
+            let while_working = self.settings().awake.while_working;
+            self.awake.working(working, while_working);
             self.mode = mode.clone();
             self.send(AppEvent::Mode { mode });
         }

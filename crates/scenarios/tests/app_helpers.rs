@@ -10,13 +10,13 @@ use serde_json::Value;
 #[test]
 fn app_helpers_read_settings_files() {
     let text = "\
-# The default agent.
-default_agent = \"claude-code\"
+# The main agent.
+main_agent = \"claude-code\"
 crew = [
   \"claude-code\",
   \"codex\", # the second
 ]
-preset = \"solo\"
+workflow = \"solo\"
 
 # Approvals
 [approvals.merge]
@@ -32,9 +32,9 @@ theme = \"dark\" # trailing
     assert_eq!(
         keys,
         [
-            "default_agent",
+            "main_agent",
             "crew",
-            "preset",
+            "workflow",
             "approvals.merge.mode",
             "ui.keys",
             "ui.theme"

@@ -196,8 +196,8 @@ async fn prefix_replay_starts_at_the_changed_phase() {
         1,
         json!({
             "critique": { "rounds": 1, "checklist": ["errors"] },
-            "divide": { "max_cards": 4 },
-            "budget": { "per_card_usd": 2.0 },
+            "divide": { "max_tasks": 4 },
+            "limits": { "per_task_usd": 2.0 },
         }),
     );
     let changed = |settings: serde_json::Value| -> LoadedRecipe {
@@ -219,11 +219,11 @@ async fn prefix_replay_starts_at_the_changed_phase() {
             Some(StandardPhase::Plan),
         ),
         (
-            json!({ "divide": { "max_cards": 6 } }),
+            json!({ "divide": { "max_tasks": 6 } }),
             Some(StandardPhase::Do),
         ),
         (
-            json!({ "budget": { "per_card_usd": 3.0 } }),
+            json!({ "limits": { "per_task_usd": 3.0 } }),
             Some(StandardPhase::Do),
         ),
         (json!({ "gates": { "timeout": "10m" } }), None),
@@ -246,12 +246,12 @@ async fn prefix_replay_starts_at_the_changed_phase() {
     assert_eq!(prompts("drafting"), Some(StandardPhase::Plan));
     assert_eq!(prompts("build"), Some(StandardPhase::Do));
     let mut rewired = changed(json!({}));
-    rewired.recipe.workflow = Some("api-feature.star".to_owned());
+    rewired.recipe.phases = Some("api-feature.star".to_owned());
     assert_eq!(start_phase(&parent, &rewired), None);
 
     let settings = base_settings();
     let fixture = tuning_fixture(&["alpha"], &settings).await;
-    let child = changed(json!({ "budget": { "per_card_usd": 3.0 } }));
+    let child = changed(json!({ "limits": { "per_task_usd": 3.0 } }));
     let runner = ScriptedRunner::new(&fixture.tasks, child_only);
     run_versions(&fixture, &settings, &parent, &child, 1000.0, &runner)
         .await
@@ -493,8 +493,9 @@ async fn replays_skip_subscriptions_by_default() {
         "ollama/qwen",
     ]
     .map(|worker| worker.parse::<WorkerRef>().unwrap())
-    .to_vec();
-    settings.default_agent = WorkerRef::new("claude-code", None);
+    .to_vec()
+    .into();
+    settings.main_agent = WorkerRef::new("claude-code", None);
 
     let names = |workers: &[WorkerRef]| -> Vec<String> {
         workers.iter().map(ToString::to_string).collect()
@@ -527,7 +528,7 @@ async fn replays_skip_subscriptions_by_default() {
     }
 
     let mut subscriptions_only = settings.clone();
-    subscriptions_only.crew = vec![WorkerRef::new("claude-code", None)];
+    subscriptions_only.crew = vec![WorkerRef::new("claude-code", None)].into();
     let runner = ScriptedRunner::new(&fixture.tasks, child_only);
     let refused = run(&fixture, &subscriptions_only, 1000.0, &runner)
         .await

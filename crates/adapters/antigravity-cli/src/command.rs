@@ -155,7 +155,7 @@ mod tests {
 
     fn request(role: SessionRole) -> SessionRequest {
         SessionRequest {
-            workdir: PathBuf::from("/work/card-001"),
+            workdir: PathBuf::from("/work/task-001"),
             prompt: "Create hello.txt".into(),
             role,
             scratch_dir: Some(PathBuf::from("/state/sessions/s1")),
@@ -559,10 +559,10 @@ mod tests {
     #[test]
     fn take_over_opens_the_conversation_in_the_worktree() {
         let spec =
-            interactive_resume_command("agy", "055a398f", Path::new("/work/card-001")).unwrap();
+            interactive_resume_command("agy", "055a398f", Path::new("/work/task-001")).unwrap();
         assert_eq!(spec.program, "agy");
         assert_eq!(spec.args, ["--conversation", "055a398f"]);
-        assert_eq!(spec.cwd, PathBuf::from("/work/card-001"));
+        assert_eq!(spec.cwd, PathBuf::from("/work/task-001"));
         assert!(spec.stdin.is_none());
         assert!(interactive_resume_command("agy", "-c", Path::new("/w")).is_none());
     }

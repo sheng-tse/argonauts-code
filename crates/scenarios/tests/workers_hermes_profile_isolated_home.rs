@@ -41,8 +41,8 @@ fn workers_hermes_profile_isolated_home() -> anyhow::Result<()> {
     write_global_config(
         &scenario,
         &format!(
-            "preset = \"solo\"\n\
-             default_agent = \"hermes/fake-local\"\n\n\
+            "workflow = \"solo\"\n\
+             main_agent = \"hermes/fake-local\"\n\n\
              [agents.hermes]\n\
              enabled = true\n\
              binary = {}\n",
@@ -84,13 +84,13 @@ fn workers_hermes_profile_isolated_home() -> anyhow::Result<()> {
     );
     assert!(
         reported,
-        "the owner's report never reached argonauts_report"
+        "the worker's report never reached argonauts_report"
     );
 
     // HERMES_HOME is the home the card keeps for its owner.
     let sessions = sessions_of(&events, "hermes");
-    let key = sessions[0].0.expect("the owner session has a key");
-    let home = card_home(&scenario, "card-001", "owner", "hermes")?;
+    let key = sessions[0].0.expect("the worker session has a key");
+    let home = card_home(&scenario, "task-001", "worker", "hermes")?;
     let seen = files_under(&session_dir(&scenario, key)?)?
         .into_iter()
         .flat_map(|(_, text)| {

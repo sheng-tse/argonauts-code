@@ -1,7 +1,7 @@
 //! The promotion checkpoint: a candidate that cleared its replays and its holdout reaches the
-//! decision point `approvals.recipe_promotion`, decided by your approval policy from
+//! decision point `approvals.workflow_promotion`, decided by your approval policy from
 //! `PromotionFacts` (its change class and when the recipe last promoted), then the loop's
-//! `Evolution::decide`. Anything the rules don't settle waits for you in `/recipes` and the
+//! `Evolution::decide`. Anything the rules don't settle waits for you in `/learned` and the
 //! inbox; shadow records what auto would have done and waits too.
 
 use argonauts_core::RunId;
@@ -95,11 +95,11 @@ fn decision(
     // Its own id, so the approval records never mistake it for a checkpoint of the run that
     // proposed it, or for another candidate's.
     let checkpoint = CheckpointId::parse(&format!("promote-{}", candidate.id))
-        .ok_or_else(|| anyhow::anyhow!("{} can't name a checkpoint", candidate.id))?;
+        .ok_or_else(|| anyhow::anyhow!("{} can't name an approval", candidate.id))?;
     let point = DecisionPoint {
         run,
         checkpoint,
-        kind: CheckpointKind::RecipePromotion,
+        kind: CheckpointKind::WorkflowPromotion,
         recipe: Some(candidate.parent.name.clone()),
         authors: Vec::new(),
         mode_override: None,
@@ -113,7 +113,7 @@ fn decision(
         ..EvidenceFacts::default()
     };
     let evidence = EvidencePacket {
-        kind: CheckpointKind::RecipePromotion,
+        kind: CheckpointKind::WorkflowPromotion,
         goal: None,
         facts,
         agent_outputs: Vec::new(),
@@ -274,7 +274,7 @@ mod tests {
         let asked = auto.asked.lock().unwrap().clone();
         assert_eq!(asked.len(), 1);
         let (point, evidence) = &asked[0];
-        assert_eq!(point.kind, CheckpointKind::RecipePromotion);
+        assert_eq!(point.kind, CheckpointKind::WorkflowPromotion);
         assert_eq!(point.recipe.as_deref(), Some("api-feature"));
         assert_eq!(point.checkpoint.as_str(), "promote-api-feature-v5");
         assert_eq!(
@@ -335,9 +335,9 @@ mod tests {
         );
 
         // Your real policy, set to supervised or shadow, never promotes on its own.
-        for mode in [ApprovalMode::Supervised, ApprovalMode::Shadow] {
+        for mode in [ApprovalMode::Supervised, ApprovalMode::AutoPreview] {
             let mut settings = Settings::default();
-            settings.approvals.recipe_promotion.mode = mode;
+            settings.approvals.workflow_promotion.mode = mode;
             let policy = real_policy(settings, &dir.path().join("state"));
             let outcome = checkpoint(policy.as_ref(), &evolution, &candidate(), &packet)
                 .await
@@ -410,10 +410,10 @@ mod tests {
             },
             version: 2,
             change: Change {
-                key: "workflow".to_owned(),
+                key: "phases".to_owned(),
                 class: ChangeClass::StepGraph,
                 before: None,
-                after: Some(serde_json::json!("solo-reviewed")),
+                after: Some(serde_json::json!("maker-checker")),
             },
             ..candidate()
         };

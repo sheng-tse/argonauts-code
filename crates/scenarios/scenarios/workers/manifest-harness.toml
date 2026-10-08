@@ -1,4 +1,4 @@
-# The owner is the JSONL plugin from the manifest adapter's fixtures, run for real, so no fake
+# The worker is the JSONL plugin from the manifest adapter's fixtures, run for real, so no fake
 # vendor plays a part. The versions let the app find the fakes it looks for at start.
 
 [version]

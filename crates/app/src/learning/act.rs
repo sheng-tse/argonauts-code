@@ -70,7 +70,7 @@ pub(crate) fn act(
         }
         LearningCommand::Promote { candidate } | LearningCommand::Reject { candidate } => {
             if !asker.at_terminal {
-                anyhow::bail!("promoting or rejecting a recipe needs you at a terminal");
+                anyhow::bail!("promoting or rejecting a learned workflow needs you at a terminal");
             }
             let promote = matches!(command, LearningCommand::Promote { .. });
             let actions = Evolution::open(&store)?.decide(candidate, promote, &Party::User)?;
@@ -181,7 +181,7 @@ pub(crate) fn export(store: &Store, settings: &Settings, recipe: &str) -> anyhow
         .iter()
         .find(|set| set.name == recipe)
         .and_then(|set| set.current())
-        .ok_or_else(|| anyhow::anyhow!("no recipe is named {recipe}"))?;
+        .ok_or_else(|| anyhow::anyhow!("no learned workflow is named {recipe}"))?;
     let proposal = skills::propose_export(store, loaded, settings.skills.claude_link)?;
     Ok(format!(
         "Proposed the {recipe} skill on {}. It waits for you; {} opens it as a pull request. \
@@ -378,7 +378,7 @@ mod tests {
                 &format!("argonauts/notes/{id}:.argonauts/notes/review.md"),
             ])
             .unwrap();
-        assert!(text.contains("Reviewers check the limiter's headers. (card-002, codex, run-04"));
+        assert!(text.contains("Reviewers check the limiter's headers. (task-002, codex, run-04"));
         assert!(accept_note(&store, &id).is_err());
         assert!(flagged_path(&store, "../escape").is_err());
     }

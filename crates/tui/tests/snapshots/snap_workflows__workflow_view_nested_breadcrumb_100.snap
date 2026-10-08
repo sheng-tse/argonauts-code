@@ -4,11 +4,11 @@ expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
  argonauts-ui-kit › build:c-demo-tests
- Demo scenes and snapshot tests for every part of the kit                 2/4 agents · 12m00s
+ Demo scenes and snapshot tests for every part of the kit 2/4 agents · 12m00s · ↓ 288k tokens
 
  ╭ Phases ───────┬ Test · 2 agents ─────────────────────────────────────────────────────────╮
- │   ✔ Draft 2/2 │  ● test:scenes    Opus    · 41k tok                                2m50s │
- │ ❯ 2 Test  0/2 │  ● test:snapshots GPT 5.6 · 38.2k tok                              2m30s │
+ │   ✔ Draft 2/2 │  ◐ test:scenes    Opus on Claude Code · 41k tok                    2m50s │
+ │ ❯ 2 Test  0/2 │  ◐ test:snapshots GPT 5.6 on Codex    · 38.2k tok                  2m30s │
  │               │                                                                          │
  │               │                                                                          │
  │               │                                                                          │

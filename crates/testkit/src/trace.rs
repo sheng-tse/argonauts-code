@@ -120,7 +120,10 @@ mod tests {
         let lines = [
             TraceLine::In {
                 t_ms: 1,
-                command: UiCommand::Submit { text: "hi".into() },
+                command: UiCommand::Submit {
+                    text: "hi".into(),
+                    workflow_requested: false,
+                },
             },
             TraceLine::Out {
                 t_ms: 2,
@@ -134,7 +137,10 @@ mod tests {
         assert_eq!(trace.lines().unwrap(), lines);
         assert_eq!(
             trace.commands().unwrap(),
-            [UiCommand::Submit { text: "hi".into() }]
+            [UiCommand::Submit {
+                text: "hi".into(),
+                workflow_requested: false
+            }]
         );
         let exit = trace
             .wait_for_event(|e| matches!(e, AppEvent::Exit), Duration::from_millis(50))

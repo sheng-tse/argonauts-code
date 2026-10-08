@@ -5,13 +5,13 @@ use argonauts_tui::app::compose_live;
 use argonauts_tui::bottom::PanelEvent;
 use argonauts_tui::model::{
     Activity, AgentRow, AgentState, BottomState, CardNote, CardOption, CardPrompt, DiffView, Hint,
-    History, StatusPart, Tone, ToolCall, ToolItem, ToolKind, ToolState, VimMode, WorkingLine,
+    History, LinePart, Tone, ToolCall, ToolItem, ToolKind, ToolState, VimMode, WindowUse,
+    WorkingLine,
 };
+use argonauts_tui::model::{AddedPart, CliUse};
 use argonauts_tui::stability;
 use argonauts_tui::theme::Role;
-use common::{
-    assert_fits, at, bg, ctx, fg, row_styled, row_text, row_with, style_of, t0, text, theme,
-};
+use common::{assert_fits, at, ctx, fg, row_styled, row_text, row_with, style_of, t0, text, theme};
 use ratatui::style::Modifier;
 
 const WIDTHS: [u16; 2] = [80, 120];
@@ -21,7 +21,7 @@ const NOW: f64 = 252.48;
 
 fn idle() -> BottomState {
     let mut bottom = BottomState::new();
-    bottom.composer.label = Some("peer-crew".into());
+    bottom.composer.label = Some("council".into());
     bottom
 }
 
@@ -30,11 +30,13 @@ fn crew() -> BottomState {
     let mut working = WorkingLine::new("Building", t0());
     working.tokens_down = 48_200;
     working.details = vec!["build".into(), "3 agents".into()];
+    // A run alone is at work, and Esc leaves its agents going.
+    working.esc_stops = false;
     bottom.working = Some(working);
     bottom.agents.rows = vec![
         agent(
             "claude-code",
-            "card-002",
+            "task-002",
             AgentState::Working,
             Some((2, 5)),
             0.0,
@@ -43,7 +45,7 @@ fn crew() -> BottomState {
         .with_model("opus"),
         agent(
             "codex",
-            "card-003",
+            "task-003",
             AgentState::Working,
             Some((1, 5)),
             32.0,
@@ -54,7 +56,7 @@ fn crew() -> BottomState {
             let mut row = agent("agy", "review", AgentState::Waiting, Some((0, 3)), 0.0, 0)
                 .with_model("gemini-3.6");
             row.started_at = None;
-            row.note = Some("waiting for card-002".into());
+            row.note = Some("waiting for task-002".into());
             row
         },
     ];
@@ -82,14 +84,14 @@ fn merge_card() -> CardPrompt {
         CardOption::irreversible("Merge"),
         CardOption::new("Open a pull request"),
         CardOption::checklist(
-            "Request changes on some cards",
-            vec!["card-002 Add the JSON writer".into()],
+            "Request changes on some tasks",
+            vec!["task-002 Add the JSON writer".into()],
         ),
         CardOption::new("Keep the branch"),
         CardOption::irreversible("Abandon the run"),
         CardOption::view("Show the diff"),
     ];
-    let mut card = CardPrompt::new(2, "Merge card-002 into main?", "Merge card-002?", options);
+    let mut card = CardPrompt::new(2, "Merge task-002 into main?", "Merge task-002?", options);
     card.detail = vec!["3 files · +48 -6 · tests passed · agy reviewed it and approved".into()];
     card.allow_note = true;
     card.focus();
@@ -123,7 +125,7 @@ fn idle_prompt() {
         rows.join("\n")
     );
     assert!(
-        rows[0].starts_with('─') && rows[0].ends_with(" peer-crew ─"),
+        rows[0].starts_with('─') && rows[0].ends_with(" council ─"),
         "{}",
         rows[0]
     );
@@ -138,9 +140,10 @@ fn idle_prompt() {
         style_of(&view.lines, "──").and_then(|s| s.fg),
         fg(Role::Rule)
     );
+    // The label is in the rule's grey. Purple is kept for the ultracode tag.
     assert_eq!(
-        style_of(&view.lines, "peer-crew").and_then(|s| s.fg),
-        fg(Role::Label)
+        style_of(&view.lines, "council").and_then(|s| s.fg),
+        fg(Role::Rule)
     );
     assert_eq!(
         style_of(&view.lines, "ǁ supervised mode on").and_then(|s| s.fg),
@@ -164,8 +167,9 @@ fn working_with_agents() {
         all.starts_with("✻ Building… (4m 12s · ↓ 48.2k tokens · build · 3 agents)\n\n"),
         "{all}"
     );
+    // Esc leaves a run's agents going, so the line makes no offer of it.
     assert!(
-        all.contains("  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage"),
+        all.contains("  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 3 agents · ↓ to manage"),
         "{all}"
     );
     for row in ["claude-code", "codex", "agy"] {
@@ -174,25 +178,22 @@ fn working_with_agents() {
             "{row} has a row:\n{all}"
         );
     }
-    // Steps and tokens in their columns, and the times at the edge.
+    // Each row ends with its to-do count, how long, and its tokens, as Claude Code ends its
+    // rows, and a note such as a wait takes the place of the time.
     let row = |name: &str| {
         row_with(&view.lines, name)
             .map(row_text)
             .unwrap_or_default()
     };
     let claude = row("claude-code/opus");
-    assert!(claude.contains("2/5  ↓ 18.1k tokens"), "{all}");
-    assert!(claude.trim_end().ends_with("4m12s"), "{all}");
+    assert!(claude.ends_with("2/5 · 4m · ↓ 18.1k tokens"), "{all}");
     let codex = row("codex/gpt-5.6");
-    assert!(codex.contains("1/5  ↓ 12.9k tokens"), "{all}");
-    assert_eq!(
-        claude.trim_end().chars().count(),
-        codex.trim_end().chars().count(),
-        "{all}"
-    );
+    assert!(codex.ends_with("1/5 · 3m · ↓ 12.9k tokens"), "{all}");
+    let stats_at = |row: &str| row.find("/5").map(|at| row[..at].chars().count());
+    assert_eq!(stats_at(&claude), stats_at(&codex), "{all}");
     assert!(
         row_with(&view.lines, "agy/gemini-3.6")
-            .is_some_and(|row| row_text(row).ends_with("waiting for card-002"))
+            .is_some_and(|row| row_text(row).ends_with("waiting for task-002"))
     );
     assert_eq!(
         style_of(&view.lines, "✻").and_then(|s| s.fg),
@@ -201,13 +202,6 @@ fn working_with_agents() {
     assert_eq!(
         style_of(&view.lines, "4m 12s").and_then(|s| s.fg),
         fg(Role::Dim)
-    );
-    let bar = row_with(&view.lines, "claude-code").unwrap();
-    let fills: Vec<_> = bar.spans.iter().filter_map(|s| s.style.bg).collect();
-    assert!(
-        fills.contains(&bg(Role::BarFill).unwrap()) && fills.contains(&bg(Role::BarTrack).unwrap()),
-        "{}",
-        row_styled(bar)
     );
     let next = crew()
         .next_change(&ctx(&theme, 100, NOW))
@@ -252,13 +246,13 @@ fn card_expanded() {
     let all = text(&view.lines);
     assert!(
         all.starts_with(&format!(
-            "{}\n◆ Merge card-002 into main?\n  3 files · +48 -6",
+            "{}\n◆ Merge task-002 into main?\n  3 files · +48 -6",
             "─".repeat(80)
         )),
         "{all}"
     );
     assert!(
-        all.contains("  Enter to choose · Tab to add a note · Esc to set aside"),
+        all.contains("  Enter to choose · Tab to add a note · Esc to carry on without me"),
         "{all}"
     );
     let merge = row_with(&view.lines, "1. Merge")
@@ -270,8 +264,8 @@ fn card_expanded() {
         "the number alone picks it, with no letter after: {merge}"
     );
     assert!(
-        !all.contains("peer-crew ─"),
-        "the card stands in for the input while it has the keys: {all}"
+        !all.contains("council ─"),
+        "the task stands in for the input while it has the keys: {all}"
     );
 }
 
@@ -296,43 +290,30 @@ fn a_card_that_needs_you_holds_the_keys() {
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     assert!(
         text(&view.lines).contains(
-            "\n  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+            "\n  Typing waits while the question has the keys · Esc to carry on without me"
         ),
         "{}",
         text(&view.lines)
     );
 }
 
+/// Handed on while work runs, the card leaves the screen whole and the input guides the run.
+/// No card that asks waits above the input, open or as a line.
 #[test]
-fn a_new_card_waits_under_the_working_line() {
+fn a_card_handed_on_under_the_working_line_leaves_the_input_to_the_run() {
     let mut bottom = crew();
     let mut card = merge_card();
-    card.focused = false;
+    card.needs_you = true;
+    card.focus();
+    card.dismiss();
     bottom.card = Some(card);
-    snapshot_widths("card_waiting", &bottom);
+    assert!(!bottom.hand_keys_to_card(std::time::Instant::now()));
+    snapshot_widths("card_handed_on_working", &bottom);
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     let all = text(&view.lines);
-    assert!(!all.contains("❯ 1."), "{all}");
-    assert!(
-        all.contains("❯ ↑ to answer the card, or type to guide the run"),
-        "{all}"
-    );
+    assert!(!all.contains("Merge"), "{all}");
+    assert!(!all.contains("to answer the question"), "{all}");
     assert!(view.cursor.is_some());
-}
-
-#[test]
-fn card_pinned() {
-    let mut bottom = idle();
-    let mut card = merge_card();
-    card.pinned = true;
-    card.focused = false;
-    bottom.card = Some(card);
-    snapshot_widths("card_pinned", &bottom);
-    let view = bottom.render(&ctx(&theme(), 80, NOW));
-    assert_eq!(
-        text(&view.lines[..1]),
-        "◆ Merge card-002? · needs you · ↑ to answer"
-    );
 }
 
 #[test]
@@ -363,7 +344,7 @@ fn queued_messages() {
     let view = bottom.render(&ctx(&theme(), 80, NOW));
     let all = text(&view.lines);
     let queued = all.find("also add --pretty").unwrap();
-    let rule = all.find("peer-crew ─").unwrap();
+    let rule = all.find("council ─").unwrap();
     assert!(queued < rule, "queued messages sit above the input:\n{all}");
     assert_eq!(
         style_of(&view.lines, "also add --pretty").and_then(|s| s.fg),
@@ -454,37 +435,41 @@ fn placeholder() {
 }
 
 #[test]
-fn status_line() {
+fn bottom_line() {
     let mut bottom = idle();
-    bottom.status_line = vec![
-        StatusPart::quota("Claude 5h 38% used", 38, Tone::Dim),
-        StatusPart::quota("Codex 5h 92% used", 92, Tone::Warning),
-        StatusPart::spend("$0.46 today"),
+    let mut claude = CliUse::new("Claude", Role::CliClaude);
+    claude.main = true;
+    claude.windows = vec![WindowUse::new("5h", 0.38), WindowUse::new("7d", 0.56)];
+    let mut codex = CliUse::new("Codex", Role::CliCodex);
+    codex.windows = vec![WindowUse::new("5h", 0.92)];
+    codex.windows[0].resets = Some("4:40pm".into());
+    bottom.line.right = vec![
+        LinePart::PlanUsage(vec![claude, codex]),
+        LinePart::Added(AddedPart::words("spend", "$0.46 today", Tone::Dim)),
     ];
-    snapshot_widths("status_line", &bottom);
-    // The mode line is the bottom row, with the chips at its right end.
+    snapshot_widths("bottom_line", &bottom);
+    // The mode line is the bottom row, with the chips against its right edge.
     let view = bottom.render(&ctx(&theme(), 120, NOW));
     let all = text(&view.lines);
     let last = all.lines().last().unwrap();
     assert!(last.starts_with("  ǁ supervised mode on"), "{all}");
-    assert!(
-        last.ends_with("  Claude 5h 38% used · Codex 5h 92% used · $0.46 today"),
-        "{all}"
-    );
+    assert!(last.contains("● Claude 5h "), "{all}");
+    assert!(last.ends_with(" 92% resets 4:40pm  $0.46 today"), "{all}");
     assert_eq!(
-        style_of(&view.lines, "Codex 5h 92%").and_then(|s| s.fg),
+        style_of(&view.lines, "92%").and_then(|s| s.fg),
         fg(Role::Warning)
     );
-    // A narrow screen loses whole chips, least used first, before the mode's own hints, and
-    // keeps the one near its limit.
+    // A narrow screen takes the hints and the added part first, and keeps every CLI: the one
+    // near its limit in words, the one in use with its fuller window.
     let narrow = text(&bottom.render(&ctx(&theme(), 64, NOW)).lines);
     let last = narrow.lines().last().unwrap();
+    assert!(last.starts_with("  ǁ supervised  "), "{narrow}");
+    assert!(last.ends_with(" 92% 4:40pm"), "{narrow}");
     assert!(
-        last.starts_with("  ǁ supervised mode on (shift+tab to cycle)  "),
+        last.contains("● Claude") && last.contains(" 56%"),
         "{narrow}"
     );
-    assert!(last.ends_with("  Codex 5h 92% used"), "{narrow}");
-    assert!(!narrow.contains("Claude"), "{narrow}");
+    assert!(!narrow.contains("$0.46"), "{narrow}");
 }
 
 #[test]
@@ -493,8 +478,21 @@ fn the_focused_agent_panel_marks_its_row() {
     bottom.agents.selected = Some(1);
     snapshot_widths("agents_focused", &bottom);
     let view = bottom.render(&ctx(&theme(), 100, NOW));
-    let codex = row_text(row_with(&view.lines, "codex/").unwrap());
-    assert!(codex.contains('❯'), "{codex}");
+    // The selected agent has the filled dot, the rule over the input names it, the input
+    // offers to message it, and the list's keys take the mode line.
+    let codex = row_text(row_with(&view.lines, "task-003").unwrap());
+    assert!(codex.starts_with("  ● codex/gpt-5.6"), "{codex}");
+    let all = text(&view.lines);
+    assert!(
+        all.contains(" codex/gpt-5.6 ─\n❯ Message @codex/gpt-5.6…\n"),
+        "{all}"
+    );
+    assert!(
+        all.contains(
+            "\n  ↑/↓ to select · enter to view · x to stop it · ctrl+x ctrl+k to stop all agents\n"
+        ),
+        "{all}"
+    );
     // `x` asks on the mode line, like Ctrl+C's double press, and no card comes up.
     let key = crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char('x'));
     assert_eq!(bottom.panel_key(key), PanelEvent::StopAsked);
@@ -521,7 +519,7 @@ fn live_blocks_share_a_short_screen() {
             "builder",
             "claude-code",
             "opus",
-            "owner · card-002",
+            "worker · task-002",
             "Add the JSON writer",
             "src/export.rs",
         ),
@@ -529,7 +527,7 @@ fn live_blocks_share_a_short_screen() {
             "wirer",
             "codex",
             "gpt-5.6",
-            "owner · card-003",
+            "worker · task-003",
             "Wire --json into the CLI",
             "src/cli.rs",
         ),
@@ -583,14 +581,14 @@ fn live_blocks_share_a_short_screen() {
     let all = text(&tight.lines);
     // Every block shrinks before any is hidden; the composer and mode line always show.
     assert!(
-        all.contains("● Opus on Claude Code · owner · card-002"),
+        all.contains("● Opus on Claude Code · worker · task-002"),
         "{all}"
     );
     assert!(
-        all.contains("● GPT 5.6 on Codex · owner · card-003"),
+        all.contains("● GPT 5.6 on Codex · worker · task-003"),
         "{all}"
     );
-    assert!(all.contains("peer-crew ─\n❯"), "{all}");
+    assert!(all.contains("council ─\n❯"), "{all}");
     assert!(all.contains("ǁ supervised mode on"), "{all}");
     let (_, row) = tight.cursor.expect("the cursor shows");
     let input = tight
@@ -613,11 +611,11 @@ fn live_blocks_share_a_short_screen() {
     assert!(with_card.lines.len() <= 24);
     assert!(all.contains("6. Show the diff"), "{all}");
     assert!(
-        !all.contains("peer-crew ─"),
-        "the card stands in for the input: {all}"
+        !all.contains("council ─"),
+        "the task stands in for the input: {all}"
     );
     assert!(
-        style_of(&with_card.lines, "Merge card-002 into main?")
+        style_of(&with_card.lines, "Merge task-002 into main?")
             .is_some_and(|s| s.add_modifier.contains(Modifier::BOLD) || s.fg.is_some())
     );
 }

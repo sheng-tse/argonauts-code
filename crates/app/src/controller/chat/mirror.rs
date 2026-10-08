@@ -58,8 +58,10 @@ pub(crate) fn show(ctx: &Ctx, chat: &ChatState, id: Option<&WorkflowId>) {
         subagents: 0,
         context: None,
         standing_in_for: None,
+        answered: None,
     };
-    let view = WorkflowView::of_vendor(&conversation_run(), &host, workflow, now_ms());
+    let mut view = WorkflowView::of_vendor(&conversation_run(), &host, workflow, now_ms());
+    crate::views::required::mark(&mut view, &ctx.env, super::talk::conversation_steps(chat));
     ctx.send(AppEvent::View {
         data: Box::new(ViewData::Workflow {
             view: Box::new(view),

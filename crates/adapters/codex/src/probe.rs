@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use argonauts_core::limits::{QuotaReading, QuotaSource, QuotaStatus};
+use argonauts_core::limits::{QuotaAnswer, QuotaReading, QuotaSource, QuotaStatus};
 use argonauts_core::names::VendorId;
 use argonauts_core::{CommandSpec, env_remove_except};
 use serde::Deserialize;
@@ -19,7 +19,7 @@ const RATE_LIMITS_REQUEST_ID: u64 = 2;
 pub const WARNING_FROM: f64 = 0.8;
 
 /// codex-cli 0.158.0 exits when stdin closes, before the rate-limit answer arrives, so stdin
-/// stays open. The runner stops once [`parse`] returns a reading, or at its timeout.
+/// stays open. The runner stops once [`answer`] reads the answer, or at its timeout.
 pub fn command(program: &str, workdir: &Path) -> CommandSpec {
     let mut spec = CommandSpec::new(program, workdir).args(["app-server", "--listen", "stdio://"]);
     spec.stdin = Some(request_lines());
@@ -55,13 +55,25 @@ fn request_lines() -> String {
 /// The answer to the rate-limit request, as the most constraining window. An error answer
 /// reads as unknown, with the error kept for `doctor`. `None` until the answer arrives.
 pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaReading> {
+    let answer = answer(stdout, observed_at)?;
+    // Only the binding window carries the payload.
+    answer
+        .windows
+        .into_iter()
+        .find(|reading| reading.detail.is_some())
+}
+
+/// The answer to the rate-limit request, one reading for each window, and the plan. The
+/// binding window carries the account's own block and the payload. `None` until the answer
+/// arrives.
+pub fn answer(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaAnswer> {
     let answer = stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
         .find(|message| {
             message.get("id").and_then(Value::as_u64) == Some(RATE_LIMITS_REQUEST_ID)
         })?;
-    let mut reading = QuotaReading {
+    let unknown = QuotaReading {
         vendor: VendorId(ID.to_owned()),
         status: QuotaStatus::Unknown,
         used: None,
@@ -73,35 +85,45 @@ pub fn parse(stdout: &str, observed_at: OffsetDateTime) -> Option<QuotaReading> 
         wrap_up: false,
     };
     let Some(mut result) = answer.get("result").cloned() else {
-        reading.detail =
-            Some(json!({ "error": answer.get("error").cloned().unwrap_or(Value::Null) }));
-        return Some(reading);
+        let error = json!({ "error": answer.get("error").cloned().unwrap_or(Value::Null) });
+        return Some(QuotaAnswer {
+            windows: vec![QuotaReading {
+                detail: Some(error),
+                ..unknown
+            }],
+            plan: None,
+        });
     };
     if let Some(fields) = result.as_object_mut() {
         fields.remove("accountId");
     }
     let limits = RateLimits::deserialize(&result).unwrap_or_default();
-    if let Some(window) = limits.snapshot.binding_window() {
-        let used = (f64::from(window.used_percent) / 100.0).clamp(0.0, 1.0);
-        reading.used = Some(used);
-        reading.resets_at = window
-            .resets_at
-            .and_then(|at| OffsetDateTime::from_unix_timestamp(at).ok());
-        reading.window = window.duration_mins.map(window_name);
-        reading.status = if used >= WARNING_FROM {
-            QuotaStatus::Warning
-        } else {
-            QuotaStatus::Allowed
-        };
-        if used >= 1.0 {
-            reading.status = QuotaStatus::Rejected;
+    let snapshot = &limits.snapshot;
+    let binding = snapshot.binding_window();
+    let mut windows = Vec::new();
+    let mut binding_at = 0;
+    for window in [snapshot.primary.as_ref(), snapshot.secondary.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        if binding.is_some_and(|binding| std::ptr::eq(binding, window)) {
+            binding_at = windows.len();
         }
+        windows.push(window.reading(&unknown));
     }
-    if limits.ordinary_usage_allowed == Some(false) || limits.snapshot.reached.is_some() {
-        reading.status = QuotaStatus::Rejected;
+    if windows.is_empty() {
+        windows.push(unknown);
     }
-    reading.detail = Some(result);
-    Some(reading)
+    let blocked = limits.ordinary_usage_allowed == Some(false) || snapshot.reached.is_some();
+    let binding = &mut windows[binding_at];
+    if blocked {
+        binding.status = QuotaStatus::Rejected;
+    }
+    binding.detail = Some(result);
+    Some(QuotaAnswer {
+        windows,
+        plan: snapshot.plan.clone().filter(|plan| !plan.is_empty()),
+    })
 }
 
 /// Such as `five_hour` or `weekly`, matching the names Claude Code uses where they overlap.
@@ -130,6 +152,8 @@ struct Snapshot {
     secondary: Option<Window>,
     #[serde(rename = "rateLimitReachedType")]
     reached: Option<String>,
+    #[serde(rename = "planType")]
+    plan: Option<String>,
 }
 
 impl Snapshot {
@@ -160,6 +184,29 @@ struct Window {
     resets_at: Option<i64>,
 }
 
+impl Window {
+    /// The window on its own, named by its length: a full one refuses work until its reset.
+    fn reading(&self, blank: &QuotaReading) -> QuotaReading {
+        let used = (f64::from(self.used_percent) / 100.0).clamp(0.0, 1.0);
+        let status = if used >= 1.0 {
+            QuotaStatus::Rejected
+        } else if used >= WARNING_FROM {
+            QuotaStatus::Warning
+        } else {
+            QuotaStatus::Allowed
+        };
+        QuotaReading {
+            status,
+            used: Some(used),
+            resets_at: self
+                .resets_at
+                .and_then(|at| OffsetDateTime::from_unix_timestamp(at).ok()),
+            window: self.duration_mins.map(window_name),
+            ..blank.clone()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,7 +214,7 @@ mod tests {
 
     const NOW: OffsetDateTime = datetime!(2026-09-30 12:00 UTC);
 
-    fn answer(result: Value) -> String {
+    fn answer_lines(result: Value) -> String {
         let init = json!({"id": 1, "result": {"platformOs": "macos"}});
         format!("{init}\n{}\n", json!({"id": 2, "result": result}))
     }
@@ -204,7 +251,7 @@ mod tests {
 
     #[test]
     fn a_full_window_is_rejected_until_its_reset() {
-        let stdout = answer(json!({
+        let stdout = answer_lines(json!({
             "rateLimits": {
                 "primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1790776800},
                 "secondary": {"usedPercent": 40, "windowDurationMins": 10080, "resetsAt": 1791259619},
@@ -220,19 +267,50 @@ mod tests {
     }
 
     #[test]
+    fn each_window_is_a_reading_named_by_its_length_and_the_plan_comes_along() {
+        let stdout = answer_lines(json!({
+            "rateLimits": {
+                "primary": {"usedPercent": 92, "windowDurationMins": 300, "resetsAt": 1790776800},
+                "secondary": {"usedPercent": 41, "windowDurationMins": 10080, "resetsAt": 1791259619},
+                "planType": "team",
+            },
+        }));
+        let answer = answer(&stdout, NOW).unwrap();
+        let windows: Vec<_> = answer
+            .windows
+            .iter()
+            .map(|r| (r.window.as_deref().unwrap(), r.used.unwrap(), r.status))
+            .collect();
+        assert_eq!(
+            windows,
+            [
+                ("five_hour", 0.92, QuotaStatus::Warning),
+                ("weekly", 0.41, QuotaStatus::Allowed)
+            ]
+        );
+        assert_eq!(answer.plan.as_deref(), Some("team"));
+        assert_eq!(
+            answer.binding().unwrap().window.as_deref(),
+            Some("five_hour")
+        );
+        // The payload goes with the binding window only.
+        assert!(answer.windows[0].detail.is_some() && answer.windows[1].detail.is_none());
+    }
+
+    #[test]
     fn warnings_blocks_and_errors() {
-        let warning = answer(json!({"rateLimits": {
+        let warning = answer_lines(json!({"rateLimits": {
             "primary": {"usedPercent": 85, "windowDurationMins": 90, "resetsAt": null}
         }}));
         let reading = parse(&warning, NOW).unwrap();
         assert_eq!(reading.status, QuotaStatus::Warning);
         assert_eq!(reading.window.as_deref(), Some("90_minutes"));
 
-        let blocked = answer(json!({
+        let blocked = answer_lines(json!({
             "rateLimits": {"primary": {"usedPercent": 10}, "rateLimitReachedType": "workspace_owner_credits_depleted"},
         }));
         assert_eq!(parse(&blocked, NOW).unwrap().status, QuotaStatus::Rejected);
-        let not_allowed = answer(json!({"rateLimits": {}, "ordinaryUsageAllowed": false}));
+        let not_allowed = answer_lines(json!({"rateLimits": {}, "ordinaryUsageAllowed": false}));
         assert_eq!(
             parse(&not_allowed, NOW).unwrap().status,
             QuotaStatus::Rejected

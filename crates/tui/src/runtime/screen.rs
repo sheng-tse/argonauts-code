@@ -185,7 +185,17 @@ impl<W: Write> Screen<W> {
                 return Err(error.into());
             }
             let now = Instant::now();
-            let wake = self.ui.next_deadline(now);
+            // Whoever draws usage numbers gets them again as they age.
+            let watch = self.ui.model().bottom.band.watch.clone();
+            if !self.bridge.state.replaying()
+                && let Some(view) = watch.due(now)
+            {
+                self.send(UiCommand::Request { view }).await;
+            }
+            let wake = [self.ui.next_deadline(now), watch.next(now)]
+                .into_iter()
+                .flatten()
+                .min();
             let sleep_until = tokio::time::Instant::from_std(wake.unwrap_or(now + IDLE_WAIT));
             tokio::select! {
                 event = self.io.events.recv() => match event {
@@ -285,10 +295,12 @@ impl<W: Write> Screen<W> {
             commands,
             bell,
             views,
+            views_as_panel,
             close_views,
             take_over,
             run_in_terminal,
             clipboard,
+            open_link,
             edit_draft,
             theme,
             vim,
@@ -306,11 +318,22 @@ impl<W: Write> Screen<W> {
         if let Some(text) = clipboard {
             copy_to_clipboard(self.ui.terminal_mut(), &text);
         }
+        if let Some(url) = open_link
+            && !open_in_browser(&url)
+        {
+            // Claude Code's words for it, with where the copy key is here.
+            let text = "Couldn't open a browser. /artifacts, then c, copies the link".to_owned();
+            self.notice(text, Tone::Warning);
+        }
         if close_views {
             self.ui.close_views();
         }
         for view in views {
-            self.ui.push_view(view);
+            if views_as_panel {
+                self.ui.push_panel(view);
+            } else {
+                self.ui.push_view(view);
+            }
         }
         if let Some(theme) = theme {
             self.ui.set_theme(theme);
@@ -473,8 +496,7 @@ impl<W: Write> Screen<W> {
     /// crew view when cards wait elsewhere.
     fn show_what_waits(&mut self) {
         let bottom = &mut self.ui.model_mut().bottom;
-        if let Some(card) = bottom.card.as_mut() {
-            card.pinned = false;
+        if bottom.card.is_some() {
             self.ui.close_views();
         } else if bottom.mode.needs_you > 0 {
             self.ui.close_views();
@@ -585,6 +607,27 @@ fn copy_to_clipboard<W: Write>(terminal: &mut InlineTerminal<W>, text: &str) {
             return;
         }
     }
+}
+
+/// Hands a claude.ai page to the system's opener, which picks the browser. The address is one
+/// argument of its own and never a shell's, and anything but a claude.ai link is left alone.
+/// False when there was nothing to hand it to.
+fn open_in_browser(url: &str) -> bool {
+    if !argonauts_core::artifacts::is_link(url) {
+        return false;
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 async fn run_here(argv: Vec<String>, cwd: PathBuf) -> io::Result<ExitStatus> {

@@ -26,7 +26,9 @@ use argonauts_core::{
 };
 use serde_json::{Map, Value, json};
 
-use super::capabilities::{ANTIGRAVITY, CLAUDE_CODE, steer_support};
+use super::capabilities::{
+    ANTIGRAVITY, CLAUDE_CODE, steer_support, takes_a_standing_note, takes_session_tools,
+};
 use super::launch::prompt_text;
 use crate::gates::env::looks_secret;
 use crate::meter;
@@ -111,9 +113,23 @@ pub fn session_request(
         Some(registry) => effort_to_run(registry, &runs, spec.effort.clone()),
         None => spec.effort.clone(),
     };
+    // The lines about its tools go where the CLI takes such a note. One with no such place
+    // reads them ahead of your message, and one that gets no tools hears nothing of them.
+    let standing = spec
+        .asking
+        .as_ref()
+        .filter(|_| takes_session_tools(adapter))
+        .and_then(|asking| asking.standing.clone());
+    let takes_a_note = takes_a_standing_note(adapter);
+    let prompt = match &standing {
+        Some(standing) if !takes_a_note => {
+            format!("{standing}\n\n{}", prompt_text(&spec.prompt))
+        }
+        _ => prompt_text(&spec.prompt),
+    };
     Ok(SessionRequest {
         workdir: spec.workdir.clone(),
-        prompt: prompt_text(&spec.prompt),
+        prompt,
         model,
         effort,
         role: session_role(spec.access),
@@ -133,6 +149,12 @@ pub fn session_request(
         session_id: (id == CLAUDE_CODE && spec.resume.is_none())
             .then(|| uuid::Uuid::new_v4().to_string()),
         project: project(spec, adapter),
+        // The largest window the CLI offers for the model, held to `sessions.context`.
+        context: settings.sessions.context.ask(
+            registry
+                .and_then(|registry| registry.get(&runs))
+                .and_then(|entry| entry.context_window),
+        ),
         compaction: (spec.compaction != Compaction::Inherit).then_some(spec.compaction),
         native_fanout: Some(spec.native_fanout),
         mcp_config,
@@ -151,6 +173,11 @@ pub fn session_request(
             .unwrap_or_default(),
         vendor_command: spec.step == Some(StepName::VendorCommand),
         main_session: is_main_session(spec),
+        ultracode: spec.cli_workflow.ultracode,
+        typed_by_you: spec.cli_workflow.typed_keyword,
+        workflow_size: Some(settings.workflow_size),
+        standing_note: standing.filter(|_| takes_a_note),
+        autopilot: spec.autopilot,
     })
 }
 
@@ -328,8 +355,11 @@ pub fn session_server(
         if asking.asks != Asks::Never {
             args.push("--approve-tool".to_owned());
         }
-        if asking.start_run {
-            args.push("--start-run".to_owned());
+        for tool in &asking.tools {
+            args.extend(["--tool".to_owned(), tool.clone()]);
+        }
+        for role in &asking.roles {
+            args.extend(["--ask-role".to_owned(), role.as_str().to_owned()]);
         }
     }
     Some(McpServerSpec {
@@ -446,6 +476,62 @@ mod tests {
             spec.access = access;
             assert_eq!(request_for(&adapter, &spec).role, role, "{access:?}");
         }
+    }
+
+    /// The main session's tools go to its server by name, and the standing lines go where the
+    /// CLI takes such a note. A CLI that gets no tools hears nothing of them.
+    #[test]
+    fn the_main_session_s_tools_and_standing_lines_reach_a_cli_that_takes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_in(dir.path(), dir.path(), "add due dates");
+        spec.access = Access::Direct;
+        let asking = Asking {
+            asks: Asks::Never,
+            endpoint: "127.0.0.1:41234".to_owned(),
+            token: "t".to_owned(),
+            tools: vec!["argonauts_start_workflow".to_owned()],
+            standing: Some("Hand real work to the crew.".to_owned()),
+            roles: Vec::new(),
+        };
+        let server = session_server(Path::new("/bin/argonauts"), None, None, Some(&asking))
+            .expect("a server for the tools");
+        assert_eq!(
+            server.args,
+            [
+                "mcp",
+                "session",
+                "--ask",
+                "127.0.0.1:41234",
+                "--tool",
+                "argonauts_start_workflow"
+            ]
+        );
+        spec.asking = Some(asking);
+
+        let claude = TestAdapter::new("true").with_id(CLAUDE_CODE);
+        let request = request_for(&claude, &spec);
+        assert_eq!(
+            request.standing_note.as_deref(),
+            Some("Hand real work to the crew.")
+        );
+        assert_eq!(request.prompt, "add due dates");
+
+        let other = TestAdapter::new("true").with_id("codex");
+        let request = request_for(&other, &spec);
+        assert_eq!(request.standing_note, None);
+        assert_eq!(request.prompt, "add due dates");
+    }
+
+    /// The adapter hears that the session's run is on autopilot, and picks its CLI's own way
+    /// of working without stopping.
+    #[test]
+    fn a_session_on_autopilot_says_so_to_its_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_in(dir.path(), dir.path(), "add due dates");
+        let claude = TestAdapter::new("true").with_id(CLAUDE_CODE);
+        assert!(!request_for(&claude, &spec).autopilot);
+        spec.autopilot = true;
+        assert!(request_for(&claude, &spec).autopilot);
     }
 
     #[test]
@@ -695,7 +781,7 @@ mod tests {
         let card = argonauts_core::CardId::new("c-001").unwrap();
         spec.run = Some(RunId::new("run-7").unwrap());
         spec.card = Some(card.clone());
-        let want = layout::card_dir(&run_dir, &card).join("homes/default/hermes");
+        let want = layout::card_dir(&run_dir, &card).join("homes/main/hermes");
         assert_eq!(card_home(&spec, "hermes"), Some(want.clone()));
         assert_eq!(
             request_for(&adapter, &spec).project,
@@ -787,7 +873,7 @@ mod tests {
                 ("OPENAI_API_KEY".to_owned(), "sk-foreign".to_owned()),
                 (SESSION_ENV.to_owned(), spec.key.to_string()),
             ],
-            "a vendor key is the adapter's to keep or drop, any other credential goes"
+            "an agent key is the adapter's to keep or drop, any other credential goes"
         );
 
         let mut command = CommandSpec::new("agent", dir.path());

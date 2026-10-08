@@ -8,7 +8,7 @@ expression: "picker_lines(picker, width)"
   wins
 
   ❯ 1. Argonauts' (OS sandbox) ✓   Argonauts' rules, kept by your OS's own sandbox
-    2. Argonauts' (container)      Argonauts' rules, in a container that holds only the agent's copy
+    2. Argonauts' (container)      Argonauts' rules, in a container that holds only the agent's worktree
     3. each AI tool's own          Each AI tool's own sandbox and approvals, with Argonauts' off
     4. none                        No protection at all, neither Argonauts' nor the tool's
 

@@ -1,10 +1,9 @@
-//! The owner's prompt as parts: role prompt, card, goal, notes, decisions, rules, the filtered
-//! status summary, and the report schema. The session view shows exactly what was sent.
+//! The worker's prompt as parts: the orchestrator's brief, the task, the goal, notes, decisions,
+//! rules, the filtered status summary, and the report schema. The session view shows exactly
+//! what was sent.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Component, Path};
-use std::sync::{Mutex, OnceLock, PoisonError};
 
 use argonauts_core::CardId;
 use argonauts_core::events::RunEventKind;
@@ -19,12 +18,14 @@ use argonauts_core::limits::HandoffPacket;
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::settings::Settings;
+use argonauts_core::steps::StepName;
 
 use crate::card::support::{card_events, owner_of, part, progress_of, record_of};
 use crate::engine::host::Host;
 use crate::error::EngineResult;
 use crate::handoff::context;
 use crate::prompts;
+use crate::prompts::instructions::Agent;
 use crate::status::Viewer;
 
 /// Notes are cut to this many characters each, so one long file can't crowd out the card.
@@ -32,30 +33,24 @@ const NOTE_CHARS: usize = 8_000;
 
 pub fn owner_parts(host: &Host, card: &CardId) -> EngineResult<Vec<InputPart>> {
     let record = record_of(host, card)?;
-    let (goal, decisions, cards) = host.read(|state| {
-        (
-            state.goal.approved.clone(),
-            state.plan.decisions.clone(),
-            state.cards.by_id.len(),
-        )
-    });
-    let opening = if cards > 1 {
-        prompts::card::OWNER_OF_ONE_CARD
-    } else {
-        prompts::card::OWNER_OF_THE_CHANGE
+    let (goal, decisions) =
+        host.read(|state| (state.goal.approved.clone(), state.plan.decisions.clone()));
+    // The frame for the worker's role goes on when the session starts. Where the orchestrator
+    // wrote the task's brief, the worker reads it as the orchestrator's instructions, and the
+    // task part keeps the facts: its paths, its kind, and what it depends on.
+    let agent = Agent {
+        role: RoleName::Worker,
+        step: Some(StepName::Build),
+        at: None,
+        card: Some(card),
     };
-    let mut parts = vec![part(
-        InputPartKind::Prompt,
-        "owner",
-        format!("{opening}{}", prompts::card::OWNER),
-        None,
-    )];
-    parts.push(part(
-        InputPartKind::Card,
-        card.as_str(),
-        card_text(&record.spec),
-        None,
-    ));
+    let brief = prompts::assemble::written(host, &agent);
+    let task = match &brief {
+        Some(_) => card_facts(&record.spec),
+        None => card_text(&record.spec),
+    };
+    let mut parts: Vec<InputPart> = brief.into_iter().collect();
+    parts.push(part(InputPartKind::Card, card.as_str(), task, None));
     if let Some(goal) = &goal {
         let source = Some(goal.path.display().to_string());
         parts.push(part(InputPartKind::Goal, "goal", goal_text(goal), source));
@@ -105,12 +100,12 @@ pub fn owner_parts(host: &Host, card: &CardId) -> EngineResult<Vec<InputPart>> {
     Ok(parts)
 }
 
-/// The built-in template, or the Markdown file `prompts.<key>` names (`file`): a repo path read
-/// from the run's base, or the full path of a file beside the run's recipe version, which may
-/// be a candidate's in the conductor's state. A file that's missing, empty, or anywhere else
-/// keeps the built-in. Judge and reviewer prompts never come here: they make the evidence
-/// approvals read.
+/// The Markdown file `prompts.<key>` names (`file`), which a learned workflow sets: a repo path
+/// read from the run's base, or the full path of a file beside the run's learned workflow
+/// version, which may be a candidate's in the conductor's state. A file that's missing, empty,
+/// or anywhere else keeps the built-in, which is your own template when you wrote one.
 pub fn replaced(host: &Host, file: &str, built_in: &'static str) -> &'static str {
+    let built_in = prompts::files::text(host, built_in);
     let file = file.trim();
     if file.is_empty() {
         return built_in;
@@ -121,7 +116,7 @@ pub fn replaced(host: &Host, file: &str, built_in: &'static str) -> &'static str
             Some(path) => std::fs::read_to_string(path),
             None => {
                 tracing::warn!(
-                    "prompts: {file} isn't a file of this run's recipe, so the built-in is used"
+                    "prompts: {file} isn't a file of this run's learned workflow, so the built-in is used"
                 );
                 return built_in;
             }
@@ -138,7 +133,7 @@ pub fn replaced(host: &Host, file: &str, built_in: &'static str) -> &'static str
         return built_in;
     };
     match text {
-        Ok(text) if !text.trim().is_empty() => intern(text),
+        Ok(text) if !text.trim().is_empty() => prompts::files::intern(text),
         Ok(_) => {
             tracing::warn!("prompts: {file} is empty, so the built-in is used");
             built_in
@@ -150,22 +145,6 @@ pub fn replaced(host: &Host, file: &str, built_in: &'static str) -> &'static str
     }
 }
 
-/// Asks take `'static` templates, so a replacement is kept for the life of the process, once
-/// per distinct text: a recipe's few prompt files, never one per session.
-fn intern(text: String) -> &'static str {
-    static TEXTS: OnceLock<Mutex<BTreeMap<String, &'static str>>> = OnceLock::new();
-    let mut texts = TEXTS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if let Some(kept) = texts.get(&text) {
-        return kept;
-    }
-    let kept: &'static str = Box::leak(text.clone().into_boxed_str());
-    texts.insert(text, kept);
-    kept
-}
-
 /// Where the worker has no status tool (agy, and Codex for now), the status summary goes again
 /// as a `Status` part with each delivered message and each resume.
 pub fn status_part(host: &Host, card: &CardId, has_status_tool: bool) -> Option<InputPart> {
@@ -174,7 +153,7 @@ pub fn status_part(host: &Host, card: &CardId, has_status_tool: bool) -> Option<
 
 fn status(host: &Host, card: &CardId) -> InputPart {
     let viewer = Viewer::Session {
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         card: Some(card.clone()),
         label: None,
     };
@@ -189,10 +168,10 @@ fn status(host: &Host, card: &CardId) -> InputPart {
 /// The gate output the owner's session resumes with.
 pub fn gate_output_part(output: &str) -> InputPart {
     let text = format!(
-        "Your card's gates failed. Fix the cause, not the check, then end with your report \
+        "Your task's checks failed. Fix the cause, not the check, then end with your report \
          again.\n\n{output}"
     );
-    part(InputPartKind::GateOutput, "gate output", text, None)
+    part(InputPartKind::GateOutput, "check output", text, None)
 }
 
 /// A reviewer's requested changes, for the owner's session.
@@ -251,14 +230,27 @@ pub async fn packet_part(
     host.record(Some(card), None, RunEventKind::Handoff(event))?;
     Ok(Some(part(
         InputPartKind::Handoff,
-        "handoff",
+        "fallback",
         told.text,
         Some(path.display().to_string()),
     )))
 }
 
+/// The whole task: its brief, then its facts.
 pub(crate) fn card_text(spec: &CardSpec) -> String {
     let mut text = format!("{} · {}\n\n{}\n", spec.id, spec.title, spec.task);
+    facts(&mut text, spec);
+    text
+}
+
+/// The task without its brief, for a worker that reads the brief as its instructions.
+fn card_facts(spec: &CardSpec) -> String {
+    let mut text = format!("{} · {}\n", spec.id, spec.title);
+    facts(&mut text, spec);
+    text
+}
+
+fn facts(text: &mut String, spec: &CardSpec) {
     let kind = match &spec.kind {
         CardKind::Solo => "the whole change".to_owned(),
         CardKind::Interface => {
@@ -270,15 +262,14 @@ pub(crate) fn card_text(spec: &CardSpec) -> String {
         CardKind::Build => "building".to_owned(),
         CardKind::Chore => "integration or cleanup".to_owned(),
         CardKind::Docs => "documentation".to_owned(),
-        CardKind::Spike { topic, option } => format!("a spike on {topic}: {option}"),
+        CardKind::Spike { topic, option } => format!("an experiment on {topic}: {option}"),
     };
     let _ = write!(text, "\nKind: {kind}");
-    list(&mut text, "Paths you own", &spec.owned_paths);
-    list(&mut text, "Read-only paths", &spec.read_only_paths);
+    list(text, "Paths you own", &spec.owned_paths);
+    list(text, "Read-only paths", &spec.read_only_paths);
     let deps: Vec<String> = spec.depends_on.iter().map(ToString::to_string).collect();
-    list(&mut text, "Already integrated before you", &deps);
-    list(&mut text, "Goal criteria it serves", &spec.criteria);
-    text
+    list(text, "Already merged into the run before you", &deps);
+    list(text, "Goal criteria it serves", &spec.criteria);
 }
 
 fn goal_text(goal: &GoalFile) -> String {
@@ -315,7 +306,7 @@ fn rules_text(spec: &CardSpec, settings: &Settings, tree: &Path, loaded: &[Strin
     let mut never = vec![".argonauts/**".to_owned()];
     never.extend(settings.limits.protected_paths.iter().cloned());
     never.extend(spec.forbidden_paths.iter().cloned());
-    let mut text = String::from("Rules for this card:");
+    let mut text = String::from("Rules for this task:");
     if spec.owned_paths.is_empty() {
         text.push_str("\n- You may change anything in the worktree except the paths below.");
     }
@@ -401,19 +392,19 @@ mod tests {
 
     #[test]
     fn the_card_part_lists_paths_and_dependencies() {
-        let mut spec = card_spec("card-002", &["card-001"], None);
+        let mut spec = card_spec("task-002", &["task-001"], None);
         spec.owned_paths = vec!["src/store/**".into()];
         spec.criteria = vec!["G1".into()];
         let text = card_text(&spec);
-        assert!(text.starts_with("card-002 · Build card-002"));
+        assert!(text.starts_with("task-002 · Build task-002"));
         assert!(text.contains("Paths you own:\n- src/store/**"));
-        assert!(text.contains("Already integrated before you:\n- card-001"));
+        assert!(text.contains("Already merged into the run before you:\n- task-001"));
         assert!(text.contains("Goal criteria it serves:\n- G1"));
     }
 
     #[test]
     fn rules_name_protected_and_forbidden_paths() {
-        let mut spec = card_spec("card-001", &[], None);
+        let mut spec = card_spec("task-001", &[], None);
         spec.forbidden_paths = vec!["migrations/**".into()];
         let mut settings = Settings::default();
         settings.limits.protected_paths = vec![".github/**".into()];
@@ -431,7 +422,7 @@ mod tests {
     /// or an isolated session that loads neither, is pointed at each.
     #[test]
     fn the_rules_name_only_instruction_files_the_cli_doesnt_load() {
-        let spec = card_spec("card-001", &[], None);
+        let spec = card_spec("task-001", &[], None);
         let settings = Settings::default();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "x").unwrap();

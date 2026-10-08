@@ -83,22 +83,20 @@ impl GoalView {
         matches!(self.data.status, GoalStatus::Pursuing | GoalStatus::Paused)
     }
 
-    /// `Goal · pursuing · attempt 2 of up to 5`.
+    /// `Goal · pursuing · round 2`, with `of up to 5` when you set a cap.
     fn title(&self) -> String {
         let status = match self.data.status {
             GoalStatus::Pursuing => "pursuing",
             GoalStatus::Paused => "paused",
             GoalStatus::Met => "met",
             GoalStatus::Stuck => "stuck",
-            GoalStatus::OverBudget => "over budget",
+            GoalStatus::OverBudget => "over its limit",
             GoalStatus::Cleared => "cleared",
         };
-        match self.data.attempts.len() {
-            0 => format!("Goal · {status}"),
-            n => format!(
-                "Goal · {status} · attempt {n} of up to {}",
-                self.data.max_attempts
-            ),
+        match (self.data.attempts.len(), self.data.max_rounds) {
+            (0, _) => format!("Goal · {status}"),
+            (n, None) => format!("Goal · {status} · round {n}"),
+            (n, Some(max)) => format!("Goal · {status} · round {n} of up to {max}"),
         }
     }
 
@@ -184,7 +182,7 @@ impl GoalView {
         if !self.data.attempts.is_empty() {
             lines.push(Line::default());
             lines.push(Line::from(vec![
-                Span::styled("Attempts", bold),
+                Span::styled("Rounds", bold),
                 Span::styled(format!(" · {}", self.data.attempts.len()), dim),
             ]));
             let titles = self
@@ -305,7 +303,7 @@ impl GoalView {
 fn decided_by(assumption: &Assumption) -> String {
     match assumption.by {
         Some(Decider::You) => "you".to_owned(),
-        Some(Decider::Lead) => "the lead".to_owned(),
+        Some(Decider::Lead) => "the main agent".to_owned(),
         Some(Decider::Rules) => "your rules".to_owned(),
         Some(Decider::Majority) | None => sanitize_line(assumption.basis.trim()).into_owned(),
     }
@@ -327,6 +325,7 @@ impl View for GoalView {
             names: vec![name],
             description,
             totals: format!("{} of {} met", self.met(), self.data.criteria.len()),
+            ..Heading::default()
         };
         let frame = dock::split(area, 0, 0);
         dock::draw_rule(buf, &frame, theme);
@@ -394,7 +393,7 @@ impl View for GoalView {
             KeyCode::Enter | KeyCode::Right => match self.pick() {
                 Some(Pick::Attempt(_)) => self.back_to_workflow(),
                 Some(Pick::Assumption(_)) => ViewOutcome::Notice(
-                    "Tell the lead in the chat how to change it; the next attempt follows it"
+                    "Tell the main agent in the chat how to change it; the next round follows it"
                         .to_owned(),
                 ),
                 _ => ViewOutcome::Consumed,
@@ -478,7 +477,7 @@ mod tests {
                     verdict: None,
                 },
             ],
-            max_attempts: 5,
+            max_rounds: None,
             last_reason: Some(
                 "Not yet. median([]) returns None at textkit/stats.py:41, and no test covers it."
                     .to_owned(),
@@ -515,14 +514,11 @@ mod tests {
     fn the_goal_view_says_what_its_after_and_how_far_it_got() {
         for width in [80, 100, 120, 200] {
             let text = draw(&mut GoalView::new(data()), width);
-            assert!(
-                text.contains("Goal · pursuing · attempt 2 of up to 5"),
-                "{text}"
-            );
+            assert!(text.contains("Goal · pursuing · round 2"), "{text}");
             assert!(text.contains("Done when · 1 of 2 met"), "{text}");
             assert!(text.contains("❯ ✔ G1"), "{text}");
             assert!(text.contains("□ G4"), "{text}");
-            assert!(text.contains("Attempts · 2"), "{text}");
+            assert!(text.contains("Rounds · 2"), "{text}");
             assert!(text.contains("● 2  Empty list"), "{text}");
             assert!(text.contains("Last check"), "{text}");
             assert!(text.contains("you"), "{text}");

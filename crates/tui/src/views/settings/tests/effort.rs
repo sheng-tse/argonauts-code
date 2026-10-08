@@ -188,11 +188,11 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
     screen.answer(settings(
         "model",
         vec![
-            row("default_agent", "\"claude-code/opus\"", "built-in", &[]),
+            row("main_agent", "\"claude-code/opus\"", "built-in", &[]),
             row("roles.reviewer.workers", "[\"codex\"]", "project", &[]),
         ],
     ));
-    assert_eq!(screen.title(), "Default agent");
+    assert_eq!(screen.title(), "Main agent");
     screen.answer(models(None, claude_and_codex()));
     assert_eq!(screen.labels(), ["Claude Code", "Codex", "Roles…"]);
     screen.press(KeyCode::Down);
@@ -232,16 +232,12 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
         [UiCommand::Request {
             view: ViewRequest::Models { role: None }
         }],
-        "← on the roles goes up to the default agent's CLIs"
+        "← on the roles goes up to the main agent's CLIs"
     );
-    assert_eq!(screen.title(), "Default agent");
+    assert_eq!(screen.title(), "Main agent");
     screen.answer(models(None, claude_and_codex()));
     screen.press(KeyCode::Left);
-    assert_eq!(
-        screen.title(),
-        "Default agent",
-        "← on the first level stays"
-    );
+    assert_eq!(screen.title(), "Main agent", "← on the first level stays");
     let out = screen.press(KeyCode::Esc);
     assert!(out.commands.is_empty());
     assert!(
@@ -252,20 +248,20 @@ fn esc_from_a_roles_models_goes_back_to_the_roles() {
 
 fn budget_rows() -> Vec<SettingRow> {
     vec![
-        row("budget.run", "5", "built-in", &["5", "10", "20"]),
-        row("budget.day", "20", "built-in", &["20", "50"]),
+        row("limits.run", "5", "built-in", &["5", "10", "20"]),
+        row("limits.day", "20", "built-in", &["20", "50"]),
     ]
 }
 
 #[test]
 fn left_goes_back_a_level_and_right_opens_one() {
     let mut screen = Screen::new();
-    screen.answer(settings("budget", budget_rows()));
+    screen.answer(settings("limits", budget_rows()));
     let keys = screen.labels();
     assert_eq!(keys.len(), 2);
     screen.press(KeyCode::Down);
     screen.press(KeyCode::Right);
-    assert_eq!(screen.title(), "budget.day");
+    assert_eq!(screen.title(), "limits.day");
     let values = screen.labels();
 
     // → on a value waits for Enter, so it saves nothing.
@@ -295,9 +291,9 @@ fn left_goes_back_a_level_and_right_opens_one() {
 #[test]
 fn with_vim_keys_h_goes_back_and_closes_from_the_first_level() {
     let mut screen = vim_screen();
-    screen.answer(settings("budget", budget_rows()));
+    screen.answer(settings("limits", budget_rows()));
     screen.press(KeyCode::Char('l'));
-    assert_eq!(screen.title(), "budget.run");
+    assert_eq!(screen.title(), "limits.run");
     screen.press(KeyCode::Char('h'));
     assert_eq!(screen.labels().len(), 2);
     screen.press(KeyCode::Char('h'));
@@ -337,7 +333,7 @@ fn the_effort_slider_adjusts_and_sends_the_level() {
     assert_eq!(screen.title(), "Effort");
     let text = shown(&screen, 80);
     for part in [
-        "How long Opus 5.5 thinks before it answers, for the default agent",
+        "How long Opus 5.5 thinks before it answers, for the main agent",
         "Faster",
         "Smarter",
         "▲",
@@ -370,7 +366,7 @@ fn the_effort_slider_adjusts_and_sends_the_level() {
             command: SlashCommand::Effort {
                 role: None,
                 level: Some("medium".into()),
-                all_hands: None,
+                ultracode: None,
             },
         }]
     );
@@ -447,19 +443,19 @@ fn with_no_level_set_the_slider_says_the_cli_picks_and_esc_keeps_that() {
 /// Tab flips All hands on the default agent's slider, and Esc leaves it as it was. A role's
 /// slider doesn't offer it, since it's about every task rather than how one role thinks.
 #[test]
-fn tab_flips_all_hands_on_the_default_agents_slider_only() {
+fn tab_flips_ultracode_on_the_main_agents_slider_only() {
     let mut screen = Screen::new();
-    screen.answer(effort_answer(slider(None, None).with_all_hands(false)));
-    assert!(shown(&screen, 80).contains("All hands  off"));
+    screen.answer(effort_answer(slider(None, None).with_ultracode(false)));
+    assert!(shown(&screen, 80).contains("Ultracode  off"));
     screen.press(KeyCode::Tab);
     let text = shown(&screen, 80);
-    assert!(text.contains("All hands  on"), "{text}");
+    assert!(text.contains("Ultracode  on"), "{text}");
     assert!(
-        text.contains("All hands: every task goes to the crew"),
+        text.contains("Ultracode: a workflow for every real request"),
         "{text}"
     );
     screen.press(KeyCode::Tab);
-    assert!(shown(&screen, 80).contains("All hands  off"));
+    assert!(shown(&screen, 80).contains("Ultracode  off"));
     screen.press(KeyCode::Tab);
     let out = screen.press(KeyCode::Esc);
     assert!(out.commands.is_empty());
@@ -470,7 +466,7 @@ fn tab_flips_all_hands_on_the_default_agents_slider_only() {
     screen.answer(effort_answer(slider(Some(RoleName::Reviewer), None)));
     screen.press(KeyCode::Tab);
     let text = shown(&screen, 80);
-    assert!(!text.contains("All hands"), "{text}");
+    assert!(!text.contains("Ultracode"), "{text}");
     let out = screen.press(KeyCode::Enter);
     assert_eq!(
         out.commands,
@@ -478,7 +474,7 @@ fn tab_flips_all_hands_on_the_default_agents_slider_only() {
             command: SlashCommand::Effort {
                 role: Some(RoleName::Reviewer),
                 level: Some("xhigh".into()),
-                all_hands: None,
+                ultracode: None,
             },
         }]
     );
@@ -617,7 +613,7 @@ fn effort_on_a_model_fixed_at_one_level_shows_it_instead_of_a_slider() {
     screen.answer(effort_answer(fixed_slider()));
     let text = shown(&screen, 100);
     for part in [
-        "How long Gemini 3.8 Flash (High) thinks before it answers, for the default agent",
+        "How long Gemini 3.8 Flash (High) thinks before it answers, for the main agent",
         "◉ high effort (fixed by the model)",
         "To change it, pick another model with /model.",
         "Esc to close",
@@ -651,13 +647,13 @@ fn a_fixed_level_fits_every_width() {
 /// The default agent on a model fixed at one level still offers All hands: Tab flips it, Enter
 /// saves only it, and with the toggle back as it was Enter closes as Esc does.
 #[test]
-fn tab_then_enter_on_a_fixed_slider_saves_all_hands_alone() {
+fn tab_then_enter_on_a_fixed_slider_saves_ultracode_alone() {
     let mut screen = Screen::new();
-    screen.answer(effort_answer(fixed_slider().with_all_hands(false)));
+    screen.answer(effort_answer(fixed_slider().with_ultracode(false)));
     let text = shown(&screen, 100);
     for part in [
         "◉ high effort (fixed by the model)",
-        "All hands  off · Tab to toggle",
+        "Ultracode  off · Tab to toggle",
         "To change it, pick another model with /model.",
         "Enter to confirm · Esc to cancel",
     ] {
@@ -666,9 +662,9 @@ fn tab_then_enter_on_a_fixed_slider_saves_all_hands_alone() {
     assert!(!text.contains("every task goes to the crew"), "{text}");
     screen.press(KeyCode::Tab);
     let text = shown(&screen, 100);
-    assert!(text.contains("All hands  on · Tab to toggle"), "{text}");
+    assert!(text.contains("Ultracode  on · Tab to toggle"), "{text}");
     assert!(
-        text.contains("All hands: every task goes to the crew"),
+        text.contains("Ultracode: a workflow for every real request"),
         "{text}"
     );
     let out = screen.press(KeyCode::Enter);
@@ -678,13 +674,13 @@ fn tab_then_enter_on_a_fixed_slider_saves_all_hands_alone() {
             command: SlashCommand::Effort {
                 role: None,
                 level: None,
-                all_hands: Some(true),
+                ultracode: Some(true),
             },
         }]
     );
 
     let mut screen = Screen::new();
-    screen.answer(effort_answer(fixed_slider().with_all_hands(true)));
+    screen.answer(effort_answer(fixed_slider().with_ultracode(true)));
     screen.press(KeyCode::Tab);
     screen.press(KeyCode::Tab);
     let out = screen.press(KeyCode::Enter);
@@ -701,14 +697,14 @@ fn no_levels() -> EffortSlider {
 /// Haiku takes no effort setting, so the default agent's `/effort` holds All hands alone:
 /// the arrows do nothing, Tab flips it, and Enter saves it.
 #[test]
-fn a_model_without_levels_still_offers_all_hands() {
+fn a_model_without_levels_still_offers_ultracode() {
     let mut screen = Screen::new();
-    screen.answer(effort_answer(no_levels().with_all_hands(false)));
+    screen.answer(effort_answer(no_levels().with_ultracode(false)));
     assert_eq!(screen.title(), "Effort");
     let text = shown(&screen, 100);
     for part in [
         "Haiku 4.5 takes no effort setting.",
-        "All hands  off · Tab to toggle",
+        "Ultracode  off · Tab to toggle",
         "To set an effort, pick another model with /model.",
         "Enter to confirm · Esc to cancel",
     ] {
@@ -728,7 +724,7 @@ fn a_model_without_levels_still_offers_all_hands() {
     screen.press(KeyCode::Left);
     assert_eq!(shown(&screen, 100), text);
     screen.press(KeyCode::Tab);
-    assert!(shown(&screen, 100).contains("All hands  on"));
+    assert!(shown(&screen, 100).contains("Ultracode  on"));
     let out = screen.press(KeyCode::Enter);
     assert_eq!(
         out.commands,
@@ -736,13 +732,13 @@ fn a_model_without_levels_still_offers_all_hands() {
             command: SlashCommand::Effort {
                 role: None,
                 level: None,
-                all_hands: Some(true),
+                ultracode: Some(true),
             },
         }]
     );
 
     let mut screen = Screen::new();
-    screen.answer(effort_answer(no_levels().with_all_hands(true)));
+    screen.answer(effort_answer(no_levels().with_ultracode(true)));
     screen.press(KeyCode::Tab);
     let out = screen.press(KeyCode::Esc);
     assert!(out.commands.is_empty());
@@ -751,12 +747,12 @@ fn a_model_without_levels_still_offers_all_hands() {
 }
 
 #[test]
-fn all_hands_without_a_slider_fits_every_width() {
+fn ultracode_without_a_slider_fits_every_width() {
     let theme = Theme::dark();
     for slider in [fixed_slider(), no_levels()] {
         for on in [false, true] {
             let mut screen = Screen::new();
-            screen.answer(effort_answer(slider.clone().with_all_hands(on)));
+            screen.answer(effort_answer(slider.clone().with_ultracode(on)));
             for width in crate::stability::WIDTHS {
                 let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
                 crate::stability::assert_lines(&picker(&screen).lines(&ctx), width);

@@ -11,7 +11,7 @@ use super::RuleVerdict;
 pub fn check(facts: &EvidenceFacts, rules: &PromotionRules, now: OffsetDateTime) -> RuleVerdict {
     let Some(promotion) = &facts.promotion else {
         return RuleVerdict::escalate(
-            "the evidence doesn't show the candidate's change class or when the recipe last \
+            "the evidence doesn't show the candidate's change class or when the workflow last \
              promoted",
         );
     };
@@ -24,16 +24,16 @@ pub fn check(facts: &EvidenceFacts, rules: &PromotionRules, now: OffsetDateTime)
     let gap = Duration::days(i64::from(rules.min_days_between));
     match promotion.last_promoted {
         Some(last) if now - last < gap => RuleVerdict::escalate(format!(
-            "the recipe last promoted {} days ago, and your rules wait {} days between promotions",
+            "the workflow last promoted {} days ago, and your rules wait {} days between promotions",
             (now - last).whole_days().max(0),
             rules.min_days_between
         )),
         Some(last) => RuleVerdict::approve(format!(
-            "{class} is a class you allow, and the recipe last promoted {} days ago",
+            "{class} is a class you allow, and the workflow last promoted {} days ago",
             (now - last).whole_days()
         )),
         None => RuleVerdict::approve(format!(
-            "{class} is a class you allow, and the recipe never promoted before"
+            "{class} is a class you allow, and the workflow never promoted before"
         )),
     }
 }
@@ -73,7 +73,7 @@ mod tests {
                 &rules,
                 Verdict::Approve,
             ),
-            (facts("card_split", days_ago(30)), &rules, Verdict::Approve),
+            (facts("task_split", days_ago(30)), &rules, Verdict::Approve),
             // Too soon after the last promotion, a long wait in the queue notwithstanding.
             (
                 facts("checklist_item", days_ago(13)),

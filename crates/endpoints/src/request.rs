@@ -2,7 +2,7 @@
 //! `chat/completions` or `responses` with streaming on, plus the key and headers read from
 //! the environment variables the settings name.
 
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::events::session::InputPart;
 use argonauts_core::input::EFFORT_LEVELS;
 use argonauts_core::settings::agents::{EndpointApi, EndpointSettings, StructuredMode};
 use serde_json::{Value, json};
@@ -104,7 +104,7 @@ pub(crate) struct Prompt {
 pub(crate) fn split_prompt(parts: &[InputPart]) -> Prompt {
     let role = parts
         .iter()
-        .take_while(|part| part.kind == InputPartKind::Prompt)
+        .take_while(|part| part.kind.instructs())
         .count();
     let join = |parts: &[InputPart]| parts.iter().map(|part| part.text.as_str()).collect();
     Prompt {
@@ -219,6 +219,7 @@ pub(crate) fn credentials(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use argonauts_core::events::session::InputPartKind;
 
     fn part(kind: InputPartKind, text: &str) -> InputPart {
         InputPart {
@@ -314,12 +315,12 @@ mod tests {
     fn the_role_prompt_is_the_system_part() {
         let parts = [
             part(InputPartKind::Prompt, "You review. "),
-            part(InputPartKind::Card, "Card 1. "),
+            part(InputPartKind::Card, "Task 1. "),
             part(InputPartKind::Prompt, "Late rule."),
         ];
         let prompt = split_prompt(&parts);
         assert_eq!(prompt.system, "You review. ");
-        assert_eq!(prompt.user, "Card 1. Late rule.");
+        assert_eq!(prompt.user, "Task 1. Late rule.");
         let all: String = parts.iter().map(|p| p.text.as_str()).collect();
         assert_eq!(format!("{}{}", prompt.system, prompt.user), all);
     }

@@ -49,7 +49,9 @@ fn attach_to(run: &str, interactive: bool) -> HarnessOptions {
 async fn barrier(harness: &mut Harness) {
     harness
         .send(UiCommand::Slash {
-            command: SlashCommand::Status,
+            command: SlashCommand::Status {
+                action: Default::default(),
+            },
         })
         .await;
     harness
@@ -99,12 +101,42 @@ async fn guidance_ids_are_kept_and_take_back_answers_taken_back() {
     );
 }
 
+/// Esc on a run's question reaches the engine as "carry on without me", bound to no evidence,
+/// so the run never waits on it.
+#[tokio::test]
+async fn esc_on_a_runs_question_tells_the_engine_to_carry_on() {
+    let mut harness = Harness::start().await;
+    let (run, id) = (run_id("run-005"), CheckpointId::numbered(3));
+    harness
+        .send(UiCommand::SetAside {
+            to: AnswerTarget::Checkpoint {
+                run: run.clone(),
+                id: id.clone(),
+            },
+        })
+        .await;
+    barrier(&mut harness).await;
+    assert_eq!(
+        harness.approvals.calls(),
+        [ApprovalCall::Answer {
+            run,
+            answer: CheckpointAnswer {
+                id,
+                action: AnswerAction::CarryOn,
+                text: None,
+                evidence_sha256: String::new(),
+                cards: Vec::new(),
+            },
+        }]
+    );
+}
+
 #[tokio::test]
 async fn an_answer_passes_evidence_sha256_through() {
     let mut harness = Harness::start().await;
     let (run, id) = (run_id("run-005"), CheckpointId::numbered(3));
     let evidence = "ab".repeat(32);
-    let card = CardId::new("card-002").expect("a card id");
+    let card = CardId::new("task-002").expect("a task id");
     harness
         .send(UiCommand::Answer {
             to: AnswerTarget::Checkpoint {
@@ -158,7 +190,7 @@ async fn without_approvals_nothing_is_sent() {
         },
         UiCommand::TakeOver {
             run: run_id("run-001"),
-            card: CardId::new("card-001").expect("a card id"),
+            card: CardId::new("task-001").expect("a task id"),
         },
     ];
     for command in commands {
@@ -191,13 +223,18 @@ async fn status_and_every_view_start_no_model_session() {
         .await;
     let run = run_id("run-001");
     let session = SessionKey::numbered(1);
-    let card = CardId::new("card-001").expect("a card id");
+    let card = CardId::new("task-001").expect("a task id");
     let mut commands = vec![
         UiCommand::Slash {
-            command: SlashCommand::Status,
+            command: SlashCommand::Status {
+                action: Default::default(),
+            },
         },
         UiCommand::Slash {
-            command: SlashCommand::Context,
+            command: SlashCommand::Context {
+                all: false,
+                action: Default::default(),
+            },
         },
         UiCommand::Slash {
             command: SlashCommand::Ask {
@@ -257,7 +294,7 @@ async fn revert_asks_first_then_sends_it_to_the_run() {
     harness
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
-    let card = CardId::new("card-002").expect("a card id");
+    let card = CardId::new("task-002").expect("a task id");
     harness
         .send(UiCommand::Rewind {
             card: card.clone(),
@@ -275,7 +312,7 @@ async fn revert_asks_first_then_sends_it_to_the_run() {
         choice
             .body
             .iter()
-            .any(|line| line.contains("card-002-replaced-1"))
+            .any(|line| line.contains("task-002-replaced-1"))
     );
     harness
         .send(UiCommand::Answer {
@@ -297,8 +334,8 @@ async fn revert_asks_first_then_sends_it_to_the_run() {
     };
     assert_eq!(id, choice.id);
     assert!(
-        outcome.starts_with("Reverted card-002 to handoff-1.")
-            && outcome.contains("argonauts/run-001/card-002-replaced-1"),
+        outcome.starts_with("Reverted task-002 to fallback-1.")
+            && outcome.contains("argonauts/run-001/task-002-replaced-1"),
         "{outcome}"
     );
     assert!(harness.conductor.calls().contains(&Call::Revert {
@@ -361,6 +398,42 @@ async fn a_spot_check_goes_to_the_run_and_needs_you_at_the_terminal() {
     unattended.exit().await;
 }
 
+/// `c` on an agent's goal reaches the run as its own action, and the notice says the checks
+/// run beside the try and decide nothing.
+#[tokio::test]
+async fn running_a_goals_checks_now_goes_to_the_run() {
+    use argonauts_core::events::goal::GoalAction;
+
+    let check_now = GoalAction::CheckNow {
+        task: Some(CardId::new("task-002").unwrap()),
+    };
+    let mut harness = Harness::start_with(attach_to("run-001", true)).await;
+    harness
+        .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
+        .await;
+    harness
+        .send(UiCommand::Goal {
+            run: Some(run_id("run-001")),
+            action: check_now.clone(),
+        })
+        .await;
+    let said = harness
+        .until(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("checks")))
+        .await;
+    let AppEvent::Notice { text, .. } = said else {
+        unreachable!()
+    };
+    assert!(
+        text.starts_with("Running the goal's checks now, beside the try under way."),
+        "{text}"
+    );
+    assert!(harness.conductor.calls().contains(&Call::Goal {
+        run: run_id("run-001"),
+        action: check_now,
+    }));
+    harness.exit().await;
+}
+
 fn handoff_opened(id: &CheckpointId, card: &CardId, stopped: &WorkerRef) -> RunEventKind {
     let plan = HandoffPlan {
         card: card.clone(),
@@ -379,7 +452,7 @@ fn handoff_opened(id: &CheckpointId, card: &CardId, stopped: &WorkerRef) -> RunE
     let opened = CheckpointOpened {
         id: id.clone(),
         kind: CheckpointKind::Handoff,
-        title: "Handoff · card-002".to_owned(),
+        title: "Fallback · task-002".to_owned(),
         card: Some(card.clone()),
         packet: CheckpointPacket::Handoff(plan),
         evidence_sha256: "e".repeat(64),
@@ -395,7 +468,7 @@ fn handoff_opened(id: &CheckpointId, card: &CardId, stopped: &WorkerRef) -> RunE
 #[test]
 fn a_remembered_handoff_pick_asks_where_to_save_the_rule() {
     let run = run_id("run-001");
-    let card = CardId::new("card-002").expect("a card id");
+    let card = CardId::new("task-002").expect("a task id");
     let id = CheckpointId::numbered(4);
     let stopped = WorkerRef::new("claude-code", Some("opus".to_owned()));
     let pick = WorkerRef::new("codex", Some("gpt-5".to_owned()));
@@ -411,7 +484,7 @@ fn a_remembered_handoff_pick_asks_where_to_save_the_rule() {
                 "role": "reviewer",
                 "step": null,
                 "access": "build",
-                "lifetime": "card",
+                "lifetime": "task",
                 "resumed_from": null,
                 "follow_key": 1,
             }))
@@ -440,9 +513,9 @@ fn a_remembered_handoff_pick_asks_where_to_save_the_rule() {
         ),
     ];
     let expected = ScopeRequest {
-        key: "roles.reviewer.handoff.replace.claude-code.with".to_owned(),
+        key: "fallback.reviewers.replace.claude-code.with".to_owned(),
         value: "[\"codex/gpt-5\"]".to_owned(),
-        command: "handoff".to_owned(),
+        command: "fallback".to_owned(),
     };
     assert_eq!(handoff_rule(&events, &id, None), Some(expected.clone()));
     let other = WorkerRef::new("antigravity-cli", None);
@@ -451,16 +524,10 @@ fn a_remembered_handoff_pick_asks_where_to_save_the_rule() {
     assert_eq!(
         handoff_rule(&events[..1], &id, None),
         None,
-        "no handoff card"
+        "no fallback question"
     );
     let owner = handoff_rule(&events[1..], &id, None).expect("a rule");
-    assert_eq!(
-        owner.key,
-        format!(
-            "roles.{}.handoff.replace.claude-code.with",
-            RoleName::Owner.as_str()
-        )
-    );
+    assert_eq!(owner.key, "fallback.workers.replace.claude-code.with");
 }
 
 #[test]
@@ -468,13 +535,13 @@ fn where_are_we_is_a_status_question() {
     for question in [
         "Where are we?",
         "status",
-        "What's the status of card-002",
+        "What's the status of task-002",
         "how is it going",
     ] {
         assert!(asks_for_status(question), "{question}");
     }
     for question in [
-        "Why did the reviewer reject card-002?",
+        "Why did the reviewer reject task-002?",
         "What does the plan change?",
     ] {
         assert!(!asks_for_status(question), "{question}");
@@ -488,10 +555,10 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
         .until(|event| matches!(event, AppEvent::ReplayDone { .. }))
         .await;
     let run = run_id("run-001");
-    let card = CardId::new("card-002").expect("a card id");
+    let card = CardId::new("task-002").expect("a task id");
     let id = CheckpointId::numbered(4);
     let owner = SessionKey::numbered(1);
-    let started = session_started(1, &owner, Some(&card), RoleName::Owner, "claude-code");
+    let started = session_started(1, &owner, Some(&card), RoleName::Worker, "claude-code");
     let stopped = WorkerRef::new("claude-code", None);
     for event in [
         RunEvent {
@@ -531,7 +598,7 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
     assert_eq!(choice.kind, ChoiceKind::SettingScope);
     assert_eq!(
         choice.body.first().map(String::as_str),
-        Some("roles.owner.handoff.replace.claude-code.with = [\"codex/gpt-5\"]"),
+        Some("fallback.workers.replace.claude-code.with = [\"codex/gpt-5\"]"),
         "{choice:?}"
     );
     let sent = harness.approvals.calls();
@@ -567,22 +634,15 @@ async fn a_handoff_answer_with_remember_saves_the_rule_where_you_say() {
     assert_eq!(
         (key.as_str(), value.as_str()),
         (
-            "roles.owner.handoff.replace.claude-code.with",
+            "fallback.workers.replace.claude-code.with",
             "[\"codex/gpt-5\"]"
         )
     );
     let text = std::fs::read_to_string(harness.env.project_config()).expect("the project file");
     let written = toml::Value::Table(text.parse().expect("the project file is TOML"));
-    let with = [
-        "roles",
-        "owner",
-        "handoff",
-        "replace",
-        "claude-code",
-        "with",
-    ]
-    .iter()
-    .try_fold(&written, |node, part| node.get(part));
+    let with = ["fallback", "workers", "replace", "claude-code", "with"]
+        .iter()
+        .try_fold(&written, |node, part| node.get(part));
     assert_eq!(
         with.and_then(toml::Value::as_array).map(|picks| picks
             .iter()
@@ -599,7 +659,7 @@ fn listed(run: &str, live: bool) -> RunSummary {
         run: run_id(run),
         title: format!("{run} title"),
         mode: RunMode::Solo,
-        preset: "solo".to_owned(),
+        workflow: "solo".to_owned(),
         state: if live {
             RunState::Running
         } else {
@@ -618,18 +678,19 @@ fn listed(run: &str, live: bool) -> RunSummary {
 
 /// A live session of `run`, with its context fill when `window` is known.
 fn live_session(run: &RunId, seq: u64, key: &SessionKey, window: Option<u64>) -> Vec<RunEvent> {
-    let card = CardId::new("card-001").expect("a card id");
+    let card = CardId::new("task-001").expect("a task id");
     let mut events = vec![session_started(
         seq,
         key,
         Some(&card),
-        RoleName::Owner,
+        RoleName::Worker,
         "claude-code",
     )];
     if let Some(size) = window {
         let fill = AgentEvent::ContextFill {
             used: size / 10,
             size: Some(size),
+            sent: None,
         };
         events.push(agent(seq + 1, key, fill));
         events.push(usage(seq + 2, key, 1_000, 200, 0.25));
@@ -762,7 +823,7 @@ impl StandIn {
         let pid = self.0.id();
         LiveSupervisor {
             pid,
-            start_time: Processes::new().start_time(pid).expect("the stand-in runs"),
+            start_time: Processes::new().start_time(pid).expect("the fallback runs"),
             repo_root: repo_root.to_owned(),
             run: run.clone(),
             sessions: 1,
@@ -832,7 +893,7 @@ async fn all_repos_lists_this_repo_then_live_ones_newest_first() {
         stand_ins[2].entry(&newer, &newer_run),
         stand_ins[3].entry(&base.join("moved-away"), &run_id("run-103")),
     ] {
-        register(&rig.ctx.env.paths, &entry).expect("the stand-in registers");
+        register(&rig.ctx.env.paths, &entry).expect("the fallback registers");
     }
 
     let repos = all_repos(&mut rig).await;
@@ -875,8 +936,8 @@ async fn rewind_lists_a_cards_checkpoints_for_the_picker() {
     let mut rig = Rig::new();
     let run = rig.start("Rename the flag").await;
     let (export, docs) = (
-        CardId::new("card-001").expect("a card id"),
-        CardId::new("card-002").expect("a card id"),
+        CardId::new("task-001").expect("a task id"),
+        CardId::new("task-002").expect("a task id"),
     );
     let tagged = |seq, card: &CardId, n| RunEvent {
         card_id: Some(card.clone()),
@@ -903,7 +964,7 @@ async fn rewind_lists_a_cards_checkpoints_for_the_picker() {
 
     super::checkpoints(&mut rig.ctx, &mut rig.runs, Some(export.clone()))
         .await
-        .expect("/rewind card-001");
+        .expect("/rewind task-001");
     let AppEvent::View { data } = rig
         .until(|event| matches!(event, AppEvent::View { .. }))
         .await
@@ -925,14 +986,14 @@ async fn rewind_lists_a_cards_checkpoints_for_the_picker() {
         .collect();
     assert_eq!(
         picked,
-        [("card-001".to_owned(), 1), ("card-001".to_owned(), 2)]
+        [("task-001".to_owned(), 1), ("task-001".to_owned(), 2)]
     );
 
     // A card with none says so instead of an empty picker.
-    let none = CardId::new("card-009").expect("a card id");
+    let none = CardId::new("task-009").expect("a task id");
     super::checkpoints(&mut rig.ctx, &mut rig.runs, Some(none))
         .await
-        .expect("/rewind card-009");
+        .expect("/rewind task-009");
     let AppEvent::Notice { text, .. } = rig
         .until(|event| matches!(event, AppEvent::Notice { .. }))
         .await
@@ -940,7 +1001,7 @@ async fn rewind_lists_a_cards_checkpoints_for_the_picker() {
         unreachable!()
     };
     assert!(
-        text.contains("card-009 has no handoff checkpoints"),
+        text.contains("task-009 has no fallback checkpoints"),
         "{text}"
     );
 }
@@ -1005,10 +1066,10 @@ fn merged_id() -> RunId {
 /// A follow-up to a solo run stays solo, unless All hands is on, which sends it to the crew as
 /// it does every task.
 #[tokio::test]
-async fn follow_up_goes_to_the_crew_while_all_hands_is_on() {
+async fn follow_up_goes_to_the_crew_while_ultracode_is_on() {
     for on in [false, true] {
         let mut rig = Rig::with(true, |global| {
-            std::fs::write(global, format!("[triage]\nall_hands = {on}\n")).unwrap();
+            std::fs::write(global, format!("ultracode = {on}\n")).unwrap();
         });
         let merged = RunSummary {
             state: RunState::Merged,
@@ -1033,7 +1094,7 @@ async fn follow_up_goes_to_the_crew_while_all_hands_is_on() {
         assert_eq!(*merged, merged_id());
         let rule = request.triage.as_ref().map(|triage| triage.rule.as_str());
         if on {
-            assert_eq!((request.mode, rule), (RunMode::Crew, Some("all_hands")));
+            assert_eq!((request.mode, rule), (RunMode::Crew, Some("ultracode")));
         } else {
             assert_eq!((request.mode, rule), (RunMode::Solo, None));
         }
@@ -1149,10 +1210,10 @@ async fn stopping_a_merged_run_says_so_plainly() {
 fn failures_read_as_one_plain_line() {
     use argonauts_core::api::ApiError;
 
-    let refused = ApiError::Refused("card-001 has no session to steer".into());
+    let refused = ApiError::Refused("task-001 has no session to steer".into());
     assert_eq!(
-        super::failure(&refused, "Couldn't steer card-001"),
-        "Couldn't steer card-001: card-001 has no session to steer."
+        super::failure(&refused, "Couldn't steer task-001"),
+        "Couldn't steer task-001: task-001 has no session to steer."
     );
     let down = ApiError::Supervisor("socket closed".into());
     assert_eq!(

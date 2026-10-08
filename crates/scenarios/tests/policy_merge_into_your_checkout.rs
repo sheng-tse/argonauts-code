@@ -1,9 +1,9 @@
 //! The sample run in a Python repo with no `.gitignore`: the agent's tests left bytecode in its
 //! worktree, the conductor committed it, and the fast-forward into your checkout failed on your
 //! own untracked bytecode at the same paths, after the transcript had said "Merged". Now a file
-//! of yours in the way makes the run wait to merge and ask you, never fail. By default the
-//! run's commits take the bytecode, since a fixed list of file types can't decide what's
-//! committed; with `merge.leave_out_builtin` on, build output stays out of them.
+//! of yours in the way makes the run wait to merge and ask you, never fail. And the run's
+//! commits take only the new files its agent meant to create, the ones its edit tools wrote
+//! or its report lists, so what the tests left behind stays out with no list of file types.
 
 mod policy_support;
 
@@ -11,7 +11,7 @@ use argonauts_core::events::card::IntegrationEvent;
 use argonauts_core::events::checkpoint::{CheckpointEvent, CheckpointKind};
 use argonauts_core::events::run::{RunLifecycle, RunOutcome};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_scenarios::WAIT;
+use argonauts_scenarios::{WAIT, past_the_card_guard};
 use argonauts_testkit::Key;
 use policy_support::{
     AUTO_MERGE_RULES, RUN_WAIT, launch_ready, run_finished, solo_config, start_solo,
@@ -21,8 +21,8 @@ use policy_support::{
 const SCENARIO: &str = "owner-runs-python-tests.toml";
 const YOUR_BYTECODE: &str = "your own bytecode";
 const YOURS: &str = "__pycache__/textkit.cpython-312.pyc";
-/// The built-in list of build output, which is opt-in.
-const LEAVE_OUT_BUILTIN: &str = "\n[merge]\nleave_out_builtin = true\n";
+/// Every new file is committed, whoever made it, as before the claims rule.
+const KEEP_EVERY_NEW_FILE: &str = "\n[commit]\nunclaimed = \"keep\"\n";
 
 fn outcome(events: &[RunEvent]) -> Option<RunOutcome> {
     events.iter().find_map(|event| match &event.kind {
@@ -51,9 +51,8 @@ fn waiting_to_merge(events: &[RunEvent]) -> Option<&Vec<String>> {
 }
 
 #[test]
-fn build_output_stays_out_and_the_merge_lands_beside_yours() -> anyhow::Result<()> {
-    let config = solo_config(&format!("{AUTO_MERGE_RULES}{LEAVE_OUT_BUILTIN}"));
-    let scenario = trusted_scenario(SCENARIO, &config)?;
+fn what_the_tests_left_stays_out_and_the_merge_lands_beside_yours() -> anyhow::Result<()> {
+    let scenario = trusted_scenario(SCENARIO, &solo_config(AUTO_MERGE_RULES))?;
     scenario.repo.write(YOURS, YOUR_BYTECODE)?;
     let mut pty = launch_ready(&scenario, &[])?;
     start_solo(&mut pty)?;
@@ -66,7 +65,7 @@ fn build_output_stays_out_and_the_merge_lands_beside_yours() -> anyhow::Result<(
     assert!(landed.lines().any(|path| path == "textkit.py"), "{landed}");
     assert!(
         !landed.contains("__pycache__") && !landed.contains(".pytest_cache"),
-        "build output landed:\n{landed}"
+        "build output merged:\n{landed}"
     );
     assert_eq!(
         std::fs::read_to_string(scenario.repo.root().join(YOURS))?,
@@ -75,7 +74,7 @@ fn build_output_stays_out_and_the_merge_lands_beside_yours() -> anyhow::Result<(
     // Each commit names what it left out, each folder once, so nothing goes missing unsaid.
     let told: Vec<&str> = notes(&events)
         .into_iter()
-        .filter(|note| note.starts_with("Left out of card-001's commit"))
+        .filter(|note| note.starts_with("Left out of task-001's commit"))
         .collect();
     let pycache = told
         .iter()
@@ -91,12 +90,13 @@ fn build_output_stays_out_and_the_merge_lands_beside_yours() -> anyhow::Result<(
     scenario.shot(&pty, "policy_build_output_stays_out_of_the_merge")
 }
 
-/// The sample case as it runs by default, with the built-in list off: the run's commit takes
-/// the bytecode its tests left, yours is at the same path, and the run waits to merge on its
-/// card's choices instead of failing, its work kept on its branch.
+/// The sample case as it ran, with `commit.unclaimed = "keep"`: the run's commit takes the
+/// bytecode its tests left, yours is at the same path, and the run waits to merge on its
+/// approval's choices instead of failing, its work kept on its branch.
 #[test]
-fn by_default_your_bytecode_in_the_way_waits_to_merge() -> anyhow::Result<()> {
-    let scenario = trusted_scenario(SCENARIO, &solo_config(AUTO_MERGE_RULES))?;
+fn with_every_new_file_committed_your_bytecode_in_the_way_waits_to_merge() -> anyhow::Result<()> {
+    let config = solo_config(&format!("{AUTO_MERGE_RULES}{KEEP_EVERY_NEW_FILE}"));
+    let scenario = trusted_scenario(SCENARIO, &config)?;
     scenario.repo.write(YOURS, YOUR_BYTECODE)?;
     let main = scenario.repo.head()?;
     let mut pty = launch_ready(&scenario, &[])?;
@@ -114,7 +114,7 @@ fn by_default_your_bytecode_in_the_way_waits_to_merge() -> anyhow::Result<()> {
     pty.wait_for("Move them aside and merge", WAIT)?;
     let screen = pty.screen().text();
     assert!(!screen.contains("The run failed"), "{screen}");
-    assert_eq!(scenario.repo.head()?, main, "nothing landed");
+    assert_eq!(scenario.repo.head()?, main, "nothing merged");
     assert_eq!(
         std::fs::read_to_string(scenario.repo.root().join(YOURS))?,
         YOUR_BYTECODE
@@ -193,7 +193,8 @@ fn a_file_of_yours_in_the_way_waits_to_merge_and_moves_aside() -> anyhow::Result
     scenario.shot(&pty, "policy_merge_waits_on_your_files")?;
 
     // The card opens waiting, or already focused on its first option.
-    pty.wait_for(r"↑ to answer|❯ \d+\. ", WAIT)?;
+    pty.wait_for(r"❯ \d+\. ", WAIT)?;
+    past_the_card_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     let events = wait_for_events(&scenario, "the run to finish", RUN_WAIT, run_finished)?;

@@ -1,12 +1,15 @@
 //! Earlier conversations, read back from their journals at no token cost: the `/resume` list,
 //! and the turns a resumed conversation reprints and primes a fresh session with.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use argonauts_core::app::{ChatEvent, ChatSummary, ReplayTurn, TurnReply};
+use argonauts_core::artifacts::{self, Artifact};
+use argonauts_core::event::AgentEvent;
 use argonauts_core::events::run::Party;
 use argonauts_core::names::{ChatId, SessionKey, TurnId, WorkerRef};
+use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::excerpt::reply_text;
@@ -149,6 +152,43 @@ pub(super) fn load(chat_dir: &Path, chat: &ChatId) -> Option<PastChat> {
     Some(PastChat { summary, turns })
 }
 
+/// The pages the conversation `chat` published with Claude Code's Artifact tool, oldest first,
+/// read off its journal's calls as the screen reads them off the live ones. A
+/// page published again counts once, as the most recent. Only a line that names the tool, or
+/// could answer a call of it, is parsed.
+pub(super) fn artifacts(chat_dir: &Path, chat: &ChatId) -> Vec<Artifact> {
+    let mut calls: HashMap<String, Value> = HashMap::new();
+    let mut pages: Vec<Artifact> = Vec::new();
+    ChatStore::open(chat_dir, chat).each_agent_line(|line| {
+        let answers = calls.keys().any(|id| line.contains(id.as_str()));
+        if !answers && !line.contains(artifacts::TOOL) {
+            return;
+        }
+        let Ok(ChatEvent::Agent { event, .. }) = serde_json::from_str(line) else {
+            return;
+        };
+        match event {
+            AgentEvent::ToolStarted {
+                id, name, input, ..
+            } if artifacts::publishes(&name, &input) => {
+                calls.insert(id, input);
+            }
+            AgentEvent::ToolFinished { id, ok, output, .. } => {
+                let page = calls
+                    .remove(&id)
+                    .filter(|_| ok)
+                    .and_then(|input| artifacts::published(&input, output.as_deref()?));
+                if let Some(page) = page {
+                    pages.retain(|known| known.url != page.url);
+                    pages.push(page);
+                }
+            }
+            _ => {}
+        }
+    });
+    pages
+}
+
 /// Turns in the order they started. A fallback records a turn again under the same id, naming
 /// the worker that took it over.
 fn fold(events: Vec<ChatEvent>) -> Vec<PastTurn> {
@@ -236,6 +276,81 @@ mod tests {
         for event in events {
             store.append(event).unwrap();
         }
+    }
+
+    /// A conversation's pages come back from its journal: each call that
+    /// published one, the latest of a page published twice, and none for a call that failed,
+    /// only listed the artifacts, or belongs to another tool.
+    #[test]
+    fn a_journals_artifact_calls_read_back_as_its_pages() {
+        let call = |id: &str, name: &str, input: Value| ChatEvent::Agent {
+            turn: TurnId::numbered(1),
+            event: AgentEvent::ToolStarted {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                input,
+                parent: None,
+            },
+        };
+        let done = |id: &str, ok: bool, output: &str| ChatEvent::Agent {
+            turn: TurnId::numbered(1),
+            event: AgentEvent::ToolFinished {
+                id: id.to_owned(),
+                ok,
+                output: Some(output.to_owned()),
+                parent: None,
+            },
+        };
+        let file = |path: &str| serde_json::json!({"file_path": path});
+        let link = |id: &str| format!("https://claude.ai/code/artifact/{id}");
+        let (overview, report) = (link("0b1e7c9a"), link("7d2c4b18"));
+        let published = |path: &str, url: &str| format!("Published {path} at {url} (Version 1)");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(artifacts(dir.path(), &ChatId::numbered(1)).is_empty());
+        write(
+            dir.path(),
+            1,
+            &[
+                started(1, "write it up", "claude-code"),
+                call("toolu_01", "Artifact", file("out/overview.html")),
+                done("toolu_01", true, &published("out/overview.html", &overview)),
+                call("toolu_02", "Read", file("out/overview.html")),
+                done(
+                    "toolu_02",
+                    true,
+                    &published("out/overview.html", &link("x")),
+                ),
+                call(
+                    "toolu_03",
+                    "Artifact",
+                    serde_json::json!({"action": "list"}),
+                ),
+                done("toolu_03", true, &format!("1 artifact: {overview}")),
+                call("toolu_04", "Artifact", file("out/broken.html")),
+                done("toolu_04", false, "Publishing was refused"),
+                call("toolu_05", "Artifact", file("out/report.html")),
+                done("toolu_05", true, &published("out/report.html", &report)),
+                call("toolu_06", "Artifact", file("out/overview.html")),
+                done(
+                    "toolu_06",
+                    true,
+                    &format!("Updated out/overview.html at {overview} (Version 2)"),
+                ),
+                finished(1, "Both are up."),
+            ],
+        );
+        let pages = artifacts(dir.path(), &ChatId::numbered(1));
+        let seen: Vec<(&str, &str, bool)> = pages
+            .iter()
+            .map(|page| (page.name.as_str(), page.url.as_str(), page.updated))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("report", report.as_str(), false),
+                ("overview", overview.as_str(), true)
+            ]
+        );
     }
 
     #[test]

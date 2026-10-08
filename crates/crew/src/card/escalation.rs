@@ -85,7 +85,7 @@ fn request(
 ) -> CheckpointRequest {
     let card = record.spec.id.clone();
     let title = match from {
-        CardState::Escalated => format!("{card} escalated · {}", record.spec.title),
+        CardState::Escalated => format!("{card} needs you · {}", record.spec.title),
         _ => format!("{card} needs a decision · {}", record.spec.title),
     };
     let packet = EscalationPacket {
@@ -120,7 +120,7 @@ fn escalation_facts(host: &Host, record: &CardRecord) -> Option<EscalationFacts>
     let owner = owner_of(host, record);
     let handoff_mode = rules::applied_for(host, &record.spec, &owner).mode;
     let next_family =
-        recovery::other_family(host, record).map(|worker| roles::family(host, &worker));
+        recovery::other_provider(host, record).map(|worker| roles::family(host, &worker));
     let (mut families_tried, extra_attempts, fits_reserve) = host.read(|state| {
         let families: Vec<String> = state
             .sessions
@@ -178,13 +178,13 @@ pub(crate) async fn apply_answer(
             transition(host, card, to_ready, &format!("you picked {worker}"))?;
             Ok(fresh(
                 AttemptCause::Reassigned,
-                "you picked a new owner",
+                "you picked a new worker",
                 extra,
             ))
         }
         AnswerAction::HandOff | AnswerAction::OtherCandidates => {
             let record = record_of(host, card)?;
-            match recovery::other_family(host, &record) {
+            match recovery::other_provider(host, &record) {
                 Some(worker) => {
                     reassign(host, card, worker.clone(), &decided.by)?;
                     transition(host, card, to_ready, &format!("handed to {worker}"))?;
@@ -238,7 +238,7 @@ pub(crate) async fn apply_answer(
             Ok(Decision::Moved(None))
         }
         AnswerAction::Escalate if from == CardState::NeedsDecision => {
-            transition(host, card, Trigger::Escalate, "you escalated it")?;
+            transition(host, card, Trigger::Escalate, "you asked to decide it")?;
             Ok(Decision::Moved(None))
         }
         _ if from == CardState::NeedsDecision => {
@@ -247,7 +247,7 @@ pub(crate) async fn apply_answer(
             if parts.is_empty() {
                 parts.push(prompt::message_part(
                     "continue",
-                    "You decided it continues. Carry on with the card.",
+                    "You decided it continues. Carry on with the task.",
                 ));
             }
             Ok(Decision::Moved(Some(Next::resume(
@@ -310,7 +310,7 @@ pub(crate) async fn take_over_return(
             )?;
             let commit = commit.map_or_else(String::new, |sha| format!(" in commit {sha}"));
             let mut text = format!(
-                "The user took this card over while you were paused and changed {} files                  (+{} -{}){commit}. Read what changed before you go on, then continue the card.",
+                "The user took this task over while you were paused and changed {} files                  (+{} -{}){commit}. Read what changed before you go on, then continue the task.",
                 changed.files_changed, changed.insertions, changed.deletions
             );
             if let Some(note) = decided.text.as_deref().filter(|t| !t.trim().is_empty()) {
@@ -329,7 +329,7 @@ pub(crate) async fn take_over_return(
                 host,
                 card,
                 Trigger::SaidDone,
-                "you kept it, so its gates run",
+                "you kept it, so its checks run",
             )?;
             Ok(Decision::Moved(None))
         }
@@ -403,7 +403,7 @@ async fn split(
                 record.spec.title
             ),
             approach: format!(
-                "The card's task:\n\n{}\n\nIts paths: {}\n\nHow to split it: {how}",
+                "The task:\n\n{}\n\nIts paths: {}\n\nHow to split it: {how}",
                 record.spec.task,
                 record.spec.owned_paths.join(", ")
             ),
@@ -418,9 +418,9 @@ async fn split(
             .map(|d| format!("{}: {}", d.title, d.choice))
             .collect(),
         forbidden_paths: forbidden,
-        max_cards: settings.divide.max_cards,
+        max_tasks: settings.divide.max_tasks,
     };
-    let worker = lead.unwrap_or_else(|| settings.default_agent.clone());
+    let worker = lead.unwrap_or_else(|| settings.main_agent.clone());
     let mut ask = Ask::new(
         at.cloned(),
         RoleName::PhaseLead,
@@ -503,7 +503,7 @@ fn next_card_number(state: &RunState) -> u32 {
         .cards
         .by_id
         .keys()
-        .filter_map(|id| id.as_str().strip_prefix("card-")?.parse::<u32>().ok())
+        .filter_map(|id| id.as_str().strip_prefix("task-")?.parse::<u32>().ok())
         .max()
         .unwrap_or(0)
         + 1
@@ -516,19 +516,19 @@ mod tests {
 
     #[test]
     fn split_cards_take_new_numbers_and_the_old_dependencies() {
-        let mut split = card_spec("card-002", &["card-001"], Some("codex"));
+        let mut split = card_spec("task-002", &["task-001"], Some("codex"));
         split.reviewers = vec!["agy".parse().unwrap()];
-        let a = card_spec("card-001", &[], None);
-        let b = card_spec("card-002", &["card-001"], None);
+        let a = card_spec("task-001", &[], None);
+        let b = card_spec("task-002", &["task-001"], None);
         let cards = renumbered(vec![a, b], &split, 7);
         let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["card-007", "card-008"]);
-        assert_eq!(cards[0].depends_on, [CardId::new("card-001").unwrap()]);
+        assert_eq!(ids, ["task-007", "task-008"]);
+        assert_eq!(cards[0].depends_on, [CardId::new("task-001").unwrap()]);
         assert_eq!(
             cards[1].depends_on,
             [
-                CardId::new("card-001").unwrap(),
-                CardId::new("card-007").unwrap()
+                CardId::new("task-001").unwrap(),
+                CardId::new("task-007").unwrap()
             ]
         );
         assert_eq!(cards[1].owner, Some("codex".parse().unwrap()));
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn new_card_numbers_follow_the_highest() {
         let mut state = RunState::default();
-        for id in ["card-003", "card-010", "spike-001"] {
+        for id in ["task-003", "task-010", "spike-001"] {
             let spec = card_spec(id, &[], None);
             state
                 .cards

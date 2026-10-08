@@ -1,5 +1,5 @@
 name: best-of-n
-description: Independent attempts at one card, keeping one that passes the visible gates
+description: Independent attempts at one task, keeping one that passes the visible gates
 params:
   attempts: 3
 phases:
@@ -9,17 +9,17 @@ phases:
     steps:
       - kind: restate
         name: restatement
-        role: default
+        role: main
         label: "read:{family}"
       - kind: checkpoint
         checkpoint: goal
         when: restate_first
   - name: Build
-    detail: independent attempts at the card, each in its own worktree, keeping one that passes the gates
+    detail: independent attempts at the task, each in its own worktree, keeping one that passes the gates
     standard: do
     steps:
       - kind: build
-        role: owner
+        role: worker
         input: goal
         count: "{{attempts}}"
         label: "build:{item}"

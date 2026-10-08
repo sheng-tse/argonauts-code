@@ -2,7 +2,7 @@
 source: crates/tui/tests/snap_composer.rs
 expression: text(&view.lines)
 ---
-──────────────────────────────────────────────────────────────────── peer-crew ─
+────────────────────────────────────────────────────────────────────── council ─
 ❯ @c
 ────────────────────────────────────────────────────────────────────────────────
   + crates/
@@ -11,6 +11,5 @@ expression: text(&view.lines)
   + crates/tui/
   + crates/tui/src/
 Agents
-  @claude-code                  opus · owner on card-002                  agent
-  @codex                        2 sessions: owner on card-003, reviewer … agent
-  @card-002                     Add the JSON writer                        card
+  @claude-code                  opus · worker on task-002                 agent
+  @codex                        2 sessions: worker on task-003, reviewer… agent

@@ -190,6 +190,8 @@ pub struct ListedModel {
     /// In the overview's lineup, which is current by definition.
     pub lineup: bool,
     pub retired: bool,
+    /// Its context window in tokens, where the overview says.
+    pub context_window: Option<u64>,
 }
 
 /// The overview's lineup, then every other model the status table lists, in its order. Either
@@ -197,6 +199,7 @@ pub struct ListedModel {
 pub fn parse_model_pages(overview: &str, status: &str) -> Vec<ListedModel> {
     let ids = table_row(overview, "Claude API ID");
     let aliases = table_row(overview, "Claude API alias");
+    let windows = context_windows(overview);
     let mut listed: Vec<ListedModel> = ids
         .iter()
         .enumerate()
@@ -205,6 +208,12 @@ pub fn parse_model_pages(overview: &str, status: &str) -> Vec<ListedModel> {
             alias: aliases.get(at).filter(|alias| *alias != id).cloned(),
             lineup: true,
             retired: false,
+            // Only a row with a window for every model lines up with the ids.
+            context_window: windows
+                .get(at)
+                .copied()
+                .flatten()
+                .filter(|_| windows.len() == ids.len()),
         })
         .collect();
     for (id, state) in status_rows(status) {
@@ -216,6 +225,7 @@ pub fn parse_model_pages(overview: &str, status: &str) -> Vec<ListedModel> {
                 alias: None,
                 lineup: false,
                 retired,
+                context_window: None,
             }),
         }
     }
@@ -238,6 +248,33 @@ fn table_row(markdown: &str, name: &str) -> Vec<String> {
             let cell = cell.trim();
             let id = cell.strip_prefix('`')?.split('`').next()?;
             is_model_id(id).then(|| id.to_owned())
+        })
+        .collect()
+}
+
+/// The overview table's "Context window" row, one cell per model column: `1M tokens` is
+/// 1,000,000 and `200K tokens` 200,000. A cell that reads otherwise is `None`.
+fn context_windows(markdown: &str) -> Vec<Option<u64>> {
+    let Some(row) = markdown.lines().find(|line| {
+        line.trim_start()
+            .strip_prefix('|')
+            .is_some_and(|rest| cell_text(rest.split('|').next().unwrap_or("")) == "Context window")
+    }) else {
+        return Vec::new();
+    };
+    let cells: Vec<&str> = row.split('|').skip(2).map(str::trim).collect();
+    // The row ends with `|`, which leaves one empty piece after the last cell.
+    let cells = cells.strip_suffix(&[""]).unwrap_or(&cells);
+    cells
+        .iter()
+        .map(|cell| {
+            let size = cell.split_whitespace().next()?;
+            let (digits, scale) = match size.char_indices().last()? {
+                (at, 'M' | 'm') => (&size[..at], 1_000_000),
+                (at, 'K' | 'k') => (&size[..at], 1_000),
+                _ => return None,
+            };
+            digits.parse::<u64>().ok()?.checked_mul(scale)
         })
         .collect()
 }
@@ -295,6 +332,7 @@ pub fn parse_anthropic_models(json: &str) -> Result<Vec<ListedModel>, String> {
             alias: None,
             lineup: false,
             retired: false,
+            context_window: None,
         })
         .collect())
 }
@@ -350,6 +388,7 @@ pub fn claude_code_entries(settings: &Settings, listed: Vec<ListedModel>) -> Vec
         .map(|model| {
             let mut entry = harness_entry(settings, "claude-code", Some(&model.id));
             entry.discovered = true;
+            entry.context_window = model.context_window;
             entry.aliases = model.alias.into_iter().collect();
             entry.retired = model.retired;
             if !is_current(&model.id) {
@@ -427,6 +466,12 @@ mod tests {
         let haiku = entry(&entries, "claude-haiku-4-5-20251001");
         assert_eq!(haiku.aliases, ["claude-haiku-4-5"]);
         assert_eq!(haiku.successor, None);
+        // The overview says how large each lineup model's window is, and no older one's.
+        assert_eq!(haiku.context_window, Some(200_000));
+        for id in ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"] {
+            assert_eq!(entry(&entries, id).context_window, Some(1_000_000), "{id}");
+        }
+        assert_eq!(entry(&entries, "claude-opus-4-8").context_window, None);
 
         let older = entry(&entries, "claude-opus-4-8");
         assert_eq!(older.successor.as_deref(), Some("claude-opus-5-5"));

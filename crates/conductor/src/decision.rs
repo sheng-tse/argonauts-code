@@ -66,7 +66,7 @@ impl MergeDecider for ChannelDecider {
             .map_err(|_| anyhow::anyhow!("nothing is listening for the merge decision"))?;
         answer
             .await
-            .map_err(|_| anyhow::anyhow!("the merge card was closed without an answer"))
+            .map_err(|_| anyhow::anyhow!("the merge approval was closed without an answer"))
     }
 }
 
@@ -81,7 +81,7 @@ mod tests {
             card_id: CardId::numbered(1),
             title: "Add hello".into(),
             card: MergeCard {
-                branch: "argonauts/run-1/card-001".into(),
+                branch: "argonauts/run-1/task-001".into(),
                 target_branch: Some("main".into()),
                 stat: DiffStat::default(),
                 gates: vec![],

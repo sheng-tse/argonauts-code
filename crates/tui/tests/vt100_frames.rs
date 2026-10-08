@@ -128,7 +128,7 @@ fn each_frame_one_synchronized_update() {
     let history = &mut f.ui.model_mut().history;
     history.push(UserMessage::new("hi"));
     history.push(AssistantMessage::new("Hello there."));
-    let mut block = ToolCall::agent("GPT on Codex", None, "owner", "Wire --json");
+    let mut block = ToolCall::agent("GPT on Codex", None, "worker", "Wire --json");
     block.push(ToolItem::text("step one"));
     f.ui.model_mut().history.push_active(block);
     f.ui.model_mut().bottom.working = Some(WorkingLine::new("Rowing", f.now));
@@ -139,13 +139,13 @@ fn each_frame_one_synchronized_update() {
     // A card changes the title in the same update as the card itself.
     f.ui.model_mut().bottom.card = Some(CardPrompt::new(
         1,
-        "Merge card-002 into main?",
-        "Merge card-002?",
+        "Merge task-002 into main?",
+        "Merge task-002?",
         vec![CardOption::new("Merge")],
     ));
     f.frame();
     assert!(f.last().contains("◆ needs you · frames"), "{:?}", f.last());
-    assert!(f.last().contains("Merge card-002"), "{:?}", f.last());
+    assert!(f.last().contains("Merge task-002"), "{:?}", f.last());
 
     // Switching to the transcript prints waiting history, switches, and draws in one go.
     f.ui.model_mut()

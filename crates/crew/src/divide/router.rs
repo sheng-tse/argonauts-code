@@ -1,6 +1,7 @@
 //! Owners by `routing.algorithm`, among the role's candidates. The engine keeps the rules that
-//! remove candidates: vendors that are down, degraded when another fits, or above
-//! `skip_quota_above`. With learning's track records, `bandit` ranks what's left by Thompson
+//! remove candidates: agents that are down, degraded when another fits, or out of plan, which
+//! is when their provider says so or their plan window is as full as your `limits.plan_usage`.
+//! With learning's track records, `bandit` ranks what's left by Thompson
 //! draws on the routing utility and `epsilon-greedy` by the posterior means, both exploring
 //! only where `routing::may_explore` allows, and every draw is kept for the outcome log.
 //! Without them, `bandit` samples Beta(passes + 1, failures + 1) from plain counts. Among
@@ -31,6 +32,8 @@ pub struct Candidate {
     pub health: HealthState,
     /// Share of quota used, 0 to 1, when known.
     pub quota_used: Option<f64>,
+    /// Your `limits.plan_usage`, when you set one.
+    pub plan_limit: Option<f64>,
     pub cost: CostEstimate,
     pub running_cards: u32,
     /// Its learning record for the card's task type, from the book divide rebuilt.
@@ -61,7 +64,7 @@ pub fn choose(
     settings: &RoutingSettings,
     rng: &mut StdRng,
 ) -> Option<Choice> {
-    let eligible = eligible(candidates, settings);
+    let eligible = eligible(candidates);
     if eligible.is_empty() {
         return None;
     }
@@ -109,11 +112,37 @@ pub fn choose(
     })
 }
 
+/// The candidates best first, the same every time: those up and under their quota first, then
+/// by the track record's expected pass rate, then the cheaper and the less busy, then as listed.
+/// Code goes by it where a pick must not change between tries, such as moving an assignment
+/// that broke the rules.
+pub fn rank(candidates: &[Candidate]) -> Vec<WorkerRef> {
+    let up = eligible(candidates);
+    let expected = |candidate: &Candidate| {
+        let (passed, failed) = passes_and_failures(candidate.record);
+        (f64::from(passed) + 1.0) / (f64::from(passed + failed) + 2.0)
+    };
+    let mut ranked: Vec<(usize, &Candidate)> = candidates.iter().enumerate().collect();
+    ranked.sort_by(|(a_at, a), (b_at, b)| {
+        let a_up = up.iter().any(|candidate| std::ptr::eq(*candidate, *a));
+        let b_up = up.iter().any(|candidate| std::ptr::eq(*candidate, *b));
+        b_up.cmp(&a_up)
+            .then(expected(b).total_cmp(&expected(a)))
+            .then(cost_order(a.cost, b.cost))
+            .then(a.running_cards.cmp(&b.running_cards))
+            .then(a_at.cmp(b_at))
+    });
+    ranked
+        .into_iter()
+        .map(|(_, candidate)| candidate.worker.clone())
+        .collect()
+}
+
 /// The algorithm that routes a card under `algorithm`. The coordinator's own picks are taken
 /// from its assignments before routing, so any card it left without an owner goes to `bandit`.
 pub fn effective(algorithm: RoutingAlgorithm) -> RoutingAlgorithm {
     match algorithm {
-        RoutingAlgorithm::Coordinator => RoutingAlgorithm::Bandit,
+        RoutingAlgorithm::Orchestrator => RoutingAlgorithm::Bandit,
         other => other,
     }
 }
@@ -131,9 +160,9 @@ pub fn route(
     match effective(algorithm) {
         RoutingAlgorithm::Bandit
         | RoutingAlgorithm::EpsilonGreedy
-        | RoutingAlgorithm::Coordinator => choose(candidates, labels, settings, rng),
+        | RoutingAlgorithm::Orchestrator => choose(candidates, labels, settings, rng),
         RoutingAlgorithm::RoundRobin => {
-            let eligible = eligible(candidates, settings);
+            let eligible = eligible(candidates);
             let chosen = eligible.get(turn % eligible.len().max(1))?;
             Some(Choice {
                 worker: chosen.worker.clone(),
@@ -142,11 +171,11 @@ pub fn route(
             })
         }
         RoutingAlgorithm::Fixed => {
-            let chosen = eligible(candidates, settings).into_iter().next()?;
+            let chosen = eligible(candidates).into_iter().next()?;
             let reason = if chosen.worker == candidates[0].worker {
-                "the first listed owner".to_owned()
+                "the first listed worker".to_owned()
             } else {
-                "the first listed owner that is up and under its quota".to_owned()
+                "the first listed worker that is up and under its plan usage".to_owned()
             };
             Some(Choice {
                 worker: chosen.worker.clone(),
@@ -197,7 +226,7 @@ fn learned(
     rng: &mut StdRng,
     so_far: RunSoFar,
 ) -> Option<(Choice, Draw)> {
-    let eligible = eligible(candidates, settings);
+    let eligible = eligible(candidates);
     let records: Vec<Record> = eligible
         .iter()
         .filter_map(|candidate| candidate.learned.clone())
@@ -284,7 +313,7 @@ fn learned(
             let ranked = ranked.iter().find(|r| r.worker == candidate.worker);
             Considered {
                 worker: candidate.worker.clone(),
-                removed_by: removed_by(candidate, &eligible, settings),
+                removed_by: removed_by(candidate, &eligible),
                 sampled: ranked.map(|r| r.sampled),
                 mean: ranked.map(|r| r.mean),
             }
@@ -292,7 +321,7 @@ fn learned(
         .collect();
     let line = match (&explored, chosen.learned.as_ref()) {
         (Some(_), Some(record)) => {
-            format!("exploring: {:.0} similar cards so far", record.evidence)
+            format!("exploring: {:.0} similar tasks so far", record.evidence)
         }
         _ => record_line(chosen),
     };
@@ -315,25 +344,33 @@ fn learned(
 }
 
 /// The rule that removed a candidate, if one did, as the draw log names it.
-fn removed_by(
-    candidate: &Candidate,
-    eligible: &[&Candidate],
-    settings: &RoutingSettings,
-) -> Option<String> {
+fn removed_by(candidate: &Candidate, eligible: &[&Candidate]) -> Option<String> {
     if eligible.iter().any(|kept| kept.worker == candidate.worker) {
         return None;
     }
     let rule = if candidate.health == HealthState::Down {
-        "vendor down"
-    } else if candidate
-        .quota_used
-        .is_some_and(|used| used > settings.skip_quota_above)
-    {
-        "routing.skip_quota_above"
+        "agent down"
+    } else if candidate.plan_ran_out() {
+        "plan ran out"
+    } else if candidate.out_of_plan() {
+        "limits.plan_usage"
     } else {
         "degraded while another is healthy"
     };
     Some(rule.to_owned())
+}
+
+impl Candidate {
+    /// Its provider's plan window is spent.
+    fn plan_ran_out(&self) -> bool {
+        self.quota_used.is_some_and(|used| used >= 1.0)
+    }
+
+    /// Nothing new goes to it: its plan ran out, or it is as full as you let it get.
+    fn out_of_plan(&self) -> bool {
+        let limit = self.plan_limit.unwrap_or(1.0);
+        self.quota_used.is_some_and(|used| used >= limit)
+    }
 }
 
 /// A draw from Beta(alpha, beta), as the first of two Gamma draws over their sum.
@@ -344,15 +381,11 @@ pub fn beta_sample(alpha: f64, beta: f64, rng: &mut StdRng) -> f64 {
 }
 
 /// Candidates that may take a new card, in their given order.
-fn eligible<'a>(candidates: &'a [Candidate], settings: &RoutingSettings) -> Vec<&'a Candidate> {
+fn eligible(candidates: &[Candidate]) -> Vec<&Candidate> {
     let usable: Vec<&Candidate> = candidates
         .iter()
         .filter(|candidate| candidate.health != HealthState::Down)
-        .filter(|candidate| {
-            candidate
-                .quota_used
-                .is_none_or(|used| used <= settings.skip_quota_above)
-        })
+        .filter(|candidate| !candidate.out_of_plan())
         .collect();
     if usable
         .iter()
@@ -374,9 +407,9 @@ fn explore(eligible: &[&Candidate], rng: &mut StdRng) -> Choice {
     let least: Vec<&&Candidate> = eligible.iter().filter(|c| trials(c) == fewest).collect();
     let chosen = least[rng.random_range(0..least.len())];
     let reason = match fewest {
-        0 => "exploring: no similar cards yet".to_owned(),
-        1 => "exploring: 1 similar card so far".to_owned(),
-        n => format!("exploring: {n} similar cards so far"),
+        0 => "exploring: no similar tasks yet".to_owned(),
+        1 => "exploring: 1 similar task so far".to_owned(),
+        n => format!("exploring: {n} similar tasks so far"),
     };
     Choice {
         worker: chosen.worker.clone(),
@@ -410,13 +443,13 @@ fn cost_order(a: CostEstimate, b: CostEstimate) -> Ordering {
 fn record_line(candidate: &Candidate) -> String {
     let mut line = match candidate.record {
         Some(record) if record.of > 0 => {
-            let noun = if record.of == 1 { "card" } else { "cards" };
+            let noun = if record.of == 1 { "task" } else { "tasks" };
             format!("{} of {} similar {noun} passed", record.passed, record.of)
         }
         _ => "no track record yet".to_owned(),
     };
     if let Some(used) = candidate.quota_used {
-        line.push_str(&format!(", {:.0}% quota used", used * 100.0));
+        line.push_str(&format!(", {:.0}% of plan used", used * 100.0));
     }
     line
 }
@@ -464,6 +497,7 @@ mod tests {
             record: Some(TrackRecord { passed, of }),
             health: HealthState::Healthy,
             quota_used: None,
+            plan_limit: None,
             cost: CostEstimate::Unknown,
             running_cards: 0,
             learned: None,
@@ -515,10 +549,10 @@ mod tests {
         let choice = choose(&crew, &[], &always, &mut rng).unwrap();
         assert!(choice.explored);
         assert_eq!(choice.worker.to_string(), "agy");
-        assert_eq!(choice.reason, "exploring: no similar cards yet");
+        assert_eq!(choice.reason, "exploring: no similar tasks yet");
         let choice = choose(&crew, &["Security".to_owned()], &always, &mut rng).unwrap();
         assert!(!choice.explored);
-        assert_eq!(choice.reason, "90 of 100 similar cards passed");
+        assert_eq!(choice.reason, "90 of 100 similar tasks passed");
 
         let mut rng = StdRng::seed_from_u64(11);
         let draws: Vec<f64> = (0..4000).map(|_| beta_sample(3.0, 7.0, &mut rng)).collect();
@@ -534,9 +568,39 @@ mod tests {
     }
 
     #[test]
-    fn router_skips_vendor_over_quota() {
+    fn a_plan_is_used_until_it_runs_out_unless_you_set_a_limit() {
         let mut busy = candidate("codex", 10, 10);
         busy.quota_used = Some(0.95);
+        let mut fine = candidate("claude-code", 1, 10);
+        fine.quota_used = Some(0.4);
+        // No limit: 95% used is still usable, and the better record wins.
+        let crew = [busy.clone(), fine.clone()];
+        for pick in picks(&crew, &no_explore(), 5) {
+            assert_eq!(pick, "codex");
+        }
+        let mut out = busy.clone();
+        out.quota_used = Some(1.0);
+        for pick in picks(&[out, fine.clone()], &no_explore(), 5) {
+            assert_eq!(pick, "claude-code");
+        }
+        // Your limit of 80% takes the fuller one out before its provider does.
+        let limited = [busy.clone(), fine.clone()].map(|mut candidate| {
+            candidate.plan_limit = Some(0.8);
+            candidate
+        });
+        for pick in picks(&limited, &no_explore(), 5) {
+            assert_eq!(pick, "claude-code");
+        }
+        assert_eq!(
+            removed_by(&limited[0], &[&limited[1]]).as_deref(),
+            Some("limits.plan_usage")
+        );
+    }
+
+    #[test]
+    fn router_skips_an_agent_that_is_down_or_out_of_plan() {
+        let mut busy = candidate("codex", 10, 10);
+        busy.quota_used = Some(1.0);
         let mut down = candidate("agy", 10, 10);
         down.health = HealthState::Down;
         let mut fine = candidate("claude-code", 1, 10);
@@ -549,7 +613,7 @@ mod tests {
         let choice = choose(&crew, &[], &no_explore(), &mut rng).unwrap();
         assert_eq!(
             choice.reason,
-            "1 of 10 similar cards passed, 40% quota used"
+            "1 of 10 similar tasks passed, 40% of plan used"
         );
 
         // Degraded only when nothing healthy fits.
@@ -634,7 +698,7 @@ mod tests {
         assert_eq!(fixed.worker.to_string(), "claude-code");
         assert_eq!(
             fixed.reason,
-            "the first listed owner that is up and under its quota"
+            "the first listed worker that is up and under its plan usage"
         );
     }
 }

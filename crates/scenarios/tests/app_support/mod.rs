@@ -20,7 +20,7 @@ use argonauts_core::events::checkpoint::{
 };
 use argonauts_core::layout::run_files;
 use argonauts_core::names::ChoiceId;
-use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT};
+use argonauts_scenarios::{COLS, ROWS, Scenario, WAIT, past_the_card_guard};
 use argonauts_testkit::{Invocation, Key, Pty, PtyCommand, argonauts_bin};
 
 pub use files::{TomlEntry, json_at, same_toml, toml_entries, toml_value};
@@ -35,23 +35,41 @@ pub const VENDORS: &str = "app/vendors.toml";
 /// Keeps the guided setup closed and vim keys off, and parks runs quickly.
 pub const GLOBAL_CONFIG: &str = "\
 # Written by the scenario test, kept through every change.
-default_agent = \"claude-code\"
-crew = [\"claude-code\", \"codex\", \"antigravity-cli\"]
+main_agent = \"claude-code\"
+
+[crew]
+workers = [\"claude-code\", \"codex\", \"antigravity-cli\"]
+reviewers = [\"claude-code\", \"codex\", \"antigravity-cli\"]
+judge = [\"claude-code\", \"codex\", \"antigravity-cli\"]
 
 [ui]
 keys = \"default\"
 
+# The fake CLIs write files directly, with none of their edit tools' events, so every new file
+# counts as their work.
+[commit]
+unclaimed = \"keep\"
+
 [supervisor]
-park_grace = \"1s\"
+wait_grace = \"1s\"
 
 # These scenarios follow solo runs in a checked copy.
 [solo]
-style = \"checked\"
+kind = \"checked\"
+
+# Their crew runs answer the fixed phases, so a built-in workflow runs those.
+[workflows]
+adapt_with = \"phases\"
+
+# And the verdict that ends each chat reply, which a CLI that takes no tools keeps.
+# `app_main_session.rs` plays the main session with its tools.
+[main_session]
+tools = false
 ";
 
 /// One gate that always passes, for scenarios that reach the merge card.
 pub const PASSING_GATE: &str = "
-[[gates.run]]
+[[checks.run]]
 name = \"tests\"
 command = [\"true\"]
 ";
@@ -117,11 +135,16 @@ pub fn scenario_playing(vendors: &Path) -> anyhow::Result<AppScenario> {
     Ok(AppScenario(Scenario::from_file(vendors)?))
 }
 
+/// `GLOBAL_CONFIG` with more `[workflows]` keys, each on a line of its own.
+pub fn config_with_workflows(keys: &str) -> String {
+    GLOBAL_CONFIG.replace("[workflows]\n", &format!("[workflows]\n{keys}"))
+}
+
 /// `GLOBAL_CONFIG` with another default agent, an adapter id such as `codex`.
-pub fn config_with_default_agent(agent: &str) -> String {
+pub fn config_with_main_agent(agent: &str) -> String {
     GLOBAL_CONFIG.replace(
-        "default_agent = \"claude-code\"",
-        &format!("default_agent = \"{agent}\""),
+        "main_agent = \"claude-code\"",
+        &format!("main_agent = \"{agent}\""),
     )
 }
 
@@ -241,22 +264,25 @@ pub fn number_of(options: &[AnswerOption], key: char) -> char {
 pub fn answer_card(pty: &mut Pty, number: char) -> anyhow::Result<()> {
     assert!(
         number.is_ascii_digit(),
-        "cards answer to numbers, not `{number}`"
+        "tasks answer to numbers, not `{number}`"
     );
     check_no_history_search(pty)?;
     // The trace has the card before the screen does, and an Up that comes first recalls the
-    // last prompt instead. A card waits with `↑ to answer`, or opens focused on an option.
-    pty.wait_for(r"↑ to answer|❯ \d+\. ", WAIT)?;
+    // last prompt instead. A card opens focused on an option.
+    pty.wait_for(r"❯ \d+\. ", WAIT)?;
+    past_the_card_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char(number))
 }
 
-/// A card that needs you takes the keys once the input is quiet, so a command typed while it
-/// waits needs it set aside first, as you would with Esc.
-pub fn set_card_aside(pty: &mut Pty) -> anyhow::Result<()> {
+/// A card that needs you takes the keys as it shows, so a command typed while it waits needs
+/// Esc first, which hands the card on and leaves a line saying who decides it now.
+pub fn hand_card_on(pty: &mut Pty) -> anyhow::Result<()> {
     pty.wait_for(CARD_HAS_THE_KEYS, WAIT)?;
+    past_the_card_guard();
     pty.press(Key::Esc)?;
-    pty.wait_for(r"needs you · ↑ to answer", WAIT).map(drop)
+    pty.wait_for(r"left to the (main )?agent · you, ", WAIT)
+        .map(drop)
 }
 
 /// For Merge, Abandon, and the other options that wait for Enter after their number.
@@ -613,7 +639,7 @@ pub fn wait_checkpoint(
     scenario: &Scenario,
     kind: CheckpointKind,
 ) -> anyhow::Result<CheckpointOpened> {
-    wait_until(&format!("a {kind:?} checkpoint"), || {
+    wait_until(&format!("a {kind:?} approval"), || {
         Ok(events(scenario)?.into_iter().find_map(|event| match event {
             AppEvent::Run { event } => match event.kind {
                 RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
@@ -646,7 +672,7 @@ pub fn wait_mode(
 
 /// The run is working and its owner has started: returns the owner's fake pid.
 pub fn wait_owner_started(scenario: &Scenario) -> anyhow::Result<u32> {
-    wait_until("the owner to start", || {
+    wait_until("the worker to start", || {
         Ok(claude_sessions(scenario, "acceptEdits")?
             .first()
             .map(|i| i.pid))

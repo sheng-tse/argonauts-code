@@ -68,8 +68,8 @@ mod tests {
 
     #[test]
     fn checkpoint_rows_list_each_handoff_oldest_first() {
-        let export = CardId::new("card-001").unwrap();
-        let docs = CardId::new("card-002").unwrap();
+        let export = CardId::new("task-001").unwrap();
+        let docs = CardId::new("task-002").unwrap();
         let events = vec![
             tagged(0, &export, 1, "codex"),
             tagged(1, &docs, 1, "antigravity-cli"),
@@ -79,7 +79,7 @@ mod tests {
                 &export,
                 CardEvent::Reverted {
                     to: 1,
-                    kept_on: "argonauts/run/card-001-replaced-1".to_owned(),
+                    kept_on: "argonauts/run/task-001-replaced-1".to_owned(),
                 },
             ),
         ];
@@ -93,6 +93,6 @@ mod tests {
         assert_eq!(picked, [(1, "codex", true), (2, "opencode", false)]);
         assert_eq!(mine[0].from.to_string(), "claude-code/opus");
         assert_eq!(mine[0].reason, "usage limit, resets at 3:45 PM");
-        assert!(checkpoint_rows(&events, Some(&CardId::new("card-003").unwrap())).is_empty());
+        assert!(checkpoint_rows(&events, Some(&CardId::new("task-003").unwrap())).is_empty());
     }
 }

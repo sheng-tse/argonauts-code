@@ -20,12 +20,9 @@ pub struct IntakeSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TriageSettings {
-    /// Force a mode for every request, as the `solo` presets do.
+    /// Force a mode for every request, as the `solo` workflow does.
     pub force: Option<ForcedMode>,
-    /// All hands: every task goes to the crew, and the lead designs its workflow. Questions
-    /// are still just answered, and `/solo` still runs one task solo.
-    pub all_hands: bool,
-    pub use_recipes: bool,
+    pub use_learned: bool,
     /// Solo at this many files or fewer...
     pub solo_max_files: u32,
     /// ...and only when tests exist.
@@ -34,24 +31,19 @@ pub struct TriageSettings {
     pub crew_labels: Vec<String>,
     pub otherwise: TriageMiddle,
     /// Solo that these rules pick, rather than you: checked, so it can still grow into a crew
-    /// run, direct, or as `solo.style` says.
+    /// run, direct, or as `solo.kind` says.
+    #[serde(rename = "solo_kind")]
     pub solo_style: TriageSoloStyle,
     /// The estimate lists how the request says to run it, and code follows what passes its
     /// checks.
     pub read_instructions: bool,
 }
 
-impl TriageSettings {
-    /// The All hands key, which `/effort`'s toggle writes.
-    pub const ALL_HANDS: &'static str = "triage.all_hands";
-}
-
 impl Default for TriageSettings {
     fn default() -> Self {
         Self {
             force: None,
-            all_hands: false,
-            use_recipes: true,
+            use_learned: true,
             solo_max_files: 3,
             solo_requires_tests: true,
             crew_min_files: 8,
@@ -89,7 +81,7 @@ pub enum ForcedMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TriageMiddle {
-    /// Solo first, then crew if the solo card escalates.
+    /// Solo first, then crew if the solo task needs the crew.
     SoloThenCrew,
     Solo,
     Crew,
@@ -99,6 +91,7 @@ pub enum TriageMiddle {
 #[serde(default)]
 pub struct SoloSettings {
     /// Solo you choose: the main session in your checkout, like its CLI, or a checked copy.
+    #[serde(rename = "kind")]
     pub style: SoloStyle,
     /// What a direct turn asks you in supervised mode.
     pub asks: crate::session::Asks,
@@ -106,12 +99,13 @@ pub struct SoloSettings {
     pub rewind: bool,
     /// Untracked files bigger than this can't be restored by `/rewind`.
     pub rewind_max_mb: u64,
-    /// The main session may start a run when you ask it for one (`argonauts_start_run`).
-    pub start_run_tool: bool,
+    /// In solo the main session may still start a workflow when your own words ask for the
+    /// crew, other agents or a checked copy (`argonauts_start_workflow`). Off, nothing leaves it.
+    pub start_workflow_tool: bool,
     /// The default agent restates the goal and waits for approval before building. Makes solo
     /// checked.
     pub restate_first: bool,
-    /// Review by another model family (`solo-reviewed`). Makes solo checked.
+    /// Review by another provider (`maker-checker`). Makes solo checked.
     pub review: bool,
     /// Independent attempts, keeping one that passes the visible tests (`best-of-n`). Above 1
     /// makes solo checked.
@@ -138,7 +132,7 @@ impl Default for SoloSettings {
             asks: crate::session::Asks::LikeCli,
             rewind: true,
             rewind_max_mb: 50,
-            start_run_tool: true,
+            start_workflow_tool: true,
             restate_first: false,
             review: false,
             attempts: 1,
@@ -153,7 +147,7 @@ pub enum SoloStyle {
     /// A turn of the main session in your checkout, as its CLI works.
     #[default]
     Direct,
-    /// A worktree copy, one card, gates, and a merge into your branch.
+    /// A worktree, one task, checks, and a merge into your branch.
     Checked,
 }
 
@@ -172,7 +166,7 @@ pub struct UnderstandSettings {
     pub comparers: u32,
     pub max_questions: u32,
     /// Topics that are always a question, never a majority's silent assumption. Who answers
-    /// them is `approvals.answered_by`.
+    /// them is `approvals.answers`.
     pub always_ask: Vec<String>,
     /// Adopt a two-of-three reading outside `always_ask` as a stated assumption.
     pub majority_assumptions: bool,
@@ -199,8 +193,8 @@ impl Default for UnderstandSettings {
 pub enum UnderstandWhen {
     /// Every crew run opens with Understand, the original design.
     Crew,
-    /// The lead decides, as Claude Code's orchestrator decides whether to scout first.
-    Lead,
+    /// The main agent decides, as Claude Code's orchestrator decides whether to scout first.
+    Main,
     Off,
 }
 
@@ -216,31 +210,6 @@ pub const UNDERSTAND_RENAMES: &[(&str, &str)] = &[
         "understand.majority_assumptions",
     ),
 ];
-
-/// `[goal]`: the goal style, pursued in attempts until a check from another company finds
-/// every criterion met. The run's budget still caps it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
-pub struct GoalSettings {
-    pub max_attempts: u32,
-    /// Attempts in a row that end on the same blocker before the goal is stuck.
-    pub stuck_after: u32,
-    /// Attempts in a row that meet no new criterion and change no file before it's stuck.
-    pub idle_after: u32,
-    /// Who checks: `other_company`, or a worker by name.
-    pub checker: String,
-}
-
-impl Default for GoalSettings {
-    fn default() -> Self {
-        Self {
-            max_attempts: 5,
-            stuck_after: 3,
-            idle_after: 2,
-            checker: "other_company".to_owned(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -268,7 +237,7 @@ pub enum PlanningBy {
     /// Blind drafts, the map, critique, judging.
     Crew,
     /// The coordinator's structured plan, checked by code.
-    Coordinator,
+    Orchestrator,
 }
 
 /// The disagreement map.
@@ -321,9 +290,10 @@ impl Default for CritiqueSettings {
 #[serde(default)]
 pub struct SpikeSettings {
     pub enabled: bool,
-    /// Dollars for all spikes in a run.
+    /// Dollars for all experiments in a run.
+    #[serde(rename = "limit_usd")]
     pub budget_usd: f64,
-    /// Minutes per spike option.
+    /// Minutes per experiment option.
     pub time_box_min: f64,
 }
 
@@ -345,9 +315,10 @@ pub struct JudgingSettings {
     pub anonymize: bool,
     pub both_orders: bool,
     pub rubric: Vec<String>,
-    /// The winner's lead (out of 10) below which it's a near tie for you.
+    /// The winner's margin (out of 10) below which it's a near tie for you.
     pub clear_winner_margin: f64,
-    /// Reserve a judge seat for a worker that didn't draft.
+    /// Keep a judge's place for a worker that didn't draft.
+    #[serde(rename = "reserve_non_drafting_judge")]
     pub reserve_non_drafting_seat: bool,
 }
 
@@ -380,21 +351,22 @@ pub enum JudgingMethod {
     /// One non-author judge.
     Single,
     Vote,
-    Coordinator,
+    Orchestrator,
     Human,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct DivideSettings {
-    /// An interface card, then acceptance-test cards, before build cards.
+    /// An interface task, then acceptance-test tasks, before build tasks.
     pub contracts_first: bool,
     pub acceptance_tests_by: TestAuthor,
     /// How chores (integration, docs) are assigned.
     pub chores: ChoreAssignment,
-    pub max_cards: u32,
+    pub max_tasks: u32,
     pub predictions: bool,
-    /// One owner builds the whole plan (`draft-and-vote`).
+    /// One worker builds the whole plan (`draft-and-vote`).
+    #[serde(rename = "single_worker")]
     pub single_owner: bool,
 }
 
@@ -404,7 +376,7 @@ impl Default for DivideSettings {
             contracts_first: true,
             acceptance_tests_by: TestAuthor::Reviewer,
             chores: ChoreAssignment::Rotate,
-            max_cards: 12,
+            max_tasks: 12,
             predictions: true,
             single_owner: false,
         }
@@ -414,9 +386,9 @@ impl Default for DivideSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TestAuthor {
-    /// The card's ring reviewer.
+    /// The task's ring reviewer.
     Reviewer,
-    /// Nobody: no test cards.
+    /// Nobody: no test tasks.
     None,
 }
 
@@ -431,12 +403,12 @@ pub enum ChoreAssignment {
 #[serde(default)]
 pub struct ReviewSettings {
     pub assign: ReviewAssignment,
-    /// Reviewers come from another model family than the owner.
-    pub other_family: bool,
-    pub per_card: u32,
+    /// Reviewers come from another provider than the worker.
+    pub other_provider: bool,
+    pub per_task: u32,
     /// Reviewers can't see each other's reviews until adjudication.
     pub blind: bool,
-    /// Rounds of requested changes before the card escalates.
+    /// Rounds of requested changes before the task needs you.
     pub max_change_rounds: u32,
     /// Diff lines a reviewer or approver sees in one piece. Longer diffs go in per-file chunks,
     /// with a note saying what was cut.
@@ -447,8 +419,8 @@ impl Default for ReviewSettings {
     fn default() -> Self {
         Self {
             assign: ReviewAssignment::Ring,
-            other_family: true,
-            per_card: 1,
+            other_provider: true,
+            per_task: 1,
             blind: false,
             max_change_rounds: 2,
             max_diff_lines: 4000,
@@ -463,7 +435,7 @@ pub enum ReviewAssignment {
     Random,
     /// `roles.reviewer.workers`, in order.
     Fixed,
-    Coordinator,
+    Orchestrator,
 }
 
 /// Gates. The built-in checks (protected paths, secrets, test tampering, dependencies, stub
@@ -471,12 +443,12 @@ pub enum ReviewAssignment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct GateSettings {
-    /// Commands run in each card's sandbox, in order: lint, types, unit tests.
+    /// Commands run in each task's sandbox, in order: lint, types, unit tests.
     pub run: Vec<GateCommand>,
     /// The full suite for the final check. Unset reuses `run`.
     pub full_suite: Vec<GateCommand>,
     pub timeout: Span,
-    /// Commands the conductor runs once in each new card worktree before its first gate, such
+    /// Commands the conductor runs once in each new task worktree before its first check, such
     /// as installing from the lockfile. They run outside the agent's sandbox, with install
     /// scripts off where the tool allows it.
     pub setup: Vec<GateCommand>,
@@ -508,29 +480,27 @@ pub struct GateCommand {
 #[serde(default)]
 pub struct RoutingSettings {
     pub algorithm: RoutingAlgorithm,
-    /// With epsilon-greedy, the share of cards that go to a less proven worker. Thompson
+    /// With epsilon-greedy, the share of tasks that go to a less proven worker. Thompson
     /// sampling explores by its own draws, within max_explore_share.
     pub explore_rate: f64,
-    /// Skip a vendor for new cards above this share of its quota window.
-    pub skip_quota_above: f64,
     pub no_explore_labels: Vec<String>,
     /// Workers whose sampled pass rate is within this much of the best count as tied. Ties go
-    /// to the lower cost estimate, then to the worker with fewer running cards.
+    /// to the lower cost estimate, then to the worker with fewer running tasks.
     pub tie_band: f64,
     /// How much each part of a track record counts when the router compares workers.
     pub weights: RoutingWeights,
-    /// Cards of evidence a prior is worth.
+    /// Tasks of evidence a prior is worth.
     pub prior_strength: f64,
     /// Days after which an observation counts half. The prior doesn't fade.
     pub half_life_days: f64,
-    /// Most of a run's cards that may go to a less proven worker, such as 0.2 for one in five.
+    /// Most of a run's tasks that may go to a less proven worker, such as 0.2 for one in five.
     pub max_explore_share: f64,
-    /// Recent cards a worker needs on a task type before it's scored on that type alone rather
+    /// Recent tasks a worker needs on a task type before it's scored on that type alone rather
     /// than its group.
     pub own_type_after: u32,
     /// Share of a worker's old evidence that still counts once its model id changes.
     pub model_change_keep: f64,
-    /// How sure a retro must be before it says one worker is better at a task type.
+    /// How sure a run review must be before it says one worker is better at a task type.
     pub claim_above: f64,
     /// An average prediction this far above the actual rate flags a worker as overconfident.
     pub overconfident_margin: f64,
@@ -558,7 +528,6 @@ impl Default for RoutingSettings {
         Self {
             algorithm: RoutingAlgorithm::Bandit,
             explore_rate: 0.1,
-            skip_quota_above: 0.9,
             no_explore_labels: vec!["security".to_owned(), "migration".to_owned()],
             tie_band: 0.05,
             weights: RoutingWeights::default(),
@@ -589,7 +558,7 @@ impl Default for RoutingSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct RoutingWeights {
-    /// Weight of the first-pass gate rate.
+    /// Weight of the first-pass check rate.
     pub pass_rate: f64,
     /// Weight of the review approval rate.
     pub approval_rate: f64,
@@ -616,7 +585,7 @@ impl Default for RoutingWeights {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct PriorRates {
-    /// A starting first-pass gate rate, 0 to 1.
+    /// A starting first-pass check rate, 0 to 1.
     pub first_pass_rate: Option<f64>,
     /// A starting review approval rate, 0 to 1.
     pub approval_rate: Option<f64>,
@@ -627,12 +596,12 @@ pub struct PriorRates {
 pub enum RoutingAlgorithm {
     /// Thompson sampling over track records.
     Bandit,
-    /// The best posterior mean, except for `explore_rate` of the cards.
+    /// The best posterior mean, except for `explore_rate` of the tasks.
     EpsilonGreedy,
     RoundRobin,
     /// `roles.owner.workers`, in order.
     Fixed,
-    Coordinator,
+    Orchestrator,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -672,6 +641,10 @@ pub struct MergeSettings {
     /// `__pycache__/`, `*.pyc`, and `node_modules/`. Off by default, since what counts as build
     /// output differs by language and tool. Each commit says what it left out.
     pub leave_out_builtin: bool,
+    /// How a run lands when your branch had no commit at its start: as changes to your files
+    /// for you to commit, or as the branch's first commit, made from your files as the run
+    /// found them and its work.
+    pub unborn: super::delivery::UnbornLanding,
 }
 
 impl Default for MergeSettings {
@@ -682,6 +655,7 @@ impl Default for MergeSettings {
             pr_draft: false,
             leave_out: Vec::new(),
             leave_out_builtin: false,
+            unborn: super::delivery::UnbornLanding::default(),
         }
     }
 }

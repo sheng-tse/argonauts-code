@@ -42,6 +42,9 @@ pub struct ToolCall {
     /// The body wraps at this many columns however wide the screen is, as the Triage item's
     /// lines wrap at 100.
     pub wrap_at: Option<u16>,
+    /// Dim words after the title, such as ` · orchestrator · ctrl+t to open`. The first thing
+    /// to go when the header has no room.
+    pub tail: Option<String>,
 }
 
 /// Worked out at each frame, so a countdown counts and a quiet spell grows.
@@ -120,12 +123,10 @@ pub enum ToolItem {
         text: String,
         tone: Tone,
     },
-    /// One line whose text wraps under itself, after `lead`, as a numbered phase's detail
-    /// lines up under the detail column.
-    Hanging {
-        lead: String,
-        text: String,
-    },
+    /// A workflow's phases as it declares them, numbered, such as `2. ★ Secrets scan  the
+    /// reviewers scan the change`. The details line up and wrap under their own column, a step
+    /// you require carries the mark, and a list with one ends by saying what the mark means.
+    Phases(Vec<PhaseLine>),
     /// `hidden` counts output lines left out, shown as `… +N lines`.
     Command {
         command: String,
@@ -149,6 +150,16 @@ pub enum ToolItem {
         since: Instant,
         background: bool,
     },
+}
+
+/// One phase of a workflow, as the chat lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseLine {
+    pub title: String,
+    /// One line on who does what. Empty when the workflow gave none.
+    pub detail: String,
+    /// A step you require of the workflow.
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +254,13 @@ impl ToolCall {
             stamp: None,
             note: None,
             wrap_at: None,
+            tail: None,
         }
+    }
+
+    pub fn with_tail(mut self, tail: impl Into<String>) -> Self {
+        self.tail = Some(tail.into());
+        self
     }
 
     pub fn with_wrap_at(mut self, columns: u16) -> Self {
@@ -391,6 +408,7 @@ impl ToolCall {
             stamp: self.stamp.clone(),
             note: None,
             wrap_at: self.wrap_at,
+            tail: self.tail.clone(),
         }
     }
 
@@ -434,6 +452,19 @@ impl ToolCall {
     /// Long args hang under the `(`. A header with live stats, or an agent session's, stays on
     /// one row.
     pub(super) fn header(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let mut lines = self.title_rows(ctx);
+        // The tail rides on a header of one row that has room for it, else it gives way.
+        if let (Some(tail), [line]) = (&self.tail, lines.as_mut_slice()) {
+            let tail = sanitize_line(tail).into_owned();
+            if spans_width(&line.spans) + str_width(&tail) <= usize::from(ctx.width) {
+                line.spans
+                    .push(Span::styled(tail, ctx.theme.style(Role::Dim)));
+            }
+        }
+        lines
+    }
+
+    fn title_rows(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
         let trails = self.trails(ctx);
         if !trails[0].is_empty() || matches!(self.title, ToolTitle::Agent { .. }) {
             return vec![self.one_row_header(ctx, &trails)];

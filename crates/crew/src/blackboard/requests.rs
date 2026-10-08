@@ -105,7 +105,7 @@ pub async fn file(
             decide_yourself(
                 host,
                 &id,
-                "It's irreversible, or no other card owns what it touches",
+                "It's irreversible, or no other task owns what it touches",
             )
             .await?;
         }
@@ -206,7 +206,7 @@ fn answer(
         })
     });
     let Some(reply) = reply else {
-        tracing::warn!(%card, %question, "an answer to a question that isn't open for this card");
+        tracing::warn!(%card, %question, "an answer to a question that isn't open for this task");
         return Ok(());
     };
     let posted = post_once(host, reply)?;
@@ -238,7 +238,7 @@ async fn vote(
         })
     });
     let Some(primary) = primary else {
-        tracing::warn!(%on, %voter, "a vote on a change request this owner wasn't asked about");
+        tracing::warn!(%on, %voter, "a vote on a change request this worker wasn't asked about");
         return Ok(());
     };
     if host.read(|state| state.blackboard.settled(&primary).is_some()) {
@@ -273,7 +273,7 @@ async fn count(host: &Host, primary: &MessageId) -> EngineResult<()> {
     }
     let lead = host.read(|state| lead::phase_lead(state, host.settings()));
     let accepted = ballot.votes.iter().filter(|(_, accepts)| *accepts).count();
-    let tally_note = format!("{accepted} of {} owners accepted", ballot.votes.len());
+    let tally_note = format!("{accepted} of {} workers accepted", ballot.votes.len());
     match rules::tally(&ballot.votes, lead.as_ref()) {
         Tally::Accepted => {
             settle(
@@ -321,7 +321,7 @@ async fn count(host: &Host, primary: &MessageId) -> EngineResult<()> {
                         from: asked.from.clone(),
                         to: Recipient::Worker { worker: lead },
                         text: format!(
-                            "The owners tied on this. As phase lead, your vote decides.\n{}",
+                            "The workers tied on this. As phase lead, your vote decides.\n{}",
                             asked.text
                         ),
                         in_reply_to: Some(primary.clone()),
@@ -337,7 +337,7 @@ async fn count(host: &Host, primary: &MessageId) -> EngineResult<()> {
             decide_yourself(
                 host,
                 primary,
-                "The owners tied, and the phase lead is one of them",
+                "The workers tied, and the phase lead is one of them",
             )
             .await?;
         }
@@ -406,7 +406,7 @@ async fn decide_yourself(host: &Host, primary: &MessageId, why: &str) -> EngineR
             Some((asked, card, paused))
         })
         .ok_or_else(|| {
-            EngineError::Refused(format!("{primary} isn't a change request from a card"))
+            EngineError::Refused(format!("{primary} isn't a change request from a task"))
         })?;
     // The approver mustn't come from the company whose agent asked for the change.
     let authors = match &asked.from {
@@ -467,7 +467,7 @@ pub fn settle(
     let verdict = match outcome {
         Outcome::Accepted => "Accepted",
         Outcome::Rejected => "Rejected",
-        Outcome::Replan => "Sent back to the plan checkpoint",
+        Outcome::Replan => "Sent back to the plan approval",
     };
     let mut text = format!("{verdict}: {}", asked.text);
     if !note.trim().is_empty() {

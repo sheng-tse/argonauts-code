@@ -9,7 +9,7 @@ use argonauts_core::app::AppEvent;
 use pty_support::*;
 use regex::Regex;
 
-const HEADER: &str = r"Argonauts v\d";
+const HEADER: &str = r"Argonauts Code v\d";
 const SHELL_LINE: &str = "$ argonauts";
 
 fn visible_count(screen: &Screen, pattern: &str) -> usize {
@@ -263,7 +263,7 @@ fn a_resize_keeps_the_input_at_the_bottom() {
 #[test]
 fn a_saved_setup_changes_the_header_in_place() {
     let mut saved = serde_json::to_value(welcome()).expect("an AppEvent writes as JSON");
-    saved["preset"] = serde_json::json!("solo");
+    saved["workflow"] = serde_json::json!("solo");
     let script = Script::idle()
         .all(50, notes(1..=3))
         .at(300, app(saved))

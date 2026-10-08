@@ -4,46 +4,235 @@
 use std::collections::BTreeMap;
 use std::io::BufRead as _;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context as _, bail};
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::{OverrideRecord, RunLifecycle, RunStarted};
 use argonauts_core::paths::create_private_dir_all;
+use argonauts_core::settings::delivery::HistorySettings;
+use argonauts_core::{RunId, unborn};
 use argonauts_registry::resolve;
 
 use crate::app_settings::sources;
-use crate::env::AppEnv;
-use crate::git::{git, head, uncommitted_paths};
+use crate::env::{AppEnv, FolderGit};
+use crate::git::{git, has_commits, head, uncommitted_paths};
+use crate::hidden_git::{self, Survey};
 use crate::run_files::{SettingsRecord, StartRecord};
 use crate::trust::TrustStore;
 
 /// Longest title, in characters, before it's cut.
 const TITLE_CHARS: usize = 60;
 
-/// Takes the base at `HEAD`, or at a snapshot commit of `HEAD` plus your uncommitted changes
-/// when the request included them.
+/// Where a new run starts from.
+struct Base {
+    commit: String,
+    /// Your uncommitted files when the run started, for the record.
+    uncommitted: Vec<String>,
+    /// Whether the base holds them.
+    included: bool,
+    /// What you're told about how the base was taken.
+    notes: Vec<String>,
+}
+
+/// The most files a note names before it says how many more.
+const NAMED: usize = 5;
+
+/// A new run's first event, with what to tell you about where it starts from.
 pub(crate) fn run_started(
     env: &AppEnv,
+    run: &RunId,
     run_dir: &Path,
     start: &StartRecord,
     recorded: &SettingsRecord,
-) -> anyhow::Result<RunStarted> {
+) -> anyhow::Result<(RunStarted, Vec<String>)> {
     let root = &env.repo_root;
+    let history = &recorded.settings.history;
+    let base = match env.git() {
+        FolderGit::Repository if has_commits(root)? => {
+            repository_base(root, run_dir, start.request.include_uncommitted)?
+        }
+        FolderGit::Repository => {
+            let first_commit = unborn::makes_first_commit(&recorded.settings);
+            unborn_base(env, run, run_dir, history, first_commit)?
+        }
+        FolderGit::Hidden(_) | FolderGit::Off => folder_base(env, history)?,
+    };
+    let Base {
+        commit: base_commit,
+        uncommitted,
+        included,
+        notes,
+    } = base;
+    let started = started(env, start, recorded, base_commit, uncommitted, included)?;
+    Ok((started, notes))
+}
+
+/// In a repository the base is `HEAD`, or a snapshot commit of `HEAD` plus your uncommitted
+/// changes when the request included them.
+fn repository_base(root: &Path, run_dir: &Path, include_uncommitted: bool) -> anyhow::Result<Base> {
     let uncommitted = uncommitted_paths(root)?;
-    let included = start.request.include_uncommitted && !uncommitted.is_empty();
-    let base_commit = if included {
+    let included = include_uncommitted && !uncommitted.is_empty();
+    let commit = if included {
         snapshot_commit(root, run_dir)?
     } else {
         head(root).context("reading the base commit")?
     };
+    Ok(Base {
+        commit,
+        uncommitted,
+        included,
+        notes: Vec::new(),
+    })
+}
+
+/// A repository with no commits has no `HEAD` to branch from, so the base is your files as
+/// they are: what your index holds and what your ignore rules allow, by the sizes a folder
+/// without git is recorded with. It's a commit with no parent, at a ref of the run's own and
+/// built in a private index, so your branch, your staging area and your files stay as they
+/// are. The run can't move a branch that has nothing on it, so its work comes back as files,
+/// or as the branch's `first_commit` when your settings ask for that.
+fn unborn_base(
+    env: &AppEnv,
+    run: &RunId,
+    run_dir: &Path,
+    history: &HistorySettings,
+    first_commit: bool,
+) -> anyhow::Result<Base> {
+    let root = &env.repo_root;
+    refuse_too_much(env)?;
+    create_private_dir_all(run_dir)?;
+    let index = run_dir.join("base.index");
+    let snapshot = (|| {
+        copy_your_index(root, &index)?;
+        let new = git_with_index(
+            root,
+            &index,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+        )?;
+        let survey = Survey::of(root, &new, history);
+        survey.fits(history)?;
+        survey.leaves_room(root, history)?;
+        let add = survey.add_all();
+        let add: Vec<&str> = add.iter().map(String::as_str).collect();
+        git_with_index(root, &index, &add)?;
+        let tree = git_with_index(root, &index, &["write-tree"])?;
+        let message = "Argonauts run base: your files before your first commit";
+        let commit = git_with_index(root, &index, &["commit-tree", &tree, "-m", message])?;
+        git(root, &["update-ref", &unborn::base_ref(run), &commit])?;
+        Ok::<_, anyhow::Error>((commit, survey.left_out))
+    })();
+    remove_index(&index);
+    let (commit, left_out) = snapshot?;
+    let lands = if first_commit {
+        "Its finished work becomes your branch's first commit, together with those files, as \
+         merge.unborn asks."
+    } else {
+        "Its finished work is written into your files for you to commit, and nothing is \
+         committed or staged for you."
+    };
+    let mut notes = vec![format!(
+        "This repository has no commits yet, so this workflow starts from your files as they \
+         are. {lands}"
+    )];
+    notes.extend(left_out_note(&left_out));
+    Ok(Base {
+        commit,
+        uncommitted: Vec::new(),
+        included: false,
+        notes,
+    })
+}
+
+/// A private index that starts as a copy of yours, so the snapshot holds what you staged,
+/// a file your ignore rules would hide included.
+fn copy_your_index(root: &Path, index: &Path) -> anyhow::Result<()> {
+    let yours = root.join(git(root, &["rev-parse", "--git-path", "index"])?);
+    match std::fs::copy(&yours, index) {
+        // Nothing staged yet.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("reading {}", yours.display())),
+        Ok(_) => Ok(()),
+    }
+}
+
+/// Your home folder and a file system's top hold far more than a project.
+fn refuse_too_much(env: &AppEnv) -> anyhow::Result<()> {
+    if let Some(what) = hidden_git::refused(&env.repo_root, env.user_home.as_deref()) {
+        bail!(
+            "this is {what}, which is too much to record for a workflow. Start Argonauts in \
+             the project's own folder"
+        );
+    }
+    Ok(())
+}
+
+fn left_out_note(left_out: &[String]) -> Option<String> {
+    let left_out = named(left_out)?;
+    Some(format!(
+        "Left out of what the agents see, and left alone in your folder: {left_out}."
+    ))
+}
+
+/// A folder without git has nothing committed, so the base is the folder as it is, recorded
+/// in the history Argonauts keeps for it. A folder that kept none until now starts here, and
+/// is told so: agents working side by side need branches, and chat and solo never did.
+fn folder_base(env: &AppEnv, history: &HistorySettings) -> anyhow::Result<Base> {
+    if !history.enabled {
+        bail!(
+            "this folder has no git, and history.enabled is off, so a workflow has nowhere to \
+             keep its branches. Turn the setting on, or make the folder a repository with /git"
+        );
+    }
+    refuse_too_much(env)?;
+    let mut notes = Vec::new();
+    if !env.git().has_history() {
+        notes.push(format!(
+            "This folder has no git, so this workflow keeps its history under {}. Your folder \
+             gets no .git, and the finished work is written back into your files. /git changes \
+             that.",
+            env.display(env.paths.home())
+        ));
+    }
+    hidden_git::turn_on(&env.state_dir)?;
+    let snapshot = hidden_git::record(&env.repo_root, history, "Your folder before a run")?;
+    notes.extend(left_out_note(&snapshot.left_out));
+    Ok(Base {
+        commit: snapshot.commit,
+        uncommitted: Vec::new(),
+        included: false,
+        notes,
+    })
+}
+
+/// The first few of `paths`, then how many more.
+fn named(paths: &[String]) -> Option<String> {
+    let shown = paths.len().min(NAMED);
+    let mut text = paths.get(..shown)?.join(", ");
+    if text.is_empty() {
+        return None;
+    }
+    if paths.len() > shown {
+        text.push_str(&format!(" and {} more", paths.len() - shown));
+    }
+    Some(text)
+}
+
+fn started(
+    env: &AppEnv,
+    start: &StartRecord,
+    recorded: &SettingsRecord,
+    base_commit: String,
+    uncommitted: Vec<String>,
+    included: bool,
+) -> anyhow::Result<RunStarted> {
+    let root = &env.repo_root;
     let request = &start.request;
     Ok(RunStarted {
         request: request.request.clone(),
         title: title(&request.request),
         mode: request.mode,
         forced: request.forced,
-        preset: recorded.settings.preset.clone(),
+        workflow: recorded.settings.workflow.clone(),
         estimate: request.estimate.clone(),
         triage: request.triage.clone(),
         chat_turn: request.chat_turn.clone(),
@@ -60,6 +249,7 @@ pub(crate) fn run_started(
         version: env!("CARGO_PKG_VERSION").to_owned(),
         front_end: request.front_end.clone(),
         instructions: request.instructions.clone(),
+        required_steps: request.required_steps.clone(),
     })
 }
 
@@ -124,18 +314,20 @@ fn snapshot_commit(root: &Path, run_dir: &Path) -> anyhow::Result<String> {
             ],
         )
     })();
-    if let Err(err) = std::fs::remove_file(&index)
+    remove_index(&index);
+    result
+}
+
+fn remove_index(index: &Path) {
+    if let Err(err) = std::fs::remove_file(index)
         && err.kind() != std::io::ErrorKind::NotFound
     {
         tracing::warn!("removing {}: {err}", index.display());
     }
-    result
 }
 
 fn git_with_index(root: &Path, index: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let output = crate::git::command(root)
         .args(args)
         .env("GIT_INDEX_FILE", index)
         .env("GIT_AUTHOR_NAME", "Argonauts")
@@ -237,5 +429,157 @@ mod tests {
             "untracked\n"
         );
         base_worktree(&env.repo_root, &base, &commit).unwrap();
+    }
+
+    #[test]
+    fn a_run_in_a_folder_without_git_starts_from_the_folder_as_it_is() {
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("todo.txt"), "buy milk\n").unwrap();
+        let env = AppEnv::for_repo(Paths::new(home.path()), folder.path(), false).unwrap();
+        let settings = argonauts_core::settings::Settings::default();
+
+        let base = folder_base(&env, &settings.history).unwrap();
+        assert!(!env.repo_root.join(".git").exists());
+        assert!(
+            env.git().has_history(),
+            "the workflow turned the hidden history on"
+        );
+        assert_eq!(base.commit, head(&env.repo_root).unwrap());
+        assert_eq!(
+            git(
+                &env.repo_root,
+                &["show", &format!("{}:todo.txt", base.commit)]
+            )
+            .unwrap(),
+            "buy milk"
+        );
+        assert!(base.uncommitted.is_empty() && !base.included);
+        assert!(
+            matches!(base.notes.as_slice(), [note] if note.starts_with("This folder has no git, so")),
+            "{:?}",
+            base.notes
+        );
+
+        // The base worktree is made from that history, and the next run says nothing new.
+        let tree = home.path().join("worktrees/base");
+        base_worktree(&env.repo_root, &tree, &base.commit).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tree.join("todo.txt")).unwrap(),
+            "buy milk\n"
+        );
+        std::fs::write(folder.path().join("todo.txt"), "buy oat milk\n").unwrap();
+        let next = folder_base(&env, &settings.history).unwrap();
+        assert_ne!(next.commit, base.commit);
+        assert!(next.notes.is_empty(), "{:?}", next.notes);
+    }
+
+    #[test]
+    fn a_workflow_is_refused_where_the_history_is_turned_off() {
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let env = AppEnv::for_repo(Paths::new(home.path()), folder.path(), false).unwrap();
+        let off = HistorySettings {
+            enabled: false,
+            ..HistorySettings::default()
+        };
+        let err = folder_base(&env, &off).err().unwrap();
+        assert!(err.to_string().contains("history.enabled"), "{err}");
+        assert!(!env.git().has_history());
+    }
+
+    /// A repository with no commits, some files, and its environment.
+    fn unborn() -> (tempfile::TempDir, tempfile::TempDir, AppEnv) {
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        git(folder.path(), &["init", "--quiet"]).unwrap();
+        std::fs::write(folder.path().join("todo.txt"), "buy milk\n").unwrap();
+        std::fs::write(folder.path().join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(folder.path().join("debug.log"), "noise\n").unwrap();
+        let env = AppEnv::for_repo(Paths::new(home.path()), folder.path(), false).unwrap();
+        (folder, home, env)
+    }
+
+    #[test]
+    fn a_run_in_a_repository_with_no_commits_starts_from_a_snapshot_of_your_files() {
+        let (_folder, home, env) = unborn();
+        let root = &env.repo_root;
+        // Staged past the ignore rules, so it's yours to keep in the project.
+        std::fs::write(root.join("kept.log"), "wanted\n").unwrap();
+        git(root, &["add", "--force", "kept.log"]).unwrap();
+        let status = git(root, &["status", "--porcelain"]).unwrap();
+        let run = RunId::new("run-01").unwrap();
+        let settings = argonauts_core::settings::Settings::default();
+
+        let run_dir = home.path().join("run");
+        let base = unborn_base(&env, &run, &run_dir, &settings.history, false).unwrap();
+
+        let held = git(root, &["ls-tree", "-r", "--name-only", &base.commit]).unwrap();
+        assert_eq!(held, ".gitignore\nkept.log\ntodo.txt");
+        assert!(
+            git(root, &["rev-list", "--parents", "-1", &base.commit])
+                .unwrap()
+                .split(' ')
+                .nth(1)
+                .is_none(),
+            "the snapshot has no parent"
+        );
+        assert_eq!(
+            git(root, &["rev-parse", "refs/argonauts/run-01/base"]).unwrap(),
+            base.commit
+        );
+        assert!(
+            matches!(base.notes.as_slice(), [note] if note.starts_with("This repository has no commits yet")
+                && note.ends_with("nothing is committed or staged for you.")),
+            "{:?}",
+            base.notes
+        );
+        // Asked to make the first commit, the run says so from the start.
+        let again = RunId::new("run-02").unwrap();
+        let asked = unborn_base(&env, &again, &run_dir, &settings.history, true).unwrap();
+        assert!(
+            matches!(asked.notes.as_slice(), [note] if note.ends_with("becomes your branch's first commit, together with those files, as merge.unborn asks.")),
+            "{:?}",
+            asked.notes
+        );
+
+        // Your branch still has nothing on it, and your staging area is as you left it.
+        assert!(!has_commits(root).unwrap());
+        assert_eq!(git(root, &["status", "--porcelain"]).unwrap(), status);
+        assert!(!run_dir.join("base.index").exists());
+
+        let tree = home.path().join("worktrees/base");
+        base_worktree(root, &tree, &base.commit).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tree.join("todo.txt")).unwrap(),
+            "buy milk\n"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_leaves_out_what_is_too_big_and_says_so() {
+        let (_folder, home, env) = unborn();
+        std::fs::write(env.repo_root.join("data.bin"), vec![0_u8; 2 * 1024 * 1024]).unwrap();
+        let limits = HistorySettings {
+            max_file_mb: 1,
+            ..HistorySettings::default()
+        };
+        let run = RunId::new("run-01").unwrap();
+
+        let base = unborn_base(&env, &run, &home.path().join("run"), &limits, false).unwrap();
+
+        let held = git(
+            &env.repo_root,
+            &["ls-tree", "-r", "--name-only", &base.commit],
+        )
+        .unwrap();
+        assert_eq!(held, ".gitignore\ntodo.txt");
+        assert!(
+            base.notes
+                .iter()
+                .any(|note| note.contains("data.bin (over 1 MB)")),
+            "{:?}",
+            base.notes
+        );
     }
 }

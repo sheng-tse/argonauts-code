@@ -5,17 +5,17 @@ expression: "screen(&mut view, width, height, &state)"
 argonauts › crew                                                    Claude 72% · Codex 41% · agy 90%
   Needs you 2    Working 2    Ready 0    Done 3  [ All 7 ]
 
-~/code/export
-  Add a --json flag to export
-  ❯ ◆ Add a --json flag to export                            asks: Merge this run into ma…  just now
-    ◆ Add the JSON writer           GPT 5.6 on Codex         asks: Keep a CSV fallback?       2m ago
-    ● Wire the --json flag          Opus on Claude Code      Update(src/mw/limit.ts)          5m ago
-    ○ Wire the --json flag          Gemini 3.6 Pro on Anti…  waiting on other work            1m ago
-    ✓ Rename the CSV writer         GPT 5.6 on Codex         Integrated card-001.             3m ago
-    ✓ Restater · Add a --json fla…  Haiku on Claude Code     done                            15m ago
-    ✓ Drafter · Add a --json flag…  Haiku on Claude Code     done                            15m ago
+◆ Add a --json flag to export · needs you
+  ❯ ◆ question           asks: Merge this run into main?                                    just now
+    ◆ build:json-writer  asks: Keep a CSV fallback?                                           2m ago
+    ● build:json-flag    Update(src/mw/limit.ts)                                              5m ago
+    ○ review:json-flag   waiting on other work                                                1m ago
+    ✓ build:csv-writer   Integrated task-001.                                                 3m ago
+    ✓ restater           done                                                                15m ago
+    ✓ drafter            done                                                                15m ago
 
 Listing conversations and CLI sessions…
+
 
 
 

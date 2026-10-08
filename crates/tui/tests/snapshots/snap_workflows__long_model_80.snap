@@ -3,12 +3,12 @@ source: crates/tui/tests/snap_workflows.rs
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────
- solo-reviewed
- One small change, reviewed by another family          0/2 agents · 1m30s
+ maker-checker
+ One small change, reviewed by another… 0/2 agents · 1m30s · ↓ 41k tokens
 
  ╭ Phases ───────┬ Build · 2 agents ────────────────────────────────────╮
- │ ❯ 1 Build 0/2 │  ● owner · card-001    Qwen3 Coder 480B A35b … 1m01s │
- │               │  ○ reviewer · card-001 GPT 5.6                       │
+ │ ❯ 1 Build 0/2 │  ◐ worker · task-001   Qwen3 Coder 480B A35b … 1m01s │
+ │               │  ○ reviewer · task-001 GPT 5.6                       │
  │               │                                                      │
  │               │                                                      │
  │               │                                                      │

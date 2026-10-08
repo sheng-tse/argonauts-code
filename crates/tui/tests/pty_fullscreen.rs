@@ -10,7 +10,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use pty_support::*;
 
-const HEADER: &str = r"Argonauts v\d";
+const HEADER: &str = r"Argonauts Code v\d";
 const SHELL_LINE: &str = "$ argonauts";
 const ENTER: &str = "\x1b[?1049h";
 const LEAVE: &str = "\x1b[?1049l";
@@ -245,7 +245,7 @@ fn a_message_that_says_exit_or_quit_leaves() {
 fn runs_that_keep_going_leave_one_line_naming_how_to_watch_them() {
     let (_, _, events) = crew_run(1);
     let mut harness = start_from_shell(Script::idle().all(0, events));
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.send("/exit");
     harness.press(Key::Enter);
     assert_eq!(harness.wait_exit(), 0);
@@ -259,7 +259,7 @@ fn runs_that_keep_going_leave_one_line_naming_how_to_watch_them() {
 fn a_panic_gives_the_terminal_back_before_its_message() {
     let script = Script::idle()
         .await_signal("boom")
-        .panic("the harness crashed on purpose");
+        .panic("the CLI crashed on purpose");
     let mut harness = start_from_shell(script);
     harness.wait_visible(MODE_IDLE);
     assert!(on_alternate(&harness));
@@ -268,7 +268,7 @@ fn a_panic_gives_the_terminal_back_before_its_message() {
     assert!(!on_alternate(&harness));
     let raw = raw_text(&harness);
     let message = raw
-        .find("the harness crashed on purpose")
+        .find("the CLI crashed on purpose")
         .expect("the panic printed");
     assert!(
         raw.rfind(LEAVE).is_some_and(|left| left < message),
@@ -290,7 +290,7 @@ fn sigterm_gives_the_terminal_back() {
     harness.wait_visible("note 03");
     assert!(on_alternate(&harness));
     let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
-    kill(Pid::from_raw(pid), Signal::SIGTERM).expect("signalling the harness");
+    kill(Pid::from_raw(pid), Signal::SIGTERM).expect("signalling the CLI");
     harness.wait_exit();
     assert!(!on_alternate(&harness));
     let screen = harness.screen();
@@ -332,9 +332,9 @@ fn stop_signals_give_the_inline_screen_the_terminal_back() {
             .inline()
             .name(&format!("inline_{signal}"))
             .start();
-        harness.wait_visible("esc to interrupt");
+        harness.wait_visible(WORKING);
         let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
-        kill(Pid::from_raw(pid), signal).expect("signalling the harness");
+        kill(Pid::from_raw(pid), signal).expect("signalling the CLI");
         assert_eq!(harness.wait_exit(), 0, "{signal} closes the screen cleanly");
         let raw = raw_text(&harness);
         assert!(!raw.contains(ENTER), "{signal}: {raw:?}");
@@ -370,7 +370,7 @@ fn a_stop_signal_during_the_start_up_probes_gives_the_terminal_back() {
         raw_text(&harness).contains(KEYBOARD_QUERY)
     });
     let pid = i32::try_from(harness.pid()).expect("a pid fits an i32");
-    kill(Pid::from_raw(pid), Signal::SIGTERM).expect("signalling the harness");
+    kill(Pid::from_raw(pid), Signal::SIGTERM).expect("signalling the CLI");
     assert_eq!(harness.wait_exit(), 0, "the screen closed it");
     let raw = raw_text(&harness);
     for (on, off) in [(PASTE_ON, PASTE_OFF), (FOCUS_ON, FOCUS_OFF)] {

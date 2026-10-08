@@ -143,6 +143,27 @@ pub enum InputPartKind {
     Schema,
     /// A file or folder you mentioned with `@`.
     File,
+    /// The frame around an agent's instructions: its role, what it may touch, and the shape
+    /// of its answer.
+    Frame,
+    /// What the agent is asked to do, by whoever wrote it: the orchestrator, a model you
+    /// named, or Argonauts' own template.
+    Instructions,
+    /// Your own file for the role, such as `.argonauts/roles/reviewers.md`.
+    RoleFile,
+    /// What your request said for the role.
+    Request,
+}
+
+impl InputPartKind {
+    /// Whether the part tells the agent what it is and what to do, rather than giving it
+    /// something to work on. Endpoints send these as the system message.
+    pub fn instructs(self) -> bool {
+        matches!(
+            self,
+            Self::Prompt | Self::Frame | Self::Instructions | Self::RoleFile | Self::Request
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -397,6 +418,10 @@ pub struct SubagentUpdate {
     pub log_uri: Option<String>,
     /// Whether its own tool calls stream to us. False for Codex threads, and the UI says so.
     pub steps_visible: bool,
+    /// The tokens it has used so far, where its CLI counts them as it goes, as Claude Code's
+    /// task progress does. The list ends its row with them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

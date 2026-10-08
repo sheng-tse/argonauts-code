@@ -6,7 +6,7 @@ use argonauts_core::{AgentEvent, ErrorCategory, TodoItem, Verbosity};
 use serde_json::Value;
 
 use crate::bridge::tools::{finish_call, is_own, start_call};
-use crate::cell::{ToolItem, ToolTitle};
+use crate::cell::{PhaseLine, ToolItem, ToolTitle};
 use crate::state::AppState;
 use crate::text::sanitize_line;
 
@@ -93,6 +93,11 @@ pub fn agent_lines(
             message,
             ..
         } => vec![format!("{who}: {}", sanitize_line(message).trim())],
+        // Its turn was stopped, by you or to hand it a message. Nothing failed.
+        AgentEvent::Error {
+            category: ErrorCategory::Interrupted,
+            ..
+        } => vec![format!("{who}: stopped")],
         AgentEvent::Error { message, .. } => {
             vec![format!("{who} error: {}", sanitize_line(message).trim())]
         }
@@ -170,7 +175,7 @@ fn tool_result(
 fn item_lines(item: &ToolItem) -> Vec<String> {
     match item {
         ToolItem::Text { text, .. } | ToolItem::Markdown(text) => output_lines(text),
-        ToolItem::Hanging { lead, text } => output_lines(&format!("{lead}{text}")),
+        ToolItem::Phases(phases) => phases.iter().enumerate().map(phase_line).collect(),
         ToolItem::Command { output, hidden, .. } => {
             let mut lines = output_lines(&output.join("\n"));
             if *hidden > 0 && !lines.is_empty() {
@@ -179,6 +184,20 @@ fn item_lines(item: &ToolItem) -> Vec<String> {
             lines
         }
         _ => Vec::new(),
+    }
+}
+
+/// `2. Secrets scan, a step you require: the reviewers scan the change`.
+fn phase_line((i, phase): (usize, &PhaseLine)) -> String {
+    let yours = if phase.required {
+        ", a step you require"
+    } else {
+        ""
+    };
+    let said = format!("{}. {}{yours}", i + 1, sanitize_line(&phase.title).trim());
+    match sanitize_line(&phase.detail).trim() {
+        "" => said,
+        detail => format!("{said}: {detail}"),
     }
 }
 

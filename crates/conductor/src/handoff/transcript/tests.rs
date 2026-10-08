@@ -34,7 +34,7 @@ impl Log {
             seq: self.events.len() as u64,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: run(),
-            card_id: card.map(|id| CardId::new(id).expect("a valid card id")),
+            card_id: card.map(|id| CardId::new(id).expect("a valid task id")),
             session: session.map(SessionKey::numbered),
             source: "conductor".to_owned(),
             kind,
@@ -52,7 +52,7 @@ impl Log {
 
     fn started(&mut self, session: u32, who: &str, access: Access) {
         let role = match access {
-            Access::Build | Access::Spike => RoleName::Owner,
+            Access::Build | Access::Spike => RoleName::Worker,
             _ => RoleName::Reviewer,
         };
         let started = SessionStarted {
@@ -63,7 +63,7 @@ impl Log {
             role,
             step: None,
             access,
-            lifetime: SessionLifetime::Card,
+            lifetime: SessionLifetime::Task,
             resumed_from: None,
             follow_key: None,
             workflow_step: None,
@@ -172,7 +172,7 @@ impl Log {
 }
 
 fn card_id() -> CardId {
-    CardId::new(CARD).expect("a valid card id")
+    CardId::new(CARD).expect("a valid task id")
 }
 
 fn transcript_of(log: &Log) -> String {
@@ -205,7 +205,7 @@ fn fenced_after<'a>(text: &'a str, line: &str) -> &'a str {
 #[test]
 fn renders_each_kind_of_event() {
     let mut log = Log::new();
-    log.worktree(Path::new("/w/card-003"));
+    log.worktree(Path::new("/w/task-003"));
     // An earlier session on the card, and a reviewer after: neither is the old session.
     log.started(1, "codex/gpt-5", Access::Build);
     log.message(1, "first try");
@@ -222,7 +222,7 @@ fn renders_each_kind_of_event() {
     log.input(
         2,
         &[
-            ("prompt", "You own card-003.\n"),
+            ("prompt", "You own task-003.\n"),
             ("card", "Add the rate-limit middleware."),
         ],
     );
@@ -251,7 +251,7 @@ fn renders_each_kind_of_event() {
         json!({"file_path": "src/cli.rs", "old_string": "a\nb\nc", "new_string": "a\nB\nC\nD\nc"}),
     );
     log.finished(2, "t2", true, Some("The file has been updated."));
-    log.changed(2, "/w/card-003/src/cli.rs", "update");
+    log.changed(2, "/w/task-003/src/cli.rs", "update");
     log.tool(
         2,
         "t3",
@@ -341,17 +341,17 @@ fn renders_each_kind_of_event() {
 
     let session = old_session(&card_id(), &log.events).expect("a building session");
     assert_eq!(session.number, 2);
-    assert_eq!(session.worktree, Some(Path::new("/w/card-003")));
+    assert_eq!(session.worktree, Some(Path::new("/w/task-003")));
     let text = render(&card(CARD), &session, &log.events, "unused");
     let expected = "\
-# card-003 Middleware · claude-code/opus · why it stopped: usage limit
+# task-003 Middleware · claude-code/opus · why it stopped: usage limit
 
 Written from the run's event log. Each tool's output is cut to 40 lines; the raw log has all of it.
 
 ## Prompt
 
 ```
-You own card-003.
+You own task-003.
 Add the rate-limit middleware.
 ```
 
@@ -448,7 +448,7 @@ fn a_session_without_its_end_takes_the_reason_given() {
     let text = transcript_of(&log);
     assert!(
         text.starts_with(
-            "# card-003 Middleware · claude-code/opus · why it stopped: it stopped without a \
+            "# task-003 Middleware · claude-code/opus · why it stopped: it stopped without a \
              recorded reason\n"
         ),
         "{text}"
@@ -571,7 +571,7 @@ fn the_old_session_is_the_last_one_that_builds() {
     log.started(2, "codex/gpt-5", Access::ReadOnly);
     // Another card's session is never this card's.
     log.push(
-        Some("card-009"),
+        Some("task-009"),
         Some(7),
         RunEventKind::Session(SessionEvent::Ended(Box::new(SessionEnd {
             vendor_session: None,
@@ -592,11 +592,11 @@ fn the_old_session_is_the_last_one_that_builds() {
     assert_eq!(session.worktree, None);
 
     log.started(3, "claude-code/opus", Access::Spike);
-    log.worktree(Path::new("/w/card-003"));
+    log.worktree(Path::new("/w/task-003"));
     let session = old_session(&card_id(), &log.events).expect("two building sessions");
     assert_eq!((session.key, session.number), (&SessionKey::numbered(3), 2));
     assert_eq!(session.started.worker, worker("claude-code/opus"));
-    assert_eq!(session.worktree, Some(Path::new("/w/card-003")));
+    assert_eq!(session.worktree, Some(Path::new("/w/task-003")));
 }
 
 #[tokio::test]
@@ -608,25 +608,25 @@ async fn no_commit_in_the_worktree_takes_the_transcript() {
         .await
         .expect("git runs")
         .expect("a first commit");
-    let tree = repo.dir.path().join("trees/run-01/card-003");
-    git.add_worktree(&repo.root, &tree, "argonauts/run-01/card-003", &base)
+    let tree = repo.dir.path().join("trees/run-01/task-003");
+    git.add_worktree(&repo.root, &tree, "argonauts/run-01/task-003", &base)
         .await
         .expect("a worktree");
     let run_dir = repo.dir.path().join("state/runs/run-01");
 
-    let paths = write("# card-003\n", 1, &tree, &run_dir, &card_id()).expect("written");
+    let paths = write("# task-003\n", 1, &tree, &run_dir, &card_id()).expect("written");
     assert_eq!(
         paths.worktree,
-        tree.join(".argonauts/handoff/1/transcript.md")
+        tree.join(".argonauts/fallback/1/transcript.md")
     );
     assert_eq!(
         paths.run,
-        run_dir.join("cards/card-003/handoff-1/transcript.md")
+        run_dir.join("cards/task-003/fallback-1/transcript.md")
     );
     for path in [&paths.worktree, &paths.run] {
         assert_eq!(
             std::fs::read_to_string(path).expect("a copy"),
-            "# card-003\n"
+            "# task-003\n"
         );
     }
     assert_eq!(
@@ -635,7 +635,7 @@ async fn no_commit_in_the_worktree_takes_the_transcript() {
     );
 
     // A later handoff's transcript stays out too, and the exclude lists the folder once.
-    write("# card-003 again\n", 2, &tree, &run_dir, &card_id()).expect("written");
+    write("# task-003 again\n", 2, &tree, &run_dir, &card_id()).expect("written");
     std::fs::write(tree.join("limit.rs"), "fn limit() {}\n").expect("a file");
     let sha = git
         .commit_all(&tree, "work")
@@ -699,7 +699,7 @@ fn the_packet_names_the_transcript_when_its_context_wants_one() {
     let text = std::fs::read_to_string(&paths.worktree).expect("the worktree's copy");
     assert!(
         text.starts_with(
-            "# card-003 Middleware · claude-code/opus · why it stopped: usage limit\n"
+            "# task-003 Middleware · claude-code/opus · why it stopped: usage limit\n"
         )
     );
     assert!(text.contains("Halfway there."));
@@ -715,7 +715,7 @@ fn the_packet_names_the_transcript_when_its_context_wants_one() {
     );
 
     let mut summary = Fixture::new();
-    summary.settings_mut().handoff.context = Some(HandoffContext::NoteAndSummary);
+    summary.settings_mut().fallback.context = Some(HandoffContext::NoteAndSummary);
     let packet = summary
         .planner()
         .with_run_dir(run_dir.clone())
@@ -733,7 +733,7 @@ fn fresh_and_note_get_no_transcript() {
 
     for context in [HandoffContext::Fresh, HandoffContext::Note] {
         let mut fixture = Fixture::new();
-        fixture.settings_mut().handoff.context = Some(context);
+        fixture.settings_mut().fallback.context = Some(context);
         let packet = fixture
             .planner()
             .with_run_dir(run_dir.clone())
@@ -742,7 +742,7 @@ fn fresh_and_note_get_no_transcript() {
     }
     // The stopped vendor's own rule wins over the global one.
     let mut fixture = Fixture::new();
-    fixture.settings_mut().handoff.replace.insert(
+    fixture.settings_mut().fallback.replace.insert(
         vendor("claude-code"),
         VendorReplacement {
             context: Some(HandoffContext::Note),

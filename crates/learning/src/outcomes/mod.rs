@@ -60,7 +60,7 @@ pub struct Prediction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Predictor {
-    Owner,
+    Worker,
     Reviewer,
 }
 
@@ -307,10 +307,10 @@ mod tests {
         std::fs::create_dir_all(store.outcomes_dir()).unwrap();
         std::fs::write(
             run_file(&store, &run),
-            "{\"run\":\"run-01\",\"card\":\"card-001\",\"worker\":\"claude-code\",\
+            "{\"run\":\"run-01\",\"card\":\"task-001\",\"worker\":\"claude-code\",\
              \"task_type\":\"docs\",\"first_try\":false,\"attempts\":2,\"integrated\":true,\
              \"spent_usd\":0.4}\n\
-             {\"run\":\"run-01\",\"card\":\"card-003\",\"worker\":\"codex/gpt-5.6\",\
+             {\"run\":\"run-01\",\"card\":\"task-003\",\"worker\":\"codex/gpt-5.6\",\
              \"task_type\":\"backend\",\"first_try\":true,\"attempts\":1,\"integrated\":true,\
              \"spent_usd\":0.9,\"step\":{\"kind\":\"build\",\"standard\":\"do\"}}\n\
              {\"cut short\n",
@@ -324,8 +324,8 @@ mod tests {
             .unwrap();
         std::io::Write::write_all(
             &mut file,
-            b"{\"type\":\"prediction\",\"run\":\"run-01\",\"card\":\"card-002\",\
-              \"worker\":\"codex\",\"role\":\"owner\",\"task_type\":\"backend\",\
+            b"{\"type\":\"prediction\",\"run\":\"run-01\",\"card\":\"task-002\",\
+              \"worker\":\"codex\",\"role\":\"worker\",\"task_type\":\"backend\",\
               \"at\":\"2026-09-30T10:00:00Z\",\"p_pass_gates_first_try\":0.7}\n\
               {\"type\":\"reversal\",\"run\":\"run-01\",\"what\":\"reverted the auto-merge\",\
               \"at\":\"2026-09-30T12:00:00Z\"}\n",
@@ -355,7 +355,7 @@ mod tests {
         let LogLine::Prediction(prediction) = &lines[3] else {
             panic!("{lines:?}");
         };
-        assert_eq!(prediction.role, Predictor::Owner);
+        assert_eq!(prediction.role, Predictor::Worker);
         assert_eq!(prediction.p_pass_gates_first_try, Some(0.7));
         assert_eq!(prediction.p_within_time_cap, None);
         assert!(matches!(&lines[4], LogLine::Reversal(reversal) if reversal.card.is_none()));

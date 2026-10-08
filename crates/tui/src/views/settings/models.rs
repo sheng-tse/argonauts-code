@@ -14,7 +14,7 @@ use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::registry::ModelAccess;
 
 use super::flow::{self, Flow, Kept, RowAction, Stage, Step};
-use super::words::{model_role, value_words};
+use super::words::{model_role, value_words, word_for_a_model};
 use crate::bottom::{Picker, PickerRow};
 use crate::format::{self, setting_value};
 
@@ -70,14 +70,14 @@ fn cli_list(picker: &mut Picker, role: Option<RoleName>) {
     let for_setting = picker.flow.model_for.is_some();
     if !for_setting {
         picker.title = match role {
-            None => "Default agent".to_owned(),
+            None => "Main agent".to_owned(),
             Some(role) => format!("Model for {}", role.as_str()),
         };
     }
     picker.about = with_freshness(
         picker,
         match role {
-            _ if for_setting => "Every vendor's CLIs and endpoints you can run, best fit first",
+            _ if for_setting => "Every agent's CLIs and endpoints you can run, best fit first",
             None => "Who answers in chat, does solo work, and steps in last when others stop",
             Some(_) => "The CLIs and endpoints this role's rules allow, best fit first",
         },
@@ -217,7 +217,7 @@ pub fn pick(role: Option<RoleName>, worker: WorkerRef) -> Step {
 fn pick_with(role: Option<RoleName>, worker: WorkerRef, effort: Option<String>) -> Step {
     Step::Done(UiCommand::Slash {
         command: SlashCommand::Model {
-            role: role.filter(|role| *role != RoleName::Default),
+            role: role.filter(|role| *role != RoleName::Main),
             worker: Some(worker),
             effort,
         },
@@ -352,6 +352,9 @@ pub fn kept(picker: &Picker, role: Option<RoleName>) -> Kept {
 /// the CLI picks and says what it runs. A worker that isn't one of `choices` gets the name
 /// its id gives.
 pub fn worker_words(worker: &str, choices: &[ModelChoice]) -> String {
+    if let Some(word) = word_for_a_model(worker) {
+        return word.to_owned();
+    }
     let Ok(worker) = worker.parse::<WorkerRef>() else {
         return worker.to_owned();
     };
@@ -380,7 +383,7 @@ fn has_roles(picker: &Picker) -> bool {
 
 fn who(role: Option<RoleName>) -> String {
     match role {
-        None | Some(RoleName::Default) => "the default agent".to_owned(),
+        None | Some(RoleName::Main) => "the main agent".to_owned(),
         Some(role) => format!("the {} role", role.as_str()),
     }
 }
@@ -516,8 +519,10 @@ fn alias_line(aliases: &[ModelChoice]) -> Option<String> {
 fn model_note(choice: &ModelChoice) -> String {
     let mut parts: Vec<String> = choice.note.iter().cloned().collect();
     match choice.cost {
-        CostEstimate::Usd(usd) => parts.push(format!("~{} a card", format::usd(usd))),
-        CostEstimate::Quota(share) => parts.push(format!("~{} of quota a card", percent(share))),
+        CostEstimate::Usd(usd) => parts.push(format!("~{} a task", format::usd(usd))),
+        CostEstimate::Quota(share) => {
+            parts.push(format!("~{} of plan usage a task", format::percent(share)))
+        }
         CostEstimate::Free => parts.push("free".to_owned()),
         CostEstimate::Unknown => {}
     }
@@ -538,12 +543,9 @@ fn access_words(access: ModelAccess) -> &'static str {
 fn quota_words(choice: &ModelChoice) -> Option<String> {
     let quota = choice.quota.as_ref()?;
     match (quota.status, quota.used) {
-        (QuotaStatus::Rejected, _) => Some("out of quota".to_owned()),
-        (_, Some(used)) => Some(format!("{} used", percent(used))),
+        (QuotaStatus::Rejected, _) => Some("out of plan usage".to_owned()),
+        // Plan usage in the one wording every view has: `71% used`.
+        (_, Some(used)) => Some(format::quota(used, format::QuotaWords::Used, false)),
         _ => None,
     }
-}
-
-fn percent(share: f64) -> String {
-    format!("{:.0}%", (share * 100.0).clamp(0.0, 100.0))
 }

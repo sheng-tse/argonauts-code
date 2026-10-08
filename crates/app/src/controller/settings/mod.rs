@@ -26,8 +26,11 @@ mod tests;
 #[cfg(test)]
 mod tests_models;
 
+pub(crate) use args::{check_known, preset_list};
 pub(crate) use models::choices as model_choices;
 pub(crate) use rows::model_keys;
+pub(crate) use rows::rows as setting_rows;
+pub(crate) use save::set_where_it_came_from;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -47,12 +50,12 @@ use crate::commands::refuse_safety_change;
 use crate::trust::{cant_trust, hash_of};
 use save::{Change, TrustAfter};
 
-const COORDINATED_CREW: &str = "coordinated-crew";
+const COORDINATED_CREW: &str = "orchestrator";
 
 pub(crate) struct SettingsState {
     /// The questions asked here that haven't been answered.
     pending: HashMap<ChoiceId, Pending>,
-    /// `preset = "coordinated-crew"` waiting for its coordinator, with the scope picked for it.
+    /// `preset = "orchestrator"` waiting for its coordinator, with the scope picked for it.
     hold: Option<SettingScope>,
     /// The gates offer was answered in this app session, so it isn't made again even when the
     /// answer left `gates.run` ignored in a file you didn't trust.
@@ -131,7 +134,7 @@ pub(crate) async fn command(
     command: SlashCommand,
 ) -> Handled {
     if let SlashCommand::Model {
-        role: Some(RoleName::Coordinator),
+        role: Some(RoleName::Orchestrator),
         worker: Some(worker),
         ..
     } = &command
@@ -199,7 +202,7 @@ pub(crate) async fn view(
     if !matches!(
         view,
         ViewRequest::Models {
-            role: Some(RoleName::Coordinator)
+            role: Some(RoleName::Orchestrator)
         }
     ) {
         settings.hold = None;
@@ -327,11 +330,19 @@ pub(crate) async fn answer_choice(
         (Pending::Trust { change, scope }, AnswerAction::Cancel) => {
             not_now(ctx, id, &change, scope)
         }
-        // The TUI shows the file itself; the question stays open.
+        // "Show the file" prints it above the question, which stays open.
         (
             pending @ (Pending::Trust { .. } | Pending::TrustAtStart { .. }),
             AnswerAction::ShowDiff,
         ) => {
+            let file = match &pending {
+                Pending::TrustAtStart { file, .. } => Some(file.clone()),
+                Pending::Trust { scope, .. } => save::file_for(ctx, *scope),
+                _ => None,
+            };
+            if let Some(file) = file {
+                super::prompt_trust::show_file(ctx, &file);
+            }
             settings.pending.insert(id, pending);
             Ok(Vec::new())
         }
@@ -421,9 +432,9 @@ pub(crate) async fn toggle_vim(ctx: &mut Ctx, settings: &mut SettingsState) -> H
 /// this project from now on, just for you, as Claude Code's "don't ask again" does. Picking it
 /// on the card is the confirm a safety key needs; `/approvals` undoes it.
 pub(crate) fn let_the_lead_answer(ctx: &mut Ctx) -> Handled {
-    const KEY: &str = "approvals.answered_by";
+    const KEY: &str = "approvals.answers";
     refuse_safety_change(&ctx.env, &[KEY.to_owned()])?;
-    let change = Change::Set(vec![(KEY.to_owned(), "\"lead\"".to_owned())]);
+    let change = Change::Set(vec![(KEY.to_owned(), "\"main\"".to_owned())]);
     let effects = save::apply(
         ctx,
         &change,
@@ -432,7 +443,7 @@ pub(crate) fn let_the_lead_answer(ctx: &mut Ctx) -> Handled {
     )?;
     ctx.notice(
         NoteLevel::Info,
-        "From now on the lead answers the crew's questions in this project, just for you. \
+        "From now on the main agent answers the crew's questions in this project, just for you. \
          /approvals changes it.",
     );
     Ok(effects)
@@ -461,7 +472,7 @@ pub(crate) async fn offer_gates(ctx: &mut Ctx, settings: &mut SettingsState) -> 
         || settings.gates_answered
         || ctx.env.agent_session
         || !ctx.env.interactive
-        || !ctx.settings().gates.run.is_empty()
+        || !ctx.settings().checks.run.is_empty()
         || gates::skipped(&ctx.env.state_dir)
     {
         return Ok(Vec::new());
@@ -512,7 +523,7 @@ fn begin(
     refuse_unless_at_terminal(ctx, &change)?;
     if needs_coordinator(ctx, &change) {
         settings.hold = Some(scope);
-        let data = refresh::view(ctx, settings, Some(RoleName::Coordinator));
+        let data = refresh::view(ctx, settings, Some(RoleName::Orchestrator));
         ctx.send(AppEvent::View {
             data: Box::new(data),
         });
@@ -647,7 +658,7 @@ fn trust_at_start(
         save::send_ui(ctx);
     }
     let mut effects = Vec::new();
-    if ctx.settings().default_agent != before.default_agent {
+    if ctx.settings().main_agent != before.main_agent {
         effects.push(Effect::FreshChat);
     }
     effects.push(Effect::SettingsApplied { keys });
@@ -707,11 +718,11 @@ fn reset_in_effect(ctx: &mut Ctx, settings: &mut SettingsState, key: &str) -> Ha
         anyhow::bail!("{key} isn't a setting; /config lists them");
     }
     let layer = ctx.settings.layer(key);
-    let preset = ctx.settings().preset.clone();
+    let preset = ctx.settings().workflow.clone();
     let explain = match layer.as_str() {
-        "preset" => Some(format!(
-            "{key} comes from the {preset} preset, so it can't be reset here. Use /preset copy \
-             {preset} to edit the preset."
+        "workflow" => Some(format!(
+            "{key} comes from the {preset} workflow, so it can't be reset here. Use /workflow copy \
+             {preset} to edit the workflow."
         )),
         "flag" => Some(format!(
             "{key} comes from a --set flag, so it can't be reset here. It holds until you quit."
@@ -740,21 +751,21 @@ fn coordinator_picked(
     scope: SettingScope,
     worker: &WorkerRef,
 ) -> Handled {
-    if let Some(why) = models::refusal(ctx, Some(RoleName::Coordinator), worker) {
+    if let Some(why) = models::refusal(ctx, Some(RoleName::Orchestrator), worker) {
         anyhow::bail!("{why}");
     }
     trust_step(ctx, settings, coordinator_change(worker), scope)
 }
 
 fn coordinator_change(worker: &WorkerRef) -> Change {
-    let (key, value) = args::model_key(Some(RoleName::Coordinator), worker);
+    let (key, value) = args::model_key(Some(RoleName::Orchestrator), worker);
     Change::Set(vec![
-        ("preset".to_owned(), args::quoted(COORDINATED_CREW)),
+        ("workflow".to_owned(), args::quoted(COORDINATED_CREW)),
         (key, value),
     ])
 }
 
-/// `preset = "coordinated-crew"` alone while no coordinator is set.
+/// `preset = "orchestrator"` alone while no coordinator is set.
 fn needs_coordinator(ctx: &Ctx, change: &Change) -> bool {
     let Change::Set(pairs) = change else {
         return false;
@@ -762,14 +773,14 @@ fn needs_coordinator(ctx: &Ctx, change: &Change) -> bool {
     let quoted = args::quoted(COORDINATED_CREW);
     let picks_crew = pairs
         .iter()
-        .any(|(key, value)| key == "preset" && *value == quoted);
+        .any(|(key, value)| key == "workflow" && *value == quoted);
     let names_coordinator = pairs
         .iter()
-        .any(|(key, _)| key == "roles.coordinator.workers");
+        .any(|(key, _)| key == "roles.orchestrator.workers");
     let has_coordinator = ctx
         .settings()
         .roles
-        .get(&RoleName::Coordinator)
+        .get(&RoleName::Orchestrator)
         .is_some_and(|role| !role.workers.is_empty());
     picks_crew && !names_coordinator && !has_coordinator
 }
@@ -780,12 +791,12 @@ fn save_gates(ctx: &mut Ctx, settings: &mut SettingsState, lines: &[String]) -> 
     if commands.is_empty() {
         ctx.notice(
             NoteLevel::Info,
-            "No gate commands given, so none were saved.",
+            "No check commands given, so none were saved.",
         );
         return Ok(Vec::new());
     }
     let change = Change::Set(vec![(
-        "gates.run".to_owned(),
+        "checks.run".to_owned(),
         gates::gates_value(&commands)?,
     )]);
     refuse_unless_at_terminal(ctx, &change)?;

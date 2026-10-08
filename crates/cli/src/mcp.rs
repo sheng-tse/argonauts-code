@@ -17,7 +17,10 @@ use serde::Deserialize;
 pub struct Asking<'a> {
     pub endpoint: &'a str,
     pub approve: bool,
-    pub start_run: bool,
+    /// The main session's tools to offer, by name.
+    pub tools: &'a [String],
+    /// Crew roles it may ask, such as `reviewers`.
+    pub roles: &'a [String],
 }
 
 /// One agent session's tools. `report` is the step's schema file and where valid reports go.
@@ -39,12 +42,21 @@ pub async fn session(
         }
         None => None,
     };
-    let asking = asking.map(|asking| argonauts_mcp::AskTool {
-        endpoint: asking.endpoint.to_owned(),
-        token: std::env::var(APPROVE_TOKEN_ENV).unwrap_or_default(),
-        approve: asking.approve,
-        start_run: asking.start_run,
-    });
+    let asking = match asking {
+        Some(asking) => Some(argonauts_mcp::AskTool {
+            endpoint: asking.endpoint.to_owned(),
+            token: std::env::var(APPROVE_TOKEN_ENV).unwrap_or_default(),
+            approve: asking.approve,
+            tools: asking.tools.to_vec(),
+            roles: asking
+                .roles
+                .iter()
+                .map(|role| role.parse())
+                .collect::<Result<_, _>>()
+                .map_err(|err| anyhow::anyhow!("--ask-role: {err}"))?,
+        }),
+        None => None,
+    };
     argonauts_mcp::serve_session(status_file, report, asking).await
 }
 

@@ -15,8 +15,8 @@ use argonauts_core::policy::{
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    Answerer, ApprovalMode, CheckpointSettings, DecideWith, GoalChanges, Otherwise, Presence,
-    SandboxChoice,
+    Answerer, ApprovalMode, CheckpointSettings, DecideWith, Decides, GoalChanges, Otherwise,
+    Presence, SandboxChoice,
 };
 use argonauts_core::worker::SessionSpec;
 use argonauts_testkit::FakeClock;
@@ -247,7 +247,7 @@ fn merge_facts(verdict: Verdict) -> EvidenceFacts {
     let passing = EvidenceFacts {
         gates_passed: Some(true),
         reviews_approved: Some(true),
-        reviewed_by_other_company: Some(true),
+        reviewed_by_other_provider: Some(true),
         acceptance_tests_valid: Some(true),
         changed_line_coverage: Some(0.9),
         tamper_flags: Some(0),
@@ -295,7 +295,7 @@ fn asks() -> PolicyOutcome {
 fn violation() -> Violation {
     Violation {
         limit: HardLimit::ProtectedPath,
-        detail: "a card touched a protected path".to_owned(),
+        detail: "a task touched a protected path".to_owned(),
         paths: vec![".github/workflows/ci.yml".to_owned()],
     }
 }
@@ -340,15 +340,20 @@ fn last_reason(outcome: &PolicyOutcome) -> Option<String> {
 
 #[tokio::test]
 async fn policy_modes_table() {
-    use ApprovalMode::{Auto, Shadow, Supervised};
+    use ApprovalMode::{Auto, AutoPreview, Supervised};
     use Verdict::{Approve, Escalate, Reject};
     let cases = [
         (Supervised, Approve, Otherwise::Ask, Expect::Ask),
         (Supervised, Reject, Otherwise::Stop, Expect::Ask),
         (Supervised, Escalate, Otherwise::Ask, Expect::Ask),
-        (Shadow, Approve, Otherwise::Ask, Expect::Would(Approve)),
-        (Shadow, Reject, Otherwise::Stop, Expect::Would(Reject)),
-        (Shadow, Escalate, Otherwise::Ask, Expect::Would(Escalate)),
+        (AutoPreview, Approve, Otherwise::Ask, Expect::Would(Approve)),
+        (AutoPreview, Reject, Otherwise::Stop, Expect::Would(Reject)),
+        (
+            AutoPreview,
+            Escalate,
+            Otherwise::Ask,
+            Expect::Would(Escalate),
+        ),
         (Auto, Approve, Otherwise::Ask, Expect::Decided(Approve)),
         (Auto, Approve, Otherwise::Stop, Expect::Decided(Approve)),
         (Auto, Reject, Otherwise::Ask, Expect::Would(Reject)),
@@ -372,7 +377,7 @@ async fn policy_modes_table() {
             .await;
         assert_outcome(&outcome, expect, &case);
         assert_eq!(h.approver.calls(), 0, "{case}");
-        let shadows = usize::from(mode == Shadow);
+        let shadows = usize::from(mode == AutoPreview);
         assert_eq!(h.autonomy.shadows().len(), shadows, "{case}");
         if let PolicyOutcome::Decided { by, approver, .. } = &outcome {
             assert_eq!((*by, approver), (DecideWith::Rules, &None), "{case}");
@@ -460,7 +465,7 @@ async fn auto_approval_reports_the_spot_check_and_asks_when_it_cannot_reserve() 
             shadow: Some(shadow),
         } = outcome
         else {
-            panic!("asks with a shadow record: {outcome:?}");
+            panic!("asks with an auto preview record: {outcome:?}");
         };
         assert!(violations.is_empty());
         assert_eq!(shadow.would, Verdict::Approve);
@@ -490,24 +495,24 @@ async fn auto_approval_reports_the_spot_check_and_asks_when_it_cannot_reserve() 
 /// shadow stop an approval there; `auto-off` still does, and a plan or merge you keep for
 /// yourself with `presence = required` says so.
 #[tokio::test]
-async fn full_auto_goes_on_where_auto_would_pause_or_be_demoted() {
-    let mut full_auto = point(CheckpointKind::Merge);
-    full_auto.mode_override = Some(ApprovalMode::FullAuto);
+async fn autopilot_goes_on_where_auto_would_pause_or_be_demoted() {
+    let mut autopilot = point(CheckpointKind::Merge);
+    autopilot.mode_override = Some(ApprovalMode::Autopilot);
 
     let h = harness(auto_merge());
     *h.autonomy.paused.lock().unwrap() = Some("5 spot checks waiting".to_owned());
     let outcome = h
         .policy
-        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .evaluate(&autopilot, &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "paused");
     assert_eq!(h.autonomy.log(), ["reserve"]);
 
     let h = harness(auto_merge());
-    *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::Shadow);
+    *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::AutoPreview);
     let outcome = h
         .policy
-        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .evaluate(&autopilot, &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "demoted");
 
@@ -516,7 +521,7 @@ async fn full_auto_goes_on_where_auto_would_pause_or_be_demoted() {
     *h.autonomy.paused.lock().unwrap() = Some("auto is off".to_owned());
     let outcome = h
         .policy
-        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .evaluate(&autopilot, &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "auto-off");
 
@@ -524,7 +529,7 @@ async fn full_auto_goes_on_where_auto_would_pause_or_be_demoted() {
     settings.approvals.presence = Presence::Required;
     let outcome = harness(settings)
         .policy
-        .evaluate(&full_auto, &merge(Verdict::Approve))
+        .evaluate(&autopilot, &merge(Verdict::Approve))
         .await;
     assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "presence");
     assert_eq!(
@@ -546,7 +551,7 @@ async fn the_mode_comes_from_the_override_and_is_only_ever_lowered() {
 
     // Autonomy records that lost auto for this kind lower it to shadow.
     let h = harness(auto_merge());
-    *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::Shadow);
+    *h.autonomy.effective.lock().unwrap() = Some(ApprovalMode::AutoPreview);
     let outcome = h
         .policy
         .evaluate(&point(CheckpointKind::Merge), &merge(Verdict::Approve))
@@ -711,7 +716,7 @@ async fn policy_decide_with_combinations() {
 async fn hard_limits_checked_first() {
     for mode in [
         ApprovalMode::Supervised,
-        ApprovalMode::Shadow,
+        ApprovalMode::AutoPreview,
         ApprovalMode::Auto,
     ] {
         let fakes = Fakes {
@@ -796,7 +801,7 @@ async fn policy_auto_goal_approves_when_no_questions() {
 
 #[tokio::test]
 async fn policy_shadow_records_would_decide() {
-    let settings = merge_settings(ApprovalMode::Shadow, DecideWith::Rules, Otherwise::Ask);
+    let settings = merge_settings(ApprovalMode::AutoPreview, DecideWith::Rules, Otherwise::Ask);
     let h = harness(settings);
     let outcome = h
         .policy
@@ -818,10 +823,10 @@ async fn policy_shadow_records_would_decide() {
     assert_eq!(h.autonomy.shadows(), [record]);
     assert!(
         !h.autonomy.log().contains(&"reserve"),
-        "shadow reserves nothing"
+        "auto preview reserves nothing"
     );
 
-    let settings = merge_settings(ApprovalMode::Shadow, DecideWith::Model, Otherwise::Ask);
+    let settings = merge_settings(ApprovalMode::AutoPreview, DecideWith::Model, Otherwise::Ask);
     let fakes = Fakes {
         approver: FakeApprover::answering(Verdict::Reject),
         ..Fakes::default()
@@ -890,9 +895,9 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
     let mut stricter_number = auto_merge();
     stricter_number
         .approvals
-        .merge
         .rules
-        .min_changed_line_coverage = 0.95;
+        .merge
+        .min_test_coverage_of_changed_lines = 0.95;
     *file.lock().unwrap() = Some(stricter_number);
     let outcome = h
         .policy
@@ -917,12 +922,19 @@ async fn policy_stricter_of_run_start_and_reloaded_settings() {
     let supervised = merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
     let h = harness_with(supervised, fakes);
     let mut looser = auto_merge();
-    looser.approvals.merge.rules.min_changed_line_coverage = 0.1;
+    looser
+        .approvals
+        .rules
+        .merge
+        .min_test_coverage_of_changed_lines = 0.1;
     looser.limits.auto_merges_per_day = 50;
     *file.lock().unwrap() = Some(looser);
     let now = h.policy.parts().source.current();
     assert_eq!(now.approvals.merge.mode, ApprovalMode::Supervised);
-    assert_eq!(now.approvals.merge.rules.min_changed_line_coverage, 0.8);
+    assert_eq!(
+        now.approvals.rules.merge.min_test_coverage_of_changed_lines,
+        0.8
+    );
     assert_eq!(now.limits.auto_merges_per_day, 3);
     let outcome = h
         .policy
@@ -967,13 +979,13 @@ async fn a_mode_tightened_mid_run_caps_the_override() {
         .await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "unchanged");
 
-    let shadow = merge_settings(ApprovalMode::Shadow, DecideWith::Rules, Otherwise::Ask);
+    let shadow = merge_settings(ApprovalMode::AutoPreview, DecideWith::Rules, Otherwise::Ask);
     *file.lock().unwrap() = Some(shadow);
     let outcome = h
         .policy
         .evaluate(&shift_tab, &merge(Verdict::Approve))
         .await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Approve), "shadow");
+    assert_outcome(&outcome, Expect::Would(Verdict::Approve), "auto_preview");
     assert_eq!(h.autonomy.shadows().len(), 1);
 
     let supervised = merge_settings(ApprovalMode::Supervised, DecideWith::Rules, Otherwise::Ask);
@@ -1001,7 +1013,7 @@ async fn a_mode_tightened_mid_run_caps_the_override() {
 
 /// Auto for `kind`, decided with `decide_with`, and a rejection would stop the run.
 fn auto_kind(kind: CheckpointKind, decide_with: DecideWith) -> Settings {
-    fn set<R: Default>(table: &mut CheckpointSettings<R>, decide_with: DecideWith) {
+    fn set(table: &mut CheckpointSettings, decide_with: DecideWith) {
         table.mode = ApprovalMode::Auto;
         table.decide_with = decide_with;
         table.otherwise = Otherwise::Stop;
@@ -1013,10 +1025,10 @@ fn auto_kind(kind: CheckpointKind, decide_with: DecideWith) -> Settings {
         CheckpointKind::Budget => set(&mut approvals.budget, decide_with),
         CheckpointKind::Escalation => set(&mut approvals.escalation, decide_with),
         CheckpointKind::ChangeRequest => set(&mut approvals.change_request, decide_with),
-        CheckpointKind::RecipePromotion => {
-            let mut table = approvals.recipe_promotion.as_checkpoint();
+        CheckpointKind::WorkflowPromotion => {
+            let mut table = approvals.workflow_promotion.as_checkpoint();
             set(&mut table, decide_with);
-            approvals.recipe_promotion = table.into();
+            approvals.workflow_promotion = table.into();
         }
         other => panic!("no table for {other:?}"),
     }
@@ -1025,7 +1037,7 @@ fn auto_kind(kind: CheckpointKind, decide_with: DecideWith) -> Settings {
 
 #[tokio::test]
 async fn no_approver_model_waives_what_is_always_yours() {
-    use CheckpointKind::{Budget, ChangeRequest, Escalation, Goal, RecipePromotion};
+    use CheckpointKind::{Budget, ChangeRequest, Escalation, Goal, WorkflowPromotion};
     let open = |open_questions| EvidenceFacts {
         open_questions,
         ..EvidenceFacts::default()
@@ -1042,38 +1054,38 @@ async fn no_approver_model_waives_what_is_always_yours() {
         ("goal with 2 open questions", Goal, |_| {}, open(Some(2))),
         ("goal with no count", Goal, |_| {}, open(None)),
         (
-            "budget without use_reserve",
+            "limit without use_reserve",
             Budget,
-            |s| s.approvals.budget.rules.use_reserve = false,
+            |s| s.approvals.rules.budget.use_reserve = false,
             none(),
         ),
         (
-            "budget with use_reserve",
+            "limit with use_reserve",
             Budget,
-            |s| s.approvals.budget.rules.use_reserve = true,
+            |s| s.approvals.rules.budget.use_reserve = true,
             none(),
         ),
         (
             "escalation with no extra attempt",
             Escalation,
-            |s| s.approvals.escalation.rules.max_extra_attempts = 0,
+            |s| s.approvals.rules.escalation.max_extra_attempts = 0,
             none(),
         ),
         (
             "escalation with extra attempts",
             Escalation,
-            |s| s.approvals.escalation.rules.max_extra_attempts = 3,
+            |s| s.approvals.rules.escalation.max_extra_attempts = 3,
             none(),
         ),
         (
             "promotion with no change class",
-            RecipePromotion,
-            |s| s.approvals.recipe_promotion.rules.change_classes.clear(),
+            WorkflowPromotion,
+            |s| s.approvals.rules.workflow_promotion.change_classes.clear(),
             none(),
         ),
         (
             "promotion with change classes",
-            RecipePromotion,
+            WorkflowPromotion,
             |_| {},
             none(),
         ),
@@ -1247,7 +1259,7 @@ async fn the_plan_rules_hold_when_the_lead_answers() {
         open_questions: Some(0),
         max_score_spread: Some(0.0),
         winner_margin: Some(10.0),
-        judges_other_family: Some(true),
+        judges_other_provider: Some(true),
         disputes_settled: Some(true),
         flagged_plans: Some(0),
         estimate_usd: Some(1.0),
@@ -1287,7 +1299,7 @@ async fn the_plan_rules_hold_when_the_lead_answers() {
     );
 
     let mut dollars = Settings::default();
-    dollars.budget.run_usd = Some(20.0);
+    dollars.limits.budget.spend_per_run = Some(20.0);
     let mut partly_priced = uncontested;
     partly_priced.spent.cost_partial = true;
     let outcome = harness(dollars)
@@ -1300,14 +1312,14 @@ async fn the_plan_rules_hold_when_the_lead_answers() {
     assert_outcome(
         &outcome,
         Expect::Would(Verdict::Escalate),
-        "a partly priced spend under a dollar budget",
+        "a partly priced spend under a dollar limit",
     );
 }
 
 #[tokio::test]
 async fn when_rules_approve_and_the_model_does_not_its_reasons_come_first() {
     let mut settings = Settings::default();
-    settings.approvals.answered_by = Some(Answerer::You);
+    settings.approvals.answers = Some(Answerer::You);
     let fakes = Fakes {
         approver: FakeApprover::answering(Verdict::Escalate),
         ..Fakes::default()
@@ -1328,7 +1340,7 @@ async fn when_rules_approve_and_the_model_does_not_its_reasons_come_first() {
         ..
     } = &outcome
     else {
-        panic!("the model escalated: {outcome:?}");
+        panic!("the model needs you: {outcome:?}");
     };
     assert_eq!(shadow.reasons[0], "the model says Escalate");
 }
@@ -1338,15 +1350,15 @@ fn who_answers_takes_the_stricter_side() {
     let pick = |a: Option<Answerer>, b: Option<Answerer>| {
         let mut x = Settings::default();
         let mut y = Settings::default();
-        x.approvals.answered_by = a;
-        y.approvals.answered_by = b;
-        stricter(&x, &y).approvals.answered_by
+        x.approvals.answers = a;
+        y.approvals.answers = b;
+        stricter(&x, &y).approvals.answers
     };
-    use Answerer::{Lead, You};
-    assert_eq!(pick(Some(Lead), Some(You)), Some(You));
+    use Answerer::{Main, You};
+    assert_eq!(pick(Some(Main), Some(You)), Some(You));
     assert_eq!(pick(None, Some(You)), Some(You));
-    assert_eq!(pick(Some(Lead), None), None);
-    assert_eq!(pick(Some(Lead), Some(Lead)), Some(Lead));
+    assert_eq!(pick(Some(Main), None), None);
+    assert_eq!(pick(Some(Main), Some(Main)), Some(Main));
     assert_eq!(pick(None, None), None);
     // A model you picked holds while both name it; two different ones follow the mode.
     let glm = Answerer::Model("openrouter/z-ai/glm-5".parse().expect("a worker"));
@@ -1356,21 +1368,21 @@ fn who_answers_takes_the_stricter_side() {
         Some(glm.clone())
     );
     assert_eq!(pick(Some(glm.clone()), Some(gpt)), None);
-    assert_eq!(pick(Some(glm.clone()), Some(Lead)), None);
+    assert_eq!(pick(Some(glm.clone()), Some(Main)), None);
     assert_eq!(pick(Some(glm), Some(You)), Some(You));
 }
 
 /// Full auto everywhere holds only while both say so, and two different hard-limit choices
 /// stop safely, or park when either side parks.
 #[test]
-fn the_full_auto_switch_and_hard_limits_take_the_stricter_side() {
+fn the_autopilot_switch_and_hard_limits_take_the_stricter_side() {
     use argonauts_core::settings::approvals::AtHardLimit;
     let mut a = Settings::default();
     let mut b = Settings::default();
-    a.approvals.full_auto = true;
-    assert!(!stricter(&a, &b).approvals.full_auto);
-    b.approvals.full_auto = true;
-    assert!(stricter(&a, &b).approvals.full_auto);
+    a.approvals.autopilot = true;
+    assert!(!stricter(&a, &b).approvals.autopilot);
+    b.approvals.autopilot = true;
+    assert!(stricter(&a, &b).approvals.autopilot);
 
     a.approvals.merge.at_hard_limit = AtHardLimit::OpenPullRequest;
     b.approvals.merge.at_hard_limit = AtHardLimit::OpenPullRequest;
@@ -1417,7 +1429,7 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     let mut a = Settings::default();
     let mut b = Settings::default();
     a.approvals.goal.mode = ApprovalMode::Auto;
-    b.approvals.goal.mode = ApprovalMode::Shadow;
+    b.approvals.goal.mode = ApprovalMode::AutoPreview;
     a.approvals.merge.otherwise = Otherwise::Stop;
     b.approvals.merge.otherwise = Otherwise::SendBack;
     a.approvals.plan.otherwise = Otherwise::Stop;
@@ -1428,26 +1440,26 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     a.approvals.spot_check_sample = 0.05;
     b.approvals.pause_auto_when_spot_checks_waiting = 2;
     b.approvals.suggest_auto_after_matches = 40;
-    a.approvals.plan.rules.max_score_spread = 0.5;
-    b.approvals.plan.rules.min_winner_margin = 3.0;
-    b.approvals.merge.rules.max_combined_diff_lines = 200;
-    a.approvals.merge.rules.allow_debt = true;
-    b.approvals.budget.rules.use_reserve = false;
-    b.approvals.escalation.rules.max_extra_attempts = 0;
-    b.approvals.recipe_promotion.rules.change_classes = vec!["checklist_item".to_owned()];
-    b.approvals.recipe_promotion.rules.min_days_between = 30;
+    a.approvals.rules.plan.max_score_spread = 0.5;
+    b.approvals.rules.plan.min_winner_margin = 3.0;
+    b.approvals.rules.merge.max_changed_lines = 200;
+    a.approvals.rules.merge.allow_debt = true;
+    b.approvals.rules.budget.use_reserve = false;
+    b.approvals.rules.escalation.max_extra_attempts = 0;
+    b.approvals.rules.workflow_promotion.change_classes = vec!["checklist_item".to_owned()];
+    b.approvals.rules.workflow_promotion.min_days_between = 30;
     b.approvals
         .refuse_ancestor_env
         .push("OTHER_AGENT".to_owned());
-    a.approvals.approver.model = Some(approver_model());
-    b.approvals.approver.model = Some(WorkerRef::new("claude", None));
-    a.approvals.approver.different_family = false;
+    a.approvals.decides = approver_model().into();
+    b.approvals.decides = WorkerRef::new("claude", None).into();
+    a.approvals.approver.different_provider = false;
     b.approvals.approver.second_model = Some(WorkerRef::new("agy", None));
     a.limits.protected_paths.push("migrations/**".to_owned());
     a.limits.dependency_allowlist = vec!["serde".to_owned(), "rand".to_owned()];
     b.limits.dependency_allowlist = vec!["serde".to_owned()];
-    a.limits.usd_per_day = None;
-    b.limits.usd_per_day = Some(10.0);
+    a.limits.spend_per_day = None;
+    b.limits.spend_per_day = Some(10.0);
     b.limits.auto_merges_per_day = 1;
     a.limits.irreversible_allowlist = vec!["publish".to_owned()];
     a.sandbox.mode = SandboxChoice::Tool;
@@ -1455,13 +1467,13 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     a.sandbox.network = true;
     b.sandbox.network = false;
     b.sandbox.agents_commit = false;
-    a.sandbox.agents_see_other_copies = true;
-    b.budget.run_usd = None;
-    a.budget.run_usd = Some(5.0);
+    a.sandbox.agents_see_other_worktrees = true;
+    b.limits.budget.spend_per_run = None;
+    a.limits.budget.spend_per_run = Some(5.0);
 
     let s = stricter(&a, &b);
     let ap = &s.approvals;
-    assert_eq!(ap.goal.mode, ApprovalMode::Shadow);
+    assert_eq!(ap.goal.mode, ApprovalMode::AutoPreview);
     assert_eq!(ap.merge.otherwise, Otherwise::Ask);
     assert_eq!(ap.plan.otherwise, Otherwise::Stop);
     assert_eq!(ap.goal_changes, GoalChanges::Deny);
@@ -1469,22 +1481,25 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     assert_eq!(ap.spot_check_sample, 0.1);
     assert_eq!(ap.pause_auto_when_spot_checks_waiting, 2);
     assert_eq!(ap.suggest_auto_after_matches, 40);
-    assert_eq!(ap.plan.rules.max_score_spread, 0.5);
-    assert_eq!(ap.plan.rules.min_winner_margin, 3.0);
-    assert_eq!(ap.merge.rules.max_combined_diff_lines, 200);
-    assert_eq!(ap.merge.rules.min_changed_line_coverage, 0.8);
-    assert!(!ap.merge.rules.allow_debt);
-    assert!(!ap.budget.rules.use_reserve);
-    assert_eq!(ap.escalation.rules.max_extra_attempts, 0);
-    assert_eq!(ap.recipe_promotion.rules.change_classes, ["checklist_item"]);
-    assert_eq!(ap.recipe_promotion.rules.min_days_between, 30);
+    assert_eq!(ap.rules.plan.max_score_spread, 0.5);
+    assert_eq!(ap.rules.plan.min_winner_margin, 3.0);
+    assert_eq!(ap.rules.merge.max_changed_lines, 200);
+    assert_eq!(ap.rules.merge.min_test_coverage_of_changed_lines, 0.8);
+    assert!(!ap.rules.merge.allow_debt);
+    assert!(!ap.rules.budget.use_reserve);
+    assert_eq!(ap.rules.escalation.max_extra_attempts, 0);
+    assert_eq!(
+        ap.rules.workflow_promotion.change_classes,
+        ["checklist_item"]
+    );
+    assert_eq!(ap.rules.workflow_promotion.min_days_between, 30);
     assert!(ap.refuse_ancestor_env.contains(&"OTHER_AGENT".to_owned()));
     assert!(
         ap.refuse_ancestor_env
             .contains(&"OPENCLAW_SHELL".to_owned())
     );
-    assert_eq!(ap.approver.model, None);
-    assert!(ap.approver.different_family);
+    assert_eq!(ap.decides, Decides::Judge);
+    assert!(ap.approver.different_provider);
     assert_eq!(ap.approver.second_model, Some(WorkerRef::new("agy", None)));
     assert!(
         s.limits
@@ -1493,14 +1508,14 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     );
     assert!(s.limits.protected_paths.contains(&".github/**".to_owned()));
     assert_eq!(s.limits.dependency_allowlist, ["serde"]);
-    assert_eq!(s.limits.usd_per_day, Some(10.0));
+    assert_eq!(s.limits.spend_per_day, Some(10.0));
     assert_eq!(s.limits.auto_merges_per_day, 1);
     assert!(s.limits.irreversible_allowlist.is_empty());
     assert_eq!(s.sandbox.mode, SandboxChoice::Os);
     assert!(!s.sandbox.network);
     assert!(!s.sandbox.agents_commit);
-    assert!(!s.sandbox.agents_see_other_copies);
-    assert_eq!(s.budget.run_usd, Some(5.0));
+    assert!(!s.sandbox.agents_see_other_worktrees);
+    assert_eq!(s.limits.budget.spend_per_run, Some(5.0));
 
     let mode = |mode| {
         let mut settings = Settings::default();
@@ -1541,17 +1556,17 @@ fn stricter_takes_the_tighter_side_of_every_key() {
     assert_eq!(pause(2, 5), 2);
 
     // Removing or replacing the approver model stops it at once.
-    let model = |run: Option<WorkerRef>, now: Option<WorkerRef>| {
+    let model = |run: Decides, now: Decides| {
         let mut x = Settings::default();
         let mut y = Settings::default();
-        x.approvals.approver.model = run;
-        y.approvals.approver.model = now;
-        stricter(&x, &y).approvals.approver.model
+        x.approvals.decides = run;
+        y.approvals.decides = now;
+        stricter(&x, &y).approvals.decides
     };
-    let codex = Some(approver_model());
+    let codex = Decides::Model(approver_model());
     assert_eq!(model(codex.clone(), codex.clone()), codex);
-    assert_eq!(model(codex.clone(), None), None);
-    assert_eq!(model(None, codex), None);
+    assert_eq!(model(codex.clone(), Decides::Judge), Decides::Judge);
+    assert_eq!(model(Decides::Judge, codex), Decides::Judge);
 }
 
 /// Approvable merge evidence, but for the cards whose quality debt no strong enough model
@@ -1567,7 +1582,7 @@ fn indebted(debt: Option<&[&str]>) -> EvidencePacket {
 #[tokio::test]
 async fn allow_debt_lets_auto_merge_debt() {
     let merge_point = point(CheckpointKind::Merge);
-    let debt = indebted(Some(&["card-03"]));
+    let debt = indebted(Some(&["task-03"]));
 
     // Off, debt asks you whoever decides, and no approver model is started for it.
     for decide_with in [
@@ -1581,7 +1596,7 @@ async fn allow_debt_lets_auto_merge_debt() {
             let case = format!("{decide_with:?} {otherwise:?}");
             let outcome = h.policy.evaluate(&merge_point, &debt).await;
             assert_outcome(&outcome, Expect::Would(Verdict::Escalate), &case);
-            assert!(last_reason(&outcome).is_some_and(|why| why.contains("card-03")));
+            assert!(last_reason(&outcome).is_some_and(|why| why.contains("task-03")));
             let outcome = h.policy.evaluate(&merge_point, &indebted(None)).await;
             let unmeasured = format!("{case}, debt not measured");
             assert_outcome(&outcome, Expect::Would(Verdict::Escalate), &unmeasured);
@@ -1591,13 +1606,13 @@ async fn allow_debt_lets_auto_merge_debt() {
 
     // Shadow records that auto would have asked.
     let h = harness(merge_settings(
-        ApprovalMode::Shadow,
+        ApprovalMode::AutoPreview,
         DecideWith::Model,
         Otherwise::Ask,
     ));
     let outcome = h.policy.evaluate(&merge_point, &debt).await;
-    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "shadow");
-    assert!(h.autonomy.shadows()[0].reasons[0].contains("card-03"));
+    assert_outcome(&outcome, Expect::Would(Verdict::Escalate), "auto_preview");
+    assert!(h.autonomy.shadows()[0].reasons[0].contains("task-03"));
 
     // On, auto merges it.
     let (file, reload) = reloadable();
@@ -1606,7 +1621,7 @@ async fn allow_debt_lets_auto_merge_debt() {
         ..Fakes::default()
     };
     let mut lenient = auto_merge();
-    lenient.approvals.merge.rules.allow_debt = true;
+    lenient.approvals.rules.merge.allow_debt = true;
     let h = harness_with(lenient.clone(), fakes);
     let outcome = h.policy.evaluate(&merge_point, &debt).await;
     assert_outcome(&outcome, Expect::Decided(Verdict::Approve), "allowed");

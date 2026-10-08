@@ -113,8 +113,8 @@ impl Layout {
             results: results.path().canonicalize().unwrap().join("results.txt"),
             status: session_dir.join(session_files::STATUS),
             base: tree("base"),
-            card_a: tree("card-a"),
-            card_b: tree("card-b"),
+            card_a: tree("task-a"),
+            card_b: tree("task-b"),
             session_dir,
             run_dir,
             key,
@@ -134,7 +134,7 @@ impl Layout {
             (other_session.join(session_files::RAW_STDOUT), "{\"raw\":1}"),
             (layout.status.clone(), "{}"),
             (layout.base.join("README.md"), "base"),
-            (layout.card_a.join("src.rs"), "card a"),
+            (layout.card_a.join("src.rs"), "task a"),
             (layout.card_b.join("hidden_test.rs"), "hidden test"),
         ] {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -234,7 +234,7 @@ impl Layout {
         spec.session_dir = self.session_dir.clone();
         spec.status_file = Some(self.status.clone());
         if matches!(access, Access::Build | Access::Spike) {
-            spec.card = Some(CardId::new("card-a").unwrap());
+            spec.card = Some(CardId::new("task-a").unwrap());
             spec.goal_sha256 = Some("0".repeat(64));
         }
 

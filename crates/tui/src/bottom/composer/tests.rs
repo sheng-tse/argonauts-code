@@ -333,18 +333,22 @@ fn set_text_sanitizes() {
 #[test]
 fn renders_rules_label_prompt_and_cursor() {
     let mut c = Composer::new();
-    c.label = Some("peer-crew".into());
+    c.label = Some("council".into());
     c.placeholder = Some("Ask anything".into());
     let view = render(&c, 40);
     assert_eq!(
         plain_text(&view.lines),
-        "──────────────────────────── peer-crew ─\n\
+        "────────────────────────────── council ─\n\
          ❯ Ask anything\n\
          ────────────────────────────────────────"
     );
     assert_eq!(view.cursor, (2, 1));
     let theme = theme();
-    assert_eq!(view.lines[0].spans[2].style, theme.style(Role::Label));
+    // The name is in the rule's own grey. Purple is kept for the ultracode tag.
+    assert_eq!(
+        view.lines[0].spans[2].style,
+        decoration(theme.style(Role::Rule))
+    );
     assert_eq!(
         view.lines[1].spans[0].style,
         decoration(theme.style(Role::Text))
@@ -438,10 +442,10 @@ fn an_empty_prompt_offers_an_example_while_nothing_runs() {
         Some("Try \"fix the flaky export test\"")
     );
     assert_eq!(composer.placeholder_text(false), None);
-    composer.placeholder = Some("↑ to answer the card, or type to guide the run".into());
+    composer.placeholder = Some("↑ to answer the question, or type to guide the run".into());
     assert_eq!(
         composer.placeholder_text(false).as_deref(),
-        Some("↑ to answer the card, or type to guide the run")
+        Some("↑ to answer the question, or type to guide the run")
     );
 }
 
@@ -845,19 +849,19 @@ fn a_paste_of_several_lines_never_runs_hidden() {
 #[test]
 fn shell_mode_draws_its_marker_rules_and_placeholder_in_its_color() {
     let mut c = Composer::new();
-    c.label = Some("peer-crew".into());
+    c.label = Some("council".into());
     type_text(&mut c, "!");
     let view = render(&c, 50);
     assert_eq!(
         plain_text(&view.lines),
-        "────────────────────────────────────── peer-crew ─\n\
+        "──────────────────────────────────────── council ─\n\
          ! Run a shell command in the repo folder\n\
          ──────────────────────────────────────────────────"
     );
     let theme = theme();
     let pink = theme.style(Role::Shell);
     assert_eq!(view.lines[0].spans[0].style, decoration(pink));
-    assert_eq!(view.lines[0].spans[2].style, theme.style(Role::Label));
+    assert_eq!(view.lines[0].spans[2].style, decoration(pink));
     assert_eq!(view.lines[1].spans[0].style, decoration(pink));
     assert_eq!(view.lines[2].spans[0].style, decoration(pink));
 
@@ -931,4 +935,109 @@ fn the_shimmer_animates_until_shell_mode_or_the_word_goes() {
     // Past the shell's `!`, the text is plain.
     let row = &render(&shell, 40).lines[1].spans;
     assert!(row[1..].iter().all(|span| span.style.fg.is_none()));
+}
+
+/// The model alone, the workflow first when it isn't solo, and a purple
+/// `ultracode` at the far right, two spaces after the name.
+#[test]
+fn the_rule_names_the_model_and_keeps_purple_for_ultracode() {
+    let rule = |label: &str, ultracode: bool, width: u16| {
+        let mut c = Composer::new();
+        c.label = Some(label.into());
+        c.ultracode = ultracode;
+        render(&c, width).lines.remove(0)
+    };
+    let text = |line: &Line<'static>| plain_text(std::slice::from_ref(line));
+
+    assert_eq!(
+        text(&rule("Opus 5.5", false, 40)),
+        "───────────────────────────── Opus 5.5 ─"
+    );
+    assert_eq!(
+        text(&rule("council · Opus 5.5", false, 40)),
+        "─────────────────── council · Opus 5.5 ─"
+    );
+    let on = rule("Opus 5.5", true, 40);
+    assert_eq!(text(&on), "────────────────── Opus 5.5  ultracode ─");
+    let theme = theme();
+    let tag = on.spans.iter().find(|span| span.content == "ultracode");
+    assert_eq!(tag.unwrap().style, theme.style(Role::Ultracode));
+    let name = on.spans.iter().find(|span| span.content == "Opus 5.5");
+    assert_eq!(name.unwrap().style, decoration(theme.style(Role::Rule)));
+
+    // Too narrow for both, the name goes first, then the tag.
+    assert_eq!(text(&rule("Opus 5.5", true, 20)), "──────── ultracode ─");
+    assert_eq!(text(&rule("Opus 5.5", true, 12)), "────────────");
+}
+
+/// Claude Code's own handling of the word: one flat purple while it counts, Opt+W to ignore
+/// it for the prompt, and the ignore forgotten once the word leaves the draft.
+#[test]
+fn the_word_ultracode_asks_for_a_workflow_until_it_is_ignored() {
+    let theme = theme();
+    let purple = theme.style(Role::Ultracode);
+    let word_style = |c: &Composer| {
+        let view = render(c, 60);
+        view.lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("ultracode"))
+            .map(|span| span.style)
+    };
+    let mut c = Composer::new();
+    type_text(&mut c, "ultracode fix the flaky export test");
+    assert!(c.workflow_requested());
+    assert_eq!(word_style(&c), Some(purple), "one run, one color");
+
+    assert_eq!(c.toggle_workflow_word(), Some(true));
+    assert!(!c.workflow_requested());
+    assert_ne!(word_style(&c), Some(purple));
+    assert_eq!(
+        c.toggle_workflow_word(),
+        Some(false),
+        "pressed again, it's back"
+    );
+    assert!(c.workflow_requested());
+
+    // Ignored, then sent: the request goes without the workflow.
+    c.toggle_workflow_word();
+    c.handle_key(key(KeyCode::Enter));
+    assert!(!c.take_workflow_request());
+
+    // Taking the word out forgets the ignore, so typing it again counts afresh.
+    type_text(&mut c, "ultracode");
+    c.toggle_workflow_word();
+    c.handle_key(key(KeyCode::Backspace));
+    assert!(!c.workflow_requested());
+    c.handle_key(key(KeyCode::Char('e')));
+    assert!(c.workflow_requested());
+    c.handle_key(key(KeyCode::Enter));
+    assert!(c.take_workflow_request());
+    assert!(!c.take_workflow_request(), "read once");
+}
+
+#[test]
+fn the_workflow_word_counts_only_in_a_message() {
+    let mut c = Composer::new();
+    type_text(&mut c, "/effort ultracode on");
+    assert!(!c.workflow_requested());
+    assert_eq!(c.toggle_workflow_word(), None, "the key is free");
+
+    let mut c = Composer::new();
+    type_text(&mut c, "!echo ultracode");
+    assert!(!c.workflow_requested());
+
+    let mut c = Composer::field();
+    type_text(&mut c, "ultracode");
+    assert!(!c.workflow_requested());
+
+    // A question about the word asks nothing, and nothing of it is drawn purple.
+    let mut c = Composer::new();
+    type_text(&mut c, "what is ultracode?");
+    assert!(!c.workflow_requested());
+    assert!(
+        c.drawn_keywords()
+            .iter()
+            .all(|keyword| keyword.word != argonauts_core::keywords::ULTRACODE.word)
+    );
 }

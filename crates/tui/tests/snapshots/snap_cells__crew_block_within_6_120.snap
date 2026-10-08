@@ -2,7 +2,7 @@
 source: crates/tui/tests/snap_cells.rs
 expression: text(&lines)
 ---
-● Opus 5.5 on Claude Code · owner · card-002 (Add the JSON writer)
+● Opus 5.5 on Claude Code · worker · task-002 (Add the JSON writer)
   ⎿  … +6 lines (ctrl+o to expand)
      Update(src/export.rs)
         Added 3 lines, removed 2 lines

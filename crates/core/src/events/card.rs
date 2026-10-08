@@ -179,6 +179,8 @@ pub enum AttemptCause {
     GateRetry,
     /// Same session, with the reviewer's requested changes.
     ReviewChanges,
+    /// Same session, with what the check of the task's goal found still failing.
+    GoalRetry,
     /// Fresh session on another agent after a failure (the retry ladder).
     AfterFailure,
     /// Usage limit, outage, or login.
@@ -292,6 +294,8 @@ pub enum IntegrationEvent {
     Landed {
         target: String,
         sha: String,
+        /// Whether a branch of yours moved to `sha`. False when the run's work was only
+        /// written into your files.
         fast_forward: bool,
     },
     /// The merge into your checkout waits on your files, which git won't overwrite: untracked

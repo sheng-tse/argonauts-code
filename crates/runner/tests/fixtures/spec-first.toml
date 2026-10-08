@@ -1,0 +1,34 @@
+# Your own workflow. It runs exactly as written. Pick it with /workflow.
+name  = "spec-first"
+adapt = false
+
+[[step]]
+name = "Spec"
+role = "orchestrator"
+does = "Write a short spec and acceptance tests for: {request}. List the tasks."
+
+[[step]]
+name     = "Build"
+role     = "workers"
+for_each = "task"
+does     = "Implement {task}."
+until    = "its acceptance tests pass"      # a goal: the worker keeps going until this is true
+
+[[step]]
+name         = "Review"
+role         = "reviewers"
+count        = 2                             # two reviewers, from different providers
+does         = "Review the change against the spec. Accept it, or list what must change."
+send_back_to = "Revise"                      # when either asks for a change
+
+[[step]]
+name = "Revise"
+role = "workers"
+does = "Fix every finding."
+then = "Review"                              # round again until both accept
+# max_rounds = 5                             # yours to set. Without it only acceptance ends the loop
+
+[[step]]
+name  = "Sign off"
+role  = "judge"
+model = "codex/gpt-5.6"                      # a step may name its own model in place of the role's

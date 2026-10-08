@@ -15,15 +15,14 @@ use argonauts_core::registry::{ModelRegistry, effort_to_run, known_efforts};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
-use argonauts_core::settings::handoff::HandoffSettings;
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::steps::intake::{ChatAnswer, TriageEstimate};
 use argonauts_core::steps::{
     StepError, StepName, StepObserver, StepOutcome, StepRequest, output_schema,
 };
 use argonauts_core::worker::{
-    Access, Asking, SandboxMode, SandboxProfile, SessionControl, SessionLimits, SessionSpec,
-    Worker, WorkerError, WorkerEvent, WorkerKind,
+    Access, Asking, CliWorkflow, SandboxMode, SandboxProfile, SessionControl, SessionLimits,
+    SessionSpec, Worker, WorkerError, WorkerEvent, WorkerKind,
 };
 use argonauts_core::{DEFAULT_SOFT_RATIO, sha256_hex};
 use tokio::sync::mpsc;
@@ -32,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use super::chat::TurnUpdate;
 use super::{Ctx, Internal};
 use crate::controller::instructions::Command;
+use crate::env::FolderGit;
 use crate::git;
 use crate::repo_files;
 
@@ -45,6 +45,14 @@ pub(crate) struct Record {
 impl Record {
     /// A git failure, such as a repo with no commits yet, leaves that part empty and says so.
     pub(crate) fn now(ctx: &Ctx) -> Self {
+        // A folder without git of its own has no commit to name, and a run there starts from
+        // the folder as it is, so nothing is left out.
+        if ctx.env.git() != FolderGit::Repository {
+            return Self {
+                commit: String::new(),
+                uncommitted: Vec::new(),
+            };
+        }
         let root = &ctx.env.repo_root;
         let commit = git::head(root).unwrap_or_else(|err| {
             ctx.notice(
@@ -80,14 +88,12 @@ impl Record {
     }
 }
 
-/// The default agent, then its fallbacks in the order `roles.default.handoff` gives them.
+/// The main agent, then its fallbacks in the order `[fallback.main]` gives them.
 pub(crate) fn candidates(settings: &Settings) -> Vec<WorkerRef> {
-    let default = settings.default_agent.clone();
-    let role = settings
-        .roles
-        .get(&RoleName::Default)
-        .map(|role| &role.handoff);
-    let applied = HandoffSettings::applied(&settings.handoff, role, &default.vendor());
+    let default = settings.main_agent.clone();
+    let applied = settings
+        .fallback
+        .applied_to(RoleName::Main, &default.vendor());
     let mut workers = vec![default];
     for entry in &applied.candidates {
         if !workers.contains(entry.worker()) {
@@ -123,13 +129,13 @@ pub(crate) fn pick(
         return Ok((worker, handle));
     }
     out_of_service.ok_or_else(|| {
-        first_error.unwrap_or_else(|| WorkerError::Unknown(ctx.settings().default_agent.clone()))
+        first_error.unwrap_or_else(|| WorkerError::Unknown(ctx.settings().main_agent.clone()))
     })
 }
 
 /// The default agent itself, for a turn no fallback can take.
 pub(crate) fn pick_main(ctx: &Ctx) -> Result<(WorkerRef, Arc<dyn Worker>), WorkerError> {
-    let main = ctx.settings().default_agent.clone();
+    let main = ctx.settings().main_agent.clone();
     let handle = ctx.services.workers.get(&main)?;
     Ok((main, handle))
 }
@@ -206,6 +212,10 @@ pub(crate) struct DirectWords {
     pub budget_usd: Option<f64>,
     pub no_network: bool,
     pub supervised: bool,
+    /// What the CLI's own workflow does with this message, such as the `ultracode` you typed.
+    pub cli_workflow: CliWorkflow,
+    /// "Keep going until its tests pass": the goal your words set for this request.
+    pub goal: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,7 +246,7 @@ pub(crate) enum TurnStep {
     Title,
     /// Direct solo: your message to the main session, which works in your checkout as its CLI
     /// does and ends with its own answer. `asking` is the turn's listener for what it asks you,
-    /// and for `argonauts_start_run`; `None` asks nothing. `go_ahead` is what the session reads
+    /// and for the main session's tools; `None` asks nothing. `go_ahead` is what the session reads
     /// in place of your message when it has it already, as after its estimate or its plan.
     Direct {
         asking: Option<Asking>,
@@ -249,13 +259,22 @@ pub(crate) enum TurnStep {
     Plan { words: DirectWords },
     /// `/compact`: a summary the next session starts from.
     Compact { instructions: Option<String> },
+    /// The summary a main model on another CLI starts from. With no `record`, `writer` is the
+    /// model being left, which writes it in its own session `resume` with `/compact`'s prompt;
+    /// with one, `writer` is the new model, which writes it from that record of the
+    /// conversation.
+    Carry {
+        writer: WorkerRef,
+        resume: Option<String>,
+        record: Option<String>,
+    },
     /// `/review` and `/security-review`, by whoever [`crate::controller::chat`] picked.
     Review {
         security: bool,
         /// Such as "the uncommitted changes".
         target: String,
         changes: String,
-        other_company: bool,
+        other_provider: bool,
     },
 }
 
@@ -271,6 +290,7 @@ impl TurnStep {
             | Self::Side
             | Self::Title
             | Self::Compact { .. }
+            | Self::Carry { .. }
             | Self::Review { .. } => StepName::ChatAnswer,
         }
     }
@@ -326,6 +346,17 @@ impl TurnStep {
         }
     }
 
+    /// The turn's session was offered some of the main session's tools.
+    pub(crate) fn has_tools(&self) -> bool {
+        matches!(self.direct_asking(), Some(Some(asking)) if !asking.tools.is_empty())
+    }
+
+    /// The turn's session was offered the tool `name`, so a call to it is its own.
+    pub(crate) fn offers_tool(&self, name: &str) -> bool {
+        matches!(self.direct_asking(), Some(Some(asking))
+            if asking.tools.iter().any(|tool| tool == name))
+    }
+
     /// Steps whose reply is the CLI's own text, with no schema to read.
     pub(crate) fn plain_reply(&self) -> bool {
         matches!(
@@ -352,7 +383,7 @@ impl TurnStep {
     /// Answered in a session of its own and left out of the journal and the history, so the
     /// conversation reads as if it never happened.
     pub(crate) fn kept_out(&self) -> bool {
-        matches!(self, Self::Side | Self::Title)
+        matches!(self, Self::Side | Self::Title | Self::Carry { .. })
     }
 
     /// Never resumes the conversation's vendor session, and never becomes it: a side question
@@ -368,7 +399,7 @@ impl TurnStep {
                 read_instructions,
                 ..
             } => (
-                "triage estimate",
+                "estimate",
                 crate::prompts::triage_estimate(
                     &argonauts_core::steps::intake::IntakeInput {
                         request: text.to_owned(),
@@ -384,7 +415,7 @@ impl TurnStep {
                     run_status: run_status.clone(),
                 }),
             ),
-            Self::Vendor { prompt, .. } => ("vendor command", prompt.clone()),
+            Self::Vendor { prompt, .. } => ("agent command", prompt.clone()),
             Self::Direct {
                 go_ahead: Some(words),
                 ..
@@ -406,18 +437,23 @@ impl TurnStep {
             Self::Compact { instructions } => {
                 ("compact", crate::prompts::compact(instructions.as_deref()))
             }
+            Self::Carry { record: None, .. } => ("summary", crate::prompts::compact(None)),
+            Self::Carry {
+                record: Some(record),
+                ..
+            } => ("summary", crate::prompts::carry_summary(record)),
             Self::Review {
                 security,
                 target,
                 changes,
-                other_company,
+                other_provider,
             } => (
                 "review",
                 crate::prompts::review(&crate::prompts::ReviewInput {
                     security: *security,
                     target,
                     changes,
-                    other_company: *other_company,
+                    other_provider: *other_provider,
                 }),
             ),
         };
@@ -579,7 +615,7 @@ async fn next_command(
 /// The worker and effort a chat turn runs with: the model and effort you set for the agent
 /// when `worker` names none, and the default role's effort over the agent's.
 pub(crate) fn chat_agent(settings: &Settings, worker: &WorkerRef) -> (WorkerRef, Option<String>) {
-    let role = settings.roles.get(&RoleName::Default);
+    let role = settings.roles.get(&RoleName::Main);
     let agent = settings.agents.get(&worker.worker);
     let mut worker = worker.clone();
     if worker.model.is_none() {
@@ -658,7 +694,7 @@ pub(crate) fn session_spec(
     session_dir: PathBuf,
 ) -> SessionSpec {
     let settings = ctx.settings();
-    let role = settings.roles.get(&RoleName::Default);
+    let role = settings.roles.get(&RoleName::Main);
     let (mut worker, mut effort) = chat_agent(settings, &launch.worker);
     let words = launch.step.direct_words();
     if let Some(words) = words {
@@ -713,7 +749,7 @@ pub(crate) fn session_spec(
         run: None,
         card: None,
         key,
-        role: RoleName::Default,
+        role: RoleName::Main,
         step: Some(launch.step.name()),
         worker,
         effort,
@@ -750,9 +786,25 @@ pub(crate) fn session_spec(
             .and_then(|role| role.native_fanout)
             .unwrap_or(settings.native_fanout),
         isolated: false,
+        // You are here to answer, and only talking it over starts nothing.
+        autopilot: false,
         status_file: None,
         env: Vec::new(),
         asking,
+        cli_workflow: cli_workflow(settings, direct, words),
+    }
+}
+
+/// A direct turn's CLI runs its own workflow as ultracode and your words say: ultracode on in
+/// solo, or the `ultracode` you typed with this message.
+fn cli_workflow(settings: &Settings, direct: bool, words: Option<&DirectWords>) -> CliWorkflow {
+    if !direct {
+        return CliWorkflow::default();
+    }
+    let asked = words.map(|words| words.cli_workflow).unwrap_or_default();
+    CliWorkflow {
+        ultracode: asked.ultracode || super::ultra::main_session(settings).ultracode,
+        typed_keyword: asked.typed_keyword,
     }
 }
 
@@ -766,14 +818,14 @@ fn direct_sandbox(choice: SandboxChoice) -> SandboxMode {
     }
 }
 
-/// Each message is held to the run budget, as a run is: the CLI's own cap sits just above it,
-/// and the meter acts for the rest.
+/// Each message is held to the run's limit when you set one, as a run is: the CLI's own cap
+/// sits just above it, and the meter acts for the rest. With none, nothing stops it.
 fn message_limits(settings: &Settings, words: Option<&DirectWords>) -> SessionLimits {
-    let budget = &settings.budget;
+    let budget = &settings.limits.budget;
     // Your words only ever lower it, so theirs stands in for the setting's.
     let asked = words.and_then(|words| words.budget_usd);
     let amount = asked
-        .or(budget.run_usd)
+        .or(budget.spend_per_run)
         .map(|amount| BudgetAmount {
             unit: BudgetUnit::Usd,
             amount,
@@ -785,13 +837,13 @@ fn message_limits(settings: &Settings, words: Option<&DirectWords>) -> SessionLi
             })
         });
     SessionLimits {
-        budget: amount.filter(|_| budget.enabled),
+        budget: amount,
         soft_stop: if budget.soft_stop > 0.0 && budget.soft_stop < 1.0 {
             budget.soft_stop
         } else {
             DEFAULT_SOFT_RATIO
         },
-        max_minutes: budget.run_minutes.filter(|_| budget.enabled),
+        max_minutes: budget.run_minutes,
         ..SessionLimits::default()
     }
 }
@@ -801,7 +853,7 @@ mod tests {
     use super::*;
     use argonauts_core::app::{AppEvent, ChatEvent};
     use argonauts_core::registry::ModelRegistry;
-    use argonauts_core::settings::handoff::FallbackEntry;
+    use argonauts_core::settings::handoff::{CrewRole, FallbackEntry};
     use argonauts_testkit::TempRepo;
     use argonauts_testkit::worker::session_end;
 
@@ -811,22 +863,17 @@ mod tests {
     use crate::host::services::{LiveRegistry, SettingsSource, directory};
 
     #[test]
-    fn the_default_agent_comes_first_then_its_fallbacks_once_each() {
+    fn the_main_agent_comes_first_then_its_fallbacks_once_each() {
         let mut settings = Settings {
-            default_agent: "claude-code".parse().unwrap(),
+            main_agent: "claude-code".parse().unwrap(),
             ..Settings::default()
         };
-        let mut role = settings
-            .roles
-            .get(&RoleName::Default)
-            .cloned()
-            .unwrap_or_default();
-        role.handoff.fallback = vec![
+        let role = settings.fallback.roles.entry(CrewRole::Main).or_default();
+        role.order = vec![
             FallbackEntry::Worker("codex".parse().unwrap()),
             FallbackEntry::Worker("claude-code".parse().unwrap()),
             FallbackEntry::Worker("antigravity-cli".parse().unwrap()),
         ];
-        settings.roles.insert(RoleName::Default, role);
         let names: Vec<String> = candidates(&settings)
             .iter()
             .map(ToString::to_string)
@@ -856,7 +903,7 @@ mod tests {
     fn codex_off(repo: &TempRepo) {
         std::fs::write(
             repo.global_config(),
-            "default_agent = \"codex\"\n\n[agents.codex]\nenabled = false\nbinary = \"/nonexistent/codex\"\n",
+            "main_agent = \"codex\"\n\n[agents.codex]\nenabled = false\nbinary = \"/nonexistent/codex\"\n",
         )
         .unwrap();
     }
@@ -1011,11 +1058,11 @@ mod tests {
 
         let mut role = settings
             .roles
-            .get(&RoleName::Default)
+            .get(&RoleName::Main)
             .cloned()
             .unwrap_or_default();
         role.effort = Some("high".to_owned());
-        settings.roles.insert(RoleName::Default, role);
+        settings.roles.insert(RoleName::Main, role);
         let named: WorkerRef = "codex/gpt-5.6".parse().unwrap();
         let (worker, effort) = chat_agent(&settings, &named);
         assert_eq!(worker.to_string(), "codex/gpt-5.6");

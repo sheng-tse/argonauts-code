@@ -65,7 +65,9 @@ fn fills(events: &[AgentEvent]) -> Vec<u64> {
     events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::ContextFill { used, size: None } => Some(*used),
+            AgentEvent::ContextFill {
+                used, size: None, ..
+            } => Some(*used),
             _ => None,
         })
         .collect()
@@ -138,6 +140,56 @@ fn recordings_used_the_cheapest_model() {
         assert_eq!(after("--effort"), "low", "{name}");
         assert_eq!(meta["cli_version"], VERSION);
     }
+}
+
+/// The version installed when this was last checked reads with nothing left unknown: an
+/// answer, a shell call, and a report under the schema, which the CLI still ends with a 503.
+#[test]
+fn the_installed_version_reads_cleanly() {
+    const INSTALLED: &str = "1.3.1";
+    for name in ["readonly_ok", "build_shell", "build_hello_schema"] {
+        let Replay { events, meta } = replay_at(INSTALLED, name);
+        assert_eq!(meta["cli_version"], INSTALLED, "{name}");
+        assert!(
+            matches!(
+                &events[0],
+                AgentEvent::Init {
+                    session_id: Some(_),
+                    ..
+                }
+            ),
+            "{name}: {events:#?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Unknown { raw } if raw.is_object())),
+            "{name}: {events:#?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::Result { .. }))
+                .count(),
+            1,
+            "{name}"
+        );
+    }
+    let Replay { events, .. } = replay_at(INSTALLED, "readonly_ok");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::Result { text: Some(text), is_error: false, .. } if text.ends_with("ok\n")
+    )));
+    let Replay { events, .. } = replay_at(INSTALLED, "build_shell");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::ToolStarted { name, .. } if name == "run_command"
+    )));
+    let Replay { events, .. } = replay_at(INSTALLED, "build_hello_schema");
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::Result { structured: Some(report), .. } if report["status"] == "done"
+    )));
 }
 
 #[test]
@@ -684,6 +736,7 @@ fn agy_subagent_info() {
             "file://~/.gemini/antigravity-cli/brain/{child}/.system_generated/logs/transcript.jsonl"
         )),
         steps_visible: false,
+        tokens: None,
     };
     let done = SubagentUpdate {
         status: SubagentStatus::Done,

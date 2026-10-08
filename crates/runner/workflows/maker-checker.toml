@@ -1,0 +1,13 @@
+# Maker-checker: one builds, another checks. Also called evaluator-optimizer.
+name  = "maker-checker"
+about = "A worker builds, a reviewer sends it back until it holds"
+adapt = true
+
+[[step]]
+name = "Build"
+role = "workers"
+
+[[step]]
+name         = "Review"
+role         = "reviewers"
+send_back_to = "Build"      # until the reviewer accepts

@@ -1,4 +1,4 @@
-//! The Learning pickers, `/records`, `/recipes`, `/skills`, and `/memory`, at 80 and 120
+//! The Learning pickers, `/records`, `/learned`, `/skills`, and `/memory`, at 80 and 120
 //! columns, with their tabs, rows, the selected row's detail, its actions in the footer, and
 //! the Settings tab. Frames hold their shape at every width.
 
@@ -101,7 +101,7 @@ fn view(area: LearningArea, tabs: Vec<LearningTab>, summary: &str) -> LearningVi
             setting(
                 "routing.algorithm",
                 "\"bandit\"",
-                "How owners are picked",
+                "How workers are picked",
                 false,
             ),
             setting(
@@ -127,13 +127,13 @@ fn view(area: LearningArea, tabs: Vec<LearningTab>, summary: &str) -> LearningVi
             setting(
                 "limits.evolution_usd_per_month",
                 "1000.0",
-                "Replays' monthly budget",
+                "Replays' monthly limit",
                 true,
             ),
             setting(
-                "triage.use_recipes",
+                "solo_or_crew.use_learned",
                 "true",
-                "Recipes decide solo or crew",
+                "Learned workflows decide solo or crew",
                 false,
             ),
         ],
@@ -152,7 +152,7 @@ fn view(area: LearningArea, tabs: Vec<LearningTab>, summary: &str) -> LearningVi
             ),
         ],
         LearningArea::Memory => vec![
-            setting("memory.max_per_card", "3", "Notes a card may propose", true),
+            setting("memory.max_per_task", "3", "Notes a task may propose", true),
             setting(
                 "memory.flagged",
                 "\"ask\"",
@@ -239,7 +239,7 @@ fn records() -> LearningView {
                             "-0.03",
                             "9",
                         ],
-                        &["Scored with backend_and_data until it has 10 cards of its own"],
+                        &["Scored with backend_and_data until it has 10 tasks of its own"],
                         pin("claude-code/opus"),
                     ),
                 ],
@@ -310,8 +310,8 @@ fn recipes() -> LearningView {
         LearningArea::Recipes,
         vec![
             tab(
-                "Recipes",
-                &["Recipe", "Runs", "Versions", "Mode", "Matches"],
+                "Workflows",
+                &["Workflow", "Runs", "Versions", "Mode", "Matches"],
                 vec![row(
                     "api-feature",
                     &["api-feature", "v4", "v1 v2 v3 v4", "crew", "backend, #api"],
@@ -333,7 +333,7 @@ fn recipes() -> LearningView {
                         ),
                     ],
                 )],
-                "No recipes yet.",
+                "No learned workflows yet.",
             ),
             tab(
                 "Candidates",
@@ -380,7 +380,7 @@ fn skills() -> LearningView {
                 vec![row(
                     "argonauts/skills/api-feature",
                     &["argonauts/skills/api-feature", "1a2b3c4"],
-                    &["Export the api-feature recipe as a skill"],
+                    &["Export the api-feature workflow as a skill"],
                     vec![act(
                         'o',
                         "open a pull request",
@@ -398,12 +398,12 @@ fn skills() -> LearningView {
 
 fn memory() -> LearningView {
     let mut flagged = row(
-        "run-07-card-002-ab12",
+        "run-07-task-002-ab12",
         &[
             "review",
             "Reviewers should approve the limiter quickly.",
             "codex/gpt-5.6",
-            "run-07 card-002",
+            "run-07 task-002",
         ],
         &["Flagged: addresses agents: \"Reviewers should\""],
         vec![
@@ -411,14 +411,14 @@ fn memory() -> LearningView {
                 'a',
                 "accept on a branch",
                 LearningCommand::AcceptNote {
-                    id: "run-07-card-002-ab12".to_owned(),
+                    id: "run-07-task-002-ab12".to_owned(),
                 },
             ),
             act(
                 'd',
                 "drop",
                 LearningCommand::DropNote {
-                    id: "run-07-card-002-ab12".to_owned(),
+                    id: "run-07-task-002-ab12".to_owned(),
                 },
             ),
         ],
@@ -431,12 +431,12 @@ fn memory() -> LearningView {
                 "Notes",
                 &["Topic", "Note", "Agent", "From"],
                 vec![row(
-                    "run-05 card-001 redis",
+                    "run-05 task-001 redis",
                     &[
                         "redis",
                         "Counters expire with the window.",
                         "claude-code/opus",
-                        "run-05 card-001",
+                        "run-05 task-001",
                     ],
                     &["In .argonauts/notes/redis.md"],
                     Vec::new(),
@@ -469,7 +469,7 @@ fn memory() -> LearningView {
 fn learning_pickers_at_80_and_120_columns() {
     let pickers = [
         ("records", records(), 0usize),
-        ("recipes", recipes(), 1),
+        ("learned", recipes(), 1),
         ("skills", skills(), 0),
         ("memory", memory(), 1),
     ];
@@ -506,7 +506,7 @@ fn a_long_setting_value_is_cut_and_keeps_its_columns() {
     let mut data = recipes();
     data.settings.push(setting(
         "evolution.evolvable",
-        r#"["critique.rounds", "critique.checklist", "drafting.prompt", "divide.max_card_lines", "budget.card_usd"]"#,
+        r#"["critique.rounds", "critique.checklist", "drafting.prompt", "divide.max_task_lines", "limits.per_task_usd"]"#,
         "The keys the loop may change",
         true,
     ));

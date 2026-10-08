@@ -100,7 +100,7 @@ pub(crate) fn chat_text(what: &NeedsYou) -> anyhow::Result<String> {
     let at = what
         .checkpoint
         .as_ref()
-        .map_or_else(|| "its checkpoint".to_owned(), ToString::to_string);
+        .map_or_else(|| "its approval".to_owned(), ToString::to_string);
     let spent = spent_text(what.spent.as_ref());
     let text = match what.trigger {
         ChatTrigger::NeedsYou => format!(
@@ -205,6 +205,23 @@ pub(crate) fn send(ctx: &Ctx, what: &NeedsYou) {
     }
 }
 
+/// One line about a run that isn't this conversation's, as an OS notification: it started in
+/// another window, or it ended there. What needs you goes through [`send`].
+pub(crate) fn send_os_line(ctx: &Ctx, repo: &str, line: &str) {
+    if !ctx.settings().notifications.os {
+        return;
+    }
+    let (title, body) = os_line(repo, line);
+    if let Some(argv) = os_command(Platform::current(), &title, &body) {
+        spawn(ctx.out.clone(), "OS", argv);
+    }
+}
+
+/// The title and body of [`send_os_line`]'s notification.
+fn os_line(repo: &str, line: &str) -> (String, String) {
+    (format!("Argonauts · {repo}"), line.to_owned())
+}
+
 fn spawn(out: Outbox, which: &'static str, argv: Vec<String>) {
     tokio::spawn(async move {
         if let Err(err) = run(&argv).await {
@@ -276,7 +293,7 @@ mod tests {
             repo: repo.to_owned(),
             run: RunId::new("run-007").expect("a run id"),
             checkpoint: CheckpointId::parse("cp-003"),
-            kind: "plan checkpoint".to_owned(),
+            kind: "plan approval".to_owned(),
             spent: Some(Spend {
                 cost_usd: 1.2,
                 ..Spend::default()
@@ -343,7 +360,7 @@ mod tests {
         let text = chat_text(&needs_you("api")).expect("text");
         assert_eq!(
             text,
-            "Argonauts in api: run-007 waits for you at cp-003, a plan checkpoint. Spent so far: \
+            "Argonauts in api: run-007 waits for you at cp-003, a plan approval. Spent so far: \
              $1.20. Answer in the argonauts app in api."
         );
         let finished = NeedsYou {

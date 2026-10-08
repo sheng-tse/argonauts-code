@@ -15,7 +15,7 @@ pub const KINDS: [CheckpointKind; 7] = [
     CheckpointKind::Goal,
     CheckpointKind::Plan,
     CheckpointKind::Merge,
-    CheckpointKind::RecipePromotion,
+    CheckpointKind::WorkflowPromotion,
     CheckpointKind::Escalation,
     CheckpointKind::Budget,
     CheckpointKind::ChangeRequest,
@@ -44,13 +44,13 @@ pub fn build(
             );
             // The full auto switch covers the checkpoints a run opens, not a promotion.
             let own = match kind {
-                CheckpointKind::RecipePromotion => point.mode,
+                CheckpointKind::WorkflowPromotion => point.mode,
                 _ => approvals.run_mode(point.mode),
             };
             let mode = if supervised_everywhere {
                 ApprovalMode::Supervised
             } else if own.goes_ahead() && tally.demoted {
-                ApprovalMode::Shadow
+                ApprovalMode::AutoPreview
             } else {
                 own
             };
@@ -67,7 +67,12 @@ pub fn build(
     ApprovalsView {
         points,
         spot_checks_waiting: records::spot_checks_waiting(records),
-        approver: approvals.approver.model.clone(),
+        // Left to the judge, the view names the one your crew set, so `/approvals` says who
+        // checks instead of how the policy would pick one.
+        approver: approvals
+            .approver_model()
+            .cloned()
+            .or_else(|| crate::approver::judges(settings).into_iter().next()),
         warnings: Vec::new(),
     }
 }
@@ -76,13 +81,16 @@ pub fn build(
 mod tests {
     use time::macros::datetime;
 
+    use argonauts_core::names::WorkerRef;
+
     use super::*;
 
     #[test]
     fn every_kind_with_settings_gets_a_row() {
         let mut settings = Settings::default();
         settings.approvals.merge.mode = ApprovalMode::Auto;
-        settings.approvals.approver.model = Some("claude/haiku".parse().expect("worker"));
+        let model: WorkerRef = "claude/haiku".parse().expect("worker");
+        settings.approvals.decides = model.clone().into();
         let now = datetime!(2026-09-29 10:00 UTC);
 
         let view = build(&[], &settings, now, false);
@@ -90,7 +98,7 @@ mod tests {
         assert_eq!(kinds, KINDS);
         assert_eq!(view.points[2].mode, ApprovalMode::Auto);
         assert_eq!(view.spot_checks_waiting, 0);
-        assert_eq!(view.approver, settings.approvals.approver.model);
+        assert_eq!(view.approver, Some(model));
 
         let off = build(&[], &settings, now, true);
         assert!(
@@ -100,17 +108,32 @@ mod tests {
         );
     }
 
+    /// With the decision left to the judge, the view names the judge your crew set, and
+    /// nobody when the crew names none.
+    #[test]
+    fn the_judge_your_crew_names_is_who_checks() {
+        let mut settings = Settings::default();
+        let now = datetime!(2026-09-29 10:00 UTC);
+        assert_eq!(build(&[], &settings, now, false).approver, None);
+        let codex: WorkerRef = "codex/gpt-5.6".parse().expect("worker");
+        settings.crew.judge = vec![codex.clone()];
+        assert_eq!(build(&[], &settings, now, false).approver, Some(codex));
+        let picked: WorkerRef = "claude/haiku".parse().expect("worker");
+        settings.approvals.decides = picked.clone().into();
+        assert_eq!(build(&[], &settings, now, false).approver, Some(picked));
+    }
+
     /// The full auto switch shows on every checkpoint a run opens, and not on a promotion.
     #[test]
-    fn the_full_auto_switch_shows_on_each_run_checkpoint() {
+    fn the_autopilot_switch_shows_on_each_run_checkpoint() {
         let mut settings = Settings::default();
-        settings.approvals.full_auto = true;
+        settings.approvals.autopilot = true;
         let now = datetime!(2026-09-29 10:00 UTC);
         let view = build(&[], &settings, now, false);
         for row in &view.points {
             let expected = match row.kind {
-                CheckpointKind::RecipePromotion => ApprovalMode::Auto,
-                _ => ApprovalMode::FullAuto,
+                CheckpointKind::WorkflowPromotion => ApprovalMode::Auto,
+                _ => ApprovalMode::Autopilot,
             };
             assert_eq!(row.mode, expected, "{:?}", row.kind);
         }

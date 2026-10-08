@@ -27,7 +27,7 @@ use argonauts_core::names::{RoleName, VendorId, WorkerRef};
 use argonauts_core::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::handoff::{
-    AppliedHandoff, FallbackEntry, FallbackRules, HandoffContext, HandoffSettings,
+    AppliedHandoff, FallbackEntry, FallbackRules, HandoffContext,
 };
 
 use crate::slots::Slots;
@@ -47,7 +47,7 @@ impl FreeSlots for Slots {
                 Ok(Some(slot)) => held.push(slot),
                 Ok(None) => break,
                 Err(error) => {
-                    tracing::warn!(%vendor, %error, "spread can't count this vendor's free slots");
+                    tracing::warn!(%vendor, %error, "spread can't count this agent's free slots");
                     return None;
                 }
             }
@@ -131,7 +131,7 @@ impl Planner {
         let Some(worktree) = session.worktree else {
             tracing::warn!(
                 card = %card.id,
-                "no transcript: the log doesn't say where the card's worktree is"
+                "no transcript: the log doesn't say where the task's worktree is"
             );
             return None;
         };
@@ -142,7 +142,7 @@ impl Planner {
                 tracing::warn!(
                     card = %card.id,
                     %error,
-                    "the handoff transcript couldn't be written"
+                    "the fallback transcript couldn't be written"
                 );
                 None
             }
@@ -159,7 +159,7 @@ impl HandoffPlanner for Planner {
         let limit = card
             .budget
             .limit
-            .or_else(|| crate::recovery::per_card_budget(&self.settings.budget));
+            .or_else(|| self.settings.limits.budget.task_limit());
         let mut packet = packet::build_with_budget(card, events, limit);
         packet.transcript = self.transcript(card, events, &packet.why_stopped);
         packet
@@ -170,11 +170,10 @@ impl HandoffPlanner for Planner {
     }
 }
 
-/// The handoff rules for `role` when `vendor` stops, walked by core from the role's table and
-/// the top-level `[handoff]`.
+/// The fallback rules for `role` when `vendor` stops, walked by core from the top-level
+/// `[fallback]` and the table of the crew role that `role` follows.
 pub fn applied(settings: &Settings, role: RoleName, vendor: &VendorId) -> AppliedHandoff {
-    let role_table = settings.roles.get(&role).map(|role| &role.handoff);
-    HandoffSettings::applied(&settings.handoff, role_table, vendor)
+    settings.fallback.applied_to(role, vendor)
 }
 
 /// The rules an entry for `worker` carries, from the first entry that names it.

@@ -1,4 +1,4 @@
-//! A solo-reviewed card whose reviewer is an endpoint model, `myapi/fake-model`, served by the
+//! A maker-checker card whose reviewer is an endpoint model, `myapi/fake-model`, served by the
 //! fake OpenAI-compatible server. The fake Claude Code owns the card.
 
 mod workers_support;
@@ -31,8 +31,8 @@ fn workers_endpoint_reviewer_card() -> anyhow::Result<()> {
     write_global_config(
         &scenario,
         &format!(
-            "preset = \"solo-reviewed\"\n\
-             default_agent = \"claude-code\"\n\n\
+            "workflow = \"maker-checker\"\n\
+             main_agent = \"claude-code\"\n\n\
              [solo]\nreview = true\n\n\
              [roles.reviewer]\nworkers = [\"myapi/fake-model\"]\n\n\
              [endpoints.myapi]\n\

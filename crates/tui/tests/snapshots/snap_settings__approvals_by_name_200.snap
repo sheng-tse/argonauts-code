@@ -3,31 +3,31 @@ source: crates/tui/tests/snap_settings.rs
 expression: "&shown"
 ---
 Approvals
-Who decides each checkpoint, and how auto matched you
+Who decides each approval, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Full auto                                                                                                                                                    off: each checkpoint keeps its own mode │
-│ ❯ For every checkpoint        off                      built-in             Full auto for every checkpoint a run opens                                                                               │
-│   Who answers questions       GPT 5.6 on Codex         everywhere (global)  Who answers the crew's questions in your place                                                                           │
-│     In full auto only; elsewhere you or the lead, by mode                                                                                                                                            │
+│ Autopilot                                                                                                                                                      off: each approval keeps its own mode │
+│ ❯ For every approval          off                       built-in             Autopilot for every approval a run opens                                                                                │
+│   Who answers questions       GPT 5.6 on Codex          everywhere (global)  Who answers the crew's questions in your place                                                                          │
+│     On autopilot only; elsewhere you or main, by mode                                                                                                                                                │
 │                                                                                                                                                                                                      │
-│ Who checks                                                                                                                                                   the cheapest model from another company │
-│   Approver model              cheapest, other company  built-in             The approver model, any model in the registry                                                                            │
-│   Second approver             none, one approver       built-in             A second approver, from another vendor, that must also approve                                                           │
+│ Who checks                                                                                                                                                  the cheapest model from another provider │
+│   The judge                   cheapest, other provider  built-in             Who settles what your rules can't decide: judge, or a model you pick                                                    │
+│   Second approver             none, one approver        built-in             A second approver, from another agent, that must also approve                                                           │
 │                                                                                                                                                                                                      │
 │ Plan · auto · rules and approver both agree                                                                                                                            0 matches in a row · 0 misses │
-│   How it's decided            auto                     everywhere (global)  The plan checkpoint: supervised waits for you, shadow also records what auto would do, auto lets your settings decide    │
-│   Who decides in auto         both agree               built-in             The plan checkpoint: who decides in auto mode, your rules, your approver model, or both                                  │
-│   When auto doesn't approve   ask you                  built-in             The plan checkpoint: what happens when auto doesn't approve                                                              │
-│   Hard limit in full auto     stop safely              built-in             The plan checkpoint: what a hard limit does in full auto                                                                 │
-│   Judge's widest score gap    1.0                      built-in             Plan rules: the largest gap between one judge's two scores, out of 10                                                    │
+│   How it's decided            auto                      everywhere (global)  The plan approval: supervised waits for you, auto preview also records what auto would do, auto lets your settings dec… │
+│   Who decides in auto         both agree                built-in             The plan approval: who decides in auto mode, your rules, your approver model, or both                                   │
+│   When auto doesn't approve   ask you                   built-in             The plan approval: what happens when auto doesn't approve                                                               │
+│   Hard limit on autopilot     stop safely               built-in             The plan approval: what a hard limit does on autopilot                                                                  │
+│   Judge's widest score gap    1.0                       built-in             Plan rules: the largest gap between one judge's two scores, out of 10                                                   │
 │                                                                                                                                                                                                      │
 │ Merge · auto · your rules decide                                                                                                                                       0 matches in a row · 0 misses │
-│   How it's decided            auto                     everywhere (global)  The merge checkpoint: supervised waits for you, shadow also records what auto would do, auto lets your settings decide   │
-│   Who decides in auto         your rules               built-in             The merge checkpoint: who decides in auto mode, your rules, your approver model, or both                                 │
-│   When auto doesn't approve   ask you                  built-in             The merge checkpoint: what happens when auto doesn't approve                                                             │
-│   Hard limit in full auto     stop safely              built-in             The merge checkpoint: what a hard limit does in full auto                                                                │
-│   Merge with unreviewed debt  no                       built-in             Merge rules: whether auto may merge a card whose debt no strong enough model reviewed                                    │
+│   How it's decided            auto                      everywhere (global)  The merge approval: supervised waits for you, auto preview also records what auto would do, auto lets your settings de… │
+│   Who decides in auto         your rules                built-in             The merge approval: who decides in auto mode, your rules, your approver model, or both                                  │
+│   When auto doesn't approve   ask you                   built-in             The merge approval: what happens when auto doesn't approve                                                              │
+│   Hard limit on autopilot     stop safely               built-in             The merge approval: what a hard limit does on autopilot                                                                 │
+│   Merge with unreviewed debt  no                        built-in             Merge rules: whether auto may merge a task whose debt no strong enough model reviewed                                   │
 │                                                                                                                                                                                                      │
 │ Spot checks                                                                                                                                                                                          │
 │   None waiting                                                                                                                                                                                       │

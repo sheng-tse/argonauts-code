@@ -235,7 +235,7 @@ pub(crate) mod tests {
             title: "Add a flag".to_owned(),
             mode,
             forced: false,
-            preset: "peer-crew".to_owned(),
+            workflow: "council".to_owned(),
             estimate: None,
             triage: None,
             chat_turn: None,
@@ -252,6 +252,7 @@ pub(crate) mod tests {
             version: "0.0.1".to_owned(),
             front_end: None,
             instructions: Vec::new(),
+            required_steps: Vec::new(),
         }
     }
 
@@ -264,7 +265,7 @@ pub(crate) mod tests {
             role,
             step: None,
             access: Access::ReadOnly,
-            lifetime: SessionLifetime::Card,
+            lifetime: SessionLifetime::Task,
             resumed_from: None,
             follow_key: None,
             workflow_step: None,
@@ -283,10 +284,13 @@ pub(crate) mod tests {
             vendor_session: None,
             transcript: None,
             context_used: None,
+            context_window: None,
             end: None,
             stopped_with_run: false,
             asked: None,
             vendor_failures: Vec::new(),
+            written: Default::default(),
+            workflow: None,
         }
     }
 
@@ -319,7 +323,7 @@ pub(crate) mod tests {
             kind,
             title: "Checkpoint".to_owned(),
             card: None,
-            packet: CheckpointPacket::RecipePromotion(serde_json::json!({})),
+            packet: CheckpointPacket::WorkflowPromotion(serde_json::json!({})),
             evidence_sha256: "evidence".to_owned(),
             mode: ApprovalMode::Supervised,
             decide_with: argonauts_core::settings::approvals::DecideWith::Rules,
@@ -334,7 +338,7 @@ pub(crate) mod tests {
             "decided": null,
             "withdrawn": null,
         });
-        serde_json::from_value(record).expect("a checkpoint record")
+        serde_json::from_value(record).expect("an approval record")
     }
 
     fn lifecycle(seq: u64, event: RunLifecycle) -> RunEvent {
@@ -426,7 +430,7 @@ pub(crate) mod tests {
             let kind = RunEventKind::Session(SessionEvent::Started(Box::new(started)));
             envelope(seq, None, Some(key), kind)
         };
-        let line = "The lead's change after phase 1 wrote a workflow that breaks its rules; it's \
+        let line = "The main agent's change after phase 1 wrote a workflow that breaks its rules; it's \
                     fixing that.";
         let noted = |seq: u64| {
             let note = Note::with_detail(NoteLevel::Info, line, "phase 1 already ran");
@@ -453,14 +457,14 @@ pub(crate) mod tests {
         let started = || {
             RunEventKind::Session(SessionEvent::Started(Box::new(session_started(
                 &worker,
-                RoleName::Owner,
+                RoleName::Worker,
             ))))
         };
         let mut state = RunState::default();
-        state.apply(&envelope(3, Some("card-001"), Some("s-004"), started()));
+        state.apply(&envelope(3, Some("task-001"), Some("s-004"), started()));
         state.apply(&envelope(
             4,
-            Some("card-001"),
+            Some("task-001"),
             Some("s-004"),
             RunEventKind::Agent(AgentEvent::Init {
                 session_id: Some("v-1".to_owned()),
@@ -473,11 +477,12 @@ pub(crate) mod tests {
         ));
         state.apply(&envelope(
             5,
-            Some("card-001"),
+            Some("task-001"),
             Some("s-004"),
             RunEventKind::Agent(AgentEvent::ContextFill {
                 used: 1200,
                 size: None,
+                sent: None,
             }),
         ));
         let key = SessionKey::numbered(4);
@@ -490,7 +495,7 @@ pub(crate) mod tests {
 
         state.apply(&envelope(
             6,
-            Some("card-001"),
+            Some("task-001"),
             Some("s-004"),
             RunEventKind::Session(SessionEvent::Ended(Box::new(end(
                 EndReason::Paused,
@@ -502,7 +507,7 @@ pub(crate) mod tests {
         assert_eq!(record.vendor_session.as_deref(), Some("v-2"));
         assert_eq!(state.sessions.running().count(), 0);
 
-        state.apply(&envelope(7, Some("card-001"), Some("s-004"), started()));
+        state.apply(&envelope(7, Some("task-001"), Some("s-004"), started()));
         let record = state.sessions.get(&key).unwrap();
         assert_eq!((record.starts, record.since), (2, 3));
         assert!(record.end.is_none());
@@ -531,7 +536,7 @@ pub(crate) mod tests {
             None,
             None,
             RunEventKind::Handoff(HandoffEvent::Waiting {
-                card: CardId::new("card-002").unwrap(),
+                card: CardId::new("task-002").unwrap(),
                 vendor: vendor.clone(),
                 until: None,
             }),
@@ -540,14 +545,14 @@ pub(crate) mod tests {
         let worker = WorkerRef::new("claude-code", None);
         state.apply(&envelope(
             2,
-            Some("card-002"),
+            Some("task-002"),
             Some("s-001"),
             RunEventKind::Session(SessionEvent::Started(Box::new(session_started(
                 &worker,
-                RoleName::Owner,
+                RoleName::Worker,
             )))),
         ));
-        assert!(state.run.vendor_waits.is_empty(), "the card has work again");
+        assert!(state.run.vendor_waits.is_empty(), "the task has work again");
     }
 
     #[test]
@@ -615,7 +620,7 @@ pub(crate) mod tests {
             Some("s-001"),
             RunEventKind::Session(SessionEvent::Started(Box::new(session_started(
                 &worker,
-                RoleName::Default,
+                RoleName::Main,
             )))),
         ));
         let snapshot = crate::engine::snapshot::build(
@@ -695,7 +700,7 @@ pub(crate) mod tests {
             Some("s-001"),
             RunEventKind::Session(SessionEvent::Started(Box::new(session_started(
                 &worker,
-                RoleName::Default,
+                RoleName::Main,
             )))),
         ));
         state.apply(&lifecycle(

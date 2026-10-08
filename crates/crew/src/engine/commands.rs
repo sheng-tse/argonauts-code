@@ -260,6 +260,11 @@ pub fn cancel_pause(host: &Host) -> EngineResult<()> {
 
 /// Wrap up, commit, and end as `Stopped`.
 pub async fn stop(host: &Host) -> EngineResult<()> {
+    stop_by(host, Party::User).await
+}
+
+/// [`stop`], asked by `by`: you, or your rules when the run reached a limit you set.
+pub async fn stop_by(host: &Host, by: Party) -> EngineResult<()> {
     let settled = host.read(|state| state.run.stop_requested || state.run.finished.is_some());
     if settled {
         return Ok(());
@@ -267,7 +272,7 @@ pub async fn stop(host: &Host) -> EngineResult<()> {
     host.record(
         None,
         None,
-        RunEventKind::Run(RunLifecycle::StopRequested { by: Party::User }),
+        RunEventKind::Run(RunLifecycle::StopRequested { by }),
     )?;
     host.shared().admission.send_replace(Admission::Closed);
     host.interrupted().cancel();
@@ -288,8 +293,8 @@ pub fn approval_mode(host: &Host, mode: ApprovalMode) -> EngineResult<()> {
             by: Party::User,
         }),
     )?;
-    if mode == ApprovalMode::FullAuto {
-        checkpoints::full_auto::settle_open(host)?;
+    if mode == ApprovalMode::Autopilot {
+        checkpoints::autopilot::settle_open(host)?;
     }
     Ok(())
 }

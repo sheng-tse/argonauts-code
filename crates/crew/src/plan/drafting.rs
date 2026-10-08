@@ -1,6 +1,8 @@
 //! The `draft` step: blind drafts in fresh read-only sessions, sealed as they arrive, and in a
 //! round after critique, each drafter revising its own plan in its own session. A plan you sent
-//! back at the plan checkpoint starts a new planning round of blind drafts, with your note.
+//! back at the plan checkpoint starts a new planning round of blind drafts, with your note. A
+//! drafter that's out may have several fallbacks draft in its place at once, and then a judge
+//! picks the seat's plan among theirs (`together`).
 
 use futures::future::join_all;
 
@@ -8,13 +10,13 @@ use argonauts_core::RunId;
 use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::names::{PlanLabel, RoleName, WorkerRef};
 use argonauts_core::sha256_hex;
-use argonauts_core::steps::plan::{Draft, DraftInput, Revise, ReviseInput};
+use argonauts_core::steps::plan::{DraftInput, Revise, ReviseInput};
 use argonauts_core::worker::Access;
 
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, part, warn, workers_for};
-use crate::plan::{drafts, map};
+use crate::plan::{drafts, map, together};
 use crate::prompts::plan::{DRAFT, REVISE};
 use crate::state::plan::{self, SealedDraft};
 use crate::status::Viewer;
@@ -43,11 +45,11 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
 pub fn guidance_part(note: Option<&str>, source: &str) -> Option<InputPart> {
     let note = note?.trim();
     let text = if note.is_empty() {
-        "You sent the last plan back at the plan checkpoint without a note. Plan again from the \
+        "You sent the last plan back at the plan approval without a note. Plan again from the \
          goal."
             .to_owned()
     } else {
-        format!("You sent the last plan back at the plan checkpoint with this note:\n\n{note}")
+        format!("You sent the last plan back at the plan approval with this note:\n\n{note}")
     };
     Some(InputPart {
         kind: InputPartKind::Message,
@@ -106,6 +108,7 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
     let (goal, decisions) =
         host.read(|state| (context::goal_brief(state), context::decision_lines(state)));
     let notes = context::notes(host);
+    let crew = context::card_roles_lines(host)?;
     // By label, since a stand-in seals a drafter's plan under its own name.
     let missing: Vec<(WorkerRef, PlanLabel)> = labels(&drafters, host.run_id())
         .into_iter()
@@ -116,6 +119,7 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
     if missing.is_empty() && mapped {
         return Ok(StepDone::skipped("No critique to revise from"));
     }
+    together::hold_seats(host, &call.at, &drafters);
     let asks = missing.into_iter().map(|(worker, label)| {
         let viewer = Viewer::Session {
             role: RoleName::Drafter,
@@ -127,6 +131,7 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
             notes: notes.clone(),
             decisions: decisions.clone(),
             status: host.status_text(&viewer),
+            crew: crew.clone(),
         };
         let mut ask = Ask::new(
             Some(call.at.clone()),
@@ -139,12 +144,16 @@ async fn blind(host: &Host, call: &StepCall, sent_back: bool) -> EngineResult<St
         ask.blind = true;
         ask.label = Some(label);
         ask.parts
-            .extend(guidance_part(note.as_deref(), "plan checkpoint"));
-        async move { (worker, label, host.ask::<Draft>(ask).await) }
+            .extend(guidance_part(note.as_deref(), "plan approval"));
+        async move { (worker, label, together::drafts(host, ask).await) }
     });
     let mut new = 0;
     let mut failed = Vec::new();
-    for (worker, label, answer) in join_all(asks).await {
+    for (worker, label, written) in join_all(asks).await {
+        let answer = match written {
+            Ok(written) => together::pick(host, &call.at, written).await,
+            Err(error) => Err(error),
+        };
         match answer {
             Ok(answered) => {
                 drafts::seal(

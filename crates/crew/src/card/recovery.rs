@@ -33,7 +33,7 @@ pub async fn decide(host: &Host, card: &CardId, end: &SessionEnd) -> EngineResul
         run: host.run_id().clone(),
         card: record.spec.clone(),
         state: record.state,
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         worker,
         end: end.clone(),
         attempts: attempt_lines(&record),
@@ -45,7 +45,7 @@ pub async fn decide(host: &Host, card: &CardId, end: &SessionEnd) -> EngineResul
 }
 
 /// Applies the action: resume the same session, rotate (not a failure, no retry used), hand
-/// off, ask, wait, apply `budget.on_hit`, escalate, or park.
+/// off, ask, wait, apply `limits.when_reached`, escalate, or park.
 ///
 /// Resuming and rotating leave the card running: its pipeline starts that session next.
 /// Everything else moves a running card to `NeedsDecision` first, or to `Failed` when the
@@ -62,7 +62,7 @@ pub async fn apply(host: &Host, card: &CardId, action: RecoveryAction) -> Engine
                 if failure {
                     transition(host, card, Trigger::Broke, "the session broke")?;
                 } else {
-                    let reason = "its result stands; the gates decide";
+                    let reason = "its result stands; the checks decide";
                     transition(host, card, Trigger::ReportedDone, reason)?;
                 }
             }
@@ -74,7 +74,7 @@ pub async fn apply(host: &Host, card: &CardId, action: RecoveryAction) -> Engine
         }
         RecoveryAction::Escalate { reason } => escalate(host, card, failure, &reason)?,
         RecoveryAction::BudgetHit(on_hit) => {
-            stop_for_decision(host, card, "the card hit its budget")?;
+            stop_for_decision(host, card, "the task hit its limit")?;
             budget::record_hit(host, card)?;
             budget::on_hit(host, card, on_hit).await?;
         }
@@ -141,7 +141,7 @@ fn needed(
         candidates: host.services().handoff.candidates(&query),
         mode: rules.mode,
         strategy: rules.strategy,
-        race_count: rules.race_count,
+        race_count: rules.together,
         also_moving: Vec::new(),
         stopped,
     }))
@@ -199,7 +199,7 @@ fn escalate(host: &Host, card: &CardId, failure: bool, reason: &str) -> EngineRe
 
 /// The retry ladder's step after a failure: a fresh session on another model family when the
 /// card hasn't had its retry on another agent yet, else escalation. Returns the new owner.
-pub(crate) fn retry_on_other_family(
+pub(crate) fn retry_on_other_provider(
     host: &Host,
     card: &CardId,
     why: &str,
@@ -214,8 +214,8 @@ pub(crate) fn retry_on_other_family(
         )?;
         return Ok(None);
     }
-    let Some(to) = other_family(host, &record) else {
-        let reason = format!("{why}, and no agent of another family can take it");
+    let Some(to) = other_provider(host, &record) else {
+        let reason = format!("{why}, and no agent of another provider can take it");
         transition(host, card, Trigger::Escalate, &reason)?;
         return Ok(None);
     };
@@ -236,7 +236,7 @@ pub(crate) fn retry_on_other_family(
 }
 
 /// The first valid candidate from another model family than the owner's and the reviewers'.
-pub(crate) fn other_family(host: &Host, record: &CardRecord) -> Option<WorkerRef> {
+pub(crate) fn other_provider(host: &Host, record: &CardRecord) -> Option<WorkerRef> {
     let owner = owner_of(host, record);
     let mut exclude = vec![roles::family(host, &owner)];
     exclude.extend(record.spec.reviewers.iter().map(|r| roles::family(host, r)));
@@ -244,7 +244,7 @@ pub(crate) fn other_family(host: &Host, record: &CardRecord) -> Option<WorkerRef
     exclude.dedup();
     let query = CandidateQuery {
         card: record.spec.clone(),
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         stopped: owner.clone(),
         exclude_families: exclude.clone(),
         fallback: Vec::new(),
@@ -270,7 +270,7 @@ pub(crate) fn any_other(host: &Host, record: &CardRecord) -> Option<WorkerRef> {
         .collect();
     let query = CandidateQuery {
         card: record.spec.clone(),
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         stopped: owner.clone(),
         exclude_families: reviewers.clone(),
         fallback: Vec::new(),
@@ -294,7 +294,7 @@ pub(crate) fn attempt_lines(record: &CardRecord) -> Vec<String> {
         .collect();
     if let Some(gate) = record.gates.iter().rev().find(|gate| !gate.passed) {
         lines.push(format!(
-            "last failed gate · {}: {}",
+            "last failed check · {}: {}",
             gate.name, gate.summary
         ));
     }

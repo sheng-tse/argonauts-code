@@ -1,15 +1,23 @@
-//! One session in full: the output side streams, pinned to the live end until you scroll up,
-//! and `i` shows the input side, exactly what Argonauts sent it.
+//! One agent, opened: its tabs on the header row, and Tab goes through them. Output streams,
+//! pinned to the live end until you scroll up, with structured results drawn as what they mean.
+//! Input shows what the agent was asked, part by part. An agent that works toward a goal has
+//! a Goal tab: its lines, its tries, the checks, and what its CLI says. The raw log is the last
+//! tab, and `r` from anywhere.
+
+mod asked;
+#[cfg(test)]
+mod tests;
 
 use std::time::{Duration, Instant};
 
 use argonauts_core::RunId;
+use argonauts_core::agent_goal::AgentGoal;
 use argonauts_core::api::DiffScope;
 use argonauts_core::app::{UiCommand, ViewRequest};
-use argonauts_core::events::session::{
-    Delivery, InputPart, PromptVia, QueuedMessage, SubagentStatus, SubagentUpdate,
-};
+use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::session::{Delivery, QueuedMessage, SubagentStatus, SubagentUpdate};
 use argonauts_core::names::SessionKey;
+use argonauts_core::steps::is_own_tool;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -21,21 +29,51 @@ use crate::bridge::tools;
 use crate::cell::{AssistantMessage, DiffCell, DiffView, HistoryCell, ToolItem};
 use crate::format::{self, WallClock};
 use crate::render::{Clock, RenderCtx};
-use crate::state::{AppState, SessionState, SessionStatus};
-use crate::text::{sanitize, sanitize_line, str_width, wrap_text};
+use crate::state::{AppState, SessionState};
+use crate::text::{sanitize, sanitize_line, spans_width, str_width, wrap_text};
 use crate::theme::{Role, Theme};
 
 use super::crew::CrewView;
+use super::follow::{Follower, Shown};
+use super::goal_keys;
+use super::goal_panel;
 use super::layout::cut;
+use super::line_edit::LineEdit;
 use super::list::{self, ListState, Nav};
 use super::panes::{self, Footer, Marks};
+use super::states;
+use super::structured;
 use super::{Follow, View, ViewCtx, ViewOutcome};
 
 /// Result lines kept under a tool call; the raw log (`r`) has the rest.
 const RESULT_LINES: usize = 40;
 
-/// Lines of a prompt part shown before `→` expands it.
-const PART_LINES: usize = 6;
+/// The opened agent's own tabs, in the order Tab goes through them. The raw log follows them
+/// as the last tab, in a pager of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    #[default]
+    Output,
+    Input,
+    /// Only for an agent that works toward a goal.
+    Goal,
+}
+
+impl Tab {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Output => "Output",
+            Self::Input => "Input",
+            Self::Goal => "Goal",
+        }
+    }
+}
+
+/// The name the raw log goes by on the tab row.
+const RAW_TAB: &str = "Raw";
+
+/// The header keeps this much of the agent's name before its time and tokens give way.
+const MIN_NAME: usize = 16;
 
 #[derive(Debug)]
 pub struct SessionView {
@@ -43,7 +81,7 @@ pub struct SessionView {
     pub session: SessionKey,
     /// Pinned to the live end until you scroll up; End pins it again.
     pub following: bool,
-    pub input_side: bool,
+    pub tab: Tab,
     /// The first row shown while not following.
     pub offset: usize,
     /// For the elapsed time; tests pin it.
@@ -52,34 +90,49 @@ pub struct SessionView {
     from_crew: bool,
     /// Opened from the run's row, so it moves on with the run.
     for_run: bool,
-    /// The selected prompt part on the input side, and the one `→` expanded.
+    /// The selected item on the Input tab, and the one `→` expanded.
     part: ListState,
     expanded: Option<usize>,
-    /// The steer line while you type it.
+    /// `→` on the Output tab opened what its structured results fold away, such as what each
+    /// task of a plan asks for.
+    results_open: bool,
+    /// The message to the agent while you type it.
     steer: Option<String>,
-    /// What you last steered with, until it shows as queued or delivered.
+    /// The goal's lines while you rewrite them, all on one line with `;` between.
+    lines_edit: Option<LineEdit>,
+    /// What you last sent it, until it shows as queued or delivered.
     sent: Option<String>,
+    /// A second `x` stops the agent.
+    confirm_stop: bool,
     page: usize,
     rows: usize,
     ticking: bool,
     cache: Option<(Signature, Body)>,
-    /// The first input-side row shown, kept so the selected part stays on screen.
+    /// The first Input row shown, kept so the selected part stays on screen.
     input_top: usize,
+    /// The first Goal row shown.
+    goal_top: usize,
+    /// Keeps the goal current while this view is on top: its run's events ask for the agent
+    /// again, and the answer carries the goal as it stands.
+    follow: Option<Follower>,
 }
 
-/// The rows drawn, and on the input side the row of the selected part's label.
+/// The rows drawn, on the Input tab the row of the selected part's heading, and on the Output
+/// tab whether `→` has more of a result to show.
 #[derive(Debug, Clone, Default)]
 struct Body {
     lines: Vec<Line<'static>>,
     selected_row: usize,
+    more: bool,
 }
 
 /// What the drawn rows depend on, so a frame with nothing new reuses them.
 #[derive(Debug, Clone, PartialEq)]
 struct Signature {
     width: u16,
-    input_side: bool,
+    tab: Tab,
     expanded: Option<usize>,
+    results_open: bool,
     part: usize,
     last_event: Option<OffsetDateTime>,
     tools: usize,
@@ -99,26 +152,31 @@ impl SessionView {
             run,
             session,
             following: true,
-            input_side: false,
+            tab: Tab::Output,
             offset: 0,
             clock: WallClock::local(),
             from_crew: false,
             for_run: false,
             part: ListState::default(),
             expanded: None,
+            results_open: false,
             steer: None,
+            lines_edit: None,
             sent: None,
+            confirm_stop: false,
             page: 1,
             rows: 0,
             ticking: false,
             cache: None,
             input_top: 0,
+            goal_top: 0,
+            follow: None,
         }
     }
 
     /// Opened from the run's row: once its agent is done and the run has moved on, to the lead's
     /// next design or to its declared workflow, so does the view, though never while you type
-    /// a steer. A view opened for one agent follows only that agent, into the session that
+    /// a message. A view opened for one agent follows only that agent, into the session that
     /// carries on its work.
     pub fn for_run(run: RunId, session: SessionKey) -> Self {
         Self {
@@ -135,6 +193,123 @@ impl SessionView {
         }
     }
 
+    /// Opened on `tab` rather than on what the agent says.
+    pub fn on(mut self, tab: Tab) -> Self {
+        self.tab = tab;
+        self
+    }
+
+    /// Opened to message the agent: the message line is already there to type into.
+    pub fn messaging(mut self) -> Self {
+        self.steer = Some(String::new());
+        self
+    }
+
+    /// Opened to rewrite `goal`'s lines: they are already there to change.
+    pub fn editing_lines(mut self, goal: &AgentGoal) -> Self {
+        self.lines_edit = Some(LineEdit::new(&goal_keys::lines_as_typed(goal)));
+        self
+    }
+
+    /// Keeps what it shows of the agent's goal current with its run.
+    pub fn following(mut self, follower: Follower) -> Self {
+        self.follow = Some(follower);
+        self
+    }
+
+    fn goal<'a>(&self, state: &'a AppState) -> Option<&'a AgentGoal> {
+        state.goals.of(&self.run, &self.session)
+    }
+
+    /// What `p` does to the agent's goal, when it has one that can be held.
+    fn goal_hold(&self, state: &AppState) -> Option<goal_keys::GoalKey> {
+        goal_keys::hold(&self.run, self.goal(state)?)
+    }
+
+    /// What `c` does: the goal's checks run now, when it is going and they aren't running.
+    fn goal_check(&self, state: &AppState) -> Option<goal_keys::GoalKey> {
+        goal_keys::check_now(&self.run, self.goal(state)?)
+    }
+
+    fn can_edit_lines(&self, state: &AppState) -> bool {
+        self.goal(state).is_some_and(goal_keys::can_edit)
+    }
+
+    /// `e` on the Goal tab: the goal's lines open on one line to be changed.
+    fn edit_lines(&mut self, state: &AppState) -> ViewOutcome {
+        match self.goal(state).filter(|goal| goal_keys::can_edit(goal)) {
+            Some(goal) => {
+                self.lines_edit = Some(LineEdit::new(&goal_keys::lines_as_typed(goal)));
+                ViewOutcome::Consumed
+            }
+            None => ViewOutcome::Notice("This goal is over, so its lines stay as they are".into()),
+        }
+    }
+
+    /// A key while the goal's lines are open: Enter rewrites them, Esc leaves them.
+    fn lines_key(&mut self, key: KeyEvent, state: &AppState) -> ViewOutcome {
+        let Some(line) = self.lines_edit.as_mut() else {
+            return ViewOutcome::Ignored;
+        };
+        match key.code {
+            KeyCode::Esc => self.lines_edit = None,
+            KeyCode::Enter => {
+                let typed = line.text();
+                self.lines_edit = None;
+                let Some(goal) = self.goal(state) else {
+                    return ViewOutcome::Notice("This agent no longer works toward a goal".into());
+                };
+                return match goal_keys::edit(&self.run, goal, &typed) {
+                    Ok(command) => ViewOutcome::Send(command),
+                    Err(why) => ViewOutcome::Notice(why),
+                };
+            }
+            _ => {
+                line.key(key);
+            }
+        }
+        ViewOutcome::Consumed
+    }
+
+    /// The tabs this agent has, in order: Goal only when it works toward one.
+    fn tabs(&self, state: &AppState) -> Vec<Tab> {
+        let mut tabs = vec![Tab::Output, Tab::Input];
+        if self.goal(state).is_some() {
+            tabs.push(Tab::Goal);
+        }
+        tabs
+    }
+
+    /// Tab goes right and Shift+Tab left. Past the last of its own tabs is the raw log, which
+    /// opens over the view and leaves it on Output, so the tabs go round.
+    fn next_tab(&mut self, back: bool, state: &AppState) -> ViewOutcome {
+        let tabs = self.tabs(state);
+        let at = tabs.iter().position(|tab| *tab == self.tab).unwrap_or(0);
+        let next = if back {
+            at.checked_sub(1)
+        } else {
+            Some(at + 1).filter(|next| *next < tabs.len())
+        };
+        self.confirm_stop = false;
+        match next {
+            Some(next) => {
+                self.tab = tabs[next];
+                ViewOutcome::Consumed
+            }
+            None => {
+                self.tab = if back { tabs[tabs.len() - 1] } else { tabs[0] };
+                self.raw()
+            }
+        }
+    }
+
+    fn raw(&self) -> ViewOutcome {
+        ViewOutcome::Request(ViewRequest::Raw {
+            run: self.run.clone(),
+            session: self.session.clone(),
+        })
+    }
+
     /// The first row shown at `rows` long with `height` rows of room.
     fn top(&self, rows: usize, height: usize) -> usize {
         let last = rows.saturating_sub(height);
@@ -145,7 +320,7 @@ impl SessionView {
         }
     }
 
-    /// Moves the output side. Scrolling up pauses following; reaching the end resumes it.
+    /// Moves the Output tab. Scrolling up pauses following; reaching the end resumes it.
     fn scroll(&mut self, nav: Nav) {
         let last = self.rows.saturating_sub(self.page);
         let top = self.top(self.rows, self.page);
@@ -169,8 +344,9 @@ impl SessionView {
     fn signature(&self, session: &SessionState, width: u16) -> Signature {
         Signature {
             width,
-            input_side: self.input_side,
+            tab: self.tab,
             expanded: self.expanded,
+            results_open: self.results_open,
             part: self.part.selected,
             last_event: Some(session.last_event),
             tools: session.tools.len(),
@@ -189,36 +365,71 @@ impl SessionView {
         }
     }
 
-    fn body(&mut self, session: &SessionState, width: u16, theme: &Theme) -> Body {
+    fn body(&mut self, session: &SessionState, width: u16, ctx: &ViewCtx<'_>) -> Body {
+        let theme = ctx.theme;
         let signature = self.signature(session, width);
-        if let Some((known, body)) = &self.cache
+        // A goal changes by its own reports, which the signature doesn't see.
+        if self.tab != Tab::Goal
+            && let Some((known, body)) = &self.cache
             && *known == signature
         {
             return body.clone();
         }
-        let body = if self.input_side {
-            input_lines(
-                session,
-                &self.part,
-                self.expanded,
-                usize::from(width),
-                theme,
-            )
-        } else {
-            // The echo stands only while the session can still take it. The controller's answer
-            // in the transcript says what came of it.
-            let sent = self.sent.as_deref().filter(|_| session.is_running());
-            Body {
-                lines: output_lines(session, sent, width, theme),
+        let body = match self.tab {
+            Tab::Goal => Body {
+                lines: match self.goal(ctx.state) {
+                    Some(goal) => goal_panel::tab(goal, usize::from(width), theme).lines,
+                    None => vec![note("This agent works without a goal", Role::Dim, theme)],
+                },
                 selected_row: 0,
+                more: false,
+            },
+            Tab::Input => {
+                let draw = asked::Draw {
+                    theme,
+                    width: usize::from(width),
+                    selected: self.part.selected,
+                    expanded: self.expanded,
+                };
+                let asked::Drawn {
+                    mut lines,
+                    selected_row,
+                } = asked::lines(&session.inputs, &draw);
+                if !session.queued.is_empty() {
+                    lines.push(Line::default());
+                    lines.extend(queued_lines(
+                        &session.queued,
+                        None,
+                        usize::from(width),
+                        theme,
+                    ));
+                }
+                Body {
+                    lines,
+                    selected_row,
+                    more: false,
+                }
+            }
+            Tab::Output => {
+                // The echo stands only while the session can still take it. The controller's
+                // answer in the transcript says what came of it.
+                let sent = self.sent.as_deref().filter(|_| session.is_running());
+                let shown = OutputDraw {
+                    names: &ctx.state.names,
+                    theme,
+                    width,
+                    results_open: self.results_open,
+                };
+                let (lines, more) = output_lines(session, sent, &shown);
+                Body {
+                    lines,
+                    selected_row: 0,
+                    more,
+                }
             }
         };
         self.cache = Some((signature, body.clone()));
         body
-    }
-
-    fn parts(session: &SessionState) -> usize {
-        session.inputs.iter().map(|input| input.parts.len()).sum()
     }
 
     fn steer_key(&mut self, key: KeyEvent) -> ViewOutcome {
@@ -265,7 +476,9 @@ impl SessionView {
             ViewOutcome::Replace(Box::new(CrewView::new(state)))
         }
     }
-
+    /// `● build:cli · GPT 5.6 on Codex`, the tabs, and the time and tokens at the right end.
+    /// The tabs sit midway between the two while there's room, and close after the name when
+    /// there isn't; the name is what gives way.
     fn header(
         &self,
         session: &SessionState,
@@ -274,15 +487,9 @@ impl SessionView {
         theme: &Theme,
     ) -> Line<'static> {
         let marks = Marks::for_theme(theme);
-        let (glyph, role) = match session.status {
-            SessionStatus::Starting | SessionStatus::Working => (marks.running, Role::Accent),
-            SessionStatus::Waiting | SessionStatus::Sleeping => (marks.waiting, Role::Dim),
-            SessionStatus::Done => (marks.done, Role::Success),
-            SessionStatus::Failed => (marks.failed, Role::Error),
-            SessionStatus::Stopped => (marks.stopped, Role::Dim),
-        };
+        let (glyph, role) = states::mark(states::of_session(session.status), theme);
         // Headed as the chat heads its block: the label, then the agent, as `fix:slugify ·
-        // Haiku 4.5 on Claude Code`. A log from before labels names the role and the card.
+        // Haiku 4.5 on Claude Code`. A log from before labels names the role and the task.
         let mut name = match &session.label {
             Some(label) => vec![clean(label), clean(&state.names.worker(&session.worker))],
             None => vec![
@@ -311,7 +518,15 @@ impl SessionView {
         }
         let end = session.ended.unwrap_or_else(|| self.clock.now());
         let elapsed = (end - session.started).whole_milliseconds().max(0);
-        let mut numbers = vec![panes::elapsed(u64::try_from(elapsed).unwrap_or(u64::MAX))];
+        let mut numbers = Vec::new();
+        if let Some(attempt) = self
+            .goal(state)
+            .map(AgentGoal::current_try)
+            .filter(|n| *n > 0)
+        {
+            numbers.push(format!("try {attempt}"));
+        }
+        numbers.push(panes::elapsed(u64::try_from(elapsed).unwrap_or(u64::MAX)));
         if session.tokens() > 0 {
             numbers.push(format!(
                 "{} {}",
@@ -319,61 +534,82 @@ impl SessionView {
                 format::tokens(session.tokens())
             ));
         }
-        let numbers = format!(" · {}", numbers.join(" · "));
+        let mut numbers = numbers.join(" · ");
+        let tabs = self.tab_spans(state, theme);
         let lead = format!("{glyph} ");
-        let room = width.saturating_sub(str_width(&lead) + str_width(&numbers));
-        Line::from(vec![
-            Span::styled(lead, theme.style(role)),
-            Span::styled(
-                cut(&name.join(" · "), room),
-                theme.style(Role::Bright).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(numbers, theme.style(Role::Dim)),
-        ])
-    }
-
-    fn sides_line(&self, width: usize, theme: &Theme) -> Line<'static> {
-        let side = |name: &str, on: bool| {
-            if on {
-                Span::styled(
-                    format!("[ {name} ]"),
-                    theme.style(Role::Label).add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled(format!("  {name}  "), theme.style(Role::Dim))
-            }
+        // Two cells apart at the least, on each side of the tabs. On a narrow screen the time
+        // and tokens go before the name is cut to nothing.
+        let room_beside = |numbers: &str| {
+            let numbers = match str_width(numbers) {
+                0 => 0,
+                cells => 2 + cells,
+            };
+            width.saturating_sub(str_width(&lead) + 2 + spans_width(&tabs) + numbers)
+        };
+        let least = name.first().map_or(0, |own| str_width(own).min(MIN_NAME));
+        if room_beside(&numbers) < least {
+            numbers.clear();
+        }
+        let name_room = room_beside(&numbers);
+        let (own, rest) = name
+            .split_first()
+            .map_or((String::new(), &[][..]), |(own, rest)| {
+                (cut(own, name_room), rest)
+            });
+        let rest = if rest.is_empty() {
+            String::new()
+        } else {
+            let rest = format!(" · {}", rest.join(" · "));
+            cut(&rest, name_room.saturating_sub(str_width(&own)))
         };
         let mut spans = vec![
-            side("Output", !self.input_side),
-            Span::raw(" "),
-            side("Input", self.input_side),
+            Span::styled(lead, theme.style(role)),
+            Span::styled(own, theme.style(Role::Bright).add_modifier(Modifier::BOLD)),
+            Span::styled(rest, theme.style(Role::Dim)),
         ];
-        let status = if self.input_side {
-            "what Argonauts sent it"
-        } else if self.following {
-            "following"
-        } else {
-            "paused · End follows"
-        };
-        let used = crate::text::spans_width(&spans);
-        let status = cut(status, width.saturating_sub(used + 2));
-        if !status.is_empty() {
-            spans.push(Span::raw(
-                " ".repeat(width.saturating_sub(used + str_width(&status))),
-            ));
-            let role = if !self.input_side && !self.following {
-                Role::Warning
-            } else {
-                Role::Dim
-            };
-            spans.push(Span::styled(status, theme.style(role)));
+        let free = width.saturating_sub(spans_width(&spans) + str_width(&numbers));
+        let tabs_width = spans_width(&tabs);
+        if free < tabs_width + 2 {
+            // Too narrow for the numbers as well: the name and the tabs are what stay.
+            spans.push(Span::raw("  "));
+            spans.extend(tabs);
+            return Line::from(crate::text::truncate_spans(&spans, width));
         }
+        let before = ((free - tabs_width) / 2).max(2);
+        spans.push(Span::raw(" ".repeat(before)));
+        spans.extend(tabs);
+        spans.push(Span::raw(" ".repeat(free - tabs_width - before)));
+        spans.push(Span::styled(numbers, theme.style(Role::Dim)));
         Line::from(spans)
     }
 
-    fn footer(&self, width: usize, state: &AppState, theme: &Theme) -> Footer {
+    /// `Output  Input  Raw`, the open one as a chip, or in brackets where there's no color.
+    fn tab_spans(&self, state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
+        let chip = theme
+            .style(Role::Card)
+            .add_modifier(Modifier::REVERSED | Modifier::BOLD);
+        let names = self
+            .tabs(state)
+            .into_iter()
+            .map(|tab| (tab.name(), tab == self.tab))
+            .chain([(RAW_TAB, false)]);
+        let mut spans = Vec::new();
+        for (name, open) in names {
+            spans.push(match (open, theme.has_color()) {
+                (true, true) => Span::styled(format!(" {name} "), chip),
+                (true, false) => Span::styled(
+                    format!("[{name}]"),
+                    theme.style(Role::Bright).add_modifier(Modifier::BOLD),
+                ),
+                (false, _) => Span::styled(format!(" {name} "), theme.style(Role::Text)),
+            });
+        }
+        spans
+    }
+
+    fn footer(&self, width: usize, state: &AppState, theme: &Theme, more: bool) -> Footer {
         if let Some(line) = &self.steer {
-            let lead = format!("steer {} ", theme.glyphs.prompt);
+            let lead = format!("message {} ", theme.glyphs.prompt);
             let room = width.saturating_sub(str_width(&lead) + 1);
             return Footer::Line(Line::from(vec![
                 Span::styled(lead, theme.style(Role::Label)),
@@ -384,48 +620,128 @@ impl SessionView {
                 Span::styled("▌", theme.style(Role::Dim)),
             ]));
         }
+        if let Some(line) = &self.lines_edit {
+            let lead = format!("its lines, with ; between {} ", theme.glyphs.prompt);
+            let mut spans = vec![Span::styled(lead.clone(), theme.style(Role::Label))];
+            spans.extend(line.spans(width.saturating_sub(str_width(&lead)), theme));
+            return Footer::Line(Line::from(spans));
+        }
+        if self.confirm_stop {
+            return Footer::hints(&[("x again to stop it", 0), ("esc to keep", 0)]);
+        }
         // Only keys that can act now are offered.
-        let steer = super::steer_refusal(state, &self.run, &self.session).is_none();
-        let has_card = state
-            .session(&self.run, &self.session)
-            .is_some_and(|session| session.card.is_some());
+        let session = state.session(&self.run, &self.session);
+        let message = super::steer_refusal(state, &self.run, &self.session).is_none();
+        let has_card = session.is_some_and(|session| session.card.is_some());
         let take_over = has_card && super::run_going(state, &self.run);
+        let stop = self.can_stop(state);
+        // The tab after Output is named, as the first thing to learn; past it, Tab goes on.
+        let tab = match self.tab {
+            Tab::Output => "tab input",
+            Tab::Input | Tab::Goal => "tab next tab",
+        };
         let mut parts = Vec::new();
-        if self.input_side {
-            parts.extend([("↑↓ select", 0), ("→ expand", 3), ("i output", 4)]);
-            if steer {
-                parts.push(("s steer", 2));
+        match self.tab {
+            Tab::Goal => {
+                parts.push(("↑↓ scroll", 1));
+                if let Some(hold) = self.goal_hold(state) {
+                    parts.push((hold.hint, 5));
+                }
+                if self.can_edit_lines(state) {
+                    parts.push((goal_keys::EDIT_HINT, 5));
+                }
+                if let Some(check) = self.goal_check(state) {
+                    parts.push((check.hint, 5));
+                }
+                if message {
+                    parts.push(("m message it", 5));
+                }
+                if stop {
+                    parts.push(("x stop it", 4));
+                }
+                // The tabs are in the header, so this hint goes before a key on the goal does.
+                parts.push((tab, 2));
             }
-        } else {
-            if !self.following {
-                parts.push(("End follow", 0));
+            Tab::Input => {
+                parts.extend([("↑↓ select", 0), ("→ expand", 3), (tab, 4)]);
+                if message {
+                    parts.push(("m message it", 2));
+                }
+                if stop {
+                    parts.push(("x stop it", 1));
+                }
             }
-            parts.push(("↑↓ scroll", if self.following { 0 } else { 9 }));
-            parts.push(("i input", 8));
-            if steer {
-                parts.push(("s steer", 7));
-            }
-            if take_over {
-                parts.push(("t take over", 4));
-            }
-            parts.push(("r raw", 6));
-            if has_card {
-                parts.push(("d diff", 5));
-            }
-            if self.following {
-                parts.push(("← crew", 3));
+            Tab::Output => {
+                if !self.following {
+                    parts.push(("End follow", 0));
+                }
+                parts.push(("↑↓ scroll", if self.following { 0 } else { 9 }));
+                if more {
+                    let hint = if self.results_open {
+                        "→ fold"
+                    } else {
+                        "→ expand"
+                    };
+                    parts.push((hint, 5));
+                }
+                parts.push((tab, 8));
+                if message {
+                    parts.push(("m message it", 7));
+                }
+                if take_over {
+                    parts.push(("t take over", 4));
+                }
+                if stop {
+                    parts.push(("x stop it", 4));
+                }
+                parts.push(("r raw", 6));
+                if has_card {
+                    parts.push(("d diff", 5));
+                }
+                if self.following {
+                    parts.push(("← crew", 3));
+                }
             }
         }
         parts.push((panes::ESC_BACK, 0));
         Footer::hints(&parts)
     }
+
+    /// Stopping needs the agent still at work in a run that goes on.
+    fn can_stop(&self, state: &AppState) -> bool {
+        super::run_going(state, &self.run)
+            && state
+                .session(&self.run, &self.session)
+                .is_some_and(SessionState::is_running)
+    }
+
+    /// `x` asks first, then stops this agent alone.
+    fn stop(&mut self, state: &AppState) -> ViewOutcome {
+        if let Some(why) = super::ended_why(state, &self.run) {
+            return ViewOutcome::Notice(why.to_owned());
+        }
+        if !self.can_stop(state) {
+            return ViewOutcome::Notice(
+                "This agent isn't running, so there's nothing to stop".into(),
+            );
+        }
+        if !self.confirm_stop {
+            self.confirm_stop = true;
+            return ViewOutcome::Consumed;
+        }
+        self.confirm_stop = false;
+        ViewOutcome::Send(UiCommand::StopAgent {
+            run: self.run.clone(),
+            session: self.session.clone(),
+        })
+    }
 }
 
-/// The input side's first row: moved the least that shows the selected part's label, and a
+/// The Input tab's first row: moved the least that shows the selected part's heading, and a
 /// few rows of its text when there's room.
 fn input_top(top: usize, selected: usize, rows: usize, height: usize) -> usize {
     let height = height.max(1);
-    let want_end = (selected + PART_LINES.min(height)).min(rows);
+    let want_end = (selected + asked::PART_LINES.min(height)).min(rows);
     let top = if selected < top {
         selected
     } else if want_end > top + height {
@@ -445,17 +761,54 @@ fn note(text: impl Into<String>, role: Role, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(text.into(), theme.style(role)))
 }
 
-/// Every message, tool call with its result, diff, and subagent, as the chat draws them, and
-/// under them what waits to be delivered.
+/// What the Output tab's rows are drawn with.
+struct OutputDraw<'a> {
+    names: &'a DisplayNames,
+    theme: &'a Theme,
+    width: u16,
+    results_open: bool,
+}
+
+/// Every tool call with its result, diff, message, and subagent, as the chat draws them, and
+/// under them what waits to be delivered. A structured result, whether the agent reported it
+/// through Argonauts' own tool or wrote it out at the end of a message, is drawn as what it
+/// means; the rest of its talk with Argonauts is left to the raw log. Also says whether `→`
+/// has more of a result to show.
 fn output_lines(
     session: &SessionState,
     sent: Option<&str>,
-    width: u16,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+    shown: &OutputDraw<'_>,
+) -> (Vec<Line<'static>>, bool) {
+    let (width, theme) = (shown.width, shown.theme);
     let ctx = RenderCtx::new(width, theme, Clock::still(Instant::now())).with_expanded(true);
-    let mut cells: Vec<Box<dyn HistoryCell>> = Vec::new();
+    let draw = structured::Draw {
+        names: shown.names,
+        theme,
+        width: usize::from(width),
+        expanded: shown.results_open,
+        hints: true,
+    };
+    let mut more = false;
+    let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
+    let mut result = |value: &serde_json::Value, blocks: &mut Vec<Vec<Line<'static>>>| {
+        let Some((lines, has_more)) = structured::lines(value, &draw) else {
+            return false;
+        };
+        more |= has_more;
+        blocks.push(lines);
+        true
+    };
     for tool in &session.tools {
+        if is_own_tool(&tool.name) {
+            let reports = tool
+                .input
+                .as_object()
+                .is_some_and(|input| !input.is_empty());
+            if reports {
+                result(&tool.input, &mut blocks);
+            }
+            continue;
+        }
         let mut call = tools::start_call(&session.vendor, &tool.name, &tool.input);
         if let Some(ok) = tool.ok {
             tools::finish_call(&mut call, ok, tool.output.as_deref());
@@ -468,48 +821,53 @@ fn output_lines(
                 push_result(&mut call, output);
             }
         }
-        cells.push(Box::new(call));
+        blocks.push(call.lines(&ctx));
     }
     for diff in &session.diffs {
         let path = clean(&diff.path);
         let view = DiffView::from_unified(&diff.hunk).unwrap_or_default();
         let view = view.updated(path.clone(), diff.added as usize, diff.removed as usize);
-        cells.push(Box::new(DiffCell {
+        let cell = DiffCell {
             title: format!("Update({path})"),
             diff: view,
-        }));
+        };
+        blocks.push(cell.lines(&ctx));
     }
+    let said = |text: &str| AssistantMessage::new(text.to_owned()).lines(&ctx);
     for message in &session.messages {
-        cells.push(Box::new(AssistantMessage::new(message.clone())));
+        match tools::written_object(message) {
+            Some((words, value)) => {
+                if !words.is_empty() {
+                    blocks.push(said(&words));
+                }
+                if !result(&value, &mut blocks) {
+                    blocks.push(said(message));
+                }
+            }
+            None => blocks.push(said(message)),
+        }
     }
     if !session.streaming.trim().is_empty() {
-        cells.push(Box::new(AssistantMessage::new(session.streaming.clone())));
+        blocks.push(said(&session.streaming));
     }
+    blocks.push(subagent_tree(&session.subagents, usize::from(width), theme));
+    blocks.push(queued_lines(
+        &session.queued,
+        sent,
+        usize::from(width),
+        theme,
+    ));
     let mut lines = Vec::new();
-    for cell in cells {
+    for block in blocks.into_iter().filter(|block| !block.is_empty()) {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        lines.extend(cell.lines(&ctx));
-    }
-    let tree = subagent_tree(&session.subagents, usize::from(width), theme);
-    if !tree.is_empty() {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.extend(tree);
-    }
-    let waiting = queued_lines(&session.queued, sent, usize::from(width), theme);
-    if !waiting.is_empty() {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.extend(waiting);
+        lines.extend(block);
     }
     if lines.is_empty() {
         lines.push(note("Nothing from this agent yet", Role::Dim, theme));
     }
-    lines
+    (lines, more)
 }
 
 /// The result text under a call as one block, cut at [`RESULT_LINES`] with the count left out.
@@ -529,7 +887,6 @@ fn subagent_tree(subagents: &[SubagentUpdate], width: usize, theme: &Theme) -> V
     if subagents.is_empty() {
         return Vec::new();
     }
-    let marks = Marks::for_theme(theme);
     let mut lines = vec![Line::from(vec![
         Span::styled(
             format!("{} ", theme.glyphs.bullet),
@@ -554,13 +911,14 @@ fn subagent_tree(subagents: &[SubagentUpdate], width: usize, theme: &Theme) -> V
             continue;
         }
         seen.push(sub.id.clone());
-        let (glyph, word, role) = match sub.status {
-            SubagentStatus::Started => (marks.waiting, "started", Role::Dim),
-            SubagentStatus::Running => (marks.running, "running", Role::Accent),
-            SubagentStatus::Done => (marks.done, "done", Role::Success),
-            SubagentStatus::Failed => (marks.failed, "failed", Role::Error),
-            SubagentStatus::Unknown => (marks.waiting, "state unknown", Role::Dim),
+        let word = match sub.status {
+            SubagentStatus::Started => "started",
+            SubagentStatus::Running => "running",
+            SubagentStatus::Done => "done",
+            SubagentStatus::Failed => "failed",
+            SubagentStatus::Unknown => "state unknown",
         };
+        let (glyph, role) = states::mark(states::of_subagent(sub.status), theme);
         let label = sub
             .label
             .as_deref()
@@ -651,162 +1009,6 @@ fn queued_lines(
     lines
 }
 
-fn prompt_via(via: PromptVia) -> &'static str {
-    match via {
-        PromptVia::Argument => "prompt as an argument",
-        PromptVia::Stdin => "prompt on stdin",
-        PromptVia::StreamInput => "prompt on an open input stream",
-        PromptVia::Request => "prompt in the request body",
-    }
-}
-
-/// An argument as typed at a shell, quoted only when it has to be, so the line pastes back as
-/// the same argv. Line breaks fold into spaces, the one change it makes.
-fn shell_arg(arg: &str) -> String {
-    shell_words::quote(&sanitize_line(arg)).into_owned()
-}
-
-/// The launch command, then each part with its label and token estimate, then queued messages.
-fn input_lines(
-    session: &SessionState,
-    part: &ListState,
-    expanded: Option<usize>,
-    width: usize,
-    theme: &Theme,
-) -> Body {
-    let dim = theme.style(Role::Dim);
-    let text = theme.style(Role::Text);
-    let marks = Marks::for_theme(theme);
-    if session.inputs.is_empty() {
-        return Body {
-            lines: vec![note("Nothing sent to this agent yet", Role::Dim, theme)],
-            selected_row: 0,
-        };
-    }
-    let mut lines = Vec::new();
-    let mut selected_row = 0;
-    let mut index = 0;
-    for (n, input) in session.inputs.iter().enumerate() {
-        if n == 0 {
-            let launch = &input.launch;
-            let command = std::iter::once(launch.program.as_str())
-                .chain(launch.args.iter().map(String::as_str))
-                .map(shell_arg)
-                .collect::<Vec<_>>()
-                .join(" ");
-            lines.extend(wrap_text(
-                &command,
-                text,
-                width,
-                &[Span::styled("$ ", dim)],
-                &[Span::raw("    ")],
-            ));
-            let mut facts = vec![
-                format!("cwd {}", clean(&launch.cwd.to_string_lossy())),
-                prompt_via(launch.prompt_via).to_owned(),
-            ];
-            if let Some(sandbox) = &launch.sandbox {
-                facts.push(format!("sandbox {}", clean(sandbox)));
-            }
-            if !launch.env_set.is_empty() {
-                let names: Vec<String> = launch.env_set.iter().map(|name| clean(name)).collect();
-                facts.push(format!("sets {}", names.join(", ")));
-            }
-            if !launch.env_removed.is_empty() {
-                let names: Vec<String> =
-                    launch.env_removed.iter().map(|name| clean(name)).collect();
-                facts.push(format!("clears {}", names.join(", ")));
-            }
-            lines.extend(wrap_text(
-                &facts.join(" · "),
-                dim,
-                width,
-                &[Span::raw("  ")],
-                &[Span::raw("  ")],
-            ));
-        } else {
-            lines.push(Line::default());
-            lines.push(note(format!("Added by delivery {n}"), Role::Bright, theme));
-        }
-        for item in &input.parts {
-            lines.push(Line::default());
-            let selected = index == part.selected;
-            if selected {
-                selected_row = lines.len();
-            }
-            lines.extend(part_lines(
-                item,
-                selected,
-                expanded == Some(index),
-                width,
-                theme,
-                &marks,
-            ));
-            index += 1;
-        }
-    }
-    if !session.queued.is_empty() {
-        lines.push(Line::default());
-        lines.extend(queued_lines(&session.queued, None, width, theme));
-    }
-    Body {
-        lines,
-        selected_row,
-    }
-}
-
-/// A part's label row, then its text word for word, each line ending its own row.
-fn part_lines(
-    part: &InputPart,
-    selected: bool,
-    expanded: bool,
-    width: usize,
-    theme: &Theme,
-    marks: &Marks,
-) -> Vec<Line<'static>> {
-    let dim = theme.style(Role::Dim);
-    let mut head = vec![
-        if selected {
-            Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
-        } else {
-            Span::raw("  ")
-        },
-        Span::styled(
-            clean(&part.label),
-            theme.style(if selected { Role::Label } else { Role::Bright }),
-        ),
-        Span::styled(format!(" · ~{} tok", part.approx_tokens), dim),
-    ];
-    if let Some(source) = &part.source {
-        head.push(Span::styled(format!(" · from {}", clean(source)), dim));
-    }
-    let mut lines = vec![Line::from(head)];
-    let body = sanitize(&part.text);
-    let rows: Vec<&str> = body.lines().collect();
-    let shown = if expanded {
-        rows.len()
-    } else {
-        rows.len().min(PART_LINES)
-    };
-    let text = theme.style(Role::Text);
-    for row in &rows[..shown] {
-        lines.extend(wrap_text(
-            row,
-            text,
-            width,
-            &[Span::raw("    ")],
-            &[Span::raw("    ")],
-        ));
-    }
-    if shown < rows.len() {
-        lines.push(Line::from(Span::styled(
-            format!("    … +{} lines · → expands", rows.len() - shown),
-            dim,
-        )));
-    }
-    lines
-}
-
 impl View for SessionView {
     fn follow(&mut self, ctx: &ViewCtx<'_>) -> Option<Follow> {
         let run = ctx.state.runs.get(&self.run)?;
@@ -814,7 +1016,7 @@ impl View for SessionView {
             .sessions
             .get(&self.session)
             .is_some_and(SessionState::is_running);
-        // It stays while its agent works, and while you type a steer to it.
+        // It stays while its agent works, and while you type a message to it.
         if working || self.steer.is_some() {
             return None;
         }
@@ -832,8 +1034,9 @@ impl View for SessionView {
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
         let theme = ctx.theme;
         let width = usize::from(area.width);
-        let [header, sides, rule, body_area, footer] = Layout::vertical([
-            Constraint::Length(1),
+        // The header, a row that is blank unless the output is paused, the tab's rows, and
+        // the footer.
+        let [header, under, body_area, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
@@ -851,6 +1054,16 @@ impl View for SessionView {
             return;
         };
         self.ticking = session.is_running();
+        if let Some(follow) = &self.follow {
+            follow.show(Shown::Agent {
+                run: self.run.clone(),
+                session: self.session.clone(),
+            });
+        }
+        // A goal that ended, or was cleared, takes its tab with it.
+        if self.tab == Tab::Goal && self.goal(ctx.state).is_none() {
+            self.tab = Tab::Output;
+        }
         panes::put(
             buf,
             header.x,
@@ -858,48 +1071,51 @@ impl View for SessionView {
             header.width,
             &self.header(session, ctx.state, width, theme),
         );
-        panes::put(
-            buf,
-            sides.x,
-            sides.y,
-            sides.width,
-            &self.sides_line(width, theme),
-        );
-        let line = theme.glyphs.rule.repeat(width);
-        panes::put(
-            buf,
-            rule.x,
-            rule.y,
-            rule.width,
-            &note(line, Role::Rule, theme),
-        );
+        if self.tab == Tab::Output && !self.following {
+            let paused = "paused · End follows";
+            let pad = " ".repeat(width.saturating_sub(str_width(paused)));
+            let line = Line::from(vec![
+                Span::raw(pad),
+                Span::styled(paused, theme.style(Role::Warning)),
+            ]);
+            panes::put(buf, under.x, under.y, under.width, &line);
+        }
 
         let Body {
             lines,
             selected_row,
-        } = self.body(session, area.width, theme);
+            more,
+        } = self.body(session, area.width, ctx);
         let height = usize::from(body_area.height);
         self.page = height.max(1);
-        let top = if self.input_side {
-            self.input_top = input_top(self.input_top, selected_row, lines.len(), height);
-            self.input_top
-        } else {
-            self.rows = lines.len();
-            let top = self.top(lines.len(), height);
-            if !self.following {
-                self.offset = top;
+        let top = match self.tab {
+            Tab::Goal => {
+                self.goal_top = self.goal_top.min(lines.len().saturating_sub(height));
+                self.goal_top
             }
-            top
+            Tab::Input => {
+                self.input_top = input_top(self.input_top, selected_row, lines.len(), height);
+                self.input_top
+            }
+            Tab::Output => {
+                self.rows = lines.len();
+                let top = self.top(lines.len(), height);
+                if !self.following {
+                    self.offset = top;
+                }
+                top
+            }
         };
         panes::put_lines(buf, body_area, &lines[top.min(lines.len())..]);
 
         let marks = Marks::for_theme(theme);
-        let mark = if self.input_side {
-            String::new()
-        } else {
-            super::pager::position_mark(top, height, lines.len(), marks.down)
+        let mark = match self.tab {
+            Tab::Output | Tab::Goal => {
+                super::pager::position_mark(top, height, lines.len(), marks.down)
+            }
+            Tab::Input => String::new(),
         };
-        // The steer input leaves room for the mark beside it.
+        // The message line leaves room for the mark beside it.
         let room = match str_width(&mark) {
             0 => width,
             mark => width.saturating_sub(mark + 2),
@@ -907,7 +1123,7 @@ impl View for SessionView {
         panes::draw_footer(
             buf,
             footer,
-            self.footer(room, ctx.state, theme),
+            self.footer(room, ctx.state, theme, more),
             &mark,
             theme,
         );
@@ -917,6 +1133,9 @@ impl View for SessionView {
         if self.steer.is_some() {
             return self.steer_key(key);
         }
+        if self.lines_edit.is_some() {
+            return self.lines_key(key, ctx.state);
+        }
         let state = ctx.state;
         let session = state.session(&self.run, &self.session);
         // `h` goes back to the crew, as ← does.
@@ -925,13 +1144,17 @@ impl View for SessionView {
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-        match key.code {
-            KeyCode::Esc => return ViewOutcome::Close,
-            KeyCode::Char('i') if plain => {
-                self.input_side = !self.input_side;
+        if self.confirm_stop && !(plain && key.code == KeyCode::Char('x')) {
+            self.confirm_stop = false;
+            if key.code == KeyCode::Esc {
                 return ViewOutcome::Consumed;
             }
-            KeyCode::Char('s') if plain => {
+        }
+        match key.code {
+            KeyCode::Esc => return ViewOutcome::Close,
+            KeyCode::Tab => return self.next_tab(false, state),
+            KeyCode::BackTab => return self.next_tab(true, state),
+            KeyCode::Char('m') if plain => {
                 if let Some(why) = super::steer_refusal(state, &self.run, &self.session) {
                     return ViewOutcome::Notice(why);
                 }
@@ -941,12 +1164,21 @@ impl View for SessionView {
             KeyCode::Char('t') if plain => {
                 return super::take_over(state, &self.run, &self.session);
             }
-            KeyCode::Char('r') if plain => {
-                return ViewOutcome::Request(ViewRequest::Raw {
-                    run: self.run.clone(),
-                    session: self.session.clone(),
-                });
+            KeyCode::Char('x') if plain => return self.stop(state),
+            KeyCode::Char('p') if plain && self.tab == Tab::Goal => {
+                return match self.goal_hold(state) {
+                    Some(hold) => ViewOutcome::Send(hold.command),
+                    None => ViewOutcome::Ignored,
+                };
             }
+            KeyCode::Char('c') if plain && self.tab == Tab::Goal => {
+                return match self.goal_check(state) {
+                    Some(check) => ViewOutcome::Send(check.command),
+                    None => ViewOutcome::Ignored,
+                };
+            }
+            KeyCode::Char('e') if plain && self.tab == Tab::Goal => return self.edit_lines(state),
+            KeyCode::Char('r') if plain => return self.raw(),
             KeyCode::Char('d') if plain => {
                 return match session.and_then(|session| session.card.clone()) {
                     Some(card) => ViewOutcome::Request(ViewRequest::Diff {
@@ -954,15 +1186,18 @@ impl View for SessionView {
                         card,
                         scope: DiffScope::Card,
                     }),
-                    None => ViewOutcome::Notice("This agent has no card, so no diff".into()),
+                    None => ViewOutcome::Notice("This agent has no task, so no diff".into()),
                 };
             }
-            KeyCode::Left if self.input_side && self.expanded.is_some() => {
+            KeyCode::Left if self.tab == Tab::Input && self.expanded.is_some() => {
                 self.expanded = None;
                 return ViewOutcome::Consumed;
             }
             KeyCode::Left => return self.back_to_crew(state),
-            KeyCode::Right | KeyCode::Enter if self.input_side => {
+            KeyCode::Right | KeyCode::Enter if self.tab == Tab::Goal => {
+                return ViewOutcome::Consumed;
+            }
+            KeyCode::Right | KeyCode::Enter if self.tab == Tab::Input => {
                 let selected = self.part.selected;
                 self.expanded = if self.expanded == Some(selected) {
                     None
@@ -971,21 +1206,41 @@ impl View for SessionView {
                 };
                 return ViewOutcome::Consumed;
             }
+            // What a plan's tasks ask for, and back.
+            KeyCode::Right | KeyCode::Enter => {
+                self.results_open = !self.results_open;
+                return ViewOutcome::Consumed;
+            }
             _ => {}
         }
         let Some(nav) = list::nav_key(&key, self.page) else {
             return ViewOutcome::Ignored;
         };
-        if self.input_side {
-            let parts = session.map_or(0, Self::parts);
-            self.part.apply(nav, parts, 1);
-            if self.expanded.is_some_and(|open| open != self.part.selected) {
-                self.expanded = None;
+        match self.tab {
+            Tab::Input => {
+                let items = session.map_or(0, |session| asked::items(&session.inputs));
+                self.part.apply(nav, items, 1);
+                if self.expanded.is_some_and(|open| open != self.part.selected) {
+                    self.expanded = None;
+                }
             }
-        } else {
-            self.scroll(nav);
+            Tab::Output => self.scroll(nav),
+            Tab::Goal => {
+                self.goal_top = match nav {
+                    Nav::Top => 0,
+                    Nav::Bottom => usize::MAX,
+                    Nav::By(delta) => self.goal_top.saturating_add_signed(delta),
+                };
+            }
         }
         ViewOutcome::Consumed
+    }
+
+    /// The agent's answer, asked for while this view is on top: the state has taken its goal
+    /// in already, so the next frame draws it.
+    fn accept(&mut self, data: &argonauts_core::app::ViewData) -> bool {
+        matches!(data, argonauts_core::app::ViewData::Agent { view }
+            if self.follow.is_some() && view.run == self.run && view.row.session == self.session)
     }
 
     fn next_change(&self, now: Instant) -> Option<Instant> {
@@ -994,8 +1249,9 @@ impl View for SessionView {
 }
 
 #[cfg(test)]
-mod tests {
+mod scroll_and_keys {
     use super::*;
+    use crate::state::SessionStatus;
 
     fn view(rows: usize, page: usize) -> SessionView {
         let mut view = SessionView::new(
@@ -1015,13 +1271,14 @@ mod tests {
         let run = state.attached.clone().unwrap();
         let session = SessionKey::numbered(1);
         let theme = Theme::dark();
-        let offered = |view: &SessionView, state: &AppState| match view.footer(120, state, &theme) {
-            Footer::Hints(hints) => hints.into_iter().map(|(hint, _)| hint).collect(),
-            Footer::Line(_) => Vec::<String>::new(),
-        };
+        let offered =
+            |view: &SessionView, state: &AppState| match view.footer(120, state, &theme, false) {
+                Footer::Hints(hints) => hints.into_iter().map(|(hint, _)| hint).collect(),
+                Footer::Line(_) => Vec::<String>::new(),
+            };
         let mut view = SessionView::new(run.clone(), session.clone());
         let keys = offered(&view, &state);
-        for hint in ["s steer", "t take over", "d diff"] {
+        for hint in ["m message it", "t take over", "x stop it", "d diff"] {
             assert!(keys.iter().any(|key| key == hint), "{hint}: {keys:?}");
         }
 
@@ -1029,7 +1286,7 @@ mod tests {
         held.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
         held.sessions.get_mut(&session).unwrap().status = SessionStatus::Done;
         let keys = offered(&view, &state);
-        for hint in ["s steer", "t take over"] {
+        for hint in ["m message it", "t take over", "x stop it"] {
             assert!(!keys.iter().any(|key| key == hint), "{hint}: {keys:?}");
         }
         assert!(keys.iter().any(|key| key == "d diff"), "{keys:?}");
@@ -1038,7 +1295,7 @@ mod tests {
             state: &state,
             now: Instant::now(),
         };
-        for c in ['t', 's'] {
+        for c in ['t', 'm', 'x'] {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
             let ViewOutcome::Notice(why) = view.handle_key(key, &ctx) else {
                 panic!("{c} says why");
@@ -1070,15 +1327,20 @@ mod tests {
             };
             view.handle_key(KeyEvent::new(code, KeyModifiers::NONE), &ctx)
         };
-        press(&mut view, &state, KeyCode::Char('s'));
+        press(&mut view, &state, KeyCode::Char('m'));
         for c in "keep the old limits".chars() {
             press(&mut view, &state, KeyCode::Char(c));
         }
         let sent = press(&mut view, &state, KeyCode::Enter);
         assert!(matches!(sent, ViewOutcome::Send(UiCommand::Steer { .. })));
         let shown = |view: &mut SessionView, state: &AppState| {
+            let ctx = ViewCtx {
+                theme: &theme,
+                state,
+                now: Instant::now(),
+            };
             let session = state.session(&run, &session).unwrap();
-            let body = view.body(session, 80, &theme);
+            let body = view.body(session, 80, &ctx);
             body.lines
                 .iter()
                 .map(|line| {
@@ -1113,14 +1375,14 @@ mod tests {
             now: Instant::now(),
         };
         let mut view = view(10, 10);
-        for c in ['d', 't', 'r', 's', 'i'] {
+        for c in ['d', 't', 'r', 'm', 'x'] {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
             assert!(
                 matches!(view.handle_key(key, &ctx), ViewOutcome::Ignored),
                 "Ctrl+{c}"
             );
         }
-        assert!(view.steer.is_none() && !view.input_side);
+        assert!(view.steer.is_none() && view.tab == Tab::Output && !view.confirm_stop);
     }
 
     #[test]
@@ -1157,28 +1419,6 @@ mod tests {
             press(&mut view, 'h', true),
             ViewOutcome::Replace(_)
         ));
-    }
-
-    #[test]
-    fn launch_args_paste_back_as_the_same_argv() {
-        let args = [
-            "claude",
-            "-p",
-            "it's done",
-            "effort=\"low\"",
-            "$HOME",
-            "a;b",
-            "*.rs",
-            "x|y",
-            "&",
-            "`ls`",
-            "",
-            "plain",
-        ];
-        let line = args.iter().map(|arg| shell_arg(arg)).collect::<Vec<_>>();
-        assert_eq!(line[0], "claude");
-        assert_eq!(line[11], "plain");
-        assert_eq!(shell_words::split(&line.join(" ")).unwrap(), args);
     }
 
     #[test]

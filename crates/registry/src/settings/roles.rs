@@ -4,7 +4,6 @@
 use argonauts_core::adapter::KNOWN_AGENT_IDS;
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::handoff::FallbackEntry;
 use toml::{Table, Value};
 
 use super::validate::Problem;
@@ -21,8 +20,8 @@ const HARNESS_ROLES: [RoleName; 5] = [
     RoleName::Restater,
     RoleName::Drafter,
     RoleName::Spike,
-    RoleName::Owner,
-    RoleName::Default,
+    RoleName::Worker,
+    RoleName::Main,
 ];
 
 /// Gives each judge, adjudicator, and approver table that doesn't set `fresh_session` a fresh
@@ -96,19 +95,18 @@ impl<'a> Workers<'a> {
     }
 }
 
-/// An endpoint where a step needs a harness: the default agent, a worker of a harness role, or
-/// an entry in such a role's own handoff lists. The top-level `[handoff]` lists serve every
-/// role, so an endpoint there is fine: the handoff filters the candidates for each role when it
-/// happens.
+/// An endpoint where a step needs a harness: the default agent, or a worker of a harness role.
+/// The `[fallback]` lists each serve several roles, so an endpoint there is fine: the fallback
+/// filters the candidates for each role when it happens.
 pub(crate) fn endpoint_problems(settings: &Settings, workers: &Workers<'_>) -> Vec<Problem> {
     let mut problems = Vec::new();
     let endpoint = |worker: &WorkerRef| workers.is_endpoint(&worker.worker);
-    if endpoint(&settings.default_agent) {
+    if endpoint(&settings.main_agent) {
         problems.push(Problem::new(
-            "default_agent",
+            "main_agent",
             format!(
-                "default_agent is {}, an endpoint; the default agent needs a harness with tools",
-                settings.default_agent
+                "main_agent is {}, an endpoint; the main agent needs a CLI with tools",
+                settings.main_agent
             ),
         ));
     }
@@ -119,20 +117,10 @@ pub(crate) fn endpoint_problems(settings: &Settings, workers: &Workers<'_>) -> V
         let name = role.as_str();
         let mut lists: Vec<(String, Vec<&WorkerRef>)> = Vec::new();
         // `roles.default.workers` is ignored, and says so in a warning of its own.
-        if role != RoleName::Default {
+        if role != RoleName::Main {
             lists.push((
                 format!("roles.{name}.workers"),
                 table.workers.iter().collect(),
-            ));
-        }
-        lists.push((
-            format!("roles.{name}.handoff.fallback"),
-            entry_workers(&table.handoff.fallback),
-        ));
-        for (vendor, replacement) in &table.handoff.replace {
-            lists.push((
-                format!("roles.{name}.handoff.replace.{vendor}.with"),
-                entry_workers(&replacement.with),
             ));
         }
         for (key, list) in lists {
@@ -140,7 +128,7 @@ pub(crate) fn endpoint_problems(settings: &Settings, workers: &Workers<'_>) -> V
                 problems.push(Problem::new(
                     &key,
                     format!(
-                        "{key} names {worker}, an endpoint, and the {name} role needs a harness \
+                        "{key} names {worker}, an endpoint, and the {name} role needs a CLI \
                          with tools; endpoints can review, critique, judge, and narrate"
                     ),
                 ));
@@ -154,7 +142,7 @@ pub(crate) fn endpoint_problems(settings: &Settings, workers: &Workers<'_>) -> V
 pub(crate) fn off(key: &str, worker: &WorkerRef) -> String {
     let id = &worker.worker;
     format!(
-        "{key} names {worker}, which is off, so a run finds no harness for it; turn it on with \
+        "{key} names {worker}, which is off, so a run finds no CLI for it; turn it on with \
          agents.{id}.enabled = true"
     )
 }
@@ -162,23 +150,19 @@ pub(crate) fn off(key: &str, worker: &WorkerRef) -> String {
 /// A worker may be a harness from a `models.toml` that doesn't parse yet, so it only warns.
 pub(crate) fn unknown(key: &str, worker: &WorkerRef) -> String {
     format!(
-        "{key} names {worker}, which isn't a harness or endpoint Argonauts knows, and no \
+        "{key} names {worker}, which isn't a CLI or endpoint Argonauts knows, and no \
          models.toml declares it as a [[harness]]"
     )
-}
-
-fn entry_workers(list: &[FallbackEntry]) -> Vec<&WorkerRef> {
-    list.iter().map(FallbackEntry::worker).collect()
 }
 
 /// Role workers nobody knows or that are off, and an adjudicator that can never run.
 pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String> {
     let mut warnings = Vec::new();
-    if workers.is_off(&settings.default_agent.worker) {
-        warnings.push(off("default_agent", &settings.default_agent));
+    if workers.is_off(&settings.main_agent.worker) {
+        warnings.push(off("main_agent", &settings.main_agent));
     }
     for (role, table) in &settings.roles {
-        if *role == RoleName::Default {
+        if *role == RoleName::Main {
             continue;
         }
         let key = format!("roles.{}.workers", role.as_str());
@@ -194,12 +178,12 @@ pub(crate) fn warnings(settings: &Settings, workers: &Workers<'_>) -> Vec<String
         .roles
         .get(&RoleName::Reviewer)
         .and_then(|role| role.count);
-    let most_reviewers = settings.review.per_card.max(reviewers.unwrap_or(0));
+    let most_reviewers = settings.review.per_task.max(reviewers.unwrap_or(0));
     if settings.roles.contains_key(&RoleName::Adjudicator) && most_reviewers < 2 {
         warnings.push(format!(
-            "roles.adjudicator never runs: it settles reviewers who disagree, and no card gets \
-             two reviewers (review.per_card is {})",
-            settings.review.per_card
+            "roles.adjudicator never runs: it settles reviewers who disagree, and no task gets \
+             two reviewers (review.per_task is {})",
+            settings.review.per_task
         ));
     }
     warnings

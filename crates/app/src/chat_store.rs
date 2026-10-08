@@ -185,6 +185,17 @@ impl ChatStore {
         Ok(Some(events))
     }
 
+    /// Walks what the agents did along the way, a journal line at a time and still unparsed,
+    /// oldest first. They make up most of a journal, so a reader after one kind of call parses
+    /// only the lines that could be it. No journal, or one that can't be read, has none.
+    pub(crate) fn each_agent_line(&self, see: impl FnMut(&str)) {
+        if let Ok(text) = fs::read_to_string(&self.journal) {
+            text.lines()
+                .filter(|line| line.starts_with(AGENT_TAG))
+                .for_each(see);
+        }
+    }
+
     /// `None` when there's none yet, or the file can't be read, which only means the next turn
     /// starts a fresh session.
     pub(crate) fn session(&self) -> Option<ChatSession> {

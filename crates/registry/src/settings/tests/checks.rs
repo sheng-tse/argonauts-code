@@ -6,22 +6,22 @@ use crate::{SettingsError, SettingsSources, resolve};
 /// Every workflow setting, each with its default where it has one (as JSON).
 const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     // Everything is a default.
-    ("triage", None),
-    ("triage.solo_max_files", None),
-    ("triage.crew_min_files", None),
-    ("triage.crew_labels", None),
+    ("solo_or_crew", None),
+    ("solo_or_crew.solo_max_files", None),
+    ("solo_or_crew.crew_min_files", None),
+    ("solo_or_crew.crew_labels", None),
     ("drafting.blind", Some("true")),
     ("judging.anonymize", Some("true")),
     ("judging.method", Some("\"cross\"")),
     ("critique.rounds", Some("1")),
     ("critique.critic", Some("\"rotate\"")),
-    ("spikes.enabled", Some("true")),
-    ("spikes.budget_usd", Some("2.0")),
+    ("experiments.enabled", Some("true")),
+    ("experiments.limit_usd", Some("2.0")),
     ("review.assign", Some("\"ring\"")),
-    ("review.other_family", Some("true")),
+    ("review.other_provider", Some("true")),
     ("solo.restate_first", Some("false")),
     ("approvals.goal_changes", Some("\"ask\"")),
-    ("gates.run", None),
+    ("checks.run", None),
     ("routing.algorithm", Some("\"bandit\"")),
     ("routing.explore_rate", None),
     ("approvals.merge.mode", Some("\"auto\"")),
@@ -30,29 +30,28 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("approvals.plan.decide_with", Some("\"rules_and_model\"")),
     ("approvals.goal.mode", Some("\"auto\"")),
     ("approvals.goal.decide_with", Some("\"rules_and_model\"")),
-    ("approvals.escalation.mode", Some("\"auto\"")),
-    (
-        "approvals.escalation.decide_with",
-        Some("\"rules_and_model\""),
-    ),
-    ("approvals.budget.mode", Some("\"auto\"")),
-    ("approvals.budget.decide_with", Some("\"rules_and_model\"")),
+    ("approvals.stuck.mode", Some("\"auto\"")),
+    ("approvals.stuck.decide_with", Some("\"rules_and_model\"")),
+    ("approvals.limit.mode", Some("\"auto\"")),
+    ("approvals.limit.decide_with", Some("\"rules_and_model\"")),
     ("approvals.change_request.mode", Some("\"auto\"")),
     (
         "approvals.change_request.decide_with",
         Some("\"rules_and_model\""),
     ),
-    ("approvals.recipe_promotion.mode", Some("\"auto\"")),
-    ("approvals.approver.different_family", Some("true")),
-    ("sessions.lifetime", Some("\"card\"")),
+    ("approvals.workflow_promotion.mode", Some("\"auto\"")),
+    ("approvals.approver.different_provider", Some("true")),
+    ("sessions.lifetime", Some("\"task\"")),
     ("compaction", Some("\"inherit\"")),
-    ("runs.remind_parked_days", Some("7")),
-    ("budget.run_usd", Some("20.0")),
-    ("budget.per_card_usd", Some("3.0")),
-    ("budget.soft_stop", Some("0.85")),
-    ("budget.on_hit", Some("\"ask\"")),
+    ("runs.remind_waiting_days", Some("7")),
+    ("limits.spend_per_run", Some("null")),
+    ("limits.spend_per_day", Some("null")),
+    ("limits.plan_usage", Some("null")),
+    ("limits.per_task_usd", Some("null")),
+    ("limits.soft_stop", Some("0.85")),
+    ("limits.when_reached", Some("\"fallback\"")),
     ("watchdogs", None),
-    ("handoff.mode", Some("\"auto\"")),
+    ("fallback.mode", Some("\"auto\"")),
     ("native_fanout", Some("{\"max\":3}")),
     ("concurrency", None),
     ("visibility", None),
@@ -69,24 +68,24 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("sandbox", None),
     ("sandbox.mode", Some("\"os\"")),
     ("sandbox.network", Some("true")),
-    ("sandbox.agents_see_other_copies", Some("false")),
+    ("sandbox.agents_see_other_worktrees", Some("false")),
     ("sandbox.agents_commit", Some("true")),
     ("limits", None),
     // The keys the later changes and decisions added.
-    ("preset", Some("\"peer-crew\"")),
-    ("workflow", Some("\"peer-crew\"")),
-    ("default_agent", Some("\"claude-code\"")),
+    ("workflow", Some("\"council\"")),
+    ("workflow", Some("\"council\"")),
+    ("main_agent", Some("\"claude-code\"")),
     ("crew", None),
-    ("handoff.strategy", Some("\"first\"")),
-    ("handoff.race_count", Some("2")),
-    ("handoff.on_return", Some("\"ask\"")),
-    ("handoff.checkpoint", Some("true")),
-    ("handoff.merge_rule", Some("\"upgrade_review\"")),
-    ("handoff.unknown_tier", Some("\"weaker\"")),
-    ("handoff.max_handoffs", Some("3")),
-    ("handoff.context", Some("\"note+transcript\"")),
-    ("handoff.replace", Some("{}")),
-    ("approvals.merge.rules.allow_debt", Some("false")),
+    ("fallback.strategy", Some("\"first\"")),
+    ("fallback.together", Some("1")),
+    ("fallback.on_return", Some("\"ask\"")),
+    ("fallback.checkpoint", Some("true")),
+    ("fallback.merge_rule", Some("\"upgrade_review\"")),
+    ("fallback.unknown_tier", Some("\"weaker\"")),
+    ("fallback.max_fallbacks", Some("3")),
+    ("fallback.context", Some("\"note+transcript\"")),
+    ("fallback.replace", Some("{}")),
+    ("approvals.rules.merge.allow_debt", Some("false")),
     ("approvals.presence", Some("\"warn\"")),
     (
         "approvals.refuse_ancestor_env",
@@ -96,19 +95,20 @@ const WORKFLOW_SETTINGS: &[(&str, Option<&str>)] = &[
     ("mcp.guidance", Some("true")),
     ("mcp.pause", Some("true")),
     ("mcp.share", Some("\"summaries\"")),
-    ("mcp.run_budget", Some("\"60m\"")),
+    ("mcp.run_limit", Some("\"60m\"")),
     ("mcp.runs_per_day", Some("5")),
     ("notifications.chat.command", Some("[]")),
     (
         "notifications.chat.on",
-        Some("[\"needs_you\",\"finished\",\"vendor_down\"]"),
+        Some("[\"needs_you\",\"finished\",\"agent_down\"]"),
     ),
-    ("sessions.rotate_at", Some("\"200k\"")),
-    ("workflows.lead_designs", Some("true")),
+    ("sessions.context", Some("\"largest\"")),
+    ("sessions.rotate_at", Some("0.9")),
+    ("workflows.orchestrator_designs", Some("true")),
     ("workflows.allow_composed", Some("true")),
     ("workflows.max_depth", Some("2")),
     ("workflows.adapt_at_phase_ends", Some("true")),
-    ("ui.panel.vendor_internals", Some("\"discovered\"")),
+    ("ui.panel.subagents", Some("\"discovered\"")),
     ("ui.panel.agents", Some("false")),
     ("ui.panel.max_rows", Some("5")),
     ("ui.glyphs", Some("\"unicode\"")),
@@ -131,9 +131,9 @@ fn every_workflow_setting_has_a_key() {
             assert_eq!(found, &expected, "{key}");
         }
     }
-    // A role's own handoff mode exists once the role has a table.
+    // A role's own fallback mode exists once the role has a fallback table.
     let owner = resolve(&SettingsSources {
-        overrides: vec!["roles.owner.workers=[\"codex\"]".into()],
+        overrides: vec!["fallback.workers.together=2".into()],
         ..SettingsSources::default()
     })
     .unwrap();
@@ -141,13 +141,13 @@ fn every_workflow_setting_has_a_key() {
         owner
             .entries
             .iter()
-            .any(|entry| entry.key == "roles.owner.handoff.mode")
+            .any(|entry| entry.key == "fallback.workers.mode")
     );
     assert!(
         owner
             .entries
             .iter()
-            .any(|entry| entry.key == "roles.owner.workers")
+            .any(|entry| entry.key == "fallback.workers.together")
     );
 }
 
@@ -169,7 +169,7 @@ fn resolved_hash_recorded() {
     repo.local("[ui]\nbell = false\n");
     let local = resolve(&repo.sources()).unwrap();
     assert_ne!(local.sha256, first.sha256);
-    repo.global_preset("peer-crew", "[judging]\nanonymize = false\n");
+    repo.global_preset("council", "[judging]\nanonymize = false\n");
     assert_ne!(resolve(&repo.sources()).unwrap().sha256, local.sha256);
 }
 
@@ -276,21 +276,21 @@ fn global_only_keys_refused_from_project_files() {
 fn values_serde_accepts_are_still_checked() {
     let repo = Repo::new();
     let cases = [
-        ("[budget]\nsoft_stop = 0.0\n", "budget.soft_stop"),
-        ("[budget]\nsoft_stop = 1.5\n", "budget.soft_stop"),
-        ("[budget.lines]\ncards = 0.9\n", "budget.lines"),
+        ("[limits]\nsoft_stop = 0.0\n", "limits.soft_stop"),
+        ("[limits]\nsoft_stop = 1.5\n", "limits.soft_stop"),
+        ("[limits.lines]\ntasks = 0.9\n", "limits.lines"),
         (
-            "[budget.lines]\ncards = -0.1\nreview = 0.6\n",
-            "budget.lines.cards",
+            "[limits.lines]\ntasks = -0.1\nreview = 0.6\n",
+            "limits.lines.tasks",
         ),
         ("[critique]\ncritic = \"two critics\"\n", "critique.critic"),
         ("native_fanout = { max = 0 }\n", "native_fanout.max"),
         (
-            "[roles.owner]\nnative_fanout = { max = 0 }\n",
-            "roles.owner.native_fanout.max",
+            "[roles.worker]\nnative_fanout = { max = 0 }\n",
+            "roles.worker.native_fanout.max",
         ),
         ("[workflows]\nmax_depth = 3\n", "workflows.max_depth"),
-        ("[gates]\ntimeout = \"5 minutes\"\n", "gates.timeout"),
+        ("[checks]\ntimeout = \"5 minutes\"\n", "checks.timeout"),
         (
             "[endpoints.local]\ntimeout = \"soon\"\n",
             "endpoints.local.timeout",
@@ -304,7 +304,7 @@ fn values_serde_accepts_are_still_checked() {
             "approvals.approver.second_model",
         ),
         (
-            "[approvals.approver]\nmodel = \"codex/<model>\"\nsecond_model = \"codex\"\n",
+            "[approvals]\ndecides = \"codex/<model>\"\n[approvals.approver]\nsecond_model = \"codex\"\n",
             "approvals.approver.second_model",
         ),
         (
@@ -317,12 +317,12 @@ fn values_serde_accepts_are_still_checked() {
             "approvals.plan.at_hard_limit",
         ),
         (
-            "[approvals.budget]\nat_hard_limit = \"send_back\"\n",
-            "approvals.budget.at_hard_limit",
+            "[approvals.limit]\nat_hard_limit = \"send_back\"\n",
+            "approvals.limit.at_hard_limit",
         ),
         (
-            "[approvals]\nanswered_by = \"the lead\"\n",
-            "approvals.answered_by",
+            "[approvals]\nanswers = \"the main agent\"\n",
+            "approvals.answers",
         ),
         (
             "[approvals]\nspot_check_sample = 2.0\n",
@@ -338,11 +338,12 @@ fn values_serde_accepts_are_still_checked() {
     // A model approver makes the same approvals sane, and full auto takes a picked answerer
     // and a merge that opens a pull request at a hard limit.
     repo.project(
-        "[approvals]\nfull_auto = true\nanswered_by = \"opencode/glm-5\"\n\
-         [approvals.approver]\nmodel = \"codex/<model>\"\nsecond_model = \"claude-code/opus\"\n\
+        "[approvals]\nautopilot = true\nanswers = \"opencode/glm-5\"\n\
+         decides = \"codex/<model>\"\n\
+         [approvals.approver]\nsecond_model = \"claude-code/opus\"\n\
          [approvals.merge]\nmode = \"auto\"\ndecide_with = \"model\"\n\
          at_hard_limit = \"open_pull_request\"\n\
-         [approvals.merge.rules]\nmin_changed_line_coverage = 0.5\n",
+         [approvals.rules.merge]\nmin_test_coverage_of_changed_lines = 0.5\n",
     );
     let resolved = resolve(&repo.trusted()).unwrap();
     assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
@@ -357,31 +358,30 @@ fn values_serde_accepts_are_still_checked() {
 /// provides, or one the approver can't check, and a checkpoint the switch leaves with you. A
 /// checkpoint kept supervised in the repo stays supervised under a global switch.
 #[test]
-fn full_auto_settings_that_miss_say_so() {
+fn autopilot_settings_that_miss_say_so() {
     use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
 
     let repo = Repo::new();
-    for (word, answerer) in [("You", Answerer::You), ("Lead", Answerer::Lead)] {
-        repo.project(&format!("[approvals]\nanswered_by = \"{word}\"\n"));
+    for (word, answerer) in [("You", Answerer::You), ("Main", Answerer::Main)] {
+        repo.project(&format!("[approvals]\nanswers = \"{word}\"\n"));
         let resolved = resolve(&repo.trusted()).unwrap();
-        assert_eq!(resolved.settings.approvals.answered_by, Some(answerer));
+        assert_eq!(resolved.settings.approvals.answers, Some(answerer));
         assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
     }
 
-    repo.project("[approvals]\nanswered_by = \"me\"\n");
+    repo.project("[approvals]\nanswers = \"me\"\n");
     let resolved = resolve(&repo.trusted()).unwrap();
     assert!(
-        resolved.warnings.iter().any(|warning| warning
-            .starts_with("approvals.answered_by names me")
-            && warning.ends_with("the lead answers in its place")),
+        resolved
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("approvals.answers names me")
+                && warning.ends_with("the main agent answers in its place")),
         "{:?}",
         resolved.warnings
     );
 
-    repo.project(
-        "[approvals]\nanswered_by = \"codex/gpt-5.6\"\n\
-         [approvals.approver]\nmodel = \"codex/gpt-5.6-luna\"\n",
-    );
+    repo.project("[approvals]\nanswers = \"codex/gpt-5.6\"\ndecides = \"codex/gpt-5.6-luna\"\n");
     let resolved = resolve(&repo.trusted()).unwrap();
     assert!(
         resolved
@@ -392,7 +392,7 @@ fn full_auto_settings_that_miss_say_so() {
         resolved.warnings
     );
 
-    repo.global("[approvals]\nfull_auto = true\n");
+    repo.global("[approvals]\nautopilot = true\n");
     repo.project("[approvals.merge]\nmode = \"supervised\"\n");
     let resolved = resolve(&repo.trusted()).unwrap();
     let approvals = &resolved.settings.approvals;
@@ -402,11 +402,11 @@ fn full_auto_settings_that_miss_say_so() {
     );
     assert_eq!(
         approvals.run_mode(approvals.plan.mode),
-        ApprovalMode::FullAuto
+        ApprovalMode::Autopilot
     );
     assert!(
         resolved.warnings.iter().any(|warning| warning
-            .contains("approvals.merge.mode = \"supervised\" keeps that checkpoint for you")),
+            .contains("approvals.merge.mode = \"supervised\" keeps that approval for you")),
         "{:?}",
         resolved.warnings
     );
@@ -417,11 +417,11 @@ fn an_unset_approver_model_is_picked_for_each_run_so_nothing_warns() {
     let repo = Repo::new();
     // The defaults decide most checkpoints with rules and a model, and leave the model unset.
     let defaults = resolve(&repo.trusted()).unwrap();
-    assert_eq!(defaults.settings.approvals.approver.model, None);
+    assert_eq!(defaults.settings.approvals.approver_model(), None);
     assert!(defaults.warnings.is_empty(), "{:?}", defaults.warnings);
 
     repo.project(
-        "[approvals.goal]\nmode = \"shadow\"\ndecide_with = \"rules_or_model\"\n\
+        "[approvals.goal]\nmode = \"auto_preview\"\ndecide_with = \"rules_or_model\"\n\
          [approvals.merge]\nmode = \"auto\"\ndecide_with = \"model\"\n",
     );
     let resolved = resolve(&repo.trusted()).unwrap();
@@ -449,12 +449,12 @@ fn the_older_sandbox_off_still_reads_as_the_tools_own() {
 #[test]
 fn a_gate_written_as_a_string_shows_the_table_to_write_instead() {
     let repo = Repo::new();
-    repo.local("[budget]\nrun_usd = 1.0\n\n[gates]\nrun = [\"python3 -m unittest -q\"]\n");
+    repo.local("[limits]\nspend_per_run = 1.0\n\n[checks]\nrun = [\"python3 -m unittest -q\"]\n");
     // Untrusted, the gates are a safety key left out, so the file resolves.
     let resolved = resolve(&repo.sources()).unwrap();
     assert!(
         resolved.warnings.iter().any(|warning| warning.starts_with(
-            "gates.run in .argonauts/config.local.toml is a safety setting and is ignored"
+            "checks.run in .argonauts/config.local.toml is a safety setting and is ignored"
         )),
         "{:?}",
         resolved.warnings
@@ -463,9 +463,9 @@ fn a_gate_written_as_a_string_shows_the_table_to_write_instead() {
     assert_eq!(layer, ".argonauts/config.local.toml");
     assert_eq!(
         message,
-        "gates.run can't be a list of strings; it takes a list of checks, each a [[gates.run]] \
+        "checks.run can't be a list of strings; it takes a list of checks, each a [[checks.run]] \
          table with a name and a command. Write it like this:\n\
-         [[gates.run]]\n\
+         [[checks.run]]\n\
          name = \"python3\"\n\
          command = [\"python3\", \"-m\", \"unittest\", \"-q\"]"
     );
@@ -475,21 +475,21 @@ fn a_gate_written_as_a_string_shows_the_table_to_write_instead() {
 #[test]
 fn a_gate_written_as_one_table_resolves_untrusted_and_shows_the_list_to_write() {
     let repo = Repo::new();
-    let expected = "gates.run is written as a single table, but it takes a list of checks, \
-                    each a [[gates.run]] table with two brackets. Write it like this:\n\
-                    [[gates.run]]\n\
+    let expected = "checks.run is written as a single table, but it takes a list of checks, \
+                    each a [[checks.run]] table with two brackets. Write it like this:\n\
+                    [[checks.run]]\n\
                     name = \"unittest\"\n\
                     command = [\"python3\", \"-m\", \"unittest\", \"-q\"]";
     for text in [
-        "[gates.run]\nname = \"unittest\"\ncommand = [\"python3\", \"-m\", \"unittest\", \"-q\"]\n",
-        "[gates]\nrun = { name = \"unittest\", command = [\"python3\", \"-m\", \"unittest\", \"-q\"] }\n",
+        "[checks.run]\nname = \"unittest\"\ncommand = [\"python3\", \"-m\", \"unittest\", \"-q\"]\n",
+        "[checks]\nrun = { name = \"unittest\", command = [\"python3\", \"-m\", \"unittest\", \"-q\"] }\n",
     ] {
         repo.local(text);
         // Untrusted, its safety settings are left out and leave no empty table behind.
         let resolved = resolve(&repo.sources()).unwrap_or_else(|err| panic!("{text}: {err}"));
         assert!(
             resolved.warnings.iter().any(|warning| warning.starts_with(
-                "gates.run.command in .argonauts/config.local.toml is a safety setting"
+                "checks.run.command in .argonauts/config.local.toml is a safety setting"
             )),
             "{:?}",
             resolved.warnings
@@ -500,19 +500,19 @@ fn a_gate_written_as_one_table_resolves_untrusted_and_shows_the_list_to_write() 
     }
 
     // An empty table sets no key, and the error still names the file, not the built-ins.
-    repo.local("[gates]\nrun = {}\n");
+    repo.local("[checks]\nrun = {}\n");
     let (layer, message) = invalid(resolve(&repo.trusted()));
     assert_eq!(layer, ".argonauts/config.local.toml");
     assert!(
-        message.starts_with("gates.run is written as a single table"),
+        message.starts_with("checks.run is written as a single table"),
         "{message}"
     );
 
     // Without a name, the check is named for its command.
-    repo.local("[gates.run]\ncommand = \"cargo test\"\n");
+    repo.local("[checks.run]\ncommand = \"cargo test\"\n");
     let (_, message) = invalid(resolve(&repo.trusted()));
     assert!(
-        message.ends_with("[[gates.run]]\nname = \"test\"\ncommand = [\"cargo\", \"test\"]"),
+        message.ends_with("[[checks.run]]\nname = \"test\"\ncommand = [\"cargo\", \"test\"]"),
         "{message}"
     );
 }
@@ -523,40 +523,46 @@ fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
     let cases = [
         // A string where the list of checks goes, and several of them.
         (
-            "[gates]\nrun = \"cargo test\"\n",
-            "gates.run can't be \"cargo test\"; it takes a list of checks, each a [[gates.run]] \
-             table with a name and a command. Write it like this:\n[[gates.run]]\n\
+            "[checks]\nrun = \"cargo test\"\n",
+            "checks.run can't be \"cargo test\"; it takes a list of checks, each a [[checks.run]] \
+             table with a name and a command. Write it like this:\n[[checks.run]]\n\
              name = \"test\"\n\
              command = [\"cargo\", \"test\"]",
         ),
         (
-            "[gates]\nsetup = [\"npm ci\", \"npm run build\"]\n",
-            "gates.setup can't be a list of 2 strings; it takes a list of checks, each a \
-             [[gates.setup]] table with a name and a command. Write it like this:\n\
-             [[gates.setup]]\n\
-             name = \"ci\"\ncommand = [\"npm\", \"ci\"]\n\n[[gates.setup]]\n\
+            "[checks]\nsetup = [\"npm ci\", \"npm run build\"]\n",
+            "checks.setup can't be a list of 2 strings; it takes a list of checks, each a \
+             [[checks.setup]] table with a name and a command. Write it like this:\n\
+             [[checks.setup]]\n\
+             name = \"ci\"\ncommand = [\"npm\", \"ci\"]\n\n[[checks.setup]]\n\
              name = \"build\"\ncommand = [\"npm\", \"run\", \"build\"]",
         ),
         (
-            "[gates]\nrun = [{ name = \"lint\", command = [\"make\", \"lint\"] }, \"make test\"]\n",
-            "gates.run can't hold \"make test\"; each entry is a table, written [[gates.run]] with \
+            "[checks]\nrun = [{ name = \"lint\", command = [\"make\", \"lint\"] }, \"make test\"]\n",
+            "checks.run can't hold \"make test\"; each entry is a table, written [[checks.run]] with \
              its settings under it",
         ),
         (
-            "[[gates.run]]\nname = \"tests\"\n",
-            "each [[gates.run]] table needs both a name and a command. Write it like this:\n\
-             [[gates.run]]\nname = \"test\"\ncommand = [\"make\", \"test\"]",
+            "[[checks.run]]\nname = \"tests\"\n",
+            "each [[checks.run]] table needs both a name and a command. Write it like this:\n\
+             [[checks.run]]\nname = \"test\"\ncommand = [\"make\", \"test\"]",
         ),
         (
-            "[[gates.run]]\nname = \"tests\"\ncommand = \"cargo test\"\n",
-            "gates.run.command can't be \"cargo test\"; it takes a list, such as \
+            "[[checks.run]]\nname = \"tests\"\ncommand = \"cargo test\"\n",
+            "checks.run.command can't be \"cargo test\"; it takes a list, such as \
              [\"cargo\", \"test\"]",
         ),
         // The wrong type.
         (
-            "[budget]\nrun_usd = \"1\"\n",
-            "budget.run_usd can't be \"1\"; it takes a number. Write it without quotes: \
-             run_usd = 1",
+            "[limits]\nspend_per_run = \"1\"\n",
+            "limits.spend_per_run can't be \"1\"; it takes a number. Write it without quotes: \
+             spend_per_run = 1",
+        ),
+        // A hard limit, which shares the table with the run and task limits.
+        (
+            "[limits]\nspend_per_run = 5.0\nauto_merges_per_day = \"3\"\n",
+            "limits.auto_merges_per_day can't be \"3\"; it takes a whole number, 0 or more. \
+             Write it without quotes: auto_merges_per_day = 3",
         ),
         (
             "[drafting]\nblind = \"yes\"\n",
@@ -568,11 +574,15 @@ fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
         ),
         (
             "crew = \"claude-code\"\n",
-            "crew can't be \"claude-code\"; it takes a list, such as [\"claude-code\"]",
+            "crew can't be \"claude-code\"; it is a table, written [crew] with its settings under it",
         ),
         (
-            "crew = [1]\n",
-            "crew can't hold 1; each entry takes text in quotes",
+            "[crew]\nworkers = [1]\n",
+            "crew.workers can't hold 1; each entry takes text in quotes",
+        ),
+        (
+            "[crew]\njudge = 3\n",
+            "crew.judge can't be 3; it takes a list",
         ),
         (
             "ui = 3\n",
@@ -593,12 +603,12 @@ fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
         ),
         // Text that isn't TOML.
         (
-            "[gates\n",
-            "line 1 isn't valid TOML (unclosed table, expected `]`): [gates",
+            "[checks\n",
+            "line 1 isn't valid TOML (unclosed table, expected `]`): [checks",
         ),
         (
-            "[budget]\nrun_usd = 1\nrun_usd = 2\n",
-            "line 3 sets run_usd a second time; each key goes in a table once",
+            "[limits]\nspend_per_run = 1\nspend_per_run = 2\n",
+            "line 3 sets spend_per_run a second time; each key goes in a table once",
         ),
     ];
     for (text, expected) in cases {
@@ -609,13 +619,51 @@ fn every_kind_of_wrong_value_says_what_the_key_takes_in_plain_words() {
     }
 }
 
+/// Who decides when you don't is written as the settings template writes it. The keys it
+/// replaced are no longer settings, and say so.
+#[test]
+fn approvals_read_as_the_template_writes_them_and_the_old_keys_are_unknown() {
+    let repo = Repo::new();
+    repo.project(
+        "[approvals]\nanswers = \"main\"\ndecides = \"judge\"\nwhen_declined = \"decide\"\n\
+         ask_limit = 2\n\
+         [approvals.rules.merge]\nmin_test_coverage_of_changed_lines = 0.8\n\
+         max_changed_lines = 400\n",
+    );
+    let resolved = resolve(&repo.trusted()).unwrap();
+    assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
+    assert_eq!(
+        resolved.settings.approvals.rules.merge.max_changed_lines,
+        400
+    );
+
+    repo.project(
+        "[approvals]\nanswered_by = \"main\"\n\
+         [approvals.approver]\nmodel = \"codex/gpt-5.6\"\n\
+         [approvals.merge.rules]\nmax_combined_diff_lines = 400\n",
+    );
+    let resolved = resolve(&repo.trusted()).unwrap();
+    for old in [
+        "approvals.answered_by",
+        "approvals.approver.model",
+        "approvals.merge.rules.max_combined_diff_lines",
+    ] {
+        let warned = format!("unknown setting {old} in .argonauts/config.toml, ignored");
+        assert!(
+            resolved.warnings.contains(&warned),
+            "{old}: {:?}",
+            resolved.warnings
+        );
+    }
+}
+
 #[test]
 fn an_unknown_key_is_a_warning_naming_the_file_from_the_repo() {
     let repo = Repo::new();
-    repo.project("[gates]\nruns = []\n");
+    repo.project("[checks]\nruns = []\n");
     let resolved = resolve(&repo.trusted()).unwrap();
     assert_eq!(
         resolved.warnings,
-        vec!["unknown setting gates.runs in .argonauts/config.toml, ignored".to_owned()]
+        vec!["unknown setting checks.runs in .argonauts/config.toml, ignored".to_owned()]
     );
 }

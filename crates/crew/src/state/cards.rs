@@ -194,7 +194,9 @@ impl Cards {
                     AttemptCause::IntegrationFailed
                     | AttemptCause::Rotation
                     | AttemptCause::Resumed => {}
+                    // A new try at the task's goal gets its own check retry.
                     AttemptCause::First
+                    | AttemptCause::GoalRetry
                     | AttemptCause::AfterFailure
                     | AttemptCause::Handoff
                     | AttemptCause::Reassigned => progress.gate_retries = 0,
@@ -361,27 +363,27 @@ mod tests {
 
     #[test]
     fn created_cards_wait_with_their_planned_owner() {
-        let spec = card_spec("card-001", &[], Some("claude-code/opus"));
+        let spec = card_spec("task-001", &[], Some("claude-code/opus"));
         let cards = fold(vec![run_event(
             1,
-            Some("card-001"),
+            Some("task-001"),
             None,
             card(CardEvent::Created(Box::new(spec.clone()))),
         )]);
-        let record = cards.get(&id("card-001")).unwrap();
+        let record = cards.get(&id("task-001")).unwrap();
         assert_eq!(record.state, CardState::Waiting);
         assert_eq!(record.owner, Some(worker("claude-code/opus")));
         assert_eq!(record.spec, spec);
-        assert_eq!(cards.in_state(CardState::Waiting), [id("card-001")]);
+        assert_eq!(cards.in_state(CardState::Waiting), [id("task-001")]);
     }
 
     #[test]
     fn states_attempts_worktrees_and_commits_fold() {
-        let c = Some("card-001");
+        let c = Some("task-001");
         let commit = CommitInfo {
-            branch: "argonauts/run-01/card-001".into(),
+            branch: "argonauts/run-01/task-001".into(),
             sha: Some("abc".into()),
-            message: "card-001 s-001".into(),
+            message: "task-001 s-001".into(),
             stat: DiffStat::default(),
             by: Some(worker("codex")),
         };
@@ -391,7 +393,7 @@ mod tests {
                 c,
                 None,
                 card(CardEvent::Created(Box::new(card_spec(
-                    "card-001",
+                    "task-001",
                     &[],
                     None,
                 )))),
@@ -411,8 +413,8 @@ mod tests {
                 c,
                 None,
                 card(CardEvent::Worktree {
-                    path: "/w/card-001".into(),
-                    branch: "argonauts/run-01/card-001".into(),
+                    path: "/w/task-001".into(),
+                    branch: "argonauts/run-01/task-001".into(),
                     base: "base".into(),
                 }),
             ),
@@ -472,28 +474,28 @@ mod tests {
                 }),
             ),
         ]);
-        let record = cards.get(&id("card-001")).unwrap();
-        let progress = cards.progress(&id("card-001"));
+        let record = cards.get(&id("task-001")).unwrap();
+        let progress = cards.progress(&id("task-001"));
         assert_eq!(record.state, CardState::Ready);
         assert_eq!(record.attempts, 1);
         assert_eq!(record.owner, Some(worker("codex")));
         assert_eq!(progress.attempt_events, 3);
         assert_eq!(progress.attempt_seq, Some(9));
-        assert_eq!(record.worktree, Some(PathBuf::from("/w/card-001")));
+        assert_eq!(record.worktree, Some(PathBuf::from("/w/task-001")));
         assert_eq!(record.base.as_deref(), Some("base"));
         assert_eq!(record.commits, [commit]);
         assert_eq!(progress.diff.as_ref().unwrap().0.insertions, 2);
         assert_eq!(progress.change_rounds, 1);
         assert_eq!(
             progress.gate_retries, 0,
-            "a review round starts the gate ladder over"
+            "a review round starts the checks ladder over"
         );
         assert_eq!(progress.last_cause, Some(AttemptCause::ReviewChanges));
     }
 
     #[test]
     fn only_a_ready_card_deferred_waits_for_budget() {
-        let c = Some("card-001");
+        let c = Some("task-001");
         let state = |seq, from, to| {
             run_event(
                 seq,
@@ -511,7 +513,7 @@ mod tests {
             c,
             None,
             card(CardEvent::Created(Box::new(card_spec(
-                "card-001",
+                "task-001",
                 &[],
                 None,
             )))),
@@ -521,18 +523,18 @@ mod tests {
             state(2, CardState::Waiting, CardState::Ready),
             state(3, CardState::Ready, CardState::Deferred),
         ]);
-        assert!(cards.progress(&id("card-001")).deferred_for_budget);
+        assert!(cards.progress(&id("task-001")).deferred_for_budget);
         let cards = fold(vec![
             created,
             state(2, CardState::Running, CardState::Escalated),
             state(3, CardState::Escalated, CardState::Deferred),
         ]);
-        assert!(!cards.progress(&id("card-001")).deferred_for_budget);
+        assert!(!cards.progress(&id("task-001")).deferred_for_budget);
     }
 
     #[test]
     fn each_move_out_of_escalation_back_in_line_is_an_extra_attempt() {
-        let c = Some("card-001");
+        let c = Some("task-001");
         let state = |seq, from, to| {
             run_event(
                 seq,
@@ -550,7 +552,7 @@ mod tests {
             c,
             None,
             card(CardEvent::Created(Box::new(card_spec(
-                "card-001",
+                "task-001",
                 &[],
                 None,
             )))),
@@ -565,12 +567,12 @@ mod tests {
             state(7, CardState::Running, CardState::Escalated),
             state(8, CardState::Escalated, CardState::Ready),
         ]);
-        assert_eq!(cards.progress(&id("card-001")).extra_attempts, 2);
+        assert_eq!(cards.progress(&id("task-001")).extra_attempts, 2);
     }
 
     #[test]
     fn gate_retries_reset_on_a_fresh_session() {
-        let c = Some("card-001");
+        let c = Some("task-001");
         let attempt = |seq, n, cause| {
             run_event(
                 seq,
@@ -589,7 +591,7 @@ mod tests {
                 c,
                 None,
                 card(CardEvent::Created(Box::new(card_spec(
-                    "card-001",
+                    "task-001",
                     &[],
                     None,
                 )))),
@@ -600,9 +602,9 @@ mod tests {
             attempt(5, 1, AttemptCause::Rotation),
         ]);
         assert_eq!(
-            cards.progress(&id("card-001")).gate_retries,
+            cards.progress(&id("task-001")).gate_retries,
             1,
-            "a resume or a rotation of the same owner keeps the gate retry used"
+            "a resume or a rotation of the same worker keeps the checks retry used"
         );
         let cards = fold(vec![
             run_event(
@@ -610,7 +612,7 @@ mod tests {
                 c,
                 None,
                 card(CardEvent::Created(Box::new(card_spec(
-                    "card-001",
+                    "task-001",
                     &[],
                     None,
                 )))),
@@ -630,15 +632,15 @@ mod tests {
             ),
             attempt(5, 2, AttemptCause::AfterFailure),
         ]);
-        let record = cards.get(&id("card-001")).unwrap();
-        assert_eq!(cards.progress(&id("card-001")).gate_retries, 0);
+        let record = cards.get(&id("task-001")).unwrap();
+        assert_eq!(cards.progress(&id("task-001")).gate_retries, 0);
         assert_eq!(record.reassigned, 1);
         assert_eq!(record.attempts, 2);
     }
 
     #[test]
     fn only_an_automatic_move_of_a_failed_card_is_a_ladder_retry() {
-        let c = Some("card-001");
+        let c = Some("task-001");
         let state = |seq, from, to| {
             run_event(
                 seq,
@@ -669,7 +671,7 @@ mod tests {
             c,
             None,
             card(CardEvent::Created(Box::new(card_spec(
-                "card-001",
+                "task-001",
                 &[],
                 None,
             )))),
@@ -682,9 +684,9 @@ mod tests {
             state(5, CardState::Running, CardState::Failed),
             reassigned(6, "codex", Party::User),
         ]);
-        let record = cards.get(&id("card-001")).unwrap();
+        let record = cards.get(&id("task-001")).unwrap();
         assert_eq!(record.reassigned, 2);
-        assert_eq!(cards.progress(&id("card-001")).ladder_retries, 0);
+        assert_eq!(cards.progress(&id("task-001")).ladder_retries, 0);
 
         let cards = fold(vec![
             created,
@@ -692,12 +694,12 @@ mod tests {
             reassigned(3, "agy", Party::Rules),
             state(4, CardState::Failed, CardState::Ready),
         ]);
-        assert_eq!(cards.progress(&id("card-001")).ladder_retries, 1);
+        assert_eq!(cards.progress(&id("task-001")).ladder_retries, 1);
     }
 
     #[test]
     fn integration_returns_count_per_owner() {
-        let c = Some("card-001");
+        let c = Some("task-001");
         let back = |seq| {
             run_event(
                 seq,
@@ -715,13 +717,13 @@ mod tests {
             c,
             None,
             card(CardEvent::Created(Box::new(card_spec(
-                "card-001",
+                "task-001",
                 &[],
                 None,
             )))),
         );
         let cards = fold(vec![created.clone(), back(2), back(3)]);
-        assert_eq!(cards.progress(&id("card-001")).integration_returns, 2);
+        assert_eq!(cards.progress(&id("task-001")).integration_returns, 2);
         let reassigned = run_event(
             4,
             c,
@@ -734,12 +736,12 @@ mod tests {
             }),
         );
         let cards = fold(vec![created, back(2), back(3), reassigned]);
-        assert_eq!(cards.progress(&id("card-001")).integration_returns, 0);
+        assert_eq!(cards.progress(&id("task-001")).integration_returns, 0);
     }
 
     #[test]
-    fn gates_reviews_and_reports_are_kept_per_card() {
-        let c = Some("card-002");
+    fn gates_reviews_and_reports_are_kept_per_task() {
+        let c = Some("task-002");
         let gate = GateOutcome {
             name: "test".into(),
             kind: GateKind::Command,
@@ -755,7 +757,7 @@ mod tests {
         };
         let written = ReviewEvent::TestsWritten {
             reviewer: worker("agy"),
-            for_card: id("card-001"),
+            for_card: id("task-001"),
             files: vec!["tests/a.rs".into()],
         };
         let cards = fold(vec![
@@ -764,7 +766,7 @@ mod tests {
                 c,
                 None,
                 card(CardEvent::Created(Box::new(card_spec(
-                    "card-002",
+                    "task-002",
                     &[],
                     None,
                 )))),
@@ -772,23 +774,23 @@ mod tests {
             run_event(2, c, None, RunEventKind::Gate(gate.clone())),
             run_event(3, c, None, RunEventKind::Review(written.clone())),
             run_event(4, None, None, RunEventKind::Gate(gate.clone())),
-            run_event(5, Some("card-404"), None, RunEventKind::Gate(gate.clone())),
+            run_event(5, Some("task-404"), None, RunEventKind::Gate(gate.clone())),
         ]);
-        let record = cards.get(&id("card-002")).unwrap();
+        let record = cards.get(&id("task-002")).unwrap();
         assert_eq!(record.gates, [gate]);
         assert_eq!(record.reviews, [written]);
         assert_eq!(cards.by_id.len(), 1);
-        assert_eq!(cards.progress(&id("card-002")).changes, 3);
+        assert_eq!(cards.progress(&id("task-002")).changes, 3);
         assert_eq!(
-            cards.progress(&id("card-404")),
+            cards.progress(&id("task-404")),
             &CardProgress::default(),
-            "a card the log never named has no progress"
+            "a task the log never named has no progress"
         );
     }
 
     #[test]
     fn handoff_checkpoints_debt_and_revert_fold() {
-        let c = Some("card-001");
+        let c = Some("task-001");
         let debt = QualityDebt {
             since: 2,
             by: worker("agy"),
@@ -800,7 +802,7 @@ mod tests {
                 c,
                 None,
                 card(CardEvent::Created(Box::new(card_spec(
-                    "card-001",
+                    "task-001",
                     &[],
                     Some("claude-code"),
                 )))),
@@ -835,7 +837,7 @@ mod tests {
                 None,
                 None,
                 RunEventKind::Handoff(HandoffEvent::Packet {
-                    card: id("card-001"),
+                    card: id("task-001"),
                     path: "/p/packet.md".into(),
                     sha256: "00".into(),
                 }),
@@ -845,22 +847,22 @@ mod tests {
                 None,
                 None,
                 RunEventKind::Handoff(HandoffEvent::Waiting {
-                    card: id("card-001"),
+                    card: id("task-001"),
                     vendor: VendorId("claude-code".into()),
                     until: None,
                 }),
             ),
         ];
         let cards = fold(base.clone());
-        let record = cards.get(&id("card-001")).unwrap();
+        let record = cards.get(&id("task-001")).unwrap();
         assert_eq!(record.handoffs, 2);
         assert_eq!(record.debt, Some(debt.clone()));
         assert_eq!(
-            cards.progress(&id("card-001")).packet,
+            cards.progress(&id("task-001")).packet,
             Some(PathBuf::from("/p/packet.md"))
         );
         assert_eq!(
-            cards.progress(&id("card-001")).waiting_for,
+            cards.progress(&id("task-001")).waiting_for,
             Some(VendorId("claude-code".into()))
         );
 
@@ -870,7 +872,7 @@ mod tests {
             None,
             None,
             RunEventKind::Handoff(HandoffEvent::HandedOff {
-                card: id("card-001"),
+                card: id("task-001"),
                 to: worker("agy"),
                 mode: HandoffMode::Auto,
                 by: Party::Rules,
@@ -886,9 +888,9 @@ mod tests {
             }),
         ));
         let cards = fold(handed);
-        let record = cards.get(&id("card-001")).unwrap();
+        let record = cards.get(&id("task-001")).unwrap();
         assert_eq!(record.owner, Some(worker("agy")));
-        assert_eq!(cards.progress(&id("card-001")).waiting_for, None);
+        assert_eq!(cards.progress(&id("task-001")).waiting_for, None);
         assert_eq!(record.debt, None);
 
         let mut reverted = base.clone();
@@ -902,7 +904,7 @@ mod tests {
             }),
         ));
         assert_eq!(
-            fold(reverted).get(&id("card-001")).unwrap().debt,
+            fold(reverted).get(&id("task-001")).unwrap().debt,
             Some(debt.clone())
         );
         let mut reverted = base;
@@ -915,6 +917,6 @@ mod tests {
                 kept_on: "x".into(),
             }),
         ));
-        assert_eq!(fold(reverted).get(&id("card-001")).unwrap().debt, None);
+        assert_eq!(fold(reverted).get(&id("task-001")).unwrap().debt, None);
     }
 }

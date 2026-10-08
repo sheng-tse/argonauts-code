@@ -162,7 +162,7 @@ impl Fixture {
             title: request.to_owned(),
             mode: RunMode::Crew,
             forced: false,
-            preset: "peer-crew".to_owned(),
+            workflow: "council".to_owned(),
             estimate: Some(ChangeEstimate {
                 task_type: "feature".to_owned(),
                 summary: request.to_owned(),
@@ -187,6 +187,7 @@ impl Fixture {
             version: "0.0.1".to_owned(),
             front_end: None,
             instructions: Vec::new(),
+            required_steps: Vec::new(),
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),
@@ -254,8 +255,8 @@ pub fn settings() -> Settings {
             ..EndpointSettings::default()
         },
     );
-    settings.crew = vec![worker.clone()];
-    settings.default_agent = worker;
+    settings.crew = vec![worker.clone()].into();
+    settings.main_agent = worker;
     settings
 }
 
@@ -279,14 +280,14 @@ pub fn recipe(version: u32, settings: Value) -> LoadedRecipe {
             version,
             parent: version.checked_sub(1).filter(|&parent| parent > 0),
             description: "Endpoints with tests".to_owned(),
-            preset: None,
-            mode: None,
             workflow: None,
+            mode: None,
+            phases: None,
             matches: Match::default(),
             prompts: BTreeMap::new(),
             settings,
         },
-        path: PathBuf::from(format!(".argonauts/recipes/api-feature/v{version}.yaml")),
+        path: PathBuf::from(format!(".argonauts/learned/api-feature/v{version}.yaml")),
         text: String::new(),
         sha256: format!("sha-v{version}"),
     }

@@ -77,8 +77,8 @@ fn test_card(build: &CardSpec, n: u32, interfaces: &[CardId], frozen: &[String])
         task: format!(
             "Write acceptance tests for {} (\"{}\") in {dir}/. Test it only through its \
              interface. The tests must fail against the stubs, since nothing is built yet, and \
-             together they must cover {criteria}. Don't edit the card's own paths.\n\nThe \
-             card's task:\n\n{}",
+             together they must cover {criteria}. Don't edit the task's own paths.\n\nThe \
+             task's task:\n\n{}",
             build.id, build.title, build.task
         ),
         kind: CardKind::AcceptanceTests {
@@ -159,11 +159,11 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "card-002", "test-005", "test-006", "card-001", "card-003", "card-004"
+                "task-002", "test-005", "test-006", "task-001", "task-003", "task-004"
             ]
         );
         let get = |id: &str| cards.iter().find(|card| card.id.as_str() == id).unwrap();
-        let interface = CardId::new("card-002").unwrap();
+        let interface = CardId::new("task-002").unwrap();
         let test = get("test-005");
         assert_eq!(
             test.kind,
@@ -171,11 +171,11 @@ mod tests {
                 for_card: CardId::numbered(1)
             }
         );
-        assert_eq!(test.owned_paths, ["tests/acceptance/card-001/**"]);
+        assert_eq!(test.owned_paths, ["tests/acceptance/task-001/**"]);
         assert_eq!(test.forbidden_paths, ["src/store/**"]);
         assert_eq!(test.depends_on, std::slice::from_ref(&interface));
         assert_eq!(test.read_only_paths, ["src/api.rs"]);
-        let store = get("card-001");
+        let store = get("task-001");
         assert_eq!(
             store.depends_on,
             [interface.clone(), CardId::new("test-005").unwrap()]
@@ -184,10 +184,10 @@ mod tests {
         assert!(
             store
                 .read_only_paths
-                .contains(&"tests/acceptance/card-001/**".to_owned())
+                .contains(&"tests/acceptance/task-001/**".to_owned())
         );
         // Docs aren't built, so they get no test card, but still wait for the interface.
-        assert!(get("card-004").depends_on.contains(&interface));
+        assert!(get("task-004").depends_on.contains(&interface));
         assert_eq!(cards.len(), 6);
         assert!(graph::rules(&cards, &Settings::default()).is_empty());
 

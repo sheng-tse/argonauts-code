@@ -27,7 +27,7 @@ fn declared_run(agents: usize) -> (Vec<Agent>, Vec<AppEvent>) {
         None,
         None,
         json!({"type": "workflow", "data": {"event": "started", "id": "wf-001",
-            "from": "peer-crew", "version": "1", "parent": null,
+            "from": "council", "version": "1", "parent": null,
             "workflow": {"name": "export-json", "description": "Add a --json flag to export",
                 "phases": []}}}),
     ));
@@ -75,7 +75,7 @@ fn run_tree_opens_with_slash_workflows_and_ctrl_t() {
     let (crew, events) = declared_run(3);
     let script = with_views(Script::idle().all(0, events), &crew, 2);
     let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.send("/workflows");
     harness.press(Key::Enter);
     let request = harness.wait_command_where("request", workflow_request);
@@ -115,7 +115,7 @@ fn run_tree_navigation() {
     let (crew, events) = declared_run(3);
     let script = with_views(Script::idle().all(0, events), &crew, 1);
     let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.press(Key::Ctrl('t'));
     let view = harness.wait_visible(VIEW_HEADER);
     assert!(
@@ -169,9 +169,10 @@ fn down_past_panel_opens_run_tree() {
         .size(40, 100)
         .ui("[panel]\nagents = true")
         .start();
-    // The run's row comes first, so four of the seven agents show and three wait below.
+    // Your conversation's row and the run's come first, so four of the seven agents show and
+    // three wait below.
     harness.wait_visible("^  ↓ 3 more");
-    // The first ↓ focuses the top row; four more reach the fifth, the last one shown.
+    // The first ↓ focuses the run's row; four more reach the fourth agent, the last one shown.
     for _ in 0..5 {
         harness.press(Key::Down);
     }
@@ -187,8 +188,9 @@ fn down_past_panel_opens_run_tree() {
     // The panel ends the screen, so the last agent is on its last row.
     harness.wait_until("the last agent picked", |screen| {
         let rows = screen.visible.len() - blank_rows_at_bottom(screen);
+        // The selected agent has the filled dot, as in Claude Code's list.
         rows.checked_sub(1)
-            .is_some_and(|last| screen.visible[last].starts_with('❯'))
+            .is_some_and(|last| screen.visible[last].starts_with("    ●"))
     });
     harness.assert_no_command("request");
     harness.press(Key::Down);
@@ -207,7 +209,7 @@ fn open_collapsed_step_from_tree() {
         .await_command("request")
         .at(0, agent_view(&goal[0]));
     let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     taller(&mut harness);
     harness.press(Key::Ctrl('t'));
     harness.wait_visible(VIEW_HEADER);
@@ -243,7 +245,7 @@ fn enter_on_workflow_row_opens_agent_view() {
         .await_command("request")
         .at(0, agent_view(&crew[0]));
     let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     taller(&mut harness);
     harness.press(Key::Ctrl('t'));
     let view = harness.wait_visible(VIEW_HEADER);
@@ -261,7 +263,7 @@ fn enter_on_workflow_row_opens_agent_view() {
     );
     let agent = harness.wait_visible("Prompt ·");
     assert_order(&agent, &["Prompt ·", "Activity ·", "Diff · 4 files"]);
-    harness.wait_visible("● Running|✔ Completed");
+    harness.wait_visible("◐ Running|✔ Completed");
     harness.press(Key::Esc);
     harness.wait_visible(VIEW_HEADER);
 }
@@ -276,7 +278,7 @@ fn panel_row_enter_opens_workflow_view() {
     assert!(
         screen.visible[mode + 1..]
             .iter()
-            .any(|row| row.contains("Add a --json flag") || row.contains("peer-crew")),
+            .any(|row| row.contains("Add a --json flag") || row.contains("council")),
         "one row per run:\n{}",
         screen.visible_text()
     );
@@ -291,7 +293,7 @@ fn frame_checker_on_resize() {
     let (crew, events) = declared_run(3);
     let script = with_views(Script::idle().all(0, events), &crew, 1);
     let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     assert_frames(&harness.screen(), COLS);
     harness.press(Key::Ctrl('t'));
     let view = harness.wait_visible(VIEW_HEADER);
@@ -317,7 +319,7 @@ fn resize_leaves_no_stale_rows() {
     let script = Script::idle().await_command("submit").timed(chat_turn(
         "t-001",
         "hi",
-        "Hello from the default agent.",
+        "Hello from the main agent.",
         5,
     ));
     let mut harness = Harness::start(script);
@@ -331,13 +333,13 @@ fn resize_leaves_no_stale_rows() {
                 .is_some_and(|rule| width(&screen.visible[rule]) == usize::from(cols))
         });
         assert_eq!(
-            count_rows(&screen, " peer-crew ─$"),
+            count_rows(&screen, " council · Haiku ─$"),
             1,
             "at {cols}:\n{}",
             screen.text()
         );
         assert_eq!(
-            count_rows(&screen, "supervised mode on"),
+            count_rows(&screen, "ǁ supervised"),
             1,
             "at {cols}:\n{}",
             screen.text()
@@ -349,7 +351,7 @@ fn resize_leaves_no_stale_rows() {
             screen.text()
         );
         assert_eq!(
-            count_rows(&screen, "Hello from the default agent"),
+            count_rows(&screen, "Hello from the main agent"),
             1,
             "{}",
             screen.text()
@@ -367,7 +369,7 @@ fn lead_designs(run: &mut RunScript, session: &str, label: &str) -> AppEvent {
         json!({"type": "session", "data": {"event": "started", "worker": "claude-code/haiku",
             "vendor": "claude-code", "family": "claude", "kind": "harness",
             "role": "phase-lead", "step": "design_workflow", "access": "read_only",
-            "lifetime": "card", "resumed_from": null, "follow_key": null, "label": label}}),
+            "lifetime": "task", "resumed_from": null, "follow_key": null, "label": label}}),
     )
 }
 
@@ -384,7 +386,7 @@ fn designing(run: &mut RunScript) -> Vec<AppEvent> {
                 "description": "Add per-API-key rate limiting with Retry-After headers",
                 "style": "workflow"}}),
         ),
-        lead_designs(run, "s-001", "lead:design"),
+        lead_designs(run, "s-001", "main:design"),
         run.event(
             None,
             Some("s-001"),
@@ -395,7 +397,7 @@ fn designing(run: &mut RunScript) -> Vec<AppEvent> {
 }
 
 /// The session view's line under its header, which follows the agent as it works.
-const SESSION_VIEW: &str = r"\[ Output \]   Input .*following$";
+const SESSION_VIEW: &str = r" Output +Input +Raw ";
 
 /// The transcript's items: rows that start with a bullet.
 fn items(screen: &Screen) -> usize {
@@ -414,11 +416,14 @@ fn enter_opens_the_lead_while_it_designs_then_the_workflow() {
             None,
             None,
             json!({"type": "workflow", "data": {"event": "started", "id": "wf-001",
-                "from": "peer-crew", "version": "1", "parent": null,
+                "from": "council", "version": "1", "parent": null,
                 "workflow": {"name": "add-per-api-key",
                     "description": "Add per-API-key rate limiting", "phases": []}}}),
         ),
-        notice("info", "The lead's plan holds, so the workflow starts."),
+        notice(
+            "info",
+            "The main agent's plan holds, so the workflow starts.",
+        ),
     ];
     let crew = [Agent::numbered(1)];
     let script = Script::idle()
@@ -436,7 +441,7 @@ fn enter_opens_the_lead_while_it_designs_then_the_workflow() {
     harness.press(Key::Down);
     harness.press(Key::Enter);
     let lead = harness.wait_visible(SESSION_VIEW);
-    expect_row(&lead, "^. lead:design · Haiku on Claude Code · ");
+    expect_row(&lead, "^. main:design · Haiku on Claude Code +Output ");
     expect_row(&lead, "Reading the rate limiter");
     for _ in 0..10 {
         harness.press(Key::Esc);
@@ -460,21 +465,21 @@ fn enter_opens_the_lead_while_it_designs_then_the_workflow() {
     );
 
     harness.signal("declare");
-    harness.wait_visible("The lead's plan holds");
+    harness.wait_visible("The main agent's plan holds");
     harness.press(Key::Enter);
     harness.wait_command_where("request", workflow_request);
     harness.wait_visible(VIEW_HEADER);
 }
 
 /// A key that can't do anything now says why on the notice line, replacing the last, and the
-/// transcript gains nothing however often it's pressed. Esc can't pause a run
-/// that crashed.
+/// transcript gains nothing however often it's pressed. Esc can't stop a
+/// pausing run now once it crashed.
 #[test]
 fn a_hint_from_a_key_stays_on_the_notice_line() {
     let (_, _, events) = crew_run(2);
     let why = format!("{RUN} crashed. /resume {RUN} recovers it.");
     let hint = app(json!({"type": "hint", "text": why}));
-    let mut script = Script::idle().all(0, events);
+    let mut script = Script::idle().all(0, events).at(0, mode_pausing(RUN));
     for _ in 0..10 {
         script = script.await_command("pause").at(0, hint.clone());
     }
@@ -522,11 +527,14 @@ fn the_view_from_a_run_row_follows_the_run() {
             None,
             None,
             json!({"type": "workflow", "data": {"event": "started", "id": "wf-001",
-                "from": "peer-crew", "version": "1", "parent": null,
+                "from": "council", "version": "1", "parent": null,
                 "workflow": {"name": "add-per-api-key",
                     "description": "Add per-API-key rate limiting", "phases": []}}}),
         ),
-        notice("info", "The lead's plan holds, so the workflow starts."),
+        notice(
+            "info",
+            "The main agent's plan holds, so the workflow starts.",
+        ),
     ];
     let crew = [Agent::numbered(1)];
     let script = Script::idle()
@@ -542,10 +550,10 @@ fn the_view_from_a_run_row_follows_the_run() {
     harness.wait_visible("↓ to manage");
     harness.press(Key::Down);
     harness.press(Key::Enter);
-    harness.wait_visible("Waiting for the lead to start designing the workflow");
+    harness.wait_visible("Waiting for the main agent to start designing the workflow");
     harness.signal("lead");
     let lead = harness.wait_visible(SESSION_VIEW);
-    expect_row(&lead, "^. lead:design · Haiku on Claude Code · ");
+    expect_row(&lead, "^. main:design · Haiku on Claude Code +Output ");
     harness.signal("declare");
     harness.wait_command_where("request", workflow_request);
     harness.wait_visible(VIEW_HEADER);

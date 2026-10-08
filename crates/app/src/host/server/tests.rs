@@ -76,7 +76,7 @@ pub(crate) fn answer_command(command: EngineCommand, log: &Log) {
             let _ = reply.send(Vec::new());
         }
         EngineCommand::TakeOver { reply, .. } => {
-            let _ = reply.send(Err("no such card".to_owned()));
+            let _ = reply.send(Err("no such task".to_owned()));
         }
         EngineCommand::Status { reply } => {
             let _ = reply.send(StatusSummary::default());
@@ -303,9 +303,9 @@ async fn socket_refuses_answer_without_token() {
     };
     assert_error(&client.call(4, mode).await, "token");
     let reassign = ControlRequest::Reassign {
-        card: argonauts_core::CardId::new("card-001").unwrap(),
+        card: argonauts_core::CardId::new("task-001").unwrap(),
         to: argonauts_core::names::WorkerRef::new("codex", None),
-        rule_override: Some("review.other_family".to_owned()),
+        rule_override: Some("review.other_provider".to_owned()),
         token: None,
     };
     assert_error(&client.call(5, reassign).await, "token");
@@ -641,11 +641,11 @@ async fn a_parked_run_answers_status_diff_and_raw_from_its_files() {
         fixture.state.run.clone(),
         fixture.state.events.clone(),
     );
-    let card = argonauts_core::CardId::new("card-001").unwrap();
-    std::fs::write(fixture.dir.path().join("card-001.diff"), "+hello\n").unwrap();
+    let card = argonauts_core::CardId::new("task-001").unwrap();
+    std::fs::write(fixture.dir.path().join("task-001.diff"), "+hello\n").unwrap();
     let diff = RunEventKind::Card(argonauts_core::events::card::CardEvent::Diff {
         stat: argonauts_core::DiffStat::default(),
-        path: PathBuf::from("card-001.diff"),
+        path: PathBuf::from("task-001.diff"),
     });
     sink.record(Some(&card), None, "conductor", diff).unwrap();
     let session = argonauts_core::names::SessionKey::numbered(1);
@@ -691,7 +691,7 @@ async fn a_parked_run_wakes_for_the_last_turns_diff() {
     fixture.state.door.park();
     let state = fixture.state.clone();
     let request = ControlRequest::Diff {
-        card: argonauts_core::CardId::new("card-001").unwrap(),
+        card: argonauts_core::CardId::new("task-001").unwrap(),
         scope: DiffScope::LastTurn,
     };
     let waiting = tokio::spawn(async move { apply(&state, request, Origin::Pending).await });

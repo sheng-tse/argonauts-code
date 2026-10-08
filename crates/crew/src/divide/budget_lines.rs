@@ -1,6 +1,6 @@
-//! Budget lines from `budget.lines` shares of the run budget, which must add up to the total.
-//! With `budget.from_history`, a card's budget is the median spend of past cards of the same
-//! task type once there are at least `budget.history_min`; otherwise `per_card_*`.
+//! Budget lines from `limits.lines` shares of the run budget, which must add up to the total.
+//! With `limits.from_history`, a card's budget is the median spend of past cards of the same
+//! task type once there are at least `limits.history_min`; otherwise `per_task_*`.
 
 use argonauts_core::events::card::{CardBudget, CardSpec};
 use argonauts_core::events::plan::{BudgetLine, BudgetPlan};
@@ -11,25 +11,26 @@ use argonauts_core::settings::budget::{
 /// How far the shares may stray from 1 before the lines don't add up.
 const SHARE_TOLERANCE: f64 = 1e-6;
 
-pub fn plan(settings: &BudgetSettings) -> Result<BudgetPlan, String> {
-    let total = run_total(settings).ok_or_else(|| {
-        "No run budget is set. Set one of budget.run_usd, run_tokens, run_quota, or run_minutes."
-            .to_owned()
-    })?;
+/// The run's limit split into its lines, or `None` when no run limit is set: then nothing
+/// is split and no line can run out.
+pub fn plan(settings: &BudgetSettings) -> Result<Option<BudgetPlan>, String> {
+    let Some(total) = settings.run_limit() else {
+        return Ok(None);
+    };
     let shares = shares(&settings.lines);
     if let Some((line, share)) = shares
         .iter()
         .find(|(_, share)| !share.is_finite() || *share < 0.0)
     {
         return Err(format!(
-            "The {} budget line has a share of {share}.",
+            "The {} limit line has a share of {share}.",
             line_name(*line)
         ));
     }
     let sum: f64 = shares.iter().map(|(_, share)| share).sum();
     if (sum - 1.0).abs() > SHARE_TOLERANCE {
         return Err(format!(
-            "The budget lines add up to {sum:.3} of the run budget, not 1."
+            "The limit lines add up to {sum:.3} of the run limit, not 1."
         ));
     }
     let mut lines: Vec<BudgetLine> = shares
@@ -58,12 +59,12 @@ pub fn plan(settings: &BudgetSettings) -> Result<BudgetPlan, String> {
     };
     // Spikes may not run and the reserve is only for trouble, so the range spans them.
     let reserve = share(BudgetLineKind::Reserve);
-    Ok(BudgetPlan {
+    Ok(Some(BudgetPlan {
         lines,
         total,
         estimate_low: total.amount * (1.0 - reserve - share(BudgetLineKind::Spikes)),
         estimate_high: total.amount * (1.0 - reserve),
-    })
+    }))
 }
 
 /// Why the lines don't add up to the total, if they don't. For lines you edited.
@@ -74,7 +75,7 @@ pub fn check(plan: &BudgetPlan) -> Result<(), String> {
         .find(|line| line.amount.unit != plan.total.unit)
     {
         return Err(format!(
-            "The {} budget line is in another unit than the run budget.",
+            "The {} limit line is in another unit than the run limit.",
             line_name(line.line)
         ));
     }
@@ -84,7 +85,7 @@ pub fn check(plan: &BudgetPlan) -> Result<(), String> {
         .find(|line| !line.amount.amount.is_finite() || line.amount.amount < 0.0)
     {
         return Err(format!(
-            "The {} budget line can't be {}.",
+            "The {} limit line can't be {}.",
             line_name(line.line),
             line.amount.amount
         ));
@@ -93,7 +94,7 @@ pub fn check(plan: &BudgetPlan) -> Result<(), String> {
     let total = plan.total.amount;
     if (sum - total).abs() > SHARE_TOLERANCE * total.max(1.0) {
         return Err(format!(
-            "The budget lines add up to {}, not the run budget of {}.",
+            "The limit lines add up to {}, not the run limit of {}.",
             amount_text(sum, plan.total.unit),
             amount_text(total, plan.total.unit)
         ));
@@ -121,23 +122,25 @@ pub fn estimate_usd(cards: &[CardSpec], budget: &BudgetPlan) -> Option<f64> {
 }
 
 /// `history` is past cards' spend in USD for this task type. History only sets dollar
-/// budgets, so a per-card budget in another unit stays as it is.
+/// budgets, so a per-card budget in another unit stays as it is. With no limit set for the
+/// run or its tasks, a task has none: history alone never limits one.
 pub fn card_budget(history: &[f64], settings: &BudgetSettings) -> CardBudget {
-    let per_card = per_card(settings);
+    let per_task = settings.task_limit();
     let spent: Vec<f64> = history
         .iter()
         .copied()
         .filter(|usd| usd.is_finite() && *usd >= 0.0)
         .collect();
     let enough = !spent.is_empty() && spent.len() >= settings.history_min as usize;
-    let dollars = per_card.is_none_or(|amount| amount.unit == BudgetUnit::Usd);
-    let limit = if settings.from_history && enough && dollars {
+    let dollars = per_task.is_none_or(|amount| amount.unit == BudgetUnit::Usd);
+    let limited = per_task.is_some() || settings.run_limit().is_some();
+    let limit = if settings.from_history && enough && dollars && limited {
         median(&spent).map(|amount| BudgetAmount {
             unit: BudgetUnit::Usd,
             amount,
         })
     } else {
-        per_card
+        per_task
     };
     CardBudget {
         limit,
@@ -156,13 +159,13 @@ pub fn median(values: &[f64]) -> Option<f64> {
     }
 }
 
-/// The key `budget <line> <share>` names, as in `budget.lines`.
+/// The key `budget <line> <share>` names, as in `limits.lines`.
 pub fn line_name(line: BudgetLineKind) -> &'static str {
     match line {
         BudgetLineKind::GoalAndPlan => "goal_and_plan",
-        BudgetLineKind::Spikes => "spikes",
+        BudgetLineKind::Spikes => "experiments",
         BudgetLineKind::Contracts => "contracts",
-        BudgetLineKind::Cards => "cards",
+        BudgetLineKind::Cards => "tasks",
         BudgetLineKind::Review => "review",
         BudgetLineKind::Integration => "integration",
         BudgetLineKind::Reserve => "reserve",
@@ -179,7 +182,7 @@ pub fn amount_text(amount: f64, unit: BudgetUnit) -> String {
     match unit {
         BudgetUnit::Usd => format!("${amount:.2}"),
         BudgetUnit::Tokens => format!("{amount:.0} tokens"),
-        BudgetUnit::Quota => format!("{:.0}% of quota", amount * 100.0),
+        BudgetUnit::Quota => format!("{:.0}% of plan usage", amount * 100.0),
         BudgetUnit::Minutes => format!("{amount:.0} minutes"),
     }
 }
@@ -201,9 +204,9 @@ fn shares(lines: &BudgetLines) -> Vec<(BudgetLineKind, f64)> {
         .map(|line| {
             let share = match line {
                 BudgetLineKind::GoalAndPlan => lines.goal_and_plan,
-                BudgetLineKind::Spikes => lines.spikes,
+                BudgetLineKind::Spikes => lines.experiments,
                 BudgetLineKind::Contracts => lines.contracts,
-                BudgetLineKind::Cards => lines.cards,
+                BudgetLineKind::Cards => lines.tasks,
                 BudgetLineKind::Review => lines.review,
                 BudgetLineKind::Integration => lines.integration,
                 BudgetLineKind::Reserve => lines.reserve,
@@ -213,41 +216,6 @@ fn shares(lines: &BudgetLines) -> Vec<(BudgetLineKind, f64)> {
         .collect()
 }
 
-fn run_total(settings: &BudgetSettings) -> Option<BudgetAmount> {
-    amount_of(
-        settings.run_usd,
-        settings.run_tokens,
-        settings.run_quota,
-        settings.run_minutes,
-    )
-}
-
-fn per_card(settings: &BudgetSettings) -> Option<BudgetAmount> {
-    amount_of(
-        settings.per_card_usd,
-        settings.per_card_tokens,
-        settings.per_card_quota,
-        settings.per_card_minutes,
-    )
-}
-
-/// The keys are one choice, so the first one set is the only one.
-fn amount_of(
-    usd: Option<f64>,
-    tokens: Option<u64>,
-    quota: Option<f64>,
-    minutes: Option<f64>,
-) -> Option<BudgetAmount> {
-    let (unit, amount) = match (usd, tokens, quota, minutes) {
-        (Some(usd), ..) => (BudgetUnit::Usd, usd),
-        (_, Some(tokens), ..) => (BudgetUnit::Tokens, tokens as f64),
-        (_, _, Some(quota), _) => (BudgetUnit::Quota, quota),
-        (_, _, _, Some(minutes)) => (BudgetUnit::Minutes, minutes),
-        _ => return None,
-    };
-    Some(BudgetAmount { unit, amount })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,10 +223,10 @@ mod tests {
     #[test]
     fn divide_budget_lines_add_up() {
         let settings = BudgetSettings {
-            run_usd: Some(20.0),
+            spend_per_run: Some(20.0),
             ..BudgetSettings::default()
         };
-        let lines = plan(&settings).unwrap();
+        let lines = plan(&settings).unwrap().unwrap();
         assert_eq!(lines.lines.len(), 7);
         let sum: f64 = lines.lines.iter().map(|line| line.amount.amount).sum();
         assert!((sum - 20.0).abs() < 1e-9, "{sum}");
@@ -275,47 +243,63 @@ mod tests {
 
         // Awkward shares still add up exactly.
         let mut odd = settings.clone();
-        odd.run_usd = Some(10.0);
+        odd.spend_per_run = Some(10.0);
         odd.lines = BudgetLines {
             goal_and_plan: 0.1,
-            spikes: 0.1,
+            experiments: 0.1,
             contracts: 0.1,
-            cards: 0.4,
+            tasks: 0.4,
             review: 0.1,
             integration: 0.1,
             reserve: 0.1,
         };
-        let odd = plan(&odd).unwrap();
+        let odd = plan(&odd).unwrap().unwrap();
         let sum: f64 = odd.lines.iter().map(|line| line.amount.amount).sum();
         assert!(check(&odd).is_ok(), "{sum}");
 
         let mut over = settings.clone();
-        over.lines.cards = 0.6;
+        over.lines.tasks = 0.6;
         assert_eq!(
             plan(&over).unwrap_err(),
-            "The budget lines add up to 1.200 of the run budget, not 1."
+            "The limit lines add up to 1.200 of the run limit, not 1."
         );
         let mut tokens = settings.clone();
-        tokens.run_usd = None;
+        tokens.spend_per_run = None;
         tokens.run_tokens = Some(200_000);
-        assert_eq!(plan(&tokens).unwrap().total.unit, BudgetUnit::Tokens);
-        let mut none = settings;
-        none.run_usd = None;
-        assert!(plan(&none).is_err());
+        assert_eq!(
+            plan(&tokens).unwrap().unwrap().total.unit,
+            BudgetUnit::Tokens
+        );
+        // No run limit is nothing to split, whatever the shares say.
+        over.spend_per_run = None;
+        assert_eq!(plan(&over), Ok(None));
+        assert_eq!(plan(&BudgetSettings::default()), Ok(None));
 
         let mut edited = odd.clone();
         edited.lines[3].amount.amount += 1.0;
         assert_eq!(
             check(&edited).unwrap_err(),
-            "The budget lines add up to $11.00, not the run budget of $10.00."
+            "The limit lines add up to $11.00, not the run limit of $10.00."
         );
     }
 
     #[test]
     fn card_budget_from_history_median() {
-        let settings = BudgetSettings::default();
-        assert_eq!(settings.history_min, 5);
         let five = [1.0, 2.5, 10.0, 2.0, 3.0];
+        // With no limit set, a task has none, however much history there is.
+        assert_eq!(card_budget(&five, &BudgetSettings::default()).limit, None);
+        let run_only = BudgetSettings {
+            spend_per_run: Some(20.0),
+            ..BudgetSettings::default()
+        };
+        assert_eq!(card_budget(&five, &run_only).limit.unwrap().amount, 2.5);
+        assert_eq!(card_budget(&five[..4], &run_only).limit, None);
+
+        let settings = BudgetSettings {
+            per_task_usd: Some(3.0),
+            ..BudgetSettings::default()
+        };
+        assert_eq!(settings.history_min, 5);
         assert_eq!(
             card_budget(&five, &settings).limit,
             Some(BudgetAmount {
@@ -335,12 +319,12 @@ mod tests {
         );
         let off = BudgetSettings {
             from_history: false,
-            ..BudgetSettings::default()
+            ..settings.clone()
         };
         assert_eq!(card_budget(&five, &off).limit.unwrap().amount, 3.0);
         let minutes = BudgetSettings {
-            per_card_usd: None,
-            per_card_minutes: Some(20.0),
+            per_task_usd: None,
+            per_task_minutes: Some(20.0),
             ..BudgetSettings::default()
         };
         assert_eq!(
@@ -355,11 +339,11 @@ mod tests {
     #[test]
     fn the_estimate_grows_with_the_cards() {
         let settings = BudgetSettings {
-            run_usd: Some(20.0),
-            per_card_usd: Some(3.0),
+            spend_per_run: Some(20.0),
+            per_task_usd: Some(3.0),
             ..BudgetSettings::default()
         };
-        let budget = plan(&settings).unwrap();
+        let budget = plan(&settings).unwrap().unwrap();
         let line = |kind| {
             budget
                 .lines

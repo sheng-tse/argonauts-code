@@ -102,7 +102,7 @@ impl Context {
         if let Some(home) = &card_home {
             // Its parents sit in the denied `~/.argonauts`, so the agent couldn't make it.
             create_private_dir_all(home).map_err(|err| {
-                format!("could not make the card's home {}: {err}", home.display())
+                format!("could not make the task's home {}: {err}", home.display())
             })?;
         }
         let mut profile = self.profile(spec, &command, card_home);
@@ -214,7 +214,7 @@ impl Context {
             base_worktree: None,
             status_file: spec.status_file.as_deref(),
             extra_writable: &extra_writable,
-            sees_other_copies: self.rules.agents_see_other_copies,
+            sees_other_copies: self.rules.agents_see_other_worktrees,
             commits: self.rules.agents_commit,
         };
         // The engine may ask for less network than the role allows, never more.
@@ -530,7 +530,7 @@ mod tests {
         settings.sandbox.mode = top;
         settings
             .roles
-            .entry(RoleName::Owner)
+            .entry(RoleName::Worker)
             .or_default()
             .sandbox
             .mode = Some(owner);
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(tool.record.sandbox.as_deref(), Some("no sandbox"));
         assert_eq!(tool.command.program, tool.record.program);
 
-        spec.role = RoleName::Owner;
+        spec.role = RoleName::Worker;
         let none = launch(&h.worker, &spec);
         assert!(none.request.tool_sandbox_off);
         assert_eq!(none.record.sandbox.as_deref(), Some("no sandbox"));
@@ -578,19 +578,19 @@ mod tests {
     #[test]
     fn a_roles_own_mode_picks_its_sandbox() {
         let h = with_settings(owner_mode(SandboxChoice::Tool, SandboxChoice::Os));
-        let (rules, sandbox) = h.worker.sandbox_for(&RoleName::Owner);
+        let (rules, sandbox) = h.worker.sandbox_for(&RoleName::Worker);
         assert_eq!(rules.mode, SandboxChoice::Os);
         assert_eq!(sandbox.mode(), SandboxMode::Os);
-        let (rules, sandbox) = h.worker.sandbox_for(&RoleName::Default);
+        let (rules, sandbox) = h.worker.sandbox_for(&RoleName::Main);
         assert_eq!(rules.mode, SandboxChoice::Tool);
         assert_eq!(sandbox.mode(), SandboxMode::None);
 
         // A worker given a sandbox keeps it for every role on the top-level mode.
         let h = Harness::with_settings(fake(), owner_mode(SandboxChoice::Os, SandboxChoice::None));
         let worker = h.worker.with_sandbox(Arc::new(Pretend(SandboxMode::Os)));
-        let (_, sandbox) = worker.sandbox_for(&RoleName::Default);
+        let (_, sandbox) = worker.sandbox_for(&RoleName::Main);
         assert_eq!(sandbox.describe(&SandboxProfile::default()), "pretend");
-        let (rules, sandbox) = worker.sandbox_for(&RoleName::Owner);
+        let (rules, sandbox) = worker.sandbox_for(&RoleName::Worker);
         assert_eq!(rules.mode, SandboxChoice::None);
         assert_eq!(sandbox.mode(), SandboxMode::None);
     }
@@ -606,7 +606,7 @@ mod tests {
         assert!(settings.sandbox.network);
         settings
             .roles
-            .entry(RoleName::Owner)
+            .entry(RoleName::Worker)
             .or_default()
             .sandbox
             .network = Some(false);
@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(open.profile.proxy_port, None);
         assert_eq!(env_of(&open.command, "HTTPS_PROXY"), None);
 
-        spec.role = RoleName::Owner;
+        spec.role = RoleName::Worker;
         let closed = launch(&worker, &spec);
         assert!(!closed.profile.network);
         assert_eq!(closed.profile.proxy_port, Some(proxy.port()));
@@ -671,7 +671,9 @@ mod tests {
             asks: argonauts_core::session::Asks::LikeCli,
             endpoint: "127.0.0.1:41234".to_owned(),
             token: "t".to_owned(),
-            start_run: true,
+            tools: vec!["argonauts_start_workflow".to_owned()],
+            standing: None,
+            roles: Vec::new(),
         });
         let off = launch(&worker, &spec);
         assert_eq!(off.profile.proxy_port, Some(proxy.port()));

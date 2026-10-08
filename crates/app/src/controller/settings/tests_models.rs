@@ -71,7 +71,7 @@ fn effort_slider(fixture: &Fixture) -> EffortSlider {
     let command = SlashCommand::Effort {
         role: None,
         level: None,
-        all_hands: None,
+        ultracode: None,
     };
     match pickers::picker(&fixture.ctx, &command).as_slice() {
         [ViewData::Effort { slider }] => slider.clone(),
@@ -188,7 +188,7 @@ async fn a_refresh_brings_the_open_model_list_up_to_date() {
         },
     ] = updates.as_slice()
     else {
-        panic!("one update to the default agent's list: {updates:#?}");
+        panic!("one update to the main agent's list: {updates:#?}");
     };
     let offered = workers(choices);
     assert!(
@@ -249,11 +249,7 @@ fn offered<'a>(choices: &'a [ModelChoice], worker: &str) -> &'a ModelChoice {
 async fn each_cli_lists_its_default_aliases_models_then_older_ones() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(false, |repo| {
-        std::fs::write(
-            repo.global_config(),
-            "default_agent = \"claude-code/opus\"\n",
-        )
-        .unwrap();
+        std::fs::write(repo.global_config(), "main_agent = \"claude-code/opus\"\n").unwrap();
     });
     let cache = dir.path().join("home").join("models-cache.json");
     cache_with_claude_models(&cache);
@@ -355,7 +351,7 @@ async fn a_cli_model_you_set_is_what_its_default_runs() {
 async fn effort_offers_the_levels_the_chosen_model_reports() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(false, |repo| {
-        std::fs::write(repo.global_config(), "default_agent = \"codex/gpt-5.5\"\n").unwrap();
+        std::fs::write(repo.global_config(), "main_agent = \"codex/gpt-5.5\"\n").unwrap();
     });
     two_installed(&mut fixture, dir.path());
     let (worker, levels) = models::efforts(&fixture.ctx, None);
@@ -404,7 +400,7 @@ async fn the_models_level_reads_like_claude_codes_picker() {
     let mut fixture = Fixture::new(false, |repo| {
         std::fs::write(
             repo.global_config(),
-            "default_agent = \"claude-code/claude-opus-5-5\"\n[roles.default]\neffort = \"max\"\n",
+            "main_agent = \"claude-code/claude-opus-5-5\"\n[roles.main]\neffort = \"max\"\n",
         )
         .unwrap();
     });
@@ -574,7 +570,7 @@ async fn codex_models_start_at_the_level_codex_lists_for_each() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(false, |repo| {
-            let config = format!("default_agent = \"{agent}\"\n");
+            let config = format!("main_agent = \"{agent}\"\n");
             std::fs::write(repo.global_config(), config).unwrap();
         });
         codex_and_agy(&mut fixture, dir.path());
@@ -607,7 +603,7 @@ async fn an_agy_model_named_for_a_level_runs_at_it_only() {
     let mut fixture = Fixture::new(false, |repo| {
         std::fs::write(
             repo.global_config(),
-            "default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
+            "main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
         )
         .unwrap();
     });
@@ -647,7 +643,7 @@ fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::Sessio
 
     let (chat, turn) = (ChatId::numbered(1), TurnId::numbered(1));
     let step = TurnStep::Ask { run_status: None };
-    let worker = fixture.ctx.settings().default_agent.clone();
+    let worker = fixture.ctx.settings().main_agent.clone();
     let launch = Launch {
         chat: &chat,
         turn: &turn,
@@ -672,13 +668,12 @@ fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::Sessio
 #[tokio::test]
 async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
     for set in [
-        "[roles.default]\neffort = \"low\"\n",
+        "[roles.main]\neffort = \"low\"\n",
         "[agents.antigravity-cli]\neffort = \"low\"\n",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(false, |repo| {
-            let config =
-                format!("default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n{set}");
+            let config = format!("main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n{set}");
             std::fs::write(repo.global_config(), config).unwrap();
         });
         codex_and_agy(&mut fixture, dir.path());
@@ -705,7 +700,7 @@ async fn a_level_set_before_never_reaches_a_model_fixed_at_one() {
 async fn fast_on_an_agy_model_fixed_at_one_level_runs_its_lowest_sibling() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(false, |repo| {
-        let config = "default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n";
+        let config = "main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n";
         std::fs::write(repo.global_config(), config).unwrap();
     });
     codex_and_agy(&mut fixture, dir.path());
@@ -739,10 +734,10 @@ async fn fast_on_an_agy_model_fixed_at_one_level_runs_its_lowest_sibling() {
 /// Haiku takes no effort setting, but the default agent's `/effort` still opens with nothing to
 /// slide, since All hands lives there. A role on Haiku lists the roles' efforts as before.
 #[test]
-fn effort_on_a_default_agent_without_levels_still_offers_all_hands() {
+fn effort_on_a_main_agent_without_levels_still_offers_ultracode() {
     let fixture = Fixture::new(false, |repo| {
-        let config = "default_agent = \"claude-code/haiku\"\n\
-                      [triage]\nall_hands = true\n\
+        let config = "main_agent = \"claude-code/haiku\"\n\
+                      ultracode = true\n\
                       [roles.reviewer]\nworkers = [\"claude-code/haiku\"]\n";
         std::fs::write(repo.global_config(), config).unwrap();
     });
@@ -752,14 +747,14 @@ fn effort_on_a_default_agent_without_levels_still_offers_all_hands() {
     assert_eq!(slider.worker, "claude-code/haiku".parse().unwrap());
     assert!(slider.model.starts_with("Haiku"), "{}", slider.model);
     assert_eq!(
-        slider.all_hands,
-        Some(argonauts_core::model_picker::AllHandsToggle::new(true))
+        slider.ultracode,
+        Some(argonauts_core::model_picker::UltracodeToggle::new(true))
     );
 
     let command = SlashCommand::Effort {
         role: Some(RoleName::Reviewer),
         level: None,
-        all_hands: None,
+        ultracode: None,
     };
     match pickers::picker(&fixture.ctx, &command).as_slice() {
         [ViewData::Settings { command, .. }] => assert_eq!(command.as_deref(), Some("effort")),

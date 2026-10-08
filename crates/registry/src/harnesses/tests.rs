@@ -262,7 +262,7 @@ fn acp_profile_parses_and_validates() {
     }
     let check = check_manifest(&no_build, None);
     assert!(check.is_ok());
-    assert!(check.warnings[0].contains("can't own a card"));
+    assert!(check.warnings[0].contains("can't own a task"));
 
     let mut bad_regex = profile();
     bad_regex.errors[0].pattern = "(unclosed".into();
@@ -440,7 +440,7 @@ fn project_harness_entries_need_trust() {
         "{warning}"
     );
     assert!(
-        warning.contains("its 4 harness entries are ignored until you trust"),
+        warning.contains("its 4 CLI entries are ignored until you trust"),
         "{warning}"
     );
 
@@ -455,11 +455,11 @@ fn project_harness_entries_need_trust() {
         planted.starts_with(&project.display().to_string()),
         "{planted}"
     );
-    assert!(planted.contains("harness planted is left out"), "{planted}");
+    assert!(planted.contains("CLI planted is left out"), "{planted}");
     assert!(planted.contains("inside the repo"), "{planted}");
     assert!(
         trusted.warnings[1]
-            .contains("harness bare is left out: binary \"agent\" must be an absolute path")
+            .contains("CLI bare is left out: binary \"agent\" must be an absolute path")
     );
 
     // A link into the repo is inside it too.
@@ -501,11 +501,11 @@ fn broken_entries_are_reported_by_file_and_id() {
     assert_eq!(entries.manifests.len(), 2);
     let joined = entries.warnings.join("\n");
     assert!(
-        joined.contains("harness half is left out: missing field"),
+        joined.contains("CLI half is left out: missing field"),
         "{joined}"
     );
     assert!(
-        joined.contains("harness codex is left out: id codex belongs to a built-in adapter"),
+        joined.contains("CLI codex is left out: id codex belongs to a built-in adapter"),
         "{joined}"
     );
 

@@ -107,7 +107,7 @@ fn supported() -> Result<(), SandboxError> {
         .and_then(|()| super::launcher::namespace_support())
         .map_err(|why| {
             SandboxError::Unavailable(format!(
-                "{why}. Harness sessions are refused until that's fixed"
+                "{why}. CLI sessions are refused until that's fixed"
             ))
         })
 }

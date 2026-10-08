@@ -12,7 +12,7 @@ use argonauts_core::events::checkpoint::AnswerAction;
 use argonauts_core::input::{
     AgentsAction, NarratorChange, PERMISSION_KEYS, PresetAction, ROLE_SANDBOX_KEYS, SlashCommand,
 };
-use argonauts_core::model_picker::AllHandsToggle;
+use argonauts_core::model_picker::UltracodeToggle;
 use argonauts_core::names::{ChoiceId, RoleName, WorkerRef};
 use argonauts_core::registry::{ModelEntry, ModelRegistry};
 use argonauts_core::settings::SettingScope;
@@ -216,48 +216,6 @@ fn registry_with(entries: &[serde_json::Value]) -> Arc<dyn ModelRegistry> {
 
 const GLOBAL_WITH_COMMENTS: &str = "# Mine, keep these notes.\n[ui]\nbell = true  # I like it\n";
 
-/// `/style` picks how crew runs work, saved for this project, just you; `/style goal` sets it.
-#[tokio::test]
-async fn style_picks_workflow_or_goal_for_this_project() {
-    let mut harness = Harness::start().await;
-    slash(&harness, SlashCommand::Style { style: None }).await;
-    let ViewData::Settings { rows, command, .. } = next_view(&mut harness).await else {
-        panic!("/style answers with its row");
-    };
-    assert_eq!(command.as_deref(), Some("style"));
-    let style = row(&rows, "workflows.style");
-    assert_eq!(style.value, "\"follow_lead\"");
-    assert_eq!(style.default_scope, SettingScope::ProjectLocal);
-    assert_eq!(rows.len(), 1);
-
-    slash(
-        &harness,
-        SlashCommand::Style {
-            style: Some("goal".into()),
-        },
-    )
-    .await;
-    // Picking a value asks where to save it, this project for you first.
-    let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    assert_eq!(recommended(&question), choose(SettingScope::ProjectLocal));
-    answer(
-        &harness,
-        &question.id,
-        choose(SettingScope::ProjectLocal),
-        None,
-    )
-    .await;
-    let (key, value, scope, ..) = next_change(&mut harness).await;
-    assert_eq!(
-        (key.as_str(), value.as_str(), scope),
-        ("workflows.style", "\"goal\"", SettingScope::ProjectLocal)
-    );
-    let local =
-        std::fs::read_to_string(harness.repo.root().join(".argonauts/config.local.toml")).unwrap();
-    assert!(local.contains("style = \"goal\""), "{local}");
-    harness.exit().await;
-}
-
 #[tokio::test]
 async fn each_command_opens_its_picker_with_its_default_scopes() {
     use SettingScope::*;
@@ -276,18 +234,15 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         panic!("/model answers with rows");
     };
     assert_eq!(command.as_deref(), Some("model"));
-    assert_eq!(row(&rows, "default_agent").default_scope, ProjectLocal);
-    assert_eq!(row(&rows, "default_agent").value, "\"claude-code\"");
+    assert_eq!(row(&rows, "main_agent").default_scope, ProjectLocal);
+    assert_eq!(row(&rows, "main_agent").value, "\"claude-code\"");
     assert_eq!(
         row(&rows, "roles.reviewer.workers").default_scope,
         ProjectLocal
     );
     assert_eq!(row(&rows, "narrator.model").default_scope, Global);
     assert_eq!(row(&rows, "narrator.model").value, "");
-    assert_eq!(
-        row(&rows, "approvals.approver.model").default_scope,
-        Project
-    );
+    assert_eq!(row(&rows, "approvals.decides").default_scope, Project);
 
     slash(
         &harness,
@@ -308,7 +263,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         SlashCommand::Effort {
             role: None,
             level: None,
-            all_hands: None,
+            ultracode: None,
         },
     )
     .await;
@@ -335,7 +290,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         })
         .await;
     let ViewData::Models { choices, role, .. } = next_view(&mut harness).await else {
-        panic!("the default agent's models");
+        panic!("the main agent's models");
     };
     assert_eq!(role, None);
     let current: Vec<String> = choices
@@ -356,7 +311,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         panic!("/agents answers with rows");
     };
     assert_eq!(command.as_deref(), Some("agents"));
-    assert_eq!(row(&rows, "crew").default_scope, Project);
+    assert_eq!(row(&rows, "crew.workers").default_scope, Project);
     assert_eq!(row(&rows, "agents.opencode-acp.binary").layer, "built-in");
     assert!(
         !rows.iter().any(|row| row.key.starts_with("agents.hermes.")),
@@ -365,22 +320,25 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
 
     slash(
         &harness,
-        SlashCommand::Preset {
+        SlashCommand::Workflow {
             name: None,
             action: PresetAction::Use,
         },
     )
     .await;
     let ViewData::Settings { rows, command, .. } = next_view(&mut harness).await else {
-        panic!("/preset answers with rows");
+        panic!("/workflow answers with rows");
     };
-    assert_eq!(command.as_deref(), Some("preset"));
+    assert_eq!(command.as_deref(), Some("workflow"));
     let peer = rows
         .iter()
-        .find(|row| row.value == "\"peer-crew\"")
-        .expect("the built-in peer-crew");
-    assert_eq!((peer.key.as_str(), peer.default_scope), ("preset", Project));
-    assert!(rows.iter().any(|row| row.value == "\"coordinated-crew\""));
+        .find(|row| row.value == "\"council\"")
+        .expect("the built-in council");
+    assert_eq!(
+        (peer.key.as_str(), peer.default_scope),
+        ("workflow", Project)
+    );
+    assert!(rows.iter().any(|row| row.value == "\"orchestrator\""));
 
     // With no run on screen, /workflows opens the workflow view's Library tab alone.
     slash(&harness, SlashCommand::Workflows).await;
@@ -404,14 +362,11 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     let rows = rows::rows(&fixture.ctx.settings, Some("approvals"), None);
     assert!(rows.iter().all(|row| row.key.starts_with("approvals.")));
     assert_eq!(row(&rows, "approvals.merge.mode").default_scope, Project);
-    assert_eq!(
-        row(&rows, "approvals.approver.model").default_scope,
-        Project
-    );
+    assert_eq!(row(&rows, "approvals.decides").default_scope, Project);
     // Full auto's settings are all there with their values: the switch, who answers, the
     // second approver, and what a hard limit does at each checkpoint.
-    assert_eq!(row(&rows, "approvals.full_auto").value, "false");
-    assert!(row(&rows, "approvals.answered_by").allowed.is_empty());
+    assert_eq!(row(&rows, "approvals.autopilot").value, "false");
+    assert!(row(&rows, "approvals.answers").allowed.is_empty());
     assert!(
         row(&rows, "approvals.approver.second_model")
             .value
@@ -423,7 +378,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     let plan = row(&rows, "approvals.plan.at_hard_limit");
     assert!(!plan.allowed.contains(&"\"open_pull_request\"".to_owned()));
     assert_eq!(
-        row(&rows, "approvals.plan.rules.max_score_spread").value,
+        row(&rows, "approvals.rules.plan.max_score_spread").value,
         "1.0"
     );
 
@@ -432,18 +387,19 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         SlashCommand::Budget {
             key: None,
             value: None,
+            action: Default::default(),
         },
     )
     .await;
     let ViewData::Settings { rows, .. } = next_view(&mut harness).await else {
-        panic!("/budget answers with rows");
+        panic!("/limits answers with rows");
     };
-    assert!(rows.iter().all(|row| row.key.starts_with("budget.")));
-    assert_eq!(row(&rows, "budget.run_usd").default_scope, Project);
+    assert!(rows.iter().all(|row| row.key.starts_with("limits.")));
+    assert_eq!(row(&rows, "limits.spend_per_run").default_scope, Project);
 
     slash(
         &harness,
-        SlashCommand::Handoff {
+        SlashCommand::Fallback {
             role: Some(RoleName::Reviewer),
             key: None,
             value: None,
@@ -451,13 +407,10 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     )
     .await;
     let ViewData::Settings { rows, section, .. } = next_view(&mut harness).await else {
-        panic!("/handoff answers with rows");
+        panic!("/fallback answers with rows");
     };
-    assert_eq!(section.as_deref(), Some("roles.reviewer.handoff"));
-    assert_eq!(
-        row(&rows, "roles.reviewer.handoff.mode").default_scope,
-        Project
-    );
+    assert_eq!(section.as_deref(), Some("fallback.reviewers"));
+    assert_eq!(row(&rows, "fallback.reviewers.mode").default_scope, Project);
 
     slash(
         &harness,
@@ -490,13 +443,16 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
     assert!(row(&rows, "sandbox.mode").safety);
     assert_eq!(row(&rows, "sandbox.mode").value, "\"os\"");
     assert_eq!(row(&rows, "sandbox.network").value, "true");
-    assert_eq!(row(&rows, "sandbox.agents_see_other_copies").value, "false");
+    assert_eq!(
+        row(&rows, "sandbox.agents_see_other_worktrees").value,
+        "false"
+    );
     assert_eq!(row(&rows, "sandbox.agents_commit").value, "true");
-    assert_eq!(row(&rows, "limits.usd_per_day").default_scope, Global);
+    assert_eq!(row(&rows, "limits.spend_per_day").default_scope, Global);
     // What a direct turn asks you, and where solo works, are here too.
     assert_eq!(row(&rows, "solo.asks").value, "\"like_cli\"");
     assert!(row(&rows, "solo.asks").safety);
-    assert_eq!(row(&rows, "solo.style").value, "\"direct\"");
+    assert_eq!(row(&rows, "solo.kind").value, "\"direct\"");
     // A role's own key is unset until you set it, and takes the same values.
     let own = row(&rows, "roles.reviewer.sandbox.mode");
     assert_eq!((own.value.as_str(), own.default_scope), ("", Project));
@@ -559,10 +515,7 @@ async fn each_command_opens_its_picker_with_its_default_scopes() {
         panic!("/config answers with rows");
     };
     assert_eq!(command.as_deref(), Some("config"));
-    assert_eq!(
-        row(&rows, "roles.default.effort").default_scope,
-        ProjectLocal
-    );
+    assert_eq!(row(&rows, "roles.main.effort").default_scope, ProjectLocal);
     assert_eq!(row(&rows, "ui.keys").default_scope, Global);
     assert_eq!(row(&rows, "ui.keys").layer, "built-in");
 
@@ -607,9 +560,9 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
             SlashCommand::Effort {
                 role: None,
                 level: Some("high".to_owned()),
-                all_hands: None,
+                ultracode: None,
             },
-            "roles.default.effort",
+            "roles.main.effort",
             "\"high\"",
             ProjectLocal,
         ),
@@ -619,64 +572,65 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
                 worker: Some("codex".parse().unwrap()),
                 effort: None,
             },
-            "default_agent",
+            "main_agent",
             "\"codex\"",
             ProjectLocal,
         ),
         (
-            SlashCommand::Preset {
-                name: Some("peer-crew".to_owned()),
+            SlashCommand::Workflow {
+                name: Some("council".to_owned()),
                 action: PresetAction::Use,
             },
-            "preset",
-            "\"peer-crew\"",
+            "workflow",
+            "\"council\"",
             Project,
         ),
         (
             SlashCommand::Approvals {
                 key: Some("merge.mode".to_owned()),
-                value: Some("shadow".to_owned()),
+                value: Some("auto_preview".to_owned()),
             },
             "approvals.merge.mode",
-            "\"shadow\"",
+            "\"auto_preview\"",
             Project,
         ),
         (
             SlashCommand::Budget {
-                key: Some("run_usd".to_owned()),
+                key: Some("spend_per_run".to_owned()),
                 value: Some("5.0".to_owned()),
+                action: Default::default(),
             },
-            "budget.run_usd",
+            "limits.spend_per_run",
             "5.0",
             Project,
         ),
         (
-            SlashCommand::Handoff {
+            SlashCommand::Fallback {
                 role: Some(RoleName::Reviewer),
                 key: Some("mode".to_owned()),
                 value: Some("wait".to_owned()),
             },
-            "roles.reviewer.handoff.mode",
+            "fallback.reviewers.mode",
             "\"wait\"",
             Project,
         ),
         (
-            SlashCommand::Handoff {
+            SlashCommand::Fallback {
                 role: None,
                 key: Some("context".to_owned()),
                 value: Some("note+summary".to_owned()),
             },
-            "handoff.context",
+            "fallback.context",
             "\"note+summary\"",
             Project,
         ),
         (
-            SlashCommand::Handoff {
+            SlashCommand::Fallback {
                 role: Some(RoleName::Reviewer),
                 key: Some("summarizer".to_owned()),
                 value: Some("claude-code/haiku".to_owned()),
             },
-            "roles.reviewer.handoff.summarizer",
+            "fallback.reviewers.summarizer",
             "\"claude-code/haiku\"",
             Project,
         ),
@@ -692,11 +646,11 @@ async fn each_command_argument_asks_the_scope_then_saves_keeping_comments() {
         ),
         (
             SlashCommand::Permissions {
-                role: Some(RoleName::Owner),
+                role: Some(RoleName::Worker),
                 key: Some("mode".to_owned()),
                 value: Some("tool".to_owned()),
             },
-            "roles.owner.sandbox.mode",
+            "roles.worker.sandbox.mode",
             "\"tool\"",
             Project,
         ),
@@ -829,7 +783,7 @@ async fn the_effort_slider_starts_where_the_clis_default_model_does() {
         SlashCommand::Effort {
             role: None,
             level: None,
-            all_hands: None,
+            ultracode: None,
         },
     )
     .await;
@@ -855,11 +809,7 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
     let mut harness = Harness::start_with(HarnessOptions {
         registry: Some(registry),
         prepare: Some(Box::new(|repo: &TempRepo| {
-            std::fs::write(
-                repo.global_config(),
-                "default_agent = \"claude-code/haiku\"\n",
-            )
-            .unwrap();
+            std::fs::write(repo.global_config(), "main_agent = \"claude-code/haiku\"\n").unwrap();
         })),
         ..HarnessOptions::default()
     })
@@ -869,7 +819,7 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         SlashCommand::Effort {
             role: None,
             level: Some("max".to_owned()),
-            all_hands: None,
+            ultracode: None,
         },
     )
     .await;
@@ -884,7 +834,7 @@ async fn an_effort_level_the_model_lacks_is_refused_naming_the_ones_it_takes() {
         SlashCommand::Effort {
             role: None,
             level: None,
-            all_hands: None,
+            ultracode: None,
         },
     )
     .await;
@@ -918,7 +868,7 @@ async fn another_level_for_a_model_fixed_at_one_is_refused_saying_so() {
         prepare: Some(Box::new(|repo: &TempRepo| {
             std::fs::write(
                 repo.global_config(),
-                "default_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
+                "main_agent = \"antigravity-cli/gemini-3.8-flash-high\"\n",
             )
             .unwrap();
         })),
@@ -930,7 +880,7 @@ async fn another_level_for_a_model_fixed_at_one_is_refused_saying_so() {
         SlashCommand::Effort {
             role: None,
             level: Some("low".to_owned()),
-            all_hands: None,
+            ultracode: None,
         },
     )
     .await;
@@ -970,8 +920,8 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
 
     slash(&harness, pick("high")).await;
     let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    assert_eq!(question.body[0], "default_agent = \"claude-code/haiku\"");
-    assert_eq!(question.body[1], "roles.default.effort = \"high\"");
+    assert_eq!(question.body[0], "main_agent = \"claude-code/haiku\"");
+    assert_eq!(question.body[1], "roles.main.effort = \"high\"");
     answer(&harness, &question.id, choose(SettingScope::Global), None).await;
     let mut saved = Vec::new();
     for _ in 0..2 {
@@ -983,16 +933,13 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
     assert_eq!(
         saved,
         [
-            (
-                "default_agent".to_owned(),
-                "\"claude-code/haiku\"".to_owned()
-            ),
-            ("roles.default.effort".to_owned(), "\"high\"".to_owned()),
+            ("main_agent".to_owned(), "\"claude-code/haiku\"".to_owned()),
+            ("roles.main.effort".to_owned(), "\"high\"".to_owned()),
         ]
     );
     let global = std::fs::read_to_string(harness.repo.global_config()).unwrap();
     assert!(
-        global.contains("default_agent = \"claude-code/haiku\""),
+        global.contains("main_agent = \"claude-code/haiku\""),
         "{global}"
     );
     assert!(global.contains("effort = \"high\""), "{global}");
@@ -1004,7 +951,7 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
         })
         .await;
     let ViewData::Models { choices, .. } = next_view(&mut harness).await else {
-        panic!("the default agent's models");
+        panic!("the main agent's models");
     };
     assert!(
         choices
@@ -1016,37 +963,37 @@ async fn a_model_picked_with_an_effort_saves_both_where_you_choose() {
 }
 
 /// `/effort`'s All hands toggle. The default agent's slider offers it as it is now and a role's
-/// doesn't. The toggle alone asks where to save and writes only `triage.all_hands`, which the
+/// doesn't. The toggle alone asks where to save and writes only `ultracode`, which the
 /// status then carries for the input rule; with a level, both are saved together. `/config`
 /// lists it.
 #[tokio::test]
-async fn all_hands_from_the_effort_slider_saves_where_you_choose() {
+async fn ultracode_from_the_effort_slider_saves_where_you_choose() {
     let mut harness = Harness::start_with(harness_options(|repo| {
         let reviewer = "[roles.reviewer]\nworkers = [\"claude-code\"]\n";
         std::fs::write(repo.global_config(), reviewer).unwrap();
     }))
     .await;
-    let effort = |role: Option<RoleName>, level: Option<&str>, all_hands: Option<bool>| {
+    let effort = |role: Option<RoleName>, level: Option<&str>, ultracode: Option<bool>| {
         SlashCommand::Effort {
             role,
             level: level.map(str::to_owned),
-            all_hands,
+            ultracode,
         }
     };
     slash(&harness, effort(None, None, None)).await;
     let ViewData::Effort { slider } = next_view(&mut harness).await else {
         panic!("/effort answers with its slider");
     };
-    assert_eq!(slider.all_hands, Some(AllHandsToggle::new(false)));
+    assert_eq!(slider.ultracode, Some(UltracodeToggle::new(false)));
     slash(&harness, effort(Some(RoleName::Reviewer), None, None)).await;
     let ViewData::Effort { slider } = next_view(&mut harness).await else {
         panic!("/effort reviewer answers with its slider");
     };
-    assert_eq!(slider.all_hands, None, "a role's slider has no toggle");
+    assert_eq!(slider.ultracode, None, "a role's slider has no toggle");
 
     slash(&harness, effort(None, None, Some(true))).await;
     let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
-    assert_eq!(question.body[0], "triage.all_hands = true");
+    assert_eq!(question.body[0], "ultracode = true");
     assert!(
         !question.body.iter().any(|line| line.contains("effort")),
         "{question:?}"
@@ -1060,7 +1007,7 @@ async fn all_hands_from_the_effort_slider_saves_where_you_choose() {
     let (key, value, scope, _, _) = next_change(&mut harness).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        ("triage.all_hands", "true", SettingScope::Project)
+        ("ultracode", "true", SettingScope::Project)
     );
     let event = harness
         .until(|event| matches!(event, AppEvent::Status { .. }))
@@ -1068,25 +1015,25 @@ async fn all_hands_from_the_effort_slider_saves_where_you_choose() {
     let AppEvent::Status { status } = event else {
         unreachable!()
     };
-    assert!(status.all_hands, "the input rule's label shows it");
+    assert!(status.ultracode, "the input rule's label shows it");
     let project =
         std::fs::read_to_string(harness.repo.root().join(".argonauts/config.toml")).unwrap();
-    assert!(project.contains("all_hands = true"), "{project}");
+    assert!(project.contains("ultracode = true"), "{project}");
     assert!(!project.contains("effort"), "{project}");
 
     slash(&harness, effort(None, None, None)).await;
     let ViewData::Effort { slider } = next_view(&mut harness).await else {
         panic!("/effort answers with its slider");
     };
-    assert_eq!(slider.all_hands, Some(AllHandsToggle::new(true)));
+    assert_eq!(slider.ultracode, Some(UltracodeToggle::new(true)));
 
     slash(&harness, effort(None, Some("high"), Some(false))).await;
     let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
     assert_eq!(
         question.body[..2],
         [
-            "roles.default.effort = \"high\"".to_owned(),
-            "triage.all_hands = false".to_owned()
+            "roles.main.effort = \"high\"".to_owned(),
+            "ultracode = false".to_owned()
         ]
     );
     answer(&harness, &question.id, choose(SettingScope::Project), None).await;
@@ -1099,29 +1046,29 @@ async fn all_hands_from_the_effort_slider_saves_where_you_choose() {
     assert_eq!(
         saved,
         [
-            ("roles.default.effort".to_owned(), "\"high\"".to_owned()),
-            ("triage.all_hands".to_owned(), "false".to_owned()),
+            ("roles.main.effort".to_owned(), "\"high\"".to_owned()),
+            ("ultracode".to_owned(), "false".to_owned()),
         ]
     );
     harness.exit().await;
 }
 
 #[tokio::test]
-async fn config_lists_all_hands_off_by_default() {
+async fn config_lists_ultracode_off_by_default() {
     let fixture = Fixture::new(false, |_| {});
     let rows = rows::rows(&fixture.ctx.settings, Some("config"), None);
-    let all_hands = row(&rows, "triage.all_hands");
+    let ultracode = row(&rows, "ultracode");
     assert_eq!(
-        (all_hands.value.as_str(), all_hands.layer.as_str()),
+        (ultracode.value.as_str(), ultracode.layer.as_str()),
         ("false", "built-in")
     );
-    assert_eq!(all_hands.allowed, ["true", "false"]);
+    assert_eq!(ultracode.allowed, ["true", "false"]);
     assert!(
-        all_hands
+        ultracode
             .description
-            .contains("every task goes to the crew"),
+            .contains("a workflow for every real request"),
         "{}",
-        all_hands.description
+        ultracode.description
     );
 }
 
@@ -1303,7 +1250,7 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
         SlashCommand::Effort {
             role: None,
             level: Some("high".to_owned()),
-            all_hands: None,
+            ultracode: None,
         },
     )
     .await;
@@ -1328,11 +1275,7 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
     let (key, value, scope, ..) = next_change(&mut harness).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        (
-            "roles.default.effort",
-            "\"high\"",
-            SettingScope::ProjectLocal
-        )
+        ("roles.main.effort", "\"high\"", SettingScope::ProjectLocal)
     );
 
     let file = harness.repo.root().join(".argonauts/config.local.toml");
@@ -1358,7 +1301,7 @@ async fn write_to_untrusted_project_file_keeps_it_untrusted() {
     assert_eq!(mode.layer, "built-in");
     let effort = entries
         .iter()
-        .find(|entry| entry.key == "roles.default.effort")
+        .find(|entry| entry.key == "roles.main.effort")
         .unwrap();
     assert_eq!(effort.layer, "project-local");
     harness.exit().await;
@@ -1390,8 +1333,7 @@ async fn sandbox_mode(harness: &mut Harness) -> (String, String) {
     (mode.value, mode.layer)
 }
 
-const UNSAFE_PROJECT: &str =
-    "[sandbox]\nmode = \"container\"\n\n[roles.default]\neffort = \"low\"\n";
+const UNSAFE_PROJECT: &str = "[sandbox]\nmode = \"container\"\n\n[roles.main]\neffort = \"low\"\n";
 
 #[tokio::test]
 async fn untrusted_safety_keys_are_asked_about_at_start() {
@@ -1458,11 +1400,8 @@ async fn a_file_changed_after_the_start_question_stays_untrusted() {
 #[tokio::test]
 async fn files_without_untrusted_safety_keys_ask_nothing_at_start() {
     let mut harness = Harness::start_with(harness_options(|repo| {
-        repo.write(
-            ".argonauts/config.toml",
-            "[roles.default]\neffort = \"low\"\n",
-        )
-        .unwrap();
+        repo.write(".argonauts/config.toml", "[roles.main]\neffort = \"low\"\n")
+            .unwrap();
     }))
     .await;
     harness
@@ -1479,7 +1418,7 @@ async fn files_without_untrusted_safety_keys_ask_nothing_at_start() {
 
 /// The file the decision was made from: a gate written as a string, beside a safety key.
 const GATE_AS_STRING: &str =
-    "[budget]\nrun_usd = 1.0\n\n[gates]\nrun = [\"python3 -m unittest -q\"]\n";
+    "[limits]\nspend_per_run = 1.0\n\n[checks]\nrun = [\"python3 -m unittest -q\"]\n";
 
 #[tokio::test]
 async fn a_file_that_needs_a_fix_says_what_to_fix_instead_of_asking_for_trust() {
@@ -1507,10 +1446,10 @@ async fn a_file_that_needs_a_fix_says_what_to_fix_instead_of_asking_for_trust() 
             _ => None,
         })
         .collect();
-    let fix = ".argonauts/config.local.toml needs a fix before you can trust it: gates.run \
-               can't be a list of strings; it takes a list of checks, each a [[gates.run]] table \
+    let fix = ".argonauts/config.local.toml needs a fix before you can trust it: checks.run \
+               can't be a list of strings; it takes a list of checks, each a [[checks.run]] table \
                with a name and a command. Write it like this:\n\
-               [[gates.run]]\n\
+               [[checks.run]]\n\
                name = \"python3\"\n\
                command = [\"python3\", \"-m\", \"unittest\", \"-q\"]";
     assert!(notices.contains(&(NoteLevel::Warn, fix)), "{notices:#?}");
@@ -1687,8 +1626,8 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
     let mut harness = Harness::start().await;
     slash(
         &harness,
-        SlashCommand::Preset {
-            name: Some("coordinated-crew".to_owned()),
+        SlashCommand::Workflow {
+            name: Some("orchestrator".to_owned()),
             action: PresetAction::Use,
         },
     )
@@ -1696,16 +1635,16 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
     let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
     answer(&harness, &question.id, choose(SettingScope::Project), None).await;
     let ViewData::Models { role, .. } = next_view(&mut harness).await else {
-        panic!("the coordinator's picker");
+        panic!("the orchestrator's picker");
     };
-    assert_eq!(role, Some(RoleName::Coordinator));
+    assert_eq!(role, Some(RoleName::Orchestrator));
 
     // The pick saves both keys to the preset's scope without asking again.
     let worker: WorkerRef = "codex/gpt-5.6".parse().unwrap();
     slash(
         &harness,
         SlashCommand::Model {
-            role: Some(RoleName::Coordinator),
+            role: Some(RoleName::Orchestrator),
             worker: Some(worker.clone()),
             effort: None,
         },
@@ -1714,13 +1653,13 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
     let (key, value, scope, ..) = next_change(&mut harness).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
-        ("preset", "\"coordinated-crew\"", SettingScope::Project)
+        ("workflow", "\"orchestrator\"", SettingScope::Project)
     );
     let (key, value, scope, ..) = next_change(&mut harness).await;
     assert_eq!(
         (key.as_str(), value.as_str(), scope),
         (
-            "roles.coordinator.workers",
+            "roles.orchestrator.workers",
             "[\"codex/gpt-5.6\"]",
             SettingScope::Project
         )
@@ -1728,7 +1667,7 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
     let saved =
         std::fs::read_to_string(harness.repo.root().join(".argonauts/config.toml")).unwrap();
     assert!(
-        saved.contains("coordinated-crew") && saved.contains("codex/gpt-5.6"),
+        saved.contains("orchestrator") && saved.contains("codex/gpt-5.6"),
         "{saved}"
     );
     let questions = harness
@@ -1745,8 +1684,8 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
     let mut harness = Harness::start().await;
     slash(
         &harness,
-        SlashCommand::Preset {
-            name: Some("coordinated-crew".to_owned()),
+        SlashCommand::Workflow {
+            name: Some("orchestrator".to_owned()),
             action: PresetAction::Use,
         },
     )
@@ -1759,7 +1698,7 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
     slash(
         &harness,
         SlashCommand::Model {
-            role: Some(RoleName::Coordinator),
+            role: Some(RoleName::Orchestrator),
             worker: Some(worker),
             effort: None,
         },
@@ -1768,7 +1707,7 @@ async fn the_coordinator_is_asked_for_and_saved_with_the_preset() {
     let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
     assert_eq!(
         question.body[0],
-        "roles.coordinator.workers = [\"codex/gpt-5.6\"]"
+        "roles.orchestrator.workers = [\"codex/gpt-5.6\"]"
     );
     harness.exit().await;
 }
@@ -1778,8 +1717,8 @@ async fn a_command_outside_settings_drops_the_coordinator_hold() {
     let mut harness = Harness::start().await;
     slash(
         &harness,
-        SlashCommand::Preset {
-            name: Some("coordinated-crew".to_owned()),
+        SlashCommand::Workflow {
+            name: Some("orchestrator".to_owned()),
             action: PresetAction::Use,
         },
     )
@@ -1793,7 +1732,7 @@ async fn a_command_outside_settings_drops_the_coordinator_hold() {
     slash(
         &harness,
         SlashCommand::Model {
-            role: Some(RoleName::Coordinator),
+            role: Some(RoleName::Orchestrator),
             worker: Some("codex/gpt-5.6".parse().unwrap()),
             effort: None,
         },
@@ -1802,7 +1741,7 @@ async fn a_command_outside_settings_drops_the_coordinator_hold() {
     let question = next_choice(&mut harness, ChoiceKind::SettingScope).await;
     assert_eq!(
         question.body[0],
-        "roles.coordinator.workers = [\"codex/gpt-5.6\"]"
+        "roles.orchestrator.workers = [\"codex/gpt-5.6\"]"
     );
     harness.exit().await;
 }
@@ -1813,9 +1752,9 @@ fn the_coordinator_pick_carries_the_preset() {
     assert_eq!(
         coordinator_change(&worker),
         Change::Set(vec![
-            ("preset".to_owned(), "\"coordinated-crew\"".to_owned()),
+            ("workflow".to_owned(), "\"orchestrator\"".to_owned()),
             (
-                "roles.coordinator.workers".to_owned(),
+                "roles.orchestrator.workers".to_owned(),
                 "[\"codex/gpt-5.6\"]".to_owned()
             ),
         ])
@@ -2032,9 +1971,9 @@ async fn gates_are_offered_once() {
     let file = fixture.repo.root().join(".argonauts/config.toml");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("\"--workspace\""), "{text}");
-    assert_eq!(fixture.ctx.settings().gates.run.len(), 1);
+    assert_eq!(fixture.ctx.settings().checks.run.len(), 1);
     assert_eq!(
-        fixture.ctx.settings().gates.run[0].command,
+        fixture.ctx.settings().checks.run[0].command,
         vec!["cargo", "test", "--workspace"]
     );
     offer_gates(&mut fixture.ctx, &mut fixture.state)
@@ -2120,12 +2059,12 @@ async fn a_session_value_joins_the_app_and_later_runs() {
 }
 
 #[tokio::test]
-async fn a_new_default_agent_starts_a_fresh_chat() {
+async fn a_new_main_agent_starts_a_fresh_chat() {
     let mut fixture = Fixture::new(false, |_| {});
     let effects = set(
         &mut fixture.ctx,
         &mut fixture.state,
-        "default_agent".to_owned(),
+        "main_agent".to_owned(),
         "\"codex\"".to_owned(),
         SettingScope::Session,
     )
@@ -2146,7 +2085,7 @@ async fn a_value_that_doesnt_resolve_is_put_back() {
     let err = set(
         &mut fixture.ctx,
         &mut fixture.state,
-        "budget.soft_stop".to_owned(),
+        "limits.soft_stop".to_owned(),
         "\"lots\"".to_owned(),
         SettingScope::Project,
     )
@@ -2165,7 +2104,7 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
     let err = set(
         &mut fixture.ctx,
         &mut fixture.state,
-        "handoff.strategi".to_owned(),
+        "fallback.strategi".to_owned(),
         "spread".to_owned(),
         SettingScope::Project,
     )
@@ -2174,14 +2113,14 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
     // The resolver names the key and the one you likely meant.
     let err = err.to_string();
     assert!(
-        err.contains("handoff.strategi isn't a setting") && err.contains("handoff.strategy"),
+        err.contains("fallback.strategi isn't a setting") && err.contains("fallback.strategy"),
         "{err}"
     );
     assert!(!file.exists());
     let err = set(
         &mut fixture.ctx,
         &mut fixture.state,
-        "handoff.strategi".to_owned(),
+        "fallback.strategi".to_owned(),
         "spread".to_owned(),
         SettingScope::Session,
     )
@@ -2193,7 +2132,7 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
     set(
         &mut fixture.ctx,
         &mut fixture.state,
-        "handoff.strategy".to_owned(),
+        "fallback.strategy".to_owned(),
         "spread".to_owned(),
         SettingScope::Project,
     )
@@ -2203,15 +2142,23 @@ async fn a_key_the_catalog_lacks_is_kept_only_when_resolve_knows_it() {
         fixture
             .ctx
             .settings
-            .entry("handoff.strategy")
+            .entry("fallback.strategy")
             .unwrap()
             .value,
         "\"spread\""
     );
-    let rows = rows::rows(&fixture.ctx.settings, Some("handoff"), None);
-    let strategy = row(&rows, "handoff.strategy");
+    let rows = rows::rows(&fixture.ctx.settings, Some("fallback"), None);
+    let strategy = row(&rows, "fallback.strategy");
     assert_eq!(strategy.layer, "project");
-    assert!(strategy.allowed.contains(&"\"race\"".to_owned()));
+    assert_eq!(strategy.allowed, ["\"first\"", "\"spread\""]);
+    // Several at once is `together`, and `pick` says how their results combine.
+    let pick = row(&rows, "fallback.pick");
+    assert_eq!(
+        pick.allowed,
+        ["\"first_passing\"", "\"judge\"", "\"merge\""]
+    );
+    assert!(rows.iter().any(|row| row.key == "fallback.together"));
+    assert!(rows.iter().any(|row| row.key == "fallback.reviewers.pick"));
 }
 
 /// Sets `key` through the same path as a picker's scope answer.
@@ -2235,11 +2182,11 @@ fn keys_of(rows: &[SettingRow]) -> Vec<&str> {
 async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_needs_one() {
     let mut fixture = Fixture::new(false, |_| {});
     let handoff = |fixture: &Fixture, section: Option<&str>| {
-        rows::rows(&fixture.ctx.settings, Some("handoff"), section)
+        rows::rows(&fixture.ctx.settings, Some("fallback"), section)
     };
 
     let rows = handoff(&fixture, None);
-    let context = row(&rows, "handoff.context");
+    let context = row(&rows, "fallback.context");
     assert_eq!(context.value, "\"note+transcript\"");
     assert_eq!(
         context.allowed,
@@ -2251,14 +2198,12 @@ async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_nee
         ]
     );
     assert!(
-        context
-            .description
-            .starts_with("What the replacement is told"),
+        context.description.starts_with("What the fallback is told"),
         "{}",
         context.description
     );
     assert_eq!(context.default_scope, SettingScope::Project);
-    assert!(keys_of(&rows).contains(&"roles.default.handoff.context"));
+    assert!(keys_of(&rows).contains(&"fallback.main.context"));
     assert!(
         !keys_of(&rows)
             .iter()
@@ -2270,79 +2215,79 @@ async fn handoff_shows_what_the_replacement_is_told_and_a_summarizer_once_it_nee
     // Picking note+summary brings the summarizer in, for every role without its own.
     set_at(
         &mut fixture,
-        "handoff.context",
+        "fallback.context",
         "note+summary",
         SettingScope::Project,
     )
     .await;
     let rows = handoff(&fixture, None);
-    let summarizer = row(&rows, "handoff.summarizer");
+    let summarizer = row(&rows, "fallback.summarizer");
     assert_eq!(summarizer.value, "");
     assert!(summarizer.allowed.is_empty());
     assert_eq!(summarizer.default_scope, SettingScope::Project);
-    assert!(keys_of(&rows).contains(&"roles.default.handoff.summarizer"));
-    let reviewer = handoff(&fixture, Some("roles.reviewer.handoff"));
-    assert!(keys_of(&reviewer).contains(&"roles.reviewer.handoff.summarizer"));
-    assert!(keys_of(&reviewer).contains(&"roles.reviewer.handoff.context"));
+    assert!(keys_of(&rows).contains(&"fallback.main.summarizer"));
+    let reviewer = handoff(&fixture, Some("fallback.reviewers"));
+    assert!(keys_of(&reviewer).contains(&"fallback.reviewers.summarizer"));
+    assert!(keys_of(&reviewer).contains(&"fallback.reviewers.context"));
 
     // One role told note+summary needs its own, and the top-level one that serves it.
     set_at(
         &mut fixture,
-        "handoff.context",
+        "fallback.context",
         "note",
         SettingScope::Project,
     )
     .await;
     set_at(
         &mut fixture,
-        "roles.reviewer.handoff.context",
+        "fallback.reviewers.context",
         "note+summary",
         SettingScope::Project,
     )
     .await;
-    let reviewer = handoff(&fixture, Some("roles.reviewer.handoff"));
-    assert!(keys_of(&reviewer).contains(&"roles.reviewer.handoff.summarizer"));
+    let reviewer = handoff(&fixture, Some("fallback.reviewers"));
+    assert!(keys_of(&reviewer).contains(&"fallback.reviewers.summarizer"));
     let rows = handoff(&fixture, None);
-    assert!(keys_of(&rows).contains(&"handoff.summarizer"));
-    assert!(!keys_of(&rows).contains(&"roles.default.handoff.summarizer"));
+    assert!(keys_of(&rows).contains(&"fallback.summarizer"));
+    assert!(!keys_of(&rows).contains(&"fallback.main.summarizer"));
 
     // So does a vendor's replacements being told note+summary.
     set_at(
         &mut fixture,
-        "roles.reviewer.handoff.context",
+        "fallback.reviewers.context",
         "fresh",
         SettingScope::Project,
     )
     .await;
     let rows = handoff(&fixture, None);
-    assert!(!keys_of(&rows).contains(&"handoff.summarizer"));
+    assert!(!keys_of(&rows).contains(&"fallback.summarizer"));
     set_at(
         &mut fixture,
-        "handoff.replace.claude-code",
+        "fallback.replace.claude-code",
         "{ with = [\"codex/gpt-5.6\"], context = \"note+summary\" }",
         SettingScope::Project,
     )
     .await;
     let rows = handoff(&fixture, None);
-    assert!(keys_of(&rows).contains(&"handoff.summarizer"));
+    assert!(keys_of(&rows).contains(&"fallback.summarizer"));
 
     // A summarizer you set stays listed, so you can change or reset it.
     set_at(
         &mut fixture,
-        "handoff.replace.claude-code.context",
+        "fallback.replace.claude-code.context",
         "note",
         SettingScope::Project,
     )
     .await;
     set_at(
         &mut fixture,
-        "handoff.summarizer",
+        "fallback.summarizer",
         "claude-code/haiku",
         SettingScope::Project,
     )
     .await;
     let rows = handoff(&fixture, None);
-    let summarizer = row(&rows, "handoff.summarizer");
+    let summarizer = row(&rows, "fallback.summarizer");
     assert_eq!(
         (summarizer.value.as_str(), summarizer.layer.as_str()),
         ("\"claude-code/haiku\"", "project")
@@ -2360,12 +2305,12 @@ async fn the_handoff_context_saves_at_each_scope() {
     use SettingScope::*;
     let mut fixture = Fixture::new(false, |_| {});
     let layer = |fixture: &Fixture, key: &str| {
-        let rows = rows::rows(&fixture.ctx.settings, Some("handoff"), None);
+        let rows = rows::rows(&fixture.ctx.settings, Some("fallback"), None);
         let row = row(&rows, key);
         (row.value.clone(), row.layer.clone())
     };
     assert_eq!(
-        layer(&fixture, "handoff.context"),
+        layer(&fixture, "fallback.context"),
         ("\"note+transcript\"".to_owned(), "built-in".to_owned())
     );
     let cases = [
@@ -2375,9 +2320,9 @@ async fn the_handoff_context_saves_at_each_scope() {
         (Session, "note+transcript", "session"),
     ];
     for (scope, value, expected) in cases {
-        set_at(&mut fixture, "handoff.context", value, scope).await;
+        set_at(&mut fixture, "fallback.context", value, scope).await;
         assert_eq!(
-            layer(&fixture, "handoff.context"),
+            layer(&fixture, "fallback.context"),
             (format!("\"{value}\""), expected.to_owned()),
             "{scope:?}"
         );
@@ -2389,26 +2334,26 @@ async fn the_handoff_context_saves_at_each_scope() {
     assert!(local.contains("context = \"note+summary\""), "{local}");
 
     // A role's own, and the summarizer, the same way.
+    set_at(&mut fixture, "fallback.reviewers.context", "fresh", Project).await;
     set_at(
         &mut fixture,
-        "roles.reviewer.handoff.context",
-        "fresh",
-        Project,
+        "fallback.summarizer",
+        "codex/gpt-5.6",
+        Session,
     )
     .await;
-    set_at(&mut fixture, "handoff.summarizer", "codex/gpt-5.6", Session).await;
     let rows = rows::rows(
         &fixture.ctx.settings,
-        Some("handoff"),
-        Some("roles.reviewer.handoff"),
+        Some("fallback"),
+        Some("fallback.reviewers"),
     );
-    let context = row(&rows, "roles.reviewer.handoff.context");
+    let context = row(&rows, "fallback.reviewers.context");
     assert_eq!(
         (context.value.as_str(), context.layer.as_str()),
         ("\"fresh\"", "project")
     );
     assert_eq!(
-        layer(&fixture, "handoff.summarizer"),
+        layer(&fixture, "fallback.summarizer"),
         ("\"codex/gpt-5.6\"".to_owned(), "session".to_owned())
     );
 
@@ -2416,7 +2361,7 @@ async fn the_handoff_context_saves_at_each_scope() {
     let err = set(
         &mut fixture.ctx,
         &mut fixture.state,
-        "handoff.context".to_owned(),
+        "fallback.context".to_owned(),
         "summary".to_owned(),
         Project,
     )
@@ -2434,12 +2379,12 @@ async fn config_lists_the_handoff_context_and_summarizer_with_their_layers() {
     let mut fixture = Fixture::new(false, |_| {});
     let config = |fixture: &Fixture| rows::rows(&fixture.ctx.settings, Some("config"), None);
     let rows = config(&fixture);
-    let context = row(&rows, "handoff.context");
+    let context = row(&rows, "fallback.context");
     assert_eq!(
         (context.value.as_str(), context.layer.as_str()),
         ("\"note+transcript\"", "built-in")
     );
-    let summarizer = row(&rows, "handoff.summarizer");
+    let summarizer = row(&rows, "fallback.summarizer");
     assert_eq!(
         (summarizer.value.as_str(), summarizer.layer.as_str()),
         ("", "built-in")
@@ -2448,34 +2393,34 @@ async fn config_lists_the_handoff_context_and_summarizer_with_their_layers() {
 
     set_at(
         &mut fixture,
-        "handoff.summarizer",
+        "fallback.summarizer",
         "claude-code/haiku",
         SettingScope::ProjectLocal,
     )
     .await;
     set_at(
         &mut fixture,
-        "roles.owner.handoff.context",
+        "fallback.workers.context",
         "fresh",
         SettingScope::Project,
     )
     .await;
     let rows = config(&fixture);
-    let summarizer = row(&rows, "handoff.summarizer");
+    let summarizer = row(&rows, "fallback.summarizer");
     assert_eq!(
         (summarizer.value.as_str(), summarizer.layer.as_str()),
         ("\"claude-code/haiku\"", "project-local")
     );
-    let owner = row(&rows, "roles.owner.handoff.context");
+    let owner = row(&rows, "fallback.workers.context");
     assert_eq!(
         (owner.value.as_str(), owner.layer.as_str()),
         ("\"fresh\"", "project")
     );
-    assert!(keys_of(&rows).contains(&"roles.owner.handoff.summarizer"));
+    assert!(keys_of(&rows).contains(&"fallback.workers.summarizer"));
     // `/config handoff` is the section on its own.
-    let section = rows::rows(&fixture.ctx.settings, Some("config"), Some("handoff"));
-    assert!(keys_of(&section).contains(&"handoff.context"));
-    assert!(keys_of(&section).contains(&"handoff.summarizer"));
+    let section = rows::rows(&fixture.ctx.settings, Some("config"), Some("fallback"));
+    assert!(keys_of(&section).contains(&"fallback.context"));
+    assert!(keys_of(&section).contains(&"fallback.summarizer"));
 }
 
 /// `/agents` names each CLI it can't find, with what installs it, and none it can.
@@ -2522,14 +2467,14 @@ async fn agents_lists_the_clis_that_are_not_installed_with_how_to_add_them() {
     // Other settings commands carry none.
     slash(
         &harness,
-        SlashCommand::Preset {
+        SlashCommand::Workflow {
             name: None,
             action: PresetAction::Use,
         },
     )
     .await;
     let ViewData::Settings { not_installed, .. } = next_view(&mut harness).await else {
-        panic!("/preset answers with rows");
+        panic!("/workflow answers with rows");
     };
     assert!(not_installed.is_empty());
     harness.exit().await;

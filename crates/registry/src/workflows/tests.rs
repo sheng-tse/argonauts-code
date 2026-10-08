@@ -151,7 +151,7 @@ fn workflow_lookup_project_then_global_then_builtin() {
 fn workflow_yaml_reads_counts_workers_and_params() {
     let text = "\
 name: review-panel
-description: Two reviewers from other families
+description: Two reviewers from other providers
 params: { target: diff, reviewers: 2, focus: [tests, docs], limits: { rounds: 1.5 } }
 phases:
   - name: Review
@@ -380,7 +380,7 @@ phases:
 fn workflows_listed_for_the_picker() {
     let folders = Folders::new();
     let solo = simple("solo", "One agent, gated and reviewed");
-    let panel = simple("review-panel", "Two reviewers from other families");
+    let panel = simple("review-panel", "Two reviewers from other providers");
     let builtins = [("solo", solo.as_str()), ("review-panel", panel.as_str())];
     let dirs = folders.dirs(&builtins);
     write(
@@ -449,7 +449,7 @@ fn workflows_listed_for_the_picker() {
 #[test]
 fn workflow_copy_never_replaces_a_file() {
     let folders = Folders::new();
-    let panel = simple("review-panel", "Two reviewers from other families");
+    let panel = simple("review-panel", "Two reviewers from other providers");
     let builtins = [("review-panel", panel.as_str())];
     let dirs = WorkflowDirs {
         project: None,

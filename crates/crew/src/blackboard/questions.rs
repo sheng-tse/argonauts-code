@@ -17,7 +17,7 @@ use argonauts_core::{CardId, Note, NoteLevel};
 use crate::blackboard::requests::move_if;
 use crate::blackboard::{Post, delivery, post_once, records, refs, reply_to, route};
 use crate::card::machine::Trigger;
-use crate::checkpoints::full_auto::{self, OWN_ANSWER};
+use crate::checkpoints::autopilot::{self, OWN_ANSWER};
 use crate::checkpoints::{self, CheckpointRequest, options};
 use crate::consultant;
 use crate::engine::host::Host;
@@ -57,7 +57,7 @@ pub async fn ask(host: &Host, card: &CardId, from: &Party, text: &str) -> Engine
             consultant::answer(host, &id).await?;
         }
         // Nothing waits for you in full auto, so the lead answers in your place.
-        Recipient::User if full_auto::applies_now(host, CheckpointKind::Question) => {
+        Recipient::User if autopilot::applies_now(host, CheckpointKind::Question) => {
             answer_for_you(host, card, &id).await?;
         }
         Recipient::User => ask_you(host, card, &id).await?,
@@ -135,7 +135,7 @@ fn asked(
         .ok_or_else(|| EngineError::Refused(format!("There's no question {id}")))?;
     Ok((
         question,
-        asker.unwrap_or_else(|| host.settings().default_agent.clone()),
+        asker.unwrap_or_else(|| host.settings().main_agent.clone()),
     ))
 }
 
@@ -181,7 +181,7 @@ async fn ask_you(host: &Host, card: &CardId, id: &MessageId) -> EngineResult<()>
     Ok(())
 }
 
-/// Full auto: the model `approvals.answered_by` picked answers a question meant for you, unless
+/// Full auto: the model `approvals.answers` picked answers a question meant for you, unless
 /// it's of the asker's own company, else the lead, or a model of another company than the
 /// asker's when the lead is of the asker's own. The approver, of another company than the one
 /// that answered, checks the answer before it goes, as it checks the lead's answers at the
@@ -194,13 +194,13 @@ async fn answer_for_you(host: &Host, card: &CardId, id: &MessageId) -> EngineRes
         proposed_answer(host, card, &question, &asker, &from).await?
     else {
         // Nothing could answer, so the agent goes on with its own judgment.
-        return reply(host, id, &question, OWN_ANSWER.to_owned(), Party::FullAuto);
+        return reply(host, id, &question, OWN_ANSWER.to_owned(), Party::Autopilot);
     };
     let answerer_name = roles::display_name(&answerer);
     let mut request = question_checkpoint(card, &from, &question.text, asker.clone());
     request.options = Some(options::lead_answer(&answerer_name));
     request.agent_outputs = vec![format!(
-        "The run is in full auto, so {answerer} answered this question from {asker} in the \
+        "The run is on autopilot, so {answerer} answered this question from {asker} in the \
          user's place. Approve only an answer that keeps the work safe and within the request"
     )];
     request.documents = vec![
@@ -240,12 +240,12 @@ async fn answer_for_you(host: &Host, card: &CardId, id: &MessageId) -> EngineRes
     let asked_by = format!("{from} ({})", roles::display_name(&asker));
     let line = match &decided.by {
         Party::Approver { model } => Some(format!(
-            "Full auto answered the question from {asked_by} for you with {answerer_name}'s \
+            "Autopilot answered the question from {asked_by} for you with {answerer_name}'s \
              answer, which {} checked.",
             roles::display_name(model)
         )),
         Party::Rules => Some(format!(
-            "Full auto answered the question from {asked_by} for you with {answerer_name}'s \
+            "Autopilot answered the question from {asked_by} for you with {answerer_name}'s \
              answer, which your rules let through."
         )),
         _ => None,
@@ -330,13 +330,13 @@ fn note(host: &Host, card: &CardId, level: NoteLevel, text: String) -> EngineRes
     Ok(())
 }
 
-/// Who answers an agent's question in your place: the model `approvals.answered_by` picked,
+/// Who answers an agent's question in your place: the model `approvals.answers` picked,
 /// unless it's of the asker's own company, else [`lead_answerer`].
 fn answerer_for(host: &Host, asker: &WorkerRef) -> WorkerRef {
     let picked = host
         .settings()
         .approvals
-        .answered_by
+        .answers
         .as_ref()
         .and_then(|answerer| answerer.model());
     let company = |worker: &WorkerRef| company_of(&roles::family(host, worker));
@@ -352,7 +352,7 @@ fn lead_answerer(host: &Host, asker: &WorkerRef) -> WorkerRef {
     let company = |worker: &WorkerRef| company_of(&roles::family(host, worker));
     let lead = host.read(|state| {
         crate::lead::phase_lead(state, host.settings())
-            .unwrap_or_else(|| host.settings().default_agent.clone())
+            .unwrap_or_else(|| host.settings().main_agent.clone())
     });
     let theirs = company(asker);
     if company(&lead) != theirs {
@@ -361,8 +361,8 @@ fn lead_answerer(host: &Host, asker: &WorkerRef) -> WorkerRef {
     let settings = host.settings();
     settings
         .crew
-        .iter()
-        .cloned()
+        .members()
+        .into_iter()
         .chain(host.services().workers.available())
         .find(|worker| company(worker) != theirs)
         .unwrap_or(lead)

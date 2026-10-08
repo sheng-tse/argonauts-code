@@ -162,7 +162,7 @@ async fn act(
                 // Nothing changed, so the debt stays for the merge card.
                 Err(EngineError::Refused(why)) => {
                     let text = format!(
-                        "{card} couldn't be redone from handoff-{}: {why}",
+                        "{card} couldn't be redone from fallback-{}: {why}",
                         debt.since
                     );
                     host.record(

@@ -13,9 +13,6 @@ use crate::error::EngineResult;
 use crate::state::RunState;
 use crate::state::sessions::SessionRecord;
 
-/// The cap when `sessions.rotate_at` can't be read, such as a share with no known window.
-const DEFAULT_ROTATE_AT: u64 = 200_000;
-
 /// Whether a new session starts fresh or continues an earlier one.
 #[derive(Debug)]
 pub enum Reuse {
@@ -82,7 +79,7 @@ pub fn choose(
         _ => Reuse::Fresh,
     };
     match lifetime(settings, role) {
-        SessionLifetime::Card => Ok(match card {
+        SessionLifetime::Task => Ok(match card {
             Some(card) => reuse(newest(&|session| session.card.as_ref() == Some(card))),
             None => Reuse::Fresh,
         }),
@@ -108,15 +105,13 @@ fn continue_main(
     main: Option<MainSession>,
 ) -> Option<String> {
     let main = main?;
-    let context = state
+    let full = state
         .sessions
         .by_key
         .values()
         .filter(|session| session.vendor_session.as_ref() == Some(&main.vendor_session))
-        .filter_map(|session| session.context_used)
-        .max()
-        .unwrap_or(0);
-    (!is_full(context, settings)).then_some(main.vendor_session)
+        .any(|session| passed_the_cap(session, settings));
+    (!full).then_some(main.vendor_session)
 }
 
 /// Whether the session ended with its context full, or this run's log saw it pass the cap.
@@ -125,28 +120,31 @@ fn was_full(session: &SessionRecord, settings: &Settings) -> bool {
         .end
         .as_ref()
         .is_some_and(|end| end.reason == EndReason::ContextFull);
-    ended_full
-        || session
-            .context_used
-            .is_some_and(|used| is_full(used, settings))
+    ended_full || passed_the_cap(session, settings)
 }
 
-/// Past `sessions.rotate_at` (an absolute cap, 200k tokens by default), so it rotates.
-pub fn is_full(context_tokens: u64, settings: &Settings) -> bool {
-    let cap = settings
-        .sessions
-        .rotate_at
-        .tokens(None)
-        .ok()
-        .flatten()
-        .unwrap_or(DEFAULT_ROTATE_AT);
-    context_tokens >= cap
+/// Whether the log saw the session's context pass the cap, against the window it reported.
+fn passed_the_cap(session: &SessionRecord, settings: &Settings) -> bool {
+    session
+        .context_used
+        .is_some_and(|used| is_full(used, session.context_window, settings))
+}
+
+/// Past `sessions.rotate_at`, so it rotates: near the end of its window unless you set a
+/// cap. `window` is the one the session last reported, held to `sessions.context`. A share
+/// of a window nobody reported is never reached: the CLI compacts by itself meanwhile, and a
+/// session that ends with its context full starts over either way.
+pub fn is_full(context_tokens: u64, window: Option<u64>, settings: &Settings) -> bool {
+    let sessions = &settings.sessions;
+    let cap = sessions.rotate_at.tokens(sessions.context.window(window));
+    cap.ok().flatten().is_some_and(|cap| context_tokens >= cap)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use argonauts_core::settings::context::ContextSize;
     use argonauts_core::settings::roles::RoleSettings;
     use argonauts_core::settings::sessions::RotateAt;
     use time::OffsetDateTime;
@@ -164,15 +162,20 @@ mod tests {
     #[test]
     fn main_session_rotates_when_full() {
         let mut settings = project_settings();
-        assert!(!is_full(199_999, &settings));
-        assert!(is_full(200_000, &settings), "200k is the default cap");
-        settings.sessions.rotate_at = RotateAt::Tokens(50_000);
-        assert!(is_full(50_000, &settings));
-        settings.sessions.rotate_at = RotateAt::Share(0.9);
+        let window = Some(1_000_000);
+        assert!(!is_full(899_999, window, &settings));
+        assert!(is_full(900_000, window, &settings), "near its window's end");
         assert!(
-            !is_full(150_000, &settings),
-            "a share without a window uses 200k"
+            !is_full(5_000_000, None, &settings),
+            "a share of a window nobody reported is never reached"
         );
+        settings.sessions.context = ContextSize::Text("200k".to_owned());
+        assert!(is_full(180_000, window, &settings), "your cap lowers it");
+        assert!(is_full(180_000, None, &settings));
+        settings.sessions.context = ContextSize::default();
+        settings.sessions.rotate_at = RotateAt::Tokens(50_000);
+        assert!(is_full(50_000, None, &settings));
+        settings.sessions.rotate_at = RotateAt::Tokens(200_000);
 
         let dir = tempfile::tempdir().unwrap();
         let mains = MainSessions::open(dir.path());
@@ -208,6 +211,7 @@ mod tests {
         let mut record =
             crate::state::tests::session_record("s-001", &worker, RoleName::Consultant);
         record.vendor_session = Some("vendor-main".to_owned());
+        record.context_window = Some(200_000);
         record.context_used = Some(150_000);
         state.sessions.by_key.insert(record.key.clone(), record);
         assert_eq!(
@@ -257,7 +261,7 @@ mod tests {
         let settings = Settings::default();
         let worker = WorkerRef::new("codex", None);
         let card = CardId::numbered(1);
-        let mut record = crate::state::tests::session_record("s-001", &worker, RoleName::Owner);
+        let mut record = crate::state::tests::session_record("s-001", &worker, RoleName::Worker);
         record.card = Some(card.clone());
         record.vendor_session = Some("vendor-1".to_owned());
         let vendor = Some("vendor-1");
@@ -272,7 +276,7 @@ mod tests {
                 state,
                 &settings,
                 &mains,
-                RoleName::Owner,
+                RoleName::Worker,
                 &worker,
                 Some(&card),
                 false,
@@ -288,6 +292,7 @@ mod tests {
         assert!(matches!(pick(&state), Ok(Reuse::Fresh)));
 
         record.end = Some(crate::state::tests::end(EndReason::Stopped, vendor));
+        record.context_window = Some(200_000);
         record.context_used = Some(250_000);
         state.sessions.by_key.insert(record.key.clone(), record);
         assert!(matches!(pick(&state), Ok(Reuse::Fresh)));

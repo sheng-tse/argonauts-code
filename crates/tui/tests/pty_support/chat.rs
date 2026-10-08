@@ -6,7 +6,7 @@ use argonauts_core::app::AppEvent;
 use serde_json::{Value, json};
 
 pub const DEFAULT_AGENT: &str = "claude-code/haiku";
-pub const PRESET: &str = "peer-crew";
+pub const PRESET: &str = "council";
 pub const REPO: &str = "~/code/api";
 
 pub fn app(value: Value) -> AppEvent {
@@ -21,7 +21,7 @@ pub fn spend(output_tokens: u64, cost_usd: f64) -> Value {
 
 pub fn welcome() -> AppEvent {
     app(
-        json!({"type": "welcome", "version": "0.1.0", "repo": REPO, "preset": PRESET,
+        json!({"type": "welcome", "version": "0.1.0", "repo": REPO, "workflow": PRESET,
         "agents": [
             {"id": "claude-code", "version": "2.1.284", "ready": true, "note": null},
             {"id": "codex", "version": "0.158.0", "ready": true, "note": null},
@@ -43,17 +43,29 @@ pub fn welcome_with_runs(runs_going: u32) -> AppEvent {
     app(value)
 }
 
-/// A vendor's quota reading, `used` from 0 to 1, for the five-hour window.
+/// A vendor's quota reading, `used` from 0 to 1, for the five-hour window: read now, in a
+/// window still open, since the bottom line drops a reading once its window has reset.
 pub fn quota(vendor: &str, used: f64) -> Value {
+    use time::format_description::well_known::Rfc3339;
     let status = if used >= 0.9 { "warning" } else { "allowed" };
+    let now = time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .unwrap();
+    let resets_at = (now + time::Duration::hours(3)).format(&Rfc3339).unwrap();
     json!({"vendor": vendor, "status": status, "used": used,
-           "resets_at": "2026-09-30T18:00:00Z", "window": "five_hour",
-           "source": "rate_limit_event", "observed_at": "2026-09-30T12:00:00Z",
+           "resets_at": resets_at, "window": "five_hour",
+           "source": "rate_limit_event", "observed_at": now.format(&Rfc3339).unwrap(),
            "detail": null})
 }
 
 pub fn chip(label: &str, reading: Option<Value>, health: &str) -> Value {
     json!({"label": label, "reading": reading, "health": health})
+}
+
+/// The bottom line's settings with the spend part after plan usage, which the narrator's
+/// spend follows.
+pub fn line_with_spend() -> Value {
+    json!({"settings": {"right": ["plan-usage", "spend"]}})
 }
 
 /// The status line of the idle screen: Claude 71%, Codex 38%, `$0.00`.
@@ -63,8 +75,8 @@ pub fn status_line() -> AppEvent {
 
 /// The idle status line with some fields replaced, such as `{"approval_mode": "auto"}`.
 pub fn status_with(changes: Value) -> AppEvent {
-    let mut status = json!({"title": "Argonauts", "repo": REPO, "preset": PRESET, "run": null,
-        "default_agent": DEFAULT_AGENT,
+    let mut status = json!({"title": "Argonauts", "repo": REPO, "workflow": PRESET, "run": null,
+        "main_agent": DEFAULT_AGENT,
         "quotas": [chip("Claude", Some(quota("claude-code", 0.71)), "healthy"),
                    chip("Codex", Some(quota("codex", 0.38)), "healthy")],
         "spent": spend(0, 0.0), "limit": null, "narrator": "on_demand",
@@ -253,7 +265,7 @@ pub fn start_work_choice(id: &str) -> AppEvent {
         id,
         "start_work",
         "Start work on this?",
-        &["Triage would pick solo: one file, tests exist."],
+        &["Argonauts would pick solo: one file, tests exist."],
         vec![
             option('s', "Solo", choose("solo"), true),
             option('c', "Crew run", choose("crew"), false),

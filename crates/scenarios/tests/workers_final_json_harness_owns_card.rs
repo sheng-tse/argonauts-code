@@ -61,7 +61,7 @@ fn workers_final_json_harness_owns_card() -> anyhow::Result<()> {
     )?;
     write_global_config(
         &scenario,
-        "preset = \"solo\"\ndefault_agent = \"openclaw-exec/fake-local\"\n",
+        "workflow = \"solo\"\nmain_agent = \"openclaw-exec/fake-local\"\n",
     )?;
 
     let mut pty = launch_ready(&scenario, &[], &[])?;
@@ -77,8 +77,8 @@ fn workers_final_json_harness_owns_card() -> anyhow::Result<()> {
 
     // The pointers read the document printed at exit.
     let sessions = sessions_of(&events, "openclaw-exec");
-    let key = sessions[0].0.expect("the owner session has a key");
-    let end = session_end(&events, key).expect("the owner session ended");
+    let key = sessions[0].0.expect("the worker session has a key");
+    let end = session_end(&events, key).expect("the worker session ended");
     assert_eq!(end.vendor_session.as_deref(), Some("oc-workers-1"));
     assert!(
         end.result_text

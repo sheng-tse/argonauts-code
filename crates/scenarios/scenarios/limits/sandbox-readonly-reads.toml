@@ -1,4 +1,4 @@
-# Claude Code builds the card. The probe set as Codex's binary tries its reads in the
+# Claude Code builds the task. The probe set as Codex's binary tries its reads in the
 # read-only review session, then this fake Codex approves.
 
 [version]

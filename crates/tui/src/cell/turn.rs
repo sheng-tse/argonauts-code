@@ -156,11 +156,11 @@ mod tests {
     fn recap_wraps_under_column_two_in_dim_italics() {
         let theme = theme();
         let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
-        let recap = Recap::new("Export now takes --json, all 4 cards merged, and the tests pass.");
+        let recap = Recap::new("Export now takes --json, all 4 tasks merged, and the tests pass.");
         let lines = recap.lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "※ recap: Export now takes --json, all 4\n  cards merged, and the tests pass.\n  (disable recaps in /config)"
+            "※ recap: Export now takes --json, all 4\n  tasks merged, and the tests pass.\n  (disable recaps in /config)"
         );
         let italic = theme.style(Role::Dim).add_modifier(Modifier::ITALIC);
         assert_eq!(lines[0].spans[2].style, theme.style(Role::Dim));

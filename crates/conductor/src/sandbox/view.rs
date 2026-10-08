@@ -696,7 +696,7 @@ mod tests {
     fn a_missing_lock_is_never_made_ahead_of_git() {
         let refs = at("/repo/.git/refs/heads/");
         let disk = FakeDisk::new(&[&refs]);
-        let lock = format!("{refs}card-a.lock");
+        let lock = format!("{refs}task-a.lock");
         let view = plan(&profile(&[&lock], &[], &[]), &disk);
         assert!(view.steps.is_empty(), "{:?}", view.steps);
         assert!(view.writable.is_empty());

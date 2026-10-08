@@ -5,20 +5,17 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use argonauts_core::api::{RawView, RunState as RunPhase, RunSummary};
-use argonauts_core::app::{SettingRow, UiCommand, ViewRequest};
+use argonauts_core::app::{SettingRow, UiCommand};
 use argonauts_core::events::run::RunMode;
 use argonauts_core::names::{SessionKey, WorkerRef};
 use argonauts_core::settings::SettingScope;
-use argonauts_core::views::{
-    CheckpointRow, ContextRow, ContextView as ContextData, WorkflowFile, WorkflowOrigin,
-};
+use argonauts_core::views::{CheckpointRow, WorkflowFile, WorkflowOrigin};
 use argonauts_core::{CardId, RunId, Spend};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use time::OffsetDateTime;
 
-use super::context::ContextView;
 use super::help::HelpView;
 use super::library::LibraryView;
 use super::list::keys_state;
@@ -29,7 +26,7 @@ use super::settings::approvals::ApprovalsView;
 use super::settings::config::ConfigView;
 use super::{View, ViewCtx, ViewOutcome};
 use crate::keymap::Keymap;
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 
 /// Drives one view with vim keys on or off, drawing it first so it knows its page.
 struct Driver {
@@ -58,10 +55,14 @@ impl Driver {
     }
 
     fn text(&self, view: &mut dyn View) -> String {
+        crate::stability::buffer_text(&self.rendered(view))
+    }
+
+    fn rendered(&self, view: &mut dyn View) -> Buffer {
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf, &self.ctx());
-        crate::stability::buffer_text(&buf)
+        buf
     }
 
     fn key(&self, view: &mut dyn View, code: KeyCode) -> ViewOutcome {
@@ -78,9 +79,9 @@ fn run(n: u32) -> RunSummary {
         run: RunId::new(format!("run-{n:02}")).unwrap(),
         title: format!("Run {n}"),
         mode: RunMode::Crew,
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         state: RunPhase::Parked,
-        stopped_at: "merge checkpoint".into(),
+        stopped_at: "merge approval".into(),
         updated: OffsetDateTime::UNIX_EPOCH,
         spent: Spend::default(),
         sessions_to_resume: 1,
@@ -101,21 +102,6 @@ fn setting(key: &str) -> SettingRow {
         safety: false,
         allowed: vec!["\"x\"".into(), "\"y\"".into()],
         description: format!("Sets {key}"),
-    }
-}
-
-fn context_row(n: u32) -> ContextRow {
-    ContextRow {
-        run: Some(RunId::new("run-01").unwrap()),
-        session: SessionKey::numbered(n),
-        label: format!("agent {n}"),
-        worker: "codex/gpt-5.6".parse().unwrap(),
-        used: 1_000,
-        window: Some(200_000),
-        cap: None,
-        tool_calls: 0,
-        spent: Spend::default(),
-        rotations: 0,
     }
 }
 
@@ -200,33 +186,6 @@ fn help_and_pagers_scroll() {
     vim.press(&mut help, 'g');
     assert_eq!(help.offset, 0);
     assert!(matches!(vim.press(&mut help, 'h'), ViewOutcome::Close));
-}
-
-#[test]
-fn context_view() {
-    let data = || ContextData {
-        rows: (1..=3).map(context_row).collect(),
-    };
-    let off = Driver::new(false);
-    let mut view = ContextView::new(data());
-    for c in ['j', 'G', 'h', 'l'] {
-        assert!(is_ignored(&off.press(&mut view, c)), "{c}");
-    }
-
-    let vim = Driver::new(true);
-    let mut view = ContextView::new(data());
-    vim.press(&mut view, 'G');
-    vim.press(&mut view, 'k');
-    let opened = |outcome: ViewOutcome| match outcome {
-        ViewOutcome::Request(ViewRequest::Agent { session, .. }) => session.to_string(),
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(opened(vim.press(&mut view, 'l')), "s-002");
-    vim.press(&mut view, 'g');
-    assert_eq!(opened(vim.press(&mut view, 'l')), "s-001");
-    vim.press(&mut view, 'j');
-    assert_eq!(opened(vim.press(&mut view, 'l')), "s-002");
-    assert!(matches!(vim.press(&mut view, 'h'), ViewOutcome::Close));
 }
 
 #[test]
@@ -329,18 +288,6 @@ fn approvals_view() {
 #[test]
 fn without_vim_keys_right_opens_a_level_and_left_goes_back() {
     let off = Driver::new(false);
-    let mut context = ContextView::new(ContextData {
-        rows: (1..=2).map(context_row).collect(),
-    });
-    assert!(matches!(
-        off.key(&mut context, KeyCode::Right),
-        ViewOutcome::Request(ViewRequest::Agent { .. })
-    ));
-    assert!(matches!(
-        off.key(&mut context, KeyCode::Left),
-        ViewOutcome::Close
-    ));
-
     // In the settings views → opens the editor, ← backs out of it and then out of the view.
     let mut config = ConfigView::new(vec![setting("ui.keys")]);
     let mut approvals = ApprovalsView::with_rows(vec![setting("approvals.mode")]);
@@ -357,7 +304,7 @@ fn without_vim_keys_right_opens_a_level_and_left_goes_back() {
 
 fn checkpoint(n: u32) -> CheckpointRow {
     CheckpointRow {
-        card: CardId::new("card-001").unwrap(),
+        card: CardId::new("task-001").unwrap(),
         n,
         at: OffsetDateTime::UNIX_EPOCH,
         commit: "0123456789abcdef".to_owned(),
@@ -410,12 +357,13 @@ fn workflow_file(name: &str) -> WorkflowFile {
         text: format!("name: {name}\n"),
         edited: None,
         in_use: false,
+        problem: None,
     }
 }
 
 #[test]
 fn workflow_library() {
-    let open = || LibraryView::new(vec![workflow_file("solo"), workflow_file("peer-crew")]);
+    let open = || LibraryView::new(vec![workflow_file("solo"), workflow_file("council")]);
     let off = Driver::new(false);
     let mut view = open();
     off.draw(&mut view);
@@ -435,4 +383,29 @@ fn workflow_library() {
     assert_eq!(view.library.list.selected, 1);
     assert!(matches!(vim.press(&mut view, 'l'), ViewOutcome::Open(_)));
     assert!(matches!(vim.press(&mut view, 'h'), ViewOutcome::Close));
+}
+
+/// The pointer and the chosen row are in the card colour, as on every list.
+#[test]
+fn the_chosen_row_is_in_the_card_colour() {
+    let driver = Driver::new(false);
+    let card = driver.theme.style(Role::Card).fg;
+    let rewind = RewindPicker::new(RunId::new("run-02").unwrap(), None, vec![checkpoint(1)]);
+    let views: Vec<(&str, Box<dyn View>)> = vec![
+        ("resume", Box::new(ResumePicker::new(vec![run(1)]))),
+        ("rewind", Box::new(rewind)),
+        (
+            "library",
+            Box::new(LibraryView::new(vec![workflow_file("solo")])),
+        ),
+    ];
+    for (name, mut view) in views {
+        let buf = driver.rendered(view.as_mut());
+        let pointer = buf
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "❯")
+            .unwrap_or_else(|| panic!("{name} draws no pointer"));
+        assert_eq!(pointer.fg, card.unwrap(), "{name}");
+    }
 }

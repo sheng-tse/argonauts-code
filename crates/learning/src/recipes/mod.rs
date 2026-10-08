@@ -1,5 +1,5 @@
 //! Recipes: a versioned workflow for one task type, with the protocol settings tuned for it.
-//! Each version is a YAML file, `.argonauts/recipes/<name>/v<N>.yaml`, that names its parent
+//! Each version is a YAML file, `.argonauts/learned/<name>/v<N>.yaml`, that names its parent
 //! and never changes after it's written. Statistics never live in the file: they come from the
 //! outcome log, so a run never edits a recipe.
 //!
@@ -32,20 +32,21 @@ pub use keys::{
 /// One version of a recipe, as written.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
+    #[serde(rename = "name")]
     pub recipe: String,
     pub version: u32,
     /// The version this one evolved from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<u32>,
     pub description: String,
-    /// The preset whose settings it starts from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<RecipeMode>,
-    /// A workflow name, or a `.star` file beside the recipe that builds one.
+    /// The workflow whose settings it starts from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<RecipeMode>,
+    /// A phases file by name, or a `.star` file beside the recipe that builds one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phases: Option<String>,
     #[serde(default, rename = "match")]
     pub matches: Match,
     /// Prompt templates beside the recipe, by the `prompts.*` key they replace.
@@ -177,7 +178,7 @@ pub fn load_set(folder: &Path) -> Result<Option<RecipeSet>> {
                 let mut problems = validate(&loaded.recipe);
                 if loaded.recipe.recipe != name {
                     problems.push(format!(
-                        "it names the recipe `{}`, but its folder is `{name}`",
+                        "its `name` is `{}`, but its folder is `{name}`",
                         loaded.recipe.recipe
                     ));
                 }
@@ -293,7 +294,7 @@ pub fn validate(recipe: &Recipe) -> Vec<String> {
     let mut problems = Vec::new();
     if !valid_name(&recipe.recipe) {
         problems.push(format!(
-            "`{}` isn't a recipe name: use lowercase letters, digits, and dashes",
+            "`{}` isn't a workflow name: use lowercase letters, digits, and dashes",
             recipe.recipe
         ));
     }
@@ -313,7 +314,7 @@ pub fn validate(recipe: &Recipe) -> Vec<String> {
     for key in recipe.settings.keys() {
         if STATISTICS.contains(&key.as_str()) {
             problems.push(format!(
-                "`{key}` is a statistic; a recipe's statistics come from the outcome log, never \
+                "`{key}` is a statistic; a learned workflow's statistics come from the outcome log, never \
                  its file"
             ));
         }
@@ -326,22 +327,22 @@ pub fn validate(recipe: &Recipe) -> Vec<String> {
     for (key, file) in &recipe.prompts {
         if !PROMPT_KEYS.contains(&key.as_str()) {
             problems.push(format!(
-                "`prompts.{key}` isn't a template a recipe can replace; only `drafting` and \
+                "`prompts.{key}` isn't a template a learned workflow can replace; only `drafting` and \
                  `build` are"
             ));
         }
         if !plain_file(file) {
             problems.push(format!(
-                "`prompts.{key}` names `{file}`, which must be a file beside the recipe"
+                "`prompts.{key}` names `{file}`, which must be a file beside the workflow"
             ));
         }
     }
-    if let Some(workflow) = &recipe.workflow {
+    if let Some(workflow) = &recipe.phases {
         if workflow.trim().is_empty() {
-            problems.push("its `workflow` is empty".to_owned());
+            problems.push("its `phases` is empty".to_owned());
         } else if is_workflow_file(workflow) && !plain_file(workflow) {
             problems.push(format!(
-                "its workflow `{workflow}` must be a file beside the recipe"
+                "its phases file `{workflow}` must be a file beside the workflow"
             ));
         }
     }
@@ -417,7 +418,7 @@ pub fn recipe_dir(loaded: &LoadedRecipe) -> &Path {
     loaded.path.parent().unwrap_or(Path::new("."))
 }
 
-/// A file beside the recipe as git names it from the repo root, `.argonauts/recipes/<name>/<file>`.
+/// A file beside the recipe as git names it from the repo root, `.argonauts/learned/<name>/<file>`.
 pub fn repo_path(recipe: &str, file: &str) -> String {
     format!(".argonauts/{RECIPES}/{recipe}/{file}")
 }
@@ -437,7 +438,7 @@ pub fn settings_overlay(loaded: &LoadedRecipe) -> Result<toml::Table> {
         table.insert(key.clone(), converted);
     }
     let beside = |file: &str| recipe_dir(loaded).join(file).to_string_lossy().into_owned();
-    if let Some(workflow) = &recipe.workflow {
+    if let Some(workflow) = &recipe.phases {
         let value = if is_workflow_file(workflow) {
             beside(workflow)
         } else {
@@ -488,7 +489,7 @@ pub fn toml_to_json(text: &str) -> std::result::Result<serde_json::Value, String
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
-/// A class of change, as `approvals.recipe_promotion.rules.change_classes` and
+/// A class of change, as `approvals.rules.workflow_promotion.change_classes` and
 /// `evolution.not_worse_classes` name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -504,9 +505,9 @@ pub enum ChangeClass {
     /// `prompts.build`.
     BuildPrompt,
     /// `divide.*`.
-    CardSplit,
-    /// `budget.per_card_usd` and fan-out caps.
-    CardBudget,
+    TaskSplit,
+    /// `limits.per_task_usd` and fan-out caps.
+    TaskBudget,
     /// Who is in the crew, keeping distinct model families.
     CrewComposition,
     /// A step of the workflow added, removed, or rewired.

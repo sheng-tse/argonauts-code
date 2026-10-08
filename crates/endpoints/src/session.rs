@@ -419,7 +419,7 @@ mod tests {
         spec.prompt = vec![InputPart {
             kind: InputPartKind::StepInput,
             label: "step input".to_owned(),
-            text: "Review card 3.".to_owned(),
+            text: "Review task 3.".to_owned(),
             approx_tokens: 1,
             source: None,
         }];

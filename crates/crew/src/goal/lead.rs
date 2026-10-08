@@ -72,8 +72,8 @@ pub async fn answer_in_slot(
     questions: &[GoalQuestion],
     slot: u32,
 ) -> EngineResult<LeadAnswers> {
-    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
-    let picked = host.read(|state| crate::lead::answering(state, host.settings(), full_auto));
+    let autopilot = checkpoints::autopilot::applies_now(host, CheckpointKind::Goal);
+    let picked = host.read(|state| crate::lead::answering(state, host.settings(), autopilot));
     let input = AnswerQuestionsInput {
         request: host.read(round::request)?,
         goal: file::render(&as_settled(drafted)),
@@ -98,7 +98,7 @@ pub async fn answer_in_slot(
     {
         // Said plainly; what the session or the validator said waits for Ctrl+O.
         let line = format!(
-            "{} couldn't answer the goal's questions, so the lead answers them.",
+            "{} couldn't answer the goal's questions, so the main agent answers them.",
             crate::roles::display_name(&picked)
         );
         round::note_with_detail(host, NoteLevel::Warn, &line, &err.to_string())?;
@@ -109,18 +109,18 @@ pub async fn answer_in_slot(
         Ok(answered) => answered.output,
         Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
         Err(err) => {
-            let whose = if full_auto {
-                "full auto takes the crew's recommended answers"
+            let whose = if autopilot {
+                "autopilot takes the crew's recommended answers"
             } else {
                 "they come to you"
             };
-            let line = format!("The lead couldn't answer the goal's questions, so {whose}.");
+            let line = format!("The main agent couldn't answer the goal's questions, so {whose}.");
             round::note_with_detail(host, NoteLevel::Warn, &line, &err.to_string())?;
             let picks = questions
                 .iter()
                 .map(|question| {
-                    let yours = Pick::Yours("the lead couldn't answer it".to_owned());
-                    in_full_auto(question, yours, full_auto)
+                    let yours = Pick::Yours("the main agent couldn't answer it".to_owned());
+                    in_autopilot(question, yours, autopilot)
                 })
                 .collect();
             return Ok(LeadAnswers { lead, picks });
@@ -130,7 +130,7 @@ pub async fn answer_in_slot(
         .iter()
         .map(|question| {
             let answer = output.answers.iter().find(|answer| answer.n == question.n);
-            in_full_auto(question, pick(question, answer), full_auto)
+            in_autopilot(question, pick(question, answer), autopilot)
         })
         .collect();
     Ok(LeadAnswers { lead, picks })
@@ -138,7 +138,7 @@ pub async fn answer_in_slot(
 
 /// In full auto a question the lead couldn't answer takes the crew's recommended answer, else
 /// its first, as an assumption whose basis says why. Nothing waits for you there.
-fn in_full_auto(question: &GoalQuestion, pick: Pick, full_auto: bool) -> Pick {
+fn in_autopilot(question: &GoalQuestion, pick: Pick, autopilot: bool) -> Pick {
     let Pick::Yours(why) = &pick else {
         return pick;
     };
@@ -148,14 +148,14 @@ fn in_full_auto(question: &GoalQuestion, pick: Pick, full_auto: bool) -> Pick {
         .find(|option| option.recommended)
         .or_else(|| question.options.first());
     match option {
-        Some(option) if full_auto => Pick::Answered(Assumption {
+        Some(option) if autopilot => Pick::Answered(Assumption {
             text: format!(
                 "{}: {}",
                 one_line(&question.text).trim_end_matches(['?', '.', ':']),
                 one_line(&option.label)
             ),
             basis: format!(
-                "{LEAD_ANSWER}: full auto took the crew's recommended answer, since {why}"
+                "{LEAD_ANSWER}: autopilot took the crew's recommended answer, since {why}"
             ),
             by: Some(Decider::Lead),
         }),
@@ -202,14 +202,14 @@ pub fn pick(question: &GoalQuestion, answer: Option<&LeadAnswer>) -> Pick {
         .map(one_line)
         .filter(|fact| !fact.is_empty())
     {
-        return Pick::Yours(format!("the lead needs a fact only you have, {fact}"));
+        return Pick::Yours(format!("the main agent needs a fact only you have, {fact}"));
     }
     let chosen = answer.and_then(|answer| {
         let option = question.options.get(usize::from(answer.option?))?;
         Some((option, one_line(&answer.why)))
     });
     let Some((option, why)) = chosen else {
-        return Pick::Yours("the lead didn't answer it".to_owned());
+        return Pick::Yours("the main agent didn't answer it".to_owned());
     };
     let asked = one_line(&question.text);
     let basis = if why.is_empty() {
@@ -276,7 +276,7 @@ pub fn answered_line(picked: Option<&WorkerRef>, answered: usize, yours: usize) 
         1 => "1 of the goal's questions".to_owned(),
         n => format!("{n} of the goal's questions"),
     };
-    let who = picked.map_or_else(|| "The lead".to_owned(), crate::roles::display_name);
+    let who = picked.map_or_else(|| "The main agent".to_owned(), crate::roles::display_name);
     let mut line = format!(
         "{who} answered {questions} for you. Its answers are assumptions in the goal, which \
          Ctrl+O and /status show"
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn the_leads_pick_becomes_an_assumption_marked_as_its_answer() {
         let Pick::Answered(assumed) = pick(&question(), Some(&answer(Some(1), None))) else {
-            panic!("the lead answered");
+            panic!("the main agent answered");
         };
         assert_eq!(
             assumed.text,
@@ -333,7 +333,7 @@ mod tests {
         );
         assert_eq!(
             assumed.basis,
-            "the lead's answer: the README says trace is for developers"
+            "the main agent's answer: the README says trace is for developers"
         );
         assert!(assumed.by_lead());
     }
@@ -344,7 +344,7 @@ mod tests {
         for answer in [None, Some(answer(Some(7), None)), Some(answer(None, None))] {
             assert_eq!(
                 pick(&question(), answer.as_ref()),
-                Pick::Yours("the lead didn't answer it".to_owned())
+                Pick::Yours("the main agent didn't answer it".to_owned())
             );
         }
     }
@@ -356,7 +356,9 @@ mod tests {
                 &question(),
                 Some(&answer(None, Some("which customers get the flag")))
             ),
-            Pick::Yours("the lead needs a fact only you have, which customers get the flag".into())
+            Pick::Yours(
+                "the main agent needs a fact only you have, which customers get the flag".into()
+            )
         );
         // A blank fact is no fact, so the lead's pick stands.
         assert!(matches!(
@@ -369,7 +371,7 @@ mod tests {
     fn the_transcript_line_says_who_answered_and_what_is_left() {
         assert_eq!(
             answered_line(None, 2, 1),
-            "The lead answered 2 of the goal's questions for you. Its answers are assumptions in \
+            "The main agent answered 2 of the goal's questions for you. Its answers are assumptions in \
              the goal, which Ctrl+O and /status show. 1 question is still yours"
         );
         assert!(answered_line(None, 1, 0).ends_with("Ctrl+O and /status show"));

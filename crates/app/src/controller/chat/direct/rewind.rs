@@ -11,7 +11,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, bail};
 
@@ -105,9 +104,7 @@ pub(crate) fn take(
 
 /// Whether git ignores `path` in the folder at `root`, so `add -A` leaves it out.
 pub(crate) fn ignored(root: &Path, path: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
+    crate::git::command(root)
         .args(["check-ignore", "-q", "--", path])
         .status()
         .is_ok_and(|status| status.success())
@@ -260,9 +257,7 @@ fn put(root: &Path, entry: &Option<(String, String)>, path: &str) -> anyhow::Res
         }
         return Ok(());
     };
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let output = crate::git::command(root)
         .args(["cat-file", "blob", sha])
         .output()
         .context("reading a file back from git")?;
@@ -325,9 +320,7 @@ fn git_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
 }
 
 fn with_index(root: &Path, index: &Path, args: &[String]) -> anyhow::Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let output = crate::git::command(root)
         .args(args)
         .env("GIT_INDEX_FILE", index)
         .output()
@@ -355,6 +348,36 @@ mod tests {
 
     fn read(root: &Path, path: &str) -> Option<String> {
         std::fs::read_to_string(root.join(path)).ok()
+    }
+
+    /// A folder with no git rewinds through its hidden history once that's on, and gets no
+    /// `.git` for it.
+    #[test]
+    fn a_folder_with_a_hidden_history_rewinds_like_a_repository() {
+        let folder = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let env = crate::env::AppEnv::for_repo(
+            argonauts_core::Paths::new(home.path()),
+            folder.path(),
+            false,
+        )
+        .unwrap();
+        let root = env.repo_root.as_path();
+        std::fs::write(root.join("notes.txt"), "before\n").unwrap();
+        assert!(take(root, MB, &BTreeSet::new()).is_err(), "no git yet");
+
+        crate::hidden_git::turn_on(&env.state_dir).unwrap();
+        let before = take(root, MB, &BTreeSet::new()).unwrap();
+        std::fs::write(root.join("notes.txt"), "after\n").unwrap();
+        std::fs::write(root.join("made.txt"), "new\n").unwrap();
+        let after = take(root, MB, &BTreeSet::new()).unwrap();
+        let paths = changed(root, &before, &after).unwrap();
+        assert_eq!(paths, ["made.txt", "notes.txt"]);
+        let restored = restore(root, &before, &after, &paths, MB).unwrap();
+        assert_eq!(restored.put_back, ["made.txt", "notes.txt"]);
+        assert_eq!(read(root, "notes.txt").as_deref(), Some("before\n"));
+        assert_eq!(read(root, "made.txt"), None);
+        assert!(!root.join(".git").exists());
     }
 
     /// A tracked edit goes back, a file the turn made goes, an untracked file under the limit

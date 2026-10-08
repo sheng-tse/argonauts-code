@@ -4,7 +4,7 @@ expression: shown
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   Effort
-  How long Gemini 3.8 Flash (High) thinks before it answers, for the default agent
+  How long Gemini 3.8 Flash (High) thinks before it answers, for the main agent
 
     ◉ high effort (fixed by the model)
 

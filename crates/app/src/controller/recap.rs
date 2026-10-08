@@ -111,7 +111,7 @@ pub(crate) fn recap_from_turn(request: &str, reply: &TurnReply) -> String {
             )
         }
         TurnReply::Unclear { .. } => {
-            format!("Answered \"{title}\", and a card asks whether to start work on it.")
+            format!("Answered \"{title}\", and a question asks whether to start work on it.")
         }
     }
 }
@@ -209,20 +209,20 @@ impl Cards {
     fn done_phrase(&self) -> Option<String> {
         match (self.merged, self.total) {
             (_, 0) => None,
-            (1, 1) => Some("the card done".to_owned()),
-            (0, 1) => Some("the card not done".to_owned()),
-            (done, total) if done == total => Some(format!("all {total} cards done")),
-            (done, total) => Some(format!("{done} of {total} cards done")),
+            (1, 1) => Some("the task done".to_owned()),
+            (0, 1) => Some("the task not done".to_owned()),
+            (done, total) if done == total => Some(format!("all {total} tasks done")),
+            (done, total) => Some(format!("{done} of {total} tasks done")),
         }
     }
 
     fn merged_phrase(&self) -> Option<String> {
         match (self.merged, self.total) {
             (_, 0) => None,
-            (1, 1) => Some("the card merged".to_owned()),
-            (0, 1) => Some("the card isn't merged".to_owned()),
-            (merged, total) if merged == total => Some(format!("all {total} cards merged")),
-            (merged, total) => Some(format!("{merged} of {total} cards merged")),
+            (1, 1) => Some("the task merged".to_owned()),
+            (0, 1) => Some("the task isn't merged".to_owned()),
+            (merged, total) if merged == total => Some(format!("all {total} tasks merged")),
+            (merged, total) => Some(format!("{merged} of {total} tasks merged")),
         }
     }
 }
@@ -282,7 +282,7 @@ mod tests {
     fn card(n: u32, state: CardState) -> CardBrief {
         CardBrief {
             card: CardId::numbered(n),
-            title: format!("card {n}"),
+            title: format!("task {n}"),
             state,
             owner: None,
             note: String::new(),
@@ -303,7 +303,7 @@ mod tests {
         let merged = summary((1..=4).map(|n| card(n, CardState::Integrated)).collect());
         assert_eq!(
             recap_from_summary(&merged, Some(RunOutcome::Merged), None),
-            "All 4 cards merged, and the checks pass. Ask for another change, or /resume an \
+            "All 4 tasks merged, and the checks pass. Ask for another change, or /resume an \
              older run."
         );
         let stopped = summary(vec![
@@ -313,20 +313,20 @@ mod tests {
         ]);
         assert_eq!(
             recap_from_summary(&stopped, Some(RunOutcome::Stopped), None),
-            "The run stopped, with 1 of 2 cards done. /resume run-007 goes on from there."
+            "The run stopped, with 1 of 2 tasks done. /resume run-007 goes on from there."
         );
         let mut going = stopped.clone();
-        going.waiting = vec!["the merge checkpoint".to_owned()];
+        going.waiting = vec!["the merge approval".to_owned()];
         assert_eq!(
             recap_from_summary(&going, None, None),
-            "Export now takes --json. 1 of 2 cards merged, 1 working. Waiting on the merge \
-             checkpoint."
+            "Export now takes --json. 1 of 2 tasks merged, 1 working. Waiting on the merge \
+             approval."
         );
         let mut escalated = summary(vec![card(1, CardState::Escalated)]);
-        escalated.waiting = vec!["card-001 escalated · Fix add so it returns a + b.".to_owned()];
+        escalated.waiting = vec!["task-001 needs you · Fix add so it returns a + b.".to_owned()];
         assert_eq!(
             recap_from_summary(&escalated, None, None),
-            "Export now takes --json. The card isn't merged. Waiting on card-001 escalated · Fix \
+            "Export now takes --json. The task isn't merged. Waiting on task-001 needs you · Fix \
              add so it returns a + b."
         );
         // Before any card, a run that waits on you says only that, never that it's under way.
@@ -350,16 +350,16 @@ mod tests {
         let one = summary(vec![card(1, CardState::Integrated)]);
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::PullRequest), None),
-            "The work waits in a pull request for review, with the card done."
+            "The work waits in a pull request for review, with the task done."
         );
         // A run left on its branches never says its card merged.
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::BranchLeft), None),
-            "The branches are kept for later, with the card done. /resume run-007 picks it up."
+            "The branches are kept for later, with the task done. /resume run-007 picks it up."
         );
         assert_eq!(
             recap_from_summary(&stopped, Some(RunOutcome::Failed), None),
-            "The run failed, with 1 of 2 cards done. /status shows where."
+            "The run failed, with 1 of 2 tasks done. /status shows where."
         );
     }
 
@@ -381,13 +381,13 @@ mod tests {
         };
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::Merged), Some(&closing)),
-            "Fixed parse() and format_cents() in invoice/money.py. The card merged, and the \
+            "Fixed parse() and format_cents() in invoice/money.py. The task merged, and the \
              checks pass. Ask for another change, or /resume an older run."
         );
         closing.by = None;
         assert_eq!(
             recap_from_summary(&one, Some(RunOutcome::Merged), Some(&closing)),
-            "Changed invoice/money.py. The card merged, and the checks pass. Ask for another \
+            "Changed invoice/money.py. The task merged, and the checks pass. Ask for another \
              change, or /resume an older run."
         );
     }
@@ -414,8 +414,8 @@ mod tests {
         let triage = TriageDecision {
             mode: RunMode::Crew,
             escalate_to_crew: false,
-            rule: "recipe:api-feature".to_owned(),
-            reason: "the recipe for api-feature says crew".to_owned(),
+            rule: "learned:api-feature".to_owned(),
+            reason: "the learned workflow for api-feature says crew".to_owned(),
             solo: None,
         };
         let reply = TurnReply::Change {
@@ -430,7 +430,7 @@ mod tests {
         };
         assert_eq!(
             recap_from_turn("add rate limiting", &reply),
-            "Started a crew run for \"add rate limiting\": the recipe for api-feature says crew."
+            "Started a crew run for \"add rate limiting\": the learned workflow for api-feature says crew."
         );
     }
 }

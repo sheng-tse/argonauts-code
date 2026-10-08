@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
@@ -17,13 +18,14 @@ use argonauts_core::events::checkpoint::{AnswerAction, CheckpointEvent, Checkpoi
 use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::paths::Paths;
-use argonauts_core::settings::workflows::StyleSetting;
+use argonauts_core::settings::workflows::AdaptWith;
 use argonauts_core::settings::{Settings, Span};
 use argonauts_core::steps::StepName;
-use argonauts_core::worker::{SessionSpec, Worker};
-use argonauts_core::{RepoId, RunId};
+use argonauts_core::worker::{SessionSpec, Worker, WorkerEvent};
+use argonauts_core::{AgentEvent, RepoId, RunId};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::{Shared, with_git_env};
+use argonauts_crew::prompts::trust;
 use argonauts_crew::state::RunState;
 use argonauts_testkit::repo::TempRepo;
 use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
@@ -55,15 +57,17 @@ impl Crew {
     /// The default preset's settings with an empty crew. A run with a checkpoint waiting parks
     /// at once instead of after the usual grace, and a session that failed for a vendor reason
     /// goes again at once, so scenarios don't wait. The lead doesn't
-    /// design the workflow, runs are workflows whoever leads, and no final check runs, unless a
-    /// scenario turns them on, so scripted answers go to the steps they were written for.
+    /// design the workflow and no final check runs, unless a scenario turns them on, so
+    /// scripted answers go to the steps they were written for. For the same reason a
+    /// built-in workflow runs its fixed phases here, and the scenarios of a workflow's own
+    /// steps ask for the script.
     pub fn new() -> anyhow::Result<Self> {
         let mut settings = Settings::default();
         settings.crew.clear();
+        settings.workflows.adapt_with = AdaptWith::Phases;
         settings.supervisor.park_grace = Span::new("0s");
         settings.supervisor.retry_wait = Span::new("0s");
         settings.workflows.lead_designs = false.into();
-        settings.workflows.style = StyleSetting::Workflow;
         settings.workflows.final_check = false;
         Ok(Self {
             services: FakeServices::new(),
@@ -95,11 +99,12 @@ impl Crew {
     ) -> Arc<FakeWorker> {
         let (file, text) = (file.to_owned(), text.to_owned());
         let fake = FakeWorker::harness(worker, family).respond_with(move |spec| {
-            if spec.step == Some(StepName::Build) {
-                std::fs::write(spec.workdir.join(&file), &text)
-                    .expect("the build session writes its file");
+            if spec.step != Some(StepName::Build) {
+                return smallest_answer(spec);
             }
-            smallest_answer(spec)
+            std::fs::write(spec.workdir.join(&file), &text)
+                .expect("the build session writes its file");
+            smallest_answer(spec).with_event(wrote(&file))
         });
         self.enlist(fake)
     }
@@ -108,10 +113,10 @@ impl Crew {
         let fake = self.services.workers.add(fake);
         let reference = fake.worker_ref().clone();
         if self.settings.crew.is_empty() {
-            self.settings.default_agent = reference.clone();
+            self.settings.main_agent = reference.clone();
         }
         if !self.settings.crew.contains(&reference) {
-            self.settings.crew.push(reference);
+            self.settings.crew.add(reference);
         }
         fake
     }
@@ -169,15 +174,21 @@ impl Crew {
         })
     }
 
-    /// A context over this repo's real layout, rebuilding from `history`.
+    /// A context over this repo's real layout, rebuilding from `history`. The project files
+    /// a test wrote and committed are trusted as they are, as you would when asked once.
     pub fn context(
         &self,
         history: Vec<RunEvent>,
     ) -> anyhow::Result<(EngineContext, Arc<MemorySink>, mpsc::Sender<EngineCommand>)> {
+        let repo = self.repo_context()?;
+        if let Some(state_dir) = repo.run_dir.parent().and_then(Path::parent) {
+            let waiting: Vec<PathBuf> = trust::waiting(&repo.root, state_dir).all().collect();
+            trust::trust(state_dir, &waiting)?;
+        }
         Ok(engine_context_in(
             &self.services,
             self.settings.clone(),
-            self.repo_context()?,
+            repo,
             history,
         ))
     }
@@ -190,7 +201,7 @@ impl Crew {
             title: request.to_owned(),
             mode,
             forced: false,
-            preset: self.settings.preset.clone(),
+            workflow: self.settings.workflow.clone(),
             estimate: None,
             triage: None,
             chat_turn: None,
@@ -207,6 +218,7 @@ impl Crew {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             front_end: None,
             instructions: Vec::new(),
+            required_steps: Vec::new(),
         };
         Ok(RunEvent {
             seq: 0,
@@ -308,6 +320,15 @@ fn mode_of(history: &[RunEvent]) -> RunMode {
             _ => None,
         })
         .unwrap_or(RunMode::Solo)
+}
+
+/// What a CLI's edit tool reports when it writes `file`, which is how a new file comes to be
+/// the agent's own and not something a command left behind.
+pub fn wrote(file: &str) -> WorkerEvent {
+    WorkerEvent::Agent(AgentEvent::FileChanged {
+        path: file.to_owned(),
+        kind: "add".to_owned(),
+    })
 }
 
 /// The smallest valid answer for the step's schema, or a plain end when it has none.
@@ -474,7 +495,7 @@ pub fn brief(based_on: Option<&str>, params: Value, workflow: Option<&str>, why:
         "why": why,
         "params": params,
         "workflow": workflow,
-        "done_when": [{"id": "G1", "text": "The gates pass", "short": "Gates",
+        "done_when": [{"id": "G1", "text": "The checks pass", "short": "Checks",
                        "check": "review"}],
         "plan": [],
         "questions": [],

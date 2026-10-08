@@ -1,4 +1,4 @@
-# The fake Claude Code owns a solo card and takes a while before it writes hello.txt, so the
+# The fake Claude Code owns a solo task and takes a while before it writes hello.txt, so the
 # narrator has something to say across several intervals. The fake Codex is the narrator, and
 # every line it says carries NARRATOR-MARK-4412, so a test can look for it where it must never
 # go. Each narration answers the narrator's schema, `{"lines": [...]}`, and reports 13464 input
@@ -41,7 +41,7 @@ emit = '{"type":"thread.started","thread_id":"01a0ec49-6e10-7c90-868e-70bbd0cb33
 [[rule.step]]
 emit = '{"type":"turn.started"}'
 [[rule.step]]
-emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"lines\":[\"NARRATOR-MARK-4412 The owner is still writing hello.txt.\"]}"}}'
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"lines\":[\"NARRATOR-MARK-4412 The worker is still writing hello.txt.\"]}"}}'
 [[rule.step]]
 emit = '{"type":"turn.completed","usage":{"input_tokens":13464,"cached_input_tokens":11008,"cache_write_input_tokens":0,"output_tokens":12,"reasoning_output_tokens":0}}'
 [[rule.step]]

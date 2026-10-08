@@ -22,6 +22,8 @@ fn row(title: &str, state: CrewState, latest: &str) -> CrewRow {
         },
         state,
         title: title.into(),
+        label: None,
+        tries: 0,
         repo: "~/app".into(),
         run: None,
         worker: Some("antigravity-cli/gemini-3.6-pro".parse().unwrap()),
@@ -125,8 +127,8 @@ fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
     state.welcome = Some(crate::state::Welcome {
         version: "0.1.0".into(),
         repo: "~/app".into(),
-        preset: "solo".into(),
-        default_agent: None,
+        workflow: "solo".into(),
+        main_agent: None,
         agents: Vec::new(),
         runs_going: 1,
         runs_need_you: 0,
@@ -135,10 +137,7 @@ fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
     let held = state.runs.keys().next().unwrap().clone();
     let run_row = |id: &RunId, repo: &str| CrewRow {
         target: CrewTarget::Run { run: id.clone() },
-        run: Some(CrewRun {
-            id: id.clone(),
-            title: "A run".into(),
-        }),
+        run: Some(CrewRun::new(id.clone(), "A run")),
         repo: repo.into(),
         ..row("A run", CrewState::Working, "running")
     };
@@ -170,15 +169,27 @@ fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
     assert!(panel.rows.iter().any(|row| row.title == "Chat"));
 }
 
+fn agent_row(label: &str, state: CrewState, latest: &str) -> CrewRow {
+    CrewRow {
+        target: CrewTarget::Agent {
+            run: RunId::new("run-01").unwrap(),
+            session: SessionKey::numbered(1),
+        },
+        label: Some(label.into()),
+        run: Some(CrewRun::new(RunId::new("run-01").unwrap(), "Add due dates")),
+        ..row("Add due dates", state, latest)
+    }
+}
+
 #[test]
-fn the_agent_gives_way_first_and_times_line_up_at_the_right() {
+fn who_and_when_show_only_in_room_the_name_and_the_last_line_leave() {
     let rows = [
-        row(
-            "Explain the input handling",
-            CrewState::Ready,
-            "It reads keys",
+        agent_row(
+            "build:add-due",
+            CrewState::Done,
+            "Implemented optional due dates",
         ),
-        row("Fix it", CrewState::Done, "merged"),
+        agent_row("signoff:judge", CrewState::Done, "All 5 criteria met"),
     ];
     let refs: Vec<&CrewRow> = rows.iter().collect();
     let columns = |room| {
@@ -186,17 +197,176 @@ fn the_agent_gives_way_first_and_times_line_up_at_the_right() {
         let names: Vec<&str> = columns.iter().map(|c| c.heading).collect();
         (names.join(" "), list::total_width(&columns, draw::GAP))
     };
-    assert_eq!(columns(120), ("title worker latest ago".to_owned(), 120));
-    assert_eq!(columns(60), ("title worker latest ago".to_owned(), 60));
-    assert_eq!(columns(46), ("title latest ago".to_owned(), 46));
-    assert_eq!(columns(34), ("title latest".to_owned(), 34));
+    assert_eq!(columns(120), ("name latest worker ago".to_owned(), 120));
+    assert_eq!(columns(60), ("name latest ago".to_owned(), 60));
+    assert_eq!(columns(46), ("name latest".to_owned(), 46));
+    assert_eq!(columns(30), ("name latest".to_owned(), 30));
+}
+
+fn text_of(lines: &[draw::BodyLine]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|body| {
+            let text: String = body
+                .line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            text.trim_end().to_owned()
+        })
+        .collect()
+}
+
+/// The list: the run's name once with where it stands, each
+/// agent by its label and last line, retries folded, and the conversations under Sessions.
+#[test]
+fn the_list_reads_like_the_picture() {
+    let mut run = CrewRun::new(RunId::new("run-01").unwrap(), "Add due dates to the tasks");
+    run.name = Some("add-due-dates".into());
+    run.stands = Some(argonauts_core::crew_panel::RunStands {
+        state: CrewState::Done,
+        word: "merged".into(),
+        since: at(13),
+        spent: Some(argonauts_core::Spend {
+            cost_usd: 0.23,
+            cost_estimated: true,
+            ..Default::default()
+        }),
+    });
+    let agent = |label: &str, latest: &str, minutes_ago: i64, tries: u32| CrewRow {
+        run: Some(run.clone()),
+        updated: at(minutes_ago),
+        tries,
+        ..agent_row(label, CrewState::Done, latest)
+    };
+    let panel = CrewPanel {
+        repo: "~/app".into(),
+        rows: vec![
+            agent("plan:orchestrator", "accepted on its 6th try", 20, 6),
+            agent("build:add-due", "Implemented optional due dates", 16, 0),
+            agent(
+                "review:add-due",
+                "The implementation cleanly adds it",
+                15,
+                0,
+            ),
+            agent("signoff:judge", "All 5 criteria met", 14, 0),
+            CrewRow {
+                worker: Some("claude-code/opus".parse().unwrap()),
+                ..row("Add due dates to the tasks", CrewState::Ready, "Done.")
+            },
+        ],
+    };
+    let lines = draw::list_lines(
+        &panel.groups(CrewTab::All),
+        &panel.repo,
+        &[],
+        2,
+        51,
+        now(),
+        &Default::default(),
+        &Theme::dark(),
+    );
+    assert_eq!(
+        text_of(&lines),
+        [
+            "✓ add-due-dates · merged 13m ago · ~$0.23",
+            "    ✓ signoff:judge         All 5 criteria met",
+            "    ✓ review:add-due        The implementation cle…",
+            "  ❯ ✓ build:add-due         Implemented optional d…",
+            "    ✓ plan:orchestrator ×6  accepted on its 6th try",
+            "Sessions",
+            "    ◎ Add due dates to th…  Claude Code · enter co…",
+        ]
+    );
+    let rows: Vec<Option<usize>> = lines.iter().map(|line| line.row).collect();
+    assert_eq!(
+        rows,
+        [None, Some(0), Some(1), Some(2), Some(3), None, Some(4)]
+    );
+    // And its colors: the run's mark green and its name bold white, where it stands dim, the
+    // chosen row lavender from its pointer to its last line, and a conversation's ring
+    // lavender too.
+    let theme = Theme::dark();
+    let fg = |role| theme.style(role).fg;
+    let fg_of = |line: usize, part: &str| {
+        lines[line]
+            .line
+            .spans
+            .iter()
+            .find(|span| span.content.contains(part))
+            .and_then(|span| span.style.fg)
+    };
+    assert_eq!(fg_of(0, "✓"), fg(Role::Success));
+    assert_eq!(fg_of(0, "add-due-dates"), fg(Role::Bright));
+    assert_eq!(fg_of(0, "merged"), fg(Role::Dim));
+    assert_eq!(fg_of(1, "✓"), fg(Role::Success));
+    for part in ["❯", "✓", "build:add-due", "Implemented"] {
+        assert_eq!(fg_of(3, part), fg(Role::Card), "{part}");
+    }
+    assert_eq!(fg_of(4, "×6"), fg(Role::Dim));
+    assert_eq!(fg_of(5, "Sessions"), fg(Role::Dim));
+    assert_eq!(fg_of(6, "◎"), fg(Role::Card));
+}
+
+/// A run with none of its agents listed, such as another repo's, is one row: its heading.
+#[test]
+fn a_run_listed_whole_is_its_own_heading_and_another_repo_is_named() {
+    let whole = |id: &str, repo: &str, word: &str, state: CrewState| {
+        let mut run = CrewRun::new(RunId::new(id).unwrap(), "Tidy the README");
+        run.stands = Some(argonauts_core::crew_panel::RunStands {
+            state,
+            word: word.into(),
+            since: at(120),
+            spent: None,
+        });
+        CrewRow {
+            target: CrewTarget::Run {
+                run: RunId::new(id).unwrap(),
+            },
+            run: Some(run),
+            repo: repo.into(),
+            ..row("Tidy the README", state, word)
+        }
+    };
+    let panel = CrewPanel {
+        repo: "~/app".into(),
+        rows: vec![
+            whole("run-02", "~/app", "merged", CrewState::Done),
+            whole("run-07", "~/api", "running", CrewState::Working),
+        ],
+    };
+    let draw = |selected| {
+        text_of(&draw::list_lines(
+            &panel.groups(CrewTab::All),
+            &panel.repo,
+            &[],
+            selected,
+            60,
+            now(),
+            &Default::default(),
+            &Theme::dark(),
+        ))
+    };
+    assert_eq!(
+        draw(1),
+        [
+            "~/app",
+            "✓ Tidy the README · merged 2h ago",
+            "",
+            "~/api",
+            "❯ Tidy the README · running",
+        ]
+    );
+    assert_eq!(draw(0)[1], "❯ Tidy the README · merged 2h ago");
 }
 
 #[test]
 fn long_paths_in_the_details_are_cut_in_the_middle() {
     let mut row = row("Fix it", CrewState::Working, "Editing");
     row.repo = "/Users/you/projects/github/argonauts/playground/demo/repo-c100".into();
-    row.details.branch = Some("argonauts/run-20261002-101116-dd4b/card-002".into());
+    row.details.branch = Some("argonauts/run-20261002-101116-dd4b/task-002".into());
     let lines = draw::details_lines(&row, false, 40, &Default::default(), &Theme::dark());
     let text: Vec<String> = lines
         .iter()
@@ -213,7 +383,7 @@ fn long_paths_in_the_details_are_cut_in_the_middle() {
         "{text:#?}"
     );
     assert!(
-        text.contains(&"Branch   argonauts/…/card-002".to_owned()),
+        text.contains(&"Branch   argonauts/…/task-002".to_owned()),
         "{text:#?}"
     );
     assert!(

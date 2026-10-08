@@ -1,4 +1,4 @@
-//! The Learning pickers: `/records`, `/recipes`, `/skills`, and `/memory`. One view draws all
+//! The Learning pickers: `/records`, `/learned`, `/skills`, and `/memory`. One view draws all
 //! four from the app's [`LearningView`]: the area's tabs at the right of the name row with a
 //! Settings tab after them, the rows as columns, the selected row's detail under them, and its
 //! actions in the footer. Tab and ⇧Tab switch tabs; a letter acts on the row. In the Settings
@@ -186,9 +186,13 @@ impl LearningPicker {
         for (i, row) in cells.iter().enumerate() {
             let selected = i == self.list.selected;
             let mut spans = vec![if selected {
-                Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
+                Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
             } else if waiting.get(i).copied().unwrap_or(false) {
-                Span::styled(format!("{} ", marks.needs_you), theme.style(Role::Warning))
+                // Waiting on you, in the color that state has in every view.
+                Span::styled(
+                    format!("{} ", marks.needs_you),
+                    theme.style(Role::StateNeedsYou),
+                )
             } else {
                 Span::raw("  ")
             }];
@@ -197,7 +201,7 @@ impl LearningPicker {
                     spans.push(Span::raw(" ".repeat(GAP)));
                 }
                 let style = match c {
-                    0 if selected => theme.style(Role::Label),
+                    0 if selected => theme.style(Role::Card),
                     0 => theme.style(Role::Text),
                     _ => dim,
                 };

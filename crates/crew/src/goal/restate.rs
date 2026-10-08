@@ -103,7 +103,7 @@ pub async fn restate(
 pub fn restaters(host: &Host, call: &StepCall, mode: RunMode) -> Vec<WorkerRef> {
     let settings = host.settings();
     if mode == RunMode::Solo {
-        return vec![settings.default_agent.clone()];
+        return vec![settings.main_agent.clone()];
     }
     let named = match &call.step.workers {
         StepWorkers::Named(workers) if !workers.is_empty() => workers.clone(),

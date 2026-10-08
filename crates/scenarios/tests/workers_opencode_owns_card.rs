@@ -13,8 +13,8 @@ fn workers_opencode_owns_card() -> anyhow::Result<()> {
     let scenario = scenario("opencode-owner.toml")?;
     write_global_config(
         &scenario,
-        "preset = \"solo\"\n\
-         default_agent = \"opencode/ollama/fake-model\"\n\n\
+        "workflow = \"solo\"\n\
+         main_agent = \"opencode/ollama/fake-model\"\n\n\
          [agents.opencode]\nenabled = true\n",
     )?;
 
@@ -47,7 +47,7 @@ fn workers_opencode_owns_card() -> anyhow::Result<()> {
     assert!(!args.iter().any(|arg| arg == "--continue"), "{args:?}");
     assert!(
         runs[0].cwd.starts_with(scenario.repo.home()),
-        "the owner ran outside its worktree: {}",
+        "the worker ran outside its worktree: {}",
         runs[0].cwd.display()
     );
 

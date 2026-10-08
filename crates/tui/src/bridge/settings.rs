@@ -3,7 +3,7 @@
 use argonauts_core::KeyScheme;
 use argonauts_core::app::AppEvent;
 use argonauts_core::settings::ui::UiSettings;
-use argonauts_core::settings::ui::{ColorChoice, Motion, Theme as ThemeChoice};
+use argonauts_core::settings::ui::{ColorChoice, Motion};
 
 use crate::text::set_ambiguous_width;
 use crate::theme::{Brightness, ColorEnv, ColorLevel, Glyphs, Theme};
@@ -47,25 +47,26 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
 /// The palette for these settings. `background_is_light` is the terminal's answer to OSC 11,
 /// when it gave one in time, for `ui.theme = "auto"`.
 pub fn theme_for(ui: &UiSettings, env: &ColorEnv, background_is_light: Option<bool>) -> Theme {
-    let brightness = match ui.theme {
-        ThemeChoice::Dark => Brightness::Dark,
-        ThemeChoice::Light => Brightness::Light,
-        ThemeChoice::Auto => background_is_light
-            .map(|light| {
-                if light {
-                    Brightness::Light
-                } else {
-                    Brightness::Dark
-                }
-            })
-            .or_else(|| Brightness::detect(env))
-            .unwrap_or_default(),
+    // The daltonized, ANSI, and custom palettes aren't drawn yet, so each draws as its base:
+    // a custom theme as auto until its file is read.
+    let light = ui.theme.is_light().or(background_is_light);
+    let brightness = match light {
+        Some(true) => Brightness::Light,
+        Some(false) => Brightness::Dark,
+        None => Brightness::detect(env).unwrap_or_default(),
     };
     let mut theme = Theme::for_brightness(brightness);
     if let Some(accent) = ui.accent.as_deref().and_then(parse_hex) {
         theme = theme.with_accent(accent);
     }
     let mut theme = theme.with_level(color_level(ui.color, env));
+    // Your own colors go on last, fitted to the level. One that can't be used leaves the
+    // theme's own in place.
+    theme.apply_colors(
+        ui.colors
+            .iter()
+            .map(|(role, color)| (role.as_str(), color.as_str())),
+    );
     theme.reduced_motion = ui.motion == Motion::Reduced;
     theme.glyphs = Glyphs::for_settings(ui.glyphs, ui.ambiguous_width);
     theme
@@ -106,6 +107,7 @@ mod tests {
 
     use argonauts_core::Verbosity;
     use argonauts_core::settings::ui::Glyphs as GlyphSet;
+    use argonauts_core::settings::ui::Theme as ThemeChoice;
     use ratatui::style::Color;
 
     use super::*;
@@ -122,6 +124,25 @@ mod tests {
             term: Some(term.into()),
             colorfgbg: None,
         }
+    }
+
+    #[test]
+    fn your_own_colors_go_over_the_theme_s_and_a_bad_one_changes_nothing() {
+        use argonauts_core::settings::ui::ColorText;
+        let terminal = env("xterm-256color");
+        let plain = theme_for(&UiSettings::default(), &terminal, Some(false));
+        let mut ui = UiSettings::default();
+        ui.colors
+            .insert("agent-orange".to_owned(), ColorText::from("agent-pink"));
+        ui.colors
+            .insert("bar-fill".to_owned(), ColorText::from("#123456"));
+        ui.colors
+            .insert("no-such-role".to_owned(), ColorText::from("#123456"));
+        let theme = theme_for(&ui, &terminal, Some(false));
+        assert_eq!(theme.linked_to(Role::AgentOrange), Some(Role::AgentPink));
+        assert_eq!(theme.style(Role::AgentOrange), plain.style(Role::AgentPink));
+        assert_ne!(theme.style(Role::BarFill), plain.style(Role::BarFill));
+        assert_eq!(theme.style(Role::Accent), plain.style(Role::Accent));
     }
 
     #[test]
@@ -151,6 +172,22 @@ mod tests {
         assert_eq!(
             theme_for(&fixed, &terminal, Some(true)).brightness,
             Brightness::Dark
+        );
+        let light_ansi = UiSettings {
+            theme: ThemeChoice::LightAnsi,
+            ..UiSettings::default()
+        };
+        assert_eq!(
+            theme_for(&light_ansi, &terminal, Some(false)).brightness,
+            Brightness::Light
+        );
+        let custom = UiSettings {
+            theme: ThemeChoice::Custom("harbor".into()),
+            ..UiSettings::default()
+        };
+        assert_eq!(
+            theme_for(&custom, &terminal, Some(true)).brightness,
+            Brightness::Light
         );
     }
 

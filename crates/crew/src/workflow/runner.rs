@@ -50,15 +50,15 @@ pub fn workflow_for_run(host: &Host) -> EngineResult<(Option<WorkflowRef>, Workf
         return Ok(running);
     }
     let settings = host.settings();
-    let configured = lookup(host, settings.workflow.as_str());
+    let configured = lookup(host, settings.phases.as_str());
     if host.read(run_mode) != Some(RunMode::Solo) {
-        return Ok((Some(settings.workflow.clone()), configured?));
+        return Ok((Some(settings.phases.clone()), configured?));
     }
     // A crew workflow that can't be found doesn't matter to a solo run that wouldn't use it.
     if let Ok(workflow) = configured
         && builds_goal(&workflow)
     {
-        return Ok((Some(settings.workflow.clone()), workflow));
+        return Ok((Some(settings.phases.clone()), workflow));
     }
     let name = WorkflowRef::new(solo_workflow(settings));
     let workflow = lookup(host, name.as_str())?;
@@ -101,7 +101,7 @@ pub fn solo_workflow(settings: &Settings) -> &'static str {
     if settings.solo.attempts > 1 {
         "best-of-n"
     } else if settings.solo.review {
-        "solo-reviewed"
+        "maker-checker"
     } else {
         "solo"
     }
@@ -110,7 +110,7 @@ pub fn solo_workflow(settings: &Settings) -> &'static str {
 /// Where a solo card that escalates goes: the preset's workflow, unless it builds the solo card
 /// too, and then the default crew workflow.
 pub fn crew_workflow(host: &Host) -> WorkflowRef {
-    let configured = &host.settings().workflow;
+    let configured = &host.settings().phases;
     match lookup(host, configured.as_str()) {
         Ok(workflow) if builds_goal(&workflow) => WorkflowRef::new(DEFAULT_CREW_WORKFLOW),
         _ => configured.clone(),
@@ -118,7 +118,7 @@ pub fn crew_workflow(host: &Host) -> WorkflowRef {
 }
 
 /// Where the crew goes when the preset's workflow is a solo one.
-pub const DEFAULT_CREW_WORKFLOW: &str = "peer-crew";
+pub const DEFAULT_CREW_WORKFLOW: &str = "council";
 
 /// Whether any step of the workflow builds the solo card from the goal.
 pub fn builds_goal(workflow: &Workflow) -> bool {
@@ -176,9 +176,11 @@ pub fn lookup(host: &Host, name: &str) -> EngineResult<Workflow> {
     let stem = name.strip_suffix(".star").unwrap_or(name);
     let file = format!("{stem}.yaml");
     let star = format!("{stem}.star");
+    // A project's file that waits for your trust is passed over, so a built-in stays in place.
+    let waiting = crate::prompts::files::waiting(host);
     for dir in workflow_dirs(host) {
         let place = dir.join(&file);
-        if stem == name {
+        if stem == name && !waiting.contains(&place) {
             match std::fs::read_to_string(&place) {
                 Ok(text) => {
                     return yaml::parse(&text).map_err(|err| {
@@ -190,7 +192,7 @@ pub fn lookup(host: &Host, name: &str) -> EngineResult<Workflow> {
             }
         }
         let place = dir.join(&star);
-        if place.is_file() {
+        if place.is_file() && !waiting.contains(&place) {
             return argonauts_learning::recipes::loops::build_file(&place)
                 .map_err(|err| EngineError::Refused(format!("{}: {err}", place.display())));
         }
@@ -208,7 +210,7 @@ fn recipe_workflow(host: &Host, path: &Path) -> EngineResult<Workflow> {
     let refused = |why: String| EngineError::Refused(format!("{}: {why}", path.display()));
     let Some(file) = crate::retro::recipe::recipe_file(&host.repo().run_dir, path) else {
         return Err(refused(
-            "a workflow named by its full path must be a file beside this run's recipe".to_owned(),
+            "a phases file named by its full path must be a file beside this run's learned workflow".to_owned(),
         ));
     };
     if file
@@ -223,8 +225,8 @@ fn recipe_workflow(host: &Host, path: &Path) -> EngineResult<Workflow> {
 
 /// Workers a workflow may name: the default agent, the crew, and every role's workers.
 pub fn allowed_workers(settings: &Settings) -> Vec<WorkerRef> {
-    let mut allowed = vec![settings.default_agent.clone()];
-    allowed.extend(settings.crew.iter().cloned());
+    let mut allowed = vec![settings.main_agent.clone()];
+    allowed.extend(settings.crew.members());
     for role in settings.roles.values() {
         allowed.extend(role.workers.iter().cloned());
     }
@@ -387,9 +389,8 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
             _ => {}
         }
         let depth = host.read(|state| state.workflows.depth(id));
-        // A goal's attempts are planned from its checks instead.
         let adapts = host.settings().workflows.adapt_at_phase_ends
-            && host.read(|state| crew_run(state, id) && !pursue::pursuing(state));
+            && host.read(|state| crew_run(state, id) && !crate::script::runs(state, id));
         let mut adapted = BTreeSet::new();
         loop {
             // Declared before its first phase, and again after an approved change.
@@ -414,11 +415,20 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
             // Asked when the next phase is about to begin, so a recovered run that stopped
             // between two phases still gets the chance, and an approved change takes effect
             // from this phase.
-            if next > 0 && !started && adapts && adapted.insert(next) {
+            // A goal's later rounds are planned from its checks instead.
+            if next > 0
+                && !started
+                && adapts
+                && !host.read(pursue::plans_its_rounds)
+                && adapted.insert(next)
+            {
                 change::adapt_at_phase_end(host, id, next - 1).await?;
                 continue;
             }
-            pursue::begin_attempt(host, id, next)?;
+            // A goal's check may have gone in before this very phase.
+            if pursue::begin_attempt(host, id, next)? {
+                continue;
+            }
             for (index, step) in phase.steps.iter().enumerate() {
                 let call = StepCall {
                     at: StepAt {
@@ -455,13 +465,16 @@ pub fn run<'a>(host: &'a Host, id: &'a WorkflowId) -> BoxFuture<'a, EngineResult
 /// Records what the workflow declares, its name, description, and phases, unless the log
 /// already holds this version's declaration. Only declared phases exist in the views.
 fn declare(host: &Host, id: &WorkflowId) -> EngineResult<()> {
-    let Some(declared) = host.read(|state| {
+    let Some(mut declared) = host.read(|state| {
         let record = state.workflows.by_id.get(id)?;
         (record.declared.as_ref() != Some(&record.version))
             .then(|| WorkflowDeclared::of(id, &record.workflow))
     }) else {
         return Ok(());
     };
+    if host.read(|state| crate::script::runs(state, id)) {
+        declared.required = crate::script::required::names(host);
+    }
     host.record(
         None,
         None,

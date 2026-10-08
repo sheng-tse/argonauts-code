@@ -34,7 +34,7 @@ fn solo_preset(config: &'static str) -> HarnessOptions {
             repo.commit_all("money").unwrap();
             std::fs::write(
                 repo.global_config(),
-                format!("{config}\n[triage]\nforce = \"solo\"\n"),
+                format!("{config}\n[solo_or_crew]\nforce = \"solo\"\n"),
             )
             .unwrap();
         })),
@@ -205,7 +205,7 @@ async fn slash_solo_is_direct_and_checked_solo_is_a_run() {
     assert_eq!(specs[0].access, Access::Direct);
     assert!(conductor.starts().is_empty());
 
-    for checked in ["[solo]\nstyle = \"checked\"\n", "[solo]\nreview = true\n"] {
+    for checked in ["[solo]\nkind = \"checked\"\n", "[solo]\nreview = true\n"] {
         let harness = Harness::start_with(solo(checked)).await;
         harness.send(slash.clone()).await;
         let conductor = harness.conductor.clone();
@@ -343,9 +343,9 @@ async fn auto_mode_asks_nothing() {
 /// Full auto asks nothing either: with its switch on, the session gets no approval tool though
 /// `solo.asks` would have it ask as its CLI does, and no card comes.
 #[tokio::test]
-async fn full_auto_asks_nothing() {
+async fn autopilot_asks_nothing() {
     let mut harness = Harness::start_with(solo_preset(
-        "[approvals]\nfull_auto = true\n[solo]\nasks = \"like_cli\"\n",
+        "[approvals]\nautopilot = true\n[solo]\nasks = \"like_cli\"\n",
     ))
     .await;
     harness.agent.push(FakeSession::completed(ANSWER));
@@ -372,7 +372,7 @@ async fn full_auto_asks_nothing() {
 #[tokio::test]
 async fn running_out_hands_the_turn_to_the_next_agent() {
     let mut options = solo_preset("");
-    options.flags = vec![r#"roles.default.handoff.fallback=["codex"]"#.to_owned()];
+    options.flags = vec![r#"fallback.main.order=["codex"]"#.to_owned()];
     let mut harness = Harness::start_with(options).await;
     let codex = harness
         .directory
@@ -392,7 +392,7 @@ async fn running_out_hands_the_turn_to_the_next_agent() {
         Some(ChatEvent::HandedOff { from, to, told, .. }) => Some((from, to, told)),
         _ => None,
     });
-    let (from, to, told) = handed.expect("a handoff line");
+    let (from, to, told) = handed.expect("a fallback line");
     assert_eq!(
         (from.worker.as_str(), to.worker.as_str()),
         ("claude-code", "codex")
@@ -418,8 +418,8 @@ async fn running_out_hands_the_turn_to_the_next_agent() {
 /// it changed.
 #[tokio::test]
 async fn with_handoff_off_the_turn_ends_and_says_what_changed() {
-    let mut options = solo_preset("[handoff]\nmode = \"wait\"\n");
-    options.flags = vec![r#"roles.default.handoff.fallback=["codex"]"#.to_owned()];
+    let mut options = solo_preset("[fallback]\nmode = \"wait\"\n");
+    options.flags = vec![r#"fallback.main.order=["codex"]"#.to_owned()];
     let mut harness = Harness::start_with(options).await;
     let codex = harness
         .directory
@@ -488,7 +488,7 @@ async fn rewind_puts_back_a_direct_turns_files() {
 #[tokio::test]
 async fn agys_refused_commands_are_offered_after_its_answer() {
     let mut harness = Harness::start_with(solo_preset(
-        "default_agent = \"antigravity-cli\"\n[approvals.goal]\nmode = \"supervised\"\n",
+        "main_agent = \"antigravity-cli\"\n[approvals.goal]\nmode = \"supervised\"\n",
     ))
     .await;
     let refused =
@@ -544,13 +544,24 @@ async fn agys_refused_commands_are_offered_after_its_answer() {
     );
 }
 
-/// `argonauts_start_run`: refused when your message asked for no run, and otherwise a run
-/// starts for your message as you typed it, with its checks, so the Triage line says what
-/// was followed. A word picked out of your message, or the agent's own restatement, starts
-/// nothing.
+/// One of the main session's tools, called by the session of the turn in flight.
+fn main_tool(name: &str, arguments: Value) -> Ask {
+    Ask::Tool {
+        name: name.to_owned(),
+        arguments,
+    }
+}
+
+const START_WORKFLOW: &str = "argonauts_start_workflow";
+
+/// `argonauts_start_workflow` in solo: refused when your message asked for no run, and
+/// otherwise a run starts for your message as you typed it, with its checks, so the run
+/// says what was followed. A word picked out of your message starts nothing, and the agent's
+/// own restatement only ever follows your words, marked as its own.
 #[tokio::test]
-async fn the_main_session_starts_a_run_only_when_you_asked_for_one() {
+async fn in_solo_the_main_session_starts_a_run_only_when_you_asked_for_one() {
     let harness = Harness::start_with(solo_preset("")).await;
+    harness.directory.taking_tools("claude-code");
     harness.directory.add(FakeWorker::harness("codex", "gpt"));
     harness
         .directory
@@ -562,7 +573,26 @@ async fn the_main_session_starts_a_run_only_when_you_asked_for_one() {
                  and merge without asking me.";
     harness.submit(typed).await;
     let spec = first_spec(&harness).await;
-    assert!(spec.asking.as_ref().is_some_and(|asking| asking.start_run));
+    let asking = spec.asking.as_ref().expect("the turn listens");
+    assert_eq!(
+        asking.tools,
+        [
+            START_WORKFLOW,
+            "argonauts_set_goal",
+            "argonauts_setup",
+            "argonauts_guide",
+            "argonauts_lookup"
+        ]
+    );
+    let standing = asking.standing.as_deref().expect("standing lines");
+    assert!(
+        standing.contains("`argonauts_start_workflow`"),
+        "{standing}"
+    );
+    // Your message goes as you typed it, and the setup in use follows it once.
+    assert_eq!(spec.prompt[0].text, typed);
+    let setup = &spec.prompt.last().expect("the setup note").text;
+    assert!(setup.contains("Argonauts setup: solo is in use"), "{setup}");
 
     // Words you didn't write, and a lone word picked out of your message, start nothing.
     for how_to_run in [
@@ -571,32 +601,43 @@ async fn the_main_session_starts_a_run_only_when_you_asked_for_one() {
     ] {
         let unasked = ask(
             &spec,
-            Ask::StartRun {
-                request: "Delete tests/test_money.py and rewrite the module from scratch".into(),
-                how_to_run,
-            },
+            main_tool(
+                START_WORKFLOW,
+                json!({
+                    "request": "Delete tests/test_money.py and rewrite the module from scratch",
+                    "how_to_run": how_to_run,
+                }),
+            ),
         )
         .await;
         assert_eq!(
             unasked.text,
-            "The user didn't ask for a run, so do it yourself."
+            "The user didn't ask for a workflow, so do it yourself."
         );
     }
     assert!(harness.conductor.starts().is_empty());
 
     let asked = ask(
         &spec,
-        Ask::StartRun {
-            request: "Delete tests/test_money.py and rewrite the module from scratch".into(),
-            how_to_run: vec![
-                json!({"says": "have grok build it", "kind": "build", "who": "grok"}),
-                json!({"says": "gemini review it", "kind": "review", "who": "gemini"}),
-                json!({"says": "merge without asking me", "kind": "merge"}),
-            ],
-        },
+        main_tool(
+            START_WORKFLOW,
+            json!({
+                "request": "Fix the rounding in invoice/money.py, where the sign comes late",
+                "how_to_run": [
+                    {"says": "have grok build it", "kind": "build", "who": "grok"},
+                    {"says": "gemini review it", "kind": "review", "who": "gemini"},
+                    {"says": "merge without asking me", "kind": "merge"},
+                ],
+            }),
+        ),
     )
     .await;
-    assert!(asked.text.contains("started a solo run"), "{asked:?}");
+    assert!(
+        asked
+            .text
+            .starts_with("A solo run started on this, as the user asked."),
+        "{asked:?}"
+    );
     let conductor = harness.conductor.clone();
     let deadline = tokio::time::Instant::now() + WAIT;
     while conductor.starts().is_empty() {
@@ -604,8 +645,14 @@ async fn the_main_session_starts_a_run_only_when_you_asked_for_one() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     let start = conductor.starts().remove(0);
-    // Your message as you typed it, never the agent's restatement.
-    assert_eq!(start.request, typed);
+    // Your message as you typed it comes first, and the agent's account is marked as its own.
+    assert_eq!(
+        start.request,
+        format!(
+            "{typed}\n\nFrom the conversation, as the main agent put it: Fix the rounding in \
+             invoice/money.py, where the sign comes late"
+        )
+    );
     assert_eq!(start.mode, RunMode::Solo);
     assert!(start.triage.as_ref().is_some_and(|t| t.as_you_asked()));
     let outcome = |says: &str| {
@@ -646,15 +693,22 @@ async fn the_main_session_starts_a_run_only_when_you_asked_for_one() {
     // One run a turn.
     let again = ask(
         &spec,
-        Ask::StartRun {
-            request: String::new(),
-            how_to_run: vec![
-                json!({"says": "gemini review it", "kind": "review", "who": "gemini"}),
-            ],
-        },
+        main_tool(
+            START_WORKFLOW,
+            json!({
+                "request": "",
+                "how_to_run": [{"says": "gemini review it", "kind": "review", "who": "gemini"}],
+            }),
+        ),
     )
     .await;
-    assert!(again.text.starts_with("A run already started"), "{again:?}");
+    assert!(
+        again.text.starts_with("A workflow already started"),
+        "{again:?}"
+    );
+    // A tool nothing registers is an error the session can read, and starts nothing.
+    let unknown = ask(&spec, main_tool("argonauts_nothing", json!({}))).await;
+    assert!(unknown.is_error, "{unknown:?}");
     assert_eq!(harness.conductor.starts().len(), 1);
     harness.exit().await;
 }
@@ -687,7 +741,7 @@ async fn a_triage_pick_runs_direct_only_when_its_style_says_so() {
         ..HarnessOptions::default()
     };
 
-    let mut harness = Harness::start_with(styled("[triage]\nsolo_style = \"direct\"\n")).await;
+    let mut harness = Harness::start_with(styled("[solo_or_crew]\nsolo_kind = \"direct\"\n")).await;
     harness.agent.push(change());
     harness.agent.push(FakeSession::completed(ANSWER));
     harness.submit(TASK).await;
@@ -769,7 +823,7 @@ async fn a_vendor_command_in_a_direct_conversation_works_in_your_checkout() {
 #[tokio::test]
 async fn every_change_with_codex_runs_in_a_checked_copy() {
     let mut harness = Harness::start_with(solo_preset(
-        "default_agent = \"codex\"\n[approvals.goal]\nmode = \"supervised\"\n[solo]\nasks = \"every_change\"\n",
+        "main_agent = \"codex\"\n[approvals.goal]\nmode = \"supervised\"\n[solo]\nasks = \"every_change\"\n",
     ))
     .await;
     let codex = harness
@@ -933,11 +987,11 @@ async fn running_out_asks_who_carries_it_on_when_it_should() {
         Arc::new(registry)
     };
     for (config, registry, pick) in [
-        ("[handoff]\nmode = \"ask\"\n", None, "codex"),
+        ("[fallback]\nmode = \"ask\"\n", None, "codex"),
         ("", Some(api_key()), "stop"),
     ] {
         let mut options = solo_preset(config);
-        options.flags = vec![r#"roles.default.handoff.fallback=["codex"]"#.to_owned()];
+        options.flags = vec![r#"fallback.main.order=["codex"]"#.to_owned()];
         options.registry = registry;
         let mut harness = Harness::start_with(options).await;
         let codex = harness
@@ -1006,6 +1060,98 @@ fn registry_is_paid(choice: &argonauts_core::app::AppChoice) -> bool {
 /// Ignored files a turn writes: nothing kept how they were, so the turn's line and `/rewind`
 /// list them as ones it can't put back, and `/rewind` never removes them. The tracked file goes
 /// back.
+/// With our sandbox off, a shell command that writes Argonauts' own files has what it named
+/// put back too. A file it didn't name is only said.
+#[tokio::test]
+async fn a_shell_command_that_writes_argonauts_own_files_is_put_back_too() {
+    let options = HarnessOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            repo.write(".argonauts/config.toml", "workflow = \"solo\"\n")
+                .unwrap();
+            repo.write(".argonauts/notes.md", "mine\n").unwrap();
+            repo.commit_all("start").unwrap();
+            std::fs::write(
+                repo.global_config(),
+                "[triage]\nforce = \"solo\"\n[sandbox]\nmode = \"tool\"\n",
+            )
+            .unwrap();
+        })),
+        ..HarnessOptions::default()
+    };
+    let mut harness = Harness::start_with(options).await;
+    let root = harness.repo.root().to_owned();
+    harness.agent.respond(|spec: &SessionSpec| {
+        let root = &spec.workdir;
+        std::fs::write(root.join(".argonauts/config.toml"), "workflow = \"x\"\n").unwrap();
+        std::fs::write(root.join(".argonauts/notes.md"), "a script's\n").unwrap();
+        FakeSession::completed(ANSWER).with_event(tool(
+            "t1",
+            "Bash",
+            json!({"command": "cd .argonauts && sed -i '' s/solo/x/ config.toml"}),
+        ))
+    });
+    harness.submit("Use the x workflow.").await;
+    harness.until(turn_ended).await;
+    harness
+        .until(|event| {
+            matches!(event, AppEvent::Notice { text, .. }
+                if text.starts_with("This turn edited .argonauts/config.toml, which only a setup"))
+        })
+        .await;
+    assert_eq!(
+        read(&root, ".argonauts/config.toml"),
+        "workflow = \"solo\"\n"
+    );
+    // Nothing named it, so it stays, and a line says it changed.
+    assert_eq!(read(&root, ".argonauts/notes.md"), "a script's\n");
+    harness.exit().await;
+}
+
+/// With our sandbox off, an edit the main session made to Argonauts' own files goes back when
+/// its turn ends, and a line says so: a setup changes them.
+#[tokio::test]
+async fn an_edit_to_argonauts_own_files_goes_back_when_our_sandbox_is_off() {
+    let options = HarnessOptions {
+        prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+            repo.write(".argonauts/notes.md", "mine\n").unwrap();
+            repo.write("app.py", "print(1)\n").unwrap();
+            repo.commit_all("start").unwrap();
+            std::fs::write(
+                repo.global_config(),
+                "[solo_or_crew]\nforce = \"solo\"\n[sandbox]\nmode = \"tool\"\n",
+            )
+            .unwrap();
+        })),
+        ..HarnessOptions::default()
+    };
+    let mut harness = Harness::start_with(options).await;
+    let root = harness.repo.root().to_owned();
+    harness.agent.respond(|spec: &SessionSpec| {
+        let root = &spec.workdir;
+        std::fs::write(root.join(".argonauts/notes.md"), "the model's\n").unwrap();
+        std::fs::write(root.join("app.py"), "print(2)\n").unwrap();
+        FakeSession::completed(ANSWER)
+            .with_event(tool(
+                "t1",
+                "Write",
+                json!({"file_path": ".argonauts/notes.md"}),
+            ))
+            .with_event(tool("t2", "Edit", json!({"file_path": "app.py"})))
+    });
+    harness.submit("Print 2, and note it.").await;
+    harness.until(turn_ended).await;
+    let told = harness
+        .until(|event| {
+            matches!(event, AppEvent::Notice { text, .. }
+                if text.starts_with("This turn edited .argonauts/notes.md, which only a setup changes"))
+        })
+        .await;
+    assert!(matches!(told, AppEvent::Notice { .. }));
+    assert_eq!(read(&root, ".argonauts/notes.md"), "mine\n");
+    assert_eq!(read(&root, "app.py"), "print(2)\n");
+    harness.exit().await;
+}
+
 #[tokio::test]
 async fn rewind_lists_the_ignored_files_a_turn_wrote_and_leaves_them() {
     let options = HarnessOptions {
@@ -1015,7 +1161,7 @@ async fn rewind_lists_the_ignored_files_a_turn_wrote_and_leaves_them() {
             repo.write("app.py", "print(1)\n").unwrap();
             repo.commit_all("start").unwrap();
             repo.write(".env", "TOKEN=yours\n").unwrap();
-            std::fs::write(repo.global_config(), "[triage]\nforce = \"solo\"\n").unwrap();
+            std::fs::write(repo.global_config(), "[solo_or_crew]\nforce = \"solo\"\n").unwrap();
         })),
         ..HarnessOptions::default()
     };
@@ -1159,47 +1305,53 @@ async fn a_question_waiting_on_you_is_no_stall() {
         }
         harness.until(turn_ended).await;
         let events = harness.exit().await;
-        assert_eq!(shows_a_stall(&events), !card_open, "card open: {card_open}");
+        assert_eq!(shows_a_stall(&events), !card_open, "task open: {card_open}");
     }
 }
 
 /// The solo preset sends what you type to the main session, but a command that names a run
-/// still starts it: `/workflow` a crew run that's a workflow, and `/goal` one that's a goal.
-/// Neither becomes a direct turn (commands come first).
+/// still starts it: `/workflow` starts a crew run and never becomes a direct turn
+/// (commands come first). `/goal` names no run: it sets a condition, and starts nothing.
 #[tokio::test]
-async fn under_the_solo_preset_workflow_and_goal_start_their_runs() {
-    for (command, style) in [
-        (
-            SlashCommand::Workflow {
-                task: Some("fix the typo in the README".to_owned()),
-            },
-            "workflow",
-        ),
-        (
-            SlashCommand::Goal {
+async fn under_the_solo_preset_workflow_starts_its_run_and_goal_starts_nothing() {
+    let harness = Harness::start_with(solo_preset("")).await;
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::Goal {
                 text: Some("every test passes".to_owned()),
             },
-            "goal",
-        ),
-    ] {
-        let harness = Harness::start_with(solo_preset("")).await;
-        harness.send(UiCommand::Slash { command }).await;
-        let conductor = harness.conductor.clone();
-        let deadline = tokio::time::Instant::now() + WAIT;
-        while conductor.starts().is_empty() {
-            assert!(tokio::time::Instant::now() < deadline, "{style}");
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        let start = conductor.starts().remove(0);
-        assert_eq!(start.mode, RunMode::Crew, "{style}");
+        })
+        .await;
+    harness
+        .send(UiCommand::Slash {
+            command: SlashCommand::WorkflowRun {
+                task: Some("fix the typo in the README".to_owned()),
+            },
+        })
+        .await;
+    let conductor = harness.conductor.clone();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while conductor.starts().is_empty() {
         assert!(
-            start
-                .overrides
-                .contains(&format!("workflows.style=\"{style}\"")),
-            "{style}: {:?}",
-            start.overrides
+            tokio::time::Instant::now() < deadline,
+            "/workflow started no run"
         );
-        assert!(harness.agent.specs().is_empty(), "{style}: no direct turn");
-        harness.exit().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    let starts = conductor.starts();
+    let [start] = starts.as_slice() else {
+        panic!("one run, the workflow's: {starts:?}");
+    };
+    assert_eq!(start.mode, RunMode::Crew);
+    assert_eq!(start.request, "fix the typo in the README");
+    // The run carries the goal set before it.
+    assert!(
+        start
+            .overrides
+            .contains(&"goal.until=\"every test passes\"".to_owned()),
+        "{:?}",
+        start.overrides
+    );
+    assert!(harness.agent.specs().is_empty(), "no direct turn");
+    harness.exit().await;
 }

@@ -105,7 +105,7 @@ pub fn decision_lines(state: &RunState) -> Vec<String> {
 pub fn crew_for(settings: &Settings, role: RoleName) -> Vec<WorkerRef> {
     let candidates = roles::candidates(settings, role);
     if candidates.is_empty() {
-        settings.crew.clone()
+        settings.crew.members()
     } else {
         candidates
     }
@@ -199,7 +199,7 @@ pub fn phase_started(host: &Host) -> EngineResult<()> {
     if started {
         return Ok(());
     }
-    let lead = host.settings().default_agent.clone();
+    let lead = host.settings().main_agent.clone();
     host.record(
         None,
         None,
@@ -216,7 +216,7 @@ pub fn phase_started(host: &Host) -> EngineResult<()> {
 pub fn phase_finished(host: &Host, summary: &str) -> EngineResult<()> {
     let lead = host
         .read(|state| lead::phase_lead(state, host.settings()))
-        .unwrap_or_else(|| host.settings().default_agent.clone());
+        .unwrap_or_else(|| host.settings().main_agent.clone());
     host.record(
         None,
         None,
@@ -321,6 +321,16 @@ pub fn warn(host: &Host, card: Option<&CardId>, text: String) -> EngineResult<()
 }
 
 /// Families of workers, from the registry.
+/// Who may own and who may review the cards, as a planner reads it, after the line that says
+/// which rule gave way when the rules couldn't all hold.
+pub fn card_roles_lines(host: &Host) -> EngineResult<Vec<String>> {
+    let card_roles = roles::cards::for_run(host);
+    card_roles.announce(host)?;
+    let mut lines = card_roles.lines(&families(host));
+    lines.push(card_roles.review_line());
+    Ok(lines)
+}
+
 pub fn families(host: &Host) -> impl Fn(&WorkerRef) -> String + '_ {
     move |worker| roles::family(host, worker)
 }

@@ -609,7 +609,7 @@ mod tests {
         let state = fold(vec![
             PlanEvent::Coordinated {
                 coordinator: "claude-code".parse().unwrap(),
-                rejection: Some("card api owns a protected path".to_owned()),
+                rejection: Some("task api owns a protected path".to_owned()),
             },
             sealed(1, 1, "claude-code", 1),
             PlanEvent::Coordinated {
@@ -670,7 +670,7 @@ mod tests {
         let state = fold(vec![
             sealed(1, 1, "claude-code", 1),
             coordinated(None),
-            coordinated(Some("card api owns a protected path")),
+            coordinated(Some("task api owns a protected path")),
         ]);
         assert!(!state.coordinator_accepted());
         assert_eq!(state.coordinated_now().len(), 1);

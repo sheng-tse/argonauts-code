@@ -432,7 +432,7 @@ fn matched_letters_are_highlighted() {
     assert_eq!(
         pointed.style.fg,
         theme.style(Role::Card).fg,
-        "the pointed row is in the card color"
+        "the pointed row is in the task color"
     );
 
     // The cursor waits after the filter, inside its box.

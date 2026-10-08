@@ -23,6 +23,9 @@ const MAX_FOLDER_ENTRIES: usize = 40;
 /// Files git tracks or would track (untracked and not ignored), relative to the repo with `/`.
 /// A tracked file deleted from the folder is left out.
 pub(crate) fn list(root: &Path) -> anyhow::Result<Vec<String>> {
+    if !crate::git::has_git(root) {
+        return Ok(walk(root));
+    }
     let listed = git(
         root,
         &[
@@ -48,6 +51,38 @@ pub(crate) fn list(root: &Path) -> anyhow::Result<Vec<String>> {
         .take(MAX_LISTED)
         .map(|path| (*path).to_owned())
         .collect())
+}
+
+/// The files of a folder with no git, relative to it with `/`, by name. With nothing to say
+/// what's ignored, every file counts but those inside a nested repository's `.git`, and links
+/// are named without being followed.
+fn walk(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut folders = vec![PathBuf::new()];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = fs::read_dir(root.join(&folder)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let path = folder.join(&name);
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() && name != ".git" => folders.push(path),
+                Ok(kind) if kind.is_file() || kind.is_symlink() => {
+                    if let Some(path) = path.to_str() {
+                        found.push(path.replace(std::path::MAIN_SEPARATOR, "/"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if found.len() >= MAX_LISTED {
+            break;
+        }
+    }
+    found.sort();
+    found.truncate(MAX_LISTED);
+    found
 }
 
 fn is_link(root: &Path, path: &str) -> bool {

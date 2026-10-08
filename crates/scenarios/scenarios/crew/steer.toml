@@ -1,6 +1,6 @@
-# A solo card whose owner is in a long tool call when you steer it from the session view
-# (`s`). Claude Code takes steering on its open input stream after the current tool call, so
-# the owner waits on stdin for the steer right after the tool's result.
+# A solo task whose worker is in a long tool call when you steer it from the session view
+# (`m`). Claude Code takes steering on its open input stream after the current tool call, so
+# the worker waits on stdin for the steer right after the tool's result.
 
 [version]
 claude = "2.1.284 (Claude Code)"
@@ -39,7 +39,7 @@ prompt_contains = "ReviewOutput"
 [[rule.step]]
 emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"claude-review\",\"model\":\"claude-haiku-4-5\",\"tools\":[],\"mcp_servers\":[]}"
 [[rule.step]]
-emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-review\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdict\":\"approve\",\"summary\":\"The change does what the card asks, and its tests cover it.\",\"comments\":[],\"tamper_suspected\":false}}"
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\",\"session_id\":\"claude-review\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":120,\"output_tokens\":60},\"structured_output\":{\"verdict\":\"approve\",\"summary\":\"The change does what the task asks, and its tests cover it.\",\"comments\":[],\"tamper_suspected\":false}}"
 [[rule.step]]
 exit = 0
 
@@ -56,7 +56,7 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# retro
+# run review
 [[rule]]
 argv0 = "claude"
 prompt_contains = "RetroOutput"
@@ -80,7 +80,7 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# plan to cards
+# plan to tasks
 [[rule]]
 argv0 = "claude"
 prompt_contains = "TaskGraphProposal"
@@ -92,7 +92,7 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# spike report
+# experiment report
 [[rule]]
 argv0 = "claude"
 prompt_contains = "SpikeReport"
@@ -104,7 +104,7 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# propose spike
+# propose experiment
 [[rule]]
 argv0 = "claude"
 prompt_contains = "SpikeProposals"
@@ -189,7 +189,7 @@ emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result
 exit = 0
 
 
-# the owner's build session
+# the worker's build session
 [[rule]]
 argv0 = "claude"
 prompt_contains = "Add a Retry-After header to 429 responses"

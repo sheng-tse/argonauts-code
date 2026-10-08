@@ -41,7 +41,7 @@ pub async fn start(
     let (board, vendor) = (worker.health.clone(), worker.vendor());
     let health = tokio::task::spawn_blocking(move || board.state(&vendor))
         .await
-        .map_err(|err| WorkerError::Io(format!("could not read the vendor's health: {err}")))?;
+        .map_err(|err| WorkerError::Io(format!("could not read the agent's health: {err}")))?;
     refuse::check(&spec, &rules, &health, &self_test)?;
     let ctx = worker
         .home()

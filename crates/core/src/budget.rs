@@ -180,7 +180,7 @@ impl BudgetStatus {
                 Some(calls) => format!("the limit of {calls} tool calls"),
                 None => "the tool-call limit".to_owned(),
             },
-            Some(BudgetDimension::Spend) | None => format!("the budget of {}", self.limit),
+            Some(BudgetDimension::Spend) | None => format!("the limit of {}", self.limit),
         }
     }
 }
@@ -675,7 +675,7 @@ mod tests {
         let status = meter.status();
         assert_eq!(status.binding, Some(BudgetDimension::Spend));
         assert_eq!(status.fraction_used, Some(0.5));
-        assert_eq!(status.limit_text(), "the budget of $1.00");
+        assert_eq!(status.limit_text(), "the limit of $1.00");
     }
 
     #[test]

@@ -23,6 +23,7 @@ use argonauts_core::limits::GateRunner;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::policy::ApprovalPolicy;
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::crew::CrewSettings;
 use argonauts_crew::replay_terms::{self, ReplayTerms};
 use argonauts_learning::evolution::{self, Action, Candidate, CandidateState, Evolution, Stage};
 use argonauts_learning::recipes::{self, RecipeMode};
@@ -103,11 +104,12 @@ impl SupervisedReplays {
             continues: None,
             overrides: Vec::new(),
             include_uncommitted: false,
-            default_agent: request.workers.first().cloned(),
+            main_agent: request.workers.first().cloned(),
             approval_mode: None,
             front_end: Some("evolution".to_owned()),
             instructions: Vec::new(),
             request_settings: Vec::new(),
+            required_steps: Vec::new(),
         };
         let recipe = ForRun {
             loaded: request.recipe.clone(),
@@ -162,16 +164,17 @@ pub(crate) fn fence(
         anyhow::bail!("a replay needs at least one worker");
     };
     let settings = &mut resolved.settings;
-    settings.default_agent = first.clone();
-    settings.crew = workers.to_vec();
-    settings.handoff.fallback.clear();
-    settings.handoff.replace.clear();
-    settings.handoff.summarizer = None;
+    settings.main_agent = first.clone();
+    settings.crew = CrewSettings::of(workers.to_vec());
+    let no_fallbacks = |fallback: &mut argonauts_core::settings::handoff::HandoffSettings| {
+        fallback.order.clear();
+        fallback.replace.clear();
+        fallback.summarizer = None;
+    };
+    no_fallbacks(&mut settings.fallback);
+    settings.fallback.roles.values_mut().for_each(no_fallbacks);
     for role in settings.roles.values_mut() {
         role.workers = workers.to_vec();
-        role.handoff.fallback.clear();
-        role.handoff.replace.clear();
-        role.handoff.summarizer = None;
     }
     settings.ui.narrator = argonauts_core::settings::ui::NarratorMode::Off;
     settings.narrator.model = None;
@@ -184,7 +187,10 @@ pub(crate) fn fence(
         .into_iter()
         .chain(
             approver_decides(settings)
-                .then(|| approver.model.iter().chain(&approver.second_model).cloned())
+                .then(|| {
+                    let model = settings.approvals.approver_model();
+                    model.into_iter().chain(&approver.second_model).cloned()
+                })
                 .into_iter()
                 .flatten(),
         );
@@ -376,7 +382,7 @@ pub(crate) async fn replay_next(
     let left = settings.limits.evolution_usd_per_month - spent;
     if left <= 0.0 {
         return Ok(Turn::Idle(
-            "the month's evolution budget is spent; candidates wait for next month".to_owned(),
+            "the month's evolution limit is spent; candidates wait for next month".to_owned(),
         ));
     }
     let Some(candidate) = next_candidate(&evolution, settings)? else {
@@ -386,7 +392,7 @@ pub(crate) async fn replay_next(
         .load_version(&candidate.parent.name, candidate.parent.version)?
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "{} is in neither .argonauts/recipes/ nor the loop's candidates, so {} can't \
+                "{} is in neither .argonauts/learned/ nor the loop's candidates, so {} can't \
                  replay",
                 candidate.parent,
                 candidate.id
@@ -450,7 +456,7 @@ const CONSIDERED: &str = "considered.json";
 
 /// Checks each merged run the outcome log names, once, for the replay set: under
 /// `accept_entries = "auto"` one that passes joins at once, and under "ask" it waits for you in
-/// /recipes and the inbox. Returns the tasks proposed.
+/// /learned and the inbox. Returns the tasks proposed.
 pub(crate) async fn consider_merged(
     store: &Store,
     settings: &Settings,
@@ -573,14 +579,14 @@ mod tests {
                 version: 4,
                 parent: Some(3),
                 description: "HTTP endpoints".to_owned(),
-                preset: None,
+                workflow: None,
                 mode: Some(RecipeMode::Crew),
-                workflow: Some("peer-crew".to_owned()),
+                phases: Some("council".to_owned()),
                 matches: Match::default(),
                 prompts: Default::default(),
                 settings,
             },
-            path: PathBuf::from(".argonauts/recipes/api-feature/v4.yaml"),
+            path: PathBuf::from(".argonauts/learned/api-feature/v4.yaml"),
             text: String::new(),
             sha256: String::new(),
         }
@@ -616,7 +622,7 @@ mod tests {
         }
     }
 
-    const V1: &str = "recipe: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
+    const V1: &str = "name: api-feature\nversion: 1\ndescription: HTTP endpoints\nmode: crew\n\
                       match: { task_types: [backend] }\nprompts: { drafting: drafting-v1.md }\n\
                       critique: { rounds: 1, checklist: [criteria, testability] }\n";
 
@@ -632,14 +638,14 @@ mod tests {
         fn new(tasks: usize) -> Self {
             let repo = TempRepo::new().unwrap();
             let store = Store::new(repo.scratch().join("state"), repo.root());
-            repo.write(".argonauts/recipes/api-feature/v1.yaml", V1)
+            repo.write(".argonauts/learned/api-feature/v1.yaml", V1)
                 .unwrap();
             repo.write(
-                ".argonauts/recipes/api-feature/drafting-v1.md",
+                ".argonauts/learned/api-feature/drafting-v1.md",
                 "Draft the routes first.\n",
             )
             .unwrap();
-            let base = repo.commit_all("a recipe").unwrap();
+            let base = repo.commit_all("a learned workflow").unwrap();
             let set = ReplaySet::open(&store).unwrap();
             let tuning = (0u64..).find(|&seed| !holdout_draw(seed, 0.5)).unwrap();
             for n in 1..=tasks {
@@ -682,8 +688,8 @@ mod tests {
                     ..EndpointSettings::default()
                 },
             );
-            settings.crew = vec![worker.clone()];
-            settings.default_agent = worker;
+            settings.crew = CrewSettings::of(vec![worker.clone()]);
+            settings.main_agent = worker;
             Self {
                 repo,
                 store,
@@ -811,7 +817,7 @@ mod tests {
         let asked = requests_for(&fake, candidate.version);
         assert!(!asked.is_empty());
         let folder = world.evolution().candidate_dir(&candidate.id);
-        let checkout = world.repo.root().join(".argonauts/recipes/api-feature");
+        let checkout = world.repo.root().join(".argonauts/learned/api-feature");
         for request in &asked {
             let file = PathBuf::from(overlay_of(request)["prompts"]["drafting"].as_str().unwrap());
             assert!(file.is_absolute(), "{}", file.display());
@@ -844,14 +850,14 @@ mod tests {
         let mut world = World::new(3);
         world.settings.limits.evolution_usd_per_month = 3.0;
         let candidate = world.propose("critique.rounds", "2");
-        let queued = world.propose("divide.max_cards", "6");
+        let queued = world.propose("divide.max_tasks", "6");
         assert_eq!(queued.state, CandidateState::Queued);
         let fake = Arc::new(Fake::default());
         let now = OffsetDateTime::now_utc();
 
         let turn = world.turn(&fake).await;
         assert!(
-            matches!(&turn, Turn::Idle(why) if why.contains("budget")),
+            matches!(&turn, Turn::Idle(why) if why.contains("limit")),
             "{turn:?}"
         );
         assert_eq!(fake.asked().len(), 2);
@@ -921,7 +927,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(turn, Turn::Idle(why) if why.contains("budget")));
+        assert!(matches!(turn, Turn::Idle(why) if why.contains("limit")));
         let turn = replay_next(&store, &Settings::default(), runner, gates, policy.as_ref())
             .await
             .unwrap();
@@ -987,10 +993,10 @@ mod tests {
                 vendor: VendorId("claude-code".to_owned()),
                 family: "claude".to_owned(),
                 kind: WorkerKind::Harness,
-                role: RoleName::Default,
+                role: RoleName::Main,
                 step: Some(StepName::Restate),
                 access: Access::ReadOnly,
-                lifetime: SessionLifetime::Card,
+                lifetime: SessionLifetime::Task,
                 resumed_from: None,
                 follow_key: None,
                 workflow_step: Some(step),
@@ -1087,37 +1093,41 @@ mod tests {
     fn a_replay_runs_only_its_workers_and_answers_to_rules() {
         use argonauts_core::names::RoleName;
         use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
-        use argonauts_core::settings::handoff::FallbackEntry;
+        use argonauts_core::settings::handoff::{CrewRole, FallbackEntry};
         let open = WorkerRef::new("openrouter", Some("open-model".to_owned()));
         let subscription = WorkerRef::new("claude-code", None);
         let mut settings = Settings {
-            crew: vec![subscription.clone()],
-            default_agent: subscription.clone(),
+            crew: vec![subscription.clone()].into(),
+            main_agent: subscription.clone(),
             ..Settings::default()
         };
         let reviewer = settings.roles.entry(RoleName::Reviewer).or_default();
         reviewer.workers = vec![subscription.clone()];
-        reviewer.handoff.fallback = vec![FallbackEntry::Worker(subscription.clone())];
-        settings.handoff.fallback = vec![FallbackEntry::Worker(subscription.clone())];
-        settings.handoff.summarizer = Some(subscription.clone());
+        let reviewers = settings
+            .fallback
+            .roles
+            .entry(CrewRole::Reviewers)
+            .or_default();
+        reviewers.order = vec![FallbackEntry::Worker(subscription.clone())];
+        settings.fallback.order = vec![FallbackEntry::Worker(subscription.clone())];
+        settings.fallback.summarizer = Some(subscription.clone());
         settings.narrator.model = Some(subscription.clone());
         let mut fenced = resolved(settings);
         fence(&mut fenced, std::slice::from_ref(&open)).unwrap();
         let settings = &fenced.settings;
-        assert_eq!(settings.crew, std::slice::from_ref(&open));
-        assert_eq!(settings.default_agent, open);
+        assert_eq!(settings.crew.members(), std::slice::from_ref(&open));
+        assert_eq!(settings.main_agent, open);
         assert_eq!(
             settings.roles[&RoleName::Reviewer].workers,
             std::slice::from_ref(&open)
         );
         assert!(
-            settings.roles[&RoleName::Reviewer]
-                .handoff
-                .fallback
+            settings.fallback.roles[&CrewRole::Reviewers]
+                .order
                 .is_empty()
         );
-        assert!(settings.handoff.fallback.is_empty());
-        assert_eq!(settings.handoff.summarizer, None);
+        assert!(settings.fallback.order.is_empty());
+        assert_eq!(settings.fallback.summarizer, None);
         assert_eq!(settings.narrator.model, None);
         assert_eq!(settings.evolution.propose_every, 0);
         for (mode, with) in [
@@ -1142,7 +1152,7 @@ mod tests {
         let mut asks_approver = Settings::default();
         asks_approver.approvals.escalation.mode = ApprovalMode::Auto;
         asks_approver.approvals.escalation.decide_with = DecideWith::Model;
-        asks_approver.approvals.approver.model = Some(subscription.clone());
+        asks_approver.approvals.decides = subscription.clone().into();
         let refused = fence(&mut resolved(asks_approver), std::slice::from_ref(&open));
         assert!(
             refused
@@ -1293,7 +1303,7 @@ mod tests {
             title: request.clone(),
             mode: RunMode::Crew,
             forced: false,
-            preset: "peer-crew".to_owned(),
+            workflow: "council".to_owned(),
             estimate: Some(ChangeEstimate {
                 task_type: "feature".to_owned(),
                 summary: request.clone(),
@@ -1318,6 +1328,7 @@ mod tests {
             version: "0.0.1".to_owned(),
             front_end: None,
             instructions: Vec::new(),
+            required_steps: Vec::new(),
         };
         let kinds = vec![
             RunEventKind::Run(RunLifecycle::Started(Box::new(started))),

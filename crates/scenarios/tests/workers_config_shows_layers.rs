@@ -11,8 +11,8 @@ use workers_support::{IDLE, launch_ready, scenario, write_global_config, write_p
 #[test]
 fn workers_config_shows_layers() -> anyhow::Result<()> {
     let scenario = scenario("config-layers.toml")?;
-    write_global_config(&scenario, "default_agent = \"codex\"\n")?;
-    write_project_config(&scenario, "[review]\nper_card = 2\n")?;
+    write_global_config(&scenario, "main_agent = \"codex\"\n")?;
+    write_project_config(&scenario, "[review]\nper_task = 2\n")?;
     let mut pty = launch_ready(&scenario, &["--set", "review.max_change_rounds=3"], &[])?;
 
     // `/config` answers with its editable rows, each with the layer that set it.
@@ -35,8 +35,8 @@ fn workers_config_shows_layers() -> anyhow::Result<()> {
             .unwrap_or_else(|| panic!("/config doesn't list {key}"))
     };
     for (key, value, layer) in [
-        ("default_agent", "\"codex\"", "global"),
-        ("review.per_card", "2", "project"),
+        ("main_agent", "\"codex\"", "global"),
+        ("review.per_task", "2", "project"),
         ("review.max_change_rounds", "3", "flag"),
         ("review.blind", "false", "built-in"),
     ] {
@@ -55,8 +55,8 @@ fn workers_config_shows_layers() -> anyhow::Result<()> {
     pty.wait_for("Every setting and the layer it comes from", WAIT)?;
     // On screen each layer reads in words, whatever order the list is in.
     for (key, label) in [
-        ("default_agent", "everywhere"),
-        ("review.per_card", "this project"),
+        ("main_agent", "everywhere"),
+        ("review.per_task", "this project"),
         ("review.max_change_rounds", "--set"),
         ("review.blind", "built-in"),
     ] {

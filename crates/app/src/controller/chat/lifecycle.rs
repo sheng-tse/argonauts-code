@@ -18,12 +18,13 @@ use argonauts_core::views::ContextRow;
 use argonauts_core::worker::WorkerEvent;
 use argonauts_crew::triage::Asked;
 
-use super::excerpt::{Exchange, excerpt};
+use super::carry;
+use super::excerpt::Exchange;
 use super::live::{self, Heard};
 use super::mirror;
 use super::offer::offer_to_start;
 use super::{
-    ChatState, Queued, Turn, agent, direct, emit, keep, planned, run_copy, run_request,
+    ChatState, Turn, agent, direct, emit, goal, handover, keep, planned, run_copy, run_request,
     send_queued, settle_mode, side, styled,
 };
 use crate::chat_store::ChatSession;
@@ -32,9 +33,11 @@ use crate::controller::recap::{self, recap_from_turn};
 use crate::controller::shell;
 use crate::controller::triage::{Reading, Requested, read_answer, read_reply_with};
 use crate::controller::turn::{self, Launch, Record, TurnStep};
+use crate::controller::ultra;
 use crate::controller::{Ctx, Effect};
+use crate::usage_ledger::UsageLedger;
 use argonauts_conductor::handoff::shortlist::auto_check;
-use argonauts_core::events::session::InputPart;
+use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::handoff::HandoffMode;
 use argonauts_core::settings::workflows::RunStyle;
 
@@ -49,6 +52,7 @@ pub(super) fn begin(
     if !place_ready(ctx, chat)? {
         return Ok(());
     }
+    carry::sent(chat);
     chat.turns += 1;
     let id = TurnId::numbered(chat.turns);
     let record = Record::now(ctx);
@@ -67,6 +71,28 @@ pub(super) fn begin_side(
     let id = side::side_turn_id(chat.sides);
     let record = Record::now(ctx);
     attempt(ctx, chat, id, text, step, record, Vec::new(), None)
+}
+
+/// Starts the summary a main model on another CLI starts from, numbered apart and unseen.
+pub(super) fn begin_carry(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    step: TurnStep,
+) -> anyhow::Result<TurnId> {
+    chat.sides += 1;
+    let id = carry::carry_turn_id(chat.sides);
+    let record = Record::now(ctx);
+    attempt(
+        ctx,
+        chat,
+        id.clone(),
+        String::new(),
+        step,
+        record,
+        Vec::new(),
+        None,
+    )?;
+    Ok(id)
 }
 
 /// Whether a turn may start where the conversation works. One that carries on an agent's
@@ -130,7 +156,7 @@ fn attempt(
     tried: Vec<WorkerRef>,
     handoff: Option<Handoff>,
 ) -> anyhow::Result<()> {
-    let default = ctx.settings().default_agent.clone();
+    let default = ctx.settings().main_agent.clone();
     // An agent's session carried on from a run stays with that agent, its CLI's own commands
     // too, until it runs out.
     let pinned = chat
@@ -145,6 +171,11 @@ fn attempt(
             .get(&handoff.to)
             .map(|handle| (handoff.to.clone(), handle)),
         (TurnStep::Review { .. }, None, _) => side::reviewer(ctx, &tried),
+        (TurnStep::Carry { writer, .. }, None, _) => ctx
+            .services
+            .workers
+            .get(writer)
+            .map(|handle| (writer.clone(), handle)),
         (_, None, Some(worker)) => ctx
             .services
             .workers
@@ -154,13 +185,19 @@ fn attempt(
         (_, None, None) => turn::pick(ctx, &tried),
     };
     let (worker, handle) = picked.map_err(|err| {
-        anyhow::anyhow!("No agent can read this: {err}. /model picks another default agent.")
+        anyhow::anyhow!("No agent can read this: {err}. /model picks another main agent.")
     })?;
     let reviewing = matches!(step, TurnStep::Review { .. });
-    if tried.is_empty() && worker != default && !reviewing && handoff.is_none() && pinned.is_none()
+    let carrying = matches!(step, TurnStep::Carry { .. });
+    if tried.is_empty()
+        && worker != default
+        && !reviewing
+        && !carrying
+        && handoff.is_none()
+        && pinned.is_none()
     {
         let why = if turn::vendor_out(ctx, &default) {
-            "is out of quota or down"
+            "is out of plan usage or down"
         } else {
             "isn't available"
         };
@@ -196,8 +233,9 @@ fn attempt(
     emit(ctx, chat, started);
     // A vendor that can't resume gets the chat so far as a handoff note instead.
     let can_resume = handle.capabilities().resume && !step.own_session();
+    // Another model on the same CLI carries the session on.
     let resumable = chat.session.as_ref().filter(|session| {
-        ctx.settings().sessions.chat_resumes && can_resume && session.worker == worker
+        ctx.settings().sessions.chat_resumes && can_resume && session.worker.worker == worker.worker
     });
     // Two processes must never share one vendor session.
     if resumable.is_some() && !chat.stopping.is_empty() {
@@ -206,13 +244,17 @@ fn attempt(
             "The stopped turn is still ending, so this one starts a fresh session.",
         );
     }
-    let resume = resumable
-        .filter(|_| chat.stopping.is_empty())
-        .map(|session| session.vendor_session.clone());
+    let resume = match &step {
+        // The model being left writes the summary in its own session.
+        TurnStep::Carry { resume, .. } => resume.clone().filter(|_| handle.capabilities().resume),
+        _ => resumable
+            .filter(|_| chat.stopping.is_empty())
+            .map(|session| session.vendor_session.clone()),
+    };
     // A reviewer judges the changes alone, as a run's reviewers do, and a vendor command must
     // be the whole prompt, or the CLI won't read it as one.
-    let excerpt = if resume.is_none() && !reviewing && !step.main_agent_only() {
-        excerpt(&chat.history)
+    let excerpt = if resume.is_none() && !reviewing && !carrying && !step.main_agent_only() {
+        carry::primer(ctx, chat)
     } else {
         None
     };
@@ -220,8 +262,16 @@ fn attempt(
     let notes = if step.main_agent_only() {
         Vec::new()
     } else if step.writes() {
-        let mut notes = direct::notes(chat);
+        let mut notes = direct::notes(ctx, chat, &step, resume.is_none());
         notes.extend(handoff_note);
+        // Only a session that has the start tool can follow the ultracode line.
+        notes.extend(
+            ultra::standing_line(ctx.settings())
+                .filter(|_| step.offers_tool(super::tools::start_workflow::NAME))
+                .map(|line| turn::part(InputPartKind::Notes, "ultracode", line.to_owned())),
+        );
+        // A goal you set is told to a turn in your checkout as well.
+        notes.extend(goal::brief(ctx, chat, &step, &worker, &text));
         notes
     } else {
         chat.prefs.notes()
@@ -295,6 +345,9 @@ fn attempt(
         direct: None,
         live: live::Live::new(control, plain_reply),
     });
+    if let (Some(turn), Some(detail)) = (&chat.turn, chat.context_watch) {
+        turn.live.watch_context(Some(detail));
+    }
     Ok(())
 }
 
@@ -353,7 +406,7 @@ pub(super) fn on_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: 
             if let Some(row) = chat.context.as_mut().filter(|_| !own) {
                 match &event {
                     AgentEvent::ToolStarted { .. } => row.tool_calls += 1,
-                    AgentEvent::ContextFill { used, size } => {
+                    AgentEvent::ContextFill { used, size, .. } => {
                         row.used = *used;
                         row.window = size.or(row.window);
                     }
@@ -391,6 +444,7 @@ fn live_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: &AgentEve
     let Some(turn) = chat.turn.as_mut().filter(|turn| &turn.id == id) else {
         return false;
     };
+    turn.live.on_agent(event);
     let heard = match event {
         AgentEvent::Init {
             capabilities,
@@ -452,7 +506,7 @@ fn live_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: &AgentEve
         Some(Heard::AlreadyRead) => {
             ctx.notice(NoteLevel::Info, "Claude already read that message.");
         }
-        Some(Heard::NotSent(text)) => chat.queue(Queued::Request(text)),
+        Some(Heard::NotSent(queued)) => chat.queue(queued),
         None => {}
     }
     true
@@ -473,21 +527,31 @@ pub(super) fn on_done(
         && let Some(row) = chat.context.as_mut()
     {
         row.spent = plus(&row.spent, &end.spend);
+        UsageLedger::new(&ctx.env.paths).turn_ended(
+            &ctx.env.repo_root,
+            &row.worker,
+            &end.spend,
+            time::OffsetDateTime::now_utc(),
+        );
     }
     // A cancelled turn's step ended, so its vendor session is free again. Its reply belongs
     // to no turn now.
     if let Some(at) = chat.stopping.iter().position(|stopping| stopping == id) {
         chat.stopping.remove(at);
         direct::stopped(ctx, chat, id);
+        carry::stopped(ctx, chat, id);
+        carry::start_if_due(ctx, chat);
         return Ok(Vec::new());
     }
     let Some(mut turn) = chat.turn.take_if(|turn| &turn.id == id) else {
         return Ok(Vec::new());
     };
+    if matches!(turn.step, TurnStep::Carry { .. }) {
+        return Ok(carry::summary_done(ctx, chat, turn, &outcome));
+    }
     // What the model never read goes first in line for the next turn.
-    for text in turn.live.unread().into_iter().rev() {
-        chat.queued
-            .push_front((Queued::Request(text), chat.last_shell));
+    for queued in turn.live.unread().into_iter().rev() {
+        chat.queued.push_front((queued, chat.last_shell));
     }
     if let Some(vendor) = end
         .and_then(|end| end.vendor_session.as_ref())
@@ -529,10 +593,66 @@ pub(super) fn on_done(
         }
         _ => read_answer(&outcome).map(|r| (r, Requested::default())),
     };
-    match reading {
-        Ok((reading, requested)) => Ok(finish(ctx, chat, turn, reading, requested, spend)),
-        Err(err) => fail(ctx, chat, turn, &err),
-    }
+    let effects = if turn.live.stopped_turn() {
+        Ok(end_stopped(ctx, chat, turn, reading, spend))
+    } else {
+        match reading {
+            Ok((reading, requested)) => Ok(finish(ctx, chat, turn, reading, requested, spend)),
+            Err(err) => fail(ctx, chat, turn, &err),
+        }
+    };
+    // A switch made while this turn ran has its summary made now.
+    carry::start_if_due(ctx, chat);
+    effects
+}
+
+/// A turn you stopped alone ends when its session does, once what it ran in the background is
+/// done. What the main agent said after that is its own words and never a request to start
+/// work, with or without a verdict. With nothing said it ends as any turn Esc stops. A session
+/// that failed says so, and no fallback takes the request you stopped.
+fn end_stopped(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    mut turn: Turn,
+    reading: Result<(Reading, Requested), StepError>,
+    spend: Spend,
+) -> Vec<Effect> {
+    let said = match reading {
+        Ok((
+            Reading::Answer { markdown }
+            | Reading::Change { markdown, .. }
+            | Reading::Unclear { markdown, .. },
+            _,
+        )) => Ok(markdown),
+        Err(StepError::SchemaMismatch { raw, .. }) => Ok(raw.unwrap_or_default()),
+        Err(err) => Err(err),
+    };
+    let err = match said {
+        Ok(markdown) => {
+            let said = Reading::Answer { markdown };
+            return finish(ctx, chat, turn, said, Requested::default(), spend);
+        }
+        Err(err) => err,
+    };
+    let id = turn.id.clone();
+    direct::cancelled(ctx, chat, &mut turn);
+    direct::stopped(ctx, chat, &id);
+    let stopped = matches!(
+        &err,
+        StepError::Session(end) if end.reason == argonauts_core::events::session::EndReason::Stopped
+    );
+    let ended = if stopped {
+        ChatEvent::TurnCancelled { turn: id.clone() }
+    } else {
+        let error = format!("{} couldn't answer: {}", turn.worker, turn::describe(&err));
+        ChatEvent::TurnFailed {
+            turn: id.clone(),
+            error,
+        }
+    };
+    emit(ctx, chat, ended);
+    settle_mode(ctx, &id);
+    send_queued(chat)
 }
 
 fn finish(
@@ -599,11 +719,11 @@ fn finish(
         // `/plan` is a crew command, so only plan first turned on reaches direct solo, where
         // the estimate's reply is the plan to approve.
         if may_start && !turn.plan_first && direct::triage_picks_direct(triage) {
-            let main = &ctx.settings().default_agent.worker;
+            let main = &ctx.settings().main_agent.worker;
             go_ahead = Some(requested.applied.for_direct(main));
             ask_first = plan_first;
         } else if may_start {
-            effects.push(Effect::StartRun(Box::new(request)));
+            effects.push(handover::start(request));
         }
         go_ahead.is_some()
     };
@@ -689,8 +809,19 @@ fn finish(
         }
         None => {}
     }
+    // With a goal set and no run to keep it, the conversation keeps the main agent to it.
+    effects.extend(goal::after_turn(ctx, chat, &turn, answer_of(&reply)));
     effects.extend(send_queued(chat));
     effects
+}
+
+/// The agent's own words in a reply.
+fn answer_of(reply: &TurnReply) -> &str {
+    match reply {
+        TurnReply::Answer { markdown }
+        | TurnReply::Change { markdown, .. }
+        | TurnReply::Unclear { markdown, .. } => markdown,
+    }
 }
 
 /// A reading for `/solo` or `/crew`: the command's mode, with where solo works as your words
@@ -821,7 +952,7 @@ fn fail(
         if let Some(style) = command.style {
             request = styled(request, style);
         }
-        effects.push(Effect::StartRun(Box::new(request)));
+        effects.push(handover::start(request));
     }
     effects.extend(send_queued(chat));
     Ok(effects)
@@ -839,7 +970,7 @@ fn fail_direct(
 ) -> anyhow::Result<Vec<Effect>> {
     let mut tried = turn.tried.clone();
     tried.push(turn.worker.clone());
-    let mode = ctx.settings().handoff.mode;
+    let mode = ctx.settings().fallback.mode;
     // Another CLI wouldn't know this one's own command.
     if turn::worth_a_fallback(err) && mode != HandoffMode::Wait && !turn.step.main_agent_only() {
         // Read after the agent's name: "hit its usage limit", "stopped: <reason>".

@@ -47,10 +47,11 @@ pub fn roles_as_you_asked(
     let mut roles: Vec<(RoleName, Vec<WorkerRef>)> = Vec::new();
     for instruction in instructions.iter().filter(|i| i.followed()) {
         let role = match instruction.kind {
-            InstructionKind::Build => RoleName::Owner,
+            InstructionKind::Build => RoleName::Worker,
             InstructionKind::Review => RoleName::Reviewer,
+            InstructionKind::Judge => RoleName::Judge,
             InstructionKind::Plan => RoleName::Drafter,
-            InstructionKind::Coordinate => RoleName::Coordinator,
+            InstructionKind::Coordinate => RoleName::Orchestrator,
             _ => continue,
         };
         let workers = settings
@@ -113,7 +114,7 @@ pub const MAX_DEPTH: u32 = 2;
 /// No loop runs more rounds than this, whatever its `max` says.
 pub const MAX_LOOP_ROUNDS: u32 = 10;
 
-/// What a card build costs at the least when `budget.per_card_usd` isn't set.
+/// What a card build costs at the least when `limits.per_task_usd` isn't set.
 const MIN_CARD_USD: f64 = 0.05;
 
 /// A template is checked as it would run, with its placeholders filled from its own params.
@@ -319,7 +320,7 @@ impl Check<'_, '_> {
         };
         let default_role = match step.kind {
             StepKind::Review => Some(RoleName::Reviewer),
-            StepKind::Build => Some(RoleName::Owner),
+            StepKind::Build => Some(RoleName::Worker),
             StepKind::Draft => Some(RoleName::Drafter),
             _ => None,
         };
@@ -376,12 +377,12 @@ impl Check<'_, '_> {
         }
         self.as_you_asked(step, &at);
         let doing_owner_work =
-            step.role == Some(RoleName::Owner) || step.roles.contains(&RoleName::Owner);
+            step.role == Some(RoleName::Worker) || step.roles.contains(&RoleName::Worker);
         if doing_owner_work && step.kind != StepKind::Build {
             self.error(
                 Rule::BuildNeedsGateAndReview,
                 &at,
-                "only a `build` step gives owners work, since only its cards run the gates and a review by another family".to_owned(),
+                "only a `build` step gives workers work, since only its tasks run the checks and a review by another provider".to_owned(),
             );
         }
         match step.kind {
@@ -480,12 +481,14 @@ impl Check<'_, '_> {
             Some(CheckpointKind::Merge) => self.error(
                 Rule::FieldNotForKind,
                 at,
-                "the merge checkpoint comes with the `merge` step".to_owned(),
+                "the merge approval comes with the `merge` step".to_owned(),
             ),
             Some(other) => self.error(
                 Rule::FieldNotForKind,
                 at,
-                format!("a `{other:?}` checkpoint opens by itself when its event happens, never as a step"),
+                format!(
+                    "a `{other:?}` approval opens by itself when its event happens, never as a step"
+                ),
             ),
         }
         if step.when.as_deref() == Some("restate_first")
@@ -494,7 +497,7 @@ impl Check<'_, '_> {
             self.error(
                 Rule::MissingCheckpoint,
                 at,
-                "only the goal checkpoint may wait for `restate_first`".to_owned(),
+                "only the goal approval may wait for `restate_first`".to_owned(),
             );
         }
     }
@@ -617,12 +620,12 @@ impl Check<'_, '_> {
     /// of it, reviewed by another family with `different_family_from: author`; `plan` builds
     /// the plan's cards, whose owners and reviewers the plan checkpoint settles.
     fn build(&mut self, step: &Step, at: &str) {
-        if let Some(role) = step.role.filter(|role| *role != RoleName::Owner) {
+        if let Some(role) = step.role.filter(|role| *role != RoleName::Worker) {
             self.error(
                 Rule::FieldNotForKind,
                 at,
                 format!(
-                    "`build` gives owners work, so it takes `role: owner`, not `{}`",
+                    "`build` gives workers work, so it takes `role: worker`, not `{}`",
                     role.as_str()
                 ),
             );
@@ -639,7 +642,7 @@ impl Check<'_, '_> {
                     Rule::UnknownInput,
                     at,
                     format!(
-                        "`build` has {said}; it builds `goal` (the solo card), `plan` (the plan's cards), or `spikes`"
+                        "`build` has {said}; it builds `goal` (the solo task), `plan` (the plan's tasks), or `spikes`"
                     ),
                 );
                 return;
@@ -658,7 +661,7 @@ impl Check<'_, '_> {
                         Rule::FieldNotForKind,
                         at,
                         format!(
-                            "only `build` with `input: goal` takes `{field}`; the plan checkpoint settles who builds and reviews the plan's cards"
+                            "only `build` with `input: goal` takes `{field}`; the plan approval settles who builds and reviews the plan's tasks"
                         ),
                     );
                 }
@@ -681,7 +684,7 @@ impl Check<'_, '_> {
                 Rule::InvalidValue,
                 at,
                 format!(
-                    "a `build` is reviewed by another family than its `author`, not than `{from}`"
+                    "a `build` is reviewed by another provider than its `author`, not than `{from}`"
                 ),
             );
         }
@@ -811,7 +814,7 @@ impl Check<'_, '_> {
                             Rule::ReviewSameFamily,
                             at,
                             format!(
-                                "{reviewer} is of the {family} family, like the authors of `{target}`"
+                                "{reviewer} is of the {family} provider, like the authors of `{target}`"
                             ),
                         );
                     }
@@ -827,7 +830,7 @@ impl Check<'_, '_> {
                         Rule::ReviewSameFamily,
                         at,
                         format!(
-                            "no reviewer comes from another family than the authors of `{target}`"
+                            "no reviewer comes from another provider than the authors of `{target}`"
                         ),
                     );
                 }
@@ -878,7 +881,7 @@ impl Check<'_, '_> {
                 errors.push((
                     Rule::MissingCheckpoint,
                     seen.at.clone(),
-                    "only a solo workflow's goal checkpoint may wait for `restate_first`; a crew always asks you"
+                    "only a solo workflow's goal approval may wait for `restate_first`; a crew always asks you"
                         .to_owned(),
                 ));
             }
@@ -889,8 +892,7 @@ impl Check<'_, '_> {
                 errors.push((
                     Rule::MissingCheckpoint,
                     seen.at.clone(),
-                    "a `build` needs a `merge` after it, where the merge checkpoint asks"
-                        .to_owned(),
+                    "a `build` needs a `merge` after it, where the merge approval asks".to_owned(),
                 ));
             }
             if solo_build(seen) {
@@ -910,7 +912,7 @@ impl Check<'_, '_> {
                         Rule::MissingCheckpoint,
                         seen.at.clone(),
                         format!(
-                            "building from a plan needs the {name} checkpoint before it, with no `when` and outside `for_each`"
+                            "building from a plan needs the {name} approval before it, with no `when` and outside `for_each`"
                         ),
                     ));
                 }
@@ -922,30 +924,31 @@ impl Check<'_, '_> {
     }
 
     /// A floor on what the workflow costs, nested workflows included: each card build at
-    /// `budget.per_card_usd`, times the rounds its loops may run.
+    /// `limits.per_task_usd`, times the rounds its loops may run.
     fn budget(&mut self) {
         let Some(left) = self.context.budget_left_usd else {
             return;
         };
-        let per_card = self
+        let per_task = self
             .context
             .settings
+            .limits
             .budget
-            .per_card_usd
+            .per_task_usd
             .filter(|usd| *usd > 0.0)
             .unwrap_or(MIN_CARD_USD);
         let estimate: f64 = self
             .flat
             .iter()
             .filter(|seen| seen.kind == StepKind::Build)
-            .map(|seen| per_card * f64::from(seen.runs) * f64::from(seen.cards))
+            .map(|seen| per_task * f64::from(seen.runs) * f64::from(seen.cards))
             .sum();
         let spends = self.flat.iter().any(|seen| takes_agents(seen.kind));
         if estimate > left || (left <= 0.0 && spends) {
             self.error(
                 Rule::OverBudget,
                 "the workflow",
-                format!("it needs at least ${estimate:.2}, and ${left:.2} of the budget is left"),
+                format!("it needs at least ${estimate:.2}, and ${left:.2} of the limit is left"),
             );
         }
     }
@@ -1013,6 +1016,7 @@ fn allowed_fields(kind: StepKind) -> &'static [&'static str] {
         StepKind::Merge => &[],
         StepKind::Check => &[],
         StepKind::Workflow => &["workflow", "params"],
+        StepKind::Script => &[],
     }
 }
 
@@ -1055,14 +1059,14 @@ mod tests {
         };
         let budget = error(
             "the workflow",
-            "it needs at least $3.00, and $0.61 of the budget is left",
+            "it needs at least $3.00, and $0.61 of the limit is left",
         );
         assert_eq!(
             budget.to_string(),
-            "the workflow needs at least $3.00, and $0.61 of the budget is left"
+            "the workflow needs at least $3.00, and $0.61 of the limit is left"
         );
-        let step = error("phase Build, step 1", "it has no owner");
-        assert_eq!(step.to_string(), "phase Build, step 1: it has no owner");
+        let step = error("phase Build, step 1", "it has no worker");
+        assert_eq!(step.to_string(), "phase Build, step 1: it has no worker");
     }
 
     fn rules(steps: &str) -> Vec<Rule> {
@@ -1167,7 +1171,7 @@ mod tests {
             let step = format!("      - kind: build\n        input: goal\n{field}");
             assert!(rules(&step).contains(&rule), "{field}: {:?}", rules(&step));
         }
-        let unknown = rules("      - kind: build\n        role: owner\n");
+        let unknown = rules("      - kind: build\n        role: worker\n");
         assert!(unknown.contains(&Rule::UnknownInput), "{unknown:?}");
         // The plan's cards get their owners and reviewers at the plan checkpoint.
         for field in ["count: 2", "different_family_from: author"] {
@@ -1257,7 +1261,7 @@ mod tests {
 
     #[test]
     fn solo_builds_take_attempts_and_a_review() {
-        let step = "      - kind: build\n        role: owner\n        input: goal\n        count: \"{{tries}}\"\n        different_family_from: author\n";
+        let step = "      - kind: build\n        role: worker\n        input: goal\n        count: \"{{tries}}\"\n        different_family_from: author\n";
         assert_eq!(rules(step), []);
     }
 

@@ -114,7 +114,7 @@ fn delegation_skill(version: &str) -> Skill {
         frontmatter: Frontmatter {
             name: SKILL_NAME.to_owned(),
             description: "Use when a coding task is big enough for a crew: several files, a \
-                plan worth critiquing, or work that needs review from another model family. \
+                plan worth critiquing, or work that needs review from another provider. \
                 Starts an Argonauts run through its MCP server, follows it, and relays when it \
                 needs a person, without ever approving anything itself."
                 .to_owned(),
@@ -139,7 +139,7 @@ to the crew and how to follow it.
 ## When to delegate
 
 - The task touches several files or modules, or needs a plan before code.
-- It benefits from review by a different model family, or from tests written separately.
+- It benefits from review by a different provider, or from tests written separately.
 - The person asked for the crew, or for a run they can review later.
 
 Keep small edits, questions about the code, and anything urgent to yourself.
@@ -157,7 +157,7 @@ waiting and give them its link, word for word.
 
 ## Never
 
-- Never approve, answer a checkpoint, or claim that something was approved. Approvals belong \
+- Never approve, answer an approval, or claim that something was approved. Approvals belong \
 to the person, in Argonauts itself. An answer given through you never counts as one.
 - Never pass credentials, tokens, or keys to the crew.
 - Never start a run in a repository the server wasn't set up for.

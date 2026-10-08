@@ -76,7 +76,7 @@ fn checked_solo(text: &str) -> String {
     if text.contains("[solo]") {
         text.to_owned()
     } else {
-        format!("{text}\n[solo]\nstyle = \"checked\"\n")
+        format!("{text}\n[solo]\nkind = \"checked\"\n")
     }
 }
 
@@ -132,7 +132,7 @@ pub fn wait_for_events(
         }
         if let Some(reason) = card_failure(&events) {
             bail!(
-                "waiting for {what}, a card stopped: {reason}\n{}",
+                "waiting for {what}, a task stopped: {reason}\n{}",
                 last_events(&events)
             );
         }
@@ -150,7 +150,7 @@ pub fn wait_for_events(
 /// Waits until a card reaches its merge checkpoint or is integrated, whichever the merge
 /// settings lead to.
 pub fn wait_for_finished_card(scenario: &Scenario) -> anyhow::Result<Vec<RunEvent>> {
-    wait_for_events(scenario, "finished card", CARD_WAIT, card_finished)
+    wait_for_events(scenario, "finished task", CARD_WAIT, card_finished)
 }
 
 pub fn card_finished(events: &[RunEvent]) -> bool {

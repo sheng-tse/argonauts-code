@@ -75,7 +75,7 @@ impl BuiltinLimits {
             Err(err) => {
                 return vec![violation(
                     HardLimit::GatesFailed,
-                    format!("the card's diff can't be read ({err}), so no gate can pass"),
+                    format!("the task's diff can't be read ({err}), so no check can pass"),
                     Vec::new(),
                 )];
             }

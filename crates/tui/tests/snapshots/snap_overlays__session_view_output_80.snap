@@ -2,9 +2,9 @@
 source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
-● GPT 5.6 on Codex · owner · card-002 (Add the JSON writer) · 2m00s · ↓ 12.4k
-[ Output ]   Input                                                     following
-────────────────────────────────────────────────────────────────────────────────
+◐ GPT 5.6 on Codex · worker · task-002 (…   Output  Input  Raw   2m00s · ↓ 12.4k
+
+● Update(src/export.rs)
   ⎿  Added 1 line, removed 1 line
         -self.write_csv(out)
         +match self.format {
@@ -20,9 +20,9 @@ expression: "screen(&mut view, width, height, &state)"
 ● The JSON writer goes beside the CSV one.
 
 ● 2 subagents
-  ⎿ ✓ explorer · done · Two writers, both in src/export.rs
-     ⎿ ● thread · running · Check the tests · its steps don't stream here
+  ⎿ ✔ explorer · done · Two writers, both in src/export.rs
+     ⎿ ◐ thread · running · Check the tests · its steps don't stream here
 
 ⎿ Queued use serde_json
   arrives after the current tool call
-↑↓ scroll · i input · s steer · r raw · d diff · esc back            11-30 of 30
+↑↓ scroll · tab input · m message it · r raw · d diff · esc back     10-30 of 30

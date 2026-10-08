@@ -135,14 +135,14 @@ pub fn card_facts(state: &RunState, settings: &Settings) -> Vec<CardFacts> {
             let (mut spent_usd, mut owner_ms) = (0.0, 0u64);
             let mut model_id = None;
             for session in sessions {
-                if session.started.role == RoleName::Owner
+                if session.started.role == RoleName::Worker
                     && let Some(model) = state.sessions.models.get(&session.key)
                 {
                     model_id = Some(model.clone());
                 }
                 let Some(end) = &session.end else { continue };
                 spent_usd += end.spend.cost_usd;
-                if session.started.role == RoleName::Owner {
+                if session.started.role == RoleName::Worker {
                     owner_ms += end.duration_ms;
                 }
             }
@@ -201,8 +201,8 @@ pub fn digest(facts: &[CardFacts], settings: &Settings) -> RetroInput {
     let first_try = ran.iter().filter(|fact| fact.first_try).count();
     let spent: f64 = facts.iter().map(|fact| fact.spent_usd).sum();
     let summary = format!(
-        "{} cards ran: {integrated} integrated, {first_try} passed their gates on the first try. \
-         ${spent:.2} spent on cards.",
+        "{} tasks ran: {integrated} merged into the run, {first_try} passed their checks on the first try. \
+         ${spent:.2} spent on tasks.",
         ran.len()
     );
     let mut trouble = Vec::new();
@@ -212,7 +212,7 @@ pub fn digest(facts: &[CardFacts], settings: &Settings) -> RetroInput {
         }
         if !fact.failed_gates.is_empty() {
             trouble.push(format!(
-                "{} failed gates: {}.",
+                "{} failed checks: {}.",
                 fact.card,
                 fact.failed_gates.join(", ")
             ));
@@ -225,7 +225,7 @@ pub fn digest(facts: &[CardFacts], settings: &Settings) -> RetroInput {
         }
         if !fact.integrated {
             trouble.push(format!(
-                "{} ended {:?}, not integrated.",
+                "{} ended {:?}, not merged into the run.",
                 fact.card, fact.state
             ));
         }

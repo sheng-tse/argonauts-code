@@ -1,5 +1,5 @@
-# The fake Claude Code starts the card, writes notes.txt, and hits its plan's usage limit,
-# which resets in two hours. Codex can take the card over.
+# The fake Claude Code starts the task, writes notes.txt, and hits its plan's usage limit,
+# which resets in two hours. Codex can take the task over.
 
 [version]
 claude = "2.1.284 (Claude Code)"

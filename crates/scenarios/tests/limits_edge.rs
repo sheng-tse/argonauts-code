@@ -14,9 +14,9 @@ use argonauts_core::limits::HealthState;
 use argonauts_scenarios::WAIT;
 use limits_support::*;
 
-const FALLBACK_CODEX: &str = "[handoff]\nfallback = [\"codex\"]\n";
+const FALLBACK_CODEX: &str = "[fallback]\norder = [\"codex\"]\n";
 /// Handoffs are automatic by default, so a scenario about the handoff card asks for it.
-const ASK_FALLBACK_CODEX: &str = "[handoff]\nmode = \"ask\"\nfallback = [\"codex\"]\n";
+const ASK_FALLBACK_CODEX: &str = "[fallback]\nmode = \"ask\"\norder = [\"codex\"]\n";
 
 #[test]
 fn limits_edge_usage_limit() -> anyhow::Result<()> {
@@ -39,7 +39,8 @@ fn limits_edge_usage_limit() -> anyhow::Result<()> {
     ));
     assert_eq!(candidate_workers(&card), ["codex"]);
     assert!(limits.calls_with("codex", "exec")?.is_empty());
-    pty.wait_for("Claude out until", WAIT)?;
+    // The chip keeps its words at any width: a red bar while there's room, then `out`.
+    pty.wait_for(r"Claude (\S+ )?out\b", WAIT)?;
     limits.shot(&pty, "limits_edge_usage_limit")
 }
 
@@ -47,7 +48,7 @@ fn limits_edge_usage_limit() -> anyhow::Result<()> {
 fn limits_edge_rate_limit_no_handoff() -> anyhow::Result<()> {
     let limits = setup("edge-rate-limit-no-handoff", FALLBACK_CODEX)?;
     let mut pty = limits.run(&[])?;
-    let events = limits.wait_for("the card to finish", CARD_WAIT, completed_by("claude-code"))?;
+    let events = limits.wait_for("the task to finish", CARD_WAIT, completed_by("claude-code"))?;
 
     let retries = find(&events, |kind| match kind {
         RunEventKind::Agent(AgentEvent::Retry { .. }) => Some(()),
@@ -67,7 +68,7 @@ fn limits_edge_outage() -> anyhow::Result<()> {
     let limits = setup(
         "edge-outage",
         "[health]\ndown_after = 1\ndown_sessions = 1\n\n\
-         [handoff]\nmode = \"ask\"\nfallback = [\"codex\"]\n",
+         [fallback]\nmode = \"ask\"\norder = [\"codex\"]\n",
     )?;
     let pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::VendorDown)?;
@@ -98,7 +99,7 @@ fn limits_edge_outage() -> anyhow::Result<()> {
 fn limits_edge_all_down_parks() -> anyhow::Result<()> {
     let limits = setup(
         "edge-all-down-parks",
-        "crew = [\"claude-code\"]\n\n[handoff]\nmode = \"auto\"\n",
+        "crew = [\"claude-code\"]\n\n[fallback]\nmode = \"auto\"\n",
     )?;
     let pty = limits.start()?;
     let events = limits.wait_for("the run to park", CARD_WAIT, |events| {
@@ -153,7 +154,7 @@ fn retry_resumes_the_same_session(name: &str, retry: &str) -> anyhow::Result<Che
     let mut pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::Handoff)?;
 
-    let first = card.options.first().context("the card has no options")?;
+    let first = card.options.first().context("the task has no options")?;
     assert_eq!(first.key, 'r');
     assert_eq!(first.action, AnswerAction::Retry);
     assert_eq!(first.label, retry);
@@ -182,10 +183,10 @@ fn retry_resumes_the_same_session(name: &str, retry: &str) -> anyhow::Result<Che
 fn limits_edge_cli_update_broke_adapter() -> anyhow::Result<()> {
     let limits = setup(
         "edge-cli-update-broke-adapter",
-        "[handoff]\nmode = \"auto\"\nfallback = [\"codex\"]\n",
+        "[fallback]\nmode = \"auto\"\norder = [\"codex\"]\n",
     )?;
     let mut pty = limits.run(&[])?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
 
     let disabled = find(&events, |kind| match kind {
         RunEventKind::Vendor(VendorEvent::Disabled { vendor, reason })
@@ -208,7 +209,7 @@ fn limits_edge_cli_update_broke_adapter() -> anyhow::Result<()> {
 fn limits_edge_model_retired() -> anyhow::Result<()> {
     let limits = setup(
         "edge-model-retired",
-        "[agents.claude-code]\nmodel = \"claude-old-1\"\n\n[handoff]\nfallback = [\"codex\"]\n",
+        "[agents.claude-code]\nmodel = \"claude-old-1\"\n\n[fallback]\norder = [\"codex\"]\n",
     )?;
     // passes when: the registry's `successor` takes a full `worker/model` reference.
     write_file(
@@ -262,7 +263,7 @@ fn limits_edge_context_full() -> anyhow::Result<()> {
     );
     assert!(
         handoff_plans(&events).is_empty(),
-        "a rotation is not a handoff"
+        "a rotation is not a fallback"
     );
     assert!(!card_states(&events).contains(&CardState::Failed));
     assert!(limits.calls_with("codex", "exec")?.is_empty());
@@ -274,10 +275,10 @@ fn limits_edge_context_full() -> anyhow::Result<()> {
 fn limits_edge_stuck_or_looping() -> anyhow::Result<()> {
     let limits = setup(
         "edge-stuck-or-looping",
-        "[watchdogs]\ninactivity_min = 0.05\n\n[handoff]\nfallback = [\"codex\"]\n",
+        "[watchdogs]\ninactivity_min = 0.05\n\n[fallback]\norder = [\"codex\"]\n",
     )?;
     let mut pty = limits.run(&[])?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
 
     let ends = ends_of(&events, "claude-code");
     assert_eq!(
@@ -300,19 +301,19 @@ fn limits_edge_stuck_or_looping() -> anyhow::Result<()> {
 fn limits_edge_broken_work() -> anyhow::Result<()> {
     let limits = setup(
         "edge-broken-work",
-        "[handoff]\nmode = \"auto\"\nfallback = [\"codex\"]\nbroken_work = \"restart\"\n\n\
-         [gates]\nrun = [{ name = \"no-broken-file\", command = [\"test\", \"!\", \"-e\", \"broken.txt\"] }]\n",
+        "[fallback]\nmode = \"auto\"\norder = [\"codex\"]\nbroken_work = \"restart\"\n\n\
+         [checks]\nrun = [{ name = \"no-broken-file\", command = [\"test\", \"!\", \"-e\", \"broken.txt\"] }]\n",
     )?;
     let mut pty = limits.run(&[])?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
 
     let plan = handoff_plans(&events)
         .into_iter()
         .next()
-        .context("no handoff")?;
+        .context("no fallback")?;
     assert!(
         plan.gates_ran,
-        "the gates never ran on the stopped card's work"
+        "the checks never ran on the stopped task's work"
     );
     let failed_gate = seq_of(
         &events,
@@ -325,7 +326,7 @@ fn limits_edge_broken_work() -> anyhow::Result<()> {
 
     // Codex's work is committed after its session ends, and in place once the run is over.
     pty.wait_for_exit(CARD_WAIT)?;
-    let branch = card_branch(&events).context("the card has no branch")?;
+    let branch = card_branch(&events).context("the task has no branch")?;
     let files = limits
         .repo
         .git(&["ls-tree", "-r", "--name-only", &branch])?;
@@ -340,7 +341,7 @@ fn limits_edge_rule_breaking_replacement() -> anyhow::Result<()> {
     // card, which is the rule this scenario breaks.
     let limits = setup(
         "edge-rule-breaking-replacement",
-        "[agents.codex]\nexclude_paths = [\"**\"]\n\n[handoff]\nfallback = [\"codex\"]\n",
+        "[agents.codex]\nexclude_paths = [\"**\"]\n\n[fallback]\norder = [\"codex\"]\n",
     )?;
     let pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::Handoff)?;
@@ -358,7 +359,7 @@ fn limits_edge_costly_fallback() -> anyhow::Result<()> {
     // by API key.
     let limits = setup(
         "edge-costly-fallback",
-        "[agents.codex]\nauth = \"api-key\"\n\n[handoff]\nmode = \"auto\"\nfallback = [\"codex\"]\n",
+        "[agents.codex]\nauth = \"api-key\"\n\n[fallback]\nmode = \"auto\"\norder = [\"codex\"]\n",
     )?;
     let mut pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::Handoff)?;
@@ -383,7 +384,7 @@ fn limits_edge_costly_fallback() -> anyhow::Result<()> {
     )
     .context("no key for Codex")?;
     answer(&mut pty, &card, key)?;
-    let events = limits.wait_for("Codex to finish the card", CARD_WAIT, completed_by("codex"))?;
+    let events = limits.wait_for("Codex to finish the task", CARD_WAIT, completed_by("codex"))?;
     assert!(handed_off(&events).iter().any(|event| matches!(
         event,
         HandoffEvent::HandedOff { to, by: Party::User, .. } if to.worker == "codex"
@@ -395,11 +396,11 @@ fn limits_edge_costly_fallback() -> anyhow::Result<()> {
 fn limits_edge_original_returns() -> anyhow::Result<()> {
     let limits = setup(
         "edge-original-returns",
-        "[handoff]\nmode = \"auto\"\nfallback = [\"codex\"]\nunknown_tier = \"equal\"\n",
+        "[fallback]\nmode = \"auto\"\norder = [\"codex\"]\nunknown_tier = \"equal\"\n",
     )?;
     let mut pty = limits.start()?;
-    let events = limits.wait_for("the handoff to Codex", CARD_WAIT, handed_off_to("codex"))?;
-    let card = first_card(&events).context("no card")?;
+    let events = limits.wait_for("the fallback to Codex", CARD_WAIT, handed_off_to("codex"))?;
+    let card = first_card(&events).context("no task")?;
 
     // Matched in two parts, since the notice can wrap.
     pty.wait_for(
@@ -412,7 +413,7 @@ fn limits_edge_original_returns() -> anyhow::Result<()> {
 
     pty.send(&format!("/reassign {card} claude-code\r"))?;
     let events = limits.wait_for(
-        "Claude Code to finish the card",
+        "Claude Code to finish the task",
         CARD_WAIT,
         completed_by("claude-code"),
     )?;
@@ -455,7 +456,7 @@ fn limits_edge_you_take_over() -> anyhow::Result<()> {
     );
     let ui = limits
         .call_with("claude", "--resume")?
-        .context("the vendor UI never ran")?;
+        .context("the agent UI never ran")?;
     assert!(!ui.args.iter().any(|arg| arg == "-p"), "{:?}", ui.args);
     let changed = find(&events, |kind| match kind {
         RunEventKind::Card(CardEvent::TakeOverEnded { changed, .. }) => Some(changed.files_changed),
@@ -465,7 +466,7 @@ fn limits_edge_you_take_over() -> anyhow::Result<()> {
     assert_eq!(option_keys(&back), ['c', 't', 'd']);
 
     answer(&mut pty, &back, 't')?;
-    let events = limits.wait_for("the gates after your work", CARD_WAIT, |events| {
+    let events = limits.wait_for("the checks after your work", CARD_WAIT, |events| {
         seq_of(events, |kind| matches!(kind, RunEventKind::Gate(_))).is_some()
             || opened(events, CheckpointKind::Merge).is_some()
     })?;

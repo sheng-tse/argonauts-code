@@ -43,7 +43,7 @@ fn chat(turn: &str, prompt: &str, answer: &str) -> Vec<AppEvent> {
 }
 
 fn checkpoint_id(id: &str) -> CheckpointId {
-    serde_json::from_value(json!(id)).expect("a checkpoint id")
+    serde_json::from_value(json!(id)).expect("an approval id")
 }
 
 fn run_id() -> RunId {
@@ -71,7 +71,7 @@ fn screen_reader_lines_for_a_crew_run() {
             false,
             "error: old_string not found in src/cli.rs",
         ),
-        narrator_line(RUN, "Both owners are on export.rs."),
+        narrator_line(RUN, "Both workers are on export.rs."),
         run.note("warn", "codex is at 91% of its window"),
         run.finished("merged", "Merged into main"),
     ];
@@ -90,8 +90,8 @@ fn screen_reader_lines_for_a_crew_run() {
     for label in [
         "you: hi",
         "claude-code: Hello there.",
-        "claude-code, owner, card-002: ",
-        "codex, owner, card-003: ",
+        "claude-code, worker, task-002: ",
+        "codex, worker, task-003: ",
         "tool: ",
         "tool error: ",
         "narrator: ",
@@ -138,7 +138,7 @@ fn screen_reader_card_as_numbered_list() {
 
     let merge = run.merge_checkpoint("cp-001");
     let said = reader.event(&merge);
-    assert!(said.bell, "a card that needs you rings the bell");
+    assert!(said.bell, "a task that needs you rings the bell");
     insta::assert_snapshot!("merge_card", said.lines.join("\n"));
     assert!(
         said.lines
@@ -188,7 +188,10 @@ fn screen_reader_card_as_numbered_list() {
     // Answered here, the card no longer takes numbers.
     assert_eq!(
         reader.typed("1").commands,
-        vec![UiCommand::Submit { text: "1".into() }]
+        vec![UiCommand::Submit {
+            text: "1".into(),
+            workflow_requested: false
+        }]
     );
 
     // A question with your own answer: the number, then the answer on the next line.
@@ -266,12 +269,15 @@ fn screen_reader_cards_follow_one_another() {
         picked
             .lines
             .iter()
-            .any(|line| line.contains("Merge checkpoint"))
+            .any(|line| line.contains("Merge approval"))
     );
     // Merge asks again before it's sent, and a letter is only a message.
     assert_eq!(
         reader.typed("y").commands,
-        vec![UiCommand::Submit { text: "y".into() }]
+        vec![UiCommand::Submit {
+            text: "y".into(),
+            workflow_requested: false
+        }]
     );
     assert!(reader.typed("1").commands.is_empty());
     assert!(matches!(
@@ -429,7 +435,7 @@ fn no_color_has_no_color_codes() {
         unreachable!("a run event")
     };
     let RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) = event.kind else {
-        unreachable!("an opened checkpoint")
+        unreachable!("an opened approval")
     };
     let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
     let mut lines: Vec<Line<'static>> = Cell::Tool(call).lines(&ctx);
@@ -525,7 +531,7 @@ fn screen_reader_says_nothing_of_argonauts_own_calls() {
     lines.extend(read(&mut reader, &events));
     let rest = [
         run.tool_started(&crew[0], "s-001-status", "argonauts_status", json!({})),
-        run.tool_finished(&crew[0], "s-001-status", true, "card-002 running"),
+        run.tool_finished(&crew[0], "s-001-status", true, "task-002 running"),
         run.tool_started(
             &crew[0],
             "s-001-report",
@@ -543,7 +549,7 @@ fn screen_reader_says_nothing_of_argonauts_own_calls() {
         "Report",
         "no run is going",
         "Structured output",
-        "card-002 running",
+        "task-002 running",
     ] {
         assert!(!text.contains(unsaid), "{unsaid:?} in:\n{text}");
     }

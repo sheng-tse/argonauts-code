@@ -20,7 +20,7 @@ use super::Planner;
 use crate::recovery::Limits;
 
 pub const RUN: &str = "run-01";
-pub const CARD: &str = "card-003";
+pub const CARD: &str = "task-003";
 
 pub struct Fixture {
     pub settings: Settings,
@@ -90,7 +90,7 @@ impl Fixture {
     pub fn query(&self, stopped: &str) -> CandidateQuery {
         CandidateQuery {
             card: card(CARD),
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             stopped: worker(stopped),
             exclude_families: Vec::new(),
             fallback: Vec::new(),
@@ -176,7 +176,7 @@ pub fn quota(vendor: &str, status: QuotaStatus, used: Option<f64>) -> QuotaReadi
 
 pub fn card(id: &str) -> CardSpec {
     CardSpec {
-        id: CardId::new(id).expect("a valid card id"),
+        id: CardId::new(id).expect("a valid task id"),
         title: "Middleware".to_owned(),
         task: "Add the rate-limit middleware.".to_owned(),
         kind: CardKind::Build,

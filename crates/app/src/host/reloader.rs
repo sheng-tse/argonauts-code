@@ -55,7 +55,7 @@ pub(crate) fn reloader(
 
 fn note_failure(sink: &dyn EventSink, failure: &str) {
     let text = format!(
-        "Your settings didn't load at this checkpoint, so the run keeps its earlier approval \
+        "Your settings didn't load at this approval, so the run keeps its earlier approval \
          settings until they do: {failure}"
     );
     let kind = RunEventKind::Note(Note {
@@ -91,11 +91,12 @@ mod tests {
                 continues: None,
                 overrides: Vec::new(),
                 include_uncommitted: false,
-                default_agent: None,
+                main_agent: None,
                 approval_mode: None,
                 front_end: None,
                 instructions: Vec::new(),
                 request_settings: Vec::new(),
+                required_steps: Vec::new(),
             },
             overrides: overrides.iter().map(|text| (*text).to_owned()).collect(),
             interactive,
@@ -145,7 +146,7 @@ mod tests {
         let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), false).unwrap();
         let recorded = record(
             &env,
-            &["runs.remind_parked_days=3", "budget.run_usd=5.0"],
+            &["runs.remind_waiting_days=3", "limits.spend_per_run=5.0"],
             true,
         );
         let sink = Arc::new(MemorySink::new(recorded.run.clone()));
@@ -154,14 +155,14 @@ mod tests {
         let first = reload().unwrap();
         assert_eq!(first.runs.remind_parked_days, 3);
         assert_eq!(
-            first.budget.run_usd,
+            first.limits.budget.spend_per_run,
             Some(5.0),
             "a safety override recorded as vetted still resolves"
         );
 
         std::fs::write(
             env.global_config(),
-            "[supervisor]\npark_grace = \"45s\"\n\n[runs]\nremind_parked_days = 9\n",
+            "[supervisor]\nwait_grace = \"45s\"\n\n[runs]\nremind_waiting_days = 9\n",
         )
         .unwrap();
         let second = reload().unwrap();
@@ -173,13 +174,13 @@ mod tests {
             second.runs.remind_parked_days, 3,
             "the recorded override still wins over the file"
         );
-        assert_eq!(second.budget.run_usd, Some(5.0));
+        assert_eq!(second.limits.budget.spend_per_run, Some(5.0));
 
         assert!(sink.events().is_empty());
 
         let unvetted = reloader(
             &env,
-            &record(&env, &["budget.run_usd=5.0"], false),
+            &record(&env, &["limits.spend_per_run=5.0"], false),
             sink.clone(),
         );
         assert!(

@@ -22,6 +22,7 @@ pub mod judging;
 pub mod map;
 pub mod scan;
 pub mod spikes;
+mod together;
 
 pub use context::part;
 
@@ -31,8 +32,8 @@ pub use context::part;
 /// follows `drafting.by`; one that names a role is drafted that way whatever it says.
 pub async fn draft_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     let coordinator = match call.step.role {
-        Some(role) => role == RoleName::Coordinator,
-        None => host.settings().drafting.by == PlanningBy::Coordinator,
+        Some(role) => role == RoleName::Orchestrator,
+        None => host.settings().drafting.by == PlanningBy::Orchestrator,
     };
     if coordinator {
         coordinated::run(host, call).await

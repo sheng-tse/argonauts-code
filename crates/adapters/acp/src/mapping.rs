@@ -239,6 +239,7 @@ impl Mapper {
         events.push(AgentEvent::ContextFill {
             used: usage.used,
             size: (usage.size > 0).then_some(usage.size),
+            sent: None,
         });
         let Some(cost) = usage.cost.as_ref().filter(|_| self.cost_from_usage_update) else {
             return;
@@ -454,6 +455,7 @@ mod tests {
             AgentEvent::ContextFill {
                 used: 1200,
                 size: Some(200_000),
+                sent: None,
             },
             AgentEvent::Usage {
                 input_tokens: 0,
@@ -465,6 +467,7 @@ mod tests {
             AgentEvent::ContextFill {
                 used: 1500,
                 size: Some(200_000),
+                sent: None,
             },
             AgentEvent::Usage {
                 input_tokens: 0,
@@ -476,6 +479,7 @@ mod tests {
             AgentEvent::ContextFill {
                 used: 1600,
                 size: None,
+                sent: None,
             },
             unknown(15),
             unknown(16),
@@ -512,7 +516,8 @@ mod tests {
             without_cost.update(&updates[11]),
             vec![AgentEvent::ContextFill {
                 used: 1200,
-                size: Some(200_000)
+                size: Some(200_000),
+                sent: None,
             }]
         );
     }

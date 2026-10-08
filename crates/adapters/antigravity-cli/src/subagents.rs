@@ -47,6 +47,7 @@ impl Subagents {
                 last_message: None,
                 log_uri: text(entry, "log_uri"),
                 steps_visible: false,
+                tokens: None,
             };
             match self.children.iter_mut().find(|child| child.id == id) {
                 None => {

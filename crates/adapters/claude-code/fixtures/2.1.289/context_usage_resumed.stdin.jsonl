@@ -1,0 +1,3 @@
+{"_t": 0.0, "type": "control_request", "request_id": "init-1", "request": {"subtype": "initialize"}}
+{"_t": 0.51, "type": "control_request", "request_id": "ctx-resumed", "request": {"subtype": "get_context_usage", "detail": "summary"}}
+{"_t": 5.55, "_stdin": "closed"}

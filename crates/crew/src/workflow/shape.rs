@@ -33,7 +33,9 @@ impl Rules {
         let settings = host.settings();
         Self {
             understand: settings.understand.when,
-            final_check: settings.workflows.final_check,
+            // A goal's check is what decides it, whatever `workflows.final_check` says.
+            final_check: settings.workflows.final_check
+                || host.read(|state| crate::goal::pursue::pursuing(state, settings)),
             style: run_style(host),
         }
     }
@@ -66,7 +68,7 @@ pub fn as_written(host: &Host, workflow: Workflow) -> Workflow {
         // Off still holds: its Understand skips, so the go-ahead must come after it.
         understand: match rules.understand {
             UnderstandWhen::Off => UnderstandWhen::Off,
-            UnderstandWhen::Crew | UnderstandWhen::Lead => UnderstandWhen::Lead,
+            UnderstandWhen::Crew | UnderstandWhen::Main => UnderstandWhen::Main,
         },
         ..rules
     };
@@ -76,7 +78,7 @@ pub fn as_written(host: &Host, workflow: Workflow) -> Workflow {
 pub fn shape(mut workflow: Workflow, rules: Rules, first_attempt: Option<Phase>) -> Workflow {
     match rules.understand {
         UnderstandWhen::Crew => crew_understands(&mut workflow),
-        UnderstandWhen::Lead => one_reading_goes(&mut workflow),
+        UnderstandWhen::Main => one_reading_goes(&mut workflow),
         // The phase stays, and its steps skip as the run reaches them.
         UnderstandWhen::Off => {}
     }
@@ -226,7 +228,7 @@ fn unconditional_checkpoint(steps: &[Step], kind: CheckpointKind) -> bool {
 /// Understand as the examples write it: readings from several companies, comparisons, and the
 /// one card, in a loop that a send back runs again.
 fn understand_phase() -> Option<Phase> {
-    let example = builtin::load("peer-crew").ok()?;
+    let example = builtin::load("council").ok()?;
     example
         .phases
         .into_iter()
@@ -290,8 +292,8 @@ pub fn attempt_phase(n: u32, title: Option<&str>) -> Phase {
     build.different_family_from = Some(card::AUTHOR.to_owned());
     Phase {
         name: title.map_or_else(|| format!("Attempt {n}"), str::to_owned),
-        detail: "one owner works toward what's unmet, then a review and the check from another \
-                 company"
+        detail: "one worker works toward what's unmet, then a review and the check from another \
+                 provider"
             .to_owned(),
         standard: StandardPhase::Do,
         steps: vec![build, check_step("check:{attempt}")],
@@ -402,7 +404,7 @@ fn final_check(workflow: &mut Workflow, on: bool) {
 pub fn check_phase() -> Phase {
     Phase {
         name: CHECK_PHASE.to_owned(),
-        detail: "a model from another company checks the done-when list".to_owned(),
+        detail: "a model from another provider checks the done-when list".to_owned(),
         standard: StandardPhase::Check,
         steps: vec![check_step("check:final")],
     }
@@ -486,7 +488,7 @@ mod tests {
     }
 
     const FIX_THEN_REVIEW: &str = "name: fix\ndescription: fix it\nphases:\n  - title: Fix\n    \
-        detail: an owner per card\n    standard: do\n    steps:\n      - { kind: build, input: \
+        detail: a worker per task\n    standard: do\n    steps:\n      - { kind: build, input: \
         plan, label: \"fix:{item}\" }\n  - title: Merge\n    detail: the merge\n    standard: \
         decide\n    steps:\n      - { kind: check, label: \"check:final\" }\n      - { kind: \
         merge, label: \"merge:{branch}\" }\n";
@@ -520,7 +522,7 @@ mod tests {
 
     #[test]
     fn the_examples_keep_their_phases_and_gain_only_the_check() {
-        for name in ["peer-crew", "coordinated-crew"] {
+        for name in ["council", "orchestrator"] {
             let example = builtin(name);
             let shaped = shape(example.clone(), rules(RunStyle::Workflow), None);
             let mut expected = names(&example);
@@ -548,7 +550,7 @@ mod tests {
             1,
             Phase {
                 name: "Review".to_owned(),
-                detail: "another company reviews each fix".to_owned(),
+                detail: "another provider reviews each fix".to_owned(),
                 standard: StandardPhase::Check,
                 steps: Vec::new(),
             },
@@ -565,7 +567,7 @@ mod tests {
         let fix = yaml::parse(FIX_THEN_REVIEW).unwrap();
         for (when, opens) in [
             (UnderstandWhen::Crew, true),
-            (UnderstandWhen::Lead, false),
+            (UnderstandWhen::Main, false),
             (UnderstandWhen::Off, false),
         ] {
             let shaped = shape(
@@ -591,7 +593,7 @@ mod tests {
     /// A past regression: no Goal phase, no phase holding only a checkpoint, no nested goal.
     #[test]
     fn no_goal_phase_no_lone_checkpoint_and_no_nested_goal() {
-        for name in ["peer-crew", "coordinated-crew", "draft-and-vote"] {
+        for name in ["council", "orchestrator", "draft-and-vote"] {
             for style in [RunStyle::Workflow, RunStyle::Goal] {
                 let shaped = shape(builtin(name), rules(style), None);
                 for phase in &shaped.phases {
@@ -601,7 +603,7 @@ mod tests {
                             .steps
                             .iter()
                             .any(|step| step.kind != StepKind::Checkpoint),
-                        "{name} {style:?}: {} holds only checkpoints",
+                        "{name} {style:?}: {} holds only approvals",
                         phase.name
                     );
                     assert!(!has_kind(&phase.steps, StepKind::Workflow));
@@ -621,7 +623,7 @@ mod tests {
 
     #[test]
     fn a_goal_is_understand_its_attempts_then_merge() {
-        let shaped = shape(builtin("peer-crew"), rules(RunStyle::Goal), None);
+        let shaped = shape(builtin("council"), rules(RunStyle::Goal), None);
         assert_eq!(names(&shaped), ["Understand", "Attempt 1", "Merge"]);
         let attempt = &shaped.phases[1];
         assert!(is_attempt(attempt));
@@ -635,11 +637,11 @@ mod tests {
         // The lead's first attempt keeps its title and gains its check.
         let planned = Phase {
             name: "Both Fixes".to_owned(),
-            detail: "an owner per function".to_owned(),
+            detail: "a worker per function".to_owned(),
             standard: StandardPhase::Do,
             steps: attempt_phase(1, None).steps[..1].to_vec(),
         };
-        let shaped = shape(builtin("peer-crew"), rules(RunStyle::Goal), Some(planned));
+        let shaped = shape(builtin("council"), rules(RunStyle::Goal), Some(planned));
         assert_eq!(names(&shaped), ["Understand", "Both Fixes", "Merge"]);
         assert!(is_attempt(&shaped.phases[1]));
     }

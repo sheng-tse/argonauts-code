@@ -257,11 +257,14 @@ pub enum NoteLevel {
     Info,
     Warn,
     Error,
+    /// About where you are rather than about something that happened, such as a folder with
+    /// no git: drawn with `※`, as Claude Code draws its asides.
+    Aside,
 }
 
 /// The note a failed retro leaves. Why it failed is in the retro phase's `Failed` summary,
 /// which the main view keeps for Ctrl+O, so a raw schema error never shows there.
-pub const RETRO_FAILED: &str = "The retro failed. The run's result stands.";
+pub const RETRO_FAILED: &str = "The run review failed. The run's result stands.";
 
 /// One line in plain words. Lines after the first are its detail, such as a validator's
 /// errors, which the main view keeps for Ctrl+O.
@@ -437,7 +440,7 @@ mod tests {
     }
 
     fn card() -> Option<CardId> {
-        Some(CardId::new("card-001").unwrap())
+        Some(CardId::new("task-001").unwrap())
     }
 
     fn event(kind: RunEventKind) -> RunEvent {
@@ -494,7 +497,7 @@ mod tests {
                 base_branch: Some("main".into()),
                 base_commit: "abc".into(),
                 config_hash: "f00".into(),
-                config: json!({"default_agent": "codex"}),
+                config: json!({"main_agent": "codex"}),
                 version: "0.0.1".into(),
             }),
             RunEventKind::Agent(AgentEvent::FileChanged {
@@ -525,7 +528,7 @@ mod tests {
             }),
             RunEventKind::GateResult(gate.clone()),
             RunEventKind::Commit(CommitInfo {
-                branch: "argonauts/run-01/card-001".into(),
+                branch: "argonauts/run-01/task-001".into(),
                 sha: Some("abc".into()),
                 message: "m".into(),
                 stat: DiffStat {
@@ -577,7 +580,7 @@ mod tests {
             json!({
                 "ts": "2026-09-29T04:15:03.25Z",
                 "run_id": "run-01",
-                "card_id": "card-001",
+                "card_id": "task-001",
                 "source": "conductor",
                 "kind": {"type": "agent", "data": {"type": "text_delta", "text": "hi", "parent": null}},
             })
@@ -722,10 +725,10 @@ mod tests {
     fn a_notes_detail_follows_its_line() {
         let note = Note::with_detail(
             NoteLevel::Warn,
-            "The lead's design came back incomplete.",
+            "The main agent's design came back incomplete.",
             "output didn't match the schema: \"name\" is a required property",
         );
-        assert_eq!(note.line(), "The lead's design came back incomplete.");
+        assert_eq!(note.line(), "The main agent's design came back incomplete.");
         assert_eq!(
             note.detail(),
             Some("output didn't match the schema: \"name\" is a required property")

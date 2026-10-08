@@ -1,5 +1,6 @@
-# The fake Codex owns the card, writes notes.txt, and hits its usage limit with the message
-# the real one prints. Claude Code takes the card over and finishes it.
+# The fake Codex owns the task, writes notes.txt, and hits its usage limit with the message
+# the real one prints. Claude Code takes the task over and finishes it. The reset carries a
+# far-off date: a bare time such as 3:00 PM means today, so the test would fail after it.
 
 [version]
 claude = "2.1.284 (Claude Code)"
@@ -26,8 +27,8 @@ emit = '{"type":"turn.started"}'
 [[rule.step]]
 write = { path = "notes.txt", content = "first half\n" }
 [[rule.step]]
-emit = '{"type":"error","message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at 3:00 PM."}'
+emit = '{"type":"error","message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at Dec 31st, 2099 3:00 PM."}'
 [[rule.step]]
-emit = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at 3:00 PM."}}'
+emit = '{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), or try again at Dec 31st, 2099 3:00 PM."}}'
 [[rule.step]]
 exit = 1

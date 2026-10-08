@@ -33,8 +33,9 @@ use crate::state::checkpoints::CheckpointRecord;
 use crate::state::ids::IdKind;
 use crate::workflow::{StepAt, change, kinds};
 
+pub mod autopilot;
+pub mod decline;
 pub mod evidence;
-pub mod full_auto;
 pub mod options;
 
 /// What a module asks for when it opens a checkpoint.
@@ -74,7 +75,7 @@ pub struct Desk {
     /// refused rather than counted twice.
     spot_checked: Mutex<BTreeSet<CheckpointId>>,
     /// Checkpoints the policy weighs, or weighed, in full auto in this process.
-    full_auto: Mutex<BTreeSet<CheckpointId>>,
+    autopilot: Mutex<BTreeSet<CheckpointId>>,
     deciding: Mutex<()>,
 }
 
@@ -171,7 +172,7 @@ pub fn asks_you_about(settings: &Settings, topics: &[&str]) -> bool {
 /// [`asks_you_about`] at a checkpoint of `kind` in this run: never in full auto, where nothing
 /// waits for you.
 pub fn keeps_yours(host: &Host, kind: CheckpointKind, topics: &[&str]) -> bool {
-    !full_auto::applies_now(host, kind) && asks_you_about(host.settings(), topics)
+    !autopilot::applies_now(host, kind) && asks_you_about(host.settings(), topics)
 }
 
 /// Why a card about `topic` waits for you though the lead answers.
@@ -210,7 +211,7 @@ impl Opening {
                         state.checkpoints.by_id.get(&id).and_then(|record| record.withdrawn.clone())
                     })
                     .unwrap_or_else(|| "the run stopped".to_owned());
-                EngineError::Refused(format!("checkpoint {id} was withdrawn: {reason}"))
+                EngineError::Refused(format!("approval {id} was withdrawn: {reason}"))
             }),
             () = host.interrupted().cancelled() => Err(EngineError::Interrupted),
         }
@@ -307,17 +308,17 @@ fn open_with(
         lock(&desk.because).insert(id.clone(), because);
     }
     if evaluate {
-        if full_auto::chosen(point.mode_override, host.settings(), request.kind) {
-            lock(&desk.full_auto).insert(id.clone());
+        if autopilot::chosen(point.mode_override, host.settings(), request.kind) {
+            lock(&desk.autopilot).insert(id.clone());
         }
         spawn_policy(host, point, evidence);
-    } else if full_auto::applies_now(host, request.kind) {
+    } else if autopilot::applies_now(host, request.kind) {
         // Only you could answer it, or it already asked you before full auto was on. One full
         // auto itself keeps for you stays yours.
         if kept_yours {
-            lock(&desk.full_auto).insert(id.clone());
+            lock(&desk.autopilot).insert(id.clone());
         }
-        full_auto::settle_open(host)?;
+        autopilot::settle_open(host)?;
     }
     Ok(Opening::Waiting { id, receiver })
 }
@@ -348,7 +349,7 @@ fn ask_again(host: &Host, record: &CheckpointRecord) -> EngineResult<()> {
         ..point
     });
     lock(&desk.points).insert(id.clone(), point.clone());
-    lock(&desk.full_auto).insert(id.clone());
+    lock(&desk.autopilot).insert(id.clone());
     spawn_policy(host, point, evidence);
     Ok(())
 }
@@ -504,7 +505,7 @@ pub fn evidence_of(host: &Host, opened: &CheckpointOpened) -> EngineResult<Evide
     let packet: EvidencePacket = serde_json::from_slice(&std::fs::read(&path)?)?;
     if packet.sha256() != opened.evidence_sha256 {
         return Err(EngineError::Refused(format!(
-            "the evidence of checkpoint {} changed since it opened",
+            "the evidence of approval {} changed since it opened",
             opened.id
         )));
     }
@@ -540,7 +541,7 @@ fn record_opened(
             configured.mode,
         )
     };
-    let in_full_auto = host.read(|state| full_auto::applies(state, host.settings(), request.kind));
+    let in_autopilot = host.read(|state| autopilot::applies(state, host.settings(), request.kind));
     let mut options = request
         .options
         .clone()
@@ -562,7 +563,7 @@ fn record_opened(
         free_text: request.free_text,
         // Only auto can settle it without you; the policy's check says so once it's in. Full
         // auto settles what's left itself.
-        needs_you: !mode.goes_ahead() && !in_full_auto,
+        needs_you: !mode.goes_ahead() && !in_autopilot,
     };
     host.record(
         request.card.as_ref(),
@@ -604,14 +605,14 @@ pub fn mode_now(host: &Host, kind: CheckpointKind) -> ApprovalMode {
 
 /// Who answers the crew's questions at a checkpoint of `kind` now: in full auto the model you
 /// picked, else the lead; otherwise the lead once you said "Yes, and let the lead answer" in
-/// this run, else `approvals.answered_by`, else the lead in auto mode and you otherwise.
+/// this run, else `approvals.answers`, else the lead in auto mode and you otherwise.
 pub fn answerer(host: &Host, kind: CheckpointKind) -> Answerer {
     let approvals = &host.settings().approvals;
-    if full_auto::applies_now(host, kind) {
-        return approvals.answerer(ApprovalMode::FullAuto);
+    if autopilot::applies_now(host, kind) {
+        return approvals.answerer(ApprovalMode::Autopilot);
     }
     if host.read(crate::goal::checkpoint::lead_answers_for_you) {
-        return Answerer::Lead;
+        return Answerer::Main;
     }
     approvals.answerer(mode_now(host, kind))
 }
@@ -638,7 +639,7 @@ fn decision_point(host: &Host, id: &CheckpointId, request: &CheckpointRequest) -
 /// The lead now, whose answers stand in for yours in full auto: the phase's lead, else the
 /// default agent.
 fn lead_of(state: &RunState, settings: &Settings) -> WorkerRef {
-    crate::lead::phase_lead(state, settings).unwrap_or_else(|| settings.default_agent.clone())
+    crate::lead::phase_lead(state, settings).unwrap_or_else(|| settings.main_agent.clone())
 }
 
 /// The recipe the run's triage picked, which shadow records count per.
@@ -648,7 +649,7 @@ fn recipe_of(state: &RunState) -> Option<String> {
         .started
         .as_ref()
         .and_then(|started| started.triage.as_ref())
-        .and_then(|triage| triage.rule.strip_prefix("recipe:"))
+        .and_then(|triage| triage.rule.strip_prefix("learned:"))
         .map(str::to_owned)
 }
 
@@ -690,15 +691,20 @@ fn spawn_policy(host: &Host, point: DecisionPoint, evidence: EvidencePacket) {
 }
 
 /// Your answer. Refused with the reason when the action wasn't offered, the evidence hash
-/// differs, or it was already decided. After it's recorded, `policy.user_decided` is called so
+/// differs, or it was already decided. Esc is an answer too: [`decline`] takes an option in
+/// your place, so nothing waits forever. After it's recorded, `policy.user_decided` is called so
 /// shadow records can be scored.
 pub fn answer(host: &Host, answer: CheckpointAnswer) -> Result<(), String> {
+    // Esc: carry on without me. No question offers it, and it isn't bound to the evidence.
+    if answer.action == AnswerAction::CarryOn {
+        return decline::left(host, &answer.id);
+    }
     let desk = &host.shared().desk;
     let (decided, point, yours) = {
         let _deciding = lock(&desk.deciding);
         let record = host
             .read(|state| state.checkpoints.by_id.get(&answer.id).cloned())
-            .ok_or_else(|| format!("no checkpoint {}", answer.id))?;
+            .ok_or_else(|| format!("no approval {}", answer.id))?;
         if record.decided.is_some() {
             return Err("already decided".to_owned());
         }
@@ -707,7 +713,7 @@ pub fn answer(host: &Host, answer: CheckpointAnswer) -> Result<(), String> {
         }
         if record.opened.evidence_sha256 != answer.evidence_sha256 {
             return Err(
-                "the evidence changed since the card was shown; look at it again and answer"
+                "the evidence changed since the question was shown; look at it again and answer"
                     .to_owned(),
             );
         }
@@ -757,7 +763,7 @@ pub fn spot_check(host: &Host, id: &CheckpointId, correct: bool) -> Result<(), S
     let desk = &host.shared().desk;
     let record = host
         .read(|state| state.checkpoints.by_id.get(id).cloned())
-        .ok_or_else(|| format!("no checkpoint {id}"))?;
+        .ok_or_else(|| format!("no approval {id}"))?;
     if !record.spot_check {
         return Err(format!("{id} isn't waiting for a spot check"));
     }
@@ -768,7 +774,7 @@ pub fn spot_check(host: &Host, id: &CheckpointId, correct: bool) -> Result<(), S
     host.services().policy.spot_checked(&point, correct);
     if !correct {
         let what = format!(
-            "your spot check found the auto-approval at the {} checkpoint wrong",
+            "your spot check found the auto-approval at the {} approval wrong",
             serde_json::to_value(record.opened.kind)
                 .ok()
                 .and_then(|kind| kind.as_str().map(|kind| kind.replace('_', " ")))
@@ -806,7 +812,7 @@ fn recorded_point(host: &Host, record: &CheckpointRecord) -> DecisionPoint {
 
 fn check_offered(opened: &CheckpointOpened, answer: &CheckpointAnswer) -> Result<(), String> {
     if matches!(answer.action, AnswerAction::ShowDiff) {
-        return Err("showing the details doesn't answer the card".to_owned());
+        return Err("showing the details doesn't answer the question".to_owned());
     }
     let offered = opened.options.iter().any(|option| option.action == answer.action)
         // "Pick another agent" lists every valid agent, so any of them may come back.
@@ -817,7 +823,7 @@ fn check_offered(opened: &CheckpointOpened, answer: &CheckpointAnswer) -> Result
                 .any(|option| option.action == AnswerAction::OtherCandidates));
     if !offered {
         return Err(format!(
-            "that answer isn't one the card offered ({:?})",
+            "that answer isn't one the question offered ({:?})",
             answer.action
         ));
     }
@@ -854,7 +860,7 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
     let _deciding = lock(&desk.deciding);
     let record = host
         .read(|state| state.checkpoints.by_id.get(id).cloned())
-        .ok_or_else(|| EngineError::Refused(format!("no checkpoint {id}")))?;
+        .ok_or_else(|| EngineError::Refused(format!("no approval {id}")))?;
     let card = record.opened.card.clone();
     let checked = |check: PolicyCheck| {
         host.record(
@@ -866,10 +872,10 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
     // A check already in counts as the policy's last word, unless full auto asked it again.
     let asked_again = record.policy_check().is_some()
         && record.is_open()
-        && full_auto::asked_in_full_auto(host, &record)
-        && record.opened.mode != ApprovalMode::FullAuto;
+        && autopilot::asked_in_autopilot(host, &record)
+        && record.opened.mode != ApprovalMode::Autopilot;
     let late = !record.is_open() || (record.policy_check().is_some() && !asked_again);
-    let in_full_auto = !late && full_auto::applies_now(host, record.opened.kind);
+    let in_autopilot = !late && autopilot::applies_now(host, record.opened.kind);
     match outcome {
         PolicyOutcome::AskUser { violations, shadow } => {
             let because = || {
@@ -887,7 +893,7 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
                 reasons: shadow.reasons,
                 shadow: true,
             };
-            if in_full_auto && !full_auto::asked_in_full_auto(host, &record) {
+            if in_autopilot && !autopilot::asked_in_autopilot(host, &record) {
                 // Weighed before full auto came on, so it's weighed again in full auto.
                 if let Some(shadow) = shadow {
                     checked(shadow_check(shadow))?;
@@ -896,24 +902,33 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
             }
             let held = match &shadow {
                 _ if !violations.is_empty() => {
-                    full_auto::Held::HardLimit(full_auto::at_hard_limit(host, &record, &violations))
+                    autopilot::Held::HardLimit(autopilot::at_hard_limit(host, &record, &violations))
                 }
-                Some(shadow) if shadow.would == Verdict::Reject => full_auto::Held::Rejected,
-                _ => full_auto::Held::Undecided,
+                _ if autopilot::kept_for_you(host.settings(), record.opened.kind) => {
+                    autopilot::Held::Kept
+                }
+                Some(shadow) if shadow.would == Verdict::Reject => autopilot::Held::Rejected,
+                _ => autopilot::Held::Undecided,
             };
             let not_checked = shadow.as_ref().and_then(|shadow| {
                 let rules_alone = shadow.by == DecideWith::Rules;
                 unchecked_question(record.opened.kind, rules_alone, &shadow.reasons)
             });
             let why = not_checked.or_else(because);
-            if in_full_auto {
-                full_auto::decide(host, &record, held, why.clone(), &violations)?;
+            let plan_in_auto = !late
+                && autopilot::settles_a_plan_in_auto(
+                    &record.opened,
+                    shadow.is_some(),
+                    !violations.is_empty(),
+                );
+            if in_autopilot || plan_in_auto {
+                autopilot::decide(host, &record, held, why.clone(), &violations)?;
             }
             if !late {
                 // In auto the card says why it still came to you, in one line, and so does a
                 // card full auto left to you. One full auto settled keeps what the policy found
                 // for you to review, recorded after the decision so it never shows as waiting.
-                let says_why = in_full_auto || record.opened.mode.goes_ahead();
+                let says_why = in_autopilot || record.opened.mode.goes_ahead();
                 checked(PolicyCheck {
                     id: id.clone(),
                     violations,
@@ -936,7 +951,7 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
             reasons,
             spot_check,
         } => {
-            let unchecked = in_full_auto
+            let unchecked = in_autopilot
                 && by == DecideWith::Rules
                 && configured(host.settings(), record.opened.kind).decide_with != DecideWith::Rules;
             let no_model = reasons.last().cloned().filter(|_| unchecked);
@@ -954,20 +969,22 @@ pub fn policy_outcome(host: &Host, id: &CheckpointId, outcome: PolicyOutcome) ->
                 return Ok(());
             }
             if let Some(why) = no_model {
-                full_auto::rules_alone(host, &record.opened, &why)?;
+                autopilot::rules_alone(host, &record.opened, &why)?;
             }
             let otherwise = configured(host.settings(), record.opened.kind).otherwise;
             let Some(action) = action_for(&record.opened.options, verdict, otherwise) else {
-                // Escalated, or nothing offered fits: it waits for you, unless in full auto.
-                if in_full_auto {
+                // Escalated, or nothing offered fits: it waits for you, unless in full auto,
+                // or it is a plan in auto, which never stops for you.
+                let plan_in_auto = autopilot::settles_a_plan_in_auto(&record.opened, true, false);
+                if in_autopilot || plan_in_auto {
                     let checked = host.read(|state| state.checkpoints.by_id.get(id).cloned());
                     let record = checked.unwrap_or(record);
                     let held = match verdict {
-                        Verdict::Reject => full_auto::Held::Rejected,
-                        Verdict::Approve | Verdict::Escalate => full_auto::Held::Undecided,
+                        Verdict::Reject => autopilot::Held::Rejected,
+                        Verdict::Approve | Verdict::Escalate => autopilot::Held::Undecided,
                     };
                     let why = not_checked.or_else(|| why_asked_of(&record));
-                    full_auto::decide(host, &record, held, why, &[])?;
+                    autopilot::decide(host, &record, held, why, &[])?;
                 }
                 return Ok(());
             };
@@ -1089,7 +1106,7 @@ fn withdraw_locked(host: &Host, id: &CheckpointId, reason: &str) -> EngineResult
     });
     let Some(card) = card else {
         return Err(EngineError::Refused(format!(
-            "checkpoint {id} isn't open, so it can't be withdrawn"
+            "approval {id} isn't open, so it can't be withdrawn"
         )));
     };
     host.record(
@@ -1122,7 +1139,7 @@ pub fn configured(settings: &Settings, kind: CheckpointKind) -> Configured {
     })
 }
 
-/// A kind's own settings, for the kinds that have them. The `full_auto` switch puts each one a
+/// A kind's own settings, for the kinds that have them. The `autopilot` switch puts each one a
 /// run opens in full auto.
 fn own_settings(settings: &Settings, kind: CheckpointKind) -> Option<Configured> {
     let approvals = &settings.approvals;
@@ -1141,10 +1158,10 @@ fn own_settings(settings: &Settings, kind: CheckpointKind) -> Option<Configured>
         CheckpointKind::Plan => from!(approvals.plan),
         CheckpointKind::Merge => from!(approvals.merge),
         // Decided outside runs, so the switch and the hard-limit choice leave it be.
-        CheckpointKind::RecipePromotion => Configured {
-            mode: approvals.recipe_promotion.mode,
-            decide_with: approvals.recipe_promotion.decide_with,
-            otherwise: approvals.recipe_promotion.otherwise,
+        CheckpointKind::WorkflowPromotion => Configured {
+            mode: approvals.workflow_promotion.mode,
+            decide_with: approvals.workflow_promotion.decide_with,
+            otherwise: approvals.workflow_promotion.otherwise,
             at_hard_limit: AtHardLimit::default(),
         },
         CheckpointKind::Escalation => from!(approvals.escalation),

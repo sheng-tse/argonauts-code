@@ -76,6 +76,14 @@ pub struct Shared {
     /// Ids handed out, which may run ahead of the log until their events are recorded.
     pub allocated: Mutex<Counters>,
     pub live: LiveSessions,
+    /// Held while a session that takes the next free slot among those like it starts, so two
+    /// that start side by side never take the same one.
+    pub start_turn: tokio::sync::Mutex<()>,
+    /// Tasks whose step lets its worker run a workflow of its own. A workflow's script says
+    /// so again each time it asks for the worker, so nothing of it is kept between stretches.
+    pub own_workflows: Mutex<BTreeSet<CardId>>,
+    /// Tasks Claude Code works as its own workflow, and what their session gets for it.
+    pub claude_codes_own: Mutex<BTreeMap<CardId, crate::claude_codes::OwnSession>>,
     pub desk: Desk,
     /// The user's status summary, folded as events are recorded.
     pub status: Mutex<Folder>,
@@ -119,8 +127,14 @@ pub struct Shared {
     /// The build and cache output the run's commits left out that it has named so far, so each
     /// commit names only what's new.
     pub told_left_out: Mutex<BTreeSet<String>>,
+    /// The tasks whose goal is being checked on your ask right now, so a second ask doesn't
+    /// run the same commands beside the first.
+    pub checking_goals: Mutex<BTreeSet<CardId>>,
     /// Who is out, which stand-in took which seat, and which handovers were said.
     pub(crate) stand_ins: Mutex<stand_in::Memory>,
+    /// How many times each task's agent ended its turn with a question and was told to decide
+    /// since the task last reported, so `approvals.ask_limit` holds across its resumes.
+    pub(crate) asked_anyway: Mutex<BTreeMap<CardId, u32>>,
 }
 
 impl Shared {
@@ -128,7 +142,7 @@ impl Shared {
     /// first; builds the rest from it and the folded history.
     pub fn new(context: &EngineContext, state: RunState) -> EngineResult<Self> {
         let mut status = Folder::default();
-        let mut run_meter = RunMeter::new(&context.settings.budget);
+        let mut run_meter = RunMeter::new(&context.settings.limits.budget);
         for event in &context.history {
             status.push(event);
             run_meter.observe(event);
@@ -142,23 +156,32 @@ impl Shared {
             .and_then(Path::parent)
             .unwrap_or(&context.repo.run_dir);
         let settings = context.settings.clone();
+        let git = GIT_ENV
+            .try_with(|env| Git::with_env(env.clone()))
+            .unwrap_or_default()
+            .leaving_out(
+                context.settings.merge.leave_out_builtin,
+                &context.settings.merge.leave_out,
+            )
+            .capping_new_files(context.settings.commit.max_new_file_mb);
+        let git = match context.repo.hidden_git() {
+            Some(hidden) => git.with_hidden(context.repo.root.clone(), hidden),
+            None => git,
+        };
         Ok(Self {
             run: context.run.clone(),
             repo: context.repo.clone(),
             settings_sha256: context.settings_sha256.clone(),
             sink: context.sink.clone(),
             services: context.services.clone(),
-            git: GIT_ENV
-                .try_with(|env| Git::with_env(env.clone()))
-                .unwrap_or_default()
-                .leaving_out(
-                    context.settings.merge.leave_out_builtin,
-                    &context.settings.merge.leave_out,
-                ),
+            git,
             mode: state.run.mode.unwrap_or(RunMode::Solo),
             allocated: Mutex::new(state.ids.clone()),
             state: Mutex::new(state),
             live: LiveSessions::default(),
+            start_turn: tokio::sync::Mutex::new(()),
+            own_workflows: Mutex::new(BTreeSet::new()),
+            claude_codes_own: Mutex::new(BTreeMap::new()),
             desk: Desk::default(),
             status: Mutex::new(status),
             status_files: Mutex::new(StatusFiles::default()),
@@ -183,7 +206,9 @@ impl Shared {
             reusing: Mutex::new(()),
             run_meter: Mutex::new(run_meter),
             told_left_out: Mutex::new(BTreeSet::new()),
+            checking_goals: Mutex::new(BTreeSet::new()),
             stand_ins: Mutex::default(),
+            asked_anyway: Mutex::default(),
             settings,
         })
     }
@@ -195,6 +220,30 @@ impl Shared {
 
     pub fn admission(&self) -> Admission {
         *self.admission.borrow()
+    }
+
+    /// A workflow's step lets this task's worker run a workflow of its own.
+    pub fn let_run_its_own_workflow(&self, card: &CardId) {
+        lock(&self.own_workflows).insert(card.clone());
+    }
+
+    pub fn may_run_its_own_workflow(&self, card: &CardId) -> bool {
+        lock(&self.own_workflows).contains(card)
+    }
+
+    /// Claude Code works this task as its own workflow, its session as `own` says.
+    pub fn work_as_claude_codes_own(&self, card: &CardId, own: crate::claude_codes::OwnSession) {
+        lock(&self.own_workflows).insert(card.clone());
+        lock(&self.claude_codes_own).insert(card.clone(), own);
+    }
+
+    pub fn claude_codes_own(&self, card: &CardId) -> Option<crate::claude_codes::OwnSession> {
+        lock(&self.claude_codes_own).get(card).cloned()
+    }
+
+    /// The task's workflow is over, so its tools are gone with it.
+    pub fn done_as_claude_codes_own(&self, card: &CardId) {
+        lock(&self.claude_codes_own).remove(card);
     }
 
     /// The interrupt as it is now. A wait reads it when it starts.

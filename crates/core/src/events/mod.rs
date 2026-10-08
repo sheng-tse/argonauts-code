@@ -3,6 +3,7 @@
 
 pub mod card;
 pub mod checkpoint;
+pub mod context;
 pub mod goal;
 pub mod plan;
 pub mod run;
@@ -19,6 +20,7 @@ use crate::{AgentEvent, CardId, Note, RunId};
 
 pub use card::{CardEvent, GateOutcome, IntegrationEvent, ReviewEvent};
 pub use checkpoint::CheckpointEvent;
+pub use context::{ContextCategory, ContextDetail, ContextItem, ContextPart};
 pub use goal::GoalEvent;
 pub use plan::{DivideEvent, PlanEvent};
 pub use run::{PhaseChange, RunLifecycle};

@@ -43,7 +43,7 @@ fn envelope(kind: Value) -> Value {
         "seq": 7,
         "ts": "2026-09-29T12:00:00Z",
         "run_id": "run-01",
-        "card_id": "card-002",
+        "card_id": "task-002",
         "session": "s-003",
         "source": "conductor",
         "kind": kind,
@@ -73,10 +73,10 @@ fn goal_file() -> Value {
 }
 
 fn card_spec() -> Value {
-    json!({"id": "card-002", "title": "Redis store", "task": "Add the token bucket store",
-           "kind": {"kind": "acceptance_tests", "for_card": "card-003"},
+    json!({"id": "task-002", "title": "Redis store", "task": "Add the token bucket store",
+           "kind": {"kind": "acceptance_tests", "for_card": "task-003"},
            "owned_paths": ["src/limits/store.ts"], "read_only_paths": ["src/limits/types.ts"],
-           "forbidden_paths": [], "hidden_paths": ["tests/hidden"], "depends_on": ["card-001"],
+           "forbidden_paths": [], "hidden_paths": ["tests/hidden"], "depends_on": ["task-001"],
            "criteria": ["G1"], "owner": "codex/gpt-x", "reviewers": ["claude-code/opus"],
            "budget": {"limit": usd(3.5), "max_minutes": 20.0, "max_tool_calls": null,
                       "inactivity_min": 5.0},
@@ -85,7 +85,7 @@ fn card_spec() -> Value {
 }
 
 fn queued() -> Value {
-    json!({"id": "m-001", "from": {"party": "user"}, "to": {"target": "card", "value": "card-002"},
+    json!({"id": "m-001", "from": {"party": "user"}, "to": {"target": "card", "value": "task-002"},
            "text": "keep a fallback", "queued_at": "2026-09-29T12:00:00Z", "delivery": "next_turn"})
 }
 
@@ -103,7 +103,7 @@ fn quota_reading() -> Value {
 }
 
 fn handoff_plan() -> Value {
-    json!({"card": "card-002", "title": "Redis store", "stopped": "claude-code/opus",
+    json!({"card": "task-002", "title": "Redis store", "stopped": "claude-code/opus",
            "reason": "usage limit, resets in 2h 10m", "resets_at": "2026-09-29T18:00:00Z",
            "work": diff_stat(), "gates_ran": false,
            "candidates": [
@@ -152,7 +152,7 @@ fn every_event_kind() -> Vec<Value> {
 
     let checkpoint_opened = |kind: &str, packet: Value, options: Value, free_text: &str| {
         checkpoint(json!({"event": "opened", "id": "cp-003", "kind": kind,
-            "title": "Checkpoint · run-01", "card": "card-002", "packet": packet,
+            "title": "Approval · run-01", "card": "task-002", "packet": packet,
             "evidence_sha256": "e3b0", "mode": "supervised", "decide_with": "rules",
             "options": options, "free_text": free_text, "needs_you": true}))
     };
@@ -162,7 +162,7 @@ fn every_event_kind() -> Vec<Value> {
         run(
             json!({"event": "started", "request": "add per-key rate limiting",
             "title": "Per-key rate limiting", "mode": "crew", "forced": false,
-            "preset": "peer-crew",
+            "workflow": "council",
             "estimate": {"task_type": "api-feature", "summary": "middleware and a store",
                          "files_likely": ["src/limits/store.ts"], "file_count": 5,
                          "risk_labels": ["api", "storage"], "tests_exist": true, "unknowns": []},
@@ -171,20 +171,22 @@ fn every_event_kind() -> Vec<Value> {
             "chat_turn": "t-012", "continues": null, "repo_root": "/repo",
             "base_branch": "main", "base_commit": "8b41d07", "uncommitted": ["notes.txt"],
             "uncommitted_included": false, "settings_sha256": "5e7f",
-            "settings": {"preset": "peer-crew"},
+            "settings": {"workflow": "council"},
             "overrides": [{"key": "critique.rounds", "value": "0", "from": "flag"}],
             "harness_versions": {"codex": "0.158.0"}, "version": "0.0.1"}),
         ),
         run(
             json!({"event": "resumed", "cause": "answer", "settings_changed": false,
             "harness_versions_changed": ["codex"], "main_moved_by": 2,
-            "sessions": [{"session": "s-009", "card": "card-002", "vendor_session": "abc",
+            "sessions": [{"session": "s-009", "card": "task-002", "vendor_session": "abc",
                           "resumed": true}]}),
         ),
         run(json!({"event": "pause_requested", "by": {"party": "user"}, "now": false})),
-        run(json!({"event": "approval_mode_changed", "mode": "shadow", "by": {"party": "user"}})),
+        run(
+            json!({"event": "approval_mode_changed", "mode": "auto_preview", "by": {"party": "user"}}),
+        ),
         run(json!({"event": "pause_cancelled"})),
-        run(json!({"event": "paused", "sessions_stopped": 2, "committed": ["card-002"]})),
+        run(json!({"event": "paused", "sessions_stopped": 2, "committed": ["task-002"]})),
         run(json!({"event": "stop_requested", "by": {"party": "user"}})),
         run(json!({"event": "parked", "reason": {"why": "checkpoint"}, "waiting_on": ["cp-003"]})),
         run(json!({"event": "parked", "reason": {"why": "paused"}, "waiting_on": []})),
@@ -202,7 +204,7 @@ fn every_event_kind() -> Vec<Value> {
             "tests": ["python3 -m unittest tests.test_money: all 6 passed"],
             "left": ["format_cents() still rounds half down"]})),
         run(json!({"event": "closing_answer", "text": "The run stopped before any change."})),
-        run(json!({"event": "finished", "outcome": "merged", "detail": "landed on main"})),
+        run(json!({"event": "finished", "outcome": "merged", "detail": "merged into main"})),
         run(
             json!({"event": "resumed", "cause": "ask_timeout", "settings_changed": false,
             "harness_versions_changed": [], "main_moved_by": null, "sessions": []}),
@@ -283,15 +285,15 @@ fn every_event_kind() -> Vec<Value> {
             "path": "/repo/.argonauts/decisions/D-003-redis.md"}),
         ),
         plan(json!({"event": "coordinated", "coordinator": "codex",
-            "rejection": "card-004 owns a protected path"})),
-        divide(json!({"event": "graph", "cards": [card_spec()], "critical_path": ["card-002"]})),
+            "rejection": "task-004 owns a protected path"})),
+        divide(json!({"event": "graph", "cards": [card_spec()], "critical_path": ["task-002"]})),
         divide(
-            json!({"event": "owner", "card": "card-002", "worker": "codex",
+            json!({"event": "owner", "card": "task-002", "worker": "codex",
             "algorithm": "round-robin", "explored": false, "reason": "9 of 11 passed"}),
         ),
-        divide(json!({"event": "reviewers", "card": "card-002",
+        divide(json!({"event": "reviewers", "card": "task-002",
             "reviewers": ["claude-code/opus"], "blind": true})),
-        divide(json!({"event": "predicted", "card": "card-002",
+        divide(json!({"event": "predicted", "card": "task-002",
             "predictions": {"p_pass_gates_first_try": 0.7, "p_within_time_cap": 0.8,
                             "p_at_most_two_attempts": 0.9}})),
         divide(
@@ -300,7 +302,7 @@ fn every_event_kind() -> Vec<Value> {
         ),
         card(with(json!({"event": "created"}), card_spec())),
         card(
-            json!({"event": "created", "id": "card-001", "title": "Solo", "task": "fix it",
+            json!({"event": "created", "id": "task-001", "title": "Solo", "task": "fix it",
             "kind": {"kind": "solo"}, "owned_paths": [], "read_only_paths": [],
             "forbidden_paths": [], "hidden_paths": [], "depends_on": [], "criteria": [],
             "owner": null, "reviewers": [],
@@ -311,11 +313,11 @@ fn every_event_kind() -> Vec<Value> {
         card(json!({"event": "state", "from": "running", "to": "gating", "reason": "report done"})),
         card(json!({"event": "state", "from": null, "to": "waiting", "reason": "created"})),
         card(json!({"event": "attempt", "attempt": 2, "worker": "codex", "cause": "gate_retry"})),
-        card(json!({"event": "worktree", "path": "/wt/card-002",
-            "branch": "argonauts/run-01/card-002", "base": "8b41d07"})),
+        card(json!({"event": "worktree", "path": "/wt/task-002",
+            "branch": "argonauts/run-01/task-002", "base": "8b41d07"})),
         card(
-            json!({"event": "committed", "branch": "argonauts/run-01/card-002", "sha": "c0ffee",
-            "message": "card-002: Redis store", "stat": diff_stat()}),
+            json!({"event": "committed", "branch": "argonauts/run-01/task-002", "sha": "c0ffee",
+            "message": "task-002: Redis store", "stat": diff_stat()}),
         ),
         card(
             json!({"event": "reported", "status": "done", "summary": "store added",
@@ -324,7 +326,7 @@ fn every_event_kind() -> Vec<Value> {
             "change_requests": [{"text": "widen the Store trait", "paths": ["src/types.ts"]}],
             "memory_proposals": [{"topic": "redis", "text": "use EVAL for atomicity"}]}),
         ),
-        card(json!({"event": "diff", "stat": diff_stat(), "path": "/state/cards/card-002/diff"})),
+        card(json!({"event": "diff", "stat": diff_stat(), "path": "/state/cards/task-002/diff"})),
         card(json!({"event": "taken_over", "command": ["codex", "resume", "abc"]})),
         card(json!({"event": "take_over_ended", "changed": diff_stat(), "commit": null})),
         card(
@@ -333,12 +335,12 @@ fn every_event_kind() -> Vec<Value> {
         ),
         session(
             json!({"event": "started", "worker": "codex", "vendor": "codex", "family": "gpt",
-            "kind": "harness", "role": "owner", "step": "build", "access": "build",
-            "lifetime": "card", "resumed_from": null, "follow_key": 2}),
+            "kind": "harness", "role": "worker", "step": "build", "access": "build",
+            "lifetime": "task", "resumed_from": null, "follow_key": 2}),
         ),
         session(json!({"event": "input",
             "launch": {"program": "codex", "args": ["exec", "--json", "<prompt>"],
-                "cwd": "/wt/card-002", "env_set": ["ARGONAUTS_SESSION"],
+                "cwd": "/wt/task-002", "env_set": ["ARGONAUTS_SESSION"],
                 "env_removed": ["ANTHROPIC_API_KEY"], "prompt_via": "stdin",
                 "sandbox": "seatbelt: write worktree+tmp"},
             "parts": [{"kind": "card", "label": "card", "text": "Add the store",
@@ -398,16 +400,16 @@ fn every_event_kind() -> Vec<Value> {
         review(json!({"event": "adjudicated", "adjudicator": "codex",
             "ruling": {"verdict": "approve", "reasons": ["fixed"], "required_changes": []}})),
         review(
-            json!({"event": "tests_written", "reviewer": "codex", "for_card": "card-003",
+            json!({"event": "tests_written", "reviewer": "codex", "for_card": "task-003",
             "files": ["tests/limits.test.ts"]}),
         ),
         integration(
             json!({"event": "branch_created", "branch": "argonauts/run-01/integration",
             "base": "8b41d07"}),
         ),
-        integration(json!({"event": "merged", "card": "card-002", "sha": "a1"})),
+        integration(json!({"event": "merged", "card": "task-002", "sha": "a1"})),
         integration(
-            json!({"event": "conflict", "card": "card-003", "files": ["src/types.ts"],
+            json!({"event": "conflict", "card": "task-003", "files": ["src/types.ts"],
             "assigned_to": "claude-code/opus"}),
         ),
         integration(
@@ -423,11 +425,11 @@ fn every_event_kind() -> Vec<Value> {
             json!({"event": "pull_request", "branch": "argonauts/run-01/integration",
             "url": null, "command": ["gh", "pr", "create"]}),
         ),
-        integration(json!({"event": "abandoned", "branches": ["argonauts/run-01/card-002"]})),
+        integration(json!({"event": "abandoned", "branches": ["argonauts/run-01/task-002"]})),
         integration(json!({"event": "dependencies_added", "packages": ["ioredis"], "sha": "c1"})),
         checkpoint_opened(
             "question",
-            json!({"kind": "question", "from": "codex", "card": "card-002",
+            json!({"kind": "question", "from": "codex", "card": "task-002",
                    "text": "keep a fallback?", "options": ["yes", "no"]}),
             json!([option(
                 "a",
@@ -468,7 +470,7 @@ fn every_event_kind() -> Vec<Value> {
         checkpoint_opened(
             "merge",
             json!({"kind": "merge", "target": "main", "branch": "argonauts/run-01/integration",
-                   "rows": [{"card": "card-002", "title": "Redis store",
+                   "rows": [{"card": "task-002", "title": "Redis store",
                              "kind": {"kind": "build"}, "stat": diff_stat(), "owner": "codex",
                              "gates_passed": true, "review": "approve"}],
                    "suite_passed_on_latest_main": true, "gates": [], "combined": diff_stat(),
@@ -506,20 +508,20 @@ fn every_event_kind() -> Vec<Value> {
             "vendor_down",
             json!({"kind": "vendor_down", "vendor": "claude-code",
                    "evidence": "overload errors on 3 sessions in 2 min", "test_at": null,
-                   "paused": [{"card": "card-003", "title": "Middleware", "role": "owner"}]}),
+                   "paused": [{"card": "task-003", "title": "Middleware", "role": "worker"}]}),
             json!([
                 option("a", "one agent for all", json!({"action": "one_for_all"})),
-                option("e", "choose per card", json!({"action": "per_card"})),
+                option("e", "choose per task", json!({"action": "per_task"})),
                 option("w", "wait", json!({"action": "wait"}))
             ]),
             "none",
         ),
         checkpoint_opened(
             "budget",
-            json!({"kind": "budget", "card": "card-002", "status": budget_status(),
+            json!({"kind": "budget", "card": "task-002", "status": budget_status(),
                    "dimension": "spend", "reserve_left": usd(2.0)}),
             json!([
-                option("m", "more budget", json!({"action": "more_budget"})),
+                option("m", "more limit", json!({"action": "more_budget"})),
                 option("h", "hand off", json!({"action": "hand_off"})),
                 option("x", "escalate", json!({"action": "escalate"}))
             ]),
@@ -527,8 +529,8 @@ fn every_event_kind() -> Vec<Value> {
         ),
         checkpoint_opened(
             "escalation",
-            json!({"kind": "escalation", "card": "card-002", "title": "Redis store",
-                   "state": "escalated", "attempts": ["codex: gates failed"],
+            json!({"kind": "escalation", "card": "task-002", "title": "Redis store",
+                   "state": "escalated", "attempts": ["codex: checks failed"],
                    "last_failure": "tests failed"}),
             json!([
                 option("r", "retry", json!({"action": "retry"})),
@@ -540,9 +542,9 @@ fn every_event_kind() -> Vec<Value> {
         ),
         checkpoint_opened(
             "change_request",
-            json!({"kind": "change_request", "from": {"party": "user"}, "card": "card-002",
+            json!({"kind": "change_request", "from": {"party": "user"}, "card": "task-002",
                    "text": "widen the trait", "paths": ["src/types.ts"],
-                   "why_you": "changes a frozen interface", "paused": ["card-003"]}),
+                   "why_you": "changes a frozen interface", "paused": ["task-003"]}),
             json!([]),
             "none",
         ),
@@ -555,46 +557,46 @@ fn every_event_kind() -> Vec<Value> {
         ),
         checkpoint_opened(
             "take_over_return",
-            json!({"kind": "take_over_return", "card": "card-002", "owner": "codex",
+            json!({"kind": "take_over_return", "card": "task-002", "owner": "codex",
                    "changed": diff_stat(), "commit": "f00d"}),
             json!([option(
                 "c",
-                "let the owner continue",
+                "let the worker continue",
                 json!({"action": "let_continue"})
             )]),
             "none",
         ),
         checkpoint_opened(
-            "recipe_promotion",
-            json!({"kind": "recipe_promotion", "recipe": "api-feature", "gain": 3.5}),
+            "workflow_promotion",
+            json!({"kind": "workflow_promotion", "recipe": "api-feature", "gain": 3.5}),
             json!([]),
             "none",
         ),
         checkpoint(json!({"event": "checked", "id": "cp-003", "violations": [],
             "verdict": "approve", "by": "rules", "approver": null,
-            "reasons": ["all gates passed"], "shadow": false})),
+            "reasons": ["all checks passed"], "shadow": false})),
         checkpoint(json!({"event": "decided", "id": "cp-003",
             "action": {"action": "choose", "value": "per API key"}, "text": null,
             "by": {"party": "approver", "model": "codex/gpt-x"}, "evidence_sha256": "e3b0",
-            "shadow": {"would": "approve", "by": "rules_and_model", "reasons": ["gates passed"]},
+            "shadow": {"would": "approve", "by": "rules_and_model", "reasons": ["checks passed"]},
             "cards": []})),
         checkpoint(json!({"event": "decided", "id": "cp-004",
             "action": {"action": "request_changes"}, "text": "cap at 100/min",
             "by": {"party": "user"}, "evidence_sha256": "e3b1", "shadow": null,
-            "cards": ["card-002"]})),
+            "cards": ["task-002"]})),
         checkpoint(json!({"event": "withdrawn", "id": "cp-003", "reason": "evidence changed"})),
         checkpoint(json!({"event": "spot_check_queued", "id": "cp-003"})),
         handoff(with(json!({"event": "needed"}), handoff_plan())),
         handoff(
-            json!({"event": "packet", "card": "card-002", "path": "/state/cards/p.md",
+            json!({"event": "packet", "card": "task-002", "path": "/state/cards/p.md",
             "sha256": "5a"}),
         ),
         handoff(
-            json!({"event": "handed_off", "card": "card-002", "to": "codex/gpt-x",
+            json!({"event": "handed_off", "card": "task-002", "to": "codex/gpt-x",
             "mode": "auto", "by": {"party": "rules"}}),
         ),
         handoff(
-            json!({"event": "waiting", "card": "card-002", "vendor": "claude-code",
+            json!({"event": "waiting", "card": "task-002", "vendor": "claude-code",
             "until": "2026-09-29T18:00:00Z"}),
         ),
         vendor(with(json!({"event": "quota"}), quota_reading())),
@@ -609,28 +611,28 @@ fn every_event_kind() -> Vec<Value> {
             "lines": [{"line": "cards", "allocated": usd(6.5), "used": 1.25}],
             "reserve_left": null})),
         budget(
-            json!({"event": "hit", "card": "card-002", "dimension": "spend",
+            json!({"event": "hit", "card": "task-002", "dimension": "spend",
             "status": budget_status()}),
         ),
         budget(
-            json!({"event": "extended", "card": "card-002", "amount": usd(1.0),
+            json!({"event": "extended", "card": "task-002", "amount": usd(1.0),
             "by": {"party": "user"}}),
         ),
-        budget(json!({"event": "deferred", "cards": ["card-004"]})),
+        budget(json!({"event": "deferred", "cards": ["task-004"]})),
         blackboard(json!({"event": "posted", "id": "m-002", "kind": "question",
             "from": {"party": "agent", "session": "s-004", "worker": "codex"},
-            "to": {"to": "card", "card": "card-003"}, "text": "which header name?",
+            "to": {"to": "card", "card": "task-003"}, "text": "which header name?",
             "in_reply_to": null, "refs": ["src/types.ts"]})),
         blackboard(json!({"event": "posted", "id": "m-003", "kind": "guidance",
             "from": {"party": "user"}, "to": {"to": "all"}, "text": "keep it small",
             "in_reply_to": null, "refs": []})),
         blackboard(json!({"event": "delivered", "message": "m-002", "to": "s-005"})),
         retro(
-            json!({"event": "scored", "card": "card-002", "metric": "p_pass_gates_first_try",
+            json!({"event": "scored", "card": "task-002", "metric": "p_pass_gates_first_try",
             "predicted": 0.7, "outcome": true, "brier": 0.09}),
         ),
         retro(
-            json!({"event": "outcome", "card": "card-002", "worker": "codex",
+            json!({"event": "outcome", "card": "task-002", "worker": "codex",
             "task_type": "api-feature", "first_try": true, "attempts": 1, "integrated": true}),
         ),
         retro(json!({"event": "memory", "from": "codex",
@@ -644,10 +646,10 @@ fn every_event_kind() -> Vec<Value> {
         json!({"type": "note", "data": {"level": "warn", "text": "2 uncommitted files left out"}}),
         run(json!({"event": "named", "name": "fix-slugify-median",
             "description": "Fix slugify's dashes and median's empty list", "style": "workflow",
-            "based_on": "peer-crew"})),
+            "based_on": "council"})),
         json!({"type": "workflow", "data": {"event": "declared", "id": "wf-001",
             "name": "fix-slugify-median", "description": "Fix slugify and median",
-            "phases": [{"index": 0, "title": "Fix", "detail": "one owner per function",
+            "phases": [{"index": 0, "title": "Fix", "detail": "one worker per function",
                         "standard": "do"},
                        {"index": 1, "title": "Merge", "standard": "decide"}]}}),
         json!({"type": "workflow", "data": {"event": "phase_started", "id": "wf-001",
@@ -667,14 +669,49 @@ fn every_event_kind() -> Vec<Value> {
             json!({"event": "set", "objective": "median handles empty lists",
             "criteria": [{"id": "G1", "text": "median([]) raises", "short": "Empty list",
                           "check": {"test": "test_median_empty"}}],
-            "attempts": [], "status": "pursuing", "max_attempts": 5}),
+            "attempts": [], "status": "pursuing", "scope": "workflow",
+            "kept_by": "argonauts", "check": "auto"}),
+        ),
+        // A task worked as a goal, kept by Codex's own, with a cap you set.
+        goal(
+            json!({"event": "set", "objective": "add the overdue command",
+            "criteria": [{"id": "G1", "text": "every test in tests/overdue.rs passes",
+                          "check": {"command": "cargo test overdue"}},
+                         {"id": "G2", "text": "its own tests pass", "check": "checks"}],
+            "attempts": [], "status": "pursuing", "max_rounds": 5, "task": "task-002",
+            "scope": "task", "kept_by": "cli", "check": "both",
+            "commands": ["cargo test --test acceptance"], "from": "role"}),
         ),
         goal(json!({"event": "attempt_started", "n": 1, "title": "Empty List", "phase": 1})),
+        goal(
+            json!({"event": "attempt_started", "n": 2, "title": "try 2", "phase": 0,
+            "task": "task-002"}),
+        ),
         goal(json!({"event": "checked", "attempt": 1,
             "verdicts": [{"id": "G1", "verdict": "cant_tell", "evidence": "",
                           "missing": "no test runs it"}],
             "overall": "not_yet", "reason": "G1 has no test yet"})),
+        goal(json!({"event": "checked", "attempt": 3,
+            "verdicts": [{"id": "G1", "verdict": "not_yet", "evidence": "",
+                          "missing": "cargo test overdue: 1 of 12 fails"}],
+            "overall": "not_yet", "reason": "one test still fails", "task": "task-002",
+            "checks": [
+                {"name": "cargo test overdue", "by": "command", "lines": ["G1"],
+                 "passed": false, "summary": "11 passed, 1 failed", "failed": 1, "total": 12,
+                 "ms": 4100, "output": "overdue::skips_tasks_without_a_date"},
+                {"name": "the judge", "by": "judge", "lines": ["G2"], "passed": true,
+                 "summary": "1 of 1 line met", "ms": 9000, "agent": "claude-code/opus"}]})),
         goal(json!({"event": "status_changed", "status": "stuck", "by": {"party": "conductor"}})),
+        goal(
+            json!({"event": "status_changed", "status": "stuck", "by": {"party": "conductor"},
+            "task": "task-002",
+            "why": "the same failure 3 rounds running, after a change of approach"}),
+        ),
+        goal(json!({"event": "approach_changed", "after": 3,
+            "why": "the same failure 3 rounds running", "task": "task-002"})),
+        goal(json!({"event": "cli_said", "task": "task-002",
+            "said": {"cli": "codex", "status": "active",
+                     "note": "one test left: tasks without a date", "turns": 14}})),
         goal(json!({"event": "answered", "question": "Accented letters?",
             "answer": "Keep them", "by": "lead"})),
         goal(json!({"event": "assumption_changed", "id": 2, "to": "Strip them", "by": "you"})),
@@ -742,6 +779,73 @@ fn a_decided_checkpoint_built_in_rust_round_trips() {
     );
 }
 
+/// The run's journal redacts an event as a JSON value and reads it back from that value, so a
+/// report has to survive the same way, with the session behind each of its agents.
+#[test]
+fn a_workflow_report_built_in_rust_round_trips_through_a_json_value() {
+    use argonauts_core::events::WorkflowEvent;
+    use argonauts_core::events::session::{
+        SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+    };
+    use argonauts_core::events::workflow::{AgentSession, WorkflowReport};
+    use argonauts_core::names::WorkflowId;
+    use argonauts_core::workflow::StepRef;
+
+    let report = WorkflowReport {
+        step: StepRef {
+            workflow: WorkflowId::numbered(1),
+            phase: 0,
+            path: vec![0],
+        },
+        workflow: VendorWorkflow {
+            id: "wf-001".into(),
+            call: None,
+            name: "add-due-dates".into(),
+            description: "Add due dates to tasks".into(),
+            phases: vec![VendorPhase {
+                index: 1,
+                title: "Build".into(),
+                detail: "one worker per task".into(),
+            }],
+            agents: vec![VendorAgent {
+                index: 1,
+                label: "build:due-field".into(),
+                phase: Some(1),
+                model: Some("GPT 5.6 on Codex".into()),
+                state: VendorAgentState::Running,
+                tokens: 1200,
+                tool_calls: 3,
+                duration_ms: 4100,
+                started_at_ms: Some(1_791_076_604_610),
+                attempt: 1,
+                prompt: None,
+                result: None,
+            }],
+            status: SubagentStatus::Running,
+            tokens: 1200,
+            tool_calls: 3,
+            duration_ms: 4100,
+            summary: None,
+            started_at_ms: Some(1_791_076_604_000),
+        },
+        sessions: vec![AgentSession {
+            agent: 1,
+            session: SessionKey::numbered(2),
+        }],
+        size_asked: None,
+    };
+    assert_eq!(report.session_of(1), Some(&SessionKey::numbered(2)));
+    assert_eq!(report.session_of(2), None);
+    let reported = RunEventKind::Workflow(WorkflowEvent::Reported(Box::new(report)));
+    let value = serde_json::to_value(&reported).unwrap();
+    assert_eq!(value["type"], "workflow");
+    assert_eq!(value["data"]["event"], "reported");
+    assert_eq!(
+        serde_json::from_value::<RunEventKind>(value).unwrap(),
+        reported
+    );
+}
+
 #[test]
 fn every_ui_command_round_trips() {
     let commands = vec![
@@ -758,7 +862,7 @@ fn every_ui_command_round_trips() {
                "evidence_sha256": "e3b0", "cards": []}),
         json!({"type": "answer", "to": {"target": "checkpoint", "run": "run-01", "id": "cp-009"},
                "action": {"action": "request_changes"}, "text": "tighten the limit",
-               "evidence_sha256": "e3b0", "cards": ["card-002", "card-004"]}),
+               "evidence_sha256": "e3b0", "cards": ["task-002", "task-004"]}),
         json!({"type": "answer", "to": {"target": "choice", "id": "ch-002"},
                "action": {"action": "choose", "value": "solo"}, "text": null,
                "evidence_sha256": null, "cards": []}),
@@ -767,9 +871,9 @@ fn every_ui_command_round_trips() {
                "evidence_sha256": "e3b0", "cards": [], "remember": true}),
         json!({"type": "set_aside", "to": {"target": "choice", "id": "ch-002"}}),
         json!({"type": "steer", "run": "run-01", "session": "s-003", "text": "use EVAL"}),
-        json!({"type": "take_over", "run": "run-01", "card": "card-002"}),
-        json!({"type": "take_over_ended", "run": "run-01", "card": "card-002", "exit_code": 0}),
-        json!({"type": "reassign", "run": "run-01", "card": "card-002", "to": "codex"}),
+        json!({"type": "take_over", "run": "run-01", "card": "task-002"}),
+        json!({"type": "take_over_ended", "run": "run-01", "card": "task-002", "exit_code": 0}),
+        json!({"type": "reassign", "run": "run-01", "card": "task-002", "to": "codex"}),
         json!({"type": "pause", "now": true}),
         json!({"type": "cancel_pause"}),
         json!({"type": "resume", "run": null}),
@@ -786,7 +890,7 @@ fn every_ui_command_round_trips() {
         json!({"type": "request", "view": {"view": "runs"}}),
         json!({"type": "request", "view": {"view": "all_repos"}}),
         json!({"type": "request", "view": {"view": "workflow_library"}}),
-        json!({"type": "request", "view": {"view": "diff", "run": "run-01", "card": "card-002",
+        json!({"type": "request", "view": {"view": "diff", "run": "run-01", "card": "task-002",
                "scope": "last_turn"}}),
         json!({"type": "request", "view": {"view": "raw", "run": "run-01", "session": "s-003"}}),
         json!({"type": "request", "view": {"view": "settings", "section": "budget"}}),
@@ -795,18 +899,18 @@ fn every_ui_command_round_trips() {
                "scope": "project"}),
         json!({"type": "set_setting", "key": "roles.reviewer.effort", "value": "\"high\"",
                "scope": "project_local"}),
-        json!({"type": "set_setting", "key": "budget.run_usd", "value": "30.0",
+        json!({"type": "set_setting", "key": "limits.spend_per_run", "value": "30.0",
                "scope": "session"}),
         json!({"type": "set_setting", "key": "ui.theme", "value": "\"light\"",
                "scope": "global"}),
-        json!({"type": "slash", "command": {"command": "preset", "name": "coordinated-crew",
+        json!({"type": "slash", "command": {"command": "workflow", "name": "orchestrator",
                "action": "copy_to_project"}}),
-        json!({"type": "slash", "command": {"command": "preset", "name": null, "action": "use"}}),
-        json!({"type": "slash", "command": {"command": "preset", "name": "peer-crew",
+        json!({"type": "slash", "command": {"command": "workflow", "name": null, "action": "use"}}),
+        json!({"type": "slash", "command": {"command": "workflow", "name": "council",
                "action": "show"}}),
-        json!({"type": "slash", "command": {"command": "preset", "name": "peer-crew",
+        json!({"type": "slash", "command": {"command": "workflow", "name": "council",
                "action": "copy"}}),
-        json!({"type": "slash", "command": {"command": "preset", "name": "peer-crew",
+        json!({"type": "slash", "command": {"command": "workflow", "name": "council",
                "action": "diff"}}),
         json!({"type": "slash", "command": {"command": "effort", "role": null,
                "level": "high"}}),
@@ -815,15 +919,15 @@ fn every_ui_command_round_trips() {
         json!({"type": "slash", "command": {"command": "agents",
                "action": {"kind": "add", "name": "ollama"}}}),
         json!({"type": "slash", "command": {"command": "agents", "action": {"kind": "list"}}}),
-        json!({"type": "slash", "command": {"command": "budget", "key": "run_usd",
+        json!({"type": "slash", "command": {"command": "budget", "key": "spend_per_run",
                "value": "30"}}),
-        json!({"type": "slash", "command": {"command": "handoff", "role": "owner",
+        json!({"type": "slash", "command": {"command": "fallback", "role": "worker",
                "key": "mode", "value": "auto"}}),
         json!({"type": "slash", "command": {"command": "permissions", "key": null,
                "value": null}}),
         json!({"type": "slash", "command": {"command": "permissions",
                "key": "sandbox.network", "value": "true"}}),
-        json!({"type": "slash", "command": {"command": "permissions", "role": "owner",
+        json!({"type": "slash", "command": {"command": "permissions", "role": "worker",
                "key": "mode", "value": "tool"}}),
         json!({"type": "slash", "command": {"command": "approvals", "key": null,
                "value": null}}),
@@ -842,7 +946,7 @@ fn every_ui_command_round_trips() {
                "target": {"kind": "run", "id": "run-01"}}}),
         json!({"type": "slash", "command": {"command": "stop", "run": null}}),
         json!({"type": "slash", "command": {"command": "workflows"}}),
-        json!({"type": "rewind", "card": "card-002", "checkpoint": 1}),
+        json!({"type": "rewind", "card": "task-002", "checkpoint": 1}),
         json!({"type": "summary"}),
         json!({"type": "workflow_file", "name": "solo", "action": "copy_to_project"}),
         json!({"type": "slash", "command": {"command": "config", "key": "narrator.model",
@@ -913,7 +1017,7 @@ fn every_ui_command_round_trips() {
 
 fn run_summary() -> Value {
     json!({"run": "run-01", "title": "Per-key rate limiting", "mode": "crew",
-           "preset": "peer-crew", "state": "parked", "stopped_at": "plan checkpoint",
+           "workflow": "council", "state": "parked", "stopped_at": "plan approval",
            "updated": "2026-09-29T12:00:00Z", "spent": spend(), "sessions_to_resume": 2,
            "waiting": ["cp-003"], "live": false, "remind": true})
 }
@@ -928,12 +1032,12 @@ fn narrator_line() -> Value {
 #[test]
 fn an_older_welcome_reads_without_the_agent_and_effort() {
     let event: AppEvent = serde_json::from_value(json!({"type": "welcome", "version": "0.0.1",
-        "repo": "~/code/api", "preset": "peer-crew", "agents": [], "runs_going": 0}))
+        "repo": "~/code/api", "workflow": "council", "agents": [], "runs_going": 0}))
     .unwrap();
     assert!(matches!(
         event,
         AppEvent::Welcome {
-            default_agent: None,
+            main_agent: None,
             effort: None,
             ..
         }
@@ -943,10 +1047,10 @@ fn an_older_welcome_reads_without_the_agent_and_effort() {
 #[test]
 fn every_app_event_round_trips() {
     let mut events = vec![
-        json!({"type": "welcome", "version": "0.0.1", "repo": "~/code/api", "preset": "peer-crew",
+        json!({"type": "welcome", "version": "0.0.1", "repo": "~/code/api", "workflow": "council",
                "agents": [{"id": "codex", "version": "0.158.0", "ready": true, "note": null}],
                "runs_going": 1, "runs_need_you": 1, "example_prompt": "fix the flaky retry test",
-               "default_agent": "codex/gpt-5.6-luna", "effort": "high"}),
+               "main_agent": "codex/gpt-5.6-luna", "effort": "high"}),
         json!({"type": "attached", "summary": run_summary()}),
         json!({"type": "attached", "summary": run_summary(), "started_here": true}),
         json!({"type": "detached", "run": "run-01"}),
@@ -966,7 +1070,7 @@ fn every_app_event_round_trips() {
                "error": "usage limit"}}),
         json!({"type": "chat", "event": {"chat": "turn_cancelled", "turn": "t-014"}}),
         json!({"type": "choice", "choice": {"id": "ch-002", "kind": "start_work",
-               "title": "Start work on this?", "body": ["Triage would pick solo."],
+               "title": "Start work on this?", "body": ["Argonauts would pick solo."],
                "options": [{"key": "s", "label": "solo", "action": {"action": "choose",
                             "value": "solo"}, "recommended": true, "detail": null}],
                "free_text": "none", "bell": true}}),
@@ -978,31 +1082,45 @@ fn every_app_event_round_trips() {
         json!({"type": "mode", "mode": {"mode": "parked", "run": "run-01",
                "reason": {"why": "checkpoint"}}}),
         json!({"type": "status", "status": {"title": "run-01", "repo": "~/code/api",
-               "preset": "peer-crew", "run": "run-01", "default_agent": "claude-code",
+               "workflow": "council", "run": "run-01", "main_agent": "claude-code",
                "quotas": [{"label": "Claude", "reading": quota_reading(), "health": "healthy"}],
                "spent": spend(), "limit": usd(20.0), "narrator": "on_demand",
                "approval_mode": "supervised"}}),
+        json!({"type": "status", "status": {"title": "", "repo": "~/code/api",
+               "workflow": "solo", "ultracode": true, "run": null, "main_agent": "claude-code",
+               "quotas": [{"label": "Claude", "reading": quota_reading(), "health": "healthy",
+                           "windows": [quota_reading()]}],
+               "spent": null, "limit": null, "narrator": "off",
+               "approval_mode": "auto",
+               "line": {"settings": {"form": "compact", "left": ["mode", "branch"],
+                                     "right": ["plan-usage", "spend"],
+                                     "plan-usage": {"show": "main", "windows": "5h",
+                                                    "as": "left", "resets": "always"},
+                                     "narrow": {"drop": ["spend"]}},
+                        "branch": "main", "spend_days": [0.0, 0.42, 1.44],
+                        "artifact": {"name": "weekly-usage-chart", "others": 2,
+                                     "feedback_drafts": 1}}}}),
         json!({"type": "notice", "level": "warn", "text": "codex is untested at 0.170.0"}),
         json!({"type": "view", "data": {"data": "runs", "runs": [run_summary()]}}),
         json!({"type": "view", "data": {"data": "config", "entries": [{"key": "ui.keys",
                "value": "\"vim\"", "layer": "global", "safety": false}]}}),
         json!({"type": "view", "data": {"data": "approvals", "view": {"points": [{"kind": "merge",
-               "mode": "shadow", "decide_with": "rules", "matches_in_a_row": 4, "misses": 0,
+               "mode": "auto_preview", "decide_with": "rules", "matches_in_a_row": 4, "misses": 0,
                "suggest_auto": false}], "spot_checks_waiting": 1, "approver": null}}}),
-        json!({"type": "view", "data": {"data": "diff", "diff": {"card": "card-002",
+        json!({"type": "view", "data": {"data": "diff", "diff": {"card": "task-002",
                "stat": diff_stat(), "text": "diff --git", "path": "/state/cards/d"}}}),
         json!({"type": "view", "data": {"data": "raw", "raw": {"session": "s-003",
                "lines": ["{}"], "truncated": false, "path": "/state/raw", "vendor_transcript": null}}}),
-        json!({"type": "take_over", "ticket": {"card": "card-002",
+        json!({"type": "take_over", "ticket": {"card": "task-002",
                "command": {"program": "codex", "args": ["resume", "abc"], "env_set": [],
-                           "env_remove": [], "stdin": null, "cwd": "/wt/card-002", "files": [],
+                           "env_remove": [], "stdin": null, "cwd": "/wt/task-002", "files": [],
                            "keep_stdin_open": false},
-               "worktree": "/wt/card-002", "vendor": "codex"},
+               "worktree": "/wt/task-002", "vendor": "codex"},
                "place": "tmux-split", "run": "run-01"}),
         json!({"type": "ui_settings", "vim": true, "verbosity": "normal", "ui": null}),
         json!({"type": "ui_settings", "vim": false, "verbosity": "normal",
                "ui": serde_json::to_value(UiSettings::default()).unwrap()}),
-        json!({"type": "recap", "text": "Card 2 is in review.", "model": null}),
+        json!({"type": "recap", "text": "Task 2 is in review.", "model": null}),
         json!({"type": "taken_back", "texts": ["keep a fallback"]}),
         json!({"type": "setting_changed", "key": "approvals.merge.mode", "value": "\"auto\"",
                "scope": "project", "previous": "\"supervised\"", "reset": false}),
@@ -1010,8 +1128,8 @@ fn every_app_event_round_trips() {
                "turns": [{"from": {"party": "user"}, "text": "add per-key rate limiting"},
                          {"from": {"party": "agent", "session": "s-003", "worker": "codex/gpt-x"},
                           "text": "Redis keeps the counters across restarts."}],
-               "milestones": ["Goal approved", "Plan approved · 5 cards"],
-               "recap": "Card 2 is in review; the plan checkpoint waits for you.",
+               "milestones": ["Goal approved", "Plan approved · 5 tasks"],
+               "recap": "Task 2 is in review; the plan approval waits for you.",
                "recap_model": null}),
         json!({"type": "replay_done", "run": "run-01", "seq": 412}),
         json!({"type": "view", "data": {"data": "runs", "runs": [run_summary()],
@@ -1062,11 +1180,11 @@ fn every_app_event_round_trips() {
                 "description": "One agent", "text": "name: solo\n", "edited": true,
                 "in_use": false}], "refresh": true}}),
         json!({"type": "view", "data": {"data": "checkpoints", "run": "run-01",
-               "card": "card-002", "checkpoints": [{"card": "card-002", "n": 1,
+               "card": "task-002", "checkpoints": [{"card": "task-002", "n": 1,
                "at": "2026-09-29T12:00:00Z", "commit": "0123456",
                "from": "claude-code/opus", "to": ["codex"], "reason": "usage limit",
                "reverted_here": false}]}}),
-        json!({"type": "view", "data": {"data": "settings", "rows": [{"key": "budget.run_usd",
+        json!({"type": "view", "data": {"data": "settings", "rows": [{"key": "limits.spend_per_run",
                "value": "20.0", "layer": "built-in", "default_scope": "project", "safety": true,
                "allowed": [], "description": "Run ceiling in dollars"}], "command": "budget",
                "section": null}}),
@@ -1094,7 +1212,7 @@ fn every_app_event_round_trips() {
                "free_text": "none", "bell": false}}),
         json!({"type": "setting_changed", "key": "roles.reviewer.effort", "value": "\"high\"",
                "scope": "project_local", "previous": null, "reset": false}),
-        json!({"type": "setting_changed", "key": "budget.run_usd", "value": "30.0",
+        json!({"type": "setting_changed", "key": "limits.spend_per_run", "value": "30.0",
                "scope": "session", "previous": "20.0", "reset": false}),
         json!({"type": "setting_changed", "key": "ui.keys", "value": "\"vim\"",
                "scope": "global", "previous": "\"default\"", "reset": false}),
@@ -1105,11 +1223,11 @@ fn every_app_event_round_trips() {
                "scope": "project_local", "previous": "\"ollama/llama3.2\"", "reset": true}),
         json!({"type": "view", "data": {"data": "settings", "rows": [{"key": "agents.codex.model",
                "value": "\"gpt-x\"", "layer": "project-local", "default_scope": "project_local",
-               "safety": false, "allowed": [], "description": "The model this harness uses"},
+               "safety": false, "allowed": [], "description": "The model this CLI uses"},
                {"key": "approvals.merge.mode", "value": "\"supervised\"", "layer": "session",
                "default_scope": "project", "safety": true,
-               "allowed": ["\"supervised\"", "\"shadow\"", "\"auto\""],
-               "description": "The merge checkpoint"}], "command": null,
+               "allowed": ["\"supervised\"", "\"auto_preview\"", "\"auto\""],
+               "description": "The merge approval"}], "command": null,
                "section": "approvals"}}),
         json!({"type": "view", "data": {"data": "models", "choices": [{"worker": "ollama/llama3.2",
                "family": "llama", "access": "local", "cost": {"unit": "free"},
@@ -1156,7 +1274,7 @@ fn every_app_event_round_trips() {
     let status = json!({"type": "view", "data": {"data": "status", "summary": {
         "run": "run-01", "goal": ["429 with Retry-After"], "plan": "Redis",
         "decisions": [["D-003", "Redis token bucket"]],
-        "cards": [{"card": "card-002", "title": "Redis store", "state": "running",
+        "cards": [{"card": "task-002", "title": "Redis store", "state": "running",
                    "owner": "codex", "note": "6m 12s · 38k tok"}],
         "recent": [], "budget": null, "quotas": [], "waiting": []}}});
     round_trip::<AppEvent>(status);
@@ -1210,17 +1328,17 @@ fn control_frames_round_trip() {
         json!({"request": "stop_session", "session": "s-003"}),
         json!({"request": "take_back", "messages": ["m-001"]}),
         json!({"request": "approval_mode", "mode": "auto", "token": "t0k"}),
-        json!({"request": "reassign", "card": "card-002", "to": "codex", "rule_override": null,
+        json!({"request": "reassign", "card": "task-002", "to": "codex", "rule_override": null,
                "token": null}),
-        json!({"request": "reassign", "card": "card-002", "to": "claude-code/opus",
-               "rule_override": "review.other_family", "token": "t0k"}),
-        json!({"request": "take_over", "card": "card-002", "token": "t0k"}),
-        json!({"request": "take_over_ended", "card": "card-002", "token": "t0k"}),
+        json!({"request": "reassign", "card": "task-002", "to": "claude-code/opus",
+               "rule_override": "review.other_provider", "token": "t0k"}),
+        json!({"request": "take_over", "card": "task-002", "token": "t0k"}),
+        json!({"request": "take_over_ended", "card": "task-002", "token": "t0k"}),
         json!({"request": "answer", "answer": answer, "token": "t0k"}),
         json!({"request": "status"}),
-        json!({"request": "diff", "card": "card-002", "scope": "card"}),
+        json!({"request": "diff", "card": "task-002", "scope": "card"}),
         json!({"request": "raw", "session": "s-003"}),
-        json!({"request": "revert", "card": "card-002", "checkpoint": 2}),
+        json!({"request": "revert", "card": "task-002", "checkpoint": 2}),
         json!({"request": "spot_check", "id": "cp-003", "correct": false}),
     ];
     for (id, body) in requests.into_iter().enumerate() {
@@ -1235,12 +1353,12 @@ fn control_frames_round_trip() {
         json!({"reply": "queued", "id": "m-004"}),
         json!({"reply": "taken_back", "messages": [queued()]}),
         json!({"reply": "steered", "ack": {"session": "s-003", "how": "interrupt_resume"}}),
-        json!({"reply": "take_over", "ticket": {"card": "card-002", "command": null,
-               "worktree": "/wt/card-002", "vendor": "openrouter"}}),
+        json!({"reply": "take_over", "ticket": {"card": "task-002", "command": null,
+               "worktree": "/wt/task-002", "vendor": "openrouter"}}),
         json!({"reply": "status", "summary": {"run": null, "goal": [], "plan": null,
                "decisions": [], "cards": [], "recent": [], "budget": null, "quotas": [],
                "waiting": []}}),
-        json!({"reply": "diff", "diff": {"card": "card-002", "stat": diff_stat(), "text": "",
+        json!({"reply": "diff", "diff": {"card": "task-002", "stat": diff_stat(), "text": "",
                "path": "/d"}}),
         json!({"reply": "raw", "raw": {"session": "s-003", "lines": [], "truncated": true,
                "path": "/r", "vendor_transcript": "/v"}}),
@@ -1256,13 +1374,13 @@ fn api_requests_round_trip() {
         json!({"request": "fix the typo", "mode": "solo", "forced": true,
         "estimate": null, "triage": null, "chat_turn": "t-001", "continues": null,
         "overrides": ["solo.review=true"], "include_uncommitted": false,
-        "default_agent": "codex/gpt-x", "approval_mode": "supervised"}),
+        "main_agent": "codex/gpt-x", "approval_mode": "supervised"}),
     );
     round_trip::<CheckpointAnswer>(json!({"id": "cp-001", "action": {"action": "send_back"},
         "text": "split the store", "evidence_sha256": "e3b0", "cards": []}));
     round_trip::<CheckpointAnswer>(
         json!({"id": "cp-009", "action": {"action": "request_changes"},
-        "text": "tighten the limit", "evidence_sha256": "e3b0", "cards": ["card-002"]}),
+        "text": "tighten the limit", "evidence_sha256": "e3b0", "cards": ["task-002"]}),
     );
     // Older answers without `cards` still read, as every card.
     let old: CheckpointAnswer = serde_json::from_value(json!({"id": "cp-001",
@@ -1299,22 +1417,22 @@ fn setting_scopes_and_metadata_round_trip() {
         ]
     );
     let meta: SettingMeta = round_trip(json!({"key": "approvals.*.mode",
-        "description": "Supervised, shadow, or auto",
-        "allowed": ["\"supervised\"", "\"shadow\"", "\"auto\""],
+        "description": "Supervised, auto preview, or auto",
+        "allowed": ["\"supervised\"", "\"auto_preview\"", "\"auto\""],
         "default_scope": "project", "safety": true}));
     assert!(meta.safety);
     round_trip::<SettingMeta>(json!({"key": "agents.*.model", "description": "",
         "allowed": [], "default_scope": "project_local", "safety": false}));
     round_trip::<ParsedInput>(json!({"input": "slash",
-        "command": {"command": "preset", "name": "peer-crew", "action": "copy_to_project"}}));
+        "command": {"command": "workflow", "name": "council", "action": "copy_to_project"}}));
     round_trip::<ParsedInput>(json!({"input": "slash",
-        "command": {"command": "handoff", "role": null, "key": null, "value": null}}));
+        "command": {"command": "fallback", "role": null, "key": null, "value": null}}));
     // An older `preset` command without an action reads as switching to it.
     let old: SlashCommand =
-        serde_json::from_value(json!({"command": "preset", "name": "solo"})).unwrap();
+        serde_json::from_value(json!({"command": "workflow", "name": "solo"})).unwrap();
     assert_eq!(
         old,
-        SlashCommand::Preset {
+        SlashCommand::Workflow {
             name: Some("solo".into()),
             action: PresetAction::Use
         }
@@ -1427,18 +1545,18 @@ fn older_messages_read_with_the_review_additions_empty() {
 }
 
 #[test]
-fn a_recipe_promotion_packet_is_an_object_without_kind() {
+fn a_workflow_promotion_packet_is_an_object_without_kind() {
     use argonauts_core::events::checkpoint::CheckpointPacket;
-    let packet = CheckpointPacket::RecipePromotion(json!({"recipe": "small-fix", "gain": 4.0}));
+    let packet = CheckpointPacket::WorkflowPromotion(json!({"recipe": "small-fix", "gain": 4.0}));
     let value = serde_json::to_value(&packet).unwrap();
-    assert_eq!(value["kind"], "recipe_promotion");
+    assert_eq!(value["kind"], "workflow_promotion");
     assert_eq!(
         serde_json::from_value::<CheckpointPacket>(value).unwrap(),
         packet
     );
     // Anything but an object has nowhere to put the tag, so it can't be written.
     for shape in [json!("text"), json!([1, 2]), json!(true), json!(3)] {
-        assert!(serde_json::to_value(CheckpointPacket::RecipePromotion(shape)).is_err());
+        assert!(serde_json::to_value(CheckpointPacket::WorkflowPromotion(shape)).is_err());
     }
 }
 
@@ -1480,8 +1598,8 @@ fn names_parse_and_display() {
     assert!(SessionKey::parse("").is_none());
 
     let roles = [
-        RoleName::Default,
-        RoleName::Coordinator,
+        RoleName::Main,
+        RoleName::Orchestrator,
         RoleName::PhaseLead,
         RoleName::Restater,
         RoleName::Differ,
@@ -1490,7 +1608,7 @@ fn names_parse_and_display() {
         RoleName::Critic,
         RoleName::Spike,
         RoleName::Judge,
-        RoleName::Owner,
+        RoleName::Worker,
         RoleName::Consultant,
         RoleName::Reviewer,
         RoleName::Adjudicator,
@@ -1510,29 +1628,31 @@ fn settings_default_matches_the_frozen_defaults_file() {
     assert_eq!(text.trim_end(), frozen.trim_end());
     let back: Settings = toml::from_str(frozen).unwrap();
     assert_eq!(back, Settings::default());
-    assert_eq!(back.preset, "peer-crew");
+    assert_eq!(back.workflow, "council");
 }
 
 #[test]
 fn partial_settings_fill_in_defaults() {
     let partial: Settings = toml::from_str(
         r#"
-preset = "coordinated-crew"
+workflow = "orchestrator"
 native_fanout = "off"
-[roles.owner]
+[roles.worker]
 workers = ["claude-code/opus"]
-[roles.owner.handoff]
+[fallback.workers]
 mode = "auto"
-fallback = ["codex/gpt-x", { worker = "openrouter/a/b", max_budget_usd = 2.0 }]
+order = ["codex/gpt-x", { worker = "openrouter/a/b", max_spend_usd = 2.0 }]
 [roles.reviewer]
 workers = ["openrouter/m-a", "openrouter/m-b"]
 blind = true
 native_fanout = { max = 2 }
 [approvals.merge]
-mode = "shadow"
+mode = "auto_preview"
 decide_with = "rules_and_model"
-rules = { min_changed_line_coverage = 0.8, max_combined_diff_lines = 400 }
 otherwise = "open_pull_request"
+[approvals.rules.merge]
+min_test_coverage_of_changed_lines = 0.8
+max_changed_lines = 400
 [ui]
 narrator = "live"
 keys = "vim"
@@ -1540,10 +1660,21 @@ takeover = "tmux-split"
 "#,
     )
     .unwrap();
-    assert_eq!(partial.preset, "coordinated-crew");
+    assert_eq!(partial.workflow, "orchestrator");
     assert_eq!(partial.roles[&RoleName::Reviewer].workers.len(), 2);
-    assert_eq!(partial.roles[&RoleName::Owner].handoff.fallback.len(), 2);
-    assert_eq!(partial.budget.run_usd, Some(20.0));
+    assert_eq!(
+        partial
+            .fallback
+            .for_role(RoleName::Worker)
+            .unwrap()
+            .order
+            .len(),
+        2
+    );
+    // No limit unless you set one.
+    assert_eq!(partial.limits.budget.spend_per_run, None);
+    assert_eq!(partial.limits.spend_per_day, None);
+    assert_eq!(partial.limits.budget.plan_usage, None);
     let json = serde_json::to_value(&partial).unwrap();
     assert_eq!(serde_json::from_value::<Settings>(json).unwrap(), partial);
 }
@@ -1571,7 +1702,7 @@ access = "subscription"
 tools = true
 cost = { unit = "quota" }
 strengths = ["refactor"]
-good_for = ["owner"]
+good_for = ["worker"]
 efforts = ["low", "medium", "high", "max"]
 
 [[model]]
@@ -1625,24 +1756,55 @@ fn spans_parse() {
 #[test]
 fn safety_keys_cover_the_contract_list() {
     for key in [
-        "limits.*",
+        "limits.protected_paths",
+        "limits.dependency_allowlist",
+        "limits.spend_per_day",
+        "limits.auto_merges_per_day",
+        "limits.irreversible_allowlist",
+        "limits.evolution_usd_per_month",
+        "limits.spend_per_run",
+        "limits.plan_usage",
         "sandbox.*",
         "approvals.*",
-        "budget.enabled",
         "agents.*.auth",
         "agents.*.binary",
         "agents.*.extra_args",
         "endpoints.*.base_url",
         "endpoints.*.header_env.*",
-        "roles.*.handoff.allow_api_billing",
-        "handoff.allow_api_billing",
+        "fallback.*.allow_api_billing",
+        "fallback.allow_api_billing",
         "roles.*.sandbox.*",
         "mcp.*",
         "merge.*",
-        "gates.*",
+        "checks.*",
         "notifications.chat.*",
     ] {
         assert!(SAFETY_KEYS.contains(&key), "{key}");
+    }
+}
+
+/// `[limits]` holds the hard limits and the run and task limits. A key added to it is a safety
+/// key unless it is listed here as one a workflow may set.
+#[test]
+fn every_limits_key_is_a_safety_key_or_a_task_limit() {
+    const A_WORKFLOW_MAY_SET: &[&str] = &[
+        "per_task_usd",
+        "per_task_tokens",
+        "per_task_plan_usage",
+        "per_task_minutes",
+        "soft_stop",
+        "when_reached",
+        "from_history",
+        "history_min",
+        "lines",
+    ];
+    let limits = serde_json::to_value(Settings::default().limits).unwrap();
+    for name in limits.as_object().unwrap().keys() {
+        let key = format!("limits.{name}");
+        assert!(
+            SAFETY_KEYS.contains(&key.as_str()) || A_WORKFLOW_MAY_SET.contains(&name.as_str()),
+            "{key} is neither a safety key nor listed as one a workflow may set"
+        );
     }
 }
 
@@ -1835,5 +1997,5 @@ fn sample_step_outputs_pass_their_strict_schemas_and_decode() {
         "reasons": ["r"], "required_changes": ["c"]}));
     check_step_output::<judgment::ModelApprover>(json!({"verdict": "escalate",
         "reasons": ["r"], "rules_cited": ["rule 2"]}));
-    check_step_output::<narrate::Narrate>(json!({"lines": ["Card 2 passed its gates."]}));
+    check_step_output::<narrate::Narrate>(json!({"lines": ["Task 2 passed its checks."]}));
 }

@@ -1,9 +1,12 @@
 //! What the app has told the screen so far, folded from `AppEvent`s. Plain data: the live
 //! region, the panel, the cards, and the overlays read it, and nothing here draws.
 
+mod artifacts;
 mod chat;
 mod decisions;
+mod goals;
 mod quota;
+mod reported;
 mod run;
 mod session;
 
@@ -29,8 +32,10 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::theme::ColorEnv;
 
-pub use chat::ChatState;
+pub use artifacts::{Artifacts, Published};
+pub use chat::{ChatState, ContextBreakdown};
 pub use decisions::DecisionRecord;
+pub use goals::GoalBoard;
 pub use quota::binding_reading;
 pub use run::{
     CardRow, GateBrief, MergeTotals, OpenCheckpoint, RunState, RunTotals, StepState, VendorWait,
@@ -42,6 +47,8 @@ pub use session::{Doing, Retrying, SessionState, SessionStatus, ToolRecord, task
 pub struct AppState {
     pub welcome: Option<Welcome>,
     pub status: Option<StatusLine>,
+    /// The latest usage numbers, for the Usage tab and the cards pinned above the input.
+    pub usage: Option<std::sync::Arc<argonauts_core::api::UsageSummary>>,
     /// `None` until the first `Mode` event, which reads as idle.
     pub mode: Option<AppMode>,
     /// The narrator's latest line, for the live line under `ui.narrator = "live"`.
@@ -53,7 +60,14 @@ pub struct AppState {
     /// This conversation's runs going or waiting on you that this screen doesn't hold, from the
     /// last `BackgroundRuns`. Each gets an agent panel row; its card waits until you open it.
     pub background: Vec<RunSummary>,
+    /// Runs held here that went on off screen when another run took it, and that a listing has
+    /// shown since. Their events stopped coming here, so the listing speaks for them.
+    pub listed_off_screen: BTreeSet<RunId>,
+    /// Runs held here that a later listing left out: they ended off screen, so their rows go.
+    pub ended_off_screen: BTreeSet<RunId>,
     pub chat: ChatState,
+    /// The artifacts the conversation and its agents have published.
+    pub artifacts: Artifacts,
     /// Open app choices, oldest first.
     pub choices: Vec<AppChoice>,
     /// The `!` command that runs now, by its id, so Ctrl+C stops it.
@@ -79,11 +93,16 @@ pub struct AppState {
     /// The crew panel's rows from the controller's last answer: conversations, the CLIs' own
     /// sessions, and runs this screen doesn't hold. Kept so a panel opens with them at once.
     pub crew_panel: Option<CrewPanel>,
+    /// Every mod with its file and numbers, from the controller's last answer. What shows a
+    /// mod above the input or on the bottom line draws from here.
+    pub mods: Option<argonauts_core::settings::mods::ModsView>,
     /// How the model lists named each worker they offered, so a line about the one you picked
     /// names it the same way.
     pub model_words: BTreeMap<String, String>,
     /// What to call each CLI and model, from the last `Names` event.
     pub names: DisplayNames,
+    /// The goals agents work toward, as last reported.
+    pub goals: GoalBoard,
     /// Cards that wait on you, in the order they arrived.
     waiting: Vec<Waiting>,
 }
@@ -92,9 +111,9 @@ pub struct AppState {
 pub struct Welcome {
     pub version: String,
     pub repo: String,
-    pub preset: String,
+    pub workflow: String,
     /// The agent the startup header names: the welcome's, or else the first status line's.
-    pub default_agent: Option<WorkerRef>,
+    pub main_agent: Option<WorkerRef>,
     pub agents: Vec<AgentReady>,
     pub runs_going: u32,
     pub runs_need_you: u32,
@@ -152,19 +171,19 @@ impl AppState {
             AppEvent::Welcome {
                 version,
                 repo,
-                preset,
+                workflow,
                 agents,
                 runs_going,
                 runs_need_you,
                 example_prompt,
-                default_agent,
+                main_agent,
                 ..
             } => {
                 self.welcome = Some(Welcome {
                     version: version.clone(),
                     repo: repo.clone(),
-                    preset: preset.clone(),
-                    default_agent: default_agent.clone(),
+                    workflow: workflow.clone(),
+                    main_agent: main_agent.clone(),
                     agents: agents.clone(),
                     runs_going: *runs_going,
                     runs_need_you: *runs_need_you,
@@ -175,9 +194,11 @@ impl AppState {
                 let run = self.run_mut(&summary.run);
                 run.title.clone_from(&summary.title);
                 run.mode = Some(summary.mode);
-                run.preset = Some(summary.preset.clone());
+                run.workflow = Some(summary.workflow.clone());
                 run.spent = summary.spent;
                 self.attached = Some(summary.run.clone());
+                self.listed_off_screen.remove(&summary.run);
+                self.ended_off_screen.remove(&summary.run);
                 self.replay = Replay::Replaying {
                     run: summary.run.clone(),
                 };
@@ -190,8 +211,14 @@ impl AppState {
                     self.replay = Replay::Live;
                 }
             }
-            AppEvent::BackgroundRuns { runs } => self.background.clone_from(runs),
-            AppEvent::Run { event } => self.apply_run(event),
+            AppEvent::BackgroundRuns { runs } => {
+                self.background.clone_from(runs);
+                self.follow_off_screen();
+            }
+            AppEvent::Run { event } => {
+                self.apply_run(event);
+                self.note_run_artifact(event);
+            }
             AppEvent::Chat { event } => {
                 // A chat turn's quota reading is as good as a run's, so the mode line shows it.
                 if let ChatEvent::Agent {
@@ -202,6 +229,15 @@ impl AppState {
                     quota::record(&mut self.quotas, reading);
                 }
                 self.chat.apply(event);
+                // A page the main agent just published, read off the call that finished.
+                if let ChatEvent::Agent {
+                    event: AgentEvent::ToolFinished { id, .. },
+                    ..
+                } = event
+                    && let Some(call) = self.chat.tools.iter().rev().find(|call| call.id == *id)
+                {
+                    self.artifacts.note(call, None);
+                }
             }
             AppEvent::Choice { choice } => {
                 self.choices.retain(|known| known.id != choice.id);
@@ -222,8 +258,8 @@ impl AppState {
             AppEvent::Status { status } => {
                 if let Some(welcome) = self.welcome.as_mut() {
                     welcome
-                        .default_agent
-                        .get_or_insert_with(|| status.default_agent.clone());
+                        .main_agent
+                        .get_or_insert_with(|| status.main_agent.clone());
                 }
                 self.status = Some(status.clone());
             }
@@ -236,7 +272,12 @@ impl AppState {
                 }
             }
             AppEvent::TakenBack { texts } => self.taken_back(texts),
-            AppEvent::ChatCleared => self.chat.heads_up = None,
+            AppEvent::ChatCleared => {
+                self.chat.heads_up = None;
+                self.artifacts.clear();
+            }
+            // The conversation on screen changed: its own pages replace the last one's.
+            AppEvent::ChatResumed { artifacts, .. } => self.artifacts.resumed(artifacts),
             AppEvent::VendorCommands { set } => self.vendor_commands = Some(set.clone()),
             AppEvent::Names { names } => self.names = (**names).clone(),
             AppEvent::ReplayDone { run, .. } => {
@@ -245,7 +286,11 @@ impl AppState {
                 }
             }
             AppEvent::View { data } => match data.as_ref() {
+                ViewData::Mods { view } => self.mods = Some((**view).clone()),
                 ViewData::Crew { panel } => self.crew_panel = Some(panel.clone()),
+                ViewData::Usage { summary } => {
+                    self.usage = Some(std::sync::Arc::new((**summary).clone()));
+                }
                 ViewData::Models { choices, .. } => {
                     for choice in choices {
                         self.model_words.insert(
@@ -253,6 +298,11 @@ impl AppState {
                             crate::format::choice_words(choice),
                         );
                     }
+                }
+                ViewData::Workflow { view } => self.goals.remember(&view.run, &view.goals),
+                ViewData::Agent { view } => {
+                    self.goals
+                        .remember_agent(&view.run, &view.row, view.goal.as_deref());
                 }
                 _ => {}
             },
@@ -267,8 +317,9 @@ impl AppState {
             | AppEvent::SettingChanged { .. }
             | AppEvent::RepoFiles { .. }
             | AppEvent::CondensedReplay { .. }
-            | AppEvent::ChatResumed { .. }
             | AppEvent::Report { .. }
+            | AppEvent::Folded { .. }
+            | AppEvent::Continued { .. }
             | AppEvent::Hint { .. }
             | AppEvent::Exit => {}
         }
@@ -282,8 +333,46 @@ impl AppState {
         self.attached.as_ref().and_then(|id| self.runs.get(id))
     }
 
+    /// The run the screen's own numbers are about, such as a pinned card's: the one the
+    /// app's mode names, else the attached one.
+    pub fn followed_run(&self) -> Option<&RunState> {
+        let named = match &self.mode {
+            Some(
+                AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Parked { run, .. },
+            ) => self.runs.get(run),
+            _ => None,
+        };
+        named.or_else(|| self.attached_run())
+    }
+
     pub fn session(&self, run: &RunId, key: &SessionKey) -> Option<&SessionState> {
         self.runs.get(run).and_then(|run| run.sessions.get(key))
+    }
+
+    /// What the latest listing says of a run held here that goes on off screen, as one does
+    /// once a second workflow takes the screen.
+    pub fn listed_off_screen(&self, run: &RunId) -> Option<&RunSummary> {
+        if self.attached.as_ref() == Some(run) {
+            return None;
+        }
+        self.background.iter().find(|listed| &listed.run == run)
+    }
+
+    /// Notes which runs held here a listing shows off screen, and which it has left out since,
+    /// as they ended there.
+    fn follow_off_screen(&mut self) {
+        let off_screen = self
+            .runs
+            .values()
+            .filter(|run| run.finished.is_none() && self.attached.as_ref() != Some(&run.id));
+        for run in off_screen {
+            if self.background.iter().any(|listed| listed.run == run.id) {
+                self.ended_off_screen.remove(&run.id);
+                self.listed_off_screen.insert(run.id.clone());
+            } else if self.listed_off_screen.remove(&run.id) {
+                self.ended_off_screen.insert(run.id.clone());
+            }
+        }
     }
 
     /// Cards waiting on you in runs this screen doesn't hold, which only their panel rows show.
@@ -346,7 +435,7 @@ impl AppState {
             .map(|session| (&run.id, session))
     }
 
-    /// Esc folded a checkpoint card to its pinned line, or it came back.
+    /// Esc handed a checkpoint card on, or it came back.
     pub fn set_aside(&mut self, run: &RunId, id: &CheckpointId, aside: bool) {
         if let Some(open) = self.runs.get_mut(run).and_then(|run| {
             run.checkpoints
@@ -380,8 +469,30 @@ impl AppState {
             .sum()
     }
 
+    /// A page an agent inside a run just published, read off the call that finished.
+    fn note_run_artifact(&mut self, event: &argonauts_core::events::RunEvent) {
+        let RunEventKind::Agent(AgentEvent::ToolFinished { id, .. }) = &event.kind else {
+            return;
+        };
+        let Some(key) = &event.session else {
+            return;
+        };
+        let call = self
+            .runs
+            .get(&event.run_id)
+            .and_then(|run| run.sessions.get(key))
+            .and_then(|session| session.tools.iter().rev().find(|call| call.id == *id));
+        if let Some(call) = call {
+            self.artifacts
+                .note(call, Some((event.run_id.clone(), key.clone())));
+        }
+    }
+
     fn apply_run(&mut self, event: &argonauts_core::events::RunEvent) {
         self.saw(event.ts);
+        if let RunEventKind::Goal(goal) = &event.kind {
+            self.goals.told(&event.run_id, goal);
+        }
         match &event.kind {
             RunEventKind::Vendor(vendor) => self.apply_vendor(vendor),
             RunEventKind::Agent(AgentEvent::Quota { reading }) => {

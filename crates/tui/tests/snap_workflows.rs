@@ -6,9 +6,8 @@ use argonauts_core::handoff::QualityDebt;
 use argonauts_core::names::{RoleName, SessionKey, WorkerRef, WorkflowId};
 use argonauts_core::settings::ui::{UiSettings, VendorInternals};
 use argonauts_core::views::{
-    ActivityLine, AgentRow, AgentView as AgentData, ContextRow, ContextUse,
-    ContextView as ContextData, NestedWorkflowRow, PhaseCount, PhaseRow, RowStatus,
-    SubagentsSection, WorkflowRow, WorkflowView as WorkflowData,
+    ActivityLine, AgentRow, AgentView as AgentData, ContextUse, NestedWorkflowRow, PhaseCount,
+    PhaseRow, RowStatus, SubagentsSection, WorkflowRow, WorkflowView as WorkflowData,
 };
 use argonauts_core::workflow::StandardPhase;
 use argonauts_core::{CardId, DiffStat, RunId, Spend};
@@ -20,7 +19,6 @@ use argonauts_tui::stability::{WIDTHS, assert_frames, assert_lines, buffer_text,
 use argonauts_tui::state::{AppState, CardRow, Doing, RunState, SessionState, SessionStatus};
 use argonauts_tui::theme::{Role, Theme};
 use argonauts_tui::views::agent::AgentView;
-use argonauts_tui::views::context::ContextView;
 use argonauts_tui::views::workflow::WorkflowView;
 use argonauts_tui::views::{View, ViewCtx, ViewOutcome};
 use common::{t0, theme};
@@ -75,6 +73,7 @@ fn agent(
         subagents: 0,
         context: None,
         standing_in_for: None,
+        answered: None,
     }
 }
 
@@ -203,6 +202,9 @@ fn ui_kit() -> WorkflowData {
         ],
         style: None,
         status_lines: Vec::new(),
+        notes: Vec::new(),
+        required: Vec::new(),
+        goals: Vec::new(),
     }
 }
 
@@ -274,6 +276,9 @@ fn demo_tests() -> WorkflowData {
         ],
         style: None,
         status_lines: Vec::new(),
+        notes: Vec::new(),
+        required: Vec::new(),
+        goals: Vec::new(),
     }
 }
 
@@ -334,6 +339,7 @@ fn subagents() -> SubagentsSection {
             last_message: message.map(str::to_owned),
             log_uri: None,
             steps_visible: true,
+            tokens: None,
         };
     SubagentsSection {
         title: "Subagents".into(),
@@ -371,6 +377,8 @@ fn agent_data(row: AgentRow) -> AgentData {
         }),
         subagents: Some(subagents()),
         outcome: Some(outcome()),
+        goal: None,
+        plan: None,
     }
 }
 
@@ -562,8 +570,8 @@ fn long_model_names_stay_visible_at_80_columns() {
     let data = |label: &str| WorkflowData {
         run: run(),
         id: WorkflowId::numbered(3),
-        name: "solo-reviewed".into(),
-        description: "One small change, reviewed by another family".into(),
+        name: "maker-checker".into(),
+        description: "One small change, reviewed by another provider".into(),
         breadcrumb: Vec::new(),
         agents_done: 0,
         agents_total: 2,
@@ -586,7 +594,7 @@ fn long_model_names_stay_visible_at_80_columns() {
                 )),
                 WorkflowRow::Agent(agent(
                     "s-022",
-                    "reviewer · card-001",
+                    "reviewer · task-001",
                     "codex/gpt-5.6",
                     RowStatus::Waiting,
                     0,
@@ -597,12 +605,15 @@ fn long_model_names_stay_visible_at_80_columns() {
         )],
         style: None,
         status_lines: Vec::new(),
+        notes: Vec::new(),
+        required: Vec::new(),
+        goals: Vec::new(),
     };
     for (name, label) in [
-        ("long_model_80", "owner · card-001"),
+        ("long_model_80", "worker · task-001"),
         (
             "long_model_and_label_80",
-            "build:card-017-rewrite-the-entire-slugify-module",
+            "build:task-017-rewrite-the-entire-slugify-module",
         ),
     ] {
         let mut view = WorkflowView::new(data(label));
@@ -655,15 +666,15 @@ fn agent_view() {
         "{text}"
     );
 
-    // i steers, t asks to take over the agent's card, and Esc goes back to the workflow.
+    // m messages the agent, t asks to take over the agent's card, and Esc goes back to the workflow.
     assert!(matches!(
-        press(&mut view, KeyCode::Char('i'), &state),
+        press(&mut view, KeyCode::Char('m'), &state),
         ViewOutcome::Consumed
     ));
     for c in "use the new layout".chars() {
         press(&mut view, KeyCode::Char(c), &state);
     }
-    assert!(screen(&mut view, 100, 32, &state).contains("steer ❯ use the new layout"));
+    assert!(screen(&mut view, 100, 32, &state).contains("message ❯ use the new layout"));
     let steer = press(&mut view, KeyCode::Enter, &state);
     assert!(
         matches!(&steer, ViewOutcome::Send(UiCommand::Steer { text, session, .. }) if text == "use the new layout" && session.as_str() == "s-003"),
@@ -809,7 +820,7 @@ fn nested_workflow_breadcrumb() {
     // The parent phase counts the nested workflow as one row.
     assert!(text.contains("❯ 2 Build    2/4"), "{text}");
     assert!(
-        text.contains("◇ build:c-demo-tests      workflow          · 2/4 agents      12m00s"),
+        text.contains("◇ build:c-demo-tests      workflow            · 2/4 agents    12m00s"),
         "{text}"
     );
 
@@ -881,7 +892,7 @@ fn nested_workflow_breadcrumb() {
 fn crew_run() -> WorkflowData {
     let mut codex = agent(
         "s-105",
-        "owner · card-002",
+        "worker · task-002",
         "codex/gpt-5.6",
         RowStatus::Running,
         181_000,
@@ -892,7 +903,7 @@ fn crew_run() -> WorkflowData {
     codex.subagents = 2;
     let mut claude = agent(
         "s-104",
-        "owner · card-001",
+        "worker · task-001",
         "claude-code/opus",
         RowStatus::Done,
         402_000,
@@ -902,7 +913,7 @@ fn crew_run() -> WorkflowData {
     claude.subagents = 3;
     let mut agy = agent(
         "s-106",
-        "owner · card-003",
+        "worker · task-003",
         "agy/gemini-3.6",
         RowStatus::Running,
         77_300,
@@ -913,7 +924,7 @@ fn crew_run() -> WorkflowData {
     WorkflowData {
         run: run(),
         id: WorkflowId::numbered(1),
-        name: "peer-crew".into(),
+        name: "council".into(),
         description: "Fix the race in the export test and add a regression test".into(),
         breadcrumb: Vec::new(),
         agents_done: 6,
@@ -981,7 +992,7 @@ fn crew_run() -> WorkflowData {
                 vec![
                     WorkflowRow::Agent(agent(
                         "s-107",
-                        "reviewer · card-001",
+                        "reviewer · task-001",
                         "codex/gpt-5.6",
                         RowStatus::Waiting,
                         0,
@@ -990,7 +1001,7 @@ fn crew_run() -> WorkflowData {
                     )),
                     WorkflowRow::Agent(agent(
                         "s-108",
-                        "reviewer · card-002",
+                        "reviewer · task-002",
                         "claude-code/opus",
                         RowStatus::Waiting,
                         0,
@@ -1002,6 +1013,9 @@ fn crew_run() -> WorkflowData {
         ],
         style: None,
         status_lines: Vec::new(),
+        notes: Vec::new(),
+        required: Vec::new(),
+        goals: Vec::new(),
     }
 }
 
@@ -1042,6 +1056,7 @@ fn run_tree_subagents_and_threads() {
         last_message: None,
         log_uri: None,
         steps_visible: visible,
+        tokens: None,
     };
     let sections = [
         (
@@ -1178,7 +1193,7 @@ fn session(
 fn card(n: u32) -> CardRow {
     CardRow {
         id: CardId::numbered(n),
-        title: format!("card {n}"),
+        title: format!("task {n}"),
         state: None,
         owner: None,
         attempt: 1,
@@ -1205,7 +1220,7 @@ fn crew_state(wall: OffsetDateTime) -> AppState {
     let mut claude = session(
         "s-104",
         "claude-code/opus",
-        RoleName::Owner,
+        RoleName::Worker,
         Some(CardId::numbered(1)),
         SessionStatus::Working,
         started,
@@ -1225,13 +1240,14 @@ fn crew_state(wall: OffsetDateTime) -> AppState {
             last_message: None,
             log_uri: None,
             steps_visible: true,
+            tokens: None,
         };
         3
     ];
     let mut codex = session(
         "s-105",
         "codex/gpt-5.6",
-        RoleName::Owner,
+        RoleName::Worker,
         Some(CardId::numbered(2)),
         SessionStatus::Working,
         started,
@@ -1300,18 +1316,18 @@ fn agent_panel_row_ctx() {
     let model = synced(&state, true);
     let bottom = &model.bottom;
     assert_eq!(bottom.workflows.rows.len(), 1);
-    // The finished drafter isn't listed; the two owners are, under their run.
-    assert_eq!(bottom.agents.rows.len(), 2);
+    // The finished drafter isn't listed; the two workers are, under their run, after your own
+    // conversation's row.
+    assert_eq!(bottom.agents.rows.len(), 3);
     let text = panel_text(&bottom.workflows, &bottom.agents, 160);
     let rows: Vec<&str> = text.lines().collect();
-    assert!(rows[0].starts_with("  ○ fix the export race"), "{text}");
-    // Under its run, an agent's row is its circle, name, card, bar, and stats, with no task.
-    assert!(
-        rows[1].starts_with("    ◐ Opus on Claude Code        card-001  "),
-        "{text}"
-    );
-    assert!(rows[1].contains("ctx 120k/200k"), "{text}");
-    assert!(rows[1].contains("+3 subagents"), "{text}");
+    assert_eq!(rows[0], "  ● main", "{text}");
+    assert!(rows[1].starts_with("  ○ fix the export race"), "{text}");
+    // Under its run, an agent's row is a row of Claude Code's list: its dot, its name, what
+    // it's doing, and its stats. This state has no labels, so each goes by its task.
+    assert!(rows[2].starts_with("    ○ task-001  "), "{text}");
+    assert!(rows[2].contains("ctx 120k/200k"), "{text}");
+    assert!(rows[2].contains("+3 subagents"), "{text}");
 
     // Near the cap, the ctx turns to the warning color; below it, it stays dim.
     let theme = theme();
@@ -1323,7 +1339,7 @@ fn agent_panel_row_ctx() {
             .find(|span| span.content.starts_with("ctx "))
             .map(|span| span.style)
     };
-    assert_eq!(ctx_style(&lines[1]), Some(theme.style(Role::Dim)));
+    assert_eq!(ctx_style(&lines[2]), Some(theme.style(Role::Dim)));
     let mut near = state.clone();
     if let Some(run) = near.runs.get_mut(&run())
         && let Some(claude) = run.sessions.get_mut(&key("s-104"))
@@ -1335,7 +1351,7 @@ fn agent_panel_row_ctx() {
     }
     let model = synced(&near, true);
     let lines = panel_lines(&model.bottom.workflows, &model.bottom.agents, &ctx);
-    assert_eq!(ctx_style(&lines[1]), Some(theme.style(Role::Warning)));
+    assert_eq!(ctx_style(&lines[2]), Some(theme.style(Role::Warning)));
 
     // Without `ui.panel.agents`, a run is one row.
     let model = synced(&state, false);
@@ -1348,8 +1364,8 @@ fn agent_panel_row_ctx() {
     );
 }
 
-/// The agents under a run line up in columns at every width: steps, tokens, and spend
-/// right-aligned, the markers after them, and the times ending at the same cell.
+/// The agents under a run line up in columns at every width: their names, and their stats in
+/// a column that ends one cell short of the edge, as the mode line's parts do.
 #[test]
 fn agent_panel_columns() {
     let mut state = crew_state(OffsetDateTime::now_utc());
@@ -1366,55 +1382,51 @@ fn agent_panel_columns() {
     for width in [80u16, 100, 120, 200] {
         let text = panel_text(&bottom.workflows, &bottom.agents, width);
         insta::assert_snapshot!(format!("agent_panel_columns_{width}"), text);
-        let rows: Vec<&str> = text.lines().skip(1).collect();
+        let rows: Vec<&str> = text.lines().skip(2).collect();
         assert_eq!(rows.len(), 2, "{text}");
         let cells = |row: &str| row.trim_end().chars().count();
-        // The times end one cell short of the edge, as the mode line's parts do.
-        assert!(
-            rows.iter().all(|row| cells(row) == usize::from(width) - 1),
-            "{text}"
-        );
-        let ends_at = |row: &str, needle: &str| {
-            row.find(needle)
-                .map(|at| row[..at].chars().count() + needle.chars().count())
-        };
-        if let (Some(long), Some(short)) = (
-            ends_at(rows[0], "18.1k tokens"),
-            ends_at(rows[1], "2.4k tokens"),
-        ) {
-            assert_eq!(long, short, "tokens right-aligned:\n{text}");
+        let widest = rows.iter().map(|row| cells(row)).max();
+        assert_eq!(widest, Some(usize::from(width) - 1), "{text}");
+        // Each row's stats start where the other's do. Both end with their tokens.
+        let stats_at = |row: &str, first: &str| row.find(first).map(|at| row[..at].chars().count());
+        let debt = stats_at(rows[1], "◌ needs");
+        if let Some(noted) = stats_at(rows[0], "ctx 120k") {
+            assert_eq!(Some(noted), debt, "{text}");
         }
+        assert!(
+            debt.is_some(),
+            "the review debt outlasts the other notes:\n{text}"
+        );
+        assert!(rows[0].ends_with("18.1k tokens") && rows[1].ends_with("2.4k tokens"));
     }
+    // What a run spent is on its own row. An agent's is in its view.
     let wide = panel_text(&bottom.workflows, &bottom.agents, 200);
-    assert!(wide.contains("$0.84"), "{wide}");
+    let rows: Vec<&str> = wide.lines().collect();
+    assert!(rows[1].contains("$0.84"), "{wide}");
+    assert!(!rows[2].contains('$') && !rows[3].contains('$'), "{wide}");
 }
 
-/// The review's probe: under a run at 80 columns, names too long for their model drop it, and
-/// the card stays beside the harness instead of past the cells the models would have filled.
+/// A long model name no longer crowds a row: the list names an agent by its label, and who
+/// runs it is in its own view and in the crew list.
 #[test]
-fn harness_names_keep_their_card_beside_them() {
+fn a_long_model_name_stays_out_of_the_list() {
     let mut state = crew_state(OffsetDateTime::now_utc());
     if let Some(run) = state.runs.get_mut(&run())
-        && let Some(owner) = run.sessions.get_mut(&key("s-104"))
+        && let Some(worker_session) = run.sessions.get_mut(&key("s-104"))
     {
-        owner.worker = worker("opencode/openrouter/qwen3-coder-480b-a35b-instruct-turbo");
-        owner.vendor = owner.worker.worker.clone();
+        worker_session.worker = worker("opencode/openrouter/qwen3-coder-480b-a35b-instruct-turbo");
+        worker_session.vendor = worker_session.worker.worker.clone();
+        worker_session.label = Some("build:export-race".into());
     }
     let model = synced(&state, true);
     let text = panel_text(&model.bottom.workflows, &model.bottom.agents, 80);
-    insta::assert_snapshot!("agent_panel_harness_names_80", text);
-    // The cards line up two cells after the widest harness, OpenCode.
-    let card_at = |row: &str| {
-        row.find("card-")
-            .map(|at| row[..at].chars().count())
-            .unwrap_or_default()
-    };
-    let rows: Vec<&str> = text.lines().skip(1).collect();
-    assert!(rows[0].contains("OpenCode  card-001"), "{text}");
     assert!(
-        rows.iter().all(|row| card_at(row) == card_at(rows[0])),
+        !text.contains("qwen3") && !text.contains("OpenCode"),
         "{text}"
     );
+    let rows: Vec<&str> = text.lines().skip(2).collect();
+    assert!(rows[0].starts_with("    ○ build:export-race  "), "{text}");
+    assert!(rows[1].starts_with("    ○ task-002           "), "{text}");
 }
 
 #[test]
@@ -1422,23 +1434,22 @@ fn debt_markers_on_rows() {
     let state = crew_state(OffsetDateTime::now_utc());
     let model = synced(&state, true);
     let text = panel_text(&model.bottom.workflows, &model.bottom.agents, 160);
-    let codex = text
-        .lines()
-        .find(|row| row.contains("GPT 5.6 on Codex"))
-        .unwrap();
+    // Codex took task-002 over from Claude Code, and what it did still waits for a review.
+    let codex = text.lines().find(|row| row.contains("task-002")).unwrap();
     assert!(codex.contains("↺ for Claude Code"), "{text}");
     assert!(codex.contains("◌ needs review"), "{text}");
-    let claude = text
-        .lines()
-        .find(|row| row.contains("Opus on Claude Code"))
-        .unwrap();
+    let claude = text.lines().find(|row| row.contains("task-001")).unwrap();
     assert!(!claude.contains("needs review"), "{text}");
 
-    // On a narrow row the markers outlast the stats.
+    // On a narrow row the other notes give way, and the review debt stays with the time and
+    // tokens, since it's the one that asks something of you.
     let narrow = panel_text(&model.bottom.workflows, &model.bottom.agents, 72);
-    let codex = narrow.lines().find(|row| row.contains("Codex")).unwrap();
+    let codex = narrow.lines().find(|row| row.contains("task-002")).unwrap();
     assert!(codex.contains("◌ needs review"), "{narrow}");
-    assert!(!codex.contains("tokens"), "{narrow}");
+    assert!(
+        !codex.contains("↺ for") && codex.ends_with("tokens"),
+        "{narrow}"
+    );
 
     // The workflow view marks the same agent's row from the folded state.
     let mut view = WorkflowView::new(crew_run());
@@ -1447,7 +1458,7 @@ fn debt_markers_on_rows() {
     let text = trimmed(&buf);
     let row = text
         .lines()
-        .find(|row| row.contains("owner · card-002"))
+        .find(|row| row.contains("worker · task-002"))
         .unwrap();
     assert!(row.contains("↺ GPT 5.6"), "{text}");
     assert!(row.contains("◌ needs review"), "{text}");
@@ -1456,6 +1467,74 @@ fn debt_markers_on_rows() {
         style_at(&buf, "◌ needs review").and_then(|s| s.fg),
         fg(&theme, Role::Warning)
     );
+}
+
+/// A page an agent published inside the workflow is named on its row, as Claude Code marks
+/// an artifact, and on no other run's agent that happens to share its session key.
+#[test]
+fn a_published_page_marks_its_agents_row() {
+    use argonauts_core::AgentEvent;
+    use argonauts_core::app::AppEvent;
+    use argonauts_core::events::{RunEvent, RunEventKind};
+
+    let wall = OffsetDateTime::now_utc();
+    let mut state = crew_state(wall);
+    let mut seq = 0;
+    let mut said = |run_id: RunId, kind: AgentEvent| {
+        seq += 1;
+        AppEvent::Run {
+            event: Box::new(RunEvent {
+                seq,
+                ts: wall,
+                run_id,
+                card_id: None,
+                session: Some(key("s-104")),
+                source: "conductor".into(),
+                kind: RunEventKind::Agent(kind),
+            }),
+        }
+    };
+    let publish = |id: &str| AgentEvent::ToolStarted {
+        id: id.into(),
+        name: "Artifact".into(),
+        input: serde_json::json!({"file_path": "out/test-report.html", "icon": "document"}),
+        parent: None,
+    };
+    let published = |id: &str| AgentEvent::ToolFinished {
+        id: id.into(),
+        ok: true,
+        output: Some(
+            "Published out/test-report.html at \
+             https://claude.ai/code/artifact/7d2c4b18-93aa-4e0f-8c61-5b0e9f1a2c33 (Version 1)"
+                .into(),
+        ),
+        parent: None,
+    };
+    let row = |state: &AppState, label: &str| {
+        let mut view = WorkflowView::new(crew_run());
+        let buf = draw(&mut view, 150, 32, state);
+        assert_frames(&buf);
+        let text = trimmed(&buf);
+        text.lines()
+            .find(|row| row.contains(label))
+            .unwrap_or_else(|| panic!("{label}:\n{text}"))
+            .to_owned()
+    };
+    assert!(!row(&state, "worker · task-001").contains("test-report"));
+
+    state.apply(&said(run(), publish("t1")));
+    state.apply(&said(run(), published("t1")));
+    let claude = row(&state, "worker · task-001");
+    assert!(claude.contains("+3 subagents · ⧉ test-report"), "{claude}");
+    assert!(!row(&state, "worker · task-002").contains("test-report"));
+
+    // Another run's agent with the same key shows nothing of it.
+    let mut other = WorkflowView::new(WorkflowData {
+        run: RunId::new("run-02").unwrap(),
+        ..crew_run()
+    });
+    let text = trimmed(&draw(&mut other, 150, 32, &state));
+    assert!(!text.contains("test-report"), "{text}");
 }
 
 #[test]
@@ -1510,12 +1589,13 @@ fn state_glyph_word_color() {
     running.status = RowStatus::Running;
     let mut view = AgentView::new(agent_data(running));
     let buf = draw(&mut view, 100, 32, &state);
+    // Working is the working color wherever it shows, never the faint grey of a number.
     assert_eq!(
-        style_at(&buf, "● Running").and_then(|s| s.fg),
-        fg(&theme, Role::Faint)
+        style_at(&buf, "◐ Running").and_then(|s| s.fg),
+        fg(&theme, Role::StateWorking)
     );
 
-    // The workflow view's rows: green ✔, grey ●, red ✗, and the nested ◇.
+    // The workflow view's rows: green ✔, red ✗, and the nested ◇.
     let mut view = WorkflowView::new(data);
     let buf = draw(&mut view, 100, 32, &state);
     assert_eq!(
@@ -1563,7 +1643,7 @@ fn state_glyph_word_color() {
     };
     assert_eq!(
         last_style(0),
-        Some(("◆ needs you".into(), theme.style(Role::Card)))
+        Some(("◆ needs you".into(), theme.style(Role::StateNeedsYou)))
     );
     assert_eq!(
         last_style(1),
@@ -1578,116 +1658,13 @@ fn state_glyph_word_color() {
         Some(("paused".into(), theme.style(Role::Dim)))
     );
     assert_eq!(lines[0].spans[1].content, "◆");
-    assert_eq!(lines[1].spans[1].content, "✓");
+    assert_eq!(lines[1].spans[1].content, "✔");
     assert_eq!(lines[2].spans[1].content, "✗");
     assert_eq!(lines[3].spans[1].content, "■");
 }
 
-fn context_data() -> ContextData {
-    let row = |run_: Option<RunId>,
-               session: &str,
-               label: &str,
-               by: &str,
-               used: u64,
-               window: Option<u64>,
-               cap: Option<u64>,
-               calls: u32,
-               cost: f64,
-               rotations: u32| ContextRow {
-        run: run_,
-        session: key(session),
-        label: label.into(),
-        worker: worker(by),
-        used,
-        window,
-        cap,
-        tool_calls: calls,
-        spent: usd(cost),
-        rotations,
-    };
-    ContextData {
-        rows: vec![
-            row(
-                None,
-                "s-001",
-                "lead",
-                "claude-code/opus",
-                48_200,
-                Some(1_000_000),
-                Some(200_000),
-                12,
-                0.21,
-                0,
-            ),
-            row(
-                Some(run()),
-                "s-105",
-                "owner · card-002",
-                "codex/gpt-5.6",
-                184_000,
-                Some(400_000),
-                Some(200_000),
-                95,
-                1.12,
-                1,
-            ),
-            row(
-                Some(run()),
-                "s-106",
-                "reviewer · card-001",
-                "agy/gemini-3.6",
-                20_400,
-                Some(1_000_000),
-                None,
-                7,
-                0.0,
-                0,
-            ),
-        ],
-    }
-}
-
-#[test]
-fn context_view() {
-    let state = AppState::default();
-    for (width, height) in SIZES {
-        let mut view = ContextView::new(context_data());
-        insta::assert_snapshot!(
-            format!("context_view_{width}"),
-            screen(&mut view, width, height, &state)
-        );
-    }
-    let mut view = ContextView::new(context_data());
-    let buf = draw(&mut view, 100, 32, &state);
-    let theme = theme();
-    assert_eq!(
-        style_at(&buf, "184k/200k").and_then(|s| s.fg),
-        fg(&theme, Role::Warning)
-    );
-    assert_ne!(
-        style_at(&buf, "48.2k/200k").and_then(|s| s.fg),
-        fg(&theme, Role::Warning)
-    );
-
-    // Enter opens the agent's view; the lead's chat has none.
-    assert!(matches!(
-        press(&mut view, KeyCode::Enter, &state),
-        ViewOutcome::Notice(_)
-    ));
-    press(&mut view, KeyCode::Down, &state);
-    let outcome = press(&mut view, KeyCode::Enter, &state);
-    assert!(
-        matches!(&outcome, ViewOutcome::Request(ViewRequest::Agent { session, .. }) if session.as_str() == "s-105"),
-        "{outcome:?}"
-    );
-    assert!(matches!(
-        press(&mut view, KeyCode::Esc, &state),
-        ViewOutcome::Close
-    ));
-}
-
 /// Every text field set to one sample, so no view can dodge it.
-fn with_sample(sample: &str) -> (WorkflowData, AgentData, ContextData) {
+fn with_sample(sample: &str) -> (WorkflowData, AgentData) {
     let mut data = ui_kit();
     data.name = sample.into();
     data.description = sample.into();
@@ -1708,11 +1685,7 @@ fn with_sample(sample: &str) -> (WorkflowData, AgentData, ContextData) {
         call.summary = sample.into();
     }
     agent.outcome = Some(format!("{sample}\n\n- {sample}"));
-    let mut context = context_data();
-    for row in &mut context.rows {
-        row.label = sample.into();
-    }
-    (data, agent, context)
+    (data, agent)
 }
 
 #[test]
@@ -1729,7 +1702,7 @@ fn workflow_frames_at_every_width() {
     for width in WIDTHS {
         for height in [12, 24] {
             for sample in texts {
-                let (data, agent, context) = with_sample(sample);
+                let (data, agent) = with_sample(sample);
                 let mut view = WorkflowView::new(data.clone());
                 assert_frames(&draw(&mut view, width, height, &state));
                 press(&mut view, KeyCode::Tab, &state);
@@ -1745,9 +1718,6 @@ fn workflow_frames_at_every_width() {
                 assert_frames(&draw(&mut view, width, height, &state));
                 press(&mut view, KeyCode::Enter, &state);
                 press(&mut view, KeyCode::Char('G'), &state);
-                assert_frames(&draw(&mut view, width, height, &state));
-
-                let mut view = ContextView::new(context);
                 assert_frames(&draw(&mut view, width, height, &state));
             }
         }
@@ -1770,23 +1740,24 @@ fn library_files() -> Vec<argonauts_core::views::WorkflowFile> {
         origin,
         source: source.to_owned(),
         description: format!("How the {name} workflow runs"),
-        text: format!("name: {name}\nphases: []\n"),
+        text: format!("name = \"{name}\"\n\n[[step]]\nname = \"Do\"\nrole = \"workers\"\n"),
         edited,
         in_use,
+        problem: None,
     };
     vec![
         file("solo", WorkflowOrigin::BuiltIn, "built in", None, false),
         file(
-            "coordinated-crew",
+            "orchestrator",
             WorkflowOrigin::Yours,
-            "~/.argonauts/workflows/coordinated-crew.yaml",
+            "~/.argonauts/workflows/orchestrator.toml",
             Some(true),
             true,
         ),
         file(
             "release",
             WorkflowOrigin::Repo,
-            ".argonauts/workflows/release.yaml",
+            ".argonauts/workflows/release.toml",
             None,
             false,
         ),
@@ -1813,13 +1784,13 @@ fn library_view() {
     }
     // It opens on the workflow in use.
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("❯ coordinated-crew"), "{text}");
+    assert!(text.contains("❯ orchestrator"), "{text}");
     let outcome = press(&mut view, KeyCode::Char('c'), &state);
     assert!(
         matches!(
             &outcome,
             ViewOutcome::Send(UiCommand::WorkflowFile { name, action })
-                if name == "coordinated-crew"
+                if name == "orchestrator"
                     && *action == argonauts_core::input::WorkflowAction::Copy
         ),
         "{outcome:?}"
@@ -1861,7 +1832,7 @@ fn before_the_workflow(lead: bool) -> AppState {
     send(
         None,
         serde_json::json!({"type": "run", "data": {"event": "started", "request": request,
-            "title": request, "mode": "crew", "forced": false, "preset": "peer-crew",
+            "title": request, "mode": "crew", "forced": false, "workflow": "council",
             "estimate": null, "triage": null, "chat_turn": null, "continues": null,
             "repo_root": "/repo", "base_branch": "main", "base_commit": "8b41d07",
             "uncommitted": [], "uncommitted_included": false, "settings_sha256": "",
@@ -1880,8 +1851,8 @@ fn before_the_workflow(lead: bool) -> AppState {
             serde_json::json!({"type": "session", "data": {"event": "started",
                 "worker": "claude-code/haiku", "vendor": "claude-code", "family": "claude",
                 "kind": "harness", "role": "phase-lead", "step": "design_workflow",
-                "access": "read_only", "lifetime": "card", "resumed_from": null,
-                "follow_key": null, "label": "lead:design-2"}}),
+                "access": "read_only", "lifetime": "task", "resumed_from": null,
+                "follow_key": null, "label": "main:design-2"}}),
         );
         for text in [
             "Reading the rate limiter and its failing test.",
@@ -1912,7 +1883,7 @@ fn a_run_before_its_workflow() {
         let mut view = argonauts_tui::views::waiting::WaitingView::new(run());
         let text = screen(&mut view, width, height, &waiting);
         assert!(
-            text.contains("Waiting for the lead to start designing the workflow."),
+            text.contains("Waiting for the main agent to start designing the workflow."),
             "{text}"
         );
         insta::assert_snapshot!(format!("run_waiting_{width}"), text);
@@ -1920,10 +1891,13 @@ fn a_run_before_its_workflow() {
         let mut lead = argonauts_tui::views::session::SessionView::new(run(), key("s-002"));
         lead.clock = argonauts_tui::format::WallClock::pinned(at);
         let text = screen(&mut lead, width, height, &designing);
+        let header = text.lines().next().unwrap_or_default();
         assert!(
-            text.contains("lead:design-2 · Haiku on Claude Code · 1m22s"),
+            header.starts_with("◐ main:design-2 · Haiku on Claude Code  "),
             "{text}"
         );
+        assert!(header.contains(" Output  Input  Raw "), "{text}");
+        assert!(header.trim_end().ends_with("1m22s"), "{text}");
         insta::assert_snapshot!(format!("lead_designing_{width}"), text);
     }
 }

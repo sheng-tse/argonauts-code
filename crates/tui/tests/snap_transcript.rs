@@ -244,7 +244,7 @@ fn started(mode: RunMode, request: &str) -> RunEventKind {
         title: request.into(),
         mode,
         forced: false,
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -261,6 +261,7 @@ fn started(mode: RunMode, request: &str) -> RunEventKind {
         version: "0.0.1".into(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     })))
 }
 
@@ -291,15 +292,17 @@ fn startup_header() {
         let status = StatusLine {
             title: "argonauts".into(),
             repo: "~/github/argonauts".into(),
-            preset: "peer-crew".into(),
-            all_hands: false,
+            workflow: "council".into(),
+            ultracode: false,
             run: None,
-            default_agent: worker("claude-code", "haiku-4.5"),
+            main_agent: worker("claude-code", "haiku-4.5"),
             quotas: vec![],
+            line: Default::default(),
             spent: None,
             limit: None,
             narrator: NarratorMode::OnDemand,
             approval_mode: ApprovalMode::Supervised,
+            awake: None,
         };
         let ready = |id: &str, version: &str| AgentReady {
             id: id.into(),
@@ -310,7 +313,7 @@ fn startup_header() {
         harness.send(AppEvent::Welcome {
             version: "0.0.1".into(),
             repo: text.unwrap_or("~/github/argonauts").into(),
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             agents: vec![
                 ready("claude-code", "2.1.4"),
                 AgentReady {
@@ -324,7 +327,7 @@ fn startup_header() {
             runs_going: 2,
             runs_need_you: 0,
             example_prompt: None,
-            default_agent: None,
+            main_agent: None,
             effort: None,
         });
         harness.send(AppEvent::Status { status });
@@ -335,7 +338,7 @@ fn startup_header() {
 fn turn_end_line() {
     snapshot("turn_end_line", |harness, text| {
         let answer = text.unwrap_or(
-            "Hi! I'm the default agent (claude-code/haiku). Ask me about this repo, or describe a change and I'll run it solo or with the crew.",
+            "Hi! I'm the main agent (claude-code/haiku). Ask me about this repo, or describe a change and I'll run it solo or with the crew.",
         );
         harness.send_all([turn_started(1, "hi"), answered(1, answer, 3)]);
         harness.settings.verbs = VerbTheme::Plain;
@@ -352,10 +355,10 @@ fn turn_end_line() {
             .into_iter()
             .enumerate()
         {
-            let n = u32::try_from(n + 1).expect("four cards");
+            let n = u32::try_from(n + 1).expect("four tasks");
             let row = card_row(
                 n,
-                "a card",
+                "a task",
                 worker("codex", "gpt-5.6"),
                 Some(diff(files, added, removed)),
             );
@@ -434,14 +437,14 @@ fn setting_changed_line() {
             changed("ui.theme", "\"dark\"", SettingScope::Global, None, true),
             changed("narrator.model", "", SettingScope::Session, None, true),
             changed(
-                "default_agent",
+                "main_agent",
                 "\"claude-code/claude-opus-5-5\"",
                 SettingScope::ProjectLocal,
                 Some("\"claude-code\""),
                 false,
             ),
             changed(
-                "roles.default.effort",
+                "roles.main.effort",
                 "\"high\"",
                 SettingScope::ProjectLocal,
                 None,
@@ -631,7 +634,7 @@ fn finished_step_collapses_with_details() {
             run_event(
                 None,
                 RunEventKind::Divide(DivideEvent::Graph(TaskGraph {
-                    cards: (1..=5).map(|n| card_spec(n, "a card")).collect(),
+                    cards: (1..=5).map(|n| card_spec(n, "a task")).collect(),
                     critical_path: vec![],
                 })),
             ),
@@ -752,7 +755,7 @@ fn handoff_and_return_transcript_lines() {
                 Some(card(2)),
                 RunEventKind::Card(CardEvent::Reverted {
                     to: 1,
-                    kept_on: "argonauts/run-01/card-002-after-handoff-1".into(),
+                    kept_on: "argonauts/run-01/task-002-after-fallback-1".into(),
                 }),
             ),
             run_event(None, health(HealthState::Down)),
@@ -767,7 +770,7 @@ fn recap_line() {
         harness.send(AppEvent::Recap {
             text: text
                 .unwrap_or(
-                    "Export now takes --json, all 4 cards merged, and the tests pass. Ask for another change, or /resume an older run.",
+                    "Export now takes --json, all 4 tasks merged, and the tests pass. Ask for another change, or /resume an older run.",
                 )
                 .into(),
             model: None,
@@ -790,10 +793,10 @@ fn replayed_session(key: &str) -> [AppEvent; 2] {
         worker: worker("claude-code", "opus"),
         family: "test".into(),
         kind: WorkerKind::Harness,
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         step: None,
         access: Access::Build,
-        lifetime: SessionLifetime::Card,
+        lifetime: SessionLifetime::Task,
         resumed_from: None,
         follow_key: None,
         workflow_step: None,
@@ -845,9 +848,9 @@ fn resumed_run(harness: &mut Harness, text: Option<&str>) {
             run: run_id(),
             title: title.into(),
             mode: RunMode::Crew,
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             state: RunStatus::Parked,
-            stopped_at: "plan checkpoint, waiting for you".into(),
+            stopped_at: "plan approval, waiting for you".into(),
             updated: datetime!(2026-09-30 17:00 UTC),
             spent: Spend {
                 cost_usd: 1.24,
@@ -891,9 +894,9 @@ fn resumed_run(harness: &mut Harness, text: Option<&str>) {
             milestones: vec![
                 "Triage: crew · 7 files, tests exist".into(),
                 "Goal approved · 3 criteria".into(),
-                "Plan 1 won · 5 cards".into(),
+                "Plan 1 won · 5 tasks".into(),
             ],
-            recap: "The plan waits for your approval at the plan checkpoint.".into(),
+            recap: "The plan waits for you at the plan approval.".into(),
             recap_model: None,
         },
         AppEvent::ReplayDone {

@@ -1,4 +1,4 @@
-//! `/preset show|diff|copy` and the Library tab of `/workflows`: the preset and workflow files.
+//! `/workflow show|diff|copy` and the workflow library of `/workflows`: the workflow files.
 //!
 //! A file in the repo's `.argonauts/` wins over yours in `~/.argonauts/`, which wins over the
 //! built-in of the same name.
@@ -11,12 +11,10 @@ use argonauts_core::NoteLevel;
 use argonauts_core::api::DiffView;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::input::{PresetAction, WorkflowAction};
-use argonauts_core::layout::{project_files, user_files};
+use argonauts_core::layout::project_files;
 use argonauts_core::log::DiffStat;
 use argonauts_core::views::{WorkflowFile, WorkflowOrigin};
-use argonauts_crew::workflow::builtin::BUILTIN as BUILTIN_WORKFLOWS;
-use argonauts_registry::workflows::WorkflowDirs;
-use argonauts_registry::{SettingsError, workflows_in};
+use argonauts_registry::{SettingsError, presets_in};
 use similar::{ChangeTag, TextDiff};
 
 use super::{Ctx, Effect};
@@ -41,64 +39,17 @@ struct Kind {
 }
 
 const PRESETS: Kind = Kind {
-    noun: "preset",
-    command: Some("/preset"),
+    noun: "workflow",
+    command: Some("/workflow"),
     extension: "toml",
     folder: project_files::PRESETS,
     builtin: argonauts_registry::builtin_preset,
     write: argonauts_registry::write_preset,
 };
 
-/// The crew engine's built-in workflows, the same text it runs.
-const WORKFLOWS: Kind = Kind {
-    noun: "workflow",
-    command: None,
-    extension: "yaml",
-    folder: project_files::WORKFLOWS,
-    builtin: builtin_workflow,
-    write: write_workflow,
-};
-
-fn builtin_workflow(name: &str) -> Result<String, SettingsError> {
-    BUILTIN_WORKFLOWS
-        .iter()
-        .find(|(builtin, _)| *builtin == name)
-        .map(|(_, text)| (*text).to_owned())
-        .ok_or_else(|| {
-            let names: Vec<&str> = BUILTIN_WORKFLOWS.iter().map(|(name, _)| *name).collect();
-            SettingsError::Invalid {
-                layer: "the built-in workflows".to_owned(),
-                message: format!(
-                    "there's no built-in workflow named {name:?}; the built-ins are {}",
-                    names.join(", ")
-                ),
-            }
-        })
-}
-
-/// Writes the built-in into `dir`, unless a file there already differs from it, which holds
-/// your edits.
-fn write_workflow(name: &str, dir: &Path) -> Result<PathBuf, SettingsError> {
-    let text = builtin_workflow(name)?;
-    let path = dir.join(format!("{name}.yaml"));
-    let io = |err: std::io::Error| SettingsError::Io {
-        path: path.clone(),
-        message: err.to_string(),
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(existing) if existing == text => return Ok(path),
-        Ok(_) => {
-            return Err(SettingsError::Refused(format!(
-                "{} has your edits, so it wasn't replaced",
-                path.display()
-            )));
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(io(err)),
-    }
-    std::fs::write(&path, text).map_err(io)?;
-    Ok(path)
-}
+/// A workflow may be a script in place of a file of steps. A script wins over a file of steps
+/// of the same name, as it does when the workflow runs.
+const SCRIPTS: [&str; 2] = ["js", "mjs"];
 
 pub(crate) async fn preset(
     ctx: &mut Ctx,
@@ -113,12 +64,13 @@ pub(crate) async fn preset(
         // Picking a preset is a setting, which the settings part handles.
         PresetAction::Use => return Ok(Vec::new()),
     };
-    let name = name.unwrap_or_else(|| ctx.settings().preset.clone());
+    let name = name.unwrap_or_else(|| ctx.settings().workflow.clone());
     act(ctx, &PRESETS, &name, action).map(|_| Vec::new())
 }
 
 pub(crate) async fn workflow(
     ctx: &mut Ctx,
+    taken: &[String],
     name: String,
     action: WorkflowAction,
 ) -> anyhow::Result<Vec<Effect>> {
@@ -129,30 +81,26 @@ pub(crate) async fn workflow(
         WorkflowAction::Copy => Action::Copy { project: false },
         WorkflowAction::CopyToProject => Action::Copy { project: true },
     };
-    let opened = act(ctx, &WORKFLOWS, &name, action)?;
+    let opened = act(ctx, &PRESETS, &name, action)?;
     // The Library tab is still on top, under any notice, so it gets the files as they are
     // now: a copy shows where the built-in was, and a diff with nothing to show says why.
     // After a pager opens, a list would open a second library over it.
     if !shows && !opened {
-        library(ctx, true);
+        library(ctx, taken, true);
     }
     Ok(Vec::new())
 }
 
-/// The Library tab of the workflow view: the built-ins, then your files, then the repo's, a
-/// file shadowing a workflow of the same name.
-pub(crate) fn library(ctx: &Ctx, refresh: bool) {
-    let dirs = Dirs::new(ctx, &WORKFLOWS);
-    let in_use = ctx.settings().workflow.as_str().to_owned();
-    let found = workflows_in(&WorkflowDirs {
-        global: &dirs.global,
-        project: Some(&dirs.project),
-        builtins: BUILTIN_WORKFLOWS,
-    });
+/// The workflow library: the built-ins, then your files, then the repo's, a file shadowing a
+/// workflow of the same name. These are the workflows `/workflow` lists and `/<name>` runs.
+pub(crate) fn library(ctx: &Ctx, taken: &[String], refresh: bool) {
+    let dirs = Dirs::new(ctx, &PRESETS);
+    let in_use = ctx.settings().workflow.clone();
+    let found = presets_in(&dirs.global, Some(&dirs.project));
     let workflows = found
         .into_iter()
         .map(|info| {
-            let builtin = builtin_workflow(&info.name).ok();
+            let builtin = (PRESETS.builtin)(&info.name).ok();
             let (origin, source, text) = if info.source == "built-in" {
                 let text = builtin.clone().unwrap_or_default();
                 (WorkflowOrigin::BuiltIn, "built in".to_owned(), text)
@@ -170,6 +118,14 @@ pub(crate) fn library(ctx: &Ctx, refresh: bool) {
                 (WorkflowOrigin::BuiltIn, _) | (_, None) => None,
                 (_, Some(builtin)) => Some(*builtin != text),
             };
+            // A copy of a built-in keeps its name; any other file named like a command never
+            // becomes that command, so the list says why `/<name>` won't run it.
+            let problem = (builtin.is_none() && taken.contains(&info.name)).then(|| {
+                format!(
+                    "/{} is already a command, so this workflow isn't one; rename the file",
+                    info.name
+                )
+            });
             WorkflowFile {
                 in_use: info.name == in_use,
                 name: info.name,
@@ -178,6 +134,7 @@ pub(crate) fn library(ctx: &Ctx, refresh: bool) {
                 description: info.description,
                 text,
                 edited,
+                problem,
             }
         })
         .collect();
@@ -219,22 +176,22 @@ struct Dirs {
 
 impl Dirs {
     fn new(ctx: &Ctx, kind: &Kind) -> Self {
-        let global = match kind.noun {
-            "preset" => ctx.env.paths.global_presets(),
-            _ => ctx.env.paths.home().join(user_files::WORKFLOWS),
-        };
         Self {
             project: ctx.env.repo_root.join(".argonauts").join(kind.folder),
-            global,
+            global: ctx.env.paths.global_presets(),
         }
     }
 
-    /// Your file for `name`, the repo's first.
+    /// Your file for `name`, the repo's first, a script before a file of steps.
     fn find(&self, kind: &Kind, name: &str) -> Option<PathBuf> {
-        let file = format!("{name}.{}", kind.extension);
+        let extensions = SCRIPTS.iter().chain([&kind.extension]);
         [&self.project, &self.global]
             .into_iter()
-            .map(|dir| dir.join(&file))
+            .flat_map(|dir| {
+                extensions
+                    .clone()
+                    .map(|extension| dir.join(format!("{name}.{extension}")))
+            })
             .find(|path| path.is_file())
     }
 }
@@ -332,12 +289,12 @@ fn copy(ctx: &Ctx, kind: &Kind, dirs: &Dirs, name: &str, project: bool) -> anyho
     }
 }
 
-struct FileDiff {
-    text: String,
-    stat: DiffStat,
+pub(crate) struct FileDiff {
+    pub text: String,
+    pub stat: DiffStat,
 }
 
-fn file_diff(old: &str, new: &str, old_name: &str, new_name: &str) -> FileDiff {
+pub(crate) fn file_diff(old: &str, new: &str, old_name: &str, new_name: &str) -> FileDiff {
     let diff = TextDiff::from_lines(old, new);
     let mut stat = DiffStat {
         files_changed: 1,
@@ -376,7 +333,7 @@ mod tests {
     async fn preset_command(harness: &mut Harness, name: &str, action: PresetAction) -> AppEvent {
         harness
             .send(UiCommand::Slash {
-                command: SlashCommand::Preset {
+                command: SlashCommand::Workflow {
                     name: Some(name.to_owned()),
                     action,
                 },
@@ -416,32 +373,51 @@ mod tests {
         (workflows, refresh)
     }
 
+    /// A file of steps of your own, as `/workflow new` would start one.
+    const RELEASE: &str = "name = \"release\"\nabout = \"Cut a release.\"\n\n[[step]]\nname = \"Tag\"\nrole = \"workers\"\n";
+
     #[tokio::test]
-    async fn the_library_lists_built_ins_yours_and_the_repos() {
+    async fn the_library_lists_the_workflows_built_in_yours_and_the_repos() {
         let mut harness = Harness::start().await;
         let project = harness.repo.root().join(".argonauts/workflows");
-        let global = harness.repo.home().join(user_files::WORKFLOWS);
+        let global = harness.env.paths.global_presets();
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(&global).unwrap();
-        std::fs::write(project.join("release.yaml"), "name: release\n").unwrap();
-        std::fs::write(global.join("solo.yaml"), "name: solo\n# mine\n").unwrap();
+        std::fs::write(project.join("release.toml"), RELEASE).unwrap();
+        std::fs::write(global.join("solo.toml"), "# mine\n").unwrap();
+        let clash = RELEASE.replace("release", "model");
+        std::fs::write(project.join("model.toml"), clash).unwrap();
         harness
             .send(UiCommand::Request {
                 view: argonauts_core::app::ViewRequest::WorkflowLibrary,
             })
             .await;
-        let release = library_row(&mut harness, "release").await;
+        let (files, _) = next_library(&mut harness).await;
+        let release = files.iter().find(|file| file.name == "release").unwrap();
         assert_eq!(release.origin, WorkflowOrigin::Repo);
         assert_eq!(release.edited, None);
-        assert_eq!(release.text, "name: release\n");
-        harness
-            .send(UiCommand::Request {
-                view: argonauts_core::app::ViewRequest::WorkflowLibrary,
-            })
-            .await;
-        let solo = library_row(&mut harness, "solo").await;
+        assert_eq!(release.text, RELEASE);
+        assert_eq!(release.description, "Cut a release.");
+        assert_eq!(release.problem, None);
+        let solo = files.iter().find(|file| file.name == "solo").unwrap();
         assert_eq!(solo.origin, WorkflowOrigin::Yours);
         assert_eq!(solo.edited, Some(true));
+        assert_eq!(solo.problem, None, "a copy of a built-in keeps its name");
+        // A file named like a command never becomes that command, and the list says why.
+        let model = files.iter().find(|file| file.name == "model").unwrap();
+        let problem = model.problem.as_deref().unwrap_or_default();
+        assert!(
+            problem.starts_with("/model is already a command"),
+            "{problem}"
+        );
+        // The workflows are the ones `/workflow` lists, the one in use marked.
+        let council = files.iter().find(|file| file.name == "council").unwrap();
+        assert_eq!(council.origin, WorkflowOrigin::BuiltIn);
+        assert!(council.in_use);
+        assert!(council.text.contains("[[step]]"), "{}", council.text);
+        // The fixed phases the engine keeps for itself are no workflow of their own.
+        assert!(!files.iter().any(|file| file.name == "script"), "{files:?}");
+        assert!(files.iter().all(|file| !file.source.ends_with(".yaml")));
         harness.exit().await;
     }
 
@@ -464,50 +440,55 @@ mod tests {
     #[tokio::test]
     async fn show_prints_your_file_first_and_diff_needs_one() {
         let mut harness = Harness::start().await;
-        let dir = harness.repo.root().join(".argonauts/presets");
+        let dir = harness.repo.root().join(".argonauts/workflows");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("mine.toml"), "preset = \"mine\"\n").unwrap();
+        std::fs::write(dir.join("mine.toml"), "workflow = \"mine\"\n").unwrap();
 
         let shown = preset_command(&mut harness, "mine", PresetAction::Show).await;
         let (level, text) = notice(&shown).unwrap();
         assert_eq!(level, NoteLevel::Info);
-        assert!(text.contains("preset = \"mine\""), "{text}");
-        assert!(text.contains(".argonauts/presets/mine.toml"), "{text}");
+        assert!(text.contains("workflow = \"mine\""), "{text}");
+        assert!(text.contains(".argonauts/workflows/mine.toml"), "{text}");
 
-        let none = preset_command(&mut harness, "peer-crew", PresetAction::Diff).await;
+        let none = preset_command(&mut harness, "council", PresetAction::Diff).await;
         let (_, text) = notice(&none).unwrap();
-        assert!(text.contains("/preset copy peer-crew"), "{text}");
+        assert!(text.contains("/workflow copy council"), "{text}");
 
         let bad = preset_command(&mut harness, "../escape", PresetAction::Show).await;
         let (level, text) = notice(&bad).unwrap();
         assert_eq!(level, NoteLevel::Error);
-        assert!(text.contains("isn't a preset name"), "{text}");
+        assert!(text.contains("isn't a workflow name"), "{text}");
         harness.exit().await;
     }
 
     #[tokio::test]
-    async fn workflow_show_prefers_the_repo_file_then_yours() {
+    async fn workflow_show_prefers_the_repo_file_then_yours_and_reads_a_script() {
         let mut harness = Harness::start().await;
         let project = harness.repo.root().join(".argonauts/workflows");
-        let global = harness.repo.home().join(user_files::WORKFLOWS);
+        let global = harness.env.paths.global_presets();
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(&global).unwrap();
-        std::fs::write(project.join("mine.yaml"), "name: mine\n# the repo's\n").unwrap();
-        std::fs::write(global.join("mine.yaml"), "name: mine\n# yours\n").unwrap();
-        std::fs::write(global.join("solo-mine.yaml"), "name: solo-mine\n").unwrap();
+        std::fs::write(
+            project.join("mine.toml"),
+            format!("# the repo's\n{RELEASE}"),
+        )
+        .unwrap();
+        std::fs::write(global.join("mine.toml"), format!("# yours\n{RELEASE}")).unwrap();
+        let sweep = "export const meta = { name: 'sweep', description: 'Find and fix' }\n";
+        std::fs::write(global.join("sweep.js"), sweep).unwrap();
 
         let shown = workflow_command(&mut harness, "mine", WorkflowAction::Show).await;
         let (level, text) = notice(&shown).unwrap();
         assert_eq!(level, NoteLevel::Info);
         assert!(text.contains("# the repo's"), "{text}");
         assert!(!text.contains("# yours"), "{text}");
-        assert!(text.contains(".argonauts/workflows/mine.yaml"), "{text}");
+        assert!(text.contains(".argonauts/workflows/mine.toml"), "{text}");
 
-        let shown = workflow_command(&mut harness, "solo-mine", WorkflowAction::Show).await;
+        let shown = workflow_command(&mut harness, "sweep", WorkflowAction::Show).await;
         let (level, text) = notice(&shown).unwrap();
         assert_eq!(level, NoteLevel::Info);
-        assert!(text.contains("name: solo-mine"), "{text}");
-        assert!(text.contains("workflows/solo-mine.yaml"), "{text}");
+        assert!(text.contains("description: 'Find and fix'"), "{text}");
+        assert!(text.contains("workflows/sweep.js"), "{text}");
 
         let missing =
             workflow_command(&mut harness, "nobody-wrote-this", WorkflowAction::Show).await;
@@ -520,79 +501,74 @@ mod tests {
 
         let none = workflow_command(&mut harness, "nobody-wrote-this", WorkflowAction::Diff).await;
         let (_, text) = notice(&none).unwrap();
-        assert!(
-            text.contains("copy nobody-wrote-this in the Library tab of /workflows"),
-            "{text}"
-        );
-        // A diff that opens no pager sends the list again, for the tab still on top.
+        assert!(text.contains("/workflow copy nobody-wrote-this"), "{text}");
+        // A diff that opens no pager sends the list again, for the library still on top.
         assert!(next_library(&mut harness).await.1);
 
         let bad = workflow_command(&mut harness, "../escape", WorkflowAction::Copy).await;
         let (level, text) = notice(&bad).unwrap();
         assert_eq!(level, NoteLevel::Error);
         assert!(text.contains("isn't a workflow name"), "{text}");
-        assert!(!harness.repo.home().join("escape.yaml").exists());
+        assert!(!harness.repo.home().join("escape.toml").exists());
         harness.exit().await;
     }
 
     #[tokio::test]
-    async fn the_engines_built_in_workflows_show_diff_and_copy() {
+    async fn the_built_in_workflows_show_diff_and_copy_from_the_library() {
         let mut harness = Harness::start().await;
-        let shown = workflow_command(&mut harness, "solo", WorkflowAction::Show).await;
+        let builtin = argonauts_registry::builtin_preset("maker-checker").unwrap();
+        let shown = workflow_command(&mut harness, "maker-checker", WorkflowAction::Show).await;
         let (level, text) = notice(&shown).unwrap();
         assert_eq!(level, NoteLevel::Info);
         assert!(text.contains("built in"), "{text}");
-        assert!(
-            text.contains(builtin_workflow("solo").unwrap().trim_end()),
-            "{text}"
-        );
+        assert!(text.contains(builtin.trim_end()), "{text}");
 
-        let copied = workflow_command(&mut harness, "solo", WorkflowAction::Copy).await;
+        let copied = workflow_command(&mut harness, "maker-checker", WorkflowAction::Copy).await;
         let (level, text) = notice(&copied).unwrap();
         assert_eq!(level, NoteLevel::Info, "{text}");
         let yours = harness
-            .repo
-            .home()
-            .join(user_files::WORKFLOWS)
-            .join("solo.yaml");
-        assert_eq!(
-            std::fs::read_to_string(&yours).unwrap(),
-            builtin_workflow("solo").unwrap()
-        );
-        // The open Library tab gets the list again, with your copy where the built-in was.
+            .env
+            .paths
+            .global_presets()
+            .join("maker-checker.toml");
+        assert_eq!(std::fs::read_to_string(&yours).unwrap(), builtin);
+        // The open library gets the list again, with your copy where the built-in was.
         let (files, refresh) = next_library(&mut harness).await;
         assert!(refresh);
-        let solo = files.into_iter().find(|file| file.name == "solo").unwrap();
-        assert_eq!(solo.origin, WorkflowOrigin::Yours);
+        let copy = files
+            .into_iter()
+            .find(|file| file.name == "maker-checker")
+            .unwrap();
+        assert_eq!(copy.origin, WorkflowOrigin::Yours);
         assert!(
-            solo.source.ends_with("workflows/solo.yaml"),
+            copy.source.ends_with("workflows/maker-checker.toml"),
             "{}",
-            solo.source
+            copy.source
         );
-        assert_eq!(solo.edited, Some(false));
+        assert_eq!(copy.edited, Some(false));
 
-        let same = workflow_command(&mut harness, "solo", WorkflowAction::Diff).await;
+        let same = workflow_command(&mut harness, "maker-checker", WorkflowAction::Diff).await;
         let (_, text) = notice(&same).unwrap();
         assert!(
-            text.contains("matches the built-in solo workflow"),
+            text.contains("matches the built-in maker-checker workflow"),
             "{text}"
         );
-        assert_eq!(library_row(&mut harness, "solo").await.edited, Some(false));
+        let row = library_row(&mut harness, "maker-checker").await;
+        assert_eq!(row.edited, Some(false));
 
-        std::fs::write(&yours, "name: solo\n# mine\n").unwrap();
-        let edited = workflow_command(&mut harness, "solo", WorkflowAction::Diff).await;
+        let edited_text = format!("{builtin}# mine\n");
+        std::fs::write(&yours, &edited_text).unwrap();
+        let edited = workflow_command(&mut harness, "maker-checker", WorkflowAction::Diff).await;
         let AppEvent::View { data } = &edited else {
             panic!("{edited:?}");
         };
         assert!(matches!(**data, ViewData::Diff { .. }), "{edited:?}");
-        let kept = workflow_command(&mut harness, "solo", WorkflowAction::Copy).await;
+        let kept = workflow_command(&mut harness, "maker-checker", WorkflowAction::Copy).await;
         let (level, text) = notice(&kept).unwrap();
         assert_eq!(level, NoteLevel::Warn, "{text}");
-        assert_eq!(
-            std::fs::read_to_string(&yours).unwrap(),
-            "name: solo\n# mine\n"
-        );
-        assert_eq!(library_row(&mut harness, "solo").await.edited, Some(true));
+        assert_eq!(std::fs::read_to_string(&yours).unwrap(), edited_text);
+        let row = library_row(&mut harness, "maker-checker").await;
+        assert_eq!(row.edited, Some(true));
         harness.exit().await;
     }
 
@@ -600,11 +576,11 @@ mod tests {
     async fn a_registry_error_reaches_you_as_a_notice() {
         let mut harness = Harness::start().await;
         // Whatever the registry answers, copy either writes the file or says why not.
-        let copied = preset_command(&mut harness, "peer-crew", PresetAction::Copy).await;
+        let copied = preset_command(&mut harness, "council", PresetAction::Copy).await;
         let (level, text) = notice(&copied).unwrap();
         match level {
             NoteLevel::Info => assert!(text.starts_with("Wrote "), "{text}"),
-            _ => assert!(text.contains("peer-crew"), "{text}"),
+            _ => assert!(text.contains("council"), "{text}"),
         }
         harness.exit().await;
     }

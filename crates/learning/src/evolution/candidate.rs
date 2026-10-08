@@ -27,7 +27,7 @@ pub fn materialize(
     let mut beside: Vec<&String> = parent.recipe.prompts.values().collect();
     if let Some(workflow) = parent
         .recipe
-        .workflow
+        .phases
         .as_ref()
         .filter(|w| is_workflow_file(w))
     {
@@ -47,7 +47,7 @@ pub fn materialize(
         let Value::String(workflow) = value else {
             return Err(refuse(format!("`{key}` takes a workflow name")));
         };
-        child.workflow = Some(workflow);
+        child.phases = Some(workflow);
     } else if let Some(prompt) = key.strip_prefix("prompts.") {
         let Value::String(template) = value else {
             return Err(refuse(format!("`{key}` takes the template's text")));
@@ -112,7 +112,7 @@ mod tests {
         );
         set_dotted(
             &mut settings,
-            "roles.owner.native_fanout.max",
+            "roles.worker.native_fanout.max",
             Value::from(2),
         );
         set_dotted(&mut settings, "crew", serde_json::json!(["codex"]));
@@ -120,7 +120,7 @@ mod tests {
             serde_json::to_value(&settings).unwrap(),
             serde_json::json!({
                 "critique": { "rounds": 2, "checklist": ["a"] },
-                "roles": { "owner": { "native_fanout": { "max": 2 } } },
+                "roles": { "worker": { "native_fanout": { "max": 2 } } },
                 "crew": ["codex"],
             })
         );

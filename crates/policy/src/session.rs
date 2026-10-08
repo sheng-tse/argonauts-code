@@ -119,7 +119,7 @@ pub fn no_tools_spec(session: NoToolsSession<'_>) -> io::Result<SessionSpec> {
         prompt: session.prompt,
         json_schema: Some(session.schema),
         resume: None,
-        lifetime: SessionLifetime::Card,
+        lifetime: SessionLifetime::Task,
         keep_input_open: false,
         limits: limits(session.budget),
         goal_sha256: None,
@@ -128,9 +128,11 @@ pub fn no_tools_spec(session: NoToolsSession<'_>) -> io::Result<SessionSpec> {
         native_fanout: NativeFanout::Switch(FanoutSwitch::Off),
         // The approver judges a call; the CLI's own servers and plugins have no part in that.
         isolated: true,
+        autopilot: false,
         status_file: None,
         env: Vec::new(),
         asking: None,
+        cli_workflow: argonauts_core::worker::CliWorkflow::default(),
     })
 }
 

@@ -8,7 +8,7 @@ use argonauts_core::settings::handoff::HandoffMode;
 use argonauts_core::settings::{SAFETY_KEYS, Settings};
 use serde_json::json;
 
-fn rule<R: Default>(checkpoint: &CheckpointSettings<R>) -> (ApprovalMode, DecideWith, Otherwise) {
+fn rule(checkpoint: &CheckpointSettings) -> (ApprovalMode, DecideWith, Otherwise) {
     (
         checkpoint.mode,
         checkpoint.decide_with,
@@ -24,11 +24,11 @@ fn agents_work_on_their_own_by_default_and_ask_when_a_rule_fails() {
     assert_eq!(sandbox.mode, SandboxChoice::Os);
     assert!(sandbox.network);
     assert!(sandbox.agents_commit);
-    assert!(!sandbox.agents_see_other_copies);
+    assert!(!sandbox.agents_see_other_worktrees);
     assert!(settings.roles.is_empty());
 
-    assert_eq!(settings.handoff.mode, HandoffMode::Auto);
-    assert!(settings.handoff.fallback.is_empty() && settings.handoff.replace.is_empty());
+    assert_eq!(settings.fallback.mode, HandoffMode::Auto);
+    assert!(settings.fallback.order.is_empty() && settings.fallback.replace.is_empty());
 
     let approvals = &settings.approvals;
     let reviewed = (
@@ -48,12 +48,12 @@ fn agents_work_on_their_own_by_default_and_ask_when_a_rule_fails() {
     assert_eq!(settings.limits.auto_merges_per_day, 3);
     // Promoting a recipe change is automatic too: its replays pass first, and a canary watches it.
     assert_eq!(
-        rule(&approvals.recipe_promotion.as_checkpoint()),
+        rule(&approvals.workflow_promotion.as_checkpoint()),
         (ApprovalMode::Auto, DecideWith::Rules, Otherwise::Ask)
     );
     // Unset, so the policy builder picks the cheapest model from another company.
-    assert_eq!(approvals.approver.model, None);
-    assert!(approvals.approver.different_family);
+    assert_eq!(approvals.approver_model(), None);
+    assert!(approvals.approver.different_provider);
 }
 
 #[test]
@@ -90,9 +90,9 @@ extra_writable = ["../shared"]
 mode = "tool"
 network = true
 
-[roles.owner.sandbox]
+[roles.worker.sandbox]
 agents_commit = false
-agents_see_other_copies = true
+agents_see_other_worktrees = true
 
 [roles.adjudicator]
 effort = "low"
@@ -103,13 +103,13 @@ effort = "low"
     let reviewer = settings.sandbox_for(&RoleName::Reviewer);
     assert_eq!(reviewer.mode, SandboxChoice::Tool);
     assert!(reviewer.network);
-    assert!(reviewer.agents_commit && !reviewer.agents_see_other_copies);
+    assert!(reviewer.agents_commit && !reviewer.agents_see_other_worktrees);
     assert_eq!(reviewer.extra_writable, ["../shared"]);
 
-    let owner = settings.sandbox_for(&RoleName::Owner);
+    let owner = settings.sandbox_for(&RoleName::Worker);
     assert_eq!(owner.mode, SandboxChoice::Os);
     assert!(!owner.network);
-    assert!(!owner.agents_commit && owner.agents_see_other_copies);
+    assert!(!owner.agents_commit && owner.agents_see_other_worktrees);
 
     // A role table without sandbox keys, and a role with no table, get the top level as is.
     assert_eq!(
@@ -117,7 +117,7 @@ effort = "low"
         settings.sandbox
     );
     assert_eq!(
-        settings.sandbox_for(&RoleName::Coordinator),
+        settings.sandbox_for(&RoleName::Orchestrator),
         settings.sandbox
     );
     assert_eq!(settings.sandbox.applied(None), settings.sandbox);
@@ -141,7 +141,7 @@ fn a_roles_sandbox_passes_the_schema() {
     reviewer.sandbox = RoleSandbox {
         mode: Some(SandboxChoice::None),
         network: Some(false),
-        agents_see_other_copies: Some(true),
+        agents_see_other_worktrees: Some(true),
         agents_commit: Some(false),
     };
     let schema = schemars::schema_for!(Settings).to_value();

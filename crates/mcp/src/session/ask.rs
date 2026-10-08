@@ -1,31 +1,29 @@
 //! A direct turn's questions. Each call opens a connection to the app, sends one line, and
-//! waits for one line back, however long you take on the card.
+//! waits for one line back, however long you take on the question. This file holds Claude
+//! Code's permission prompt and the way to the app; the main session's own tools are in
+//! `main_tools`.
 
 use std::sync::Arc;
 
 use argonauts_core::asking::{Ask, AskLine, AskReply};
-use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool};
+use rmcp::model::{CallToolResult, ContentBlock, Tool};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
+use super::main_tools::{self, object};
 use crate::AskTool;
 
 /// Claude Code's permission prompt tool, which it calls instead of asking in its own UI. It
 /// never shows in the model's tool list (2.1.289).
 pub const APPROVE_TOOL: &str = "approve";
-pub const START_RUN_TOOL: &str = "argonauts_start_run";
-
-const START_RUN_DESCRIPTION: &str = "Start an Argonauts run for the user's request. Call it only \
-    when the user asks for the crew, for other agents, or for a checked copy, never on your own \
-    judgment.";
 
 pub(super) fn tools(asking: &AskTool) -> Vec<Tool> {
     let mut tools = Vec::new();
     if asking.approve {
         tools.push(approve_tool());
     }
-    start_run_tools(asking, &mut tools);
+    tools.extend(main_tools::offered(asking));
     tools
 }
 
@@ -45,81 +43,29 @@ fn approve_tool() -> Tool {
     )
 }
 
-fn start_run_tools(asking: &AskTool, tools: &mut Vec<Tool>) {
-    if asking.start_run {
-        tools.push(Tool::new(
-            START_RUN_TOOL,
-            START_RUN_DESCRIPTION,
-            Arc::new(object(json!({
-                "type": "object",
-                "properties": {
-                    "request": {
-                        "type": "string",
-                        "description": "The user's request, as they said it."
-                    },
-                    "how_to_run": {
-                        "type": "array",
-                        "description": "Each thing the user said about how to run it, with \
-                                        their own words in `says`, copied exactly: the whole \
-                                        phrase, two words at least.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "says": {"type": "string"},
-                                "kind": {"type": "string"},
-                                "who": {"type": "string"},
-                                "model": {"type": "string"},
-                                "effort": {"type": "string"},
-                                "value": {"type": "string"},
-                                "scope": {"type": "string"}
-                            },
-                            "required": ["says", "kind"]
-                        }
-                    }
-                },
-                "required": ["request"]
-            }))),
-        ));
-    }
-}
-
 /// `None` when `name` isn't one of these tools.
 pub(super) async fn call(
     asking: &AskTool,
     name: &str,
     arguments: &Value,
 ) -> Option<CallToolResult> {
-    let ask = match name {
-        APPROVE_TOOL if asking.approve => Ask::Permission {
-            tool_name: string(arguments, "tool_name"),
-            input: arguments.get("input").cloned().unwrap_or(Value::Null),
-            tool_use_id: arguments
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        },
-        START_RUN_TOOL if asking.start_run => Ask::StartRun {
-            request: string(arguments, "request"),
-            how_to_run: arguments
-                .get("how_to_run")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-        },
-        _ => return None,
+    if name != APPROVE_TOOL || !asking.approve {
+        return main_tools::call(asking, name, arguments).await;
+    }
+    let ask = Ask::Permission {
+        tool_name: string(arguments, "tool_name"),
+        input: arguments.get("input").cloned().unwrap_or(Value::Null),
+        tool_use_id: arguments
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     };
-    let denies = matches!(ask, Ask::Permission { .. });
-    let reply = match send(asking, ask).await {
-        Ok(reply) => reply,
-        // Nothing to ask means no, so a lost app never lets a call through.
-        Err(err) if denies => AskReply::deny(&format!(
+    // Nothing to ask means no, so a lost app never lets a call through.
+    let reply = send(asking, ask).await.unwrap_or_else(|err| {
+        AskReply::deny(&format!(
             "Argonauts couldn't ask the user ({err}), so this wasn't allowed."
-        )),
-        Err(err) => AskReply {
-            text: format!("Argonauts couldn't be reached: {err}"),
-            is_error: true,
-        },
-    };
+        ))
+    });
     let content = vec![ContentBlock::text(reply.text)];
     Some(if reply.is_error {
         CallToolResult::error(content)
@@ -128,7 +74,7 @@ pub(super) async fn call(
     })
 }
 
-async fn send(asking: &AskTool, ask: Ask) -> anyhow::Result<AskReply> {
+pub(super) async fn send(asking: &AskTool, ask: Ask) -> anyhow::Result<AskReply> {
     let line = AskLine {
         token: asking.token.clone(),
         ask,
@@ -143,7 +89,7 @@ async fn send(asking: &AskTool, ask: Ask) -> anyhow::Result<AskReply> {
     Ok(serde_json::from_str(answer.trim())?)
 }
 
-fn string(arguments: &Value, key: &str) -> String {
+pub(super) fn string(arguments: &Value, key: &str) -> String {
     arguments
         .get(key)
         .and_then(Value::as_str)
@@ -151,16 +97,10 @@ fn string(arguments: &Value, key: &str) -> String {
         .to_owned()
 }
 
-fn object(value: Value) -> JsonObject {
-    match value {
-        Value::Object(map) => map,
-        _ => JsonObject::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::START_WORKFLOW_TOOL;
     use tokio::net::TcpListener;
 
     async fn listener() -> (TcpListener, AskTool) {
@@ -169,7 +109,8 @@ mod tests {
             endpoint: listener.local_addr().unwrap().to_string(),
             token: "secret".into(),
             approve: true,
-            start_run: true,
+            tools: vec![START_WORKFLOW_TOOL.to_owned()],
+            roles: Vec::new(),
         };
         (listener, asking)
     }
@@ -219,6 +160,53 @@ mod tests {
         assert!(call(&asking, "other", &arguments).await.is_none());
         let tools = tools(&asking);
         let names: Vec<_> = tools.iter().map(|tool| tool.name.to_string()).collect();
-        assert_eq!(names, [APPROVE_TOOL, START_RUN_TOOL]);
+        assert_eq!(names, [APPROVE_TOOL, START_WORKFLOW_TOOL]);
+    }
+
+    #[tokio::test]
+    async fn a_main_tool_s_call_reaches_the_app_under_its_name() {
+        let (listener, asking) = listener().await;
+        let app = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.unwrap();
+            let asked: AskLine = serde_json::from_str(&line).unwrap();
+            let reply = serde_json::to_string(&AskReply::text("The workflow started.")).unwrap();
+            write
+                .write_all(format!("{reply}\n").as_bytes())
+                .await
+                .unwrap();
+            asked
+        });
+        let arguments = json!({"request": "add due dates to tasks"});
+        let result = call(&asking, START_WORKFLOW_TOOL, &arguments)
+            .await
+            .unwrap();
+        assert_eq!(text(&result), "The workflow started.");
+        assert_ne!(result.is_error, Some(true));
+        let asked = app.await.unwrap();
+        assert_eq!(
+            asked.ask,
+            Ask::Tool {
+                name: START_WORKFLOW_TOOL.to_owned(),
+                arguments,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_app_a_main_tool_says_so_and_starts_nothing() {
+        let (listener, asking) = listener().await;
+        drop(listener);
+        let result = call(&asking, START_WORKFLOW_TOOL, &json!({"request": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            text(&result).contains("couldn't be reached"),
+            "{}",
+            text(&result)
+        );
     }
 }

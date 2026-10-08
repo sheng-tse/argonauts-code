@@ -8,10 +8,13 @@
 
 use argonauts_core::api::StartRun;
 use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, RunMode};
+use argonauts_core::goal::{CheckMeans, GoalFrom, GoalSpec};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::registry::company_of;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::budget::BudgetUnit;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::protocol::SoloStyle;
 use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::intake::{Instruction, InstructionKind, InstructionScope};
@@ -29,6 +32,12 @@ use words::{
     plainly_asks_you, quoted_at, stance, tokens, toml_list, toml_text, turned_around,
     turns_network_off, unknown, words,
 };
+
+/// Whether `says` stands in `message` word for word, two words at least, the way an
+/// instruction's words are checked against your message.
+pub(crate) fn said_in(message: &str, says: &str) -> bool {
+    quoted_at(&tokens(message), &tokens(says)).is_some()
+}
 
 /// What a command or a card chose, which beats the words.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,11 +85,11 @@ impl Applied {
             _ => None,
         };
         if let Some(lead) = lead {
-            request.default_agent = Some(lead.clone());
+            request.main_agent = Some(lead.clone());
             // The run's own default agent too, since that's who designs and leads it.
             request
                 .request_settings
-                .push(format!("default_agent={}", toml_text(&lead.to_string())));
+                .push(format!("main_agent={}", toml_text(&lead.to_string())));
         }
         if self.supervised {
             request.approval_mode = Some(ApprovalMode::Supervised);
@@ -102,13 +111,15 @@ impl Applied {
         DirectWords {
             model: text(&format!("agents.{main}.model")),
             effort: text(&format!("agents.{main}.effort")),
-            budget_usd: value("budget.run_usd").and_then(|value| {
+            budget_usd: value("limits.spend_per_run").and_then(|value| {
                 value
                     .as_float()
                     .or_else(|| value.as_integer().map(|whole| whole as f64))
             }),
             no_network: value("sandbox.network").and_then(|value| value.as_bool()) == Some(false),
             supervised: self.supervised,
+            goal: text("goal.until"),
+            ..DirectWords::default()
         }
     }
 }
@@ -149,7 +160,9 @@ pub(crate) fn might_say_how(message: &str, roster: &Roster) -> bool {
 
 /// Words that may say how to run a request. A role's verb alone, such as "the build runs",
 /// says nothing of who fills it: the agent's name does.
-const HOW_CUES: [&str; 30] = [
+const HOW_CUES: [&str; 31] = [
+    // "keep going until its tests pass" sets a goal.
+    "until",
     "crew",
     "team",
     "agents",
@@ -220,6 +233,7 @@ pub(crate) fn check(
         entry.result = checker.resolve(&entry.instruction);
     }
     settle_disagreements(&mut entries);
+    checker.settle_others(&mut entries);
     let mode = settle_mode(&mut entries, command);
     checker.review_against_owners(&mut entries, mode);
     needs_a_copy(&mut entries);
@@ -249,7 +263,7 @@ pub(crate) fn check(
             if let Some(lead) = &effect.lead {
                 applied
                     .keep
-                    .push(("default_agent".to_owned(), toml_text(&lead.to_string())));
+                    .push(("main_agent".to_owned(), toml_text(&lead.to_string())));
             }
             if !effect.said.is_empty() {
                 applied.keep_said.push(effect.said.clone());
@@ -309,6 +323,9 @@ struct Effect {
     reviewers: Vec<WorkerRef>,
     /// Who it gives the owner role to.
     owners: Vec<WorkerRef>,
+    /// Who "all the other agents" names. Which seats they fill is settled once every
+    /// instruction is read, since a role another one names keeps that one.
+    others: Vec<WorkerRef>,
 }
 
 struct Checker<'a> {
@@ -323,21 +340,30 @@ impl Checker<'_> {
         use InstructionKind as Kind;
         let gives_a_role = matches!(
             instruction.kind,
-            Kind::Lead | Kind::Coordinate | Kind::Build | Kind::Review | Kind::Plan | Kind::Check
+            Kind::Lead
+                | Kind::Coordinate
+                | Kind::Build
+                | Kind::Review
+                | Kind::Judge
+                | Kind::Plan
+                | Kind::Check
+                | Kind::Others
         );
         if gives_a_role && turned_around(&instruction.says, &names_in(&instruction.who)) {
             return Err(SAYS_OTHERWISE.to_owned());
         }
         match instruction.kind {
             Kind::Mode => mode(instruction),
-            Kind::Style => self.style(instruction),
+            Kind::Goal => self.goal(instruction),
             Kind::Isolation => self.isolation(instruction),
             Kind::Lead | Kind::Coordinate => self.lead(instruction),
             Kind::Build => self.build(instruction),
             Kind::Review => self.review(instruction),
+            Kind::Judge => self.judge(instruction),
             Kind::Plan => self.plan(instruction),
             Kind::Check => self.goal_check(instruction),
             Kind::Crew => self.crew(instruction),
+            Kind::Others => self.others(instruction),
             Kind::Exclude => self.exclude(instruction),
             Kind::Model => self.model(instruction),
             Kind::Effort => self.effort(instruction),
@@ -346,31 +372,36 @@ impl Checker<'_> {
             Kind::Budget => self.budget(instruction),
             Kind::Network => self.network(instruction),
             Kind::Gates => Err(
-                "gates.run is a safety setting, /config changes the tests a change must pass"
+                "checks.run is a safety setting, /config changes the tests a change must pass"
                     .to_owned(),
             ),
             Kind::Sandbox => {
                 Err("the sandbox is a safety setting, /permissions changes it".to_owned())
             }
             Kind::ForTheLead => for_the_lead(instruction),
+            Kind::ForARole => for_a_role(instruction),
         }
     }
 
-    fn style(&self, instruction: &Instruction) -> Result<Effect, String> {
-        let style = words(&instruction.value, &instruction.says);
-        let style = if style.contains("goal") {
-            "goal"
-        } else {
-            "workflow"
-        };
-        if !has_key(self.settings, "/workflows/style") {
-            return Err("this version has no workflow styles yet, /goal starts a goal".to_owned());
+    /// "Keep going until its tests pass": the request's own words set a goal for this request,
+    /// which the Triage line states back before work starts.
+    fn goal(&self, instruction: &Instruction) -> Result<Effect, String> {
+        if let Some(effect) = role_goal(instruction) {
+            return Ok(effect);
         }
+        let condition = match instruction.value.trim() {
+            "" => instruction.says.trim(),
+            value => value,
+        };
+        let means = CheckMeans {
+            project_checks: !self.settings.checks.run.is_empty(),
+        };
+        let check = self.settings.goal.check;
+        let goal = GoalSpec::from_words(condition, check, means, GoalFrom::Request)?;
         Ok(Effect {
-            said: format!("as a {style}"),
-            slot: Some("style".to_owned()),
-            settings: vec![("workflows.style".to_owned(), toml_text(style))],
-            implies: Some(RunMode::Crew),
+            said: format!("goal: {} · {}", goal.condition, goal.checked_by()),
+            slot: Some("goal".to_owned()),
+            settings: vec![("goal.until".to_owned(), toml_text(&goal.condition))],
             ..Effect::default()
         })
     }
@@ -406,7 +437,7 @@ impl Checker<'_> {
                     ..Effect::default()
                 });
             }
-            return Err("solo.style is a safety setting, /config changes it".to_owned());
+            return Err("solo.kind is a safety setting, /config changes it".to_owned());
         }
         let mut effect = Effect {
             said: "checked in a copy".to_owned(),
@@ -416,7 +447,7 @@ impl Checker<'_> {
             ..Effect::default()
         };
         if self.settings.solo.style != SoloStyle::Checked {
-            self.tighten(&mut effect, "solo.style", toml_text("checked"))?;
+            self.tighten(&mut effect, "solo.kind", toml_text("checked"))?;
         }
         Ok(effect)
     }
@@ -432,7 +463,7 @@ impl Checker<'_> {
         };
         let fallback = format!(
             "{} leads",
-            self.roster.name(&self.settings.default_agent.worker)
+            self.roster.name(&self.settings.main_agent.worker)
         );
         let seats = self.seats(instruction, &fallback)?;
         let [seat] = seats.seats.as_slice() else {
@@ -456,33 +487,30 @@ impl Checker<'_> {
         if coordinates {
             effect.implies = Some(RunMode::Crew);
             let worker = toml_list(std::slice::from_ref(&seat.worker));
-            // Coordinating is the coordinated crew's workflow, so the run stays a workflow even
-            // under a lead whose CLI would make it a goal.
             effect.settings.extend([
-                ("workflows.style".to_owned(), toml_text("workflow")),
-                ("workflow".to_owned(), toml_text("coordinated-crew")),
-                ("drafting.by".to_owned(), toml_text("coordinator")),
-                ("judging.method".to_owned(), toml_text("coordinator")),
-                ("routing.algorithm".to_owned(), toml_text("coordinator")),
-                ("review.assign".to_owned(), toml_text("coordinator")),
-                ("roles.coordinator.workers".to_owned(), worker),
+                ("phases".to_owned(), toml_text("orchestrator")),
+                ("drafting.by".to_owned(), toml_text("orchestrator")),
+                ("judging.method".to_owned(), toml_text("orchestrator")),
+                ("routing.algorithm".to_owned(), toml_text("orchestrator")),
+                ("review.assign".to_owned(), toml_text("orchestrator")),
+                ("roles.orchestrator.workers".to_owned(), worker),
             ]);
         }
         Ok(effect)
     }
 
     fn build(&self, instruction: &Instruction) -> Result<Effect, String> {
-        let seats = self.seats(instruction, "the crew's owners build")?;
+        let seats = self.seats(instruction, "the crew's workers build")?;
         if seats.seats.iter().any(|seat| seat.endpoint) {
             return Err("an endpoint has no tools to build with".to_owned());
         }
         let workers: Vec<WorkerRef> = seats.seats.iter().map(|seat| seat.worker.clone()).collect();
-        let mut effect = self.role_effect(&seats, RoleName::Owner, "builds", "build");
+        let mut effect = self.role_effect(&seats, RoleName::Worker, "builds", "build");
         effect.slot = Some("build".to_owned());
         if let [one] = workers.as_slice() {
             effect.solo_lead = Some(one.clone());
             // Your checkout is the main session's, so another agent builds solo in a copy.
-            if one.worker != self.settings.default_agent.worker {
+            if one.worker != self.settings.main_agent.worker {
                 effect.solo = Some(SoloStyle::Checked);
             }
         } else {
@@ -499,12 +527,109 @@ impl Checker<'_> {
         let mut effect = self.role_effect(&seats, RoleName::Reviewer, "reviews", "review");
         effect.slot = Some("review".to_owned());
         effect.settings.extend([
-            ("review.per_card".to_owned(), workers.len().to_string()),
+            ("review.per_task".to_owned(), workers.len().to_string()),
             ("solo.review".to_owned(), "true".to_owned()),
         ]);
         effect.solo = Some(SoloStyle::Checked);
         effect.reviewers = workers;
         Ok(effect)
+    }
+
+    /// Who decides and signs off. Only a crew has a judge.
+    fn judge(&self, instruction: &Instruction) -> Result<Effect, String> {
+        let seats = self.seats(instruction, "the crew's judge decides")?;
+        let mut effect = self.role_effect(&seats, RoleName::Judge, "judges", "judge");
+        effect.slot = Some("judge".to_owned());
+        effect.implies = Some(RunMode::Crew);
+        Ok(effect)
+    }
+
+    /// "All the other agents": the agents named fill every seat but the agent you talk to,
+    /// which [`Checker::settle_others`] works out. They build, so none can be an endpoint.
+    fn others(&self, instruction: &Instruction) -> Result<Effect, String> {
+        let seats = self.seats(instruction, "the crew stays as it is")?;
+        if seats.seats.iter().any(|seat| seat.endpoint) {
+            return Err("an endpoint has no tools to build with".to_owned());
+        }
+        let workers: Vec<WorkerRef> = seats.seats.iter().map(|seat| seat.worker.clone()).collect();
+        let who = match seats.seats.as_slice() {
+            [seat] => format!("{}{}", seat.name, seat.with()),
+            many => joined(
+                &many
+                    .iter()
+                    .map(|seat| seat.name.clone())
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        Ok(Effect {
+            said: format!("{who} for all the other agents"),
+            note: seats.note.clone(),
+            slot: Some("others".to_owned()),
+            names: workers.iter().map(|worker| worker.worker.clone()).collect(),
+            implies: Some(RunMode::Crew),
+            owners: workers.clone(),
+            others: workers,
+            ..Effect::default()
+        })
+    }
+
+    /// The seats "all the other agents" fills: the workers, the reviewers, the judge, and an
+    /// orchestrator that isn't the agent you talk to, except a role another of your
+    /// instructions names, followed or not. As reviewers they would review their own work as
+    /// workers, so while `review.other_provider` is on the reviewers stay as they are.
+    fn settle_others(&self, entries: &mut [Entry]) {
+        let named: Vec<CrewRole> = entries
+            .iter()
+            .filter_map(|entry| named_role(entry.instruction.kind))
+            .collect();
+        let main = &self.settings.main_agent;
+        let orchestrator_is_main =
+            argonauts_crew::roles::candidates(self.settings, RoleName::Orchestrator)
+                == [main.clone()];
+        for entry in entries.iter_mut() {
+            let Ok(effect) = &mut entry.result else {
+                continue;
+            };
+            if effect.others.is_empty() {
+                continue;
+            }
+            let list = toml_list(&effect.others);
+            let mut filled = 0;
+            for role in [
+                CrewRole::Orchestrator,
+                CrewRole::Workers,
+                CrewRole::Reviewers,
+                CrewRole::Judge,
+            ] {
+                if named.contains(&role) || (role == CrewRole::Orchestrator && orchestrator_is_main)
+                {
+                    continue;
+                }
+                if role == CrewRole::Reviewers && self.settings.review.other_provider {
+                    effect.note = Some(join_notes(
+                        effect.note.take(),
+                        "the reviewers stay as they are, since a review comes from another \
+                         provider",
+                    ));
+                    continue;
+                }
+                effect
+                    .settings
+                    .push((format!("crew.{}", role.as_str()), list.clone()));
+                // A role's own workers beat the crew's, so the ones you set are replaced too.
+                for (fine, own) in &self.settings.roles {
+                    if CrewRole::followed_by(*fine) == role && !own.workers.is_empty() {
+                        effect
+                            .settings
+                            .push((format!("roles.{}.workers", fine.as_str()), list.clone()));
+                    }
+                }
+                filled += 1;
+            }
+            if filled == 0 {
+                entry.result = Err("your other words name every role".to_owned());
+            }
+        }
     }
 
     fn plan(&self, instruction: &Instruction) -> Result<Effect, String> {
@@ -574,7 +699,7 @@ impl Checker<'_> {
             settings: vec![("crew".to_owned(), toml_list(&workers))],
             ..Effect::default()
         };
-        let default = &self.settings.default_agent.worker;
+        let default = &self.settings.main_agent.worker;
         if !workers.iter().any(|worker| &worker.worker == default) {
             effect.lead = seats
                 .seats
@@ -608,7 +733,7 @@ impl Checker<'_> {
                 .cloned()
                 .collect()
         };
-        let crew = kept(&self.settings.crew);
+        let crew = kept(&self.settings.crew.members());
         if crew.is_empty() {
             return Err("that leaves no agent in the crew".to_owned());
         }
@@ -620,7 +745,7 @@ impl Checker<'_> {
             }
         }
         let lead = out
-            .contains(&self.settings.default_agent.worker)
+            .contains(&self.settings.main_agent.worker)
             .then(|| {
                 crew.iter()
                     .find(|worker| {
@@ -693,7 +818,7 @@ impl Checker<'_> {
         };
         let model_name = display_model(agent, &model);
         Ok(Effect {
-            said: format!("{} seats on {model_name}", agent.name),
+            said: format!("{} runs on {model_name}", agent.name),
             slot: Some(format!("model:{}", agent.id)),
             names: vec![agent.id.clone()],
             settings: vec![(format!("agents.{}.model", agent.id), toml_text(&model))],
@@ -792,28 +917,30 @@ impl Checker<'_> {
         Ok(effect)
     }
 
-    /// Only a lower run budget in dollars, as code compares the amounts.
+    /// Only a lower run limit in dollars, as code compares the amounts. With no run limit
+    /// set, any amount is a lower one.
     fn budget(&self, instruction: &Instruction) -> Result<Effect, String> {
-        if !self.settings.budget.enabled {
-            return Err("budgets are off, /budget turns them on".to_owned());
-        }
-        let raising = "budget.run_usd is a safety setting, /budget changes it".to_owned();
+        let raising = "limits.spend_per_run is a safety setting, /limits changes it".to_owned();
         let Some(amount) = dollars_in(&instruction.value).or_else(|| dollars_in(&instruction.says))
         else {
             return Err("it names no amount in dollars".to_owned());
         };
-        let Some(now) = self.settings.budget.run_usd else {
-            return Err("the run budget isn't counted in dollars, /budget changes it".to_owned());
+        let now = match self.settings.limits.budget.run_limit() {
+            Some(limit) if limit.unit == BudgetUnit::Usd => Some(limit.amount),
+            Some(_) => {
+                return Err("the run limit isn't counted in dollars, /limits changes it".to_owned());
+            }
+            None => None,
         };
-        if amount >= now || amount <= 0.0 {
+        if amount <= 0.0 || now.is_some_and(|now| amount >= now) {
             return Err(raising);
         }
         let mut effect = Effect {
-            said: format!("Budget ${}", money(amount)),
+            said: format!("Limit ${}", money(amount)),
             slot: Some("budget".to_owned()),
             ..Effect::default()
         };
-        self.tighten(&mut effect, "budget.run_usd", format!("{amount}"))
+        self.tighten(&mut effect, "limits.spend_per_run", format!("{amount}"))
             .map_err(|_| raising)?;
         Ok(effect)
     }
@@ -860,12 +987,12 @@ impl Checker<'_> {
     }
 
     fn crew_and_lead(&self) -> Vec<WorkerRef> {
-        let mut workers = self.settings.crew.clone();
+        let mut workers = self.settings.crew.members();
         if !workers
             .iter()
-            .any(|worker| worker.worker == self.settings.default_agent.worker)
+            .any(|worker| worker.worker == self.settings.main_agent.worker)
         {
-            workers.push(self.settings.default_agent.clone());
+            workers.push(self.settings.main_agent.clone());
         }
         workers
     }
@@ -934,7 +1061,10 @@ impl Checker<'_> {
             AgentState::Ready => return Ok(()),
             AgentState::NotInstalled => ("isn't installed", "isn't set up"),
             AgentState::TurnedOff => ("is turned off", "is turned off"),
-            AgentState::Down => ("is out of quota or down", "is out of quota or down"),
+            AgentState::Down => (
+                "is out of plan usage or down",
+                "is out of plan usage or down",
+            ),
         };
         let why = if agent.endpoint { endpoint } else { harness };
         Err(format!("{} {why}, so {fallback}", agent.name))
@@ -984,7 +1114,7 @@ impl Checker<'_> {
         let lead = followed
             .iter()
             .find_map(|effect| effect.lead.clone().or(effect.solo_lead.clone()))
-            .unwrap_or_else(|| self.settings.default_agent.clone());
+            .unwrap_or_else(|| self.settings.main_agent.clone());
         for entry in entries.iter_mut() {
             let Ok(effect) = &mut entry.result else {
                 continue;
@@ -1005,7 +1135,7 @@ impl Checker<'_> {
                     let base = self
                         .settings
                         .roles
-                        .get(&RoleName::Owner)
+                        .get(&RoleName::Worker)
                         .map(|role| role.workers.clone())
                         .filter(|workers| !workers.is_empty())
                         .unwrap_or_else(|| self.crew_and_lead());
@@ -1017,7 +1147,7 @@ impl Checker<'_> {
                     if !others.is_empty() && others.len() != base.len() {
                         effect
                             .inferred
-                            .push(("roles.owner.workers".to_owned(), toml_list(&others)));
+                            .push(("roles.worker.workers".to_owned(), toml_list(&others)));
                         owners.extend(others);
                     } else {
                         owners.extend(base);
@@ -1034,18 +1164,18 @@ impl Checker<'_> {
                 let theirs = family(reviewer);
                 !theirs.is_empty() && owners.iter().any(|owner| family(owner) == theirs)
             });
-            if same && self.settings.review.other_family {
+            if same && self.settings.review.other_provider {
                 effect
                     .settings
-                    .push(("review.other_family".to_owned(), "false".to_owned()));
+                    .push(("review.other_provider".to_owned(), "false".to_owned()));
                 let own = if reviewers.len() == 1 { "its" } else { "their" };
                 effect.said = if effect.said.contains(" with ") || effect.said.contains(" on ") {
                     format!(
-                        "{}, reviewing {own} own company's work, as you asked",
+                        "{}, reviewing {own} own provider's work, as you asked",
                         effect.said
                     )
                 } else {
-                    format!("{} {own} own company's work, as you asked", effect.said)
+                    format!("{} {own} own provider's work, as you asked", effect.said)
                 };
             }
         }
@@ -1078,15 +1208,35 @@ impl Seat {
     }
 }
 
+/// "Have the workers use codex's own goal for each task": who keeps each task's goal going,
+/// for the workers unless your words name the main agent. `None` when the words set a
+/// condition instead.
+fn role_goal(instruction: &Instruction) -> Option<Effect> {
+    let kept_by = key(&instruction.value);
+    let said = match kept_by.as_str() {
+        "cli" => "work each task as a goal, kept by the CLI's own goal where it has one",
+        "argonauts" => "work each task as a goal, kept by Argonauts",
+        "off" => "don't work their tasks as goals",
+        _ => return None,
+    };
+    let main = key(&instruction.who).contains("main");
+    let (role, who) = if main {
+        (RoleName::Main, "the main agent")
+    } else {
+        (RoleName::Worker, "the workers")
+    };
+    Some(Effect {
+        said: format!("{who} {said}"),
+        slot: Some("role goal".to_owned()),
+        settings: vec![(format!("roles.{}.goal", role.as_str()), toml_text(&kept_by))],
+        // Workers are the crew's; the main agent alone has a goal in solo too.
+        implies: (!main).then_some(RunMode::Crew),
+        ..Effect::default()
+    })
+}
+
 /// The checkpoints that wait for you when a request asks to approve things itself.
-const CHECKPOINTS: [&str; 6] = [
-    "goal",
-    "plan",
-    "merge",
-    "escalation",
-    "budget",
-    "change_request",
-];
+const CHECKPOINTS: [&str; 6] = ["goal", "plan", "merge", "stuck", "limit", "change_request"];
 
 /// Why an instruction whose words ask for the opposite of what it was sorted as isn't followed,
 /// such as "don't do this alone" sorted as solo.
@@ -1108,7 +1258,7 @@ const CREW_CUES: [&str; 9] = [
     "team",
     "agents",
     "everyone",
-    "all hands",
+    "ultracode",
     "together",
     "other agents",
     "several agents",
@@ -1161,6 +1311,24 @@ fn mode(instruction: &Instruction) -> Result<Effect, String> {
         slot: Some("mode".to_owned()),
         ..Effect::default()
     })
+}
+
+/// The crew role an instruction of this kind gives to the agents it names.
+fn named_role(kind: InstructionKind) -> Option<CrewRole> {
+    match kind {
+        InstructionKind::Coordinate => Some(CrewRole::Orchestrator),
+        InstructionKind::Build => Some(CrewRole::Workers),
+        InstructionKind::Review => Some(CrewRole::Reviewers),
+        InstructionKind::Judge => Some(CrewRole::Judge),
+        _ => None,
+    }
+}
+
+fn join_notes(before: Option<String>, note: &str) -> String {
+    match before {
+        Some(before) => format!("{before}; {note}"),
+        None => note.to_owned(),
+    }
 }
 
 /// Two followed instructions that disagree: the later one in your message wins.
@@ -1273,7 +1441,7 @@ fn for_the_lead(instruction: &Instruction) -> Result<Effect, String> {
     {
         Some("approvals are safety settings, /approvals and Shift+Tab change them")
     } else if has(&["gate", "gates"]) || (has(&["test", "tests", "checks"]) && loosens) {
-        Some("gates.run is a safety setting, /config changes the tests a change must pass")
+        Some("checks.run is a safety setting, /config changes the tests a change must pass")
     } else if has(&[
         "key",
         "keys",
@@ -1285,7 +1453,7 @@ fn for_the_lead(instruction: &Instruction) -> Result<Effect, String> {
     ]) {
         Some("auth is a safety setting, /config changes it")
     } else if has(&["budget", "spend", "cost", "dollars", "usd"]) || says.contains('$') {
-        Some("the budget is a safety setting, /budget changes it")
+        Some("the limit is a safety setting, /limits changes it")
     } else if has(&["network", "internet", "online", "offline"]) {
         Some("sandbox.network is a safety setting, /permissions changes it")
     } else {
@@ -1294,10 +1462,33 @@ fn for_the_lead(instruction: &Instruction) -> Result<Effect, String> {
     match why {
         Some(why) => Err(why.to_owned()),
         None => Ok(Effect {
-            said: format!("For the lead: {says}"),
+            said: format!("For the main agent: {says}"),
             ..Effect::default()
         }),
     }
+}
+
+/// Words for one role's agents, which travel inside their prompt for this run only. They pass
+/// the same check as words for the main agent, since a role can't change a safety setting
+/// either.
+fn for_a_role(instruction: &Instruction) -> Result<Effect, String> {
+    let role = argonauts_core::prompt_parts::role_named(&instruction.who).ok_or_else(|| {
+        "it doesn't say which role: the main agent, the orchestrator, the workers, the \
+         reviewers or the judge"
+            .to_owned()
+    })?;
+    let words = instruction.value.trim();
+    if words.is_empty() {
+        return Err("it doesn't say what to tell them".to_owned());
+    }
+    for_the_lead(instruction)?;
+    let key = argonauts_core::settings::prompts::PromptSettings::request_key(role);
+    Ok(Effect {
+        said: argonauts_core::prompt_parts::for_role_line(role, words),
+        slot: Some(key.clone()),
+        settings: vec![(key, toml::Value::String(words.to_owned()).to_string())],
+        ..Effect::default()
+    })
 }
 
 fn current_values(settings: &Settings) -> Option<toml::Value> {

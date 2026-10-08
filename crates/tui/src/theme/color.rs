@@ -116,6 +116,19 @@ pub fn downgrade(role: Role, style: Style, level: ColorLevel) -> Style {
     }
 }
 
+/// A color someone chose, fitted to `level` by the nearest color alone, since a role's own
+/// named color in sixteen colors would replace what they picked.
+pub(super) fn fit_override(role: Role, style: Style, level: ColorLevel) -> Style {
+    match level {
+        ColorLevel::Ansi16 => Style {
+            fg: style.fg.map(to_ansi16_fg),
+            bg: style.bg.map(to_ansi16),
+            ..style
+        },
+        _ => downgrade(role, style, level),
+    }
+}
+
 fn fit_ansi256(role: Role, style: Style) -> Style {
     // The cube is coarse near black, so the nearest color to a dark red or green row is grey.
     // Diff rows take fixed tints instead, as Codex's diff renderer does.
@@ -159,9 +172,18 @@ fn fit_ansi16(role: Role, style: Style) -> Style {
             style.bg = None;
             style = style.add_modifier(Modifier::UNDERLINED);
         }
-        Role::BarTrack => style.bg = Some(Color::DarkGray),
+        // Claude Code's sixteen color meter: a yellow fill on a white track.
+        Role::BarTrack => style.bg = Some(Color::Gray),
         Role::BarFill => style.bg = Some(Color::Yellow),
         _ => style.bg = style.bg.map(to_ansi16),
+    }
+    if let Some(named) = widget_ansi16(role) {
+        style.fg = Some(named);
+    }
+    // Bright text is the brightest the palette has, bright white on a dark theme, as Claude
+    // Code's sixteen color theme draws titles and numbers.
+    if role == Role::Bright {
+        style.fg = original_fg.map(to_ansi16);
     }
     // The nearest named color would give purple and pink, or orange and red, the same one, so
     // agents get a fixed set of eight.
@@ -169,6 +191,26 @@ fn fit_ansi16(role: Role, style: Style) -> Style {
         style.fg = Some(color);
     }
     style
+}
+
+/// The widget roles by name, so the terminal's palette decides, and a bar's parts stay apart
+/// where the nearest named color would give two of them the same one.
+fn widget_ansi16(role: Role) -> Option<Color> {
+    let color = match role {
+        Role::WidgetBorder | Role::Denominator | Role::CatFree => Color::DarkGray,
+        Role::Tick => Color::LightYellow,
+        Role::Held | Role::BadgeText => Color::Black,
+        Role::CatSystem | Role::TokensInput => Color::Blue,
+        Role::CatTools => Color::Cyan,
+        Role::CatMcp => Color::LightBlue,
+        Role::CatAgents => Color::Green,
+        Role::CatMemory | Role::CatBrief => Color::Yellow,
+        Role::CatSkills => Color::Magenta,
+        Role::CatMessages | Role::TokensOutput => Color::Red,
+        Role::CatOther | Role::TokensCached => Color::Gray,
+        _ => return None,
+    };
+    Some(color)
 }
 
 /// The sixteen color form of an agent name color: the bright variants on a dark background,
@@ -187,6 +229,11 @@ fn agent_ansi16(role: Role, fg: Option<Color>) -> Option<Color> {
         Role::AgentOrange => (Color::Yellow, Color::LightRed),
         Role::AgentPink => (Color::Magenta, Color::LightMagenta),
         Role::AgentCyan => (Color::LightCyan, Color::Cyan),
+        // Claude Code's own sixteen color picks for `ultracode`, bright magenta and magenta.
+        Role::Ultracode => (Color::LightMagenta, Color::Magenta),
+        Role::CliClaude => (Color::Yellow, Color::LightRed),
+        Role::CliCodex => (Color::LightBlue, Color::Blue),
+        Role::CliAgy => (Color::LightCyan, Color::Cyan),
         _ => return None,
     };
     Some(if on_dark { dark } else { light })
@@ -199,7 +246,9 @@ fn fit_no_color(role: Role, style: Style) -> Style {
         ..style
     };
     match role {
-        Role::Dim | Role::Faint | Role::Rule => style.add_modifier(Modifier::DIM),
+        Role::Dim | Role::Faint | Role::Rule | Role::Denominator | Role::WidgetBorder => {
+            style.add_modifier(Modifier::DIM)
+        }
         Role::Accent | Role::Shimmer => style.add_modifier(Modifier::BOLD),
         Role::RemovedWord | Role::AddedWord => style.add_modifier(Modifier::UNDERLINED),
         Role::Selection => style.add_modifier(Modifier::REVERSED),
@@ -509,7 +558,7 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::REVERSED)
         );
-        assert_eq!(theme.style(Role::BarTrack).bg, Some(Color::DarkGray));
+        assert_eq!(theme.style(Role::BarTrack).bg, Some(Color::Gray));
         assert_eq!(theme.style(Role::BarFill).bg, Some(Color::Yellow));
         assert_eq!(theme.style(Role::Dim).fg, Some(Color::DarkGray));
         assert_eq!(theme.style(Role::Success).fg, Some(Color::Green));

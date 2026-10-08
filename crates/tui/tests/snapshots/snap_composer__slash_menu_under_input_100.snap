@@ -2,12 +2,13 @@
 source: crates/tui/tests/snap_composer.rs
 expression: text(&view.lines)
 ---
-──────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+────────────────────────────────────────────────────────────────────────────────────────── council ─
 ❯ /
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 Session
-  /clear                        Start a fresh chat with the lead. Runs keep going
+  /clear                        Start a fresh chat with the main agent. Runs keep going
   /resume                       Pick an earlier conversation or a run to carry on
+  /artifacts                    The pages this conversation published: open one or copy its link
   /exit                         Close the screen. Runs keep going
   /compact                      Summarize the conversation to free context
   /rename                       Rename the conversation
@@ -17,4 +18,3 @@ Session
   /recap                        One line on where the conversation stands
   /copy                         Copy the last answer, or the nth from last
   /export                       Save the conversation as plain text
-  /cd                           Work in another folder. No path shows the current one

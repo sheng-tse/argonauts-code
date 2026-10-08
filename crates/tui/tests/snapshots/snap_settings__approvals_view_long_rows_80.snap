@@ -3,11 +3,11 @@ source: crates/tui/tests/snap_settings.rs
 expression: shown
 ---
 Approvals
-Who decides each checkpoint, and how auto matched you
+Who decides each approval, and how auto matched you
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Who checks                           the cheapest model from another company │
-│ ❯ Approver model               cheapest, other company   built-in            │
+│ Who checks                          the cheapest model from another provider │
+│ ❯ The judge                    cheapest, other provider  built-in            │
 │   Rules file                   ~/.argonauts/approver-r…  everywhere (global) │
 │                                                                              │
 │ Goal · auto · rules and approver both agree    0 matches in a row · 0 misses │

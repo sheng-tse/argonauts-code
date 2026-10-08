@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn solo_card_defaults() {
         let card = Card::solo("Fix the README\n\nMore detail here.", BudgetLimit::Usd(3.0));
-        assert_eq!(card.id.as_str(), "card-001");
+        assert_eq!(card.id.as_str(), "task-001");
         assert_eq!(card.title, "Fix the README");
         assert!(card.owned_paths.is_empty());
         assert!(card.task.contains("More detail"));

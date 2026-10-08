@@ -14,7 +14,7 @@ use limits_support::*;
 
 #[test]
 fn limits_context_full_rotates() -> anyhow::Result<()> {
-    let limits = setup("context-full-rotates", "default_agent = \"codex\"\n")?;
+    let limits = setup("context-full-rotates", "main_agent = \"codex\"\n")?;
     let mut pty = limits.run(&[])?;
     let events = limits.wait_for("the rotated session to finish", CARD_WAIT, |events| {
         has_attempt("codex", AttemptCause::Rotation)(events) && completed_by("codex")(events)

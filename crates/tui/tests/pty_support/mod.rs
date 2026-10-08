@@ -18,3 +18,9 @@ pub use run::*;
 pub use screen::*;
 pub use script::Script;
 pub use views::*;
+
+/// A card that took the keys by itself works only the arrows for a moment, so a key meant for
+/// something else never answers it. Waits that out, as someone reading the card would.
+pub fn past_the_card_guard() {
+    std::thread::sleep(argonauts_tui::bottom::CARD_GUARD + std::time::Duration::from_millis(100));
+}

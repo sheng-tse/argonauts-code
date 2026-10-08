@@ -1,0 +1,13 @@
+# How much of each CLI's plan is used, one meter per window.
+name   = "plan-usage"
+title  = "plan usage"
+body   = "meters"              # stack · meters · list · columns · sparkline · marks · text
+places = ["usage"]             # above · mode-line · overview · status · usage · context · limits · stats
+form   = "full"                # full · compact · line
+
+[data]
+source = "plan_usage"          # a built-in source: context · plan_usage · spend · tokens · runs · waiting
+
+[levels]
+warn   = 90                    # amber from this percent of a window
+danger = 100                   # red when the window is used up

@@ -2,7 +2,7 @@
 source: crates/tui/tests/snap_agents.rs
 expression: text(lines)
 ---
-● Opus on Claude Code · owner · card-003 (Middleware)
+● Opus on Claude Code · worker · task-003 (Middleware)
   ⎿  Read(src/app.rs)
         Read 120 lines
      Update(src/app.rs)

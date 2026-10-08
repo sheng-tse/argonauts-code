@@ -102,17 +102,22 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 #[test]
 fn mode_line_shows_vim_mode_and_hints() {
-    let mut harness = Harness::launch(Script::idle()).ui("keys = \"vim\"").start();
-    let screen = harness.wait_visible("-- INSERT --");
+    // Wide enough for the mode's hints beside the two CLIs' chips.
+    let mut harness = Harness::launch(Script::idle())
+        .ui("keys = \"vim\"")
+        .size(ROWS, 140)
+        .start();
+    // The status with the chips comes a moment after the first frame.
+    let screen = harness.wait_visible("-- INSERT -- .*● Claude");
     let mode = expect_row(&screen, "-- INSERT --");
-    // Claude Code puts the vim mode right before the approval mode, with no dot between. What
-    // fits of the quotas and spend sits at the right end.
+    // Claude Code puts the vim mode right before the approval mode, with no dot between. Each
+    // CLI's plan usage sits against the right edge.
     let row = &screen.visible[mode];
     assert!(
         row.starts_with("  -- INSERT -- ǁ supervised mode on (shift+tab to cycle)  "),
         "{row:?}"
     );
-    assert!(row.ends_with("  Claude 5h 71% used · $0.00"), "{row:?}");
+    assert_eq!(expect_row(&screen, STATUS_IDLE), mode, "{row:?}");
     harness.press(Key::Esc);
     let screen = harness.wait_visible("-- NORMAL --");
     let mode = expect_row(&screen, "-- NORMAL --");
@@ -123,7 +128,7 @@ fn mode_line_shows_vim_mode_and_hints() {
         ),
         "{row:?}"
     );
-    assert!(row.ends_with("  $0.00"), "{row:?}");
+    assert_eq!(expect_row(&screen, STATUS_IDLE), mode, "{row:?}");
     harness.press(Key::Char('i'));
     harness.wait_visible("-- INSERT --");
     harness.wait_gone("\\? for shortcuts");
@@ -210,17 +215,17 @@ fn slash_menu_filters_and_completes() {
 fn mention_autocomplete() {
     let (_, _, events) = crew_run(3);
     let mut harness = Harness::start(Script::idle().all(0, events));
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.send("@cod");
     wait_input(&harness, "❯ @cod");
     // A worker is listed once by its harness, with its model and place beside it, as
     // `MentionTarget::Worker` reads `@codex`.
-    let list = harness.wait_visible("@codex +gpt-5\\.6 · owner on card-003 +agent");
+    let list = harness.wait_visible("@codex +gpt-5\\.6 · worker on task-003 +agent");
     let rule = expect_row(&list, TOP_RULE);
     assert!(
         list.visible[rule..]
             .iter()
-            .all(|row| !row.contains("@antigravity-cli") && !row.contains("card-004")),
+            .all(|row| !row.contains("@antigravity-cli") && !row.contains("task-004")),
         "only matches:\n{}",
         list.visible_text()
     );
@@ -304,13 +309,13 @@ fn file_mentions_list_the_repo_and_complete() {
 fn mention_ambiguous_opens_picker() {
     let (_, _, events) = crew_run(4);
     let mut harness = Harness::start(Script::idle().all(0, events));
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.send("@claude-code/opus keep the CSV path");
     harness.press(Key::Enter);
     // The cards show in the transcript too, so wait for the picker to take the screen.
     harness.wait_gone(TOP_RULE);
-    let picker = harness.wait_visible("card-005");
-    assert_order(&picker, &["card-002", "card-005"]);
+    let picker = harness.wait_visible("task-005");
+    assert_order(&picker, &["task-002", "task-005"]);
     harness.assert_no_command("mention");
     // The first row sends to every session the name matches, so card-005 is two rows down.
     harness.press(Key::Down);
@@ -320,7 +325,7 @@ fn mention_ambiguous_opens_picker() {
     assert_eq!(mention["text"], "keep the CSV path");
     let target = &mention["target"];
     assert!(
-        *target == json!({"target": "card", "value": "card-005"})
+        *target == json!({"target": "card", "value": "task-005"})
             || *target == json!({"target": "number", "value": 4}),
         "the picked agent: {mention}"
     );

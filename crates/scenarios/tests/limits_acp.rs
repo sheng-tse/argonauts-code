@@ -6,12 +6,11 @@ mod limits_support;
 
 use argonauts_core::events::checkpoint::CheckpointKind;
 use argonauts_scenarios::WAIT;
-use argonauts_testkit::Key;
 use limits_support::*;
 use serde_json::Value;
 
 /// Hermes is an experimental profile, off until you turn it on.
-const HERMES_OWNS: &str = "default_agent = \"hermes\"\n\n[agents.hermes]\nenabled = true\n";
+const HERMES_OWNS: &str = "main_agent = \"hermes\"\n\n[agents.hermes]\nenabled = true\n";
 
 /// Merging is automatic by default, so the merge card needs supervised.
 const SUPERVISED_MERGE: &str = "\n[approvals.merge]\nmode = \"supervised\"\n";
@@ -24,7 +23,7 @@ fn limits_acp_agent_owns_card() -> anyhow::Result<()> {
     )?;
     let pty = limits.start()?;
     limits.wait_for(
-        "the agent to finish the card",
+        "the agent to finish the task",
         CARD_WAIT,
         completed_by("hermes"),
     )?;
@@ -51,7 +50,7 @@ fn limits_acp_denies_forbidden_path() -> anyhow::Result<()> {
     let limits = setup("acp-denies-forbidden-path", HERMES_OWNS)?;
     let _pty = limits.start()?;
     limits.wait_for(
-        "the agent to finish the card",
+        "the agent to finish the task",
         CARD_WAIT,
         completed_by("hermes"),
     )?;
@@ -96,8 +95,8 @@ fn limits_acp_steer_then_stop_after_tool() -> anyhow::Result<()> {
     let running = limits.wait_for_frame("t2 running", CARD_WAIT, |frame| {
         tool_update(frame, "t2", "in_progress") || is_tool_call(frame, "t2")
     })?;
-    // The first Esc pauses the run, which stops each session after its running tool call.
-    pty.press(Key::Esc)?;
+    // A pause stops each session after its running tool call.
+    argonauts_scenarios::pause_run(&mut pty)?;
     let cancel = limits.wait_for_frame("the cancel after t2", CARD_WAIT, |frame| {
         client_call(frame, "session/cancel") && frame.index > running.index
     })?;

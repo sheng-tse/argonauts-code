@@ -1,7 +1,7 @@
 //! The merge rule (`merge_rule = "upgrade_review"`): a card with debt can't merge until the
 //! original, or another model at least as strong, has reviewed it. With the original still out,
 //! the merge card offers wait, review with a strong-enough candidate, or merge anyway, which
-//! always needs you unless `approvals.merge.rules.allow_debt`. With it back, `merge_return`
+//! always needs you unless `approvals.rules.merge.allow_debt`. With it back, `merge_return`
 //! decides what comes first.
 
 use argonauts_core::CardId;
@@ -60,7 +60,7 @@ pub fn stronger_candidate(host: &Host, blocked: &[(CardId, QualityDebt)]) -> Opt
     let settings = host.settings();
     let mut pool = crate::roles::candidates(settings, RoleName::Reviewer);
     if pool.is_empty() {
-        pool = settings.crew.clone();
+        pool = settings.crew.members();
     }
     pool.into_iter().find(|candidate| {
         rules::vendor_usable(host, &candidate.vendor())
@@ -76,7 +76,7 @@ pub fn stronger_candidate(host: &Host, blocked: &[(CardId, QualityDebt)]) -> Opt
 }
 
 /// Merge anyway, with debt still open: yours to decide, unless your rules may
-/// (`approvals.merge.rules.allow_debt`).
+/// (`approvals.rules.merge.allow_debt`).
 pub fn may_merge_with_debt(host: &Host, by: &Party) -> bool {
-    matches!(by, Party::User) || host.settings().approvals.merge.rules.allow_debt
+    matches!(by, Party::User) || host.settings().approvals.rules.merge.allow_debt
 }

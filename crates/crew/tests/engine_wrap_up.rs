@@ -79,9 +79,9 @@ async fn a_session_on_its_wrap_up_allowance_is_neither_stopped_nor_handed_off() 
         );
         let reference = fake.worker_ref().clone();
         if crew.settings.crew.is_empty() {
-            crew.settings.default_agent = reference.clone();
+            crew.settings.main_agent = reference.clone();
         }
-        crew.settings.crew.push(reference);
+        crew.settings.crew.add(reference);
     }
 
     let outcomes = crew

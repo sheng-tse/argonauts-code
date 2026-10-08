@@ -10,7 +10,7 @@ claude = "2.1.284 (Claude Code)"
 codex = "codex-cli 0.158.0"
 agy = "1.2.13"
 
-# A resumed owner whose prompt carries the guidance sent while the run was parked.
+# A resumed worker whose prompt carries the guidance sent while the run was parked.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits", "--resume"]
@@ -25,7 +25,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# Any other resumed owner finishes.
+# Any other resumed worker finishes.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits", "--resume"]
@@ -38,7 +38,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# An owner that works until it is stopped.
+# A worker that works until it is stopped.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits"]
@@ -53,7 +53,7 @@ emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-owner-s
 [[rule.step]]
 hang = true
 
-# An owner that sits in a build until it is stopped, so a pause waits for its tool call.
+# A worker that sits in a build until it is stopped, so a pause waits for its tool call.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits"]
@@ -66,7 +66,7 @@ emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-owner-b
 [[rule.step]]
 hang = true
 
-# An owner that takes a few seconds, then reports.
+# A worker that takes a few seconds, then reports.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits"]
@@ -85,7 +85,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# The small fix: the owner corrects README.md.
+# The small fix: the worker corrects README.md.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits"]
@@ -102,7 +102,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# An owner that moves the export job, then hits its usage limit, so the card is handed off.
+# A worker that moves the export job, then hits its usage limit, so the task is handed off.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits"]
@@ -121,7 +121,24 @@ emit = '{"type":"result","subtype":"success","is_error":true,"session_id":"sess-
 [[rule.step]]
 exit = 1
 
-# Any other owner reports done at once.
+# A worker of the orchestrator's script: it adds the rate limiter.
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'Add a token bucket per API key'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-owner-limiter","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+write = { path = "rate-limit.md", content = "a token bucket per API key, after the auth middleware\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-owner-limiter","message":{"id":"msg-sess-owner-limiter","content":[{"type":"text","text":"Added the limiter."}],"usage":{"input_tokens":900,"output_tokens":250}}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-owner-limiter","result":"Added the limiter.","total_cost_usd":0.001,"usage":{"input_tokens":900,"output_tokens":250},"structured_output":{"status":"done","summary":"A token bucket per API key, after the auth middleware.","files_changed":["rate-limit.md"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# Any other worker reports done at once.
 [[rule]]
 argv0 = "claude"
 args_contain = ["acceptEdits"]
@@ -134,7 +151,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# The retro, which proposes no change. Its prompt quotes the request, so it comes before the
+# The run review, which proposes no change. Its prompt quotes the request, so it comes before the
 # chat rules.
 [[rule]]
 argv0 = "claude"
@@ -143,6 +160,38 @@ prompt_contains = "the evolvable list"
 emit = '{"type":"system","subtype":"init","session_id":"sess-retro","cwd":".","tools":[],"model":"claude-haiku-4-5"}'
 [[rule.step]]
 emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-retro","result":"done","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"change":null}}'
+[[rule.step]]
+exit = 0
+
+# The orchestrator writes the steps for the rate limiter as a script, with council's roles: one
+# worker builds it, and a worker who didn't build it reviews it. Its prompt quotes the request,
+# so it comes before the chat rules.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'Write the workflow for one request as a script'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-orchestrator-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-orchestrator-claude","message":{"id":"msg-sess-orchestrator-claude","content":[{"type":"text","text":"One worker builds it, and one who did not build it reviews it."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-orchestrator-claude","result":"One worker builds it, and one who did not build it reviews it.","total_cost_usd":0.001,"usage":{"input_tokens":120,"output_tokens":200},"structured_output":{"script":"export const meta = {\n  name: \"rate-limit-per-key\",\n  description: \"Per-key rate limiting for the public API\",\n  phases: [\n    { title: \"Build\", detail: \"one worker adds the limiter\" },\n    { title: \"Review\", detail: \"a worker who did not build it\" },\n  ],\n}\nawait agent(\"Add a token bucket per API key after the auth middleware. The request: \" + args.request, {\n  role: \"workers\", label: \"build:rate-limit\", phase: \"Build\", task: \"rate-limit\",\n})\nconst verdict = await agent(\"Review the rate limiter against the request: \" + args.request, {\n  role: \"workers\", notTheAuthor: true, access: \"read\",\n  label: \"review:rate-limit\", phase: \"Review\", task: \"rate-limit\",\n  schema: {\n    type: \"object\",\n    properties: { accept: { type: \"boolean\" }, findings: { type: \"array\", items: { type: \"string\" } } },\n    required: [\"accept\", \"findings\"],\n  },\n})\nreturn { accepted: Boolean(verdict && verdict.accept) }\n"}}'
+[[rule.step]]
+exit = 0
+
+# The first step of a workflow of your own, which runs as written: it lists one task.
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'Split the request into tasks, as the workflow file says'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-planner-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-planner-claude","message":{"id":"msg-sess-planner-claude","content":[{"type":"text","text":"One task: the limiter itself."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-planner-claude","result":"One task: the limiter itself.","total_cost_usd":0.001,"usage":{"input_tokens":100,"output_tokens":60},"structured_output":{"summary":"One task: the limiter itself.","tasks":[{"title":"Add a token bucket per API key","done_when":["a key over its limit gets 429 with Retry-After"]}]}}'
 [[rule.step]]
 exit = 0
 
@@ -186,7 +235,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# The lead's workflow design: the review panel with two reviewers. It matches a field of the
+# The main agent's workflow design: the review panel with two reviewers. It matches a field of the
 # design's input, which only the prompt on stdin holds, so the log keeps that prompt.
 [[rule]]
 argv0 = "claude"
@@ -310,7 +359,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# A solo change whose owner hangs.
+# A solo change whose worker hangs.
 [[rule]]
 argv0 = "claude"
 args_contain = ["dontAsk"]
@@ -325,7 +374,7 @@ emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess
 [[rule.step]]
 exit = 0
 
-# A solo change whose owner takes a few seconds.
+# A solo change whose worker takes a few seconds.
 [[rule]]
 argv0 = "claude"
 args_contain = ["dontAsk"]
@@ -427,7 +476,24 @@ emit = '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens
 [[rule.step]]
 exit = 0
 
-# The chat, with Codex as the default agent. Inside Argonauts' sandbox Codex's own is off, so
+# A reviewer of the orchestrator's script: it accepts the rate limiter.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'Review the rate limiter against the request'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-reviewer-codex"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"accept\":true,\"findings\":[]}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# The chat, with Codex as the main agent. Inside Argonauts' sandbox Codex's own is off, so
 # the chat is told apart by its prompt.
 [[rule]]
 argv0 = "codex"
@@ -495,7 +561,7 @@ emit = '{"event":"result","result":{"conversation_id":"conv-restate-agy","status
 [[rule.step]]
 exit = 0
 
-# The chat, with agy as the default agent, and any other agy session.
+# The chat, with agy as the main agent, and any other agy session.
 [[rule]]
 argv0 = "agy"
 args_contain = ["--output-format"]

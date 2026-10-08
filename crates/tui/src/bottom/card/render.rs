@@ -38,16 +38,8 @@ impl CardPrompt {
         let dim = theme.style(Role::Dim);
         let card = theme.style(Role::Card);
 
-        if self.pinned {
-            let line = Line::from(vec![
-                Span::styled(format!("{} ", glyphs.card), warning),
-                Span::raw(sanitize_line(&self.short_title).into_owned()),
-                Span::styled(" · needs you · ↑ to answer", dim),
-            ]);
-            return CardView {
-                lines: vec![truncate_line(&line, width)],
-                ..CardView::default()
-            };
+        if self.dismissed {
+            return CardView::default();
         }
 
         let indent = [Span::raw("  ")];
@@ -386,7 +378,7 @@ impl CardPrompt {
             // The input is hidden while the card has the keys, so this is where letters
             // typed at it are told where they went.
             parts.push(Part::new(
-                part("Typing waits while the card has the keys"),
+                part("Typing waits while the question has the keys"),
                 KEEP,
             ));
             parts.push(Part::joined(dot(), part("↑↓ to choose"), 0));

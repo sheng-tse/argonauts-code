@@ -79,7 +79,7 @@ mod tests {
             ts: OffsetDateTime::UNIX_EPOCH,
             run: None,
             kind: NarratorLineKind::Summary,
-            text: "Two cards are building.".to_owned(),
+            text: "Two tasks are building.".to_owned(),
             model: "claude-code/haiku".parse().unwrap(),
             spend: Spend::default(),
         };
@@ -101,7 +101,7 @@ mod tests {
             ts: OffsetDateTime::UNIX_EPOCH,
             run: None,
             kind: NarratorLineKind::Update,
-            text: "Card 1 is running.".to_owned(),
+            text: "Task 1 is running.".to_owned(),
             model: "claude-code/haiku".parse().unwrap(),
             spend: spent,
         };
@@ -120,6 +120,6 @@ mod tests {
         let earlier = earlier(dir.path()).unwrap();
         assert!((earlier.spent.cost_usd - 0.04).abs() < 1e-9);
         assert_eq!(earlier.spent.input_tokens, 200);
-        assert_eq!(earlier.said, vec!["Card 1 is running.".to_owned()]);
+        assert_eq!(earlier.said, vec!["Task 1 is running.".to_owned()]);
     }
 }

@@ -228,7 +228,7 @@ impl Folder {
                     .assumptions
                     .iter()
                     .filter(|assumption| assumption.by_lead())
-                    .map(|assumption| format!("Answered by the lead · {}", assumption.text));
+                    .map(|assumption| format!("Answered by the main agent · {}", assumption.text));
                 self.tagged.goal = std::iter::once(file.summary.clone())
                     .chain(
                         file.criteria
@@ -267,7 +267,7 @@ impl Folder {
                 };
                 let (_, question) = self.asked_you.remove(at);
                 let line = format!(
-                    "Answered for you in full auto · {}: {}",
+                    "Answered for you on autopilot · {}: {}",
                     question.trim_end_matches(['?', '.', ':']),
                     one_line(&message.text)
                 );
@@ -315,7 +315,7 @@ impl Folder {
                 Some(Audience::Everyone)
             }
             PlanEvent::SpikeFinished { card, report } => self.line(format!(
-                "{card} spike on {}: {}",
+                "{card} experiment on {}: {}",
                 report.topic, report.finding
             )),
             PlanEvent::Judged(result) => {
@@ -330,8 +330,8 @@ impl Folder {
                 Some(Audience::Everyone)
             }
             PlanEvent::Coordinated { rejection, .. } => match rejection {
-                None => self.line("The coordinator's plan was accepted".to_owned()),
-                Some(rule) => self.line(format!("The coordinator's plan was rejected: {rule}")),
+                None => self.line("The orchestrator's plan was accepted".to_owned()),
+                Some(rule) => self.line(format!("The orchestrator's plan was rejected: {rule}")),
             },
         }
     }
@@ -415,7 +415,7 @@ impl Folder {
             }
             CardEvent::Reverted { to, .. } => {
                 let audience = self.card_mut(id)?.audience.clone();
-                self.card_line(audience, format!("{id} reverted to handoff-{to}"))
+                self.card_line(audience, format!("{id} reverted to fallback-{to}"))
             }
             _ => None,
         }
@@ -488,7 +488,7 @@ impl Folder {
         let verdict = if outcome.passed { "passed" } else { "failed" };
         let scope = card.map(|card| format!("{card} ")).unwrap_or_default();
         let text = format!(
-            "{scope}gate {} {verdict}: {}",
+            "{scope}check {} {verdict}: {}",
             outcome.name, outcome.summary
         );
         let audience = card
@@ -556,7 +556,7 @@ impl Folder {
             }
             IntegrationEvent::FinalCheck { passed: true } => "The final check passed".to_owned(),
             IntegrationEvent::FinalCheck { passed: false } => "The final check failed".to_owned(),
-            IntegrationEvent::Landed { target, .. } => format!("Landed on {target}"),
+            IntegrationEvent::Landed { target, .. } => format!("Merged into {target}"),
             IntegrationEvent::WaitingToMerge { target, in_the_way } => format!(
                 "Waiting to merge into {target}: {} in your checkout in the way",
                 and_list(in_the_way)
@@ -600,7 +600,7 @@ impl Folder {
                         self.tagged.plan = Some(summary);
                     }
                 }
-                let title = title.unwrap_or_else(|| format!("Checkpoint {}", decided.id));
+                let title = title.unwrap_or_else(|| format!("Approval {}", decided.id));
                 self.line(format!("{title}: {}", words(&decided.action)))
             }
             CheckpointEvent::Withdrawn { id, .. } => {
@@ -654,7 +654,7 @@ impl Folder {
                 Some(Audience::Everyone)
             }
             VendorEvent::Disabled { vendor, reason } => {
-                self.line(format!("{vendor} disabled for new cards: {reason}"))
+                self.line(format!("{vendor} disabled for new tasks: {reason}"))
             }
             VendorEvent::Health(_) => None,
         }
@@ -668,12 +668,12 @@ impl Folder {
             }
             BudgetEvent::Hit {
                 card, dimension, ..
-            } => self.line(format!("{card} hit its {} budget", words(dimension))),
-            BudgetEvent::Extended { card, .. } => self.line(format!("{card} got more budget")),
+            } => self.line(format!("{card} hit its {} limit", words(dimension))),
+            BudgetEvent::Extended { card, .. } => self.line(format!("{card} got more limit")),
             BudgetEvent::Deferred { cards } => {
                 let cards: Vec<String> = cards.iter().map(ToString::to_string).collect();
                 self.line(format!(
-                    "Deferred until budget frees up: {}",
+                    "Deferred until limit frees up: {}",
                     and_list(&cards)
                 ))
             }
@@ -756,7 +756,7 @@ pub(crate) fn words<T: Serialize>(value: &T) -> String {
             .unwrap_or_default(),
         _ => String::new(),
     };
-    name.replace(['_', '-'], " ")
+    argonauts_core::text::state_words(&name).replace(['_', '-'], " ")
 }
 
 fn and_list(items: &[String]) -> String {
@@ -877,7 +877,7 @@ mod tests {
         }))
         .unwrap();
         let owner = Viewer::Session {
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             card: None,
             label: None,
         };
@@ -967,7 +967,7 @@ mod tests {
             started(at(&id, 0, 0), StepKind::Gate, StandardPhase::Check, 1),
         ));
         let owner = Viewer::Session {
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             card: None,
             label: None,
         };
@@ -1021,7 +1021,7 @@ mod tests {
             folder.summary(&Viewer::User).goal,
             [
                 "Add a --verbose flag",
-                "Answered by the lead · Which log level: trace"
+                "Answered by the main agent · Which log level: trace"
             ]
         );
     }

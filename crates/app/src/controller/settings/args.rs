@@ -7,7 +7,8 @@ use argonauts_core::input::{
 };
 use argonauts_core::layout::project_files;
 use argonauts_core::names::{RoleName, WorkerRef};
-use argonauts_core::settings::protocol::TriageSettings;
+use argonauts_core::settings::Settings;
+use argonauts_core::settings::handoff::CrewRole;
 use argonauts_registry::{presets_in, setting_meta, settings_catalog};
 
 use super::models;
@@ -37,13 +38,13 @@ pub(crate) fn setting_write(
             worker: Some(worker),
             effort,
         } => {
-            let role = role.filter(|role| *role != RoleName::Default);
+            let role = role.filter(|role| *role != RoleName::Main);
             if let Some(why) = models::refusal(ctx, role, worker) {
                 anyhow::bail!("{why}");
             }
             if let Some(level) = effort {
                 check_level(ctx, worker, level)?;
-                let name = role.unwrap_or(RoleName::Default).as_str();
+                let name = role.unwrap_or(RoleName::Main).as_str();
                 also.push((format!("roles.{name}.effort"), quoted(level)));
             }
             let (key, value) = model_key(role, worker);
@@ -52,30 +53,23 @@ pub(crate) fn setting_write(
         SlashCommand::Effort {
             role,
             level: Some(level),
-            all_hands,
+            ultracode,
         } => {
-            if let Some(on) = all_hands {
-                also.push((TriageSettings::ALL_HANDS.to_owned(), on.to_string()));
+            if let Some(on) = ultracode {
+                also.push((Settings::ULTRACODE.to_owned(), on.to_string()));
             }
-            let name = role.unwrap_or(RoleName::Default).as_str();
+            let name = role.unwrap_or(RoleName::Main).as_str();
             (format!("roles.{name}.effort"), quoted(level), "effort")
         }
         SlashCommand::Effort {
             level: None,
-            all_hands: Some(on),
+            ultracode: Some(on),
             ..
-        } => (
-            TriageSettings::ALL_HANDS.to_owned(),
-            on.to_string(),
-            "effort",
-        ),
-        SlashCommand::Preset {
+        } => (Settings::ULTRACODE.to_owned(), on.to_string(), "effort"),
+        SlashCommand::Workflow {
             name: Some(name),
             action: PresetAction::Use,
-        } => ("preset".to_owned(), quoted(name), "preset"),
-        SlashCommand::Style { style: Some(style) } => {
-            ("workflows.style".to_owned(), quoted(style), "style")
-        }
+        } => ("workflow".to_owned(), quoted(name), "workflow"),
         SlashCommand::Approvals {
             key: Some(key),
             value: Some(value),
@@ -83,17 +77,18 @@ pub(crate) fn setting_write(
         SlashCommand::Budget {
             key: Some(key),
             value: Some(value),
-        } => (under("budget", key), value.clone(), "budget"),
-        SlashCommand::Handoff {
+            ..
+        } => (under("limits", key), value.clone(), "limits"),
+        SlashCommand::Fallback {
             role,
             key: Some(key),
             value: Some(value),
         } => {
             let section = match role {
-                Some(role) => format!("roles.{}.handoff", role.as_str()),
-                None => "handoff".to_owned(),
+                Some(role) => fallback_section(*role),
+                None => "fallback".to_owned(),
             };
-            (under(&section, key), value.clone(), "handoff")
+            (under(&section, key), value.clone(), "fallback")
         }
         SlashCommand::Permissions {
             role,
@@ -154,10 +149,10 @@ pub(crate) fn setting_write(
 /// The key a model pick sets and its TOML value: the worker you pick replaces the role's list.
 pub(crate) fn model_key(role: Option<RoleName>, worker: &WorkerRef) -> (String, String) {
     let worker = worker.to_string();
-    match role.unwrap_or(RoleName::Default) {
-        RoleName::Default => ("default_agent".to_owned(), quoted(&worker)),
+    match role.unwrap_or(RoleName::Main) {
+        RoleName::Main => ("main_agent".to_owned(), quoted(&worker)),
         RoleName::Narrator => ("narrator.model".to_owned(), quoted(&worker)),
-        RoleName::Approver => ("approvals.approver.model".to_owned(), quoted(&worker)),
+        RoleName::Approver => ("approvals.decides".to_owned(), quoted(&worker)),
         role => (
             format!("roles.{}.workers", role.as_str()),
             toml::Value::Array(vec![toml::Value::String(worker)]).to_string(),
@@ -170,11 +165,11 @@ pub(crate) fn model_key(role: Option<RoleName>, worker: &WorkerRef) -> (String, 
 pub(crate) fn check_known(ctx: &Ctx, key: &str, value: &str) -> anyhow::Result<String> {
     let value = checked_value(key, value)?;
     let text = toml_value_text(&value);
-    if key == "preset" {
+    if key == "workflow" {
         check_preset(ctx, &text)?;
     }
     if let ["roles", role, "effort"] = key.split('.').collect::<Vec<_>>().as_slice() {
-        let role = super::rows::role_named(role).filter(|role| *role != RoleName::Default);
+        let role = super::rows::role_named(role).filter(|role| *role != RoleName::Main);
         check_effort(ctx, role, &text)?;
     }
     Ok(value)
@@ -202,7 +197,7 @@ pub(crate) fn checked_value(key: &str, value: &str) -> anyhow::Result<String> {
         anyhow::bail!("{key} isn't a setting; /config lists them");
     };
     // Your own presets aren't in the catalog's list, so `/preset` checks names itself.
-    if key != "preset" && !meta.allowed.is_empty() && !meta.allowed.contains(&value) {
+    if key != "workflow" && !meta.allowed.is_empty() && !meta.allowed.contains(&value) {
         anyhow::bail!("{key} takes {}, not {value}", meta.allowed.join(", "));
     }
     Ok(value)
@@ -269,7 +264,7 @@ fn check_preset(ctx: &Ctx, name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "There's no preset named {name}; pick one of {}",
+        "There's no workflow named {name}; pick one of {}",
         names.join(", ")
     )
 }
@@ -282,6 +277,12 @@ pub(crate) fn preset_list(ctx: &Ctx) -> Vec<argonauts_registry::PresetInfo> {
         .project_config()
         .with_file_name(project_files::PRESETS);
     presets_in(&ctx.env.paths.global_presets(), Some(&project))
+}
+
+/// Where a role's own fallback settings sit: the table of the crew role it follows, such as
+/// `fallback.workers` for the worker.
+pub(crate) fn fallback_section(role: RoleName) -> String {
+    format!("fallback.{}", CrewRole::of(role).as_str())
 }
 
 /// `section.key`, unless you typed the section already.
@@ -325,7 +326,7 @@ mod tests {
             endpoint
         );
         assert_eq!(
-            checked_value("handoff.strategy", "spread").unwrap(),
+            checked_value("fallback.strategy", "spread").unwrap(),
             "\"spread\""
         );
     }
@@ -340,14 +341,14 @@ mod tests {
                 "[\"codex/gpt-5\"]".to_owned()
             )
         );
-        assert_eq!(model_key(None, &worker).0, "default_agent");
+        assert_eq!(model_key(None, &worker).0, "main_agent");
         assert_eq!(
             model_key(Some(RoleName::Narrator), &worker).0,
             "narrator.model"
         );
         assert_eq!(
             model_key(Some(RoleName::Approver), &worker).0,
-            "approvals.approver.model"
+            "approvals.decides"
         );
     }
 }

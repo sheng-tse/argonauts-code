@@ -11,7 +11,7 @@ use serde_json::Value;
 /// One outcome line per card, as the retro writes them.
 fn outcome(run: &str, card: u32, worker: &str, first_try: bool, at: &str) -> String {
     format!(
-        "{{\"type\":\"outcome\",\"run\":\"{run}\",\"card\":\"card-{card:03}\",\"worker\":\"{worker}\",\
+        "{{\"type\":\"outcome\",\"run\":\"{run}\",\"card\":\"task-{card:03}\",\"worker\":\"{worker}\",\
          \"task_type\":\"backend\",\"first_try\":{first_try},\"attempts\":1,\"integrated\":true,\
          \"spent_usd\":1.0,\"at\":\"{at}\",\"minutes\":10.0}}\n"
     )
@@ -88,7 +88,7 @@ fn learning_recipe_rollback_by_hand() -> anyhow::Result<()> {
     let scenario = scenario()?;
     let recipe = |version: u32, rounds: u32| {
         format!(
-            "recipe: api-feature\nversion: {version}\n{}description: HTTP endpoints, with tests\n\
+            "name: api-feature\nversion: {version}\n{}description: HTTP endpoints, with tests\n\
              mode: crew\nmatch: {{ task_types: [backend] }}\ncritique: {{ rounds: {rounds} }}\n",
             if version > 1 {
                 format!("parent: {}\n", version - 1)
@@ -99,20 +99,20 @@ fn learning_recipe_rollback_by_hand() -> anyhow::Result<()> {
     };
     scenario
         .repo
-        .write(".argonauts/recipes/api-feature/v1.yaml", &recipe(1, 1))?;
+        .write(".argonauts/learned/api-feature/v1.yaml", &recipe(1, 1))?;
     scenario
         .repo
-        .write(".argonauts/recipes/api-feature/v2.yaml", &recipe(2, 2))?;
+        .write(".argonauts/learned/api-feature/v2.yaml", &recipe(2, 2))?;
     scenario
         .repo
-        .write(".argonauts/recipes/api-feature/current", "2\n")?;
+        .write(".argonauts/learned/api-feature/current", "2\n")?;
     scenario.repo.commit_all("two versions of a recipe")?;
     let main_before = scenario.repo.head()?;
 
-    let listed = json(&run_cli(&scenario, &["recipes", "list", "--json"])?)?;
-    assert_eq!(listed["recipes"][0]["current"], 2, "{listed}");
+    let listed = json(&run_cli(&scenario, &["learned", "list", "--json"])?)?;
+    assert_eq!(listed["workflows"][0]["current"], 2, "{listed}");
 
-    let output = run_cli(&scenario, &["recipes", "rollback", "api-feature"])?;
+    let output = run_cli(&scenario, &["learned", "rollback", "api-feature"])?;
     let said = output_text(&output);
     assert!(output.status.success(), "{said}");
     assert!(said.contains("api-feature"), "{said}");
@@ -120,20 +120,20 @@ fn learning_recipe_rollback_by_hand() -> anyhow::Result<()> {
     // At once: the next run uses v1. The pointer change waits on a branch, never on main.
     let listed = json(&run_cli(
         &scenario,
-        &["recipes", "show", "api-feature", "--json"],
+        &["learned", "show", "api-feature", "--json"],
     )?)?;
-    assert_eq!(listed["recipe"]["version"], 1, "{listed}");
+    assert_eq!(listed["workflow"]["version"], 1, "{listed}");
     assert_eq!(scenario.repo.head()?, main_before);
     let branches = scenario.repo.git(&[
         "for-each-ref",
         "--format=%(refname:short)",
-        "refs/heads/argonauts/recipes/",
+        "refs/heads/argonauts/learned/",
     ])?;
     assert!(
         !branches.trim().is_empty(),
         "no branch proposes the pointer"
     );
     let inbox = output_text(&run_cli(&scenario, &["inbox"])?);
-    assert!(inbox.contains("argonauts/recipes/"), "{inbox}");
+    assert!(inbox.contains("argonauts/learned/"), "{inbox}");
     Ok(())
 }

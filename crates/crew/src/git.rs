@@ -9,13 +9,21 @@ use std::process::{Output, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use argonauts_core::DiffStat;
-use argonauts_core::build_output::BuildOutput;
+use argonauts_core::build_output::{BuildOutput, FilePatterns};
 use tokio::process::Command;
 
+mod absorb;
+mod claimed_ignored;
+mod first_commit;
 mod refs;
 
 /// Paths per `git rm`, well under any command-line limit.
 const PATHS_PER_CALL: usize = 200;
+
+/// The most removed files one commit looks for under a new name.
+const MOVES_LOOKED_FOR: usize = 200;
+
+const MB: u64 = 1024 * 1024;
 
 const SAFE_CONFIG: [&str; 6] = [
     "-c",
@@ -96,12 +104,104 @@ pub struct Committed {
     pub left_out: Vec<LeftOut>,
 }
 
-/// An untracked file a commit left out as build output.
+/// An untracked file a commit left out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeftOut {
     pub path: String,
-    /// What made it build output: the folder it's in, ending in `/`, or the file itself.
+    /// What it's named by when you're told: the folder it's in, ending in `/`, when that
+    /// whole folder stayed out, or the file itself.
     pub because: String,
+    pub why: LeftOutWhy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeftOutWhy {
+    /// The leave-out settings name it as build or cache output.
+    BuildOutput,
+    /// No agent meant to create it: no edit tool wrote it, and no report lists it.
+    Unclaimed,
+    /// Bigger than `commit.max_new_file_mb`, whoever made it.
+    TooBig,
+    /// An agent meant to create it, but your ignore rules match it.
+    Ignored,
+}
+
+/// The new files agents meant to create in a worktree: the ones their edit tools wrote and
+/// the ones their reports list, by path from the worktree. A listed folder covers the files
+/// under it. The files `commit.always_keep` names count as claimed, whoever made them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Claims {
+    files: BTreeSet<String>,
+    folders: Vec<String>,
+    always: FilePatterns,
+}
+
+impl Claims {
+    /// Claims every new file `patterns` name, such as `commit.always_keep`.
+    pub fn always_keeping(mut self, patterns: &[String]) -> Self {
+        self.always = FilePatterns::new(patterns);
+        self
+    }
+
+    /// Claims `path`, given from the worktree or as an absolute path inside it. A path that
+    /// leaves the worktree, or names all of it, claims nothing: `.` in a report would claim
+    /// every cache a command left behind.
+    pub fn add(&mut self, worktree: &Path, path: &str) {
+        let given = Path::new(path.trim());
+        let inside = if given.is_absolute() {
+            // A CLI may name the file through a symlink the worktree's own path doesn't use,
+            // or the other way round, as with `/tmp` on macOS.
+            let real_folder = given.parent().and_then(|folder| folder.canonicalize().ok());
+            let real = match (real_folder, given.file_name()) {
+                (Some(folder), Some(name)) => folder.join(name),
+                _ => given.to_path_buf(),
+            };
+            let root = worktree
+                .canonicalize()
+                .unwrap_or_else(|_| worktree.to_path_buf());
+            match given
+                .strip_prefix(worktree)
+                .or_else(|_| real.strip_prefix(&root))
+            {
+                Ok(inside) => inside.to_path_buf(),
+                Err(_) => return,
+            }
+        } else {
+            given.to_path_buf()
+        };
+        let mut parts = Vec::new();
+        for part in inside.components() {
+            match part {
+                std::path::Component::Normal(part) => parts.push(part.to_string_lossy()),
+                std::path::Component::CurDir => {}
+                _ => return,
+            }
+        }
+        if parts.is_empty() {
+            return;
+        }
+        let clean = parts.join("/");
+        if path.trim().ends_with('/') || worktree.join(&clean).is_dir() {
+            self.folders.push(format!("{clean}/"));
+        } else {
+            self.files.insert(clean);
+        }
+    }
+
+    pub fn covers(&self, path: &str) -> bool {
+        self.files.contains(path)
+            || self.folders.iter().any(|folder| path.starts_with(folder))
+            || self.always.contains(path)
+    }
+
+    /// Whether anything claimed sits in `folder`, which ends in `/`.
+    fn reach_into(&self, folder: &str) -> bool {
+        self.files.iter().any(|file| file.starts_with(folder))
+            || self
+                .folders
+                .iter()
+                .any(|claimed| claimed.starts_with(folder) || folder.starts_with(claimed))
+    }
 }
 
 /// Makes `dir` an empty repository of its own, with no template and so no hooks, unless it is
@@ -140,9 +240,13 @@ pub fn init_scratch_repo(dir: &Path) -> io::Result<()> {
 pub struct Git {
     env: Vec<(String, String)>,
     bound: Option<Bound>,
+    /// A folder with no git of its own, and the hidden history kept for it.
+    hidden: Option<Arc<Bound>>,
     known: Arc<Known>,
     /// What commits leave out while it's untracked.
     build_output: Arc<BuildOutput>,
+    /// The most bytes a new file may hold to be committed. 0 is no limit.
+    max_new_file: u64,
 }
 
 /// Answers that hold while the engine runs, by the directory they were asked in.
@@ -178,9 +282,22 @@ impl Git {
         Self {
             env: self.env.clone(),
             bound: Some(Bound { git_dir, work_tree }),
+            hidden: self.hidden.clone(),
             known: self.known.clone(),
             build_output: self.build_output.clone(),
+            max_new_file: self.max_new_file,
         }
+    }
+
+    /// Git that, for calls made in `folder` itself, uses the history at `git_dir` with the
+    /// folder as its work tree. `folder` has no `.git`, so nothing else says where its history
+    /// is. Worktrees made from that history find it through their own `.git` files as usual.
+    pub fn with_hidden(mut self, folder: PathBuf, git_dir: PathBuf) -> Self {
+        self.hidden = Some(Arc::new(Bound {
+            git_dir,
+            work_tree: folder,
+        }));
+        self
     }
 
     /// What commits leave out while it's untracked.
@@ -192,6 +309,13 @@ impl Git {
     /// the built-in list's when `builtin` is set.
     pub fn leaving_out(mut self, builtin: bool, extra: &[String]) -> Self {
         self.build_output = Arc::new(BuildOutput::of(builtin, extra));
+        self
+    }
+
+    /// Commits leave out a new file bigger than `megabytes`, as `commit.max_new_file_mb`
+    /// asks. 0 lifts the limit.
+    pub fn capping_new_files(mut self, megabytes: u64) -> Self {
+        self.max_new_file = megabytes.saturating_mul(MB);
         self
     }
 
@@ -271,21 +395,291 @@ impl Git {
 
     /// [`Git::commit_all`], saying which untracked files it left out as build output.
     pub async fn commit_work(&self, worktree: &Path, message: &str) -> Result<Committed, GitError> {
-        let left_out = self.stage_all(worktree).await?;
+        self.commit_claimed(worktree, message, None).await
+    }
+
+    /// Commits every change to a tracked file, and of the new files only the ones `claims`
+    /// covers, or all of them without `claims`. What the leave-out settings name stays out
+    /// either way. Says what it left out, which stays in the tree as it was.
+    pub async fn commit_claimed(
+        &self,
+        worktree: &Path,
+        message: &str,
+        claims: Option<&Claims>,
+    ) -> Result<Committed, GitError> {
+        let left_out = self.stage_all(worktree, claims).await?;
         let sha = self.commit_index(worktree, message).await?;
         Ok(Committed { sha, left_out })
     }
 
-    /// Stages everything but the untracked files the leave-out settings name. Returns what it
-    /// left out.
-    async fn stage_all(&self, worktree: &Path) -> Result<Vec<LeftOut>, GitError> {
+    /// Stages everything but the untracked files the leave-out settings name and, with
+    /// `claims`, the ones no agent claimed. Returns what it left out.
+    async fn stage_all(
+        &self,
+        worktree: &Path,
+        claims: Option<&Claims>,
+    ) -> Result<Vec<LeftOut>, GitError> {
         let untracked = self.untracked_files(worktree).await?;
-        let left_out = self.untracked_build_output(worktree, untracked).await?;
-        self.run(worktree, &["add", "--all"]).await?;
-        for chunk in left_out.chunks(PATHS_PER_CALL) {
-            let mut args = vec!["--literal-pathspecs", "rm", "--cached", "--quiet", "--"];
-            args.extend(chunk.iter().map(|left| left.path.as_str()));
+        let left_out = self.left_out_of(worktree, &untracked, claims).await?;
+        if left_out.is_empty() {
+            self.run(worktree, &["add", "--all"]).await?;
+            return Ok(left_out);
+        }
+        // What goes in is named, where `add --all` would first hash everything that stays
+        // out: a `node_modules/` a command left behind never reaches the object store.
+        self.run(worktree, &["add", "--update"]).await?;
+        let out: BTreeSet<&str> = left_out.iter().map(|left| left.path.as_str()).collect();
+        let kept: Vec<&str> = untracked
+            .iter()
+            .map(String::as_str)
+            .filter(|path| !out.contains(path))
+            .collect();
+        for chunk in kept.chunks(PATHS_PER_CALL) {
+            let mut args = vec!["--literal-pathspecs", "add", "--"];
+            args.extend(chunk);
             self.run(worktree, &args).await?;
+        }
+        Ok(left_out)
+    }
+
+    /// Takes the new files `commits` added that a commit of the conductor's could leave out
+    /// back out of the index, and leaves them in the tree, where the next commit sorts them
+    /// like any file a command left behind: the ones `claims` doesn't cover, and whoever
+    /// made them, the ones the leave-out settings name or that are too big. An agent's own
+    /// commit is no claim: its `git add -A` sweeps in bytecode and caches as readily as work.
+    pub async fn unstage_left_out(
+        &self,
+        worktree: &Path,
+        commits: &[String],
+        claims: Option<&Claims>,
+    ) -> Result<(), GitError> {
+        let mut added = BTreeSet::new();
+        for sha in commits {
+            // A file moved from a tracked name isn't new, and a merge lists nothing here, so
+            // what it brought in from the run's branch stays.
+            let args = [
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "-z",
+                "--find-renames",
+                "--diff-filter=A",
+                sha,
+            ];
+            let listed = self.run(worktree, &args).await?;
+            added.extend(
+                listed
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+        // Loosely: whatever goes is sorted again by the next commit, which puts back a file
+        // the leave-out settings name in a folder the repository tracked before.
+        let mut out: BTreeSet<&str> = added
+            .iter()
+            .filter(|path| {
+                claims.is_some_and(|claims| !claims.covers(path))
+                    || !self.build_output.matches(path).is_empty()
+            })
+            .map(String::as_str)
+            .collect();
+        let added: Vec<String> = added.iter().cloned().collect();
+        let too_big = self.too_big(worktree, &added, &[]).await?;
+        out.extend(too_big.iter().map(|left| left.path.as_str()));
+        let out: Vec<&str> = out.into_iter().collect();
+        for chunk in out.chunks(PATHS_PER_CALL) {
+            // Forced, since the file may have changed since its commit. Only the index
+            // entry goes: `--cached` never touches the file.
+            let mut args = vec![
+                "--literal-pathspecs",
+                "rm",
+                "--cached",
+                "--force",
+                "--quiet",
+                "--ignore-unmatch",
+                "--",
+            ];
+            args.extend(chunk);
+            self.run(worktree, &args).await?;
+        }
+        Ok(())
+    }
+
+    /// The new files in `worktree` a commit under `claims` would leave out as nobody's, read
+    /// without staging anything.
+    pub async fn unclaimed_files(
+        &self,
+        worktree: &Path,
+        claims: &Claims,
+    ) -> Result<Vec<LeftOut>, GitError> {
+        let untracked = self.untracked_files(worktree).await?;
+        let mut left_out = self.left_out_of(worktree, &untracked, Some(claims)).await?;
+        left_out.retain(|left| left.why == LeftOutWhy::Unclaimed);
+        Ok(left_out)
+    }
+
+    /// Which of the `untracked` files a commit leaves out: what the leave-out settings name
+    /// and, with `claims`, what no agent claimed.
+    async fn left_out_of(
+        &self,
+        worktree: &Path,
+        untracked: &[String],
+        claims: Option<&Claims>,
+    ) -> Result<Vec<LeftOut>, GitError> {
+        let mut left_out = self
+            .untracked_build_output(worktree, untracked.to_vec())
+            .await?;
+        let too_big = self.too_big(worktree, untracked, &left_out).await?;
+        left_out.extend(too_big);
+        let Some(claims) = claims else {
+            return Ok(left_out);
+        };
+        left_out.extend(self.claimed_but_ignored(worktree, claims).await?);
+        let unclaimed: Vec<String> = {
+            let named: BTreeSet<&str> = left_out.iter().map(|left| left.path.as_str()).collect();
+            untracked
+                .iter()
+                .filter(|path| !named.contains(path.as_str()) && !claims.covers(path))
+                .cloned()
+                .collect()
+        };
+        if unclaimed.is_empty() {
+            return Ok(left_out);
+        }
+        let mut claims = claims.clone();
+        // A folder that holds a file kept by a pattern isn't left out whole.
+        let always_kept = untracked.iter().filter(|path| claims.always.contains(path));
+        claims.files.extend(always_kept.cloned());
+        claims
+            .files
+            .extend(self.moved_here(worktree, &unclaimed).await?);
+        let unclaimed = unclaimed.into_iter().filter(|path| !claims.covers(path));
+        left_out.extend(self.unclaimed(worktree, unclaimed, &claims).await?);
+        Ok(left_out)
+    }
+
+    /// The files among `untracked`, less the ones `left_out` already, that are bigger than
+    /// a commit takes. A size and never a type: what your `.gitattributes` give to Git LFS
+    /// is stored outside the repository, so it's exempt.
+    async fn too_big(
+        &self,
+        dir: &Path,
+        untracked: &[String],
+        left_out: &[LeftOut],
+    ) -> Result<Vec<LeftOut>, GitError> {
+        if self.max_new_file == 0 {
+            return Ok(Vec::new());
+        }
+        let out: BTreeSet<&str> = left_out.iter().map(|left| left.path.as_str()).collect();
+        let mut too_big = Vec::new();
+        for path in untracked.iter().filter(|path| !out.contains(path.as_str())) {
+            let size = std::fs::symlink_metadata(dir.join(path))
+                .ok()
+                .filter(std::fs::Metadata::is_file)
+                .map_or(0, |meta| meta.len());
+            if size <= self.max_new_file {
+                continue;
+            }
+            let filter = ["check-attr", "-z", "filter", "--", path];
+            if self.run(dir, &filter).await?.split('\0').nth(2) == Some("lfs") {
+                continue;
+            }
+            too_big.push(LeftOut {
+                path: path.clone(),
+                because: format!("{path} ({} MB)", size / MB),
+                why: LeftOutWhy::TooBig,
+            });
+        }
+        Ok(too_big)
+    }
+
+    /// The files among `new` that hold the bytes of a tracked file now gone from the
+    /// worktree: a file a command moved, such as `mv old.py new.py`. No edit tool wrote the
+    /// new name, but leaving it out would commit the removal alone and lose the file.
+    async fn moved_here(&self, dir: &Path, new: &[String]) -> Result<BTreeSet<String>, GitError> {
+        let args = [
+            "diff-index",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+            "--no-renames",
+            "--diff-filter=D",
+            "HEAD",
+        ];
+        // Each removal reads `:<mode> <mode> <blob> <blob> D`, then its path. Only a plain
+        // file can come back as one, and only one that's gone: a file taken out of the index
+        // and still in the tree under its own name was unstaged, not moved.
+        let removed = self.run(dir, &args).await?;
+        let mut fields = removed.split('\0');
+        let mut blobs = BTreeSet::new();
+        while let (Some(entry), Some(path)) = (fields.next(), fields.next()) {
+            let gone = std::fs::symlink_metadata(dir.join(path)).is_err();
+            if blobs.len() < MOVES_LOOKED_FOR && gone && entry.starts_with(":100") {
+                blobs.extend(entry.split(' ').nth(2));
+            }
+        }
+        if blobs.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let mut sizes = BTreeSet::new();
+        for blob in &blobs {
+            if let Ok(size) = self.run(dir, &["cat-file", "-s", blob]).await {
+                sizes.extend(size.parse::<u64>());
+            }
+        }
+        // Only a file as long as one that went can be it, so a folder of thousands of new
+        // files costs a look at each one's size and no more.
+        let mut moved = BTreeSet::new();
+        for path in new {
+            let same_size = std::fs::symlink_metadata(dir.join(path))
+                .is_ok_and(|meta| meta.is_file() && sizes.contains(&meta.len()));
+            if !same_size {
+                continue;
+            }
+            let args = ["hash-object", "--", path];
+            if blobs.contains(self.run(dir, &args).await?.as_str()) {
+                moved.insert(path.clone());
+            }
+        }
+        Ok(moved)
+    }
+
+    /// New files nobody claimed, each named by its top folder when that folder is new and
+    /// nothing claimed sits in it: the whole folder stayed out, so it's told once, however
+    /// many files it holds.
+    async fn unclaimed(
+        &self,
+        dir: &Path,
+        paths: impl Iterator<Item = String>,
+        claims: &Claims,
+    ) -> Result<Vec<LeftOut>, GitError> {
+        let mut whole_folders: HashMap<String, bool> = HashMap::new();
+        let mut left_out = Vec::new();
+        for path in paths {
+            let top = path.split_once('/').map(|(top, _)| top.to_owned());
+            let mut because = path.clone();
+            if let Some(top) = top {
+                let folder = format!("{top}/");
+                let whole = match whole_folders.get(&folder) {
+                    Some(whole) => *whole,
+                    None => {
+                        let whole =
+                            !claims.reach_into(&folder) && !self.is_tracked(dir, &top).await?;
+                        whole_folders.insert(folder.clone(), whole);
+                        whole
+                    }
+                };
+                if whole {
+                    because = folder;
+                }
+            }
+            left_out.push(LeftOut {
+                path,
+                because,
+                why: LeftOutWhy::Unclaimed,
+            });
         }
         Ok(left_out)
     }
@@ -320,7 +714,11 @@ impl Git {
                 } else {
                     found.path
                 };
-                left_out.push(LeftOut { path, because });
+                left_out.push(LeftOut {
+                    path,
+                    because,
+                    why: LeftOutWhy::BuildOutput,
+                });
                 break;
             }
         }
@@ -441,6 +839,39 @@ impl Git {
     pub async fn review_diff(&self, dir: &Path, from: &str, to: &str) -> Result<String, GitError> {
         self.diff_with(dir, &["--function-context"], from, to, &[])
             .await
+    }
+
+    /// The whole change in a worktree since `from`, files not yet added included, as a
+    /// reviewer reads it while the session that makes it still works. A throwaway index at
+    /// `index` leaves the worktree's own index alone.
+    pub async fn working_diff(
+        &self,
+        dir: &Path,
+        from: &str,
+        index: &Path,
+    ) -> Result<String, GitError> {
+        let index = index.to_string_lossy();
+        let env = [("GIT_INDEX_FILE", index.as_ref())];
+        for args in [&["read-tree", "HEAD"][..], &["add", "-A"][..]] {
+            let out = self.output(dir, args, &env).await?;
+            if !out.status.success() {
+                return Err(failed(args, &out));
+            }
+        }
+        let args = [
+            "diff",
+            "--cached",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--function-context",
+            from,
+        ];
+        let out = self.output(dir, &args, &env).await?;
+        if !out.status.success() {
+            return Err(failed(&args, &out));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     /// `paths` follows the two revisions: `--` and pathspecs, or nothing for every file.
@@ -577,7 +1008,11 @@ impl Git {
     ) -> Result<Output, GitError> {
         let mut command = Command::new("git");
         command.arg("-C").arg(dir);
-        if let Some(bound) = &self.bound {
+        let hidden = self
+            .hidden
+            .as_deref()
+            .filter(|hidden| hidden.work_tree == dir);
+        if let Some(bound) = self.bound.as_ref().or(hidden) {
             command
                 .arg(flag_with_path("--git-dir=", &bound.git_dir))
                 .arg(flag_with_path("--work-tree=", &bound.work_tree));
@@ -874,16 +1309,18 @@ impl Git {
 
     /// Stages everything and commits the merge in progress, even when its tree equals HEAD's.
     pub async fn finish_merge(&self, worktree: &Path, message: &str) -> Result<String, GitError> {
-        Ok(self.finish_merge_work(worktree, message).await?.0)
+        Ok(self.finish_merge_work(worktree, message, None).await?.0)
     }
 
-    /// [`Git::finish_merge`], saying which untracked files it left out as build output.
+    /// [`Git::finish_merge`], taking of the new files what [`Git::commit_claimed`] takes, and
+    /// saying which it left out.
     pub async fn finish_merge_work(
         &self,
         worktree: &Path,
         message: &str,
+        claims: Option<&Claims>,
     ) -> Result<(String, Vec<LeftOut>), GitError> {
-        let left_out = self.stage_all(worktree).await?;
+        let left_out = self.stage_all(worktree, claims).await?;
         let identity = self.identity_env(worktree).await;
         let commit = [
             "commit",
@@ -1211,6 +1648,75 @@ mod tests {
         assert_eq!(parse_numstat(""), DiffStat::default());
     }
 
+    /// A folder with no git works through a history kept elsewhere: commits and worktrees
+    /// come from it, a merge writes the folder, and the folder never gets a `.git`.
+    #[tokio::test]
+    async fn a_folder_without_git_works_through_its_hidden_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let (folder, hidden) = (root.join("folder"), root.join("history.git"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("notes.md"), "one\n").unwrap();
+        let made = std::process::Command::new("git")
+            .args(["init", "--quiet", "--bare", "--template="])
+            .arg(&hidden)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        std::fs::write(hidden.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        assert!(
+            git().head_commit(&folder).await.is_err(),
+            "no git in the folder"
+        );
+        let git = git().with_hidden(folder.clone(), hidden.clone());
+        let base = git
+            .commit_all(&folder, "the folder")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            git.current_branch(&folder).await.unwrap().as_deref(),
+            Some("main")
+        );
+
+        let tree = root.join("worktrees/task");
+        git.add_worktree(&folder, &tree, "argonauts/run/task", &base)
+            .await
+            .unwrap();
+        std::fs::write(tree.join("notes.md"), "two\n").unwrap();
+        std::fs::write(tree.join("new.txt"), "new\n").unwrap();
+        let work = git.commit_all(&tree, "work").await.unwrap().unwrap();
+        // Bound to the worktree's own git folder, as the engine does before an agent runs.
+        let own = git.absolute_git_dir(&tree).await.unwrap();
+        assert!(own.starts_with(&hidden), "{}", own.display());
+        assert!(
+            git.bound_to(own, tree.clone())
+                .is_clean(&tree)
+                .await
+                .unwrap()
+        );
+
+        std::fs::write(folder.join("mine.txt"), "yours stays\n").unwrap();
+        assert!(
+            git.in_the_way(&folder, &base, &work)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(git.fast_forward(&folder, &work).await.unwrap());
+        assert_eq!(
+            std::fs::read_to_string(folder.join("notes.md")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(folder.join("new.txt")).unwrap(),
+            "new\n"
+        );
+        assert!(folder.join("mine.txt").is_file());
+        assert!(!folder.join(".git").exists());
+    }
+
     #[tokio::test]
     async fn reads_repository_state() {
         let repo = TestRepo::new();
@@ -1525,6 +2031,75 @@ mod tests {
         );
     }
 
+    /// Before a first commit your index lists every file you staged as a change, and never
+    /// held the snapshot a run started from. So what's in the way is found by comparing the
+    /// files themselves with that snapshot.
+    #[tokio::test]
+    async fn before_a_first_commit_only_files_that_differ_from_the_snapshot_are_in_the_way() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("store.rs", "fn get() {}\n");
+        repo.write("old.rs", "fn old() {}\n");
+        repo.write("notes.md", "mine\n");
+        repo.git(&["add", "--all"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.git(&["checkout", "-qb", "run"]);
+        repo.write("store.rs", "fn get() {}\nfn put() {}\n");
+        repo.git(&["mv", "old.rs", "older.rs"]);
+        repo.git(&["commit", "-qam", "run"]);
+        let run = git.head_commit(&repo.root).await.unwrap().unwrap();
+
+        // Your files as the run found them, with nothing on your branch and all of it staged.
+        repo.git(&["checkout", "-q", "main"]);
+        let tree = git.tree_of(&repo.root, "HEAD").await.unwrap();
+        let snapshot = repo.git(&["commit-tree", &tree, "-m", "your files"]);
+        let snapshot = snapshot.trim();
+        repo.git(&["update-ref", "refs/argonauts/run-01/base", snapshot]);
+        repo.git(&["update-ref", "-d", "refs/heads/main"]);
+        assert_eq!(git.head_commit(&repo.root).await.unwrap(), None);
+        let kept = git.ref_commit(&repo.root, "refs/argonauts/run-01/base");
+        assert_eq!(kept.await.unwrap().as_deref(), Some(snapshot));
+        let none = git.ref_commit(&repo.root, "refs/argonauts/run-02/base");
+        assert_eq!(none.await.unwrap(), None);
+
+        let scratch = repo.root.join(".git/in-the-way.index");
+        let in_the_way = || git.differing_in_the_way(&repo.root, &scratch, snapshot, &run);
+        assert!(in_the_way().await.unwrap().is_empty());
+        repo.write("notes.md", "mine, edited\n");
+        assert!(
+            in_the_way().await.unwrap().is_empty(),
+            "an edit to a file the run leaves alone rides along"
+        );
+        repo.write("store.rs", "fn get() { todo!() }\n");
+        std::fs::remove_file(repo.root.join("old.rs")).unwrap();
+        assert_eq!(in_the_way().await.unwrap(), ["old.rs", "store.rs"]);
+        assert!(!scratch.exists());
+
+        let landing = repo.root.join(".git/landing.index");
+        assert!(
+            git.write_files(&repo.root, &landing, snapshot, &run, &[])
+                .await
+                .is_err()
+        );
+        repo.write("store.rs", "fn get() {}\n");
+        repo.write("old.rs", "fn old() {}\n");
+        let written = || git.holds_change(&repo.root, &scratch, snapshot, &run);
+        assert!(!written().await.unwrap());
+        git.write_files(&repo.root, &landing, snapshot, &run, &[])
+            .await
+            .unwrap();
+        assert!(repo.root.join("older.rs").exists() && !repo.root.join("old.rs").exists());
+        assert_eq!(git.head_commit(&repo.root).await.unwrap(), None);
+
+        // Written once, the run's own work is told from an edit of yours in its way.
+        assert!(written().await.unwrap());
+        repo.write("old.rs", "fn old() {}\n");
+        assert!(!written().await.unwrap(), "a file it removes is back");
+        std::fs::remove_file(repo.root.join("old.rs")).unwrap();
+        repo.write("store.rs", "fn get() { todo!() }\n");
+        assert!(!written().await.unwrap(), "a file it wrote was edited");
+    }
+
     /// The review's probe: folders named like build output that hold source, and a 3D model,
     /// all go into the commit, and each left-out file says why.
     #[tokio::test]
@@ -1559,9 +2134,354 @@ mod tests {
             committed.left_out,
             [LeftOut {
                 path: "textkit/__pycache__/steps.cpython-312.pyc".into(),
-                because: "textkit/__pycache__/".into()
+                because: "textkit/__pycache__/".into(),
+                why: LeftOutWhy::BuildOutput,
             }]
         );
+    }
+
+    /// The sample run's commit, without a list of file types: the agent's edit tool wrote one
+    /// file and its report lists another, and its tests left bytecode and a cache beside
+    /// them. Only what it claimed is committed, with every change to a tracked file.
+    #[tokio::test]
+    async fn a_commit_takes_tracked_changes_and_only_the_new_files_an_agent_claimed() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("textkit/__init__.py", "");
+        git.commit_all(&repo.root, "start").await.unwrap();
+
+        repo.write("README.md", "# Changed\n");
+        repo.write("textkit/steps.py", "def steps(): ...\n");
+        repo.write("textkit/gen/schema.py", "SCHEMA = {}\n");
+        repo.write("textkit/__pycache__/steps.cpython-312.pyc", "bytecode");
+        repo.write(".pytest_cache/v/cache/lastfailed", "{}");
+        repo.write(".pytest_cache/README.md", "cache");
+        repo.write("coverage.xml", "<coverage/>");
+
+        let mut claims = Claims::default();
+        // An edit tool names the file by its full path, and a report by its path in the repo.
+        claims.add(
+            &repo.root,
+            &repo.root.join("textkit/steps.py").to_string_lossy(),
+        );
+        claims.add(&repo.root, "textkit/gen/");
+        for nothing in [".", "/", "../elsewhere.py", "/etc/passwd", ""] {
+            claims.add(&repo.root, nothing);
+        }
+        assert!(claims.covers("textkit/steps.py") && claims.covers("textkit/gen/schema.py"));
+        assert!(!claims.covers("coverage.xml") && !claims.covers("README.md"));
+
+        let committed = git
+            .commit_claimed(&repo.root, "work", Some(&claims))
+            .await
+            .unwrap();
+        let sha = committed.sha.unwrap();
+        let mut files = git
+            .changed_paths(&repo.root, &format!("{sha}~1"), &sha)
+            .await
+            .unwrap();
+        files.sort();
+        assert_eq!(
+            files,
+            ["README.md", "textkit/gen/schema.py", "textkit/steps.py"]
+        );
+        assert!(
+            committed
+                .left_out
+                .iter()
+                .all(|left| left.why == LeftOutWhy::Unclaimed)
+        );
+        let told: BTreeSet<&str> = committed
+            .left_out
+            .iter()
+            .map(|left| left.because.as_str())
+            .collect();
+        assert_eq!(
+            told.into_iter().collect::<Vec<_>>(),
+            [
+                // A new folder nothing claimed is named once, whatever it holds.
+                ".pytest_cache/",
+                "coverage.xml",
+                // A folder the repo tracks names the file, never the whole folder.
+                "textkit/__pycache__/steps.cpython-312.pyc",
+            ]
+        );
+        // What stayed out is still there for the next session and the checks.
+        assert!(repo.root.join("coverage.xml").exists());
+        assert!(repo.root.join(".pytest_cache/README.md").exists());
+
+        // Nothing that stayed out was hashed on the way, so a folder of thousands of files a
+        // command left behind costs the repository nothing.
+        let id = repo.git(&["hash-object", "coverage.xml"]);
+        let stored = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.root)
+            .args(["cat-file", "-e", id.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!stored.success(), "coverage.xml reached the object store");
+
+        // Without claims every new file goes in, as `commit.unclaimed = "keep"` asks.
+        let kept = git.commit_claimed(&repo.root, "all", None).await.unwrap();
+        assert!(kept.sha.is_some() && kept.left_out.is_empty());
+    }
+
+    /// A file a command moved keeps its place in the commit: no edit tool wrote the new
+    /// name, but it holds the bytes of the tracked file that went. A file with other bytes
+    /// beside it is still nobody's.
+    /// `commit.always_keep` names files a tool outside the agent's view makes and the project
+    /// needs. They go in whoever made them, and what sits beside them is still sorted.
+    #[tokio::test]
+    async fn files_the_settings_always_keep_are_committed_whoever_made_them() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("Assets/Player.cs", "class Player {}\n");
+        repo.write("Assets/Player.cs.meta", "guid: 1\n");
+        repo.write("Assets/Editor.log", "noise\n");
+        repo.write("Library/cache.bin", "cache");
+
+        let mut claims = Claims::default().always_keeping(&["*.META".to_owned()]);
+        claims.add(&repo.root, "Assets/Player.cs");
+        let committed = git
+            .commit_claimed(&repo.root, "work", Some(&claims))
+            .await
+            .unwrap();
+        let sha = committed.sha.unwrap();
+        let mut files = git
+            .changed_paths(&repo.root, &format!("{sha}~1"), &sha)
+            .await
+            .unwrap();
+        files.sort();
+        assert_eq!(files, ["Assets/Player.cs", "Assets/Player.cs.meta"]);
+        let told: Vec<&str> = committed
+            .left_out
+            .iter()
+            .map(|left| left.because.as_str())
+            .collect();
+        // `Assets/` holds kept files, so only the file is named there.
+        assert_eq!(told, ["Assets/Editor.log", "Library/"]);
+    }
+
+    /// A size and never a type: a new file over the cap stays out even when an agent claimed
+    /// it, and is named with its size. What `.gitattributes` gives to Git LFS is exempt.
+    #[tokio::test]
+    async fn a_new_file_over_the_size_cap_is_left_out_and_named_with_its_size() {
+        let repo = TestRepo::new();
+        let git = git().capping_new_files(1);
+        repo.write(".gitattributes", "*.psd filter=lfs\n");
+        git.commit_all(&repo.root, "attributes").await.unwrap();
+        let big = "x".repeat(2 * 1024 * 1024);
+        repo.write("model.bin", &big);
+        repo.write("art/cover.psd", &big);
+        repo.write("notes.md", "small\n");
+
+        let mut claims = Claims::default();
+        for claimed in ["model.bin", "art/cover.psd", "notes.md"] {
+            claims.add(&repo.root, claimed);
+        }
+        let committed = git
+            .commit_claimed(&repo.root, "work", Some(&claims))
+            .await
+            .unwrap();
+        let sha = committed.sha.unwrap();
+        let mut files = git
+            .changed_paths(&repo.root, &format!("{sha}~1"), &sha)
+            .await
+            .unwrap();
+        files.sort();
+        assert_eq!(files, ["art/cover.psd", "notes.md"]);
+        let [left] = committed.left_out.as_slice() else {
+            panic!("{:?}", committed.left_out);
+        };
+        assert_eq!(left.why, LeftOutWhy::TooBig);
+        assert_eq!(left.because, "model.bin (2 MB)");
+        assert!(repo.root.join("model.bin").exists());
+
+        // With no claims every new file goes in, and the cap still holds.
+        let kept = git.commit_work(&repo.root, "all of it").await.unwrap();
+        assert_eq!(kept.sha, None);
+        assert_eq!(kept.left_out.len(), 1);
+    }
+
+    /// An agent ran `git add -A` and committed: its work, what a command generated, and the
+    /// bytecode its tests left. The sort takes the unclaimed files back out of the index and
+    /// the next commit out of the branch, and all of them stay in the tree.
+    #[tokio::test]
+    async fn what_a_commit_swept_in_unclaimed_is_taken_back_out_and_stays_on_disk() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("textkit/__init__.py", "");
+        repo.write("textkit/old.py", "def old(): ...\n");
+        git.commit_all(&repo.root, "start").await.unwrap();
+
+        repo.write("textkit/steps.py", "def steps(): ...\n");
+        repo.write("textkit/__pycache__/steps.cpython-312.pyc", "bytecode");
+        repo.write(".coverage", "data");
+        repo.git(&["mv", "textkit/old.py", "textkit/older.py"]);
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "the agent's own"]);
+        let own = git.head_commit(&repo.root).await.unwrap().unwrap();
+        // Changed since its commit, which a plain `git rm --cached` refuses.
+        repo.write(".coverage", "data, again");
+
+        let mut claims = Claims::default();
+        claims.add(&repo.root, "textkit/steps.py");
+        git.unstage_left_out(&repo.root, std::slice::from_ref(&own), Some(&claims))
+            .await
+            .unwrap();
+        let committed = git
+            .commit_claimed(&repo.root, "the conductor's", Some(&claims))
+            .await
+            .unwrap();
+        let sha = committed.sha.unwrap();
+
+        let held = repo.git(&["ls-tree", "-r", "--name-only", &sha]);
+        let held: Vec<&str> = held.lines().collect();
+        assert_eq!(
+            held,
+            [
+                "README.md",
+                "textkit/__init__.py",
+                // Moved from a tracked name, so it was never new.
+                "textkit/older.py",
+                "textkit/steps.py"
+            ]
+        );
+        let told: BTreeSet<&str> = committed
+            .left_out
+            .iter()
+            .map(|left| left.path.as_str())
+            .collect();
+        assert_eq!(
+            told.into_iter().collect::<Vec<_>>(),
+            [".coverage", "textkit/__pycache__/steps.cpython-312.pyc"]
+        );
+        for kept in [".coverage", "textkit/__pycache__/steps.cpython-312.pyc"] {
+            assert!(repo.root.join(kept).exists(), "{kept} left the tree");
+        }
+        assert_eq!(
+            std::fs::read_to_string(repo.root.join(".coverage")).unwrap(),
+            "data, again"
+        );
+    }
+
+    /// Whoever made a new file, a commit leaves it out when it's too big or the leave-out
+    /// settings name it. An agent's own commit is sorted the same way, claims or none, and
+    /// a file the settings name in a folder the repository already tracks goes back in.
+    #[tokio::test]
+    async fn what_a_commit_swept_in_too_big_or_left_out_is_taken_back_out() {
+        let repo = TestRepo::new();
+        let git = git()
+            .capping_new_files(1)
+            .leaving_out(false, &["dist/".to_owned()]);
+        repo.write("web/dist/keep.txt", "the project's own\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "start"]);
+
+        repo.write("model.bin", &"x".repeat(2 * 1024 * 1024));
+        repo.write("dist/app.js", "built\n");
+        repo.write("web/dist/more.txt", "also the project's\n");
+        repo.write("src/app.rs", "fn app() {}\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "the agent's own"]);
+        let own = git.head_commit(&repo.root).await.unwrap().unwrap();
+
+        git.unstage_left_out(&repo.root, std::slice::from_ref(&own), None)
+            .await
+            .unwrap();
+        let committed = git
+            .commit_claimed(&repo.root, "the conductor's", None)
+            .await
+            .unwrap();
+        let sha = committed.sha.unwrap();
+        let held = repo.git(&["ls-tree", "-r", "--name-only", &sha]);
+        let held: Vec<&str> = held.lines().collect();
+        assert_eq!(
+            held,
+            [
+                "README.md",
+                "src/app.rs",
+                "web/dist/keep.txt",
+                "web/dist/more.txt"
+            ]
+        );
+        let mut told: Vec<(&str, LeftOutWhy)> = committed
+            .left_out
+            .iter()
+            .map(|left| (left.path.as_str(), left.why))
+            .collect();
+        told.sort_by_key(|(path, _)| *path);
+        assert_eq!(
+            told,
+            [
+                ("dist/app.js", LeftOutWhy::BuildOutput),
+                ("model.bin", LeftOutWhy::TooBig)
+            ]
+        );
+        assert!(repo.root.join("model.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn a_file_moved_by_a_command_goes_in_under_its_new_name() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("old/steps.py", "def steps(): ...\n");
+        repo.write("keep.py", "kept = True\n");
+        git.commit_all(&repo.root, "start").await.unwrap();
+
+        std::fs::create_dir_all(repo.root.join("lib")).unwrap();
+        std::fs::rename(
+            repo.root.join("old/steps.py"),
+            repo.root.join("lib/steps.py"),
+        )
+        .unwrap();
+        repo.write("lib/steps.pyc", "def steps(): !!!\n");
+
+        let claims = Claims::default();
+        let left = git.unclaimed_files(&repo.root, &claims).await.unwrap();
+        let named: Vec<&str> = left.iter().map(|left| left.because.as_str()).collect();
+        assert_eq!(named, ["lib/steps.pyc"], "read without staging anything");
+        assert_eq!(repo.git(&["diff", "--cached", "--name-only"]).trim(), "");
+
+        let committed = git
+            .commit_claimed(&repo.root, "move", Some(&claims))
+            .await
+            .unwrap();
+        let sha = committed.sha.unwrap();
+        let changed = repo.git(&["show", "--name-status", "--no-renames", "--format=", &sha]);
+        assert_eq!(changed, "A\tlib/steps.py\nD\told/steps.py");
+        assert_eq!(committed.left_out.len(), 1);
+    }
+
+    /// Checks run on the run's branch with a merge staged, and what they leave there is
+    /// nobody's work. The merge commit takes what the two sides committed.
+    #[tokio::test]
+    async fn a_merge_finished_with_no_claims_takes_no_file_a_check_left_behind() {
+        let repo = TestRepo::new();
+        let git = git();
+        repo.write("main.py", "print('main')\n");
+        git.commit_all(&repo.root, "start").await.unwrap();
+        repo.git(&["checkout", "-q", "-b", "task"]);
+        repo.write("side.py", "print('side')\n");
+        git.commit_all(&repo.root, "task").await.unwrap();
+        repo.git(&["checkout", "-q", "-"]);
+
+        let staged = git.merge_staged(&repo.root, "task", false).await.unwrap();
+        assert_eq!(staged, StagedMerge::Staged);
+        repo.write("__pycache__/main.cpython-312.pyc", "bytecode");
+        let (sha, left_out) = git
+            .finish_merge_work(&repo.root, "merge task", Some(&Claims::default()))
+            .await
+            .unwrap();
+        assert_eq!(
+            git.changed_paths(&repo.root, &format!("{sha}~1"), &sha)
+                .await
+                .unwrap(),
+            ["side.py"]
+        );
+        assert_eq!(left_out.len(), 1);
+        assert!(repo.root.join("__pycache__/main.cpython-312.pyc").exists());
     }
 
     /// The review's probe: a folder the repo keeps files in is its own, and build output
@@ -1697,7 +2617,7 @@ mod tests {
         );
         assert!(git.diff(&tree, &base, &sha).await.unwrap().contains("+hi"));
 
-        git.merge(&repo.root, &sha, "Merge the card").await.unwrap();
+        git.merge(&repo.root, &sha, "Merge the task").await.unwrap();
         assert_eq!(git.head_commit(&repo.root).await.unwrap().unwrap(), sha);
         assert!(repo.root.join("hello.txt").exists());
 
@@ -1724,7 +2644,7 @@ mod tests {
         repo.git(&["commit", "--quiet", "-am", "ours"]);
 
         let err = git
-            .merge(&repo.root, "card", "Merge card")
+            .merge(&repo.root, "card", "Merge task")
             .await
             .unwrap_err();
         assert!(matches!(err, GitError::Failed { .. }));
@@ -1944,10 +2864,10 @@ mod tests {
             .await
             .unwrap();
         std::fs::write(tree.join("a.txt"), "a\n").unwrap();
-        let card = git.commit_all(&tree, "card work").await.unwrap().unwrap();
+        let card = git.commit_all(&tree, "task work").await.unwrap().unwrap();
 
         let MergeOutcome::Merged(merge) = git
-            .merge_no_ff(&repo.root, "card", "Merge card-001")
+            .merge_no_ff(&repo.root, "card", "Merge task-001")
             .await
             .unwrap()
         else {
@@ -1958,7 +2878,7 @@ mod tests {
         assert_eq!(parents, format!("{base} {card}"));
         assert_eq!(
             repo.git(&["log", "-1", "--format=%s", &merge]),
-            "Merge card-001"
+            "Merge task-001"
         );
     }
 
@@ -1978,7 +2898,7 @@ mod tests {
         let head = git.head_commit(&repo.root).await.unwrap().unwrap();
 
         let outcome = git
-            .merge_no_ff(&repo.root, "card", "Merge card")
+            .merge_no_ff(&repo.root, "card", "Merge task")
             .await
             .unwrap();
         assert_eq!(
@@ -2081,7 +3001,7 @@ mod tests {
         assert!(!repo.root.join("a.txt").exists());
 
         git.merge_staged(&repo.root, "card", false).await.unwrap();
-        let merge = git.finish_merge(&repo.root, "Merge card").await.unwrap();
+        let merge = git.finish_merge(&repo.root, "Merge task").await.unwrap();
         assert_eq!(git.parents(&repo.root, &merge).await.unwrap(), [base, card]);
         assert_eq!(
             git.merge_staged(&repo.root, "card", false).await.unwrap(),

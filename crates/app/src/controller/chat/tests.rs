@@ -21,7 +21,6 @@ use time::OffsetDateTime;
 
 use crate::app_settings::AppSettings;
 use crate::chat_store::ChatStore;
-use crate::choices::JUST_ASKING;
 use crate::controller::chat::{self, ChatState};
 use crate::controller::test_support::{Harness, HarnessOptions, TestCtx, WAIT};
 use crate::controller::{Effect, Internal};
@@ -158,6 +157,30 @@ async fn hi_answers_and_nothing_starts() {
 }
 
 #[tokio::test]
+async fn a_turns_spend_goes_to_the_usage_ledger_when_it_ends() {
+    let mut harness = Harness::start().await;
+    let spent = argonauts_core::Spend {
+        input_tokens: 5000,
+        output_tokens: 300,
+        cached_tokens: 4000,
+        cost_usd: 0.12,
+        ..argonauts_core::Spend::default()
+    };
+    harness
+        .agent
+        .push(answer("Hi. Ask me anything about this repo.").with_spend(spent));
+    harness.submit("hi").await;
+    turn_done(&mut harness).await;
+    let ledger =
+        crate::usage_ledger::UsageLedger::new(&argonauts_core::Paths::new(harness.repo.home()));
+    let lines = ledger.read_since(None);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].spent(), spent);
+    assert_eq!(lines[0].run, None);
+    harness.exit().await;
+}
+
+#[tokio::test]
 async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
     let mut harness = Harness::start().await;
     harness.agent.push(reply(
@@ -175,7 +198,7 @@ async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
     assert!(
         choice
             .title
-            .starts_with("This could be a change request. Start work on it? Triage would pick "),
+            .starts_with("This could be a change request. Start work on it? Argonauts would pick "),
         "{}",
         choice.title
     );
@@ -198,7 +221,7 @@ async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
         });
     assert!(matches!(unclear, Some((Some(_), true))), "{unclear:?}");
 
-    // Esc sets it aside; it stays answerable.
+    // Esc goes on without you: the answer stands and nothing starts.
     harness
         .send(UiCommand::SetAside {
             to: AnswerTarget::Choice {
@@ -206,7 +229,6 @@ async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
             },
         })
         .await;
-    harness.send(answer_choice(choice.id.clone(), "no")).await;
     let closed = harness
         .until(|event| matches!(event, AppEvent::ChoiceClosed { .. }))
         .await;
@@ -214,7 +236,7 @@ async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
         closed,
         AppEvent::ChoiceClosed {
             id: choice.id.clone(),
-            outcome: JUST_ASKING.to_owned()
+            outcome: "No · nothing started".to_owned()
         }
     );
     harness.send(answer_choice(choice.id, "solo")).await;
@@ -231,12 +253,12 @@ async fn an_unclear_request_offers_start_work_and_n_starts_nothing() {
 /// whose lead then designs its workflow. A question is still just answered, and `/solo` still
 /// runs one task solo.
 #[tokio::test]
-async fn all_hands_sends_every_change_to_the_crew() {
-    let all_hands = || HarnessOptions {
+async fn ultracode_sends_every_change_to_the_crew() {
+    let ultracode = || HarnessOptions {
         prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
             std::fs::write(
                 repo.global_config(),
-                "[triage]\nall_hands = true\n[solo]\nstyle = \"checked\"\n",
+                "ultracode = true\n[solo]\nkind = \"checked\"\n",
             )
             .unwrap();
         })),
@@ -251,7 +273,7 @@ async fn all_hands_sends_every_change_to_the_crew() {
         "tests_exist": true,
         "unknowns": []
     });
-    let mut harness = Harness::start_with(all_hands()).await;
+    let mut harness = Harness::start_with(ultracode()).await;
     harness.agent.push(answer("Hi."));
     harness.submit("hi").await;
     turn_done(&mut harness).await;
@@ -277,11 +299,11 @@ async fn all_hands_sends_every_change_to_the_crew() {
     let triage = start.triage.expect("the triage decision");
     assert_eq!(
         (triage.rule.as_str(), triage.reason.as_str()),
-        ("all_hands", "All hands is on")
+        ("ultracode", "Ultracode is on")
     );
     harness.exit().await;
 
-    let harness = Harness::start_with(all_hands()).await;
+    let harness = Harness::start_with(ultracode()).await;
     harness
         .send(UiCommand::Slash {
             command: SlashCommand::Solo {
@@ -300,7 +322,7 @@ async fn all_hands_sends_every_change_to_the_crew() {
 pub(crate) fn checked_solo() -> HarnessOptions {
     HarnessOptions {
         prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
-            std::fs::write(repo.global_config(), "[solo]\nstyle = \"checked\"\n").unwrap();
+            std::fs::write(repo.global_config(), "[solo]\nkind = \"checked\"\n").unwrap();
         })),
         ..HarnessOptions::default()
     }
@@ -394,7 +416,7 @@ async fn forced_runs_and_triaged_changes_carry_what_start_needs() {
         prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
             std::fs::write(
                 repo.global_config(),
-                "[triage]\nread_instructions = false\n",
+                "[solo_or_crew]\nread_instructions = false\n",
             )
             .unwrap();
         })),
@@ -586,8 +608,11 @@ async fn turn_two_resumes_turn_ones_vendor_session() {
 }
 
 #[tokio::test]
-async fn a_fresh_session_is_primed_with_the_chat_so_far() {
-    let (mut parts, _) = TestCtx::new(HarnessOptions::default());
+async fn a_session_that_cant_resume_is_primed_with_the_chat_so_far() {
+    let (mut parts, _) = TestCtx::new(HarnessOptions {
+        flags: vec!["sessions.chat_resumes=false".to_owned()],
+        ..HarnessOptions::default()
+    });
     let mut chat = ChatState::new(&parts.ctx).unwrap();
     parts
         .agent
@@ -596,7 +621,6 @@ async fn a_fresh_session_is_primed_with_the_chat_so_far() {
         .agent
         .push(answer("Nine files.").with_vendor_session("v-2"));
     run_turn(&mut parts, &mut chat, "how do we add rate limiting?").await;
-    chat::fresh_session(&mut parts.ctx, &mut chat).unwrap();
     run_turn(&mut parts, &mut chat, "how many files?").await;
     let specs = parts.agent.specs();
     assert_eq!(specs[1].resume, None);
@@ -608,6 +632,17 @@ async fn a_fresh_session_is_primed_with_the_chat_so_far() {
         primer.text
     );
     assert!(primer.text.contains("Use a middleware."), "{}", primer.text);
+    let store = ChatStore::open(
+        &parts.env.chat_dir(),
+        &argonauts_core::names::ChatId::numbered(1),
+    );
+    assert!(
+        primer
+            .text
+            .contains(&store.journal_path().display().to_string()),
+        "{}",
+        primer.text
+    );
 }
 
 async fn run_turn(parts: &mut TestCtx, chat: &mut ChatState, text: &str) {
@@ -762,13 +797,13 @@ fn out_of_quota(vendor: &str) -> QuotaReading {
 
 fn with_codex_fallback() -> HarnessOptions {
     HarnessOptions {
-        flags: vec![r#"roles.default.handoff.fallback=["codex"]"#.to_owned()],
+        flags: vec![r#"fallback.main.order=["codex"]"#.to_owned()],
         ..HarnessOptions::default()
     }
 }
 
 #[tokio::test]
-async fn an_out_default_agent_hands_the_request_to_its_fallback() {
+async fn an_out_main_agent_hands_the_request_to_its_fallback() {
     let mut harness = Harness::start_with(with_codex_fallback()).await;
     let codex = harness
         .directory

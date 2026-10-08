@@ -1,7 +1,7 @@
 //! Who carries on when a session ends for a vendor reason. A vendor error never
 //! ends a run, in any mode: the same agent goes again once after a short wait when the failure
-//! may pass, then its seat goes to the next agent on its handoff list, and only when nobody can
-//! take it does the run park, saying why and what fixes it. An agent whose CLI says it's logged
+//! may pass, with a line that says so, then its seat goes to the next agent on its handoff list,
+//! and only when nobody can take it does the run park, saying why and what fixes it. An agent whose CLI says it's logged
 //! out, or whose vendor is down or out of quota, is out: its seats go straight to a stand-in
 //! until its CLI says it's logged in again or its vendor is back. Each handover is said once.
 //! A blind role's session keeps your plugins out, so only an agent whose CLI can do the same
@@ -65,13 +65,15 @@ impl Seat {
 pub(crate) struct Memory {
     /// What each agent's CLI said of its login when last asked.
     logins: BTreeMap<WorkerRef, Login>,
-    /// Seats stand-ins took, so two seats of one step never go to the same agent.
+    /// Seats stand-ins took, and seats their own agents hold, so two seats of one step never
+    /// go to the same agent.
     taken: Vec<Taken>,
     /// Handovers already said, from whom to whom, so a repeat says nothing new.
     said: BTreeSet<(WorkerRef, WorkerRef)>,
 }
 
-/// A seat a stand-in took: where, whose it was, and who took it.
+/// A seat a stand-in took: where, whose it was, and who took it. A seat its own agent holds
+/// names that agent as both.
 #[derive(Debug, Clone)]
 struct Taken {
     seat: Seat,
@@ -98,6 +100,8 @@ impl Memory {
 enum Why {
     /// Its session ended for this reason.
     Ended(EndReason),
+    /// Its session ended for this reason again, after the retry that was said.
+    EndedAgain(EndReason),
     /// Its CLI says it's logged out, after its session ended for this reason when it had one.
     LoggedOut(Option<EndReason>),
     /// Its vendor is down or out of quota, in words.
@@ -120,6 +124,62 @@ pub(crate) async fn instead_of(
         return Ok(None);
     };
     take_over(host, seat, asked, asked, &[asked], &why).map(Some)
+}
+
+/// Whether `worker` is out before a session of its own starts: its CLI says it's logged out,
+/// or its provider is down or its plan ran out.
+pub(crate) async fn is_out(host: &Host, worker: &WorkerRef) -> bool {
+    is_logged_out(host, worker).await || unusable(host, worker).is_some()
+}
+
+/// Notes that `holder` has `seat` as its own from the step's start, before a session of its own
+/// shows it. A step that asks several agents at once holds each one's seat first, so none
+/// takes another's beside its own and does the same work twice.
+pub(crate) fn hold(host: &Host, seat: &Seat, holder: &WorkerRef) {
+    let mut memory = lock(&host.shared().stand_ins);
+    let held = memory
+        .taken
+        .iter()
+        .any(|taken| taken.by == *holder && taken.asked == *holder && taken.seat.same_place(seat));
+    if !held {
+        memory.taken.push(Taken {
+            seat: seat.clone(),
+            asked: holder.clone(),
+            by: holder.clone(),
+        });
+    }
+}
+
+/// Up to `count` agents that take `seat`, `asked`'s, at once, beside those of `with` who have
+/// it already (`fallback.<role>.together`). Each is remembered in the seat, so no other seat
+/// of the step takes it. Fewer than `count` when fewer may take it, and none when the role's
+/// fallbacks wait.
+pub(crate) fn together(
+    host: &Host,
+    seat: &Seat,
+    asked: &WorkerRef,
+    with: &[&WorkerRef],
+    count: usize,
+) -> Vec<WorkerRef> {
+    let applied = rules::applied(host, seat.role, &asked.vendor());
+    if applied.mode == HandoffMode::Wait {
+        return Vec::new();
+    }
+    let mut memory = lock(&host.shared().stand_ins);
+    let listed = &applied.candidates;
+    let takers: Vec<WorkerRef> = candidates(host, seat, asked, listed, &[asked], None, &memory)
+        .into_iter()
+        .filter(|taker| !with.contains(&taker))
+        .take(count)
+        .collect();
+    for taker in &takers {
+        memory.taken.push(Taken {
+            seat: seat.clone(),
+            asked: asked.clone(),
+            by: taker.clone(),
+        });
+    }
+    takers
 }
 
 /// The next agent for `seat` once `from` ended for `reason`, after every one of `failed` did too,
@@ -161,6 +221,8 @@ pub(crate) async fn next(
     let reason = end_reason(record);
     let why = if is_logged_out(host, current).await {
         Why::LoggedOut(Some(reason))
+    } else if went_again(&failed, current, &reason) {
+        Why::EndedAgain(reason)
     } else {
         Why::Ended(reason)
     };
@@ -169,8 +231,9 @@ pub(crate) async fn next(
 
 /// The same agent again on the session of `record`, after `supervisor.retry_wait`, when its
 /// failure may pass and it had fewer than two tries since the run last resumed. A 401 its CLI's
-/// own login check contradicts was passing. After a resume, the asked agent starts over, since
-/// whatever stopped it may have been fixed meanwhile. `None` when it may not go again.
+/// own login check contradicts was passing. One line says it goes again, before the wait. After
+/// a resume, the asked agent starts over, since whatever stopped it may have been fixed
+/// meanwhile. `None` when it may not go again.
 pub(crate) async fn again(host: &Host, record: &SessionRecord) -> EngineResult<Option<WorkerRef>> {
     let failed = failures(host, record);
     if failed.is_empty() {
@@ -181,10 +244,64 @@ pub(crate) async fn again(host: &Host, record: &SessionRecord) -> EngineResult<O
     let logged_in = login_check(host, current, &reason).await;
     let tries = failed.iter().filter(|worker| **worker == current).count();
     if tries < 2 && reason.may_pass() && logged_in != Some(false) {
+        say_retry(host, record, &reason)?;
         wait(host).await?;
         return Ok(Some(current.clone()));
     }
     Ok(None)
+}
+
+/// What the line that says who takes over opens with, such as `Still unreachable`, when the
+/// session of `record` went again after a failure that might pass and ended the same way: the
+/// retry line came before it.
+pub(crate) fn still_out(host: &Host, record: &SessionRecord) -> Option<&'static str> {
+    let failed = failures(host, record);
+    let reason = end_reason(record);
+    went_again(&failed, &record.started.worker, &reason).then(|| passing_words(&reason).1)
+}
+
+/// Whether `current` was tried again on its session and stopped again for a `reason` that
+/// might pass.
+fn went_again(failed: &[&WorkerRef], current: &WorkerRef, reason: &EndReason) -> bool {
+    reason.may_pass() && failed.iter().filter(|worker| **worker == current).count() >= 2
+}
+
+/// `Opus 5.5 on Claude Code couldn't be reached · trying again in 5s`.
+fn say_retry(host: &Host, record: &SessionRecord, reason: &EndReason) -> EngineResult<()> {
+    let name = display_name(&record.started.worker);
+    let (stopped, _) = passing_words(reason);
+    let wait = &host.settings().supervisor.retry_wait;
+    let again = match wait.parse() {
+        Ok(Some(span)) if !span.is_zero() => format!("trying again in {}", wait.0.trim()),
+        _ => "trying again".to_owned(),
+    };
+    note(
+        host,
+        record.card.as_ref(),
+        format!("{name} {stopped} · {again}"),
+    )
+}
+
+/// A failure that may pass: what the agent did, for the retry line, and how the line after
+/// opens when the retry ended the same way.
+fn passing_words(reason: &EndReason) -> (&'static str, &'static str) {
+    const SIGN_IN: (&str, &str) = ("got a sign-in error", "Still a sign-in error");
+    const RATE: (&str, &str) = ("is rate limited", "Still rate limited");
+    match reason {
+        EndReason::Auth { .. } => SIGN_IN,
+        EndReason::RateLimited => RATE,
+        EndReason::StartFailed { .. } => ("couldn't start", "Still can't start"),
+        EndReason::VendorError { category, .. } => match category {
+            ErrorCategory::Auth => SIGN_IN,
+            ErrorCategory::RateLimit => RATE,
+            ErrorCategory::Overloaded
+            | ErrorCategory::Server
+            | ErrorCategory::Network
+            | ErrorCategory::Timeout => ("couldn't be reached", "Still unreachable"),
+            _ => ("gave an error", "Still failing"),
+        },
+        _ => ("crashed", "Crashed again"),
+    }
 }
 
 /// The CLI's own word on its login, asked only after a sign-in error: `Some(false)` is logged
@@ -257,8 +374,8 @@ fn unusable(host: &Host, worker: &WorkerRef) -> Option<&'static str> {
         return None;
     }
     Some(match host.services().health.state(&vendor).state {
-        HealthState::Down => "its vendor is down",
-        HealthState::Testing => "its vendor is being tested after an outage",
+        HealthState::Down => "its agent is down",
+        HealthState::Testing => "its agent is being tested after an outage",
         HealthState::Healthy | HealthState::Degraded => "it's out of usage until its plan resets",
     })
 }
@@ -347,9 +464,9 @@ fn candidates(
         let mut pool: Vec<WorkerRef> = host
             .settings()
             .crew
-            .iter()
+            .members()
+            .into_iter()
             .filter(|worker| available.contains(worker))
-            .cloned()
             .collect();
         // The rest of what's installed after the crew; a repeat is dropped below.
         pool.extend(available);
@@ -459,6 +576,12 @@ fn say_handover(
             seat_in_words(seat),
             in_words(reason),
         ),
+        // The retry line said who stopped and why.
+        Why::EndedAgain(reason) => format!(
+            "{} · {taker_name} takes over as {}",
+            passing_words(reason).1,
+            seat_in_words(seat)
+        ),
     };
     note(host, seat.card.as_ref(), text)
 }
@@ -485,7 +608,7 @@ fn stalled(
     let role = seat_in_words(seat);
     let from_name = display_name(from);
     let stopped = match why {
-        Why::Ended(reason) | Why::LoggedOut(Some(reason)) => {
+        Why::Ended(reason) | Why::EndedAgain(reason) | Why::LoggedOut(Some(reason)) => {
             format!("{from_name}'s session ended early ({})", in_words(reason))
         }
         Why::LoggedOut(None) => format!("{from_name} is logged out"),
@@ -495,7 +618,7 @@ fn stalled(
         (
             format!("{role} waits for {from_name}"),
             format!(
-                "{} waits for {from_name}: {stopped}, and your handoff settings say to wait \
+                "{} waits for {from_name}: {stopped}, and your fallback settings say to wait \
                  for it.",
                 argonauts_core::text::sentence_case(&role)
             ),
@@ -617,7 +740,7 @@ pub(crate) fn in_words(reason: &EndReason) -> String {
         EndReason::VendorError { category, .. } if *category == ErrorCategory::Auth => {
             "a sign-in error".to_owned()
         }
-        EndReason::VendorError { .. } => "a vendor error".to_owned(),
+        EndReason::VendorError { .. } => "an agent error".to_owned(),
         EndReason::Stuck { .. } => "it stopped responding".to_owned(),
         EndReason::AdapterBroken { .. } => "its output changed".to_owned(),
         EndReason::IsolationBroken { plugins, skills } => format!(
@@ -632,25 +755,25 @@ pub(crate) fn in_words(reason: &EndReason) -> String {
 /// The seat as the transcript says it: `the lead`, `a reviewer`, `the conflict's resolver`.
 fn seat_in_words(seat: &Seat) -> String {
     let words = match (seat.role, seat.step) {
-        (RoleName::Owner, Some(StepName::ResolveConflict)) => "the conflict's resolver",
-        (_, Some(StepName::SpikeReport)) => "a spike",
-        (RoleName::PhaseLead, _) => "the lead",
-        (RoleName::Coordinator, _) => "the coordinator",
+        (RoleName::Worker, Some(StepName::ResolveConflict)) => "the conflict's resolver",
+        (_, Some(StepName::SpikeReport)) => "an experiment",
+        (RoleName::PhaseLead, _) => "the main agent",
+        (RoleName::Orchestrator, _) => "the orchestrator",
         (RoleName::Restater, _) => "a restater",
         (RoleName::Differ, _) => "the differ",
         (RoleName::Drafter, _) => "a drafter",
         (RoleName::Mapper, _) => "the mapper",
         (RoleName::Critic, _) => "a critic",
-        (RoleName::Spike, _) => "a spike",
+        (RoleName::Spike, _) => "an experiment",
         (RoleName::Judge, _) => "a judge",
-        (RoleName::Owner, _) => "the card's owner",
+        (RoleName::Worker, _) => "the task's worker",
         (RoleName::Consultant, _) => "the consultant",
         (RoleName::Reviewer, _) => "a reviewer",
         (RoleName::Adjudicator, _) => "the adjudicator",
-        (RoleName::Retro, _) => "the retro",
+        (RoleName::Retro, _) => "the run review",
         (RoleName::Approver, _) => "the approver",
         (RoleName::Narrator, _) => "the narrator",
-        (RoleName::Default, _) => "the agent",
+        (RoleName::Main, _) => "the agent",
     };
     words.to_owned()
 }
@@ -672,10 +795,11 @@ mod tests {
 
     fn stall(logged_out: &[&str]) -> Stall {
         Stall {
-            detail: "nobody could take over as the lead".to_owned(),
-            line: "Nobody could take over as the lead: GPT 5.6 Luna on Codex's session ended \
+            detail: "nobody could take over as the main agent".to_owned(),
+            line:
+                "Nobody could take over as the main agent: GPT 5.6 Luna on Codex's session ended \
                    early (a sign-in error), and no other agent can take the role."
-                .to_owned(),
+                    .to_owned(),
             logged_out: logged_out.iter().map(|name| (*name).to_owned()).collect(),
             resets_at: None,
         }
@@ -718,6 +842,61 @@ mod tests {
         assert_eq!(span_in_words(Duration::from_secs(60)), "a minute");
     }
 
+    /// An outage reads as the agent being unreachable, and any other failure that may pass
+    /// as what it was, on the retry line and on the line after it.
+    #[test]
+    fn a_passing_failure_is_named_for_what_it_was() {
+        let error = |category| EndReason::VendorError {
+            category,
+            message: String::new(),
+        };
+        for outage in [
+            ErrorCategory::Overloaded,
+            ErrorCategory::Server,
+            ErrorCategory::Network,
+            ErrorCategory::Timeout,
+        ] {
+            assert_eq!(
+                passing_words(&error(outage)),
+                ("couldn't be reached", "Still unreachable")
+            );
+        }
+        let rate = ("is rate limited", "Still rate limited");
+        assert_eq!(passing_words(&EndReason::RateLimited), rate);
+        assert_eq!(passing_words(&error(ErrorCategory::RateLimit)), rate);
+        assert_eq!(
+            passing_words(&error(ErrorCategory::Unknown)),
+            ("gave an error", "Still failing")
+        );
+        let crash = EndReason::Crashed {
+            message: String::new(),
+        };
+        assert_eq!(passing_words(&crash), ("crashed", "Crashed again"));
+    }
+
+    /// Only an agent that went again and stopped again for something that may pass is still
+    /// out: a first stop, or a second for a spent plan, says why in full.
+    #[test]
+    fn only_a_retry_that_ended_the_same_way_is_still_out() {
+        let (codex, claude): (WorkerRef, WorkerRef) = (
+            "codex/gpt-5.6".parse().expect("a worker"),
+            "claude-code/opus".parse().expect("a worker"),
+        );
+        let spent = EndReason::UsageLimit { resets_at: None };
+        assert!(went_again(
+            &[&codex, &codex],
+            &codex,
+            &EndReason::RateLimited
+        ));
+        assert!(!went_again(&[&codex], &codex, &EndReason::RateLimited));
+        assert!(!went_again(
+            &[&claude, &codex],
+            &codex,
+            &EndReason::RateLimited
+        ));
+        assert!(!went_again(&[&codex, &codex], &codex, &spent));
+    }
+
     /// Parks nobody could take a seat in count up, and an agent that finishes a session starts
     /// the count over.
     #[test]
@@ -736,7 +915,7 @@ mod tests {
                 seq,
                 RunEventKind::Run(RunLifecycle::Parked {
                     reason: ParkReason::NoStandIn {
-                        detail: "nobody could take over as the lead".to_owned(),
+                        detail: "nobody could take over as the main agent".to_owned(),
                         until: None,
                     },
                     waiting_on: Vec::new(),

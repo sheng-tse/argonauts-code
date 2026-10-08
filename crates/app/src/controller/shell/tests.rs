@@ -61,12 +61,12 @@ fn long_output_keeps_its_start_and_end() {
 /// for a conversation that carries on one of its agents' sessions.
 #[test]
 fn the_commands_say_where_they_ran() {
-    let copy = std::path::PathBuf::from("/work/argonauts/worktrees/shop/run-01/card-001");
+    let copy = std::path::PathBuf::from("/work/argonauts/worktrees/shop/run-01/task-001");
     let elsewhere = ShellRan {
         folder: Some(copy.clone()),
         ..ran(
             "pwd",
-            "/work/argonauts/worktrees/shop/run-01/card-001\n",
+            "/work/argonauts/worktrees/shop/run-01/task-001\n",
             Some(0),
             false,
         )
@@ -75,7 +75,7 @@ fn the_commands_say_where_they_ran() {
     assert!(
         text.starts_with(
             "Before this message I ran these commands myself, in \
-             /work/argonauts/worktrees/shop/run-01/card-001."
+             /work/argonauts/worktrees/shop/run-01/task-001."
         ),
         "{text}"
     );
@@ -88,7 +88,7 @@ fn the_commands_say_where_they_ran() {
     );
     assert!(text.contains("\n$ ls\n(in the repo folder)\n"), "{text}");
     assert!(
-        text.contains("\n$ pwd\n(in /work/argonauts/worktrees/shop/run-01/card-001)\n"),
+        text.contains("\n$ pwd\n(in /work/argonauts/worktrees/shop/run-01/task-001)\n"),
         "{text}"
     );
 }
@@ -243,7 +243,7 @@ async fn a_command_runs_in_the_repo_and_waits_for_your_next_message() {
         .prompt
         .iter()
         .find(|part| part.label == "shell commands")
-        .expect("the commands reach the lead");
+        .expect("the commands reach the main agent");
     assert_eq!(part.kind, InputPartKind::Message);
     assert!(
         part.text
@@ -270,7 +270,7 @@ async fn a_command_runs_in_the_repo_and_waits_for_your_next_message() {
     turn_done(&mut harness).await;
     assert!(
         !prompt_text(&harness, 1).contains("$ echo hi"),
-        "the lead hears of a command once"
+        "the main agent hears of a command once"
     );
     harness.exit().await;
 }
@@ -337,7 +337,7 @@ async fn a_fallback_hears_of_the_commands_too() {
     use argonauts_testkit::FakeWorker;
 
     let mut harness = Harness::start_with(crate::controller::test_support::HarnessOptions {
-        flags: vec![r#"roles.default.handoff.fallback=["codex"]"#.to_owned()],
+        flags: vec![r#"fallback.main.order=["codex"]"#.to_owned()],
         ..Default::default()
     })
     .await;

@@ -42,22 +42,22 @@ struct Merged {
 }
 
 /// The goal settings differences settle by. The question limit spares your attention, so when
-/// the lead answers every question, in `full_auto` or because you chose it to, nothing is held
+/// the lead answers every question, in `autopilot` or because you chose it to, nothing is held
 /// back over the limit.
-pub fn goal_settings(settings: &Settings, full_auto: bool) -> UnderstandSettings {
+pub fn goal_settings(settings: &Settings, autopilot: bool) -> UnderstandSettings {
     let mut goal = settings.understand.clone();
-    if lead_answers_all(settings, full_auto) {
+    if lead_answers_all(settings, autopilot) {
         goal.max_questions = u32::MAX;
     }
     goal
 }
 
 /// Whether the lead, answering the crew's questions, may answer this one for you: any of them,
-/// unless `approvals.ask_you_about` names its tag or topic, and every one in `full_auto`, where
+/// unless `approvals.ask_you_about` names its tag or topic, and every one in `autopilot`, where
 /// nothing waits for you. `understand.always_ask` only makes a topic a question, never one that
 /// waits for you.
-pub fn lead_may_answer(question: &GoalQuestion, settings: &Settings, full_auto: bool) -> bool {
-    full_auto || asked_about(question, settings).is_none()
+pub fn lead_may_answer(question: &GoalQuestion, settings: &Settings, autopilot: bool) -> bool {
+    autopilot || asked_about(question, settings).is_none()
 }
 
 /// The word of `approvals.ask_you_about` that keeps this question yours: its tag, such as
@@ -70,8 +70,8 @@ pub fn asked_about<'q>(question: &'q GoalQuestion, settings: &Settings) -> Optio
 
 /// The lead answers every question in full auto, where the model you picked may answer in its
 /// place, or once you chose the lead to. A model you picked answers in full auto only.
-fn lead_answers_all(settings: &Settings, full_auto: bool) -> bool {
-    full_auto || settings.approvals.answered_by == Some(Answerer::Lead)
+fn lead_answers_all(settings: &Settings, autopilot: bool) -> bool {
+    autopilot || settings.approvals.answers == Some(Answerer::Main)
 }
 
 /// Settles every differ's listing of `restaters` restatements.

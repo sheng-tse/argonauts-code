@@ -34,11 +34,12 @@ fn request(text: &str) -> StartRun {
         continues: None,
         overrides: Vec::new(),
         include_uncommitted: false,
-        default_agent: None,
+        main_agent: None,
         approval_mode: None,
         front_end: Some("hermes".to_owned()),
         instructions: Vec::new(),
         request_settings: Vec::new(),
+        required_steps: Vec::new(),
     }
 }
 
@@ -105,7 +106,7 @@ async fn start_refuses_auto() {
     let home = TestHome::new();
     let launcher = Arc::new(FakeSupervisor::default());
     let client = app_client(&home, Arc::clone(&launcher));
-    for mode in [ApprovalMode::Auto, ApprovalMode::Shadow] {
+    for mode in [ApprovalMode::Auto, ApprovalMode::AutoPreview] {
         let refused = client
             .start(StartRun {
                 approval_mode: Some(mode),
@@ -125,7 +126,7 @@ async fn start_writes_its_files_and_waits_for_welcome() {
     let client = app_client(&home, Arc::clone(&launcher));
     let handle = client
         .start(StartRun {
-            overrides: vec!["runs.remind_parked_days=3".to_owned()],
+            overrides: vec!["runs.remind_waiting_days=3".to_owned()],
             approval_mode: Some(ApprovalMode::Supervised),
             ..request("Add --json to export")
         })
@@ -137,7 +138,7 @@ async fn start_writes_its_files_and_waits_for_welcome() {
 
     let start = run_files::read_start(&run_dir).unwrap();
     assert_eq!(start.run, handle.run);
-    assert_eq!(start.overrides, ["runs.remind_parked_days=3"]);
+    assert_eq!(start.overrides, ["runs.remind_waiting_days=3"]);
     assert!(start.interactive);
     assert_eq!(start.request.front_end.as_deref(), Some("hermes"));
     assert_eq!(start.repo_root, client.env.repo_root);
@@ -220,7 +221,7 @@ async fn list_tells_crashed_starting_and_parked_runs_apart() {
         &env,
         &old,
         &[
-            run_started(0, "parked long ago", None),
+            run_started(0, "waiting long ago", None),
             parked(1, now - time::Duration::days(8)),
         ],
     );
@@ -229,7 +230,7 @@ async fn list_tells_crashed_starting_and_parked_runs_apart() {
         &env,
         &recent,
         &[
-            run_started(0, "parked today", None),
+            run_started(0, "waiting today", None),
             parked(1, now - time::Duration::hours(2)),
         ],
     );
@@ -794,7 +795,7 @@ async fn a_stream_passes_the_last_events_on_before_it_turns_not_live() {
     assert_eq!(
         stream.events.try_recv().unwrap().seq,
         4,
-        "`Parked` came before the exit"
+        "`Waiting` came before the exit"
     );
 }
 
@@ -835,7 +836,7 @@ fn a_run_crashed_only_when_nothing_holds_it_and_its_log_is_unsettled() {
         &run_dir.join(names::EVENTS),
         &[parked(2, OffsetDateTime::now_utc())],
     );
-    assert!(!supervisor_crashed(&run_dir), "it parked before leaving");
+    assert!(!supervisor_crashed(&run_dir), "it waiting before leaving");
 }
 
 #[tokio::test]

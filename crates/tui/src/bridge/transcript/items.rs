@@ -8,13 +8,13 @@ use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
-use argonauts_core::settings::protocol::TriageSettings;
+use argonauts_core::settings::Settings;
 use argonauts_core::{Note, NoteLevel};
 
-use crate::cell::{AgentReady, Cell, Notice, Recap, ResultLine, SessionHeader, Tone};
+use crate::cell::{AgentReady, Cell, HungLine, Notice, Recap, ResultLine, SessionHeader, Tone};
 use crate::format;
 use crate::history::CellId;
-use crate::views::settings::words::model_role;
+use crate::views::settings::words::{model_role, word_for_a_model};
 
 use super::{Cx, emit, quiet};
 
@@ -44,11 +44,11 @@ impl Items {
         let AppEvent::Welcome {
             version,
             repo,
-            preset,
+            workflow,
             agents,
             runs_going,
             runs_need_you,
-            default_agent,
+            main_agent,
             effort,
             ..
         } = event
@@ -56,18 +56,17 @@ impl Items {
             return;
         };
         // An older app's welcome names no agent, so the status line's fills it in.
-        let default_agent = default_agent
+        let main_agent = main_agent
             .as_ref()
-            .or_else(|| cx.state.status.as_ref().map(|status| &status.default_agent));
+            .or_else(|| cx.state.status.as_ref().map(|status| &status.main_agent));
         let names = &cx.state.names;
         let header = SessionHeader {
-            app: "Argonauts".to_owned(),
+            app: "Argonauts Code".to_owned(),
             version: version.clone(),
-            default_agent: default_agent.map(|agent| names.harness(&agent.worker)),
-            model: default_agent
-                .and_then(|agent| names.model(&agent.worker, agent.model.as_deref())),
+            main_agent: main_agent.map(|agent| names.harness(&agent.worker)),
+            model: main_agent.and_then(|agent| names.model(&agent.worker, agent.model.as_deref())),
             effort: effort.clone(),
-            preset: preset.clone(),
+            workflow: workflow.clone(),
             folder: repo.clone(),
             agents: agents
                 .iter()
@@ -85,7 +84,7 @@ impl Items {
             runs_need_you: *runs_need_you,
         };
         match self.header {
-            Header::NotYet if default_agent.is_none() => {
+            Header::NotYet if main_agent.is_none() => {
                 self.header = Header::Waiting(cx.model.history.push_active(header));
             }
             Header::NotYet => {
@@ -97,7 +96,7 @@ impl Items {
                 if let Some(Cell::Header(waiting)) = cx.model.history.active_mut(id) {
                     *waiting = header;
                 }
-                if default_agent.is_some() {
+                if main_agent.is_some() {
                     self.print_header(cx);
                 }
             }
@@ -116,11 +115,11 @@ impl Items {
         let Header::Waiting(id) = self.header else {
             return;
         };
-        let agent = &status.default_agent;
+        let agent = &status.main_agent;
         let cli = cx.state.names.harness(&agent.worker);
         let model = cx.state.names.model(&agent.worker, agent.model.as_deref());
         if let Some(Cell::Header(header)) = cx.model.history.active_mut(id) {
-            header.default_agent = Some(cli);
+            header.main_agent = Some(cli);
             header.model = model;
         }
         self.print_header(cx);
@@ -160,8 +159,8 @@ impl Items {
             return;
         }
         let tone = match level {
-            NoteLevel::Info if quiet(cx) => return,
-            NoteLevel::Info => Tone::Dim,
+            NoteLevel::Info | NoteLevel::Aside if quiet(cx) => return,
+            NoteLevel::Info | NoteLevel::Aside => Tone::Dim,
             NoteLevel::Warn => {
                 if !self.warnings_seen.insert(text.to_owned()) {
                     return;
@@ -171,6 +170,9 @@ impl Items {
             NoteLevel::Error => Tone::Error,
         };
         let mut notice = Notice::new(tone, text);
+        if level == NoteLevel::Aside {
+            notice = notice.with_glyph(ASIDE);
+        }
         for line in more.into_iter().flat_map(str::lines) {
             notice = notice.with_more(line.trim_end());
         }
@@ -184,6 +186,18 @@ pub(super) fn report(title: &str, lines: &[String], cx: &mut Cx<'_>) {
     let mut notice = Notice::new(Tone::Normal, title.trim());
     for line in lines {
         notice = notice.with_detail(line.trim_end());
+    }
+    emit(cx, notice);
+}
+
+/// Like a report, with `more` behind Ctrl+O, as the summary a new main model starts from is.
+pub(super) fn folded(title: &str, lines: &[String], more: &[String], cx: &mut Cx<'_>) {
+    let mut notice = Notice::new(Tone::Normal, title.trim());
+    for line in lines {
+        notice = notice.with_detail(line.trim_end());
+    }
+    for line in more {
+        notice = notice.with_more(line.trim_end());
     }
     emit(cx, notice);
 }
@@ -210,6 +224,15 @@ pub(super) fn narrator(line: &NarratorLine, cx: &mut Cx<'_>) {
     emit(cx, Recap::narrator(line.text.trim()));
 }
 
+/// A dim line under the one before, as what a switch of the main model carried over hangs
+/// under `⎿  Set model to …`. It follows a line you caused, so it prints even at `quiet`.
+pub(super) fn continued(text: &str, cx: &mut Cx<'_>) {
+    let text = text.trim();
+    if !text.is_empty() {
+        emit(cx, Cell::Custom(Box::new(HungLine::new(text))));
+    }
+}
+
 /// `● Set approvals.merge.mode = auto · this project · was supervised`, or after a reset
 /// `● Reset ui.theme · everywhere · now dark`. A model or an effort, as `/model` and `/effort`
 /// set them, reads like Claude Code's `⎿  Set model to Opus 5.5`.
@@ -225,7 +248,10 @@ pub(super) fn setting_changed(
         picked: &cx.state.model_words,
         names: &cx.state.names,
     };
-    if !reset && let Some(line) = command_result(key, value, scope, previous, &words) {
+    // The running answer keeps the model, effort and workflow it started with.
+    let next_request = applies_at_next_request(key) && cx.model.is_working();
+    if !reset && let Some(line) = command_result(key, value, scope, previous, &words, next_request)
+    {
         emit(cx, Cell::Custom(Box::new(line)));
         return;
     }
@@ -244,9 +270,25 @@ pub(super) fn setting_changed(
             };
             text.push_str(&format!(" · was {previous}"));
         }
+        if next_request {
+            text.push_str(NEXT_REQUEST);
+        }
         text
     };
     emit(cx, Notice::new(Tone::Success, text));
+}
+
+/// Said after a change made while an answer runs, which that answer doesn't take up.
+const NEXT_REQUEST: &str = " · applies at the next request";
+/// The mark of an aside, as Claude Code draws its own. The ASCII glyph set draws the bullet.
+const ASIDE: &str = "※";
+
+/// The keys `/model`, `/effort` and `/workflow` write: each sets how a request is run, so a
+/// change made while one runs waits for the next.
+fn applies_at_next_request(key: &str) -> bool {
+    key == "workflow"
+        || model_role(key).is_some()
+        || (key.starts_with("roles.") && key.ends_with(".effort"))
 }
 
 /// `⎿  Set model to Opus 5.5 · just you · was Claude Code's default`, the value by its display
@@ -258,19 +300,20 @@ fn command_result(
     scope: SettingScope,
     previous: Option<&str>,
     names: &Words<'_>,
+    next_request: bool,
 ) -> Option<ResultLine> {
     let (name, model) = match model_role(key) {
         Some(None) => ("model".to_owned(), true),
         Some(Some(role)) => (format!("{}'s model", role.as_str()), true),
-        None if key == TriageSettings::ALL_HANDS => {
+        None if key == Settings::ULTRACODE => {
             let on = if value.trim() == "true" { "on" } else { "off" };
             let after = format!("· {}", scope_words(scope));
-            return Some(ResultLine::valued("Turned All hands", on).with_after(after));
+            return Some(ResultLine::valued("Turned Ultracode", on).with_after(after));
         }
         None => {
             let role = key.strip_prefix("roles.")?.strip_suffix(".effort")?;
             let name = match role {
-                "default" => "effort".to_owned(),
+                "main" => "effort".to_owned(),
                 role => format!("{role}'s effort"),
             };
             (name, false)
@@ -283,13 +326,24 @@ fn command_result(
             format::setting_value(toml)
         }
     };
-    let shown = words(value);
+    let mut shown = words(value);
     if shown.is_empty() {
         return None;
     }
+    let mut was = previous.map(words).filter(|previous| !previous.is_empty());
+    // The main model on another CLI moves the conversation there, so both sides name their CLI.
+    if model_role(key) == Some(None)
+        && let Some((now_cli, was_cli)) = cli_moved(value, previous, names.names)
+    {
+        shown = on_cli(by_its_model(shown, &now_cli), &now_cli);
+        was = was.map(|was| on_cli(by_its_model(was, &was_cli), &was_cli));
+    }
     let mut after = format!("· {}", scope_words(scope));
-    if let Some(previous) = previous.map(words).filter(|previous| !previous.is_empty()) {
+    if let Some(previous) = was {
         after.push_str(&format!(" · was {previous}"));
+    }
+    if next_request {
+        after.push_str(NEXT_REQUEST);
     }
     Some(ResultLine::valued(format!("Set {name} to"), shown).with_after(after))
 }
@@ -312,17 +366,61 @@ fn workers_words(toml: &str, words: &Words<'_>) -> String {
         .split(',')
         .map(|item| item.trim().trim_matches(['"', '\'']))
         .filter(|item| !item.is_empty())
-        .map(|item| match item.parse::<WorkerRef>() {
-            Ok(worker) => words
-                .picked
-                .get(&worker.to_string())
-                .cloned()
-                .or_else(|| words.names.model(&worker.worker, worker.model.as_deref()))
-                .unwrap_or_else(|| format!("{}'s default", words.names.harness(&worker.worker))),
-            Err(_) => item.to_owned(),
+        .map(|item| {
+            if let Some(word) = word_for_a_model(item) {
+                return word.to_owned();
+            }
+            match item.parse::<WorkerRef>() {
+                Ok(worker) => words
+                    .picked
+                    .get(&worker.to_string())
+                    .cloned()
+                    .or_else(|| words.names.model(&worker.worker, worker.model.as_deref()))
+                    .unwrap_or_else(|| {
+                        format!("{}'s default", words.names.harness(&worker.worker))
+                    }),
+                Err(_) => item.to_owned(),
+            }
         })
         .collect();
     words.join(", ")
+}
+
+/// The CLIs of a model setting that moved from one CLI to another, by name.
+fn cli_moved(
+    value: &str,
+    previous: Option<&str>,
+    names: &DisplayNames,
+) -> Option<(String, String)> {
+    let worker = |toml: &str| {
+        toml.trim()
+            .trim_matches(['"', '\''])
+            .parse::<WorkerRef>()
+            .ok()
+    };
+    let (now, was) = (worker(value)?, worker(previous?)?);
+    (now.worker != was.worker).then(|| (names.harness(&now.worker), names.harness(&was.worker)))
+}
+
+/// `Claude Code's default (Opus 5.5)` as the model it runs, `Opus 5.5`, for a line that names
+/// the CLI after it anyway. A default whose model isn't known stays as it is.
+fn by_its_model(words: String, cli: &str) -> String {
+    match words
+        .strip_prefix(&format!("{cli}'s default ("))
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        Some(model) if !model.is_empty() => model.to_owned(),
+        _ => words,
+    }
+}
+
+/// `GPT-6.1-Sol on Codex`, unless the words name the CLI already, as `Codex's default` does.
+fn on_cli(words: String, cli: &str) -> String {
+    if words.contains(cli) {
+        words
+    } else {
+        format!("{words} on {cli}")
+    }
 }
 
 pub(super) fn scope_words(scope: SettingScope) -> &'static str {

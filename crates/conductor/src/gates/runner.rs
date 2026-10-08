@@ -25,7 +25,7 @@ use crate::sandbox::{ProfileInput, SandboxWrap, session_profile};
 use crate::supervisor::millis;
 
 /// The gates cell with `gates.run` empty, rather than a silent pass.
-pub const NO_COMMAND_GATES: &str = "No command gates set · /config gates.run";
+pub const NO_COMMAND_GATES: &str = "No command checks set · /config checks.run";
 
 /// Used when neither the request nor `gates.timeout` gives a usable time limit.
 const FALLBACK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -34,7 +34,7 @@ const FALLBACK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// rather than passing silently; merge rules that need the suite check for commands themselves.
 pub fn no_command_gates() -> GateOutcome {
     GateOutcome {
-        name: "gates.run".to_owned(),
+        name: "checks.run".to_owned(),
         kind: GateKind::Command,
         passed: true,
         command: None,
@@ -122,7 +122,7 @@ impl SandboxedGates {
             let test = self_test_once(self.sandbox.as_ref()).await;
             if !test.ok {
                 let problem = format!(
-                    "the sandbox doesn't work, so gates can't run: {}",
+                    "the sandbox doesn't work, so checks can't run: {}",
                     test.detail
                 );
                 return finished(&request, started, false, Err(problem));
@@ -144,7 +144,7 @@ impl SandboxedGates {
         let spec = match self.sandbox.wrap(spec, &profile) {
             Ok(spec) => spec,
             Err(err) => {
-                let problem = format!("could not sandbox the gate, so it didn't run: {err}");
+                let problem = format!("could not sandbox the checks, so it didn't run: {err}");
                 return finished(&request, started, false, Err(problem));
             }
         };
@@ -189,7 +189,7 @@ impl SandboxedGates {
     }
 
     async fn copy_untracked_once(&self, worktree: &Path) -> Result<(), String> {
-        let globs = self.settings.gates.copy_untracked.clone();
+        let globs = self.settings.checks.copy_untracked.clone();
         if globs.is_empty() || lock(&self.copied).contains(worktree) {
             return Ok(());
         }
@@ -215,7 +215,7 @@ impl SandboxedGates {
         if !request.timeout.is_zero() {
             return request.timeout;
         }
-        match self.settings.gates.timeout.parse() {
+        match self.settings.checks.timeout.parse() {
             Ok(Some(timeout)) if !timeout.is_zero() => timeout,
             _ => FALLBACK_TIMEOUT,
         }
@@ -256,10 +256,10 @@ async fn run_spec(spec: &CommandSpec, timeout: Duration) -> Result<Ran, String> 
         .map(|(k, v)| (k.into(), v.into()))
         .collect();
     let process = GateProcess::new(&argv, &spec.cwd, env)
-        .map_err(|err| format!("could not run the gate: {err}"))?;
+        .map_err(|err| format!("could not run the checks: {err}"))?;
     execute(&process, timeout, &StopHandle::new())
         .await
-        .map_err(|err| format!("could not run the gate: {err}"))
+        .map_err(|err| format!("could not run the checks: {err}"))
 }
 
 fn finished(
@@ -319,7 +319,7 @@ impl GateTemp {
         for dir in [root.join("home"), root.join("tmp")] {
             std::fs::create_dir_all(&dir).map_err(|err| {
                 format!(
-                    "could not create the gate's temp directory {}: {err}",
+                    "could not create the checks's temp directory {}: {err}",
                     dir.display()
                 )
             })?;
@@ -336,7 +336,7 @@ impl Drop for GateTemp {
     fn drop(&mut self) {
         if let Err(err) = std::fs::remove_dir_all(&self.root) {
             tracing::warn!(
-                "could not remove the gate's temp directory {}: {err}",
+                "could not remove the checks's temp directory {}: {err}",
                 self.root.display()
             );
         }
@@ -392,7 +392,7 @@ mod tests {
         let first = worktree(&repo, "wt-1");
         let second = worktree(&repo, "wt-2");
         let settings = Settings {
-            gates: GateSettings {
+            checks: GateSettings {
                 copy_untracked: vec![".env.test".to_owned()],
                 ..GateSettings::default()
             },
@@ -444,7 +444,10 @@ mod tests {
     async fn empty_gates_run_says_so() {
         let outcome = no_command_gates();
         assert_eq!(outcome.summary, NO_COMMAND_GATES);
-        assert_eq!(outcome.summary, "No command gates set · /config gates.run");
+        assert_eq!(
+            outcome.summary,
+            "No command checks set · /config checks.run"
+        );
         assert!(outcome.passed);
         assert_eq!(outcome.command, None);
         assert_eq!(outcome.kind, GateKind::Command);
@@ -475,7 +478,7 @@ mod tests {
         assert!(
             outcome
                 .output_tail
-                .ends_with("[argonauts] gate timed out after 500ms")
+                .ends_with("[argonauts] check timed out after 500ms")
         );
 
         let pid: i32 = std::fs::read_to_string(dir.path().join("bg.pid"))
@@ -488,7 +491,7 @@ mod tests {
         while nix::sys::signal::kill(pid, None).is_ok() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the gate's background child survived"
+                "the checks's background child survived"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

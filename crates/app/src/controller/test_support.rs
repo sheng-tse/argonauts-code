@@ -702,6 +702,7 @@ impl Harness {
     pub(crate) async fn submit(&self, text: &str) {
         self.send(UiCommand::Submit {
             text: text.to_owned(),
+            workflow_requested: false,
         })
         .await;
     }

@@ -34,6 +34,19 @@ pub enum KeywordLook {
     /// Letter by letter red, orange, yellow, green, blue, indigo, violet, then red again, with
     /// a lighter band sweeping across while the word sits in the input.
     Rainbow,
+    /// One purple with no shimmer, as Claude Code draws `ultracode`.
+    Flat,
+}
+
+/// Asks for a workflow for the one request it is typed in. Argonauts' own word, so it works
+/// whichever CLI the main session runs on. Claude Code never draws it in the echo of your
+/// message, so neither does the transcript here.
+pub const ULTRACODE: Keyword = Keyword::new("ultracode", KeywordLook::Flat, false);
+
+/// Whether `text` asks for a workflow by holding the word. A `/` command never does, so
+/// `/effort ultracode on` only flips the switch.
+pub fn asks_for_workflow(text: &str) -> bool {
+    !text.trim_start().starts_with('/') && !find(text, std::slice::from_ref(&ULTRACODE)).is_empty()
 }
 
 /// One keyword in a text.
@@ -45,12 +58,16 @@ pub struct Found<'a> {
 }
 
 /// Every keyword in `text`, in order. Where two would overlap, the one that starts first wins,
-/// or at the same start the one first in the table.
+/// or at the same start the one first in the table. The workflow word counts only where Claude
+/// Code counts it ([`counts_as_the_workflow_word`]), so what's drawn purple is what asks.
 pub fn find<'a>(text: &str, keywords: &'a [Keyword]) -> Vec<Found<'a>> {
     let mut found: Vec<Found<'a>> = keywords
         .iter()
         .flat_map(|keyword| {
-            whole_words(text, &keyword.word).map(move |range| Found { keyword, range })
+            let workflow = keyword.word.eq_ignore_ascii_case(&ULTRACODE.word);
+            whole_words(text, &keyword.word)
+                .filter(move |range| !workflow || counts_as_the_workflow_word(text, range))
+                .map(move |range| Found { keyword, range })
         })
         .collect();
     found.sort_by_key(|found| found.range.start);
@@ -63,6 +80,53 @@ pub fn find<'a>(text: &str, keywords: &'a [Keyword]) -> Vec<Found<'a>> {
         clear
     });
     found
+}
+
+/// Claude Code skips the workflow word where it's quoted or in brackets, where it touches `/`,
+/// `\` or `-` as in a path or a flag, and where `?` follows it, as in a question about the word.
+fn counts_as_the_workflow_word(text: &str, range: &Range<usize>) -> bool {
+    let before = text[..range.start].chars().next_back();
+    let after = text[range.end..].chars().next();
+    let joins = |c: Option<char>| c.is_some_and(|c| matches!(c, '/' | '\\' | '-'));
+    if joins(before) || joins(after) || after == Some('?') {
+        return false;
+    }
+    !quoted_or_bracketed(text, range)
+}
+
+/// Whether a quote or a bracket opened before `range` is still open there and closes after it.
+/// An apostrophe inside a word, as in `don't`, quotes nothing.
+fn quoted_or_bracketed(text: &str, range: &Range<usize>) -> bool {
+    let (head, tail) = (&text[..range.start], &text[range.end..]);
+    let quote = |mark: char| {
+        let marks = |part: &str| {
+            let chars: Vec<char> = part.chars().collect();
+            (0..chars.len())
+                .filter(|&at| chars[at] == mark)
+                .filter(|&at| {
+                    let inside_a_word = at > 0
+                        && chars[at - 1].is_alphanumeric()
+                        && chars.get(at + 1).is_some_and(|c| c.is_alphanumeric());
+                    !inside_a_word
+                })
+                .count()
+        };
+        marks(head) % 2 == 1 && marks(tail) > 0
+    };
+    let bracket = |open: char, close: char| {
+        let depth = head.chars().fold(0_i32, |depth, c| match c {
+            c if c == open => depth + 1,
+            c if c == close => (depth - 1).max(0),
+            _ => depth,
+        });
+        depth > 0 && tail.contains(close)
+    };
+    ['"', '\'', '`'].into_iter().any(quote)
+        || bracket('(', ')')
+        || bracket('[', ']')
+        || bracket('{', '}')
+        || bracket('“', '”')
+        || bracket('‘', '’')
 }
 
 /// A match starts on an ASCII byte, so it's always on a char boundary.
@@ -106,6 +170,32 @@ mod tests {
             .into_iter()
             .map(|found| text[found.range].to_owned())
             .collect()
+    }
+
+    #[test]
+    fn the_workflow_word_counts_only_whole() {
+        assert!(asks_for_workflow("ultracode fix the flaky export test"));
+        assert!(asks_for_workflow("fix it, Ultracode."));
+        assert!(!asks_for_workflow("ultracoded"));
+        assert!(!asks_for_workflow("my_ultracode"));
+        assert!(!asks_for_workflow("fix the flaky export test"));
+        assert!(!asks_for_workflow("/effort ultracode on"));
+        // Where Claude Code skips it: a question about the word, a quote, a path, a flag,
+        // brackets, and a word joined by `-`.
+        for text in [
+            "what is ultracode?",
+            "explain \"ultracode\" to me",
+            "rename src/ultracode.rs",
+            "add a --ultracode flag",
+            "the (ultracode) setting",
+            "ultracode-mode is broken",
+            "see `ultracode` in the docs",
+            "the “ultracode” word",
+        ] {
+            assert!(!asks_for_workflow(text), "{text}");
+        }
+        assert!(asks_for_workflow("don't stop, ultracode it"));
+        assert!(asks_for_workflow("(first) ultracode the export"));
     }
 
     #[test]

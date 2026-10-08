@@ -87,7 +87,7 @@ pub fn guidance_part(note: Option<&str>) -> Vec<InputPart> {
         label: "your note".to_owned(),
         approx_tokens: u32::try_from(text.len() / 4).unwrap_or(u32::MAX),
         text,
-        source: Some("goal checkpoint".to_owned()),
+        source: Some("goal approval".to_owned()),
     }]
 }
 

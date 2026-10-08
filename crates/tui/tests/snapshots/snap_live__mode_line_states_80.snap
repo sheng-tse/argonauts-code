@@ -1,11 +1,10 @@
 ---
 source: crates/tui/tests/snap_live.rs
-assertion_line: 400
 expression: labeled(&rows(width))
 ---
 idle:
-  [fg=#999999]ǁ supervised mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#999999]? for shortcuts[/]
-vim insert, shadow, agents running:
-  [fg=#999999]-- INSERT --[/] [fg=#48968c]ǁ shadow mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#999999]← 3 agents[/]
+  [fg=#999999]ǁ supervised mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#999999]? for shortcuts[/]           [fg=#e08a66]●[/] [fg=#ffffff b]Claude[/]
+vim insert, auto preview, agents running:
+  [fg=#999999]-- INSERT --[/] [fg=#48968c]ǁ auto preview mode on[/][fg=#999999] · [/][fg=#999999]← 3 agents[/]        [fg=#e08a66]●[/] [fg=#ffffff b]Claude[/] [fg=#999999]5h[/] [fg=#e08a66]▄▄▖[/][fg=#505370]▄▄▄[/] [fg=#ffffff b]38%[/]
 vim normal, auto:
-  [fg=#999999]-- NORMAL --[/] [fg=#ffc107]⏵⏵ auto mode on[/] [fg=#999999](shift+tab to cycle)[/][fg=#999999] · [/][fg=#ffc107]← 1 needs you[/]
+  [fg=#999999]-- NORMAL --[/] [fg=#ffc107]⏵⏵ auto mode on[/][fg=#999999] · [/][fg=#ffc107]← 1 needs you[/]            [fg=#e08a66]●[/] [fg=#ffffff b]Claude[/] [fg=#999999]5h[/] [fg=#e08a66]▄▄▖[/][fg=#505370]▄▄▄[/] [fg=#ffffff b]38%[/]

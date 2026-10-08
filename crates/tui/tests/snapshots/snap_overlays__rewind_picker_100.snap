@@ -3,13 +3,13 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 Rewind
-Go back to a handoff checkpoint. The work after it stays on a side branch              3 checkpoints
+Go back to a fallback checkpoint. The work after it stays on a side branch             3 checkpoints
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   Checkpoint            When  Handoff                             Why                            │
-│   card-001 handoff-1  2h ago  claude-code/opus → codex            usage limit, r…  reverted here │
-│   card-002 handoff-1  2h ago  claude-code/opus → antigravity-cli  usage limit, r…                │
-│ ❯ card-001 handoff-2  2h ago  claude-code/opus → opencode         usage limit, r…                │
+│   Checkpoint             When  Fallback                            Why                           │
+│   task-001 fallback-1  2h ago  claude-code/opus → codex            usage limit, …  reverted here │
+│   task-002 fallback-1  2h ago  claude-code/opus → antigravity-cli  usage limit, …                │
+│ ❯ task-001 fallback-2  2h ago  claude-code/opus → opencode         usage limit, …                │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │

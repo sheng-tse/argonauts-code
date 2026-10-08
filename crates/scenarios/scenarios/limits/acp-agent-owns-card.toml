@@ -1,4 +1,4 @@
-# The fake agent installed as hermes speaks ACP and owns a solo card: it asks to write
+# The fake agent installed as hermes speaks ACP and owns a solo task: it asks to write
 # hello.txt inside its worktree, writes it, reports through the report tool, and ends its turn.
 
 [version]

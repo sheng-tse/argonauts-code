@@ -3,7 +3,7 @@ source: crates/tui/tests/snap_transcript.rs
 expression: text(&lines)
 ---
 ● Add a --json flag to export
-  ⎿  Parked · plan checkpoint, waiting for you · $1.24 spent · 2 sessions to
+  ⎿  Waiting · plan approval, waiting for you · $1.24 spent · 2 sessions to
      resume
      ctrl+o shows the whole history
 
@@ -14,7 +14,7 @@ expression: text(&lines)
 ● So far in this run
   ⎿  Triage: crew · 7 files, tests exist
      Goal approved · 3 criteria
-     Plan 1 won · 5 cards
+     Plan 1 won · 5 tasks
 
-※ recap: The plan waits for your approval at the plan checkpoint. (disable
-  recaps in /config)
+※ recap: The plan waits for you at the plan approval. (disable recaps in
+  /config)

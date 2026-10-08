@@ -32,10 +32,11 @@ use argonauts_core::limits::{
     Candidate, CandidateQuery, HandoffPacket, HandoffPlanner, QuotaBoard, QuotaReading,
     QuotaSource, QuotaStatus, RecoveryAction, TranscriptPaths, WorkSoFar,
 };
-use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef, WorkflowId};
+use argonauts_core::names::{SessionKey, VendorId, WorkerRef, WorkflowId};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::handoff::{HandoffContext, HandoffSettings, VendorReplacement};
-use argonauts_core::settings::roles::RoleSettings;
+use argonauts_core::settings::handoff::{
+    CrewRole, HandoffContext, HandoffSettings, Pick, VendorReplacement,
+};
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{Access, WorkerEvent};
 use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
@@ -54,7 +55,7 @@ const CODEX: &str = "codex/gpt-5.6";
 /// Codex's cheapest model, which summarizes for it when no summarizer is set.
 const LUNA: &str = "codex/gpt-5.6-luna";
 const FLASH: &str = "agy/gemini-3.6-flash";
-const TRANSCRIPT: &str = "# card-001 · claude-code/opus · usage limit\n\nRead src/store.rs\n";
+const TRANSCRIPT: &str = "# task-001 · claude-code/opus · usage limit\n\nRead src/store.rs\n";
 const SUMMARY: &str = "It tried a Redis pool, kept the store trait, and left the TTL tests.";
 
 fn worker(name: &str) -> WorkerRef {
@@ -123,12 +124,12 @@ impl Bench {
         ])?;
 
         let paths = TranscriptPaths {
-            worktree: tree.join(".argonauts/handoff/1/transcript.md"),
+            worktree: tree.join(".argonauts/fallback/1/transcript.md"),
             run: layout
                 .run_dir
                 .join("cards")
                 .join(card().as_str())
-                .join("handoff-1/transcript.md"),
+                .join("fallback-1/transcript.md"),
         };
         if writer == Writer::StandIn {
             for copy in [&paths.worktree, &paths.run] {
@@ -398,7 +399,7 @@ fn packet(transcript: Option<TranscriptPaths>) -> HandoffPacket {
 
 fn with_context(context: HandoffContext) -> Settings {
     let mut settings = Settings::default();
-    settings.handoff.context = Some(context);
+    settings.fallback.context = Some(context);
     settings
 }
 
@@ -426,7 +427,7 @@ fn transcript_line(bench: &Bench) -> String {
 }
 
 fn note_text(part: Option<InputPart>) -> anyhow::Result<String> {
-    let part = part.context("a handoff part")?;
+    let part = part.context("a fallback part")?;
     ensure!(part.kind == InputPartKind::Handoff, "{part:?}");
     Ok(part.text)
 }
@@ -455,7 +456,7 @@ async fn note_renders_the_packet_alone() -> anyhow::Result<()> {
     bench.hand_to_codex().await?;
 
     let text = note_text(bench.told(CODEX, AttemptCause::AfterFailure).await?)?;
-    ensure!(text.starts_with("You're taking over this card from another session."));
+    ensure!(text.starts_with("You're taking over this task from another session."));
     ensure!(text.contains("Edited src/store.rs (+14 −2)"), "{text}");
     ensure!(
         !text.contains("transcript"),
@@ -525,7 +526,7 @@ async fn note_and_summary_puts_the_cheapest_models_summary_in_the_note() -> anyh
 #[tokio::test]
 async fn the_summarizer_setting_names_who_summarizes() -> anyhow::Result<()> {
     let mut settings = with_context(HandoffContext::NoteAndSummary);
-    settings.handoff.summarizer = Some(worker(FLASH));
+    settings.fallback.summarizer = Some(worker(FLASH));
     let bench = Bench::new(settings).await?;
     bench.add(FakeWorker::harness(CODEX, "gpt").with_cheapest_model("gpt-5.6-luna"));
     let flash = bench.add(FakeWorker::harness(FLASH, "gemini").then(summary(SUMMARY)));
@@ -554,7 +555,7 @@ async fn a_failed_summary_goes_on_as_note_and_transcript() -> anyhow::Result<()>
     let warnings = bench.warnings();
     ensure!(
         warnings.iter().any(|warning| warning.starts_with(
-            "card-001's handoff goes on as note + transcript: the summary by \
+            "task-001's fallback goes on as note + transcript: the summary by \
              codex/gpt-5.6-luna failed"
         )),
         "{warnings:?}"
@@ -566,7 +567,7 @@ async fn a_failed_summary_goes_on_as_note_and_transcript() -> anyhow::Result<()>
 #[tokio::test]
 async fn a_summarizer_out_of_quota_is_never_started() -> anyhow::Result<()> {
     let mut settings = with_context(HandoffContext::NoteAndSummary);
-    settings.handoff.summarizer = Some(worker(FLASH));
+    settings.fallback.summarizer = Some(worker(FLASH));
     let bench = Bench::new(settings).await?;
     bench.add(FakeWorker::harness(CODEX, "gpt"));
     let flash = bench.add(FakeWorker::harness(FLASH, "gemini").then(summary(SUMMARY)));
@@ -586,8 +587,8 @@ async fn a_summarizer_out_of_quota_is_never_started() -> anyhow::Result<()> {
     let text = note_text(bench.told(CODEX, AttemptCause::AfterFailure).await?)?;
     ensure!(text.ends_with(&transcript_line(&bench)), "{text}");
     ensure!(flash.specs().is_empty(), "the summarizer started anyway");
-    let expected = "card-001's handoff goes on as note + transcript: agy/gemini-3.6-flash is out \
-                    of quota";
+    let expected = "task-001's fallback goes on as note + transcript: agy/gemini-3.6-flash is out \
+                    of plan usage";
     ensure!(
         bench.warnings().iter().any(|warning| warning == expected),
         "{:?}",
@@ -600,7 +601,7 @@ async fn a_summarizer_out_of_quota_is_never_started() -> anyhow::Result<()> {
 async fn the_stopped_vendors_context_wins_over_the_global_one() -> anyhow::Result<()> {
     let mut settings = with_context(HandoffContext::Note);
     let fresh = replace_context(HandoffContext::Fresh);
-    settings.handoff.replace.insert(claude(), fresh);
+    settings.fallback.replace.insert(claude(), fresh);
     let bench = Bench::new(settings).await?;
     bench.add(FakeWorker::harness(CODEX, "gpt"));
 
@@ -625,18 +626,12 @@ async fn the_stopped_vendors_context_wins_over_the_global_one() -> anyhow::Resul
 async fn the_roles_context_wins_over_the_vendors() -> anyhow::Result<()> {
     let mut settings = Settings::default();
     let fresh = replace_context(HandoffContext::Fresh);
-    settings.handoff.replace.insert(claude(), fresh);
+    settings.fallback.replace.insert(claude(), fresh);
     let role = HandoffSettings {
         context: Some(HandoffContext::Note),
         ..HandoffSettings::default()
     };
-    settings.roles.insert(
-        RoleName::Owner,
-        RoleSettings {
-            handoff: role,
-            ..RoleSettings::default()
-        },
-    );
+    settings.fallback.roles.insert(CrewRole::Workers, role);
     let bench = Bench::new(settings).await?;
     bench.add(FakeWorker::harness(CODEX, "gpt"));
     bench.hand_to_codex().await?;
@@ -656,13 +651,7 @@ async fn the_roles_vendor_context_wins_over_the_role() -> anyhow::Result<()> {
     };
     let transcript = replace_context(HandoffContext::NoteAndTranscript);
     role.replace.insert(claude(), transcript);
-    settings.roles.insert(
-        RoleName::Owner,
-        RoleSettings {
-            handoff: role,
-            ..RoleSettings::default()
-        },
-    );
+    settings.fallback.roles.insert(CrewRole::Workers, role);
     let bench = Bench::new(settings).await?;
     bench.add(FakeWorker::harness(CODEX, "gpt"));
     bench.hand_to_codex().await?;
@@ -677,7 +666,7 @@ async fn a_hand_back_follows_the_replacements_vendor() -> anyhow::Result<()> {
     let mut settings = Settings::default();
     let note = replace_context(HandoffContext::Note);
     settings
-        .handoff
+        .fallback
         .replace
         .insert(worker(CODEX).vendor(), note);
     let bench = Bench::new(settings).await?;
@@ -771,7 +760,7 @@ async fn the_note_names_the_transcript_the_conductor_wrote() -> anyhow::Result<(
     ensure!(note.ends_with(&transcript_line(&bench)), "{note}");
     // Written from the old session's events in the run's log.
     let written = std::fs::read_to_string(&bench.paths.worktree)?;
-    let title = "# card-001 Redis store · claude-code/opus · why it stopped: usage limit\n";
+    let title = "# task-001 Redis store · claude-code/opus · why it stopped: usage limit\n";
     ensure!(written.starts_with(title), "{written}");
     for line in ["Read src/store.rs", STORE, "The store has no pool yet."] {
         ensure!(written.contains(line), "no {line:?} in\n{written}");
@@ -787,7 +776,7 @@ async fn the_note_names_the_transcript_the_conductor_wrote() -> anyhow::Result<(
         "--name-only",
         "HEAD",
     ])?;
-    ensure!(!committed.contains(".argonauts/handoff"), "{committed}");
+    ensure!(!committed.contains(".argonauts/fallback"), "{committed}");
     Ok(())
 }
 
@@ -822,7 +811,12 @@ async fn the_summary_reads_the_transcript_the_conductor_wrote() -> anyhow::Resul
         let saved = std::fs::read_to_string(copy.with_file_name("summary.md"))?;
         ensure!(saved.trim() == SUMMARY, "{saved}");
     }
-    ensure!(bench.warnings().is_empty(), "{:?}", bench.warnings());
+    // Nothing warns of the summary: the one warning is Codex's crash, said with its retry.
+    ensure!(
+        bench.warnings() == ["GPT 5.6 on Codex crashed · trying again in 5s"],
+        "{:?}",
+        bench.warnings()
+    );
     Ok(())
 }
 
@@ -851,6 +845,7 @@ async fn every_race_attempt_reads_the_stopped_sessions_transcript() -> anyhow::R
         .packet(&spec(), &bench.logged()?);
     let race = RecoveryAction::Race {
         to: vec![worker(CODEX), worker(FLASH)],
+        pick: Pick::FirstPassing,
         packet: Box::new(packet),
         checkpoint: None,
     };
@@ -953,7 +948,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         // Solo, so build sessions need only the approved goal, not a plan as well.
         mode: RunMode::Solo,
         forced: true,
-        preset: "default".to_owned(),
+        workflow: "default".to_owned(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -970,6 +965,7 @@ fn started(repo: &TempRepo, base: &str) -> RunEventKind {
         version: "0.0.1".to_owned(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     })))
 }
 

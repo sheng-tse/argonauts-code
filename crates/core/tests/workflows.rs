@@ -59,7 +59,7 @@ fn spend() -> Value {
 fn review_panel() -> Value {
     json!({
         "name": "review-panel",
-        "description": "Two reviewers from other families; an adjudicator only if they disagree",
+        "description": "Two reviewers from other providers; an adjudicator only if they disagree",
         "params": {"target": "diff", "reviewers": 2},
         "phases": [
             {"name": "Review", "standard": "check", "steps": [
@@ -84,7 +84,7 @@ fn composed() -> Value {
             {"name": "Build", "standard": "do", "steps": [
                 {"kind": "for_each", "input": "plan", "steps": [
                     {"kind": "loop_until", "until": "gates_pass", "max": 3, "steps": [
-                        {"kind": "build", "role": "owner"}, {"kind": "gate"}]}]}]},
+                        {"kind": "build", "role": "worker"}, {"kind": "gate"}]}]}]},
             {"name": "Check", "standard": "check", "steps": [
                 {"kind": "workflow", "workflow": "review-panel", "params": {"reviewers": 3}},
                 {"kind": "review", "workers": ["claude-code/opus", "codex"]},
@@ -152,7 +152,7 @@ fn a_misspelled_workflow_key_is_refused() {
         json!({"name": "x", "phases": [{"name": "Do", "standard": "do", "steps": [
             {"kind": "review", "blnd": true}]}]}),
         json!({"name": "x", "phases": [{"name": "Do", "standard": "do", "steps": [
-            {"kind": "review", "different_family": "author"}]}]}),
+            {"kind": "review", "different_provider": "author"}]}]}),
     ];
     for value in misspelled {
         let err = serde_json::from_value::<Workflow>(value.clone()).unwrap_err();
@@ -214,8 +214,8 @@ fn counts_are_a_number_or_a_placeholder() {
     );
     assert!(serde_json::from_value::<Count>(json!(-1)).is_err());
     assert_eq!(
-        round_trip::<WorkflowRef>(json!("peer-crew")).as_str(),
-        "peer-crew"
+        round_trip::<WorkflowRef>(json!("council")).as_str(),
+        "council"
     );
     assert_eq!(WorkflowId::numbered(1).as_str(), "wf-001");
 }
@@ -255,7 +255,7 @@ fn every_workflow_event_keeps_its_wire_format() {
 
 fn session_started() -> Value {
     json!({"worker": "codex", "vendor": "codex", "family": "gpt", "kind": "harness",
-        "role": "reviewer", "step": "review", "access": "read_only", "lifetime": "card",
+        "role": "reviewer", "step": "review", "access": "read_only", "lifetime": "task",
         "resumed_from": null, "follow_key": 2})
 }
 
@@ -270,7 +270,7 @@ fn sessions_outside_a_workflow_keep_their_older_json() {
 }
 
 fn agent_row() -> Value {
-    json!({"session": "s-003", "label": "reviewer · card-002", "worker": "codex/gpt-x",
+    json!({"session": "s-003", "label": "reviewer · task-002", "worker": "codex/gpt-x",
         "status": "running", "tokens": 38000, "spent": spend(), "elapsed_ms": 372000,
         "subagents": 3, "context": {"used": 120000, "cap": 200000},
         "standing_in_for": "claude-code/opus"})
@@ -285,10 +285,10 @@ fn the_workflow_agent_and_context_views_keep_their_wire_format() {
         "status_lines": [{"kind": "note", "text": "review:median found a bug, so a second round"}],
         "breadcrumb": [], "agents_done": 1,
         "agents_total": 3, "elapsed_ms": 72000, "spent": spend(),
-        "phases": [{"name": "Review", "detail": "two reviewers from other companies",
+        "phases": [{"name": "Review", "detail": "two reviewers from other providers",
             "standard": "check", "status": "running", "count": {"done": 1, "total": 3},
             "rows": [
-                {"row": "agent", "session": "s-003", "label": "reviewer · card-002",
+                {"row": "agent", "session": "s-003", "label": "reviewer · task-002",
                  "worker": "codex/gpt-x", "status": "done", "tokens": 38000,
                  "spent": spend(), "elapsed_ms": 372000, "subagents": 0, "context": null,
                  "standing_in_for": null},
@@ -300,7 +300,7 @@ fn the_workflow_agent_and_context_views_keep_their_wire_format() {
             {"name": "Adjudicate", "detail": "", "standard": "decide", "status": "skipped",
              "attempt": 2, "rows": []}]}}));
     let agent = view(json!({"data": "agent", "view": {
-        "run": "run-01", "row": agent_row(), "prompt": "Review card-002's diff.",
+        "run": "run-01", "row": agent_row(), "prompt": "Review task-002's diff.",
         "activity": [{"tool": "Bash", "summary": "npm test", "ok": true},
                      {"tool": "Read", "summary": "src/limits/store.ts", "ok": false},
                      {"tool": "Edit", "summary": "src/limits/store.ts", "ok": null}],
@@ -314,7 +314,7 @@ fn the_workflow_agent_and_context_views_keep_their_wire_format() {
         {"run": null, "session": "s-001", "label": "lead", "worker": "claude-code/opus",
          "used": 42000, "window": 200000, "cap": 180000, "tool_calls": 12, "spent": spend(),
          "rotations": 0},
-        {"run": "run-01", "session": "s-003", "label": "owner · card-002",
+        {"run": "run-01", "session": "s-003", "label": "worker · task-002",
          "worker": "openrouter/z-ai/glm-5", "used": 91000, "window": null, "cap": null,
          "tool_calls": 40, "spent": spend(), "rotations": 1}]}}));
     for event in [workflow, agent, context] {
@@ -402,13 +402,13 @@ fn design_answers_pass_the_strict_schema_and_decode() {
     check_step_output::<DesignWorkflow>(json!({"name": "fix-slugify-median",
         "description": "Fix slugify's dashes and median's empty list", "based_on": null,
         "why": "No example fits a one-line fix.", "params": [],
-        "workflow": "name: tight-fix\nphases:\n  - title: Fix\n    detail: one owner\n    standard: do\n    steps:\n      - { kind: build, label: \"fix:{item}\" }\n",
+        "workflow": "name: tight-fix\nphases:\n  - title: Fix\n    detail: one worker\n    standard: do\n    steps:\n      - { kind: build, label: \"fix:{item}\" }\n",
         "done_when": [{"id": "G1", "text": "median([]) raises", "short": "Empty list",
                        "check": {"command": "pytest -k median"}}],
         "plan": [{"item": "median", "task": "raise on an empty list"}],
         "questions": [{"topic": "Accented letters", "text": "Keep accents?",
                        "options": ["Keep them", "Strip them"]}],
-        "first_attempt": {"title": "Empty List", "detail": "one owner",
+        "first_attempt": {"title": "Empty List", "detail": "one worker",
                           "steps": "- { kind: build, label: \"fix:{item}\" }\n"}}));
     round_trip::<DesignInput>(json!({"request": "add per-key rate limiting",
         "goal": ["429 with Retry-After"],
@@ -427,7 +427,7 @@ fn design_answers_pass_the_strict_schema_and_decode() {
 #[test]
 fn the_new_workflow_defaults_hold() {
     let settings = Settings::default();
-    assert_eq!(settings.workflow, WorkflowRef::new("peer-crew"));
+    assert_eq!(settings.phases, WorkflowRef::new("council"));
     let workflows = &settings.workflows;
     assert_eq!(workflows.lead_designs.design(), LeadDesign::Size);
     assert!(workflows.allow_composed && workflows.adapt_at_phase_ends);
@@ -444,9 +444,9 @@ fn the_new_workflow_defaults_hold() {
 fn settings_with_the_workflow_keys_set_pass_the_schema() {
     let settings: Settings = toml::from_str(
         r#"
-workflow = "review-panel"
+phases = "review-panel"
 [workflows]
-lead_designs = false
+orchestrator_designs = false
 allow_composed = false
 max_depth = 1
 adapt_at_phase_ends = false
@@ -454,13 +454,13 @@ adapt_at_phase_ends = false
 glyphs = "ascii"
 ambiguous_width = 2
 [ui.panel]
-vendor_internals = "hidden"
+subagents = "hidden"
 agents = true
 max_rows = 8
 "#,
     )
     .unwrap();
-    assert_eq!(settings.workflow.as_str(), "review-panel");
+    assert_eq!(settings.phases.as_str(), "review-panel");
     assert_eq!(settings.workflows.max_depth, 1);
     assert_eq!(settings.ui.panel.vendor_internals, VendorInternals::Hidden);
     assert_eq!(settings.ui.glyphs, Glyphs::Ascii);

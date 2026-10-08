@@ -7,11 +7,13 @@
 pub mod color;
 pub mod glyphs;
 mod rainbow;
+mod value;
 
 use ratatui::style::{Color, Modifier, Style};
 
 pub use color::{Brightness, ColorEnv, ColorLevel, downgrade, nearest_ansi16, nearest_ansi256};
 pub use glyphs::Glyphs;
+pub use value::{BadColor, ColorValue};
 
 /// What a piece of text is, independent of the color a theme gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -37,7 +39,7 @@ pub enum Role {
     ModeShadow,
     ModeAuto,
     /// Claude Code's bypass-permissions red, since nothing in full auto waits for you.
-    ModeFullAuto,
+    ModeAutopilot,
     /// Shell mode: the input's `!`, its rules, and the mode line's words.
     Shell,
     /// Background of a removed diff row.
@@ -76,10 +78,48 @@ pub enum Role {
     SyntaxNumber,
     SyntaxType,
     SyntaxConstant,
+    /// A widget's frame.
+    WidgetBorder,
+    /// Where something happens on a bar: compaction, rotation, the soft stop.
+    Tick,
+    /// The part of a bar past its tick.
+    Held,
+    BadgeText,
+    /// What a number is measured against, fainter than the number.
+    Denominator,
+    CatSystem,
+    CatTools,
+    CatMcp,
+    CatAgents,
+    CatMemory,
+    CatSkills,
+    CatMessages,
+    CatFree,
+    /// What Argonauts sent a CLI that reports no breakdown of its context.
+    CatBrief,
+    /// The rest of a conversation, and parts folded together.
+    CatOther,
+    TokensCached,
+    TokensInput,
+    TokensOutput,
+    // The state roles follow another role by default, so one override moves every glyph.
+    StateWorking,
+    StateWaiting,
+    StateTimer,
+    StateNeedsYou,
+    StateDone,
+    StateFailed,
+    StateStopped,
+    /// Claude Code's purple for `ultracode`: the tag on the input's rule and the typed word.
+    Ultracode,
+    // One color per CLI, the same in every mod that draws it.
+    CliClaude,
+    CliCodex,
+    CliAgy,
 }
 
 impl Role {
-    pub const COUNT: usize = 44;
+    pub const COUNT: usize = 73;
 
     pub const ALL: [Role; Role::COUNT] = [
         Role::Text,
@@ -98,7 +138,7 @@ impl Role {
         Role::ModeSupervised,
         Role::ModeShadow,
         Role::ModeAuto,
-        Role::ModeFullAuto,
+        Role::ModeAutopilot,
         Role::Shell,
         Role::RemovedRow,
         Role::RemovedWord,
@@ -126,6 +166,35 @@ impl Role {
         Role::SyntaxNumber,
         Role::SyntaxType,
         Role::SyntaxConstant,
+        Role::WidgetBorder,
+        Role::Tick,
+        Role::Held,
+        Role::BadgeText,
+        Role::Denominator,
+        Role::CatSystem,
+        Role::CatTools,
+        Role::CatMcp,
+        Role::CatAgents,
+        Role::CatMemory,
+        Role::CatSkills,
+        Role::CatMessages,
+        Role::CatFree,
+        Role::CatBrief,
+        Role::CatOther,
+        Role::TokensCached,
+        Role::TokensInput,
+        Role::TokensOutput,
+        Role::StateWorking,
+        Role::StateWaiting,
+        Role::StateTimer,
+        Role::StateNeedsYou,
+        Role::StateDone,
+        Role::StateFailed,
+        Role::StateStopped,
+        Role::Ultracode,
+        Role::CliClaude,
+        Role::CliCodex,
+        Role::CliAgy,
     ];
 
     /// The name a config file uses for this role, such as `accent` or `removed-row`.
@@ -145,9 +214,9 @@ impl Role {
             Role::Card => "card",
             Role::Label => "label",
             Role::ModeSupervised => "mode-supervised",
-            Role::ModeShadow => "mode-shadow",
+            Role::ModeShadow => "mode-auto-preview",
             Role::ModeAuto => "mode-auto",
-            Role::ModeFullAuto => "mode-full-auto",
+            Role::ModeAutopilot => "mode-autopilot",
             Role::Shell => "shell",
             Role::RemovedRow => "removed-row",
             Role::RemovedWord => "removed-word",
@@ -175,6 +244,35 @@ impl Role {
             Role::SyntaxNumber => "syntax-number",
             Role::SyntaxType => "syntax-type",
             Role::SyntaxConstant => "syntax-constant",
+            Role::WidgetBorder => "mod-border",
+            Role::Tick => "tick",
+            Role::Held => "held",
+            Role::BadgeText => "badge-text",
+            Role::Denominator => "denominator",
+            Role::CatSystem => "cat-system",
+            Role::CatTools => "cat-tools",
+            Role::CatMcp => "cat-mcp",
+            Role::CatAgents => "cat-agents",
+            Role::CatMemory => "cat-memory",
+            Role::CatSkills => "cat-skills",
+            Role::CatMessages => "cat-messages",
+            Role::CatFree => "cat-free",
+            Role::CatBrief => "cat-brief",
+            Role::CatOther => "cat-other",
+            Role::TokensCached => "tokens-cached",
+            Role::TokensInput => "tokens-input",
+            Role::TokensOutput => "tokens-output",
+            Role::StateWorking => "state-working",
+            Role::StateWaiting => "state-waiting",
+            Role::StateTimer => "state-timer",
+            Role::StateNeedsYou => "state-needs-you",
+            Role::StateDone => "state-done",
+            Role::StateFailed => "state-failed",
+            Role::StateStopped => "state-stopped",
+            Role::Ultracode => "ultracode",
+            Role::CliClaude => "cli-claude",
+            Role::CliCodex => "cli-codex",
+            Role::CliAgy => "cli-agy",
         }
     }
 
@@ -182,8 +280,31 @@ impl Role {
         Role::ALL.into_iter().find(|role| role.name() == name)
     }
 
+    /// The role this one follows until it's given a color of its own.
+    pub fn default_link(self) -> Option<Role> {
+        match self {
+            Role::StateWorking => Some(Role::Card),
+            Role::StateWaiting | Role::StateTimer | Role::StateStopped => Some(Role::Dim),
+            Role::StateNeedsYou => Some(Role::Warning),
+            Role::StateDone => Some(Role::Success),
+            Role::StateFailed => Some(Role::Error),
+            _ => None,
+        }
+    }
+
     fn index(self) -> usize {
         self as usize
+    }
+
+    /// The color a CLI keeps in every mod, by its adapter id or the short name its chip shows.
+    /// A CLI without one of its own draws in the grey of whatever is left over.
+    pub fn for_cli(cli: &str) -> Role {
+        match cli.trim() {
+            "claude-code" | "Claude" | "Claude Code" => Role::CliClaude,
+            "codex" | "Codex" => Role::CliCodex,
+            "antigravity-cli" | "agy" | "Antigravity CLI" => Role::CliAgy,
+            _ => Role::CatOther,
+        }
     }
 }
 
@@ -262,6 +383,8 @@ impl AgentColors {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     styles: [Style; Role::COUNT],
+    /// Roles drawn as another role, such as `state-done` as `success`.
+    links: [Option<Role>; Role::COUNT],
     pub glyphs: Glyphs,
     pub level: ColorLevel,
     pub brightness: Brightness,
@@ -302,11 +425,46 @@ impl Theme {
     }
 
     pub fn style(&self, role: Role) -> Style {
-        self.styles[role.index()]
+        self.styles[self.resolve(role).index()]
+    }
+
+    /// The role's color, whether the palette gives it as text or as a fill, for parts that draw
+    /// it both ways, such as a bar's cells and its legend's swatches.
+    pub fn color(&self, role: Role) -> Option<Color> {
+        let style = self.style(role);
+        style.fg.or(style.bg)
     }
 
     pub fn set(&mut self, role: Role, style: Style) {
         self.styles[role.index()] = style;
+        self.links[role.index()] = None;
+    }
+
+    /// Draws `role` as `target` draws, so overriding `target` moves both. A link that would
+    /// lead back to `role` is refused, and returns false.
+    pub fn link(&mut self, role: Role, target: Role) -> bool {
+        if self.resolve(target) == role {
+            return false;
+        }
+        self.links[role.index()] = Some(target);
+        true
+    }
+
+    /// The role whose style `role` draws with, following links.
+    fn resolve(&self, mut role: Role) -> Role {
+        // `link` refuses loops, so this ends; the bound only keeps a bug from hanging.
+        for _ in 0..Role::COUNT {
+            match self.links[role.index()] {
+                Some(next) => role = next,
+                None => break,
+            }
+        }
+        role
+    }
+
+    /// The role `role` follows, if it follows one.
+    pub fn linked_to(&self, role: Role) -> Option<Role> {
+        self.links[role.index()]
     }
 
     /// An agent's name style: its own color for the run, or normal text without one.
@@ -319,7 +477,8 @@ impl Theme {
         self.level != ColorLevel::None
     }
 
-    /// The shimmer becomes a lighter shade of the new accent, and the bar fill follows it.
+    /// The shimmer becomes a lighter shade of the new accent. The meter fill stays lavender, since
+    /// a gold fill can't be told from the warning amber.
     pub fn with_accent(mut self, (r, g, b): (u8, u8, u8)) -> Self {
         let lighten = |c: u8| c.saturating_add(((255 - u16::from(c)) * 2 / 5) as u8);
         self.set(Role::Accent, Style::new().fg(Color::Rgb(r, g, b)));
@@ -327,7 +486,6 @@ impl Theme {
             Role::Shimmer,
             Style::new().fg(Color::Rgb(lighten(r), lighten(g), lighten(b))),
         );
-        self.set(Role::BarFill, Style::new().bg(Color::Rgb(r, g, b)));
         let level = self.level;
         self.with_level(level)
     }
@@ -335,6 +493,7 @@ impl Theme {
     fn from_fn(brightness: Brightness, style: fn(Role) -> Style) -> Self {
         Self {
             styles: Role::ALL.map(style),
+            links: Role::ALL.map(Role::default_link),
             glyphs: Glyphs::UNICODE,
             level: ColorLevel::TrueColor,
             brightness,
@@ -381,7 +540,7 @@ fn dark_style(role: Role) -> Style {
         Role::ModeSupervised => fg(0x999999),
         Role::ModeShadow => fg(0x48968c),
         Role::ModeAuto => fg(0xffc107),
-        Role::ModeFullAuto => fg(0xff6b80),
+        Role::ModeAutopilot => fg(0xff6b80),
         // Claude Code's bash mode pink.
         Role::Shell => fg(0xfd5db1),
         Role::RemovedRow => bg(0x3d0100),
@@ -393,8 +552,9 @@ fn dark_style(role: Role) -> Style {
         Role::DiffText => fg(0xf8f8f2),
         Role::UserBand => bg(0x373737),
         Role::Selection => bg(0x264f78),
-        Role::BarTrack => bg(0x383945),
-        Role::BarFill => bg(0xe6a23c),
+        // Claude Code's /usage meter: `rate_limit_fill` on `rate_limit_empty`.
+        Role::BarTrack => bg(0x505370),
+        Role::BarFill => bg(0xb1b9f9),
         // Lighter shades of the eight, so names read on a dark background.
         Role::AgentRed => fg(0xf87171),
         Role::AgentBlue => fg(0x60a5fa),
@@ -411,6 +571,36 @@ fn dark_style(role: Role) -> Style {
         Role::SyntaxNumber => fg(0xd19a66),
         Role::SyntaxType => fg(0xe5c07b),
         Role::SyntaxConstant => fg(0xd19a66),
+        Role::WidgetBorder => fg(0x4f5468),
+        Role::Tick => fg(0xffc107),
+        Role::Held => fg(0x262a3a),
+        Role::BadgeText => fg(0x14161f),
+        Role::Denominator => fg(0x6e7385),
+        // The categories of Claude Code's /context, in hues that stay apart in a bar.
+        Role::CatSystem => fg(0x7088c8),
+        Role::CatTools => fg(0x3fa7a0),
+        Role::CatMcp => fg(0xb1b9f9),
+        Role::CatAgents => fg(0x4eba65),
+        Role::CatMemory => fg(0xe5c07b),
+        Role::CatSkills => fg(0xe27fb3),
+        Role::CatMessages => fg(0xd97757),
+        Role::CatFree => fg(0x3a3f55),
+        Role::CatBrief => fg(0xe6a23c),
+        Role::CatOther => fg(0x8b90a8),
+        Role::TokensCached => fg(0x6f7590),
+        Role::TokensInput => fg(0x7088c8),
+        Role::TokensOutput => fg(0xd97757),
+        Role::StateWorking
+        | Role::StateWaiting
+        | Role::StateTimer
+        | Role::StateNeedsYou
+        | Role::StateDone
+        | Role::StateFailed
+        | Role::StateStopped => dark_style(role.default_link().unwrap_or(Role::Text)),
+        Role::Ultracode => fg(0xaf87ff),
+        Role::CliClaude => fg(0xe08a66),
+        Role::CliCodex => fg(0x6aa6ff),
+        Role::CliAgy => fg(0x36cfe6),
     }
 }
 
@@ -434,7 +624,7 @@ fn light_style(role: Role) -> Style {
         Role::ModeSupervised => fg(0x666666),
         Role::ModeShadow => fg(0x006666),
         Role::ModeAuto => fg(0x966c1e),
-        Role::ModeFullAuto => fg(0xcf222e),
+        Role::ModeAutopilot => fg(0xcf222e),
         Role::Shell => fg(0xff0087),
         Role::RemovedRow => bg(0xffdcdc),
         Role::RemovedWord => bg(0xffc7c7),
@@ -445,8 +635,8 @@ fn light_style(role: Role) -> Style {
         Role::DiffText => fg(0x333333),
         Role::UserBand => bg(0xf0f0f0),
         Role::Selection => bg(0xadd6ff),
-        Role::BarTrack => bg(0xd8dbe2),
-        Role::BarFill => bg(0xb7791f),
+        Role::BarTrack => bg(0xd6daf5),
+        Role::BarFill => bg(0x5769f7),
         // Claude Code's subagent colors.
         Role::AgentRed => fg(0xdc2626),
         Role::AgentBlue => fg(0x2563eb),
@@ -463,6 +653,35 @@ fn light_style(role: Role) -> Style {
         Role::SyntaxNumber => fg(0xb45309),
         Role::SyntaxType => fg(0x9a6700),
         Role::SyntaxConstant => fg(0xb45309),
+        Role::WidgetBorder => fg(0xc4c8d2),
+        Role::Tick => fg(0xb26a00),
+        Role::Held => fg(0xf1f2f5),
+        Role::BadgeText => fg(0xffffff),
+        Role::Denominator => fg(0x8c8f99),
+        Role::CatSystem => fg(0x4f63a8),
+        Role::CatTools => fg(0x1f7f79),
+        Role::CatMcp => fg(0x5769f7),
+        Role::CatAgents => fg(0x2c7a39),
+        Role::CatMemory => fg(0xb58900),
+        Role::CatSkills => fg(0xc0407f),
+        Role::CatMessages => fg(0xc4583a),
+        Role::CatFree => fg(0xe1e4ea),
+        Role::CatBrief => fg(0xb7791f),
+        Role::CatOther => fg(0x8a8fa3),
+        Role::TokensCached => fg(0x9aa0b4),
+        Role::TokensInput => fg(0x4f63a8),
+        Role::TokensOutput => fg(0xc4583a),
+        Role::StateWorking
+        | Role::StateWaiting
+        | Role::StateTimer
+        | Role::StateNeedsYou
+        | Role::StateDone
+        | Role::StateFailed
+        | Role::StateStopped => light_style(role.default_link().unwrap_or(Role::Text)),
+        Role::Ultracode => fg(0x8700ff),
+        Role::CliClaude => fg(0xc4583a),
+        Role::CliCodex => fg(0x2563eb),
+        Role::CliAgy => fg(0x0891b2),
     }
 }
 

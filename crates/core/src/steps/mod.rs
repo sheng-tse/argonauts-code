@@ -1,11 +1,13 @@
 //! LLM steps: every judgment call is a schema-checked step whose output feeds a fixed rule.
 //! Code, never the model, decides what happens next.
 
+pub mod asking;
 pub mod card;
 pub mod design;
 mod design_shorthand;
 pub mod goal;
 pub mod handoff;
+pub mod instructions;
 pub mod intake;
 pub mod judgment;
 pub mod narrate;
@@ -58,6 +60,8 @@ pub enum StepName {
     Narrate,
     DesignWorkflow,
     HandoffSummary,
+    /// The judge picks among fallbacks that did the same task at once.
+    PickAttempt,
     /// The lead writes a goal's next attempt.
     PlanAttempt,
     /// A check from another company judges a goal's criteria.
@@ -66,6 +70,8 @@ pub enum StepName {
     VendorCommand,
     /// A direct solo turn: your message to the main session, as its CLI takes it.
     Direct,
+    /// A model you named writes another agent's instructions.
+    WriteInstructions,
 }
 
 pub trait Step {
@@ -88,6 +94,11 @@ pub struct StepRequest {
     pub spec: SessionSpec,
     /// Retries in the same session when the output doesn't match. Default 1.
     pub retries_on_mismatch: u8,
+    /// How many times a session that ends its turn with a question, instead of its answer, is
+    /// told to decide and carry on (`approvals.ask_limit`). Once more after that it is told to
+    /// take the option it recommended. `None` replies to no question, so it fails like any
+    /// answer that doesn't match. Default `None`.
+    pub ask_limit: Option<u8>,
     /// Steering commands for the running session, passed on as they arrive.
     pub control: Option<mpsc::Receiver<SessionControl>>,
     /// Cancelling stops the session at once, and the step ends with the session's end.
@@ -103,6 +114,7 @@ impl StepRequest {
             worker,
             spec,
             retries_on_mismatch: 1,
+            ask_limit: None,
             control: None,
             cancel: CancellationToken::new(),
             normalize: std::convert::identity,
@@ -742,7 +754,7 @@ mod tests {
     fn valid_outputs_still_validate_after_the_rewrite() {
         let schema = output_schema::<narrate::Narrate>();
         let output = narrate::NarrateOutput {
-            lines: vec!["Card 2 passed its gates.".into()],
+            lines: vec!["Task 2 passed its checks.".into()],
         };
         let value = serde_json::to_value(&output).unwrap();
         assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));

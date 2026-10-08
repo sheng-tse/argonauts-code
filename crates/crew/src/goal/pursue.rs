@@ -1,12 +1,14 @@
-//! The goal style: an objective and a done-when list pursued in attempts. Each
-//! attempt is a phase that ends with its check; when the check says "not yet", the lead plans
-//! the next attempt from what's missing and it's added before Merge, which waits at the end. A
-//! workflow whose final check finds a criterion unmet may keep going as a goal the same way.
+//! A goal around a run's workflow: the workflow runs, the check decides whether the goal holds,
+//! and when it doesn't the orchestrator plans the next round from what failed, added before
+//! Merge, which waits at the end. A run takes its goal at the start (`/goal`, the request's
+//! own words, `goal.default`), or on the way: when its workflow's own steps state one, when you
+//! turn it into a goal, or when its final check finds a line unmet and it keeps going.
 //!
-//! Only code, from the check's answers, marks a goal met, stuck, or out of attempts. A stuck
-//! goal, and "keep going as a goal", go to whoever answers the crew's questions: you, or in
-//! auto mode the lead, which takes the recommended answer and says so.
+//! Only code, from the check, marks a goal met or stuck. There's no fixed number of rounds:
+//! the same failure `goal.stuck_after` rounds running changes approach once, and stuck again
+//! the goal stops and says why. On autopilot it never asks.
 
+use argonauts_core::CardId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::{CardKind, CardSpec};
 use argonauts_core::events::checkpoint::{
@@ -18,15 +20,18 @@ use argonauts_core::events::goal::{
 };
 use argonauts_core::events::run::{ParkReason, Party, RunMode, RunOutcome};
 use argonauts_core::events::workflow::{RunNote, StepEnd, WorkflowEvent};
+use argonauts_core::goal::keep::{self, Limits, Next};
+use argonauts_core::goal::{
+    CheckMeans, CheckWith, GoalDefault, GoalFrom, GoalScope, GoalSpec, KeptBy,
+};
 use argonauts_core::names::{RoleName, WorkerRef, WorkflowId};
 use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::AtHardLimit;
 use argonauts_core::settings::budget::BudgetUnit;
-use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::goal::DiffTag;
 use argonauts_core::steps::pursue::{AttemptPlan, PlanAttempt, PlanAttemptInput};
 use argonauts_core::workflow::{Phase, StandardPhase, StepKind, Workflow};
-use argonauts_core::{CardId, RunId};
 
 use crate::checkpoints::{self, CheckpointRequest};
 use crate::engine::host::{Ask, Host};
@@ -39,39 +44,59 @@ use crate::workflow::{Flow, StepCall, StepDone, change, runner, shape, yaml};
 
 use super::{check, draft, file};
 
-/// The longest objective `/goal` takes, as Codex's does.
-pub const MAX_OBJECTIVE: usize = 4_000;
-
 pub const KEEP_GOING: &str = "Keep going as a goal?";
 pub const KEEP: &str = "Keep going as a goal";
 pub const TO_THE_MERGE: &str = "Go on to the merge";
 pub const STUCK: &str = "The goal is stuck. What now?";
-pub const ONE_MORE: &str = "One more attempt, by another model";
+pub const KEEP_TRYING: &str = "Keep trying";
 pub const DELIVER: &str = "Deliver what holds";
 pub const STOP: &str = "Stop and keep the branch";
 pub const TURN_INTO_GOAL: &str = "Turn this run into a goal?";
-pub const OVER_BUDGET: &str = "The goal is over budget. What now?";
+pub const OVER_BUDGET: &str = "The goal is over its limit. What now?";
 pub const CHECK_WHEN_IT_ENDS: &str = "Yes, and check it when this workflow ends";
 
-/// Whether the run pursues a goal: one that started as a goal, or a workflow that kept going as
-/// one.
-pub fn pursuing(state: &RunState) -> bool {
+/// Whether a goal goes round the run's workflow: one it started with (`goal.until`, or
+/// `goal.default = "from-request"`), or one it took on the way. A solo run's goal is its one
+/// task's instead, kept in `task`.
+pub fn pursuing(state: &RunState, settings: &Settings) -> bool {
     state.goal.pursuit.is_some()
         || runner::run_mode(state) == Some(RunMode::Crew)
-            && state
-                .run
-                .named
-                .as_ref()
-                .is_some_and(|named| named.style == RunStyle::Goal)
+            && (configured(settings).is_some() || settings.goal.default == GoalDefault::FromRequest)
 }
 
-/// The run's done-when list: the goal's once it's set, else the lead's, else the approved goal
-/// file's criteria. A goal that's your prompt alone has one criterion: the prompt done.
-pub fn criteria(state: &RunState) -> Vec<Criterion> {
-    if let Some(goal) = &state.goal.pursuit {
-        return goal.criteria.clone();
+/// The goal the settings give a run: `goal.until`, from whichever layer set it, which is the
+/// conversation's for `/goal` and the request's for its own words.
+pub fn configured(settings: &Settings) -> Option<GoalSpec> {
+    let until = settings.goal.until.as_deref()?.trim();
+    if until.is_empty() {
+        return None;
     }
-    planned_criteria(state)
+    let means = CheckMeans {
+        project_checks: !settings.checks.run.is_empty(),
+    };
+    // A condition `command` can't check was refused where it was typed. From a file it still
+    // gets a check: the judge reads the lines no command names.
+    let mut goal = GoalSpec::from_words(until, settings.goal.check, means, GoalFrom::Setting)
+        .or_else(|_| GoalSpec::from_words(until, CheckWith::Auto, means, GoalFrom::Setting))
+        .ok()?;
+    goal.max_rounds = settings.goal.max_rounds;
+    Some(goal)
+}
+
+/// Whether the run's later phases are its goal's rounds, which the orchestrator plans from each
+/// check rather than at phase ends: true once a round has been checked.
+pub fn plans_its_rounds(state: &RunState) -> bool {
+    state.goal.pursuit.as_ref().is_some_and(|goal| {
+        goal.attempts
+            .iter()
+            .any(|attempt| attempt.verdict.is_some())
+    })
+}
+
+/// The goal's lines: its own once it's set, else the ones the settings give, else the
+/// done-when list the final check judges.
+pub fn criteria(state: &RunState, settings: &Settings) -> Vec<Criterion> {
+    spec(state, settings).lines
 }
 
 /// The done-when list before a goal pursues it: the lead's, else the approved goal file's.
@@ -94,22 +119,12 @@ pub fn planned_criteria(state: &RunState) -> Vec<Criterion> {
     approved.criteria.clone()
 }
 
-/// The objective: your words from `/goal <objective>`, verbatim, else the run's description.
+/// The condition in words: the goal's own, else the run's description.
 pub fn objective(state: &RunState) -> String {
     if let Some(goal) = &state.goal.pursuit {
         return goal.objective.clone();
     }
     let started = state.run.started.as_ref();
-    let asked_as_goal = started.is_some_and(|started| {
-        started.forced
-            && started
-                .overrides
-                .iter()
-                .any(|set| set.key == "workflows.style" && set.value.trim_matches('"') == "goal")
-    });
-    if asked_as_goal && let Some(started) = started {
-        return started.request.chars().take(MAX_OBJECTIVE).collect();
-    }
     state
         .run
         .named
@@ -119,216 +134,345 @@ pub fn objective(state: &RunState) -> String {
         .unwrap_or_default()
 }
 
-/// Before a goal run's attempt phase begins: the goal, the first time, then the attempt.
-pub fn begin_attempt(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<()> {
-    let Some((title, set, n)) = host.read(|state| {
-        if !pursuing(state) {
-            return None;
-        }
-        let record = state.workflows.by_id.get(id)?;
-        if record.parent.is_some() {
-            return None;
-        }
-        let definition = record.phase_definition(phase)?;
-        if !shape::is_attempt(definition) {
-            return None;
-        }
-        let attempts = state
+/// The goal as the check takes it: the run's own once set, else `goal.until`, else the
+/// done-when list, which under `goal.default = "from-request"` is the request's goal and
+/// otherwise is read by the judge as the final check always was.
+fn spec(state: &RunState, settings: &Settings) -> GoalSpec {
+    if let Some(goal) = &state.goal.pursuit {
+        return goal.spec();
+    }
+    if runner::run_mode(state) == Some(RunMode::Crew)
+        && let Some(goal) = configured(settings)
+    {
+        return goal;
+    }
+    let from_request = settings.goal.default == GoalDefault::FromRequest;
+    let mut goal = GoalSpec::from_lines(
+        &objective(state),
+        planned_criteria(state),
+        if from_request {
+            settings.goal.check
+        } else {
+            CheckWith::Judge
+        },
+        if from_request {
+            GoalFrom::Request
+        } else {
+            GoalFrom::WorkflowFile
+        },
+    );
+    if from_request {
+        goal.max_rounds = settings.goal.max_rounds;
+    }
+    goal
+}
+
+/// When the run's goal stops being tried: its own cap, else `goal.max_rounds`.
+pub(super) fn limits(state: &RunState, settings: &Settings) -> Limits {
+    Limits {
+        stuck_after: settings.goal.stuck_after,
+        max_rounds: state
             .goal
             .pursuit
             .as_ref()
-            .map(|goal| goal.attempts.as_slice())
-            .unwrap_or_default();
-        if attempts.iter().any(|attempt| attempt.phase == phase) {
+            .and_then(|goal| goal.max_rounds)
+            .or(settings.goal.max_rounds),
+    }
+}
+
+/// Before a phase of the run's workflow begins. A run that starts with a goal takes it here,
+/// and its workflow is round 1. A phase the orchestrator added after a check is the next round.
+///
+/// Whatever shaped the workflow, a goal nothing has checked gets its check before Merge.
+/// Returns true when that changed the phases ahead, this one maybe among them, so the runner
+/// looks at them again.
+pub fn begin_attempt(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<bool> {
+    let root = host.read(|state| {
+        state
+            .workflows
+            .by_id
+            .get(id)
+            .is_some_and(|record| record.parent.is_none())
+    });
+    if !root {
+        return Ok(false);
+    }
+    let taken = take_goal(host, phase)?;
+    if check_before_merge(host, id, phase)? {
+        return Ok(true);
+    }
+    if taken {
+        return Ok(false);
+    }
+    let Some((title, n)) = host.read(|state| {
+        let goal = state.goal.pursuit.as_ref()?;
+        // Until round 1 is checked every phase is the workflow's own, its Check included.
+        if !plans_its_rounds(state) {
             return None;
         }
-        let n = u32::try_from(attempts.len()).unwrap_or(u32::MAX) + 1;
-        Some((definition.name.clone(), state.goal.pursuit.is_none(), n))
+        let definition = state.workflows.by_id.get(id)?.phase_definition(phase)?;
+        if !shape::is_attempt(definition) {
+            return None;
+        }
+        if goal.attempts.iter().any(|attempt| attempt.phase == phase) {
+            return None;
+        }
+        let n = u32::try_from(goal.attempts.len()).unwrap_or(u32::MAX) + 1;
+        Some((definition.name.clone(), n))
     }) else {
-        return Ok(());
+        return Ok(false);
     };
-    if set {
-        let goal = host.read(|state| GoalRun {
-            objective: objective(state),
-            criteria: criteria(state),
-            attempts: Vec::new(),
-            status: GoalStatus::Pursuing,
-            max_attempts: host.settings().goal.max_attempts.max(1),
-        });
-        host.record(
-            None,
-            None,
-            RunEventKind::Goal(GoalEvent::Set(Box::new(goal))),
-        )?;
+    attempt_started(host, n, title, phase)?;
+    Ok(false)
+}
+
+const CHECKED_BEFORE_MERGE: &str = "The run has a goal, so its check comes before Merge";
+const TURNED_INTO_GOAL: &str =
+    "You turned the run into a goal, so a check judges the workflow before Merge";
+
+/// Why the run owes a check before Merge: its goal is still kept and nothing has checked the
+/// newest round, or you turned the workflow into a goal and nothing has judged it yet.
+fn owes_a_check(state: &RunState) -> Option<&'static str> {
+    let judged = |round: Option<u32>| {
+        state.goal.checks.iter().any(|checked| {
+            checked.task.is_none() && round.is_none_or(|round| checked.attempt == round)
+        })
+    };
+    let Some(goal) = &state.goal.pursuit else {
+        return (turned_into_goal(state) && !judged(None)).then_some(TURNED_INTO_GOAL);
+    };
+    let kept = matches!(goal.status, GoalStatus::Pursuing | GoalStatus::Paused);
+    let newest = goal.attempts.last().map_or(1, |attempt| attempt.n);
+    (kept && !judged(Some(newest))).then_some(CHECKED_BEFORE_MERGE)
+}
+
+/// As phase `phase` of the run's workflow is about to begin: puts the check the run owes
+/// before Merge, unless a phase from here on has it. The usual workflow has. One with
+/// `workflows.final_check` off that you turn into a goal doesn't, and neither does one whose
+/// own steps make the rounds: they may never ask whether the goal holds, and only code may say
+/// that it does. Returns whether the phases changed.
+fn check_before_merge(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<bool> {
+    let Some((workflow, why)) = host.read(|state| {
+        let why = owes_a_check(state)?;
+        let record = state.workflows.by_id.get(id)?;
+        // A change recorded while a phase runs counts that phase as finished from then on, so
+        // a run picked up in the middle of one waits for the next phase to begin.
+        (!record.phase_started(phase)).then(|| (record.workflow.clone(), why))
+    }) else {
+        return Ok(false);
+    };
+    let ahead = workflow.phases.iter().skip(phase as usize);
+    if ahead
+        .clone()
+        .any(|phase| shape::has_kind(&phase.steps, StepKind::Check))
+    {
+        return Ok(false);
     }
+    let Some(merge) = ahead
+        .clone()
+        .position(|phase| shape::has_kind(&phase.steps, StepKind::Merge))
+    else {
+        return Ok(false);
+    };
+    let mut proposed = workflow.clone();
+    proposed
+        .phases
+        .insert(phase as usize + merge, shape::check_phase());
+    change::record(host, id, proposed, None, why.to_owned())?;
+    Ok(true)
+}
+
+/// Sets the goal the run starts with, once its lines are known, with the workflow as round 1
+/// from `phase`. Returns whether it did.
+pub(super) fn take_goal(host: &Host, phase: u32) -> EngineResult<bool> {
+    let settings = host.settings();
+    let Some((goal, title)) = host.read(|state| {
+        if state.goal.pursuit.is_some() || !pursuing(state, settings) {
+            return None;
+        }
+        let spec = spec(state, settings);
+        if spec.lines.is_empty() {
+            return None;
+        }
+        let goal = GoalRun::new(&spec, GoalScope::Workflow, KeptBy::Argonauts);
+        Some((goal, workflow_title(state)))
+    }) else {
+        return Ok(false);
+    };
+    set(host, goal, title, phase)?;
+    Ok(true)
+}
+
+/// A workflow file's `goal =`, with its `check = [...]` in `spec.commands`: the run takes
+/// `spec` as its goal whatever the settings say, and the workflow is round 1 from `phase`. For
+/// the workflow runner, before the workflow's first step. Returns false, and changes nothing,
+/// for a run that already has a goal and for a solo run, whose goal is its one task's.
+pub fn around(host: &Host, spec: &GoalSpec, phase: u32) -> EngineResult<bool> {
+    let Some(title) = host.read(|state| {
+        let takes = state.goal.pursuit.is_none()
+            && runner::run_mode(state) != Some(RunMode::Solo)
+            && !spec.lines.is_empty();
+        takes.then(|| workflow_title(state))
+    }) else {
+        return Ok(false);
+    };
+    let goal = GoalRun::new(spec, GoalScope::Workflow, KeptBy::Argonauts);
+    set(host, goal, title, phase)?;
+    Ok(true)
+}
+
+/// Records the run's goal, says so in one line, and starts round 1.
+fn set(host: &Host, goal: GoalRun, title: String, phase: u32) -> EngineResult<()> {
+    let stated = format!(
+        "{} · {}",
+        goal.spec().size_words(),
+        goal.spec().checked_by()
+    );
     host.record(
         None,
         None,
-        RunEventKind::Goal(GoalEvent::AttemptStarted { n, title, phase }),
+        RunEventKind::Goal(GoalEvent::Set(Box::new(goal))),
+    )?;
+    note(host, format!("Goal set · {stated}"))?;
+    attempt_started(host, 1, title, phase)
+}
+
+pub(super) fn attempt_started(host: &Host, n: u32, title: String, phase: u32) -> EngineResult<()> {
+    host.record(
+        None,
+        None,
+        RunEventKind::Goal(GoalEvent::AttemptStarted {
+            n,
+            title,
+            phase,
+            task: None,
+        }),
     )?;
     Ok(())
 }
 
-/// `check`: the done-when list judged after the gates. In a goal it decides the attempt; in a
-/// workflow, with `workflows.final_check`, it runs before Merge, and a criterion left unmet
-/// asks whether to keep going as a goal.
+/// The workflow's own name, as round 1 of a goal goes by it.
+fn workflow_title(state: &RunState) -> String {
+    state
+        .run
+        .named
+        .as_ref()
+        .map_or_else(|| "The workflow".to_owned(), |named| named.name.clone())
+}
+
+/// `check`: the goal's check after a round, or, in a workflow with no goal and
+/// `workflows.final_check`, the done-when list judged before Merge, where a line left unmet asks
+/// whether to keep going.
 pub async fn check_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    let (solo, goal_run, criteria, attempt, objective) = host.read(|state| {
+    let settings = host.settings();
+    if host.read(runner::run_mode) == Some(RunMode::Solo) {
+        return Ok(StepDone::skipped("a solo run's checks are its check"));
+    }
+    let goal_run = host.read(|state| pursuing(state, settings));
+    if !goal_run && !settings.workflows.final_check && !host.read(turned_into_goal) {
+        return Ok(StepDone::skipped("workflows.final_check is off"));
+    }
+    // A goal whose lines only the plan could give, as from-request's are, is set by now.
+    if goal_run {
+        take_goal(host, call.at.step.phase)?;
+    }
+    let (goal, attempt) = host.read(|state| {
         let attempt = state
             .goal
             .pursuit
             .as_ref()
             .and_then(|goal| goal.attempts.last())
             .map_or(1, |attempt| attempt.n);
-        (
-            runner::run_mode(state) == Some(RunMode::Solo),
-            pursuing(state),
-            criteria(state),
-            attempt,
-            objective(state),
-        )
+        (spec(state, settings), attempt)
     });
-    if solo {
-        return Ok(StepDone::skipped("a solo run's gates are its check"));
-    }
-    if !goal_run && !host.settings().workflows.final_check && !host.read(turned_into_goal) {
-        return Ok(StepDone::skipped("workflows.final_check is off"));
-    }
-    if criteria.is_empty() {
+    if goal.lines.is_empty() {
         return Ok(StepDone::skipped("there's no done-when list to check"));
     }
-    // A check already recorded for this attempt stands, so a re-entered step never asks again.
+    // A check already recorded for this round stands, so a re-entered step never asks again.
     let recorded = host.read(|state| {
         state
             .goal
             .checks
             .iter()
             .rev()
-            .find(|checked| checked.attempt == attempt)
+            .find(|checked| checked.attempt == attempt && checked.task.is_none())
             .cloned()
     });
     let checked = match recorded {
         Some(checked) => checked,
-        None => check::judge(host, call, attempt, &objective, &criteria).await?,
+        None => check::judge(host, call, attempt, &goal).await?,
     };
-    if goal_run {
+    if host.read(|state| state.goal.pursuit.is_some()) {
         after_attempt(host, call, &checked).await
     } else {
         after_final_check(host, call, &checked).await
     }
 }
 
-/// A goal's attempt was checked: met, the next attempt, or stuck.
+/// A round was checked: the goal holds, the next round, a change of approach, or it stops.
 async fn after_attempt(
     host: &Host,
     call: &StepCall,
     checked: &GoalChecked,
 ) -> EngineResult<StepDone> {
-    let (attempts, status) = host.read(|state| {
+    let (rounds, status, next) = host.read(|state| {
         let goal = state.goal.pursuit.as_ref();
         (
             goal.map_or(1, |goal| goal.attempts.len()),
             goal.map(|goal| goal.status),
+            keep::next(
+                &state.goal.checks_of(None),
+                limits(state, host.settings()),
+                state.goal.approach_changed(None),
+            ),
         )
     });
     let total = checked.verdicts.len();
     let met = check::met_count(&checked.verdicts);
     if checked.overall == GoalVerdict::Met {
-        status_changed(host, GoalStatus::Met, Party::Conductor)?;
-        let attempts = match attempts {
-            1 => "1 attempt".to_owned(),
-            n => format!("{n} attempts"),
+        status_changed(host, GoalStatus::Met, Party::Conductor, None)?;
+        let rounds = match rounds {
+            1 => "1 round".to_owned(),
+            n => format!("{n} rounds"),
         };
         return Ok(StepDone::done(format!(
-            "Goal met · {total} of {total} · {attempts}"
+            "Goal met · {total} of {total} · {rounds}"
         )));
     }
     if status == Some(GoalStatus::Cleared) {
         return Ok(StepDone::done(format!(
-            "Goal cleared · {met} of {total} met · Merge lands what holds if every check passes"
+            "Goal cleared · {met} of {total} met · Merge takes what holds if every check passes"
+        )));
+    }
+    if host.read(paused_by_you) {
+        return Ok(StepDone::done(format!(
+            "Goal paused · {met} of {total} met · Merge takes what holds if every check passes"
         )));
     }
     if let Some(spent) = host.read(over_budget) {
         return when_over_budget(host, call, checked, &spent).await;
     }
-    if let Some(why) = host.read(|state| stuck(state, host, checked)) {
-        return when_stuck(host, call, checked, &why).await;
+    match next {
+        Next::Stop { why } => return when_stuck(host, call, checked, &why).await,
+        Next::ChangeApproach { why } => {
+            host.record(
+                None,
+                None,
+                RunEventKind::Goal(GoalEvent::ApproachChanged {
+                    after: checked.attempt,
+                    why: why.clone(),
+                    task: None,
+                }),
+            )?;
+            note(
+                host,
+                format!("The goal is stuck, {why}, so the next round takes another approach"),
+            )?;
+        }
+        Next::Again | Next::Met => {}
     }
     next_attempt(host, call, checked).await?;
     Ok(StepDone::done(format!("Not yet met · {met} of {total}")))
-}
-
-/// Why the goal can't go on as it is, if it can't: the check says it can't be met, no attempts
-/// are left, the same blocker ended `goal.stuck_after` attempts running, or `goal.idle_after`
-/// attempts met nothing new.
-fn stuck(state: &RunState, host: &Host, checked: &GoalChecked) -> Option<String> {
-    let settings = &host.settings().goal;
-    let goal = state.goal.pursuit.as_ref()?;
-    if checked.overall == GoalVerdict::Impossible {
-        return Some(format!(
-            "the check says it can't be met: {}",
-            checked.reason
-        ));
-    }
-    let used = u32::try_from(goal.attempts.len()).unwrap_or(u32::MAX);
-    // A goal that was stuck once and got one more attempt stops after it.
-    let allowed = goal.max_attempts + u32::try_from(state.goal.stuck_at.len()).unwrap_or(0);
-    if used >= allowed {
-        return Some(format!("no attempts left, {used} of {used} used"));
-    }
-    let checks = goal_checks(state);
-    let same = settings.stuck_after.max(1) as usize;
-    if checks.len() >= same {
-        let blockers: Vec<Vec<&str>> = checks[checks.len() - same..]
-            .iter()
-            .map(|checked| check::unmet(&checked.verdicts).collect())
-            .collect();
-        if blockers.iter().all(|blocker| *blocker == blockers[0]) && !blockers[0].is_empty() {
-            return Some(format!("the same blocker {same} attempts running"));
-        }
-    }
-    let idle = settings.idle_after.max(1) as usize;
-    if checks.len() > idle {
-        let window = &checks[checks.len() - idle - 1..];
-        let progressed = window.windows(2).any(|pair| {
-            let before: Vec<&str> = met_ids(pair[0]).collect();
-            met_ids(pair[1]).any(|id| !before.contains(&id))
-        });
-        let wrote = window[1..]
-            .iter()
-            .any(|checked| attempt_wrote(state, checked.attempt));
-        if !progressed && !wrote {
-            return Some(format!(
-                "{idle} attempts in a row met no new criterion and changed no file"
-            ));
-        }
-    }
-    None
-}
-
-fn goal_checks(state: &RunState) -> Vec<&GoalChecked> {
-    let Some(goal) = &state.goal.pursuit else {
-        return Vec::new();
-    };
-    goal.attempts
-        .iter()
-        .filter_map(|attempt| {
-            state
-                .goal
-                .checks
-                .iter()
-                .rev()
-                .find(|checked| checked.attempt == attempt.n)
-        })
-        .collect()
-}
-
-fn met_ids(checked: &GoalChecked) -> impl Iterator<Item = &str> {
-    checked
-        .verdicts
-        .iter()
-        .filter(|verdict| verdict.verdict == argonauts_core::events::goal::CriterionState::Met)
-        .map(|verdict| verdict.id.as_str())
 }
 
 /// The run's budget is spent: `$0.61 of $0.50`. Only a budget in dollars is checked here; the
@@ -351,11 +495,16 @@ async fn when_over_budget(
     checked: &GoalChecked,
     spent: &str,
 ) -> EngineResult<StepDone> {
-    status_changed(host, GoalStatus::OverBudget, Party::Conductor)?;
+    status_changed(
+        host,
+        GoalStatus::OverBudget,
+        Party::Conductor,
+        Some(spent.to_owned()),
+    )?;
     let met = check::met_count(&checked.verdicts);
     let total = checked.verdicts.len();
     let why = format!("{met} of {total} met · {spent}");
-    note(host, format!("The goal is over budget: {spent}"))?;
+    note(host, format!("The goal is over its limit: {spent}"))?;
     let answer = choose(
         host,
         call,
@@ -368,54 +517,42 @@ async fn when_over_budget(
     if answer == STOP {
         return Ok(StepDone {
             end: StepEnd::Done,
-            summary: Some(format!("Goal over budget · {met} of {total} met · stopped")),
+            summary: Some(format!(
+                "Goal over its limit · {met} of {total} met · stopped"
+            )),
             flow: Flow::Finish(RunOutcome::BranchLeft),
         });
     }
     Ok(StepDone::done(format!(
-        "Goal over budget · {met} of {total} met · delivers what holds"
+        "Goal over its limit · {met} of {total} met · delivers what holds"
     )))
 }
 
-/// Whether attempt `n`'s card committed anything.
-fn attempt_wrote(state: &RunState, n: u32) -> bool {
-    state
-        .cards
-        .get(&attempt_card_id(n))
-        .is_some_and(|record| !record.commits.is_empty())
-}
-
-/// The stuck goal goes to whoever answers the crew's questions. The lead takes one more attempt
-/// led by another company's model, then delivers what holds.
+/// The goal stops short. On autopilot, or when the main agent answers for you, nobody is asked:
+/// the goal ends, says why, and Merge takes what holds. Otherwise you choose.
 async fn when_stuck(
     host: &Host,
     call: &StepCall,
     checked: &GoalChecked,
     why: &str,
 ) -> EngineResult<StepDone> {
-    status_changed(host, GoalStatus::Stuck, Party::Conductor)?;
+    status_changed(
+        host,
+        GoalStatus::Stuck,
+        Party::Conductor,
+        Some(why.to_owned()),
+    )?;
     note(host, format!("The goal is stuck: {why}"))?;
-    let extra_taken = host.read(|state| {
-        state
-            .goal
-            .answers
-            .iter()
-            .any(|(question, answer, _)| question == STUCK && answer == ONE_MORE)
-    });
-    let options: &[&str] = if extra_taken {
-        &[DELIVER, ONE_MORE, STOP]
-    } else {
-        &[ONE_MORE, DELIVER, STOP]
-    };
+    let options = &[DELIVER, KEEP_TRYING, STOP];
     let answer = choose(host, call, STUCK, Topic::Crew("stuck goal"), options, why).await?;
     let met = check::met_count(&checked.verdicts);
     let total = checked.verdicts.len();
     match answer.as_str() {
-        ONE_MORE => {
-            status_changed(host, GoalStatus::Pursuing, Party::Conductor)?;
+        KEEP_TRYING => {
+            status_changed(host, GoalStatus::Pursuing, Party::User, None)?;
             next_attempt(host, call, checked).await?;
             Ok(StepDone::done(format!(
-                "Goal stuck · {met} of {total} met · one more attempt"
+                "Goal stuck · {met} of {total} met · one more round"
             )))
         }
         STOP => Ok(StepDone {
@@ -488,21 +625,17 @@ fn keep_going(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResu
     if host.read(|state| state.goal.pursuit.is_some()) {
         return Ok(());
     }
-    let goal = host.read(|state| GoalRun {
-        objective: objective(state),
-        criteria: criteria(state),
-        attempts: vec![Attempt {
+    let goal = host.read(|state| {
+        let spec = spec(state, host.settings());
+        let mut goal = GoalRun::new(&spec, GoalScope::Workflow, KeptBy::Argonauts);
+        goal.max_rounds = goal.max_rounds.or(host.settings().goal.max_rounds);
+        goal.attempts = vec![Attempt {
             n: checked.attempt,
-            title: state
-                .run
-                .named
-                .as_ref()
-                .map_or_else(|| "The workflow".to_owned(), |named| named.name.clone()),
+            title: workflow_title(state),
             phase: call.at.step.phase,
             verdict: Some(checked.overall),
-        }],
-        status: GoalStatus::Pursuing,
-        max_attempts: host.settings().goal.max_attempts.max(1),
+        }];
+        goal
     });
     host.record(
         None,
@@ -518,8 +651,9 @@ fn keep_going(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResu
     )
 }
 
-/// The lead plans the next attempt from the check, and it's added before Merge. An answer that
-/// doesn't make a valid phase gives way to the usual attempt, with a note.
+/// The orchestrator plans the next round from what the check found failing, and it's added
+/// before Merge. An answer that doesn't make a valid phase gives way to the usual round, with a
+/// note.
 async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> EngineResult<()> {
     let id = call.at.step.workflow.clone();
     let Some((workflow, from, input)) = host.read(|state| {
@@ -546,6 +680,11 @@ async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> En
                     format!("{}. {}: {verdict}", attempt.n, attempt.title)
                 })
                 .collect(),
+            change_approach: state.goal.stuck_at.contains(&checked.attempt).then(|| {
+                "The same failure came back round after round. Plan this round another \
+                     way: a different fix, or a different worker."
+                    .to_owned()
+            }),
         };
         Some((record.workflow.clone(), record.change_from(), input))
     }) else {
@@ -601,13 +740,14 @@ async fn next_attempt(host: &Host, call: &StepCall, checked: &GoalChecked) -> En
         note(
             host,
             format!(
-                "The lead's attempt {n} didn't hold, so it runs as the usual attempt: {problem}"
+                "The main agent's plan for round {n} didn't hold, so it runs as the usual round: \
+                 {problem}"
             ),
         )?;
     }
     let unmet: Vec<&str> = check::unmet(&checked.verdicts).collect();
     let reason = format!(
-        "check:{} found {} met, so attempt {n} aims at {}",
+        "check:{} found {} met, so round {n} aims at {}",
         checked.attempt,
         check::met_count(&checked.verdicts),
         if unmet.is_empty() {
@@ -677,9 +817,9 @@ fn unique_title(workflow: &Workflow, mut phase: Phase) -> Phase {
     phase
 }
 
-/// The card attempt `n` builds: the whole objective, aimed at what the last check said is
-/// missing, on top of what earlier attempts integrated. After a stuck goal, another company's
-/// model owns it.
+/// The task round `n` builds when the orchestrator planned no tasks of its own: the whole goal,
+/// aimed at what the last check found failing, on top of what earlier rounds merged. After a
+/// change of approach, another provider's model takes it.
 pub fn attempt_card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
     let mut spec = solo::card(state, host)?;
     let Some(goal) = &state.goal.pursuit else {
@@ -688,7 +828,7 @@ pub fn attempt_card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
     let Some(attempt) = goal.attempts.last() else {
         return Ok(spec);
     };
-    let last = goal_checks(state).last().copied();
+    let last = state.goal.checks_of(None).last().copied();
     let unmet: Vec<&Criterion> = goal
         .criteria
         .iter()
@@ -697,8 +837,8 @@ pub fn attempt_card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
         })
         .collect();
     let mut task = format!(
-        "{}\n\nThe goal: {}\n\nThis is attempt {} of up to {}. Make these hold:\n",
-        spec.task, goal.objective, attempt.n, goal.max_attempts
+        "{}\n\nThe goal: {}\n\nThis is round {}. Make these hold:\n",
+        spec.task, goal.objective, attempt.n
     );
     for criterion in &unmet {
         task.push_str(&format!("- {}: {}\n", criterion.id, criterion.text));
@@ -706,14 +846,19 @@ pub fn attempt_card(state: &RunState, host: &Host) -> EngineResult<CardSpec> {
     if let Some(checked) = last {
         task.push_str(&format!("\nThe last check said: {}\n", checked.reason));
     }
+    let changed = state.goal.stuck_at.contains(&attempt.n.saturating_sub(1));
+    if changed {
+        task.push_str(
+            "\nThe same failure came back round after round. Take a different approach this \
+             time.\n",
+        );
+    }
     spec.id = attempt_card_id(attempt.n);
     spec.title = attempt.title.clone();
     spec.task = task;
     spec.kind = CardKind::Solo;
     spec.criteria = unmet.iter().map(|criterion| criterion.id.clone()).collect();
-    if state.goal.stuck_at.contains(&(attempt.n - 1))
-        && let Some(other) = other_company(host, spec.owner.as_ref())
-    {
+    if changed && let Some(other) = other_provider(host, spec.owner.as_ref()) {
         spec.owner = Some(other);
         spec.reviewers.clear();
     }
@@ -725,14 +870,14 @@ pub fn attempt_card_id(n: u32) -> CardId {
 }
 
 /// The first crew member from another company than `owner`.
-fn other_company(host: &Host, owner: Option<&WorkerRef>) -> Option<WorkerRef> {
+fn other_provider(host: &Host, owner: Option<&WorkerRef>) -> Option<WorkerRef> {
     let owner = owner?;
     let family = roles::family(host, owner);
     host.settings()
         .crew
-        .iter()
-        .find(|worker| *worker != owner && roles::family(host, worker) != family)
-        .cloned()
+        .members()
+        .into_iter()
+        .find(|worker| worker != owner && roles::family(host, worker) != family)
 }
 
 /// What a question is about: one the crew's answerer takes, or a hard limit, which comes to you
@@ -769,8 +914,8 @@ async fn choose(
         Topic::Crew(topic) => (topic, false),
         Topic::HardLimit(topic) => (topic, true),
     };
-    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
-    if full_auto
+    let autopilot = checkpoints::autopilot::applies_now(host, CheckpointKind::Goal);
+    if autopilot
         && hard_limit
         && checkpoints::configured(host.settings(), CheckpointKind::Goal).at_hard_limit
             != AtHardLimit::Park
@@ -780,7 +925,7 @@ async fn choose(
         note(
             host,
             format!(
-                "Full auto stopped at the goal's {topic}, a hard limit, and kept the branch, as \
+                "Autopilot stopped at the goal's {topic}, a hard limit, and kept the branch, as \
                  approvals.goal.at_hard_limit says"
             ),
         )?;
@@ -791,7 +936,9 @@ async fn choose(
         answered(host, question, &recommended, Decider::Lead)?;
         note(
             host,
-            format!("The lead answered \"{question}\": {recommended}, the recommended answer"),
+            format!(
+                "The main agent answered \"{question}\": {recommended}, the recommended answer"
+            ),
         )?;
         return Ok(recommended);
     }
@@ -802,7 +949,7 @@ async fn choose(
             .goal
             .approved
             .clone()
-            .unwrap_or_else(|| goal_so_far(state, host.run_id()))
+            .unwrap_or_else(|| goal_so_far(state, host))
     });
     let choices: Vec<ChoiceOption> = options
         .iter()
@@ -874,7 +1021,7 @@ async fn choose(
     let decided = match opening.decided_or_withdrawn(host).await? {
         Ok(decided) => decided,
         // Full auto came on while it waited for you, so it's answered as full auto answers it.
-        Err(left) if left == checkpoints::full_auto::LEFT_TO_THE_LEAD => {
+        Err(left) if left == checkpoints::autopilot::LEFT_TO_THE_LEAD => {
             return Box::pin(choose(
                 host,
                 call,
@@ -907,9 +1054,9 @@ async fn choose(
 
 /// The goal as a run pursues it before any goal file was approved: the objective and the
 /// done-when list.
-fn goal_so_far(state: &RunState, run: &RunId) -> GoalFile {
-    let mut goal = draft::from_prompt(run, &objective(state));
-    goal.criteria = criteria(state);
+fn goal_so_far(state: &RunState, host: &Host) -> GoalFile {
+    let mut goal = draft::from_prompt(host.run_id(), &objective(state));
+    goal.criteria = criteria(state, host.settings());
     file::hashed(goal)
 }
 
@@ -944,11 +1091,11 @@ pub async fn act(host: &Host, action: GoalAction) -> Result<(), String> {
             if !host.read(|state| state.goal.pursuit.is_some()) {
                 return Err("no goal is being pursued in this run".to_owned());
             }
-            status_changed(host, GoalStatus::Cleared, Party::User).map_err(refused)?;
+            status_changed(host, GoalStatus::Cleared, Party::User, None).map_err(refused)?;
             if land {
                 note(
                     host,
-                    "You stopped pursuing the goal; Merge lands what holds once every check \
+                    "You stopped pursuing the goal; Merge takes what holds once every check \
                      passes"
                         .to_owned(),
                 )
@@ -962,15 +1109,53 @@ pub async fn act(host: &Host, action: GoalAction) -> Result<(), String> {
                 crate::engine::commands::stop(host).await.map_err(refused)
             }
         }
+        GoalAction::EditLines { task, lines } => edit_lines(host, task.as_ref(), &lines),
+        GoalAction::CheckNow { task } => super::now::start(host, task.as_ref()),
+        GoalAction::Pause { task: Some(task) } => super::task::pause(host, &task).map_err(refused),
+        GoalAction::Resume { task: Some(task) } => {
+            super::task::resume(host, &task).map_err(refused)
+        }
+        GoalAction::Pause { task: None } => {
+            let pursued = host.read(|state| {
+                state
+                    .goal
+                    .pursuit
+                    .as_ref()
+                    .is_some_and(|goal| goal.status == GoalStatus::Pursuing)
+            });
+            if !pursued {
+                return Err("no goal is being pursued in this run".to_owned());
+            }
+            status_changed(
+                host,
+                GoalStatus::Paused,
+                Party::User,
+                Some(YOU_PAUSED.to_owned()),
+            )
+            .map_err(refused)?;
+            note(
+                host,
+                "You paused the goal: this round finishes and is checked, and no other follows \
+                 until you resume it"
+                    .to_owned(),
+            )
+            .map_err(refused)
+        }
+        GoalAction::Resume { task: None } => {
+            if !host.read(paused_by_you) {
+                return Err("this run's goal isn't paused".to_owned());
+            }
+            status_changed(host, GoalStatus::Pursuing, Party::User, None).map_err(refused)
+        }
         GoalAction::TurnIntoGoal => {
-            if host.read(pursuing) {
+            if host.read(|state| pursuing(state, host.settings())) {
                 return Err("this run already pursues a goal".to_owned());
             }
             if host.read(turned_into_goal) {
                 return Ok(());
             }
-            answered(host, TURN_INTO_GOAL, CHECK_WHEN_IT_ENDS, Decider::You).map_err(refused)?;
-            check_before_merge(host).map_err(refused)
+            // Its check goes in before Merge when the next phase begins.
+            answered(host, TURN_INTO_GOAL, CHECK_WHEN_IT_ENDS, Decider::You).map_err(refused)
         }
         GoalAction::ChangeAssumption { id, to } => {
             let to = to.trim().to_owned();
@@ -1005,40 +1190,27 @@ pub async fn act(host: &Host, action: GoalAction) -> Result<(), String> {
     }
 }
 
-/// A workflow you turned into a goal gets its check before Merge, even with
-/// `workflows.final_check` off, so the goal has an attempt 1 to judge.
-fn check_before_merge(host: &Host) -> EngineResult<()> {
-    let Some((id, workflow, from)) = host.read(|state| {
-        let id = state.workflows.root.clone()?;
-        let record = state.workflows.by_id.get(&id)?;
-        Some((id, record.workflow.clone(), record.change_from()))
-    }) else {
-        return Ok(());
+/// `e` on a goal: its lines as you rewrote them, each with the check `goal.check` gives it.
+/// The tries so far stay, and the next check reads the new lines.
+fn edit_lines(host: &Host, task: Option<&CardId>, lines: &[String]) -> Result<(), String> {
+    let Some(mut goal) = host.read(|state| state.goal.goal_of(task).cloned()) else {
+        return Err("there's no goal here to change".to_owned());
     };
-    let ahead = &workflow.phases[(from as usize).min(workflow.phases.len())..];
-    if ahead
-        .iter()
-        .any(|phase| phase.steps.iter().any(|step| step.kind == StepKind::Check))
-    {
-        return Ok(());
-    }
-    let Some(merge) = workflow
-        .phases
-        .iter()
-        .position(|phase| phase.steps.iter().any(|step| step.kind == StepKind::Merge))
-        .filter(|merge| *merge >= from as usize)
-    else {
-        return Ok(());
+    let settings = host.settings();
+    let means = CheckMeans {
+        project_checks: !settings.checks.run.is_empty(),
     };
-    let mut proposed = workflow.clone();
-    proposed.phases.insert(merge, shape::check_phase());
-    change::record(
-        host,
-        &id,
-        proposed,
+    let from = goal.from.unwrap_or(GoalFrom::Command);
+    let edited = GoalSpec::from_words(&lines.join("\n"), goal.check, means, from)?;
+    goal.objective = edited.condition;
+    goal.criteria = edited.lines;
+    host.record(
+        task,
         None,
-        "You turned the run into a goal, so a check judges the workflow before Merge".to_owned(),
+        RunEventKind::Goal(GoalEvent::Set(Box::new(goal))),
     )
+    .map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 /// The run parks: a goal being pursued is paused, by you or by a usage limit, until it goes on.
@@ -1058,27 +1230,46 @@ pub fn on_park(host: &Host, reason: &ParkReason) -> EngineResult<()> {
             .is_some_and(|goal| goal.status == GoalStatus::Pursuing)
     });
     if pursuing {
-        status_changed(host, GoalStatus::Paused, by)?;
+        status_changed(host, GoalStatus::Paused, by, None)?;
     }
     Ok(())
 }
 
-/// The run goes on after a park: a paused goal is pursued again.
+/// The run goes on after a park: a goal the park paused is pursued again. One you paused
+/// yourself waits for `/goal resume`.
 pub fn on_resume(host: &Host) -> EngineResult<()> {
-    let paused = host.read(|state| {
+    let parked = host.read(|state| {
         state
             .goal
             .pursuit
             .as_ref()
             .is_some_and(|goal| goal.status == GoalStatus::Paused)
+            && !paused_by_you(state)
     });
-    if paused {
-        status_changed(host, GoalStatus::Pursuing, Party::User)?;
+    if parked {
+        status_changed(host, GoalStatus::Pursuing, Party::User, None)?;
     }
     Ok(())
 }
 
-fn status_changed(host: &Host, status: GoalStatus, by: Party) -> EngineResult<()> {
+/// Why a goal you paused is paused, which tells it from one a parked run paused.
+pub const YOU_PAUSED: &str = "you paused it";
+
+fn paused_by_you(state: &RunState) -> bool {
+    state
+        .goal
+        .pursuit
+        .as_ref()
+        .is_some_and(|goal| goal.status == GoalStatus::Paused)
+        && state.goal.ended_because.as_deref() == Some(YOU_PAUSED)
+}
+
+pub(super) fn status_changed(
+    host: &Host,
+    status: GoalStatus,
+    by: Party,
+    why: Option<String>,
+) -> EngineResult<()> {
     let current = host.read(|state| state.goal.pursuit.as_ref().map(|goal| goal.status));
     if current.is_none() || current == Some(status) {
         return Ok(());
@@ -1086,18 +1277,27 @@ fn status_changed(host: &Host, status: GoalStatus, by: Party) -> EngineResult<()
     host.record(
         None,
         None,
-        RunEventKind::Goal(GoalEvent::StatusChanged { status, by }),
+        RunEventKind::Goal(GoalEvent::StatusChanged {
+            status,
+            by,
+            task: None,
+            why,
+        }),
     )?;
     Ok(())
 }
 
 /// A `›` note on why the plan moved, on the run's own workflow.
-fn note(host: &Host, text: String) -> EngineResult<()> {
+pub(super) fn note(host: &Host, text: String) -> EngineResult<()> {
     let workflow = host.read(|state| state.workflows.root.clone());
     host.record(
         None,
         None,
-        RunEventKind::Workflow(WorkflowEvent::Note(RunNote { text, workflow })),
+        RunEventKind::Workflow(WorkflowEvent::Note(RunNote {
+            text,
+            workflow,
+            left: false,
+        })),
     )?;
     Ok(())
 }
@@ -1109,7 +1309,7 @@ mod tests {
     fn plan(title: &str, steps: &str) -> AttemptPlan {
         AttemptPlan {
             title: title.to_owned(),
-            detail: "one owner fixes it".to_owned(),
+            detail: "one worker fixes it".to_owned(),
             steps: steps.to_owned(),
         }
     }

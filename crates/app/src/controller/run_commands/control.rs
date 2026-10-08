@@ -113,7 +113,8 @@ pub(crate) async fn steer(
     }
 }
 
-/// Esc while a run works. When there's nothing to pause, the notice line says why.
+/// A pause asked from the run's row or view, or Esc on a pausing run to stop it now. When
+/// there's nothing to pause, the notice line says why.
 pub(crate) async fn pause(ctx: &mut Ctx, runs: &mut RunsState, now: bool) -> Handled {
     let Some(run) = runs::attached(runs).cloned() else {
         ctx.hint(super::NO_RUN);
@@ -135,7 +136,7 @@ fn not_going(runs: &RunsState, run: &RunId) -> Option<String> {
     let attached = runs.attached.as_ref()?;
     match attached.stage {
         _ if attached.crashed => Some(format!("{run} crashed. /resume {run} recovers it.")),
-        Stage::Parked => Some(format!("{run} is parked. /resume {run} goes on.")),
+        Stage::Parked => Some(format!("{run} is waiting. /resume {run} goes on.")),
         Stage::Finished(_) => Some(format!("{run} has finished.")),
         Stage::Going => None,
     }
@@ -303,7 +304,7 @@ pub(crate) async fn continue_run(
     };
     let settings = ctx.settings();
     // It goes on the way the merged run went, unless All hands sends every task to the crew.
-    let triage = argonauts_crew::triage::all_hands(&settings.triage);
+    let triage = argonauts_crew::triage::ultracode(settings);
     let mode = triage.as_ref().map_or(merged.mode, |crew| crew.mode);
     let follow_up = StartRun {
         request: request.clone(),
@@ -315,12 +316,13 @@ pub(crate) async fn continue_run(
         continues: Some(merged.run.clone()),
         overrides: ctx.settings.run_overrides(),
         include_uncommitted: settings.intake.include_uncommitted,
-        default_agent: Some(settings.default_agent.clone()),
+        main_agent: Some(settings.main_agent.clone()),
         approval_mode: (runs.approval_mode == Some(ApprovalMode::Supervised))
             .then_some(ApprovalMode::Supervised),
         front_end: None,
         instructions: Vec::new(),
         request_settings: Vec::new(),
+        required_steps: Vec::new(),
     };
     let handle = match ctx
         .services

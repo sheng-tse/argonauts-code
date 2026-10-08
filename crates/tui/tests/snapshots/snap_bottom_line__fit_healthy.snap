@@ -1,0 +1,20 @@
+---
+source: crates/tui/tests/snap_bottom_line.rs
+expression: at_every_width(&line)
+---
+200 columns
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                                                                  ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%▕
+150 columns
+  ⏵⏵ auto mode on (shift+tab to cycle) · ? for shortcuts                ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%▕
+120 columns
+  ⏵⏵ auto mode on (shift+tab to cycle)    ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%▕
+100 columns
+  ⏵⏵ auto mode on     ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex 7d █░░░░░ 11%  ○ agy 5h ░░░░░░ 2%▕
+ 80 columns
+  ⏵⏵ auto mode on ● Claude 5h ░░░░░░ 1% 7d ███░░░ 56%  ○ Codex ▁ 11%  ○ agy ▁ 2%▕
+ 60 columns
+  ⏵⏵ auto     ● Claude 5h ▁ 1% 7d ███░░░ 56%  ○ Codex  ○ agy▕
+ 40 columns
+  ⏵⏵ auto   ● Claude 7d ███░░░ 56%  ○  ○▕
+ 20 columns
+  ⏵⏵     ● 56%  ○  ○▕

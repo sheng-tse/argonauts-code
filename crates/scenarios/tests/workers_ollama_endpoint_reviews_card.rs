@@ -27,8 +27,8 @@ fn workers_ollama_endpoint_reviews_card() -> anyhow::Result<()> {
     write_global_config(
         &scenario,
         &format!(
-            "preset = \"solo-reviewed\"\n\
-             default_agent = \"claude-code\"\n\n\
+            "workflow = \"maker-checker\"\n\
+             main_agent = \"claude-code\"\n\n\
              [solo]\nreview = true\n\n\
              [roles.reviewer]\nworkers = [\"ollama/fake-model\"]\n\n\
              [endpoints.ollama]\n\

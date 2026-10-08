@@ -1,0 +1,9 @@
+# Today's tokens: what came from cache, what was new input, and what was output.
+name   = "tokens"
+title  = "tokens"
+body   = "stack"
+places = ["usage"]
+form   = "full"
+
+[data]
+source = "tokens"

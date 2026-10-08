@@ -3,7 +3,7 @@ source: crates/tui/src/bottom/tests.rs
 expression: screen(&view)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Merge card-002 into main?
+◆ Merge task-002 into main?
   3 files · +48 -6 · tests passed · agy reviewed it and approved
 
     1. Merge
@@ -15,11 +15,11 @@ expression: screen(&view)
   ↑ to answer
 
 ❯ also add a --csv flag
-──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
-❯ ▏↑ to answer the card
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── council ─
+❯ ▏↑ to answer the question
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 3 agents · ↓ to manage                 $0.46 of $3.00
+  ǁ supervised mode on (shift+tab to cycle) · ← 3 agents · ↓ to manage               ● Claude 5h ▄▄▄▖▄▄ 58%  $0.46/$3.00
 
-  ◐ claude-code  card-002                        2/5  ↓ 18.1k tokens                                               1m0s
-  ◐ codex        card-003                        1/5  ↓ 12.9k tokens                                                28s
-  ○ agy          review                          waiting
+  ○ claude-code  task-002                                                                    2/5 · 1m · ↓ 18.1k tokens
+  ○ codex        task-003                                                                    1/5 · 28s · ↓ 12.9k tokens
+  ○ agy          review                                                                      waiting

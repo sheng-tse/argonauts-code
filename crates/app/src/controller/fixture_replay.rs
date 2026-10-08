@@ -198,7 +198,7 @@ fn recorded_resumed_turns_remember_the_first() {
 }
 
 #[test]
-#[ignore = "live calls that spend vendor quota"]
+#[ignore = "live calls that spend agent plan usage"]
 fn record_chat_fixtures() {
     if env::var("ARGONAUTS_RECORD").ok().as_deref() != Some("record_chat_fixtures") {
         eprintln!("set ARGONAUTS_RECORD=record_chat_fixtures and ARGONAUTS_LIVE_DIR");
@@ -304,7 +304,7 @@ fn call(adapter: &dyn Adapter, request: &SessionRequest) -> Call {
         command.env(name, value);
     }
     let started = Instant::now();
-    let mut child = command.spawn().expect("the vendor CLI starts");
+    let mut child = command.spawn().expect("the agent CLI starts");
     let mut stdin = child.stdin.take().expect("stdin");
     stdin
         .write_all(spec.stdin.as_deref().unwrap_or_default().as_bytes())

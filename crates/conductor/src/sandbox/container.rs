@@ -99,7 +99,7 @@ impl SandboxWrap for Container {
         if self.image.is_empty() {
             return Err(SandboxError::Unavailable(
                 "no container image is set. Set sandbox.container_image to an image with the \
-                 harness installed, or sandbox.mode = \"os\""
+                 CLI installed, or sandbox.mode = \"os\""
                     .to_owned(),
             ));
         }
@@ -676,7 +676,7 @@ mod tests {
     fn a_missing_lock_is_never_made_ahead_of_git() {
         let refs = at("/repo/.git/refs/heads");
         let disk = FakeDisk::new(&[&format!("{}/", refs.display())]);
-        let lock = refs.join("card-a.lock");
+        let lock = refs.join("task-a.lock");
         let mounts = plan_mounts(&profile(&[lock], &[], &[]), &disk);
         assert!(mounts.create.is_empty(), "{:?}", mounts.create);
         assert!(mounts.list.is_empty(), "{:?}", mounts.list);

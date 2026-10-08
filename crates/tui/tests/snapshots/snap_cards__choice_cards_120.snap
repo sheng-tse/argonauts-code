@@ -10,7 +10,7 @@ expression: text(&lines)
     2. Crew run
     3. No, just asking
 
-  Enter to choose · Esc to set aside
+  Enter to choose · Esc to carry on without me
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Save effort = high where?
@@ -46,7 +46,7 @@ expression: text(&lines)
   Enter to choose · Esc for not now
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Use these gate commands?
+◆ Use these check commands?
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
   cargo fmt --check
   cargo clippy -- -D warnings
@@ -59,7 +59,7 @@ expression: text(&lines)
   Enter to choose · Tab to add a note · Esc for not now
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Welcome to Argonauts
+◆ Welcome to Argonauts Code
   Argonauts runs the coding agents you already use as one crew.
 
   ❯ 1. Continue
@@ -68,18 +68,18 @@ expression: text(&lines)
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ How should the crew work?
-  You can change it later with /preset.
+  You can change it later with /workflow.
 
-  ❯ 1. peer-crew (recommended)
-    2. coordinated-crew
+  ❯ 1. council (recommended)
+    2. orchestrator
     3. solo
 
   Enter to choose · Esc to take the recommended answers
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Revert card-002 to handoff-1?
+◆ Revert task-002 to fallback-1?
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-  3 commits since handoff-1 move to argonauts/run-01/card-002-replaced-1
+  3 commits since fallback-1 move to argonauts/run-01/task-002-replaced-1
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
   ❯ 1. Revert
     2. Show the diff
@@ -87,7 +87,7 @@ expression: text(&lines)
   Enter to choose · Esc to cancel
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Take over card-002 from codex/gpt-5.6?
+◆ Take over task-002 from codex/gpt-5.6?
 
   ❯ 1. Take over
 

@@ -25,12 +25,12 @@ pub async fn predict(
     let owner = card
         .owner
         .clone()
-        .ok_or_else(|| EngineError::Refused(format!("{} has no owner to predict it", card.id)))?;
+        .ok_or_else(|| EngineError::Refused(format!("{} has no worker to predict it", card.id)))?;
     let input = PredictInput {
         card: format!("{}\n\n{}", card.title, card.task),
         time_cap_min: time_cap_min(card, host.settings()),
     };
-    let mut ask = Ask::new(at, RoleName::Owner, owner, prompts::divide::PREDICT, input);
+    let mut ask = Ask::new(at, RoleName::Worker, owner, prompts::divide::PREDICT, input);
     ask.card = Some(card.id.clone());
     ask.item.clone_from(&card.item);
     ask.access = Access::NoTools;
@@ -57,7 +57,7 @@ pub fn log(host: &Host, cards: &[CardSpec], run_task_type: Option<&str>) -> Engi
                 run: host.run_id().clone(),
                 card: card.id.clone(),
                 worker: card.owner.clone()?,
-                role: Predictor::Owner,
+                role: Predictor::Worker,
                 task_type: assign::task_type(&card.kind, run_task_type),
                 at: host.now(),
                 p_pass_gates_first_try: Some(predicted.p_pass_gates_first_try),
@@ -71,7 +71,12 @@ pub fn log(host: &Host, cards: &[CardSpec], run_task_type: Option<&str>) -> Engi
     outcomes::append_lines(&state_dir, host.run_id(), &lines)
 }
 
-/// The card's own time limit, else a per-card budget in minutes, else the wall-clock watchdog.
+/// What a prediction is made against when nothing limits a task's time, so predictions stay
+/// comparable from run to run. It stops nothing.
+const TIME_YARDSTICK_MIN: f64 = 30.0;
+
+/// The card's own time limit, else a per-card budget in minutes, else the wall-clock watchdog,
+/// else the yardstick.
 pub fn time_cap_min(card: &CardSpec, settings: &Settings) -> f64 {
     let in_minutes = card
         .budget
@@ -81,8 +86,9 @@ pub fn time_cap_min(card: &CardSpec, settings: &Settings) -> f64 {
     card.budget
         .max_minutes
         .or(in_minutes)
-        .or(settings.budget.per_card_minutes)
-        .unwrap_or(settings.watchdogs.wall_clock_min)
+        .or(settings.limits.budget.per_task_minutes)
+        .or(settings.watchdogs.wall_clock_min)
+        .unwrap_or(TIME_YARDSTICK_MIN)
 }
 
 /// Probabilities kept between 0 and 1; a missing one says nothing either way.
@@ -124,7 +130,7 @@ mod tests {
 
     #[test]
     fn the_time_cap_comes_from_the_card_first() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
         let mut card = CardSpec {
             id: CardId::numbered(1),
             title: "t".into(),
@@ -142,10 +148,9 @@ mod tests {
             predictions: None,
             item: None,
         };
-        assert_eq!(
-            time_cap_min(&card, &settings),
-            settings.watchdogs.wall_clock_min
-        );
+        assert_eq!(time_cap_min(&card, &settings), TIME_YARDSTICK_MIN);
+        settings.watchdogs.wall_clock_min = Some(45.0);
+        assert_eq!(time_cap_min(&card, &settings), 45.0);
         card.budget.limit = Some(BudgetAmount {
             unit: BudgetUnit::Minutes,
             amount: 12.0,

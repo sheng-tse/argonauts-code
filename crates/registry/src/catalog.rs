@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use argonauts_core::input::EFFORT_LEVELS;
+use argonauts_core::settings::handoff::CrewRole;
+use argonauts_core::settings::ui::Theme;
 use argonauts_core::settings::{SettingMeta, SettingScope, Settings};
 use serde_json::Value as Json;
 
@@ -12,7 +14,7 @@ use crate::resolve::{is_safety_key, key_matches};
 
 /// Keys that are personal choices in a repo, saved just for you by default.
 const JUST_YOU: &[&str] = &[
-    "default_agent",
+    "main_agent",
     "agents.*.model",
     "agents.*.effort",
     "roles.*.workers",
@@ -28,28 +30,32 @@ const EVERYWHERE: &[&str] = &[
     "ui.*",
     "narrator.*",
     "notifications.*",
-    "limits.usd_per_day",
+    "switch.*",
+    "limits.spend_per_day",
     "limits.auto_merges_per_day",
 ];
 
 /// The checkpoints `/approvals` covers, as they appear under `approvals.`.
 const CHECKPOINTS: &[(&str, &str)] = &[
-    ("goal", "The goal checkpoint"),
-    ("plan", "The plan checkpoint"),
-    ("merge", "The merge checkpoint"),
-    ("escalation", "A stuck card"),
-    ("budget", "More budget from the run's reserve"),
+    ("goal", "The goal approval"),
+    ("plan", "The plan approval"),
+    ("merge", "The merge approval"),
+    ("stuck", "A stuck task"),
+    ("limit", "More limit from the run's reserve"),
     (
         "change_request",
-        "A change request no other card's owner can decide",
+        "A change request no other task's worker can decide",
     ),
-    ("recipe_promotion", "Promoting a recipe change"),
+    (
+        "workflow_promotion",
+        "Promoting a change to a learned workflow",
+    ),
 ];
 
 const BOOL: &[&str] = &["true", "false"];
 
 const ON_RETURN: &[&str] = &["ask", "keep", "review", "hand_back", "redo"];
-const STRATEGIES: &[&str] = &["first", "spread", "race"];
+const STRATEGIES: &[&str] = &["first", "spread"];
 const CONTEXTS: &[&str] = &["fresh", "note", "note+transcript", "note+summary"];
 
 /// What `/handoff` edits, below `handoff.` for every role and below `roles.*.handoff.` for one.
@@ -58,61 +64,68 @@ const HANDOFF: &[(&str, &str, Choices)] = &[
     (
         "mode",
         "When an agent stops, such as at a usage limit: ask you, hand off to the next fallback, \
-         or wait for the vendor",
+         or wait for the agent",
         Choices::Words(&["ask", "auto", "wait"]),
     ),
     (
-        "fallback",
+        "order",
         "Who takes over, in order: an agent, or a table with its own rules. With no list \
          anywhere, the other installed and logged-in CLIs",
         Choices::Any,
     ),
     (
         "ask_timeout",
-        "How long the handoff card waits before handing off by itself, or \"none\"",
+        "How long the fallback question waits before handing off by itself, or \"none\"",
         Choices::Any,
     ),
     (
         "allow_api_billing",
-        "Whether a handoff may move work onto a paid API without asking you",
+        "Whether a fallback may move work onto a paid API without asking you",
         Choices::Bool,
     ),
     (
         "return_to_original",
-        "Move the card back when the original vendor returns, the older spelling of on_return = \
+        "Move the task back when the original agent returns, the older spelling of on_return = \
          \"hand_back\"",
         Choices::Bool,
     ),
     (
         "broken_work",
-        "What the new owner does with broken work in progress: continue from it, or restart",
+        "What the new worker does with broken work in progress: continue from it, or restart",
         Choices::Words(&["continue", "restart"]),
     ),
     (
         "wrap_up",
         "An agent finishing on its CLI's wrap-up allowance at a limit: let it finish, or hand \
-         its card off at once to save the allowance",
+         its task off at once to save the allowance",
         Choices::Words(&["let_finish", "hand_off"]),
     ),
     (
         "strategy",
-        "Who takes the cards: the first fallback that's up, spread across them, or a race",
+        "Who takes a stopped agent's tasks, one fallback each: the first that's up, or spread \
+         across them",
         Choices::Words(STRATEGIES),
     ),
     (
-        "race_count",
-        "How many attempts run at once in a race",
+        "together",
+        "How many fallbacks take over at once. 2 or more do the same task side by side",
         Choices::Any,
     ),
     (
+        "pick",
+        "How results combine when several take over at once: the first to pass your checks \
+         wins, the judge picks the best, or every finding is kept",
+        Choices::Words(&["first_passing", "judge", "merge"]),
+    ),
+    (
         "on_return",
-        "When the original vendor returns: ask you, keep the new owner, review its work, hand \
-         the card back, or redo it",
+        "When the original agent returns: ask you, keep the new worker, review its work, hand \
+         the task back, or redo it",
         Choices::Words(ON_RETURN),
     ),
     (
         "checkpoint",
-        "Tag the card's state at every handoff, so you can go back to it",
+        "Tag the task's state at every fallback, so you can go back to it",
         Choices::Bool,
     ),
     (
@@ -127,40 +140,40 @@ const HANDOFF: &[(&str, &str, Choices)] = &[
         Choices::Words(&["weaker", "equal"]),
     ),
     (
-        "max_handoffs",
-        "Handoffs per card before it escalates to you",
+        "max_fallbacks",
+        "Fallbacks per task before it comes to you",
         Choices::Any,
     ),
     (
         "context",
-        "What the replacement is told: the card only (fresh), the handoff note, the note and the \
+        "What the fallback is told: the task only (fresh), the fallback note, the note and the \
          old session's transcript, or the note and a summary of it",
         Choices::Words(CONTEXTS),
     ),
     (
         "summarizer",
-        "Who summarizes the old session for note+summary: harness/model or an endpoint. Unset \
-         uses the replacement's harness with its cheapest model",
+        "Who summarizes the old session for note+summary: cli/model or an endpoint. Unset \
+         uses the fallback's CLI with its cheapest model",
         Choices::Any,
     ),
     (
         "replace.*.with",
-        "Who replaces this vendor, in order: an agent, or a table with its own rules",
+        "Who replaces this agent, in order: an agent, or a table with its own rules",
         Choices::Any,
     ),
     (
         "replace.*.strategy",
-        "How this vendor's cards go to its replacements: the first, spread, or a race",
+        "How this agent's tasks go to its fallbacks: the first that's up, or spread",
         Choices::Words(STRATEGIES),
     ),
     (
         "replace.*.on_return",
-        "When this vendor returns: ask you, keep, review, hand back, or redo",
+        "When this agent returns: ask you, keep, review, hand back, or redo",
         Choices::Words(ON_RETURN),
     ),
     (
         "replace.*.context",
-        "What this vendor's replacements are told: fresh, note, note+transcript, or note+summary",
+        "What this agent's fallbacks are told: fresh, note, note+transcript, or note+summary",
         Choices::Words(CONTEXTS),
     ),
 ];
@@ -180,8 +193,8 @@ const SANDBOX: &[(&str, &str, Choices)] = &[
         Choices::Bool,
     ),
     (
-        "agents_see_other_copies",
-        "Whether an agent can read the other agents' copies of the repo, not only its own",
+        "agents_see_other_worktrees",
+        "Whether an agent can read the other agents' worktrees of the repo, not only its own",
         Choices::Bool,
     ),
     (
@@ -202,7 +215,7 @@ enum Choices {
 const OWN_WORDS: &[(&str, &str)] = &[
     (
         "agents.*.extra_args",
-        "Extra arguments for the harness's program on every run",
+        "Extra arguments for the CLI's program on every run",
     ),
     (
         "agents.*.price.input_per_mtok",
@@ -221,58 +234,61 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "Auto approval pauses while this many spot checks wait for you",
     ),
     (
-        "approvals.recipe_promotion.rules.change_classes",
-        "Recipe rules: the classes of change auto may promote, such as adding a checklist item",
+        "approvals.rules.workflow_promotion.change_classes",
+        "Learned workflows: the classes of change auto may promote, such as adding a checklist item",
     ),
     (
-        "budget.history_min",
-        "Past cards of a task type needed before their median sets a card's budget",
+        "limits.history_min",
+        "Past tasks of a task type needed before their median sets a task's limit",
     ),
     (
-        "budget.lines.goal_and_plan",
-        "Share of the run budget for the goal and the plan",
+        "limits.lines.goal_and_plan",
+        "Share of the run limit for the goal and the plan",
     ),
     (
-        "budget.lines.contracts",
-        "Share of the run budget for interface and acceptance-test cards",
+        "limits.lines.contracts",
+        "Share of the run limit for interface and acceptance-test tasks",
     ),
     (
-        "budget.lines.cards",
-        "Share of the run budget for build cards",
+        "limits.lines.tasks",
+        "Share of the run limit for build tasks",
     ),
-    ("budget.lines.review", "Share of the run budget for review"),
-    ("budget.lines.spikes", "Share of the run budget for spikes"),
+    ("limits.lines.review", "Share of the run limit for review"),
     (
-        "budget.lines.integration",
-        "Share of the run budget for integration",
+        "limits.lines.experiments",
+        "Share of the run limit for experiments",
     ),
     (
-        "budget.lines.reserve",
-        "Share of the run budget held in reserve",
+        "limits.lines.integration",
+        "Share of the run limit for integration",
+    ),
+    (
+        "limits.lines.reserve",
+        "Share of the run limit held in reserve",
     ),
     (
         "concurrency.max_sessions",
         "Most agent sessions running at once",
     ),
     (
-        "concurrency.max_per_vendor",
-        "Most sessions running at once with one vendor",
+        "concurrency.max_per_agent",
+        "Most sessions running at once with one agent",
     ),
     ("critique.rounds", "Critique rounds. 0 turns critique off"),
     ("critique.checklist", "What every critique checks"),
     (
         "divide.acceptance_tests_by",
-        "Who writes each card's acceptance tests: its reviewer, or nobody",
+        "Who writes each task's acceptance tests: its reviewer, or nobody",
     ),
-    ("divide.max_cards", "Most cards a plan may divide into"),
+    ("divide.max_tasks", "Most tasks a plan may divide into"),
     (
         "divide.predictions",
-        "Each owner writes predictions on its card as probabilities, such as passing the gates \
+        "Each worker writes predictions on its task as probabilities, such as passing the checks \
          on the first try",
     ),
     (
         "drafting.by",
-        "Who drafts plans: the crew, or the coordinator",
+        "Who drafts plans: the crew, or the orchestrator",
     ),
     (
         "drafting.drafters",
@@ -292,7 +308,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "evolution.canary_runs",
-        "Runs a promoted recipe change is watched for as a canary",
+        "Runs a promoted workflow change is watched for as a canary",
     ),
     (
         "evolution.replay.tasks",
@@ -303,8 +319,8 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "Runs of each replayed task",
     ),
     (
-        "gates.timeout",
-        "How long one gate command may run, such as \"30m\"",
+        "checks.timeout",
+        "How long one check command may run, such as \"30m\"",
     ),
     (
         "understand.max_questions",
@@ -316,23 +332,39 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "understand.comparers",
-        "How many models from other companies compare the readings",
+        "How many models from other providers compare the readings",
     ),
     (
         "understand.always_ask",
         "Topics that are always a question, never a majority's silent assumption",
     ),
     (
-        "goal.max_attempts",
-        "Most attempts a goal run makes. The run's budget still caps it",
+        "goal.until",
+        "The goal: keep going until this is true. /goal sets it for the conversation",
+    ),
+    (
+        "goal.default",
+        "Whether a request gets a goal you didn't set: off, or from-request, where the main \
+         agent says what done means and the work goes on until it holds",
+    ),
+    (
+        "goal.check",
+        "What checks a goal: auto takes a command when the goal names one and else the judge; \
+         command, judge, or both",
     ),
     (
         "goal.stuck_after",
-        "Attempts in a row that end on the same blocker before a goal is stuck",
+        "Rounds in a row that end on the same failure before a goal changes approach once, then \
+         stops and says why",
     ),
     (
-        "goal.idle_after",
-        "Attempts in a row that meet no new criterion and change no file before a goal is stuck",
+        "goal.max_rounds",
+        "Most rounds a goal goes. Unset, only the goal holding, you, or being stuck ends it",
+    ),
+    (
+        "roles.*.goal",
+        "Whether the role works each task as a goal, and who keeps it going: cli for the CLI's \
+         own goal, which Codex has, argonauts, or off",
     ),
     (
         "health.window",
@@ -340,15 +372,15 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "health.down_after",
-        "Overload or server errors within the window that mark a vendor down",
+        "Overload or server errors within the window that mark an agent down",
     ),
     (
         "health.down_sessions",
-        "Sessions those errors must come from before a vendor counts as down",
+        "Sessions those errors must come from before an agent counts as down",
     ),
     (
         "judging.method",
-        "How plans are judged: cross-judging, one judge, a vote, the coordinator, or you",
+        "How plans are judged: cross-judging, one judge, a vote, the orchestrator, or you",
     ),
     (
         "judging.both_orders",
@@ -361,7 +393,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "limits.evolution_usd_per_month",
-        "The most recipe evolution may spend a month, in dollars",
+        "The most workflow evolution may spend a month, in dollars",
     ),
     (
         "mapping.remap_after_revision",
@@ -382,7 +414,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "native_fanout.max",
-        "Most subagents a harness session may start",
+        "Most subagents a CLI session may start",
     ),
     (
         "notifications.bell",
@@ -390,9 +422,9 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "review.assign",
-        "How reviewers are assigned: a ring, at random, by the coordinator, or fixed",
+        "How reviewers are assigned: a ring, at random, by the orchestrator, or fixed",
     ),
-    ("review.per_card", "Reviewers per card"),
+    ("review.per_task", "Reviewers per task"),
     (
         "roles.*.compaction",
         "Compaction for this role, over the crew-wide setting",
@@ -403,24 +435,25 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "roles.*.lifetime",
-        "How long this role's session lasts: a card, a run, or the project",
+        "How long this role's session lasts: a task, a run, or the project",
     ),
     (
         "roles.*.native_fanout",
-        "Subagents this role's harness may start: on, off, or a table with a max",
+        "Subagents this role's CLI may start: on, off, or a table with a max. On also lets it \
+         run a workflow of its own, where its CLI has one",
     ),
     (
         "roles.*.native_fanout.max",
-        "Most subagents this role's harness session may start",
+        "Most subagents this role's CLI session may start",
     ),
     (
         "routing.algorithm",
-        "How cards find owners: a bandit that learns, round robin, the coordinator, or fixed \
-         owners",
+        "How tasks find workers: a bandit that learns, round robin, the orchestrator, or fixed \
+         workers",
     ),
     (
         "routing.no_explore_labels",
-        "Card labels that never go to a less-proven agent",
+        "Task labels that never go to a less-proven agent",
     ),
     (
         "sandbox.container_image",
@@ -432,7 +465,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "sandbox.proxy_allow",
-        "Hosts agents may reach through the proxy, on top of their harness's API hosts",
+        "Hosts agents may reach through the proxy, on top of their CLI's API hosts",
     ),
     (
         "sandbox.untrusted_repos",
@@ -440,50 +473,54 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "sessions.lifetime",
-        "How long an agent session lasts: a card, a run, or the project. A role can override it",
+        "How long an agent session lasts: a task, a run, or the project. A role can override it",
     ),
     (
-        "solo.style",
-        "Solo you choose: direct works in your checkout like its CLI, checked works in a copy \
-         with gates and a merge",
+        "solo.kind",
+        "Solo you choose: direct works in your checkout like its CLI, checked works in a \
+         worktree with checks and a merge",
     ),
     (
-        "spikes.enabled",
+        "experiments.enabled",
         "Small experiments settle what the plans disagree on",
     ),
     (
-        "triage.all_hands",
-        "All hands: every task goes to the crew, and the lead designs its workflow. Questions \
-         are still just answered, and /solo still runs one task solo",
-    ),
-    ("triage.use_recipes", "A matching recipe decides the mode"),
-    (
-        "triage.otherwise",
-        "What triage does between the thresholds: solo, the crew, or solo then the crew",
+        "ultracode",
+        "Ultracode: a workflow for every real request, small ones included. In solo, Claude \
+         Code runs its own, and on Codex or Antigravity CLI one runs on that same model. \
+         Questions are still just answered",
     ),
     (
-        "triage.solo_max_files",
-        "Triage picks solo at this many files or fewer",
+        "solo_or_crew.use_learned",
+        "A matching learned workflow decides the mode",
     ),
     (
-        "triage.solo_requires_tests",
+        "solo_or_crew.otherwise",
+        "Between the thresholds: solo, the crew, or solo then the crew",
+    ),
+    (
+        "solo_or_crew.solo_max_files",
+        "Solo is picked at this many files or fewer",
+    ),
+    (
+        "solo_or_crew.solo_requires_tests",
         "Solo also needs the repo to have tests",
     ),
     (
-        "triage.crew_min_files",
-        "Triage picks the crew at this many files or more",
+        "solo_or_crew.crew_min_files",
+        "The crew is picked at this many files or more",
     ),
     (
-        "triage.crew_labels",
+        "solo_or_crew.crew_labels",
         "Labels that always get the crew, such as security",
     ),
     (
-        "triage.solo_style",
-        "Solo the triage rules pick: checked, so it can grow into a crew run, direct, or as \
-         solo.style says",
+        "solo_or_crew.solo_kind",
+        "Solo when the rules pick it: checked, so it can grow into a crew run, direct, or as \
+         solo.kind says",
     ),
     (
-        "triage.read_instructions",
+        "solo_or_crew.read_instructions",
         "Follow what a request says about how to run it, such as who coordinates or reviews",
     ),
     ("ui.bell", "Let the app ring the terminal bell"),
@@ -493,7 +530,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "ui.takeover",
-        "Where a vendor's own screen opens when you take over: here, a tmux split, or a new tab",
+        "Where an agent's own screen opens when you take over: here, a tmux split, or a new tab",
     ),
     (
         "visibility.drafts_hidden_until_sealed",
@@ -505,7 +542,7 @@ const OWN_WORDS: &[(&str, &str)] = &[
     ),
     (
         "watchdogs.wall_clock_min",
-        "Minutes a card may run. A soft stop comes first",
+        "Minutes a task may run. A soft stop comes first. Unset, there is no limit",
     ),
 ];
 
@@ -553,6 +590,13 @@ fn catalog() -> &'static [SettingMeta] {
     static CATALOG: OnceLock<Vec<SettingMeta>> = OnceLock::new();
     CATALOG.get_or_init(|| {
         let mut entries = named();
+        // Not a key the settings hold: a file may write one list for the whole crew, and the
+        // resolver seats everyone in it (`settings::crew::spell_out`).
+        entries.push(meta(
+            "crew",
+            "One list for the whole crew: everyone in it may work, review and judge",
+            &[],
+        ));
         let mut seen: BTreeSet<String> = entries.iter().map(|meta| meta.key.clone()).collect();
         for leaf in schema_leaves() {
             if seen.insert(leaf.key.clone()) {
@@ -592,12 +636,19 @@ pub(crate) fn quote(word: &str) -> String {
 }
 
 /// Each key of `table` below `<section>.` for every role, then below `roles.*.<section>.` for one.
+/// The keys of a table every role shares and of each role's own: `roles.*.sandbox` for the
+/// roles, and `fallback.<role>` for each of the crew's five.
 fn per_role_keys(section: &str, table: &[(&str, &str, Choices)]) -> Vec<SettingMeta> {
     let mut entries = Vec::new();
-    let prefixes = [
-        (section.to_owned(), true),
-        (format!("roles.*.{section}"), false),
-    ];
+    let mut prefixes = vec![(section.to_owned(), true)];
+    match section {
+        "fallback" => prefixes.extend(
+            CrewRole::ALL
+                .into_iter()
+                .map(|role| (format!("fallback.{}", role.as_str()), false)),
+        ),
+        _ => prefixes.push((format!("roles.*.{section}"), false)),
+    }
     for (prefix, for_every_role) in prefixes {
         for (name, description, choices) in table {
             let key = format!("{prefix}.{name}");
@@ -622,8 +673,8 @@ fn named() -> Vec<SettingMeta> {
     let mut entries = vec![
         // /model
         meta(
-            "default_agent",
-            "Who you chat with, and who works solo: a harness, or harness/model",
+            "main_agent",
+            "Who you chat with, and who works solo: a CLI, or cli/model",
             &[],
         ),
         meta(
@@ -633,13 +684,13 @@ fn named() -> Vec<SettingMeta> {
         ),
         meta(
             "agents.*.model",
-            "The model this harness runs unless a role names one. Unset uses the CLI's default",
+            "The model this CLI runs unless a role names one. Unset uses the CLI's default",
             &[],
         ),
         // /effort
         words(
             "agents.*.effort",
-            "Reasoning effort for this harness. Unset uses the CLI's default",
+            "Reasoning effort for this CLI. Unset uses the CLI's default",
             EFFORT_LEVELS,
         ),
         words(
@@ -649,22 +700,29 @@ fn named() -> Vec<SettingMeta> {
         ),
         // /preset. The picker adds your own presets from `presets_in`.
         words(
-            "preset",
-            "How the crew works: peer-crew plans and judges as peers, coordinated-crew has one \
-             coordinator",
+            "workflow",
+            "How the crew works: council plans and judges as peers, orchestrator has one \
+             orchestrator",
             &presets,
         ),
         // /agents
         meta(
-            "crew",
-            "The harnesses and endpoints that work on crew runs",
+            "crew.orchestrator",
+            "Who plans and delegates: \"main\" for the agent you talk to, or a model of its own",
             &[],
         ),
         meta(
-            "agents.*.enabled",
-            "Whether this harness may work at all",
-            BOOL,
+            "crew.workers",
+            "Who does the tasks, in order: the first that's available",
+            &[],
         ),
+        meta(
+            "crew.reviewers",
+            "Who checks a result, in order, never one their own provider made",
+            &[],
+        ),
+        meta("crew.judge", "Who decides and signs off, in order", &[]),
+        meta("agents.*.enabled", "Whether this CLI may work at all", BOOL),
         words(
             "agents.*.auth",
             "Your own login (subscription), or an API key from the environment (api-key)",
@@ -672,7 +730,7 @@ fn named() -> Vec<SettingMeta> {
         ),
         meta(
             "agents.*.binary",
-            "The harness's program, as an absolute path outside the repo, when it isn't on PATH",
+            "The CLI's program, as an absolute path outside the repo, when it isn't on PATH",
             &[],
         ),
         meta(
@@ -712,28 +770,35 @@ fn named() -> Vec<SettingMeta> {
         ),
         // /approvals
         meta(
-            "approvals.full_auto",
-            "Full auto for every checkpoint a run opens that its own mode leaves to auto: \
-             nothing waits for you there. One you keep supervised or in shadow stays yours. \
-             Off, each checkpoint keeps its own mode",
+            "approvals.autopilot",
+            "Autopilot for every approval a run opens that its own mode leaves to auto: \
+             nothing waits for you there. One you keep supervised or in auto preview stays yours. \
+             Off, each approval keeps its own mode",
             BOOL,
         ),
         meta(
-            "approvals.answered_by",
+            "approvals.answers",
             "Who answers the crew's questions, Understand's open questions and the go-ahead, \
-             and in full auto the agents' questions meant for you: you, the lead, or a model you \
+             and on autopilot the agents' questions meant for you: you, the main agent, or a model you \
              pick such as codex/gpt-5.6, whose answers become assumptions you can review. Unset, \
-             the lead in auto mode and you otherwise. Set to the lead, it answers in every mode. \
-             A model answers in full auto only, where nothing waits for you; elsewhere the mode \
-             decides. Full auto never has you answer: the model you picked does, else the lead",
+             the main agent in auto mode and you otherwise. Set to the main agent, it answers in every mode. \
+             A model answers on autopilot only, where nothing waits for you; elsewhere the mode \
+             decides. Autopilot never has you answer: the model you picked does, else the main agent",
+            &[],
+        ),
+        meta(
+            "approvals.decides",
+            "Who settles what your rules can't decide: judge, the cheapest model you can run \
+             from another provider than the work it judges, or a model you pick such as \
+             antigravity-cli/gemini-3.6-flash, which judges in its place",
             &[],
         ),
         meta(
             "approvals.ask_you_about",
-            "Topics that come to you even when the lead answers, matched without case: a \
+            "Topics that come to you even when the main agent answers, matched without case: a \
              question's tag (scope, security, data, cost, detail) or its topic, such as \"log \
              level\", and \"go-ahead\", \"workflow change\", \"stuck goal\", or \"keep \
-             going\". Over budget always comes to you. Full auto answers them too, since \
+             going\". Over limit always comes to you. Autopilot answers them too, since \
              nothing waits for you there",
             &[],
         ),
@@ -748,11 +813,11 @@ fn named() -> Vec<SettingMeta> {
         entries.push(words(
             &format!("approvals.{checkpoint}.mode"),
             &format!(
-                "{label}: supervised waits for you, shadow also records what auto would do, \
-                 auto lets your settings decide, and full auto never waits: what they can't \
+                "{label}: supervised waits for you, auto preview also records what auto would do, \
+                 auto lets your settings decide, and autopilot never waits: what they can't \
                  approve ends safely and is reported"
             ),
-            &["supervised", "shadow", "auto", "full_auto"],
+            &["supervised", "auto_preview", "auto", "autopilot"],
         ));
         entries.push(words(
             &format!("approvals.{checkpoint}.decide_with"),
@@ -769,62 +834,56 @@ fn named() -> Vec<SettingMeta> {
             &format!("{label}: what happens when auto doesn't approve"),
             otherwise,
         ));
-        // Only a merge opens a pull request, and a stuck card or a budget has nothing to send
-        // back. A promotion is decided outside runs, where full auto never reaches.
+        // Only a merge opens a pull request, and a stuck task or a limit has nothing to send
+        // back. A promotion is decided outside runs, where autopilot never reaches.
         let at_hard_limit: &[&str] = match *checkpoint {
-            "recipe_promotion" => continue,
+            "workflow_promotion" => continue,
             "merge" => &["stop", "send_back", "open_pull_request", "park"],
-            "escalation" | "budget" => &["stop", "park"],
+            "stuck" | "limit" => &["stop", "park"],
             _ => &["stop", "send_back", "park"],
         };
         entries.push(words(
             &format!("approvals.{checkpoint}.at_hard_limit"),
             &format!(
-                "{label}: what a hard limit does in full auto, where no one is there to ask: \
+                "{label}: what a hard limit does on autopilot, where no one is there to ask: \
                  stop ends that part safely and keeps its work, send_back runs another round, \
-                 open_pull_request opens one for you, and park leaves the card for you"
+                 open_pull_request opens one for you, and park leaves the task for you"
             ),
             at_hard_limit,
         ));
     }
     entries.extend([
         meta(
-            "approvals.plan.rules.max_score_spread",
+            "approvals.rules.plan.max_score_spread",
             "Plan rules: the largest gap between one judge's two scores, out of 10",
             &[],
         ),
         meta(
-            "approvals.plan.rules.min_winner_margin",
-            "Plan rules: how far the winning plan must lead the runner-up",
+            "approvals.rules.plan.min_winner_margin",
+            "Plan rules: how far ahead of the runner-up the winning plan must be",
             &[],
         ),
         meta(
-            "approvals.merge.rules.min_changed_line_coverage",
+            "approvals.rules.merge.min_test_coverage_of_changed_lines",
             "Merge rules: the share of changed lines the tests must cover, from 0 to 1, where \
              coverage is measured",
             &[],
         ),
         meta(
-            "approvals.merge.rules.max_combined_diff_lines",
+            "approvals.rules.merge.max_changed_lines",
             "Merge rules: the most lines the run's combined diff may have",
             &[],
         ),
         meta(
-            "approvals.escalation.rules.max_extra_attempts",
-            "Stuck-card rules: extra attempts auto may grant, by an agent from a family that \
+            "approvals.rules.stuck.max_extra_attempts",
+            "Stuck-task rules: extra attempts auto may grant, by an agent from a provider that \
              hasn't tried",
             &[],
         ),
         meta(
-            "approvals.budget.rules.use_reserve",
-            "Budget rules: whether auto may release the run's reserve, never above a ceiling",
+            "approvals.rules.limit.use_reserve",
+            "Limit rules: whether auto may release the run's reserve, never above a ceiling",
             BOOL,
-        ),
-        meta(
-            "approvals.approver.model",
-            "The approver model, any model in the registry. Unset picks the cheapest model from \
-             another company than the work it judges",
-            &[],
         ),
         meta(
             "approvals.approver.model_rules",
@@ -832,13 +891,13 @@ fn named() -> Vec<SettingMeta> {
             &[],
         ),
         meta(
-            "approvals.approver.different_family",
-            "The approver must come from a model family no author or owner used",
+            "approvals.approver.different_provider",
+            "The approver must come from a provider no author or worker used",
             BOOL,
         ),
         meta(
             "approvals.approver.second_model",
-            "A second approver, from another vendor, that must also approve",
+            "A second approver, from another agent, that must also approve",
             &[],
         ),
         meta(
@@ -846,77 +905,74 @@ fn named() -> Vec<SettingMeta> {
             "Share of auto decisions queued for your spot check, from 0 to 1",
             &[],
         ),
-        // /budget
+        // /limits. The four you are most likely to set come first.
         meta(
-            "budget.enabled",
-            "Whether budgets stop work. Off, the meter still counts",
-            BOOL,
-        ),
-        meta(
-            "budget.run_usd",
-            "The most a run may spend, in dollars",
+            "limits.spend_per_run",
+            "The most a run may spend, in dollars. Unset, there is no limit",
             &[],
         ),
-        meta("budget.run_tokens", "The most tokens a run may use", &[]),
         meta(
-            "budget.run_quota",
+            "limits.spend_per_day",
+            "The most you spend a day across every run and repo, in dollars. Unset, there is \
+             no limit",
+            &[],
+        ),
+        meta(
+            "limits.plan_usage",
+            "How full a provider's plan window may get before its agents stop being used, \
+             from 0 to 1. Unset, a plan is used until it runs out",
+            &[],
+        ),
+        words(
+            "limits.when_reached",
+            "When a limit you set is reached: the fallbacks take over, or the work stops",
+            &["fallback", "stop"],
+        ),
+        meta("limits.run_tokens", "The most tokens a run may use", &[]),
+        meta(
+            "limits.run_plan_usage",
             "The most of a subscription window a run may use, from 0 to 1",
             &[],
         ),
         meta(
-            "budget.run_minutes",
+            "limits.run_minutes",
             "The longest a run may take, in minutes",
             &[],
         ),
         meta(
-            "budget.per_card_usd",
-            "Each card's budget in dollars, until similar past cards give a median",
+            "limits.per_task_usd",
+            "Each task's limit in dollars, until similar past tasks give a median",
+            &[],
+        ),
+        meta("limits.per_task_tokens", "Each task's limit in tokens", &[]),
+        meta(
+            "limits.per_task_plan_usage",
+            "Each task's limit as a share of a subscription window",
             &[],
         ),
         meta(
-            "budget.per_card_tokens",
-            "Each card's budget in tokens",
+            "limits.per_task_minutes",
+            "Each task's limit in minutes",
             &[],
         ),
         meta(
-            "budget.per_card_quota",
-            "Each card's budget as a share of a subscription window",
+            "limits.soft_stop",
+            "Share of a limit at which the agent is asked to wrap up",
             &[],
-        ),
-        meta(
-            "budget.per_card_minutes",
-            "Each card's budget in minutes",
-            &[],
-        ),
-        meta(
-            "budget.soft_stop",
-            "Share of a budget at which the agent is asked to wrap up",
-            &[],
-        ),
-        words(
-            "budget.on_hit",
-            "When a card hits its budget: ask you, extend it from the reserve, hand it off, or \
-             escalate",
-            &["ask", "extend", "handoff", "escalate"],
         ),
     ]);
-    entries.extend(per_role_keys("handoff", HANDOFF));
+    entries.extend(per_role_keys("fallback", HANDOFF));
     // /permissions
     entries.extend(per_role_keys("sandbox", SANDBOX));
     entries.extend([
         meta(
             "limits.protected_paths",
-            "Paths no card may touch, as glob patterns, on top of .argonauts/**",
+            "Paths no task may touch, as glob patterns, on top of .argonauts/**",
             &[],
         ),
         meta(
             "limits.dependency_allowlist",
             "Packages a plan may add without asking you",
-            &[],
-        ),
-        meta(
-            "limits.usd_per_day",
-            "The most you spend a day across every run and repo, in dollars",
             &[],
         ),
         // /narrator
@@ -927,7 +983,7 @@ fn named() -> Vec<SettingMeta> {
         ),
         meta(
             "narrator.model",
-            "The model that narrates, any in the registry. Unset uses the default agent, \
+            "The model that narrates, any in the registry. Unset uses the main agent, \
              read-only",
             &[],
         ),
@@ -944,12 +1000,14 @@ fn named() -> Vec<SettingMeta> {
         // /theme
         words(
             "ui.theme",
-            "The palette. Auto follows your terminal's background",
-            &["auto", "dark", "light"],
+            "The palette. Auto follows your terminal's background; dark and light come in \
+             daltonized and ANSI forms too, and custom:<name> reads a theme file",
+            &Theme::BUILT_IN,
         ),
         meta(
             "ui.accent",
-            "The working line's accent color, as \"#rrggbb\". Unset is the warm gold",
+            "The working line's accent color and its shimmer, as \"#rrggbb\". Unset is the warm \
+             gold",
             &[],
         ),
         words(
@@ -992,62 +1050,76 @@ fn named() -> Vec<SettingMeta> {
 /// The keys added for workflows, sessions, the panel, handoff debt, and front ends.
 fn later_keys() -> Vec<SettingMeta> {
     vec![
-        // /config workflow
+        // /config phases
         meta(
-            "workflow",
-            "The workflow a run starts from. Each preset sets its own, and /config workflow picks \
-             another, which wins when saved where the preset is picked or in a later file",
+            "phases",
+            "The phases a run starts from. Each workflow sets its own, and /config phases picks \
+             another, which wins when saved where the workflow is picked or in a later file",
             &[],
         ),
         meta(
-            "workflows.lead_designs",
-            "The lead sizes the preset's workflow for each task, with more or fewer agents at a \
+            "mods.commands",
+            "Whether a mod file's command may run. Off, mods that read a command draw nothing \
+             and say why; mods with a built-in source are untouched",
+            BOOL,
+        ),
+        meta(
+            "workflow_size",
+            "How big a workflow the orchestrator plans when your request doesn't say: small \
+             (under 5 agents), medium (under 10), large, or none for no guideline. A guideline, \
+             as in Claude Code: a request can ask for another size",
+            &["\"small\"", "\"medium\"", "\"large\"", "\"none\""],
+        ),
+        words(
+            "switch.carry",
+            "What a main model on another CLI starts from: a summary the model you leave writes \
+             with the recent exchanges in full, the recent exchanges only, or all of them. Each \
+             also gets the transcript's path",
+            &["summary", "recent", "all"],
+        ),
+        meta(
+            "switch.recent",
+            "How many of the latest exchanges a main model on another CLI gets word for word",
+            &[],
+        ),
+        meta(
+            "workflows.orchestrator_designs",
+            "The main agent sizes the workflow's steps for each task, with more or fewer agents at a \
              step or a step left out, and says what it changed. Off runs it as it is, and \
-             \"any\" lets the lead run another workflow or compose one",
+             \"any\" lets the main agent run another workflow or compose one",
             &["true", "false", "\"any\""],
         ),
         meta(
             "workflows.allow_composed",
-            "The lead may compose new workflows from the step kinds, which are checked before \
+            "The main agent may compose new workflows from the step kinds, which are checked before \
              they run",
             BOOL,
         ),
         meta(
             "workflows.max_depth",
-            "How deep workflows may nest, at most 2",
+            "How deep workflows may nest, at most 2: with 2 a workflow's script may run another \
+             as a step, and with 1 none may",
             &[],
         ),
         meta(
             "workflows.adapt_at_phase_ends",
-            "The lead may propose a change at a phase end, through the change request checkpoint",
+            "The main agent may propose a change at a phase end, through the change request approval",
             BOOL,
-        ),
-        words(
-            "workflows.style",
-            "How a crew run works: as a workflow, phases that end when they finish; as a goal, \
-             attempts until a check from another company finds every criterion met; or as the \
-             lead's CLI does",
-            &["follow_lead", "workflow", "goal"],
-        ),
-        words(
-            "workflows.style_by_lead.*",
-            "What follow_lead picks for this CLI. Any CLI not listed leads a workflow",
-            &["workflow", "goal"],
         ),
         meta(
             "workflows.final_check",
-            "A check from another company judges the done-when list before Merge",
+            "A check from another provider judges the done-when list before Merge",
             BOOL,
         ),
         words(
             "understand.when",
-            "When models from several companies read your request first: in every crew run, \
-             when the lead decides, or never",
-            &["crew", "lead", "off"],
+            "When models from several providers read your request first: in every crew run, \
+             when the main agent decides, or never",
+            &["crew", "main", "off"],
         ),
         meta(
             "goal.checker",
-            "Who checks a goal: other_company, or a worker by name",
+            "Who the judge of a goal is: other_provider, or an agent by name",
             &[],
         ),
         meta(
@@ -1056,14 +1128,20 @@ fn later_keys() -> Vec<SettingMeta> {
             BOOL,
         ),
         meta(
+            "sessions.context",
+            "How much context a session may hold: \"largest\" is the largest window each CLI \
+             offers for the model, and a token count such as \"200k\" lowers it for cheaper turns",
+            &[],
+        ),
+        meta(
             "sessions.rotate_at",
-            "When a session starts fresh with a handoff note: a token count such as \"200k\", or \
-             a share of the context window such as 0.9",
+            "When a session starts fresh with a fallback note: a share of its context window \
+             such as 0.9, which is near its end, or a token count such as \"200k\"",
             &[],
         ),
         // The panel under the mode line
         words(
-            "ui.panel.vendor_internals",
+            "ui.panel.subagents",
             "What an agent's own subagents or threads show: each one, a summary, or nothing",
             &["discovered", "summary", "hidden"],
         ),
@@ -1088,8 +1166,8 @@ fn later_keys() -> Vec<SettingMeta> {
             &["1", "2"],
         ),
         meta(
-            "approvals.merge.rules.allow_debt",
-            "Merge rules: whether auto may merge a card whose debt no strong enough model reviewed",
+            "approvals.rules.merge.allow_debt",
+            "Merge rules: whether auto may merge a task whose debt no strong enough model reviewed",
             BOOL,
         ),
         // Always-on agents and front ends
@@ -1123,8 +1201,8 @@ fn later_keys() -> Vec<SettingMeta> {
             &["summaries", "status-only"],
         ),
         meta(
-            "mcp.run_budget",
-            "The time budget of each run a front end starts, such as \"60m\"",
+            "mcp.run_limit",
+            "The time limit of each run a front end starts, such as \"60m\"",
             &[],
         ),
         meta(
@@ -1140,7 +1218,7 @@ fn later_keys() -> Vec<SettingMeta> {
         ),
         meta(
             "notifications.chat.on",
-            "What sends a chat message: needs_you, finished, vendor_down",
+            "What sends a chat message: needs_you, finished, agent_down",
             &[],
         ),
     ]
@@ -1314,6 +1392,73 @@ mod tests {
     use toml::{Table, Value};
 
     use super::*;
+
+    /// The retired words, as a setting's key, value or description
+    /// might still say them.
+    const OLD_WORDS: [&str; 23] = [
+        "card",
+        "owner",
+        "coordinator",
+        "lead",
+        "preset",
+        "full auto",
+        "shadow",
+        "gate",
+        "parked",
+        "escalat",
+        "vendor",
+        "harness",
+        "family",
+        "families",
+        "company",
+        "spike",
+        "retro",
+        "widget",
+        "quota",
+        "budget",
+        "triage",
+        "seat",
+        "recipe",
+    ];
+
+    /// Whether `word` starts a word of `text`, any ending after it.
+    fn speaks(text: &str, word: &str) -> bool {
+        let text = text.to_lowercase();
+        text.match_indices(word).any(|(at, _)| {
+            !text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|before| before.is_alphanumeric())
+        })
+    }
+
+    /// Nothing you read or type about a setting uses a retired word: not its key,
+    /// not a value it takes, and not what `/config`, the schema and the files Argonauts writes
+    /// say of it.
+    #[test]
+    fn no_setting_speaks_an_old_word() {
+        let mut found = Vec::new();
+        for meta in settings_catalog() {
+            let texts = [&meta.key, &meta.description]
+                .into_iter()
+                .chain(meta.allowed.iter());
+            // A mod is a drawn card, so a card on a tab or above the input is one.
+            let drawn = meta.key.starts_with("ui.mods.") || meta.key.starts_with("ui.views.");
+            for text in texts {
+                for word in OLD_WORDS {
+                    if speaks(text, word) && !(drawn && word == "card") {
+                        found.push(format!("{} · {word} · {text}", meta.key));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "{} old words:\n{}",
+            found.len(),
+            found.join("\n")
+        );
+    }
     use crate::resolve::leaves;
 
     /// A real key for a catalog key, with each `*` filled in.
@@ -1327,7 +1472,7 @@ mod tests {
                     ("endpoints", 1) => "ollama",
                     ("endpoints", _) => "X_TEAM",
                     ("roles", _) => "reviewer",
-                    ("visibility", _) => "owner",
+                    ("visibility", _) => "worker",
                     _ => "crew_view",
                 };
             }
@@ -1359,53 +1504,65 @@ mod tests {
         Table::try_from(settings).map_err(|err| err.to_string())
     }
 
-    /// A value to try for keys whose pickers offer no list.
+    /// A value to try for keys whose pickers offer no list. A crew role's own fallback key
+    /// takes what any role's does, so `fallback.workers.order` reads as `fallback.*.order`.
     fn sample(key: &str) -> &'static str {
-        match key {
-            "default_agent" | "approvals.approver.model" | "approvals.approver.second_model" => {
+        let segments: Vec<&str> = key.split('.').collect();
+        let any_role = match segments.as_slice() {
+            ["fallback", role, rest @ ..] if CrewRole::named(role).is_some() => {
+                format!("fallback.*.{}", rest.join("."))
+            }
+            _ => key.to_owned(),
+        };
+        match any_role.as_str() {
+            "main_agent" | "approvals.decides" | "approvals.approver.second_model" => {
                 "\"codex/gpt-x\""
             }
             "roles.*.workers"
-            | "crew"
-            | "roles.*.handoff.fallback"
-            | "handoff.fallback"
-            | "handoff.replace.*.with"
-            | "roles.*.handoff.replace.*.with" => "[\"codex\"]",
+            | "crew.orchestrator"
+            | "crew.workers"
+            | "crew.reviewers"
+            | "crew.judge"
+            | "fallback.*.order"
+            | "fallback.order"
+            | "fallback.replace.*.with"
+            | "fallback.*.replace.*.with" => "[\"codex\"]",
             "agents.*.model" => "\"opus\"",
             "agents.*.binary" => "\"/opt/codex/bin/codex\"",
             "agents.*.version_pin" => "\"0.158.0\"",
             "endpoints.*.base_url" => "\"http://localhost:11434/v1\"",
             "endpoints.*.api_key_env" => "\"OLLAMA_API_KEY\"",
             "approvals.approver.model_rules" => "\"approval-rules.md\"",
-            "budget.run_tokens" | "budget.per_card_tokens" => "200000",
-            "approvals.merge.rules.max_combined_diff_lines"
-            | "approvals.escalation.rules.max_extra_attempts"
-            | "handoff.race_count"
-            | "roles.*.handoff.race_count"
-            | "handoff.max_handoffs"
-            | "roles.*.handoff.max_handoffs"
+            "limits.run_tokens" | "limits.per_task_tokens" => "200000",
+            "approvals.rules.merge.max_changed_lines"
+            | "approvals.rules.stuck.max_extra_attempts"
+            | "fallback.together"
+            | "fallback.*.together"
+            | "fallback.max_fallbacks"
+            | "fallback.*.max_fallbacks"
             | "workflows.max_depth"
             | "ui.panel.max_rows"
-            | "mcp.runs_per_day" => "2",
+            | "mcp.runs_per_day"
+            | "switch.recent" => "2",
             "limits.protected_paths" | "limits.dependency_allowlist" => "[\"docs/**\"]",
             "approvals.refuse_ancestor_env" => "[\"OTHER_AGENT_SHELL\"]",
             "notifications.chat.command" => "[\"/usr/local/bin/send-chat\", \"{text}\"]",
             "notifications.chat.on" => "[\"finished\"]",
-            "narrator.model" | "handoff.summarizer" | "roles.*.handoff.summarizer" => {
+            "narrator.model" | "fallback.summarizer" | "fallback.*.summarizer" => {
                 "\"ollama/llama3.2\""
             }
-            "approvals.answered_by" => "\"codex/gpt-5.6\"",
+            "approvals.answers" => "\"codex/gpt-5.6\"",
             "narrator.interval"
-            | "roles.*.handoff.ask_timeout"
-            | "handoff.ask_timeout"
-            | "mcp.run_budget" => "\"30s\"",
+            | "fallback.*.ask_timeout"
+            | "fallback.ask_timeout"
+            | "mcp.run_limit" => "\"30s\"",
             "narrator.spend_cap" => "\"0.50 usd\"",
             "ui.accent" => "\"#d4a017\"",
             "ui.keymap.*" => "\"ctrl+left\"",
             "goal.checker" => "\"codex\"",
             "approvals.ask_you_about" | "understand.always_ask" => "[\"security\"]",
-            "workflow" => "\"solo\"",
-            "sessions.rotate_at" => "\"200k\"",
+            "phases" => "\"solo\"",
+            "sessions.rotate_at" | "sessions.context" => "\"200k\"",
             _ => "0.5",
         }
     }
@@ -1462,55 +1619,59 @@ mod tests {
             "agents.*.price.input_per_mtok",
             "agents.*.price.output_per_mtok",
             "agents.*.price.cached_input_per_mtok",
-            "triage.force",
-            "triage.all_hands",
-            "handoff.strategy",
-            "handoff.race_count",
-            "handoff.on_return",
-            "handoff.checkpoint",
-            "handoff.merge_rule",
-            "handoff.unknown_tier",
-            "handoff.max_handoffs",
-            "handoff.replace.*.with",
-            "handoff.replace.*.strategy",
-            "handoff.replace.*.on_return",
-            "handoff.context",
-            "handoff.summarizer",
-            "handoff.replace.*.context",
-            "roles.*.handoff.strategy",
-            "roles.*.handoff.replace.*.with",
-            "roles.*.handoff.replace.*.on_return",
-            "roles.*.handoff.context",
-            "roles.*.handoff.summarizer",
-            "roles.*.handoff.replace.*.context",
+            "solo_or_crew.force",
+            "ultracode",
+            "fallback.strategy",
+            "fallback.together",
+            "fallback.pick",
+            "fallback.on_return",
+            "fallback.checkpoint",
+            "fallback.merge_rule",
+            "fallback.unknown_tier",
+            "fallback.max_fallbacks",
+            "fallback.replace.*.with",
+            "fallback.replace.*.strategy",
+            "fallback.replace.*.on_return",
+            "fallback.context",
+            "fallback.summarizer",
+            "fallback.replace.*.context",
+            "fallback.workers.strategy",
+            "fallback.workers.together",
+            "fallback.reviewers.pick",
+            "fallback.main.replace.*.with",
+            "fallback.orchestrator.replace.*.on_return",
+            "fallback.judge.context",
+            "fallback.workers.summarizer",
+            "fallback.reviewers.replace.*.context",
             "roles.*.native_fanout",
             "roles.*.native_fanout.max",
+            "sessions.context",
             "sessions.rotate_at",
-            "ui.panel.vendor_internals",
+            "ui.panel.subagents",
             "ui.panel.agents",
             "ui.panel.max_rows",
             "ui.glyphs",
             "ui.ambiguous_width",
-            "workflow",
-            "workflows.lead_designs",
+            "phases",
+            "workflows.orchestrator_designs",
             "workflows.allow_composed",
             "workflows.max_depth",
             "workflows.adapt_at_phase_ends",
-            "approvals.merge.rules.allow_debt",
+            "approvals.rules.merge.allow_debt",
             "approvals.presence",
             "approvals.refuse_ancestor_env",
             "mcp.start_runs",
             "mcp.share",
-            "mcp.run_budget",
+            "mcp.run_limit",
             "notifications.chat.command",
             "notifications.chat.on",
             "endpoints.*.header_env.*",
             "ui.keymap.*",
-            "sandbox.agents_see_other_copies",
+            "sandbox.agents_see_other_worktrees",
             "sandbox.agents_commit",
             "roles.*.sandbox.mode",
             "roles.*.sandbox.network",
-            "roles.*.sandbox.agents_see_other_copies",
+            "roles.*.sandbox.agents_see_other_worktrees",
             "roles.*.sandbox.agents_commit",
         ] {
             assert!(keys.contains(key), "{key}");
@@ -1538,17 +1699,17 @@ mod tests {
         let allowed = |key: &str| setting_meta(key).unwrap().allowed;
         for key in [
             "mcp.pause",
-            "triage.all_hands",
-            "handoff.checkpoint",
-            "roles.owner.blind",
+            "ultracode",
+            "fallback.checkpoint",
+            "roles.worker.blind",
             "ui.panel.agents",
         ] {
             assert_eq!(allowed(key), BOOL, "{key}");
         }
-        assert_eq!(allowed("triage.force"), ["\"solo\"", "\"crew\""]);
+        assert_eq!(allowed("solo_or_crew.force"), ["\"solo\"", "\"crew\""]);
         assert_eq!(allowed("ui.ambiguous_width"), ["1", "2"]);
         assert_eq!(
-            allowed("roles.owner.handoff.replace.codex.on_return"),
+            allowed("fallback.workers.replace.codex.on_return"),
             [
                 "\"ask\"",
                 "\"keep\"",
@@ -1563,23 +1724,24 @@ mod tests {
             "\"note+transcript\"",
             "\"note+summary\"",
         ];
-        assert_eq!(allowed("handoff.context"), contexts);
-        assert_eq!(allowed("roles.owner.handoff.context"), contexts);
-        assert_eq!(allowed("handoff.replace.codex.context"), contexts);
-        let fanout = allowed("roles.owner.native_fanout");
+        assert_eq!(allowed("fallback.context"), contexts);
+        assert_eq!(allowed("fallback.workers.context"), contexts);
+        assert_eq!(allowed("fallback.replace.codex.context"), contexts);
+        let fanout = allowed("roles.worker.native_fanout");
         assert!(fanout.contains(&"\"off\"".to_owned()), "{fanout:?}");
         for open in [
+            "sessions.context",
             "sessions.rotate_at",
-            "workflow",
+            "phases",
             "notifications.chat.on",
-            "crew",
-            "handoff.summarizer",
+            "crew.workers",
+            "fallback.summarizer",
         ] {
             assert!(allowed(open).is_empty(), "{open}");
         }
         assert!(setting_meta("notifications.chat.command").unwrap().safety);
-        assert!(setting_meta("handoff.allow_api_billing").unwrap().safety);
-        assert!(!setting_meta("handoff.strategy").unwrap().safety);
+        assert!(setting_meta("fallback.allow_api_billing").unwrap().safety);
+        assert!(!setting_meta("fallback.strategy").unwrap().safety);
         assert!(
             setting_meta("endpoints.ollama.header_env.X_TEAM")
                 .unwrap()
@@ -1598,7 +1760,7 @@ mod tests {
         }
         for key in [
             "agents.*.binary",
-            "runs.remind_parked_days",
+            "runs.remind_waiting_days",
             "roles.*.on_demand",
         ] {
             assert!(keys.contains(key), "{key}");
@@ -1609,20 +1771,20 @@ mod tests {
     fn default_scopes_are_the_ones_each_setting_is_given() {
         let scope = |key: &str| setting_meta(key).map(|meta| meta.default_scope);
         for key in [
-            "default_agent",
+            "main_agent",
             "agents.codex.model",
             "agents.codex.effort",
             "roles.reviewer.workers",
-            "roles.owner.effort",
+            "roles.worker.effort",
         ] {
             assert_eq!(scope(key), Some(SettingScope::ProjectLocal), "{key}");
         }
         for key in [
-            "preset",
-            "crew",
+            "workflow",
+            "crew.workers",
             "approvals.merge.mode",
-            "budget.run_usd",
-            "roles.owner.handoff.mode",
+            "limits.spend_per_run",
+            "fallback.workers.mode",
             "sandbox.network",
             "limits.protected_paths",
             "agents.codex.enabled",
@@ -1638,7 +1800,7 @@ mod tests {
             "ui.keymap.crew_view",
             "narrator.model",
             "notifications.os",
-            "limits.usd_per_day",
+            "limits.spend_per_day",
             "limits.auto_merges_per_day",
         ] {
             assert_eq!(scope(key), Some(SettingScope::Global), "{key}");
@@ -1654,9 +1816,9 @@ mod tests {
             assert!(meta.safety, "{key}");
             assert_eq!(meta.default_scope, SettingScope::Project, "{key}");
         }
-        for name in ["network", "agents_see_other_copies", "agents_commit"] {
+        for name in ["network", "agents_see_other_worktrees", "agents_commit"] {
             let every = setting_meta(&format!("sandbox.{name}")).unwrap();
-            let one = setting_meta(&format!("roles.owner.sandbox.{name}")).unwrap();
+            let one = setting_meta(&format!("roles.worker.sandbox.{name}")).unwrap();
             assert_eq!(one.key, format!("roles.*.sandbox.{name}"));
             for meta in [&every, &one] {
                 assert_eq!(meta.allowed, BOOL, "{}", meta.key);
@@ -1668,21 +1830,26 @@ mod tests {
 
     #[test]
     fn real_keys_find_their_entry() {
-        let meta = setting_meta("roles.reviewer.handoff.allow_api_billing").unwrap();
-        assert_eq!(meta.key, "roles.*.handoff.allow_api_billing");
+        let meta = setting_meta("fallback.reviewers.allow_api_billing").unwrap();
+        assert_eq!(meta.key, "fallback.reviewers.allow_api_billing");
         assert!(meta.safety);
         let meta = setting_meta("approvals.merge.mode").unwrap();
         assert!(meta.safety);
         assert_eq!(
             meta.allowed,
-            ["\"supervised\"", "\"shadow\"", "\"auto\"", "\"full_auto\""]
+            [
+                "\"supervised\"",
+                "\"auto_preview\"",
+                "\"auto\"",
+                "\"autopilot\""
+            ]
         );
         assert!(!setting_meta("ui.keys").unwrap().safety);
         assert!(
-            setting_meta("preset")
+            setting_meta("workflow")
                 .unwrap()
                 .allowed
-                .contains(&"\"coordinated-crew\"".to_owned())
+                .contains(&"\"orchestrator\"".to_owned())
         );
         assert_eq!(setting_meta("nothing.here"), None);
     }
@@ -1693,7 +1860,7 @@ mod tests {
         let find = |key: &str| catalog.iter().find(|meta| meta.key == key);
         assert!(find("ui.keys").is_some_and(|meta| !meta.safety));
         assert!(find("approvals.merge.mode").is_some_and(|meta| meta.safety));
-        assert!(find("runs.remind_parked_days").is_some());
+        assert!(find("runs.remind_waiting_days").is_some());
         assert!(find("limits.parked_run_expires_days").is_none());
     }
 }

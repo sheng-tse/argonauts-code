@@ -42,7 +42,8 @@ pub struct ModelEntry {
     pub strengths: Vec<String>,
     #[serde(default)]
     pub good_for: Vec<RoleName>,
-    /// In tokens.
+    /// In tokens: the largest window its CLI offers for it, which a session gets unless
+    /// `sessions.context` lowers it.
     #[serde(default)]
     pub context_window: Option<u64>,
     /// Reasoning effort levels the model accepts, from `input::EFFORT_LEVELS`. Empty when

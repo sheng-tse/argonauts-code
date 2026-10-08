@@ -82,7 +82,7 @@ pub async fn merge_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
         };
         if seen.contains(&decided.id) {
             return Err(EngineError::Refused(
-                "the merge checkpoint could not open again".to_owned(),
+                "the merge approval could not open again".to_owned(),
             ));
         }
         seen.push(decided.id.clone());
@@ -95,7 +95,7 @@ pub async fn merge_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
                 let note = decided
                     .text
                     .clone()
-                    .unwrap_or_else(|| "changes requested at the merge checkpoint".to_owned());
+                    .unwrap_or_else(|| "changes requested at the merge approval".to_owned());
                 let sent = rerun(host, call, &cards, &note).await?;
                 notices.extend(sent_back_notices("changes requested", &cards, &sent));
             }
@@ -128,7 +128,7 @@ pub async fn merge_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
             {
                 notices.push(format!(
                     "merging with quality debt on {} needs you, since \
-                     approvals.merge.rules.allow_debt is off",
+                     approvals.rules.merge.allow_debt is off",
                     card_list(&blocked)
                 ));
             }
@@ -178,7 +178,8 @@ async fn answered(
     call: &StepCall,
     seen: &[CheckpointId],
 ) -> EngineResult<Option<(CheckpointDecided, EvidenceSubject)>> {
-    let found = checkpoints::decided_in_round(host, &call.at, CheckpointKind::Merge, &title(host))?;
+    let title = title(host).await?;
+    let found = checkpoints::decided_in_round(host, &call.at, CheckpointKind::Merge, &title)?;
     let Some((decided, Some(shown))) = found else {
         return Ok(None);
     };
@@ -222,7 +223,7 @@ async fn ask(
             "the merge has nothing to approve".to_owned(),
         ));
     };
-    let request = request(host, call, evidence, blocked, notices);
+    let request = request(host, call, title(host).await?, evidence, blocked, notices);
     let decided = checkpoints::open(host, request)?
         .decided_or_withdrawn(host)
         .await?;
@@ -231,16 +232,17 @@ async fn ask(
 
 /// The question the card asks, such as "Merge this run into main?". The screen shows it, so
 /// it names the target and leaves the run's id to the detail views.
-fn title(host: &Host) -> String {
-    match final_check::target(host) {
+async fn title(host: &Host) -> EngineResult<String> {
+    Ok(match final_check::lands_on(host).await? {
         Some(target) => format!("Merge this run into {target}?"),
         None => "Merge this run?".to_owned(),
-    }
+    })
 }
 
 fn request(
     host: &Host,
     call: &StepCall,
+    title: String,
     evidence: MergeEvidence,
     blocked: &[(CardId, QualityDebt)],
     notices: &[String],
@@ -257,7 +259,7 @@ fn request(
     CheckpointRequest {
         at: Some(call.at.clone()),
         kind: CheckpointKind::Merge,
-        title: title(host),
+        title,
         card: None,
         packet: CheckpointPacket::Merge(evidence.packet),
         facts: evidence.facts,
@@ -433,7 +435,7 @@ async fn wait_for_originals(host: &Host, blocked: &[(CardId, QualityDebt)]) -> E
             event = events.recv() => {
                 if let Err(tokio::sync::broadcast::error::RecvError::Closed) = event {
                     return Err(EngineError::Refused(
-                        "vendor health stopped reporting while the merge waited".to_owned(),
+                        "agent health stopped reporting while the merge waited".to_owned(),
                     ));
                 }
             }

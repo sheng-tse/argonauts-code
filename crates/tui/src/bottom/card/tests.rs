@@ -23,10 +23,10 @@ fn merge_card() -> CardPrompt {
             CardOption::irreversible("Merge"),
             CardOption::new("Open a pull request"),
             CardOption::checklist(
-                "Request changes on some cards",
+                "Request changes on some tasks",
                 vec![
-                    "card-002 Add the JSON writer".into(),
-                    "card-003 Wire --json into the CLI".into(),
+                    "task-002 Add the JSON writer".into(),
+                    "task-003 Wire --json into the CLI".into(),
                 ],
             ),
             CardOption::new("Keep the branch"),
@@ -34,7 +34,7 @@ fn merge_card() -> CardPrompt {
             CardOption::view("Show the diff"),
         ],
     );
-    card.detail = vec!["4 cards · 7 files · +120 -18 · full suite passed".into()];
+    card.detail = vec!["4 tasks · 7 files · +120 -18 · full suite passed".into()];
     card.allow_note = true;
     card
 }
@@ -77,17 +77,17 @@ fn expanded_reads_like_the_reference() {
         format!(
             "{}\n\
              ◆ Merge this run into main?\n\
-             \x20 4 cards · 7 files · +120 -18 · full suite passed\n\
+             \x20 4 tasks · 7 files · +120 -18 · full suite passed\n\
              \n\
              \x20 Merge it now?\n\
              \x20 ❯ 1. Merge\n\
              \x20   2. Open a pull request\n\
-             \x20   3. Request changes on some cards\n\
+             \x20   3. Request changes on some tasks\n\
              \x20   4. Keep the branch\n\
              \x20   5. Abandon the run\n\
              \x20   6. Show the diff\n\
              \n\
-             \x20 Enter to choose · Tab to add a note · Esc to set aside",
+             \x20 Enter to choose · Tab to add a note · Esc to carry on without me",
             "─".repeat(80)
         )
     );
@@ -140,22 +140,19 @@ fn a_new_card_waits_without_the_keys() {
 }
 
 #[test]
-fn pinned_is_one_line_and_gives_the_keys_back() {
+fn esc_takes_it_off_the_screen_and_gives_the_keys_back() {
     let theme = theme();
     let ctx = ctx(80, &theme);
     let mut card = focused(merge_card());
-    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
-    assert!(!card.focused);
-    assert_eq!(
-        plain_text(&card.lines(&ctx)),
-        "◆ Merge run-01? · needs you · ↑ to answer"
-    );
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Dismissed);
+    assert!(!card.focused && !card.claims_keys());
+    assert!(card.lines(&ctx).is_empty(), "no line stays behind");
     assert_eq!(
         card.handle_key(key(KeyCode::Char('2'))),
         CardEvent::Unhandled
     );
     card.focus();
-    assert!(!card.pinned);
+    assert!(!card.dismissed);
 }
 
 #[test]
@@ -180,13 +177,13 @@ fn keys_move_and_answer() {
 fn down_past_the_last_option_hands_the_keys_back() {
     let welcome = CardPrompt::new(
         1,
-        "Welcome to Argonauts",
+        "Welcome to Argonauts Code",
         "Welcome",
         vec![CardOption::new("Continue").recommended()],
     );
     let mut card = focused(welcome);
     assert_eq!(card.handle_key(key(KeyCode::Down)), CardEvent::BackToInput);
-    assert!(card.waits() && !card.pinned);
+    assert!(card.waits() && !card.dismissed);
     assert_eq!(card.handle_key(key(KeyCode::Enter)), CardEvent::Unhandled);
     card.focus();
     assert_eq!(card.handle_key(key(KeyCode::Up)), CardEvent::Moved);
@@ -200,7 +197,7 @@ fn down_past_the_last_option_hands_the_keys_back() {
     assert_eq!(card.selected, card.options.len() - 1);
     card.focus();
     assert_eq!(card.handle_key(key(KeyCode::Up)), CardEvent::Moved);
-    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Dismissed);
 
     // An armed option lets go, so the key that comes back can't answer it unseen.
     let mut card = focused(CardPrompt::new(
@@ -252,7 +249,7 @@ fn vim_keys_stand_in_for_the_arrows_inside_a_checklist_too() {
     // `h` closes the checklist, as Esc does, then sets the card aside.
     assert_eq!(vim(&mut card, 'h'), CardEvent::Moved);
     assert!(card.checklist.is_none() && card.focused);
-    assert_eq!(vim(&mut card, 'h'), CardEvent::Pinned);
+    assert_eq!(vim(&mut card, 'h'), CardEvent::Dismissed);
 
     // Home and End go to the first and last option without vim keys.
     let mut card = focused(merge_card());
@@ -269,17 +266,17 @@ fn confirming_a_cancel_offers_a_way_back() {
     let ctx = ctx(80, &theme);
     let mut card = focused(CardPrompt::new(
         8,
-        "card-001 escalated · Fix add",
+        "task-001 needs you · Fix add",
         "What now?",
         vec![
             CardOption::new("Retry with a note"),
-            CardOption::irreversible("Cancel the card"),
+            CardOption::irreversible("Cancel the task"),
         ],
     ));
     card.handle_key(key(KeyCode::Char('2')));
     assert_eq!(
         last_row(&card, &ctx),
-        "  Enter to cancel the card · Esc to go back"
+        "  Enter to cancel the task · Esc to go back"
     );
 }
 
@@ -294,7 +291,7 @@ fn an_option_that_cant_be_undone_waits_for_enter() {
     assert_eq!(last_row(&card, &ctx), "  Enter to merge · Esc to cancel");
     assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Moved);
     assert_eq!(card.armed, None);
-    assert!(card.focused && !card.pinned);
+    assert!(card.focused && !card.dismissed);
     card.handle_key(key(KeyCode::Char('1')));
     assert_eq!(card.handle_key(key(KeyCode::Enter)), answered(0));
     assert_eq!(card.handle_key(key(KeyCode::Char('5'))), CardEvent::Moved);
@@ -320,7 +317,7 @@ fn a_view_option_opens_and_keeps_the_card() {
         card.handle_key(key(KeyCode::Char('6'))),
         CardEvent::OpenView { index: 5 }
     );
-    assert!(!card.pinned);
+    assert!(!card.dismissed);
     assert_eq!(card.selected, 0);
     card.selected = 5;
     assert_eq!(
@@ -328,7 +325,10 @@ fn a_view_option_opens_and_keeps_the_card() {
         CardEvent::OpenView { index: 5 }
     );
     assert_eq!(card.handle_key(key(KeyCode::Tab)), CardEvent::Unhandled);
-    assert_eq!(last_row(&card, &ctx), "  Enter to open · Esc to set aside");
+    assert_eq!(
+        last_row(&card, &ctx),
+        "  Enter to open · Esc to carry on without me"
+    );
 }
 
 #[test]
@@ -429,9 +429,9 @@ fn esc_closes_the_note_before_pinning() {
     card.handle_key(key(KeyCode::Char('y')));
     assert_eq!(card.note.as_ref().unwrap().text(), "y");
     assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Moved);
-    assert!(!card.pinned);
-    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
-    assert!(card.pinned);
+    assert!(!card.dismissed);
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Dismissed);
+    assert!(card.dismissed);
 }
 
 #[test]
@@ -444,7 +444,7 @@ fn notes_need_permission() {
     assert!(!card.handle_paste("text"));
     assert_eq!(
         last_row(&card, &ctx),
-        "  Enter to choose · Esc to set aside"
+        "  Enter to choose · Esc to carry on without me"
     );
 }
 
@@ -454,11 +454,11 @@ fn a_long_label_wraps_under_itself_with_no_letter_column() {
     let mut card = focused(CardPrompt::new(
         3,
         "codex hit its billing cap",
-        "Hand off card-003?",
+        "Hand off task-003?",
         vec![
             CardOption::new("I topped up, retry"),
             CardOption::new(
-                "Hand card-003 to claude-code/opus, which has the most quota left today",
+                "Hand task-003 to claude-code/opus, which has the most plan usage left today",
             ),
             CardOption::new("Take over myself"),
         ],
@@ -480,7 +480,7 @@ fn a_long_label_wraps_under_itself_with_no_letter_column() {
     let text = plain_text(&card.lines(&ctx));
     assert!(
         text.contains(
-            "    2. Hand card-003 to claude-code/opus, which has the most\n       quota left today\n"
+            "    2. Hand task-003 to claude-code/opus, which has the most\n       plan usage left today\n"
         ),
         "{text}"
     );
@@ -527,7 +527,7 @@ fn a_question_card_has_chips_descriptions_and_its_own_answer() {
          \x20      1 of 3 restatements read it this way\n\
          \x20   3. Type my own answer\n\
          \n\
-         \x20 Enter to choose · Esc to set aside"
+         \x20 Enter to choose · Esc to carry on without me"
     );
     let card_style = theme.style(Role::Card);
     assert_eq!(
@@ -574,9 +574,9 @@ fn a_checklist_option_ticks_rows_and_sends_them() {
     let text = plain_text(&card.lines(&ctx));
     assert!(
         text.contains(
-            "  ❯ 3. Request changes on some cards\n\
-             \x20      ❯ ☐ card-002 Add the JSON writer\n\
-             \x20        ☐ card-003 Wire --json into the CLI\n"
+            "  ❯ 3. Request changes on some tasks\n\
+             \x20      ❯ ☐ task-002 Add the JSON writer\n\
+             \x20        ☐ task-003 Wire --json into the CLI\n"
         ),
         "{text}"
     );
@@ -587,7 +587,7 @@ fn a_checklist_option_ticks_rows_and_sends_them() {
     assert_eq!(card.handle_key(key(KeyCode::Enter)), CardEvent::Moved);
     card.handle_key(key(KeyCode::Down));
     card.handle_key(key(KeyCode::Char(' ')));
-    assert!(plain_text(&card.lines(&ctx)).contains("❯ ☒ card-003"));
+    assert!(plain_text(&card.lines(&ctx)).contains("❯ ☒ task-003"));
     assert_eq!(
         card.handle_key(key(KeyCode::Enter)),
         CardEvent::Answered {
@@ -618,8 +618,8 @@ fn a_checklist_that_asks_for_a_note_opens_it_after_the_ticks() {
     let text = plain_text(&card.lines(&ctx));
     assert!(
         text.contains(
-            "  ❯ 3. Request changes on some cards, and add a note\n\
-             \x20      ❯ ☒ card-002 Add the JSON writer\n"
+            "  ❯ 3. Request changes on some tasks, and add a note\n\
+             \x20      ❯ ☒ task-002 Add the JSON writer\n"
         ),
         "{text}"
     );
@@ -718,7 +718,7 @@ fn a_body_sits_between_dashed_rules_and_a_footer_ends_the_card() {
              \x20 ❯ 1. Approve the plan\n\
              \x20   2. Show the plan\n\
              \n\
-             \x20 Enter to choose · Esc to set aside\n\
+             \x20 Enter to choose\n\
              \x20 ctrl+g to edit the plan · plans/run-0…",
             dashes = "╌".repeat(40)
         )
@@ -794,7 +794,7 @@ fn a_toggle_flips_in_place_and_never_answers() {
     assert_eq!(card.handle_key(key(KeyCode::Tab)), CardEvent::Unhandled);
     assert_eq!(
         last_row(&card, &ctx),
-        "  Enter to switch · Esc to set aside"
+        "  Enter to switch · Esc to carry on without me"
     );
 }
 
@@ -835,18 +835,18 @@ fn a_card_you_set_off_holds_the_keys_until_answered() {
     assert!(card.focused, "↓ past the last option keeps the keys");
     assert_eq!(card.selected, 3);
     assert_eq!(card.handle_key(key(KeyCode::Char('2'))), answered(1));
-    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Dismissed);
     assert!(!card.focused);
 }
 
 #[test]
 fn a_card_that_needs_you_takes_the_keys_until_set_aside() {
+    let now = Instant::now();
     let mut card = merge_card();
     card.needs_you = true;
-    assert!(!card.take_keys(false), "a draft in the input holds it off");
     assert!(card.waits());
-    assert!(card.take_keys(true), "an empty input lets it take the keys");
-    assert!(card.focused && !card.take_keys(true));
+    assert!(card.take_keys(now), "it takes the keys as it shows");
+    assert!(card.focused && !card.take_keys(now));
     for c in ['s', 'm', '/'] {
         assert_eq!(card.handle_key(key(KeyCode::Char(c))), CardEvent::Unhandled);
     }
@@ -854,8 +854,8 @@ fn a_card_that_needs_you_takes_the_keys_until_set_aside() {
         assert_eq!(card.handle_key(key(KeyCode::Down)), CardEvent::Moved);
     }
     assert!(card.focused, "↓ past the last option keeps the keys");
-    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
-    assert!(!card.take_keys(true), "set aside, it leaves the keys alone");
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Dismissed);
+    assert!(!card.take_keys(now), "set aside, it leaves the keys alone");
     card.focus();
     assert_eq!(card.handle_key(key(KeyCode::Char('2'))), answered(1));
 }
@@ -895,18 +895,18 @@ fn the_key_line_names_the_keys_while_a_card_has_them() {
     let ctx = ctx(120, &theme);
     let mut card = focused(merge_card());
     let first = last_row(&card, &ctx);
-    assert!(first.ends_with("Esc to set aside"), "{first}");
+    assert!(first.ends_with("Esc to carry on without me"), "{first}");
     card.handle_key(key(KeyCode::Char('5')));
     assert!(last_row(&card, &ctx).ends_with("· Esc to cancel"));
     card.handle_key(key(KeyCode::Char('y')));
     assert_eq!(
         last_row(&card, &ctx),
-        "  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+        "  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me"
     );
     card.esc_hint = "Esc to cancel".into();
     assert_eq!(
         last_row(&card, &ctx),
-        "  Typing waits while the card has the keys · ↑↓ to choose · Esc to cancel"
+        "  Typing waits while the question has the keys · ↑↓ to choose · Esc to cancel"
     );
     // A deliberate key clears the stray letters, and the line names the card's keys again.
     card.esc_hint = ESC_HINT.into();
@@ -914,11 +914,11 @@ fn the_key_line_names_the_keys_while_a_card_has_them() {
     assert_eq!(last_row(&card, &ctx), first);
 }
 
-/// A card that took the keys by itself, as one work waits on does from a quiet input.
+/// A card that took the keys by itself, as one work waits on does as it shows.
 fn took_the_keys() -> CardPrompt {
     let mut card = merge_card();
     card.needs_you = true;
-    assert!(card.take_keys(true));
+    assert!(card.take_keys(Instant::now()));
     assert!(!card.engaged);
     card
 }
@@ -955,7 +955,7 @@ fn a_paste_and_the_enter_after_it_never_answer() {
     let theme = theme();
     assert_eq!(
         last_row(&card, &ctx(120, &theme)),
-        "  Typing waits while the card has the keys · ↑↓ to choose · Esc to set aside"
+        "  Typing waits while the question has the keys · ↑↓ to choose · Esc to carry on without me"
     );
 }
 
@@ -965,7 +965,7 @@ fn vim_letters_never_answer_a_card_that_took_the_keys_by_itself() {
         let mut card = took_the_keys();
         let events = type_at(&mut card, line, true);
         assert!(!answers(&events), "{line:?} answered: {events:?}");
-        assert!(card.focused && !card.pinned, "{line:?} set it aside");
+        assert!(card.focused && !card.dismissed, "{line:?} set it aside");
     }
     // Once you've moved with the arrows, `l` answers as Enter does.
     let mut card = took_the_keys();
@@ -993,17 +993,38 @@ fn a_number_after_letters_never_answers() {
     );
 }
 
+/// For a moment after a card takes the keys by itself, only the arrows work on it: Enter, Esc,
+/// and Tab meant for what had the keys do nothing, and a letter or a number counts as stray
+/// typing. ↑ hands it the keys with nothing held off.
 #[test]
-fn the_unclear_request_leaves_the_keys_to_you_once_you_type() {
+fn a_card_that_just_took_the_keys_holds_off_all_but_the_arrows() {
+    let t0 = Instant::now();
+    let soon = t0 + CARD_GUARD / 2;
     let mut card = merge_card();
     card.needs_you = true;
-    card.yields_to_typing = true;
-    card.typed_while_up = true;
-    assert!(!card.take_keys(true));
-    card.yields_to_typing = false;
+    assert!(card.take_keys(t0));
+    for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Tab] {
+        assert!(card.held_off(&key(code), soon), "{code:?}");
+    }
+    assert!(!card.stray_typing);
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Home, KeyCode::End] {
+        assert!(!card.held_off(&key(code), soon), "{code:?}");
+    }
+    let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(!card.held_off(&ctrl_c, soon), "the quit keys still work");
+    assert!(card.held_off(&key(KeyCode::Char('1')), soon));
     assert!(
-        card.take_keys(true),
-        "a run's card takes them once it's quiet"
+        card.stray_typing,
+        "a number then starts a line for the input"
+    );
+    assert!(!card.held_off(&key(KeyCode::Enter), t0 + CARD_GUARD));
+
+    card.handle_key(key(KeyCode::Esc));
+    assert!(card.dismissed);
+    card.focus();
+    assert!(
+        !card.held_off(&key(KeyCode::Char('2')), soon),
+        "↑ hands it over"
     );
 }
 
@@ -1039,7 +1060,10 @@ fn a_free_text_question_shows_its_answer_field_open() {
     assert!(text.contains("\n  ❯ Type your answer\n"), "{text}");
     assert!(!text.contains("1."), "{text}");
     assert!(!text.contains("Type my own answer"), "{text}");
-    assert_eq!(last_row(&card, &ctx), "  Enter to send · Esc to set aside");
+    assert_eq!(
+        last_row(&card, &ctx),
+        "  Enter to send · Esc to carry on without me"
+    );
     let row = view
         .lines
         .iter()
@@ -1060,7 +1084,7 @@ fn a_free_text_question_shows_its_answer_field_open() {
 #[test]
 fn the_answer_field_takes_every_key_and_enter_sends_it() {
     let mut card = free_text_question();
-    assert!(card.take_keys(true));
+    assert!(card.take_keys(Instant::now()));
     assert_eq!(
         card.handle_key(key(KeyCode::Enter)),
         CardEvent::Moved,
@@ -1082,14 +1106,14 @@ fn the_answer_field_takes_every_key_and_enter_sends_it() {
 }
 
 #[test]
-fn esc_sets_the_answer_field_aside_and_keeps_what_you_typed() {
+fn esc_takes_the_answer_field_off_the_screen_and_keeps_what_you_typed() {
     let theme = theme();
     let ctx = ctx(80, &theme);
     let mut card = focused(free_text_question());
     typed(&mut card, "hi");
-    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Pinned);
-    assert!(card.pinned && !card.focused);
-    assert_eq!(card.lines(&ctx).len(), 1);
+    assert_eq!(card.handle_key(key(KeyCode::Esc)), CardEvent::Dismissed);
+    assert!(card.dismissed && !card.focused);
+    assert!(card.lines(&ctx).is_empty());
     card.focus();
     assert_eq!(card.note.as_ref().unwrap().text(), "hi");
     assert!(plain_text(&card.lines(&ctx)).contains("  ❯ hi"));

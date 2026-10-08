@@ -1,11 +1,11 @@
-# The fake Claude Code hits its usage limit, and you take the card over in its own UI.
+# The fake Claude Code hits its usage limit, and you take the task over in its own UI.
 
 [version]
 claude = "2.1.284 (Claude Code)"
 codex = "codex-cli 0.158.0"
 agy = "1.2.13"
 
-# A resumed session finishes the card.
+# A resumed session finishes the task.
 [[rule]]
 argv0 = "claude"
 args_contain = ["-p", "--resume", "limits-claude-1"]

@@ -10,7 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::render::Clock;
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 
 /// Claude Code's shimmer takes a step every 50 ms of a clock that only ticks in its 16 ms
 /// frames, so the band redraws every 64 ms and now and then moves two letters at once.
@@ -51,6 +51,8 @@ pub fn letters(
                     letters.push((start..start + letter.len_utf8(), theme.rainbow(index, lit)));
                 }
             }
+            // The whole word is one run in one color, so a row draws it as one span.
+            KeywordLook::Flat => letters.push((found.range.clone(), theme.style(Role::Ultracode))),
         }
     }
     letters

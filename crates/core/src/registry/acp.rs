@@ -142,7 +142,7 @@ impl TryFrom<String> for QuotaRoute {
             other => match other.strip_prefix(SAME_LOGIN_AS) {
                 Some(harness) if !harness.is_empty() => Ok(Self::SameLoginAs(harness.to_owned())),
                 _ => Err(format!(
-                    "quota {text:?}: use \"none\", \"probe\", or \"same-login-as:<harness>\""
+                    "quota {text:?}: use \"none\", \"probe\", or \"same-login-as:<agent>\""
                 )),
             },
         }

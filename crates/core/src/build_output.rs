@@ -138,6 +138,23 @@ impl BuildOutput {
     }
 }
 
+/// Files a setting names for another reason, in the same patterns, such as
+/// `commit.always_keep`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilePatterns(BuildOutput);
+
+impl FilePatterns {
+    pub fn new(patterns: &[String]) -> Self {
+        Self(BuildOutput::of(false, patterns))
+    }
+
+    /// Whether a pattern names `path`, relative to the repo with `/` between folders, or a
+    /// folder it is in.
+    pub fn contains(&self, path: &str) -> bool {
+        self.0.contains(path)
+    }
+}
+
 /// Why a path is build output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {

@@ -4,6 +4,7 @@
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::SettingScope;
+use argonauts_core::settings::approvals::Decides;
 use time::OffsetDateTime;
 
 use crate::format::setting_value;
@@ -38,7 +39,7 @@ pub fn layer_words(layer: &str) -> String {
         "global" => "everywhere (global)".to_owned(),
         "project" => "this project".to_owned(),
         "project-local" => "just you (project-local)".to_owned(),
-        "preset" => "preset".to_owned(),
+        "workflow" => "workflow".to_owned(),
         "flag" => "--set".to_owned(),
         "session" => "this session".to_owned(),
         other => other.to_owned(),
@@ -85,9 +86,11 @@ pub fn hidden_from_files(layer: &str, preset_from: Option<&str>) -> Option<Strin
         return None;
     }
     Some(match layer {
-        "preset" => "The preset sets this, so saving it in a file won't change it. Use /preset \
-                     copy to edit the preset, or save it for this session."
-            .to_owned(),
+        "workflow" => {
+            "The workflow sets this, so saving it in a file won't change it. Use /workflow \
+                     copy to edit the workflow, or save it for this session."
+                .to_owned()
+        }
         "flag" => "A --set flag sets this until you quit, so saving it in a file won't show \
                    before then."
             .to_owned(),
@@ -132,13 +135,13 @@ pub fn hidden_note(layer: &str, preset_from: Option<&str>, scope: SettingScope) 
             "Your own project file sets this, so saving it {saving} won't change this repo. \
              Pick This project, just me instead."
         ),
-        "preset" if preset_from.is_some() => format!(
-            "The preset sets this, and it's picked in a later file, so saving it {saving} won't \
-             change it. Save it where you picked the preset, or later."
+        "workflow" if preset_from.is_some() => format!(
+            "The workflow sets this, and it's picked in a later file, so saving it {saving} won't \
+             change it. Save it where you picked the workflow, or later."
         ),
-        "preset" => format!(
-            "The preset sets this, so saving it {saving} won't change it. \
-             Use /preset copy to edit the preset, or save it for this session."
+        "workflow" => format!(
+            "The workflow sets this, so saving it {saving} won't change it. \
+             Use /workflow copy to edit the workflow, or save it for this session."
         ),
         "flag" => format!(
             "A --set flag sets this until you quit, so saving it {saving} won't show before \
@@ -193,8 +196,19 @@ pub fn workers_words(toml: &str) -> String {
         .join(", ")
 }
 
+/// A word a model setting takes in a model's place, as a sentence says it: `the judge` for
+/// `approvals.decides = "judge"`. `None` for anything else, which names a model.
+pub fn word_for_a_model(value: &str) -> Option<&'static str> {
+    let word = value.trim().trim_matches(['"', '\'']);
+    word.eq_ignore_ascii_case(Decides::JUDGE)
+        .then_some("the judge")
+}
+
 /// One worker, `claude-code/claude-opus-5-5`, as `Opus 5.5 on Claude Code`.
 pub fn worker_words(worker: &str) -> String {
+    if let Some(word) = word_for_a_model(worker) {
+        return word.to_owned();
+    }
     match worker.parse::<WorkerRef>() {
         Ok(worker) => DisplayNames::default().worker(&worker),
         Err(_) => worker.to_owned(),
@@ -215,10 +229,10 @@ pub fn row_value_words(key: &str, toml: &str) -> String {
 fn default_meaning(key: &str) -> Option<&'static str> {
     let segments: Vec<&str> = key.split('.').collect();
     Some(match segments.as_slice() {
-        ["approvals", "approver", "model"] => "cheapest, other company",
-        ["approvals", "answered_by"] => "you or the lead, by mode",
+        ["approvals", "decides"] => "cheapest, other provider",
+        ["approvals", "answers"] => "you or main, by mode",
         ["approvals", "approver", "second_model"] => "none, one approver",
-        ["handoff", "fallback"] | ["roles", _, "handoff", "fallback"] => "other logged-in CLIs",
+        ["fallback", "order"] | ["fallback", _, "order"] => "other logged-in CLIs",
         ["roles", _, "sandbox", _] => "same as every agent",
         _ => return None,
     })
@@ -257,7 +271,7 @@ pub fn quote(text: &str) -> String {
 /// A role as rows name it: the default agent, or the role's own name.
 pub fn role_words(role: Option<RoleName>) -> String {
     match role {
-        None | Some(RoleName::Default) => "Default agent".to_owned(),
+        None | Some(RoleName::Main) => "Main agent".to_owned(),
         Some(role) => role.as_str().to_owned(),
     }
 }
@@ -265,13 +279,13 @@ pub fn role_words(role: Option<RoleName>) -> String {
 /// The role a key picks workers for, as `/model` lists them. `None` for a key that isn't one.
 pub fn model_role(key: &str) -> Option<Option<RoleName>> {
     match key {
-        "default_agent" => Some(None),
+        "main_agent" => Some(None),
         "narrator.model" => Some(Some(RoleName::Narrator)),
-        "approvals.approver.model" => Some(Some(RoleName::Approver)),
+        "approvals.decides" => Some(Some(RoleName::Approver)),
         _ => {
             let role = key.strip_prefix("roles.")?.strip_suffix(".workers")?;
             let role = parse_role(role)?;
-            Some((role != RoleName::Default).then_some(role))
+            Some((role != RoleName::Main).then_some(role))
         }
     }
 }
@@ -284,15 +298,23 @@ pub fn parse_role(name: &str) -> Option<RoleName> {
 pub fn value_note(key: &str, value: &str) -> &'static str {
     let segments: Vec<&str> = key.split('.').collect();
     match segments.as_slice() {
-        ["preset"] => preset_note(value),
-        ["workflows", "style"] => style_note(value),
-        ["handoff", .., "context"] | ["roles", _, "handoff", .., "context"] => context_note(value),
+        ["workflow"] => preset_note(value),
+        ["goal", "default"] => match value {
+            "off" => "A request has a goal only when you set one",
+            "from-request" => {
+                "Every request: the main agent says what done means, and the work goes on until it holds"
+            }
+            _ => "",
+        },
+        ["goal", "check"] => goal_check_note(value),
+        ["roles", _, "goal"] => role_goal_note(value),
+        ["fallback", .., "context"] => context_note(value),
         ["sandbox", leaf] | ["roles", _, "sandbox", leaf] => {
             super::permissions::value_note(leaf, value)
         }
-        ["approvals", "full_auto"] => match value {
-            "true" => "Nothing waits for you at any checkpoint a run opens",
-            "false" => "Each checkpoint keeps its own mode",
+        ["approvals", "autopilot"] => match value {
+            "true" => "Nothing waits for you at any approval a run opens",
+            "false" => "Each approval keeps its own mode",
             _ => "",
         },
         ["approvals", _, "at_hard_limit"] => hard_limit_note(value),
@@ -306,17 +328,28 @@ fn hard_limit_note(value: &str) -> &'static str {
         "stop" => "End that part safely and keep its work",
         "send_back" => "Run another round, or decline the change",
         "open_pull_request" => "Open a pull request for you to review",
-        "park" => "Leave the card for you; the run waits",
+        "park" => "Leave the approval for you; the run waits",
         _ => "",
     }
 }
 
-/// What each `workflows.style` makes of a crew run, as `/style` lists them.
-fn style_note(value: &str) -> &'static str {
+/// What checks a goal's lines, for each `goal.check`.
+fn goal_check_note(value: &str) -> &'static str {
     match value {
-        "follow_lead" => "As the lead's CLI does: a workflow under Claude Code, a goal under Codex",
-        "workflow" => "The lead plans every phase up front, and the run ends with them",
-        "goal" => "The crew keeps attempting until a check finds every criterion met",
+        "auto" => "A command when the goal names one, else the judge",
+        "command" => "Commands only, by their exit code",
+        "judge" => "The judge reads the result against each line",
+        "both" => "The commands, then the judge on every line",
+        _ => "",
+    }
+}
+
+/// Whether a role works each task as a goal, and who keeps it going.
+fn role_goal_note(value: &str) -> &'static str {
+    match value {
+        "off" => "A task is done when its agent says so and its checks pass",
+        "cli" => "The CLI's own goal, which Codex has; Argonauts still runs the check",
+        "argonauts" => "Argonauts runs the check after each try and sends back what still fails",
         _ => "",
     }
 }
@@ -324,8 +357,8 @@ fn style_note(value: &str) -> &'static str {
 /// What a replacement gets for each `handoff.context`.
 fn context_note(value: &str) -> &'static str {
     match value {
-        "fresh" => "The card only",
-        "note" => "The handoff note: why it stopped and what's left",
+        "fresh" => "The task only",
+        "note" => "The fallback note: why it stopped and what's left",
         "note+transcript" => "The note, and the old session's transcript as a file",
         "note+summary" => "The note, with a summary of the old session",
         _ => "",
@@ -335,11 +368,11 @@ fn context_note(value: &str) -> &'static str {
 /// One line on what a built-in preset does, for `/preset`.
 pub fn preset_note(name: &str) -> &'static str {
     match name {
-        "peer-crew" => "Every agent plans and builds as a peer",
-        "coordinated-crew" => "One coordinator plans and hands out the work",
-        "solo" => "One agent does the whole task",
-        "solo-reviewed" => "One agent does it and another reviews",
-        "best-of-n" => "Several agents try and the best result wins",
+        "council" => "Everyone proposes and challenges, the judge decides, then they build",
+        "orchestrator" => "The orchestrator plans and delegates, workers build",
+        "solo" => "The main agent does it, as its CLI would",
+        "maker-checker" => "A worker builds, a reviewer sends it back until it holds",
+        "best-of-n" => "Several workers try the same task and the judge picks one",
         "draft-and-vote" => "Agents draft plans and vote on one",
         name if name.starts_with("ablate-") => "Turns one part of the crew off, for research",
         _ => "",
@@ -393,13 +426,13 @@ mod tests {
     fn a_layer_over_every_file_is_named_once() {
         assert!(hidden_from_files("session", None).is_some());
         assert!(hidden_from_files("flag", None).is_some());
-        assert!(hidden_from_files("preset", None).is_some());
+        assert!(hidden_from_files("workflow", None).is_some());
         for layer in ["built-in", "global", "project", "project-local"] {
             assert_eq!(hidden_from_files(layer, None), None, "{layer}");
         }
         // Picked in a file, the preset gives way to that file and the later ones.
-        assert_eq!(hidden_from_files("preset", Some("global")), None);
-        let note = hidden_note("preset", Some("project"), SettingScope::Global);
+        assert_eq!(hidden_from_files("workflow", Some("global")), None);
+        let note = hidden_note("workflow", Some("project"), SettingScope::Global);
         assert!(note.contains("picked in a later file"), "{note}");
     }
 
@@ -413,19 +446,22 @@ mod tests {
         );
         assert_eq!(value_words("[]"), "none");
         assert_eq!(
-            row_value_words("approvals.approver.model", ""),
-            "cheapest, other company"
+            row_value_words("approvals.decides", ""),
+            "cheapest, other provider"
         );
+        // The judge is a word, never a CLI named judge running its default.
+        assert_eq!(workers_words("\"judge\""), "the judge");
+        assert_eq!(word_for_a_model("codex/gpt-5.6"), None);
         assert_eq!(
-            row_value_words("roles.owner.handoff.fallback", "[]"),
+            row_value_words("fallback.workers.order", "[]"),
             "other logged-in CLIs"
         );
         assert_eq!(
-            row_value_words("roles.owner.sandbox.network", ""),
+            row_value_words("roles.worker.sandbox.network", ""),
             "same as every agent"
         );
-        assert_eq!(row_value_words("handoff.fallback", "[\"codex\"]"), "codex");
-        assert_eq!(row_value_words("handoff.summarizer", ""), "unset");
+        assert_eq!(row_value_words("fallback.order", "[\"codex\"]"), "codex");
+        assert_eq!(row_value_words("fallback.summarizer", ""), "unset");
         assert_eq!(value_words("30.0"), "30.0");
         assert!(same_value("'dark'", "\"dark\""));
     }
@@ -433,34 +469,34 @@ mod tests {
     #[test]
     fn handoff_contexts_say_what_the_replacement_gets() {
         for key in [
-            "handoff.context",
-            "roles.owner.handoff.context",
-            "handoff.replace.codex.context",
-            "roles.owner.handoff.replace.codex.context",
+            "fallback.context",
+            "fallback.workers.context",
+            "fallback.replace.codex.context",
+            "fallback.workers.replace.codex.context",
         ] {
-            assert_eq!(value_note(key, "fresh"), "The card only", "{key}");
+            assert_eq!(value_note(key, "fresh"), "The task only", "{key}");
             for value in ["note", "note+transcript", "note+summary"] {
                 assert!(value_note(key, value).starts_with("The "), "{key} {value}");
             }
         }
         assert_eq!(value_note("narrator.context", "fresh"), "");
-        assert_eq!(value_note("handoff.strategy", "first"), "");
+        assert_eq!(value_note("fallback.strategy", "first"), "");
         assert_eq!(
-            value_note("preset", "solo"),
-            "One agent does the whole task"
+            value_note("workflow", "solo"),
+            "The main agent does it, as its CLI would"
         );
     }
 
     #[test]
     fn model_roles_from_keys() {
-        assert_eq!(model_role("default_agent"), Some(None));
-        assert_eq!(model_role("roles.default.workers"), Some(None));
+        assert_eq!(model_role("main_agent"), Some(None));
+        assert_eq!(model_role("roles.main.workers"), Some(None));
         assert_eq!(
             model_role("roles.reviewer.workers"),
             Some(Some(RoleName::Reviewer))
         );
         assert_eq!(
-            model_role("approvals.approver.model"),
+            model_role("approvals.decides"),
             Some(Some(RoleName::Approver))
         );
         assert_eq!(model_role("roles.reviewer.effort"), None);

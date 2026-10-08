@@ -1,20 +1,20 @@
-//! The review ring: each card's reviewers (`review.per_card`) come from other model families
-//! than its owner (`review.other_family`). Chores (integration, docs) rotate.
+//! The review ring: each card's reviewers (`review.per_task`) come from other model families
+//! than its owner (`review.other_provider`). Chores (integration, docs) rotate.
 
 use argonauts_core::names::WorkerRef;
 
 /// `candidates` are `(worker, family)`, the owner already left out. Rotates by `offset` so the
-/// load spreads. Fewer than `per_card` come back when too few fit.
+/// load spreads. Fewer than `per_task` come back when too few fit.
 pub fn reviewers(
     owner_family: &str,
     candidates: &[(WorkerRef, String)],
-    per_card: usize,
-    other_family: bool,
+    per_task: usize,
+    other_provider: bool,
     offset: usize,
 ) -> Vec<WorkerRef> {
     let mut pool: Vec<&WorkerRef> = Vec::new();
     for (worker, family) in candidates {
-        if (!other_family || family != owner_family) && !pool.contains(&worker) {
+        if (!other_provider || family != owner_family) && !pool.contains(&worker) {
             pool.push(worker);
         }
     }
@@ -25,7 +25,7 @@ pub fn reviewers(
     pool.iter()
         .cycle()
         .skip(start)
-        .take(per_card.min(pool.len()))
+        .take(per_task.min(pool.len()))
         .map(|worker| (*worker).clone())
         .collect()
 }
@@ -51,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn divide_review_ring_other_family() {
+    fn divide_review_ring_other_provider() {
         let crew = crew();
         for offset in 0..6 {
             for reviewer in reviewers("claude", &crew, 2, true, offset) {

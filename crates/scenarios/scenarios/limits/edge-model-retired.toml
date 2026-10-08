@@ -1,12 +1,12 @@
 # The fake Claude Code rejects the configured model as retired. The registry names its
-# successor, and a session on that model finishes the card.
+# successor, and a session on that model finishes the task.
 
 [version]
 claude = "2.1.284 (Claude Code)"
 codex = "codex-cli 0.158.0"
 agy = "1.2.13"
 
-# The successor model finishes the card.
+# The successor model finishes the task.
 [[rule]]
 argv0 = "claude"
 args_contain = ["-p", "--model", "haiku"]

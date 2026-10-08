@@ -23,9 +23,10 @@ fn crew_view_tabs_and_quotas() {
     let (_, _, script) = crew_needing_you();
     let mut harness = Harness::start(script);
     harness.wait_visible("Keep a CSV fallback\\?");
-    // The question has the keys until it's set aside.
+    // The question has the keys until it's handed on.
+    past_the_card_guard();
     harness.press(Key::Esc);
-    harness.wait_visible("· needs you · ↑ to answer");
+    harness.wait_visible("◆ Question left to the agent · you, ");
     harness.press(Key::Left);
     let view = harness.wait_gone(TOP_RULE);
     let title = expect_row(&view, "argonauts › crew");
@@ -74,15 +75,18 @@ fn crew_view_lists_conversations_and_other_repos() {
                "updated": "2026-09-30T11:00:00Z"}),
         json!({"target": {"kind": "run", "run": "run-07"}, "state": "needs_you",
                "title": "Fix the login redirect", "repo": "~/code/web",
-               "run": {"id": "run-07", "title": "Fix the login redirect"},
-               "latest": "plan checkpoint", "updated": "2026-09-29T06:00:00Z"}),
+               "run": {"id": "run-07", "title": "Fix the login redirect",
+                       "stands": {"state": "needs_you", "word": "plan approval",
+                                  "since": "2026-09-29T06:00:00Z"}},
+               "latest": "plan approval", "updated": "2026-09-29T06:00:00Z"}),
     ];
     let script = script.await_command("request").at(0, crew_view_data(rows));
     let mut harness = Harness::start(script);
     harness.wait_visible("Keep a CSV fallback\\?");
-    // The question has the keys until it's set aside.
+    // The question has the keys until it's handed on.
+    past_the_card_guard();
     harness.press(Key::Esc);
-    harness.wait_visible("· needs you · ↑ to answer");
+    harness.wait_visible("◆ Question left to the agent · you, ");
     harness.press(Key::Left);
     let request = harness.wait_command("request");
     assert_eq!(request["view"], json!({"view": "crew"}));
@@ -91,14 +95,15 @@ fn crew_view_lists_conversations_and_other_repos() {
         &view,
         &[
             REPO,
-            "Opus on Claude Code",
-            "Conversations and CLI sessions",
-            "How does the export",
+            "Sessions",
+            "How does the",
             "~/code/web",
-            "Fix the login redirect",
+            "Fix the login redirect · plan approval",
         ],
     );
-    assert!(view.visible[expect_row(&view, "plan checkpoint")].contains('◆'));
+    let chat = &view.visible[expect_row(&view, "How does the")];
+    assert!(chat.contains("Claude Code · enter continues"), "{chat}");
+    assert!(view.visible[expect_row(&view, "plan approval")].contains('◆'));
 }
 
 fn session_script(agent_parts: &[(&str, &str)]) -> (RunScript, Vec<Agent>, Script) {
@@ -114,8 +119,8 @@ fn session_script(agent_parts: &[(&str, &str)]) -> (RunScript, Vec<Agent>, Scrip
 
 const PARTS: [(&str, &str); 3] = [
     (
-        "card",
-        "You own card-002: Add the JSON writer.\nKeep the CSV path working.",
+        "task",
+        "You own task-002: Add the JSON writer.\nKeep the CSV path working.",
     ),
     ("goal", "Export takes --json and prints valid JSON."),
     ("notes", "Use serde_json.\nNo new dependencies."),
@@ -146,16 +151,19 @@ fn session_view_output_and_input() {
         "with results:\n{}",
         output.visible_text()
     );
-    harness.press(Key::Char('i'));
-    let input = harness.wait_visible("exec --json");
+    // Tab goes to what the agent was asked, each part under its own heading, and the launch
+    // folded to one line under them.
+    harness.press(Key::Tab);
+    let input = harness.wait_visible("Launched as .* exec --json");
     for (label, _) in PARTS {
+        let heading = format!("{}{}", label[..1].to_uppercase(), &label[1..]);
         assert!(
-            row_of(&input, label).is_some(),
-            "{label}:\n{}",
+            row_of(&input, &heading).is_some(),
+            "{heading}:\n{}",
             input.visible_text()
         );
     }
-    harness.press(Key::Char('i'));
+    harness.press(Key::ShiftTab);
     harness.wait_visible("JSON writer goes beside");
 }
 
@@ -165,7 +173,7 @@ fn session_input_side_exact() {
     let mut harness = Harness::launch(script).ui("[panel]\nagents = true").start();
     harness.wait_visible("↓ to manage");
     open_first_session(&mut harness);
-    harness.press(Key::Char('i'));
+    harness.press(Key::Tab);
     let input = harness.wait_visible("No new dependencies\\.");
     let lines: Vec<&str> = PARTS.iter().flat_map(|(_, text)| text.lines()).collect();
     let mut last = 0;
@@ -186,7 +194,7 @@ fn session_view_steer_raw_diff() {
     let agent = crew[0].clone();
     let script = script
         .await_command("request")
-        .at(0, raw_view(&agent, &["{\"type\":\"raw vendor line\"}"]))
+        .at(0, raw_view(&agent, &["{\"type\":\"raw agent line\"}"]))
         .await_command("request")
         .at(
             0,
@@ -198,7 +206,7 @@ fn session_view_steer_raw_diff() {
     let mut harness = Harness::launch(script).ui("[panel]\nagents = true").start();
     harness.wait_visible("↓ to manage");
     open_first_session(&mut harness);
-    harness.press(Key::Char('s'));
+    harness.press(Key::Char('m'));
     harness.send("use serde_json");
     harness.press(Key::Enter);
     let steer = harness.wait_command("steer");
@@ -212,7 +220,7 @@ fn session_view_steer_raw_diff() {
         raw["view"],
         json!({"view": "raw", "run": RUN, "session": "s-001"})
     );
-    harness.wait_visible("raw vendor line");
+    harness.wait_visible("raw agent line");
     harness.press(Key::Esc);
     harness.press(Key::Char('d'));
     let diff = harness.wait_command("request");

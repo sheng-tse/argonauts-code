@@ -27,8 +27,8 @@ const TWO_PHASES: &str = "name: two-looks\ndescription: Two looks\nphases:\n  - 
 fn crew_with_a_change(mode: ApprovalMode) -> anyhow::Result<support::Crew> {
     let mut crew = support::Crew::new()?;
     let lead = crew.worker("claude-code/opus", "anthropic");
-    crew.settings.default_agent = WorkerRef::new("claude-code", Some("opus".to_owned()));
-    crew.settings.workflow = WorkflowRef::new("two-looks");
+    crew.settings.main_agent = WorkerRef::new("claude-code", Some("opus".to_owned()));
+    crew.settings.phases = WorkflowRef::new("two-looks");
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.settings.approvals.change_request.mode = mode;
     crew.repo
@@ -80,7 +80,7 @@ async fn approval_hash_mismatch_refused() -> anyhow::Result<()> {
     let crew = crew_with_a_change(ApprovalMode::Supervised)?;
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
     assert_eq!(outcome.exit, EngineExit::Parked(ParkReason::Checkpoint));
-    let card = opened(&outcome.events).unwrap_or_else(|| panic!("no checkpoint opened"));
+    let card = opened(&outcome.events).unwrap_or_else(|| panic!("no approval opened"));
     assert_eq!(card.kind, CheckpointKind::ChangeRequest);
     let mut history = outcome.events;
 
@@ -185,7 +185,7 @@ async fn spot_check_verdict_reaches_the_policy() -> anyhow::Result<()> {
     assert!(
         unknown_reply
             .await?
-            .is_err_and(|why| why.contains("no checkpoint"))
+            .is_err_and(|why| why.contains("no approval"))
     );
     assert_eq!(first_reply.await?, Ok(()));
     assert!(
@@ -230,7 +230,7 @@ fn reversals_of(
 async fn turning_work_down_at_a_checkpoint_is_a_reversal() -> anyhow::Result<()> {
     let crew = crew_with_a_change(ApprovalMode::Supervised)?;
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
-    let card = opened(&outcome.events).unwrap_or_else(|| panic!("no checkpoint opened"));
+    let card = opened(&outcome.events).unwrap_or_else(|| panic!("no approval opened"));
     assert_eq!(card.kind, CheckpointKind::ChangeRequest);
     assert!(reversals_of(&crew)?.is_empty());
     let turned_down = card
@@ -238,7 +238,7 @@ async fn turning_work_down_at_a_checkpoint_is_a_reversal() -> anyhow::Result<()>
         .iter()
         .map(|option| option.action.clone())
         .find(|action| argonauts_crew::retro::reversals::rejects(card.kind, action))
-        .unwrap_or_else(|| panic!("the card offers no way to turn the change down"));
+        .unwrap_or_else(|| panic!("the task offers no way to turn the change down"));
     let (command, reply) = answer(&card, turned_down, &card.evidence_sha256);
     crew.resume(outcome.events, vec![command]).await?;
     assert_eq!(reply.await?, Ok(()));
@@ -332,8 +332,8 @@ async fn user_answer_beats_slow_approver() -> anyhow::Result<()> {
 /// In full auto nothing waits for you, so `approvals.ask_you_about` doesn't keep a workflow
 /// change yours: your rules and the approver weigh it as full auto weighs any change.
 #[tokio::test]
-async fn ask_you_about_leaves_a_workflow_change_to_full_auto() -> anyhow::Result<()> {
-    let mut crew = crew_with_a_change(ApprovalMode::FullAuto)?;
+async fn ask_you_about_leaves_a_workflow_change_to_autopilot() -> anyhow::Result<()> {
+    let mut crew = crew_with_a_change(ApprovalMode::Autopilot)?;
     crew.settings.approvals.ask_you_about = vec!["Workflow change".to_owned()];
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
     let changes: Vec<CheckpointOpened> = outcome
@@ -350,7 +350,7 @@ async fn ask_you_about_leaves_a_workflow_change_to_full_auto() -> anyhow::Result
         .collect();
     assert!(!changes.is_empty(), "{:?}", outcome.exit);
     for card in &changes {
-        assert_eq!(card.mode, ApprovalMode::FullAuto, "{card:?}");
+        assert_eq!(card.mode, ApprovalMode::Autopilot, "{card:?}");
         assert!(!card.needs_you, "{card:?}");
     }
     Ok(())
@@ -364,7 +364,7 @@ async fn ask_you_about_keeps_a_workflow_change_yours_in_auto() -> anyhow::Result
     crew.settings.approvals.ask_you_about = vec!["Workflow change".to_owned()];
     let outcome = crew.start(RunMode::Crew, "look twice").await?;
     assert_eq!(outcome.exit, EngineExit::Parked(ParkReason::Checkpoint));
-    let card = opened(&outcome.events).unwrap_or_else(|| panic!("no checkpoint opened"));
+    let card = opened(&outcome.events).unwrap_or_else(|| panic!("no approval opened"));
     assert_eq!(card.kind, CheckpointKind::ChangeRequest);
     assert_eq!(card.mode, ApprovalMode::Supervised);
     assert!(card.needs_you);

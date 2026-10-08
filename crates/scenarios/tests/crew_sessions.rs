@@ -24,7 +24,7 @@ use argonauts_testkit::{Key, LogLine};
 
 const TASK: &str = "Add a Retry-After header to 429 responses";
 
-const SOLO_CONFIG: &str = r#"default_agent = "claude-code"
+const SOLO_CONFIG: &str = r#"main_agent = "claude-code"
 
 [ui]
 theme = "dark"
@@ -179,11 +179,11 @@ fn crew_steer_delivered_after_tool() -> anyhow::Result<()> {
     pty.wait_for(r"Bash\(npm test\)|\$ npm test", WAIT)?;
 
     // A solo run is one agent, so its panel row opens the owner's session directly,
-    // where `s` steers it.
+    // where `m` messages it.
     pty.press(Key::Down)?;
     pty.press(Key::Enter)?;
-    pty.wait_for(r"s steer", WAIT)?;
-    pty.press(Key::Char('s'))?;
+    pty.wait_for(r"m message it", WAIT)?;
+    pty.press(Key::Char('m'))?;
     pty.send(steer)?;
     pty.press(Key::Enter)?;
     scenario.shot(&pty, "crew-steer-sent")?;
@@ -260,7 +260,7 @@ fn crew_status_tool_mid_session() -> anyhow::Result<()> {
             _ => None,
         })
         .context("a status part at session start")?;
-    assert!(injected.contains("card-001"), "{injected}");
+    assert!(injected.contains("task-001"), "{injected}");
 
     // Mid-session, the session's status file and its MCP tool both answer.
     let run = argonauts_testkit::journal::latest_run(scenario.repo.home()).context("the run")?;
@@ -270,11 +270,11 @@ fn crew_status_tool_mid_session() -> anyhow::Result<()> {
         summary
             .cards
             .iter()
-            .any(|card| card.card.as_str() == "card-001")
+            .any(|card| card.card.as_str() == "task-001")
     );
     assert!(!summary.goal.is_empty());
     let answer = call_status_tool(&dir.join("mcp.json"))?;
-    assert!(answer.contains("card-001"), "{answer}");
+    assert!(answer.contains("task-001"), "{answer}");
     assert!(answer.contains("Retry-After"), "{answer}");
     scenario.shot(&pty, "crew-status-tool")?;
     Ok(())

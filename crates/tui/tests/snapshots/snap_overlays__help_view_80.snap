@@ -3,15 +3,15 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 Help
-The keys in effect, and every command by category                    58 commands
+The keys in effect, and every command by category                    65 commands
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Keys                                                                         │
 │ enter                         send the prompt                                │
 │ shift+enter / alt+enter / ctrl+j                                             │
 │                               new line                                       │
-│ esc                           set a card aside, stop a chat turn, or pause   │
-│                               the run                                        │
+│ esc                           hand a question on, or stop the main agent's   │
+│                               turn                                           │
 │ ctrl+c                        clear the prompt, twice to exit                │
 │ ctrl+d                        exit, twice on an empty prompt                 │
 │ shift+tab                     next approval mode                             │
@@ -23,6 +23,6 @@ The keys in effect, and every command by category                    58 commands
 │ ctrl+r                        search prompt history                          │
 │ ?                             shortcuts, on an empty prompt                  │
 │ up                            take queued messages back                      │
-│ tab / up                      answer a waiting card                          │
+│ tab / up                      answer a waiting question                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-↑↓ scroll · esc back                                               1-18 of 129 ↓
+↑↓ scroll · esc back                                               1-18 of 155 ↓

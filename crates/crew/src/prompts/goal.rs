@@ -1,5 +1,6 @@
 //! Understand: restating the request, comparing restatements, and the lead answering the open
-//! questions. And the goal style: the check that decides "met", and the lead's next attempt.
+//! questions. And a goal's two prompts: the judge reading the work against each line, and the
+//! orchestrator planning the next round from what the check found failing.
 
 pub const RESTATE: &str = include_str!("goal/restate.md");
 pub const DIFFER: &str = include_str!("goal/differ.md");

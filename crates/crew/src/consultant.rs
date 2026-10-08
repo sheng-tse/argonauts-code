@@ -78,6 +78,7 @@ pub(crate) async fn session_answer(
             json_schema: None,
             resume: None,
             slot: slot(&asked.id),
+            label: None,
         })
         .await?;
     let session = running.key.clone();
@@ -91,7 +92,7 @@ pub fn consultant(settings: &Settings) -> WorkerRef {
         .roles
         .get(&RoleName::Consultant)
         .and_then(|role| role.workers.first().cloned())
-        .unwrap_or_else(|| settings.default_agent.clone())
+        .unwrap_or_else(|| settings.main_agent.clone())
 }
 
 fn parts(host: &Host, asked: &BlackboardMessage, role: RoleName, prompt: &str) -> Vec<InputPart> {

@@ -44,7 +44,7 @@ pub(super) fn report(card: Option<&str>, gates: &[GateOutcome], label: bool, cx:
         })
         .collect();
     if listed.is_empty() {
-        details.push("No command gates set · /config gates.run".to_owned());
+        details.push("No command checks set · /config checks.run".to_owned());
     } else if failed.is_empty() {
         details.push(match listed.len() {
             1 => "Passed".to_owned(),
@@ -56,13 +56,13 @@ pub(super) fn report(card: Option<&str>, gates: &[GateOutcome], label: bool, cx:
     } else {
         ToolState::Failed
     };
-    emit(cx, step("Gates", &args, state, &details));
+    emit(cx, step("Checks", &args, state, &details));
 }
 
 /// The engine's marker for an empty `gates.run`. Nothing ran, so it neither failed nor names a
 /// gate; the item says no command gates are set instead.
 fn is_unset(gate: &GateOutcome) -> bool {
-    gate.kind == GateKind::Command && gate.command.is_none() && gate.name == "gates.run"
+    gate.kind == GateKind::Command && gate.command.is_none() && gate.name == "checks.run"
 }
 
 /// Gates you set, and the suites the final check runs. The built-in checks show only when one

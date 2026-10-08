@@ -221,7 +221,7 @@ mod tests {
         let repo = TempRepo::new().unwrap();
         let root = repo.root();
         let base = repo.home().join("worktrees");
-        let (copy, yours) = (base.join("card-001"), base.join("yours"));
+        let (copy, yours) = (base.join("task-001"), base.join("yours"));
         repo.git(&["branch", "card"]).unwrap();
         repo.git(&["branch", "mine"]).unwrap();
         for (folder, branch) in [(&copy, "card"), (&yours, "mine")] {
@@ -258,7 +258,7 @@ mod tests {
     fn a_copy_made_again_goes_once_clean_and_its_commits_stay_on_its_branch() {
         let repo = TempRepo::new().unwrap();
         let root = repo.root();
-        let copy = repo.home().join("worktrees/card-001");
+        let copy = repo.home().join("worktrees/task-001");
         repo.git(&["branch", "card"]).unwrap();
         assert!(ensure_copy(root, &copy, Some("card")).unwrap());
         let path = copy.to_str().unwrap();

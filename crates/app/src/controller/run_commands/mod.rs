@@ -29,7 +29,8 @@ pub(crate) use control::{
     take_back,
 };
 pub(crate) use views::{
-    all_repos, ask_narrator, context, save_workflow, status, summary, view, workflow_view,
+    all_repos, ask_narrator, context, context_report, save_workflow, status, summary, view,
+    workflow_view,
 };
 
 /// Why nothing that decides or raises autonomy can leave this app.
@@ -176,6 +177,27 @@ pub(crate) async fn answer(ctx: &mut Ctx, runs: &mut RunsState, reply: Checkpoin
     Ok(Vec::new())
 }
 
+/// Esc on a run's question or approval means "carry on without me": the engine
+/// takes an option in your place, as `approvals.when_declined` says, so the run never waits on
+/// it. One it can't take anything for stays open, and a line says why.
+pub(crate) async fn carry_on(ctx: &mut Ctx, run: RunId, id: CheckpointId) -> Handled {
+    let Some(approvals) = approvals(ctx) else {
+        return Ok(Vec::new());
+    };
+    let left = CheckpointAnswer {
+        id: id.clone(),
+        action: AnswerAction::CarryOn,
+        text: None,
+        // Leaving it isn't an answer to what was shown, so it's bound to no evidence.
+        evidence_sha256: String::new(),
+        cards: Vec::new(),
+    };
+    if let Err(err) = approvals.answer(&run, left).await {
+        return refused(ctx, err, || format!("{id} still waits for you"));
+    }
+    Ok(Vec::new())
+}
+
 /// Choices this part opened, such as a reassign that overrides a rule, or `/rewind`'s confirm.
 pub(crate) async fn answer_choice(
     ctx: &mut Ctx,
@@ -230,7 +252,7 @@ pub(crate) async fn answer_choice(
                 return refused(ctx, err, || format!("Couldn't reassign {card}"));
             }
             let name = ctx.names.worker(&to);
-            format!("Reassigned {card} to {name}, overriding {rule} for this card.")
+            format!("Reassigned {card} to {name}, overriding {rule} for this task.")
         }
         (
             RunChoice::Revert {
@@ -246,7 +268,7 @@ pub(crate) async fn answer_choice(
                 return refused(ctx, err, || format!("Couldn't revert {card}"));
             }
             format!(
-                "Reverted {card} to handoff-{checkpoint}. The work after it is on \
+                "Reverted {card} to fallback-{checkpoint}. The work after it is on \
                  argonauts/{run}/{card}-replaced-{checkpoint}."
             )
         }
@@ -319,12 +341,12 @@ pub(crate) async fn take_over_ended(
     }
     let how = match exit_code {
         Some(0) | None => String::new(),
-        Some(code) => format!("The vendor's UI exited with code {code}. "),
+        Some(code) => format!("The agent's UI exited with code {code}. "),
     };
     ctx.notice(
         NoteLevel::Info,
         format!(
-            "{how}Your changes to {card} are committed, and its return card decides who goes on."
+            "{how}Your changes to {card} are committed, and its return question decides who goes on."
         ),
     );
     Ok(Vec::new())
@@ -357,8 +379,9 @@ pub(crate) async fn approval_mode(
 
 /// Your verdict on an auto-approval. A right one can raise autonomy, so it needs you at the
 /// terminal, as an approval does.
-/// The goal view's keys: clear the goal, turn the run into one, or change an assumption. Only
-/// you do these, so an app that can't approve can't either.
+/// The goal view's keys and the goal panels': clear the goal, pause it, rewrite its lines, run
+/// its checks now, turn the run into one, or change an assumption. Only you do these, so an
+/// app that can't approve can't either.
 pub(crate) async fn goal(
     ctx: &mut Ctx,
     runs: &mut RunsState,
@@ -373,22 +396,39 @@ pub(crate) async fn goal(
     };
     let done = match &action {
         GoalAction::Clear { land: true } => {
-            "Stopped pursuing the goal. Merge lands what holds once every check passes."
+            "Stopped pursuing the goal. Merge takes what holds once every check passes."
         }
         GoalAction::Clear { land: false } => {
             "Stopped pursuing the goal. The run stops and keeps its branch."
         }
+        GoalAction::Pause { .. } => {
+            "Goal paused. The try in progress finishes and is checked, and nothing is sent \
+             round again until /goal resume."
+        }
+        GoalAction::Resume { .. } => "Goal resumed.",
+        GoalAction::EditLines { .. } => {
+            "Changed the goal's lines. The tries so far stay, and the next check reads the \
+             new lines."
+        }
+        GoalAction::CheckNow { .. } => {
+            "Running the goal's checks now, beside the try under way. What they find shows \
+             as the last check, and the try's own check still decides what follows."
+        }
         GoalAction::TurnIntoGoal => {
-            "The run becomes a goal: its check judges this workflow when it ends, and the crew \
-             keeps attempting what's unmet."
+            "The run takes its done-when list as a goal: its check judges this workflow when \
+             it ends, and the crew goes round again for what doesn't hold."
         }
         GoalAction::ChangeAssumption { .. } => {
-            "Changed the assumption. The agents working now are told, and the next attempt \
+            "Changed the assumption. The agents working now are told, and the next round \
              plans with it."
         }
     };
+    let doing = match &action {
+        GoalAction::CheckNow { .. } => "Couldn't run the goal's checks",
+        _ => "Couldn't change the goal",
+    };
     if let Err(err) = ctx.services.conductor.goal(&run, action).await {
-        return refused(ctx, err, || "Couldn't change the goal".to_owned());
+        return refused(ctx, err, || doing.to_owned());
     }
     ctx.notice(NoteLevel::Info, done);
     Ok(Vec::new())
@@ -409,7 +449,7 @@ pub(crate) async fn spot_check(
     let verdict = if correct {
         "right, so it counts toward autonomy"
     } else {
-        "wrong, so that decision point goes back to shadow"
+        "wrong, so that decision point goes back to auto preview"
     };
     ctx.notice(NoteLevel::Info, format!("Marked {id} of {run} {verdict}."));
     Ok(Vec::new())

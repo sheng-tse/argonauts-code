@@ -54,21 +54,21 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             flow: Flow::Finish(RunOutcome::Abandoned),
         }),
         other => Err(EngineError::Refused(format!(
-            "the plan checkpoint of a workflow with no plan doesn't offer {other:?}"
+            "the plan approval of a workflow with no plan doesn't offer {other:?}"
         ))),
     }
 }
 
 async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest> {
-    let shown = host.read(plan_workflow);
-    let summary = match &shown {
+    let workflow = host.read(plan_workflow);
+    let summary = match &workflow {
         Some(shown) => shown
             .why
             .clone()
             .unwrap_or_else(|| format!("The run follows the {} workflow", shown.workflow.name)),
         None => "The run follows its workflow".to_owned(),
     };
-    let documents = match &shown {
+    let documents = match &workflow {
         Some(shown) => vec![EvidenceDocument {
             label: "workflow".to_owned(),
             text: yaml::print(&shown.workflow).map_err(EngineError::Refused)?,
@@ -77,8 +77,32 @@ async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest
         }],
         None => Vec::new(),
     };
-    let budget = super::budget_lines::plan(&host.settings().budget)
-        .unwrap_or_else(|_| super::empty_budget());
+    let shown = Shown {
+        workflow,
+        summary,
+        documents,
+        options: answer_options(),
+        free_text: FreeText::None,
+        authors: host.read(designer).into_iter().collect(),
+    };
+    Ok(request_showing(host, call, shown).await)
+}
+
+/// A plan approval whose plan is a workflow alone: what it shows, and what it offers.
+pub struct Shown {
+    pub workflow: Option<PlanWorkflow>,
+    pub summary: String,
+    /// What an approver reads: the workflow as it would run.
+    pub documents: Vec<EvidenceDocument>,
+    pub options: Vec<AnswerOption>,
+    pub free_text: FreeText,
+    /// Who wrote it, so an approver comes from another provider.
+    pub authors: Vec<WorkerRef>,
+}
+
+/// The plan approval over `shown`, with an uncontested plan's facts.
+pub async fn request_showing(host: &Host, call: &StepCall, shown: Shown) -> CheckpointRequest {
+    let budget = super::limit_plan(host.settings());
     let review = super::plan_facts::review(host);
     let facts = EvidenceFacts {
         subject: super::plan_checkpoint::subject(host).await,
@@ -86,7 +110,7 @@ async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest
         ..review.facts()
     };
     let packet = PlanPacket {
-        summary,
+        summary: shown.summary,
         judging: None,
         near_tie: false,
         decisions: host.read(|state| state.plan.decisions.clone()),
@@ -98,9 +122,9 @@ async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest
         budget,
         new_dependencies: Vec::new(),
         flags: review.flags(),
-        workflow: shown,
+        workflow: shown.workflow,
     };
-    Ok(CheckpointRequest {
+    CheckpointRequest {
         at: Some(call.at.clone()),
         kind: CheckpointKind::Plan,
         title: "Approve this plan?".to_owned(),
@@ -108,11 +132,11 @@ async fn request(host: &Host, call: &StepCall) -> EngineResult<CheckpointRequest
         packet: CheckpointPacket::Plan(Box::new(packet)),
         facts,
         agent_outputs: Vec::new(),
-        documents,
-        options: Some(answer_options()),
-        free_text: FreeText::None,
-        authors: host.read(designer).into_iter().collect(),
-    })
+        documents: shown.documents,
+        options: Some(shown.options),
+        free_text: shown.free_text,
+        authors: shown.authors,
+    }
 }
 
 /// The top of the plan's estimate, when the run's budget is in dollars.
@@ -202,13 +226,13 @@ mod tests {
         state.apply(&envelope(1, None, Some("s-001"), kind));
         let mut ended = end(EndReason::Completed, Some("v-1"));
         ended.structured = Some(serde_json::json!({
-            "name": "fix-it", "description": "Fix it", "based_on": "Peer Crew",
+            "name": "fix-it", "description": "Fix it", "based_on": "Council",
             "why": "each bug has one clear fix", "done_when": [],
         }));
         let kind = RunEventKind::Session(SessionEvent::Ended(Box::new(ended)));
         state.apply(&envelope(2, None, Some("s-001"), kind));
         assert_eq!(
-            design_why(&state, Some(&WorkflowRef::new("peer-crew"))).as_deref(),
+            design_why(&state, Some(&WorkflowRef::new("council"))).as_deref(),
             Some("each bug has one clear fix")
         );
         assert_eq!(design_why(&state, Some(&WorkflowRef::new("solo"))), None);

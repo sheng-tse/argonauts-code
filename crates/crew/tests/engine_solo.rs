@@ -62,7 +62,7 @@ fn restatement() -> Value {
 /// A solo crew whose default agent is a fake Claude Code.
 fn solo_crew() -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
     let mut crew = Crew::new()?;
-    crew.settings.default_agent = OWNER.parse()?;
+    crew.settings.main_agent = OWNER.parse()?;
     // Each phase end would ask the default agent for a workflow change, and the retro would ask
     // for a process change. These scenarios script neither session.
     crew.settings.workflows.adapt_at_phase_ends = false;
@@ -122,7 +122,7 @@ fn merge_packet(events: &[RunEvent]) -> MergePacket {
             },
             _ => None,
         })
-        .expect("a merge card opened")
+        .expect("a merge approval opened")
 }
 
 fn builds(worker: &FakeWorker) -> Vec<SessionSpec> {
@@ -216,11 +216,9 @@ async fn solo_lifecycle() -> anyhow::Result<()> {
         .iter()
         .map(|part| part.text.as_str())
         .collect();
-    assert!(
-        sent.starts_with("You make this change on your own"),
-        "{sent}"
-    );
-    assert!(!sent.contains("Other agents own"), "{sent}");
+    assert!(sent.starts_with("You are a worker."), "{sent}");
+    assert!(sent.contains("You make this change on your own."), "{sent}");
+    assert!(!sent.contains("Other workers build"), "{sent}");
     assert!(sent.contains("Kind: the whole change\n\n"), "{sent}");
 
     // Then the merge checkpoint, and merging ends the run.
@@ -479,7 +477,7 @@ async fn solo_restate_first_waits() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn solo_reviewed_other_family() -> anyhow::Result<()> {
+async fn solo_reviewed_other_provider() -> anyhow::Result<()> {
     let (mut crew, owner) = solo_crew()?;
     crew.settings.solo.review = true;
     // Families come from the registry, which knows this one by its model's name.
@@ -511,7 +509,7 @@ async fn solo_reviewed_other_family() -> anyhow::Result<()> {
             .specs()
             .iter()
             .all(|spec| spec.step != Some(StepName::Review)),
-        "the owner never reviews its own card"
+        "the worker never reviews its own task"
     );
     assert_eq!(opened(&outcome.events, CheckpointKind::Merge), 1);
     Ok(())
@@ -532,7 +530,7 @@ async fn solo_goal_file_not_a_violation() -> anyhow::Result<()> {
         .iter()
         .rev()
         .find(|(point, _)| point.kind == CheckpointKind::Merge)
-        .expect("the policy saw the merge checkpoint");
+        .expect("the policy saw the merge approval");
     // The conductor committed the goal file, so it's shown, never checked as an agent's change.
     assert!(
         evidence.facts.conductor_paths.contains(&goal_path),
@@ -576,7 +574,7 @@ async fn solo_goal_file_not_a_violation() -> anyhow::Result<()> {
 #[tokio::test]
 async fn best_of_n_closes_with_the_kept_attempts_answer() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
-    crew.settings.default_agent = OWNER.parse()?;
+    crew.settings.main_agent = OWNER.parse()?;
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     crew.settings.solo.attempts = 2;
@@ -600,11 +598,11 @@ async fn best_of_n_closes_with_the_kept_attempts_answer() -> anyhow::Result<()> 
                 FakeSession::structured(said)
             }),
         );
-    crew.settings.crew.push(OWNER.parse()?);
+    crew.settings.crew.add(OWNER.parse()?);
     let outcome = crew.start(RunMode::Solo, REQUEST).await?;
     let packet = merge_packet(&outcome.events);
     let kept = packet.rows.first().map(|row| row.card.to_string());
-    let kept = kept.ok_or_else(|| anyhow::anyhow!("the merge card names no card"))?;
+    let kept = kept.ok_or_else(|| anyhow::anyhow!("the merge approval names no task"))?;
     assert!(kept.contains("-attempt-"), "{kept}");
     let merged = decide(&crew, &outcome, CheckpointKind::Merge, AnswerAction::Merge).await?;
     assert_eq!(merged.exit, EngineExit::Finished(RunOutcome::Merged));

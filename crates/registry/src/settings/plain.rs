@@ -8,7 +8,7 @@ use toml::{Table, Value};
 use crate::catalog::setting_meta;
 
 /// The keys that take a list of named commands, each written as a `[[key]]` table.
-const COMMAND_LISTS: [&str; 3] = ["gates.run", "gates.full_suite", "gates.setup"];
+const COMMAND_LISTS: [&str; 3] = ["checks.run", "checks.full_suite", "checks.setup"];
 
 /// The shape shown when the file gives nothing to build one from.
 const EXAMPLE_COMMAND: &str = "make test";
@@ -334,7 +334,7 @@ fn as_list(key: &str, text: &str) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// `budget.run_usd = "1"` meant the number, so the fix drops the quotes.
+/// `limits.spend_per_run = "1"` meant the number, so the fix drops the quotes.
 fn unquoted(key: &str, expected: &str, found: &Found) -> Option<String> {
     let text = found.text.as_deref()?.trim();
     let fits = match expected {
@@ -403,8 +403,8 @@ mod tests {
             "steps.review.when can't be \"later\"; it takes \"always\", \"never\", or \"ask\""
         );
         assert_eq!(
-            type_message("default_agent", "invalid worker \"a b\"", None),
-            "default_agent: invalid worker \"a b\""
+            type_message("main_agent", "invalid worker \"a b\"", None),
+            "main_agent: invalid worker \"a b\""
         );
     }
 
@@ -425,12 +425,12 @@ mod tests {
     fn a_gate_of_flags_alone_still_shows_the_shape() {
         let written = Value::Array(vec![Value::String("--all".to_owned())]);
         let message = type_message(
-            "gates.run",
+            "checks.run",
             "invalid type: string \"--all\", expected struct GateCommand",
             Some(&written),
         );
         assert!(
-            message.ends_with("[[gates.run]]\nname = \"test\"\ncommand = [\"make\", \"test\"]"),
+            message.ends_with("[[checks.run]]\nname = \"test\"\ncommand = [\"make\", \"test\"]"),
             "{message}"
         );
     }

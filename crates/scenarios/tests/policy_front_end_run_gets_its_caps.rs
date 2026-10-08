@@ -1,4 +1,4 @@
-//! A run a front end starts gets `mcp.run_budget` as its time budget and counts against
+//! A run a front end starts gets `mcp.run_limit` as its time budget and counts against
 //! `mcp.runs_per_day`, across every repo, so the next start past the cap is refused.
 
 mod policy_support;
@@ -14,7 +14,7 @@ use serde_json::json;
 fn policy_front_end_run_gets_its_caps() -> anyhow::Result<()> {
     let scenario = trusted_scenario(
         "owner-writes-hello.toml",
-        &solo_config("[mcp]\nrun_budget = \"1m\"\nruns_per_day = 1\n"),
+        &solo_config("[mcp]\nrun_limit = \"1m\"\nruns_per_day = 1\n"),
     )?;
     let run = runtime()?.block_on(async {
         let server = McpServer::start(&scenario, FrontEnd::Hermes).await?;
@@ -48,10 +48,10 @@ fn policy_front_end_run_gets_its_caps() -> anyhow::Result<()> {
     let started = run_started(&events).expect("RunStarted");
     assert_eq!(events[0].run_id.as_str(), run);
     assert_eq!(started.front_end.as_deref(), Some("hermes"));
-    // The run's supervisor pauses a front-end run once the `mcp.run_budget` it was started
+    // The run's supervisor pauses a front-end run once the `mcp.run_limit` it was started
     // with is spent, so the run carries that budget in its own settings.
     assert_eq!(
-        started.settings["mcp"]["run_budget"].as_str(),
+        started.settings["mcp"]["run_limit"].as_str(),
         Some("1m"),
         "the run's mcp settings: {}",
         started.settings["mcp"]

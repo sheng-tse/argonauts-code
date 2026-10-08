@@ -3,15 +3,15 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, 24, &state)"
 ---
 Resume a conversation, a run, or a session
-Pick one to carry on. Parked runs never expire                          1 conversation · 2 runs · 2 Claude Code sessions
+Pick one to carry on. Waiting runs never expire                         1 conversation · 2 runs · 2 Claude Code sessions
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│     Kind     Id                      Title              State    Details                       When  Spent  Sessions │
-│ ❯   session  claude-code:0a1b2c3d-1  Explain the inpu…           Claude Code on main       just now                  │
-│     chat     chat-002                what does export…           3 turns with Claude Code    2h ago                  │
-│     run      run-02                  Fix the flaky ex…  crashed  merge checkpoint            3h ago  $0.46         2 │
-│     session  claude-code:0a1b2c3d-2  Rename the CSV w…           Claude Code                 1d ago                  │
-│   ◆ run      run-03                  Add a --json fla…  parked   merge checkpoint            2d ago  $0.46         2 │
+│     Kind     Id                      Title            State      Details                       When  Spent  Sessions │
+│ ❯   session  claude-code:0a1b2c3d-1  Explain the in…             Claude Code on main       just now                  │
+│     chat     chat-002                what does expo…             3 turns with Claude Code    2h ago                  │
+│     run      run-02                  Fix the flaky …  ✗ crashed  merge approval              3h ago  $0.46         2 │
+│     session  claude-code:0a1b2c3d-2  Rename the CSV…             Claude Code                 1d ago                  │
+│   ◆ run      run-03                  Add a --json f…  ◆ waiting  merge approval              2d ago  $0.46         2 │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

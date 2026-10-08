@@ -3,14 +3,27 @@
 
 pub mod agents;
 pub mod approvals;
+pub mod asking;
+pub mod awake;
+pub mod bottom_line;
 pub mod budget;
+pub mod context;
+pub mod crew;
+pub mod delivery;
 pub mod endpoints;
 pub mod evolution;
+pub mod goal;
 pub mod handoff;
 pub mod learning;
+pub mod limits_template;
+pub mod main_session;
+pub mod mods;
+pub mod prompts;
 pub mod protocol;
 pub mod roles;
 pub mod sessions;
+pub mod stats;
+pub mod switch;
 pub mod ui;
 pub mod workflows;
 
@@ -25,12 +38,16 @@ use crate::workflow::WorkflowRef;
 
 use agents::{AgentSettings, EndpointSettings, McpSettings, RegistrySettings};
 use approvals::{ApprovalSettings, HardLimitSettings, SandboxSettings};
-use budget::{BudgetSettings, WatchdogSettings};
+use awake::AwakeSettings;
+use budget::WatchdogSettings;
+use crew::CrewSettings;
 use evolution::EvolutionSettings;
-use handoff::HandoffSettings;
-use learning::{MemorySettings, OutcomeSettings, PromptSettings, SkillSettings};
+use goal::GoalSettings;
+use handoff::FallbackSettings;
+use learning::{MemorySettings, OutcomeSettings, SkillSettings};
+use prompts::PromptSettings;
 use protocol::{
-    CritiqueSettings, DivideSettings, DraftingSettings, GateSettings, GoalSettings, IntakeSettings,
+    CritiqueSettings, DivideSettings, DraftingSettings, GateSettings, IntakeSettings,
     JudgingSettings, MappingSettings, MergeSettings, ReviewSettings, RoutingSettings, SoloSettings,
     SpikeSettings, TriageSettings, UnderstandSettings, VisibilitySettings,
 };
@@ -40,57 +57,71 @@ use sessions::{
     SupervisorSettings,
 };
 use ui::{NarratorSettings, NotificationSettings, UiSettings};
-use workflows::{LeadDesign, WorkflowSettings};
+use workflows::{LeadDesign, WorkflowSettings, WorkflowSize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Settings {
-    /// The preset: `peer-crew` (default), `coordinated-crew`, `solo`, `solo-reviewed`,
-    /// `best-of-n`, `draft-and-vote`, or an `ablate-*` preset.
-    pub preset: String,
-    /// The workflow a run starts from, which each preset sets. With `workflows.lead_designs`
-    /// the lead sizes it for the task, and with `"any"` it may pick another or compose one.
-    pub workflow: WorkflowRef,
+    /// How the crew is organised: `council` (default), `orchestrator`, `solo`,
+    /// `maker-checker`, `best-of-n`, `draft-and-vote`, an `ablate-*` one, or one of your own.
+    pub workflow: String,
+    /// The file of phases and steps a run starts from, which each workflow sets. With
+    /// `workflows.lead_designs` the lead sizes it for the task, and with `"any"` it may pick
+    /// another or compose one.
+    pub phases: WorkflowRef,
+    /// Ultracode: every real request goes through a workflow, small ones included. Solo on
+    /// Claude Code turns on Claude Code's own. Questions are still just answered.
+    pub ultracode: bool,
+    /// How big a workflow the orchestrator plans when the request doesn't say. A guideline, as
+    /// in Claude Code.
+    pub workflow_size: WorkflowSize,
     /// Used for chat, the triage estimate, solo work, and as the last fallback.
-    pub default_agent: WorkerRef,
-    pub crew: Vec<WorkerRef>,
+    pub main_agent: WorkerRef,
+    /// Who fills the five roles. A fine role without `roles.<role>.workers` follows one of them.
+    pub crew: CrewSettings,
     pub agents: BTreeMap<String, AgentSettings>,
     pub endpoints: BTreeMap<String, EndpointSettings>,
     /// Per role. A role with no entry uses the defaults and the router.
     pub roles: BTreeMap<RoleName, RoleSettings>,
-    /// Handoff defaults for every role. [`HandoffSettings`] says which keys the resolver copies
-    /// into role tables, and [`HandoffSettings::applied`] walks the rest.
-    pub handoff: HandoffSettings,
+    /// Fallbacks: the defaults for every role, and `[fallback.<role>]` for each of the crew's
+    /// five. [`HandoffSettings`] says which keys the resolver copies into role tables, and
+    /// [`FallbackSettings::applied_to`] walks the rest.
+    pub fallback: FallbackSettings,
     pub intake: IntakeSettings,
+    /// How a request is sent to solo or to the crew.
+    #[serde(rename = "solo_or_crew")]
     pub triage: TriageSettings,
     pub solo: SoloSettings,
     pub understand: UnderstandSettings,
-    /// The goal style's limits.
+    /// Goals: whether a request gets one by default, what checks it, and when it's stuck.
     pub goal: GoalSettings,
     pub drafting: DraftingSettings,
     pub mapping: MappingSettings,
     pub critique: CritiqueSettings,
-    pub spikes: SpikeSettings,
+    pub experiments: SpikeSettings,
     pub judging: JudgingSettings,
     pub divide: DivideSettings,
     pub review: ReviewSettings,
-    pub gates: GateSettings,
+    pub checks: GateSettings,
     pub routing: RoutingSettings,
     pub approvals: ApprovalSettings,
     pub limits: HardLimitSettings,
     /// The sandbox for every role. [`Settings::sandbox_for`] lays a role's own table over it.
     pub sandbox: SandboxSettings,
-    pub budget: BudgetSettings,
     pub watchdogs: WatchdogSettings,
     pub health: HealthSettings,
     pub sessions: SessionSettings,
+    pub switch: switch::SwitchSettings,
     /// Compaction for every role unless the role overrides it.
     pub compaction: Compaction,
-    /// Harness subagent cap for every role unless the role overrides it.
+    /// The cap on a CLI's own subagents for every role unless the role overrides it.
     pub native_fanout: NativeFanout,
     pub concurrency: ConcurrencySettings,
     pub visibility: VisibilitySettings,
     pub merge: MergeSettings,
+    pub commit: delivery::CommitSettings,
+    pub delivery: delivery::DeliverySettings,
+    pub history: delivery::HistorySettings,
     pub workflows: WorkflowSettings,
     pub evolution: EvolutionSettings,
     pub memory: MemorySettings,
@@ -98,12 +129,16 @@ pub struct Settings {
     pub outcomes: OutcomeSettings,
     pub prompts: PromptSettings,
     pub ui: UiSettings,
+    /// What mod files may do.
+    pub mods: mods::ModsSettings,
     pub narrator: NarratorSettings,
     pub supervisor: SupervisorSettings,
     pub runs: RunsSettings,
     pub notifications: NotificationSettings,
     pub mcp: McpSettings,
     pub registry: RegistrySettings,
+    pub awake: AwakeSettings,
+    pub main_session: main_session::MainSessionSettings,
 }
 
 impl Default for Settings {
@@ -114,18 +149,16 @@ impl Default for Settings {
             .map(|id| (id.to_owned(), AgentSettings::default()))
             .collect();
         Self {
-            preset: "peer-crew".to_owned(),
-            workflow: WorkflowRef::new("peer-crew"),
-            default_agent: worker("claude-code"),
-            crew: vec![
-                worker("claude-code"),
-                worker("codex"),
-                worker("antigravity-cli"),
-            ],
+            workflow: "council".to_owned(),
+            phases: WorkflowRef::new("council"),
+            ultracode: false,
+            workflow_size: WorkflowSize::default(),
+            main_agent: worker("claude-code"),
+            crew: CrewSettings::default(),
             agents,
             endpoints: BTreeMap::new(),
             roles: BTreeMap::new(),
-            handoff: HandoffSettings::built_in(),
+            fallback: FallbackSettings::built_in(),
             intake: IntakeSettings::default(),
             triage: TriageSettings::default(),
             solo: SoloSettings::default(),
@@ -134,24 +167,27 @@ impl Default for Settings {
             drafting: DraftingSettings::default(),
             mapping: MappingSettings::default(),
             critique: CritiqueSettings::default(),
-            spikes: SpikeSettings::default(),
+            experiments: SpikeSettings::default(),
             judging: JudgingSettings::default(),
             divide: DivideSettings::default(),
             review: ReviewSettings::default(),
-            gates: GateSettings::default(),
+            checks: GateSettings::default(),
             routing: RoutingSettings::default(),
             approvals: ApprovalSettings::default(),
             limits: HardLimitSettings::default(),
             sandbox: SandboxSettings::default(),
-            budget: BudgetSettings::default(),
             watchdogs: WatchdogSettings::default(),
             health: HealthSettings::default(),
             sessions: SessionSettings::default(),
+            switch: switch::SwitchSettings::default(),
             compaction: Compaction::Inherit,
             native_fanout: NativeFanout::default(),
             concurrency: ConcurrencySettings::default(),
             visibility: VisibilitySettings::default(),
             merge: MergeSettings::default(),
+            commit: delivery::CommitSettings::default(),
+            delivery: delivery::DeliverySettings::default(),
+            history: delivery::HistorySettings::default(),
             workflows: WorkflowSettings::default(),
             evolution: EvolutionSettings::default(),
             memory: MemorySettings::default(),
@@ -159,17 +195,28 @@ impl Default for Settings {
             outcomes: OutcomeSettings::default(),
             prompts: PromptSettings::default(),
             ui: UiSettings::default(),
+            mods: mods::ModsSettings::default(),
             narrator: NarratorSettings::default(),
             supervisor: SupervisorSettings::default(),
             runs: RunsSettings::default(),
             notifications: NotificationSettings::default(),
             mcp: McpSettings::default(),
+            awake: AwakeSettings::default(),
             registry: RegistrySettings::default(),
+            main_session: main_session::MainSessionSettings::default(),
         }
     }
 }
 
 impl Settings {
+    /// The ultracode key, which `/effort`'s toggle writes.
+    pub const ULTRACODE: &'static str = "ultracode";
+
+    /// Who may fill one of the five roles, in order of preference.
+    pub fn seats(&self, role: crew::CrewRole) -> Vec<WorkerRef> {
+        self.crew.seats(role, &self.main_agent)
+    }
+
     /// The sandbox for `role`'s agents, its own `[roles.<role>.sandbox]` over `[sandbox]`.
     pub fn sandbox_for(&self, role: &RoleName) -> SandboxSettings {
         let own = self.roles.get(role).map(|settings| &settings.sandbox);
@@ -179,7 +226,7 @@ impl Settings {
     /// How far the lead may change a crew run's workflow. All hands always has it size one.
     pub fn lead_designs(&self) -> LeadDesign {
         let design = self.workflows.lead_designs.design();
-        if self.triage.all_hands {
+        if self.ultracode {
             design.max(LeadDesign::Size)
         } else {
             design
@@ -192,19 +239,24 @@ impl Settings {
 /// project's `.argonauts/config.toml` applies only once you trust that file. A trailing `.*`
 /// covers every key below it, and `*` in the middle matches one map key.
 pub const SAFETY_KEYS: &[&str] = &[
-    "limits.*",
+    "limits.protected_paths",
+    "limits.dependency_allowlist",
+    "limits.spend_per_day",
+    "limits.auto_merges_per_day",
+    "limits.irreversible_allowlist",
+    "limits.evolution_usd_per_month",
     "sandbox.*",
     "approvals.*",
     "evolution.*",
     "memory.*",
-    "budget.run_usd",
-    "budget.run_tokens",
-    "budget.run_quota",
-    "budget.run_minutes",
-    "budget.enabled",
-    "solo.style",
+    "limits.spend_per_run",
+    "limits.run_tokens",
+    "limits.run_plan_usage",
+    "limits.run_minutes",
+    "limits.plan_usage",
+    "solo.kind",
     "solo.asks",
-    "triage.solo_style",
+    "solo_or_crew.solo_kind",
     "agents.*.auth",
     "agents.*.binary",
     "agents.*.extra_args",
@@ -212,15 +264,16 @@ pub const SAFETY_KEYS: &[&str] = &[
     "endpoints.*.api_key_env",
     "endpoints.*.allow_api_billing",
     "endpoints.*.header_env.*",
-    "roles.*.handoff.allow_api_billing",
+    "fallback.*.allow_api_billing",
     "roles.*.sandbox.*",
-    "handoff.allow_api_billing",
+    "fallback.allow_api_billing",
     "mcp.*",
     "merge.*",
-    "gates.*",
+    "checks.*",
+    "mods.*",
     "notifications.chat.*",
-    "solo.style",
-    "triage.solo_style",
+    "solo.kind",
+    "solo_or_crew.solo_kind",
 ];
 
 /// Keys only your global config may set. A project file that sets one is refused, trusted or
@@ -235,7 +288,7 @@ pub const LAYERS: &[&str] = &[
     "global",
     "project",
     "project-local",
-    "preset",
+    "workflow",
     "flag",
     "session",
     "request",
@@ -270,6 +323,42 @@ impl SettingScope {
         }
     }
 
+    /// The file scope a settings layer names; `None` for a layer that isn't a file.
+    pub fn from_layer(layer: &str) -> Option<Self> {
+        match layer {
+            "project-local" => Some(Self::ProjectLocal),
+            "project" => Some(Self::Project),
+            "global" => Some(Self::Global),
+            "session" => Some(Self::Session),
+            _ => None,
+        }
+    }
+
+    /// Where a change to a value now from `layer` is saved, so it takes effect and never hides
+    /// under a layer that wins: the file it came from, and everywhere for a default. A value
+    /// from the preset goes to the file that picked the preset, `preset_from`. One from a flag,
+    /// a request, or a preset no file picked can only be outdone by this session.
+    pub fn for_change(layer: &str, preset_from: Option<&str>) -> Self {
+        match layer {
+            "built-in" => Self::Global,
+            "workflow" => preset_from
+                .and_then(Self::from_layer)
+                .unwrap_or(Self::Session),
+            "flag" | "request" => Self::Session,
+            other => Self::from_layer(other).unwrap_or(Self::Global),
+        }
+    }
+
+    /// `--global`, `--project`, or `--local`, as the settings commands take them.
+    pub fn from_flag(flag: &str) -> Option<Self> {
+        match flag {
+            "--global" => Some(Self::Global),
+            "--project" => Some(Self::Project),
+            "--local" => Some(Self::ProjectLocal),
+            _ => None,
+        }
+    }
+
     /// Whether a value from `layer` still wins over one saved in this scope. An unknown layer
     /// never hides anything.
     pub fn hidden_by(self, layer: &str) -> bool {
@@ -285,7 +374,7 @@ impl SettingScope {
     /// you set there or in a later layer wins over the preset.
     pub fn hidden_by_value(self, layer: &str, preset_from: Option<&str>) -> bool {
         match preset_from {
-            Some(from) if layer == "preset" => self.hidden_by(from),
+            Some(from) if layer == "workflow" => self.hidden_by(from),
             _ => self.hidden_by(layer),
         }
     }
@@ -304,7 +393,7 @@ pub struct SettingMeta {
     pub safety: bool,
 }
 
-/// A duration written as text: `"45s"`, `"30m"`, `"2h"`, or `"none"` for no limit.
+/// A duration written as text: `"150ms"`, `"45s"`, `"30m"`, `"2h"`, or `"none"` for no limit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct Span(pub String);
@@ -326,13 +415,14 @@ impl Span {
         let n: u64 = number
             .parse()
             .map_err(|_| format!("{text:?} isn't a duration"))?;
-        let secs = match unit {
-            "s" => n,
-            "m" => n * 60,
-            "h" => n * 3600,
-            _ => return Err(format!("{text:?}: use s, m, or h")),
+        let duration = match unit {
+            "ms" => Duration::from_millis(n),
+            "s" => Duration::from_secs(n),
+            "m" => Duration::from_secs(n * 60),
+            "h" => Duration::from_secs(n * 3600),
+            _ => return Err(format!("{text:?}: use ms, s, m, or h")),
         };
-        Ok(Some(Duration::from_secs(secs)))
+        Ok(Some(duration))
     }
 }
 
@@ -355,7 +445,7 @@ mod tests {
         }
         assert!(Global.hidden_by("project"));
         assert!(Project.hidden_by("project-local"));
-        assert!(ProjectLocal.hidden_by("preset"));
+        assert!(ProjectLocal.hidden_by("workflow"));
         assert!(ProjectLocal.hidden_by("flag"));
         assert!(!ProjectLocal.hidden_by("project"));
         assert!(Global.hidden_by("session"));
@@ -363,15 +453,44 @@ mod tests {
     }
 
     #[test]
+    fn a_change_is_saved_where_its_value_came_from() {
+        use SettingScope::*;
+        assert_eq!(SettingScope::for_change("project", None), Project);
+        assert_eq!(
+            SettingScope::for_change("project-local", None),
+            ProjectLocal
+        );
+        assert_eq!(SettingScope::for_change("global", None), Global);
+        assert_eq!(SettingScope::for_change("session", None), Session);
+        assert_eq!(SettingScope::for_change("built-in", None), Global);
+        assert_eq!(
+            SettingScope::for_change("workflow", Some("project")),
+            Project
+        );
+        assert_eq!(SettingScope::for_change("workflow", None), Session);
+        assert_eq!(SettingScope::for_change("flag", None), Session);
+        // Wherever it goes, nothing above it hides the change. A request's own words hold for
+        // its run alone, so they never hide what you save.
+        for layer in LAYERS.iter().filter(|layer| **layer != "request") {
+            let scope = SettingScope::for_change(layer, None);
+            assert!(!scope.hidden_by(layer), "{layer}");
+        }
+        assert_eq!(SettingScope::from_flag("--local"), Some(ProjectLocal));
+        assert_eq!(SettingScope::from_flag("--project"), Some(Project));
+        assert_eq!(SettingScope::from_flag("--global"), Some(Global));
+        assert_eq!(SettingScope::from_flag("--session"), None);
+    }
+
+    #[test]
     fn a_preset_picked_in_a_file_hides_only_the_files_before_it() {
         use SettingScope::*;
-        assert!(Global.hidden_by_value("preset", Some("project")));
-        assert!(!Project.hidden_by_value("preset", Some("project")));
-        assert!(!ProjectLocal.hidden_by_value("preset", Some("project")));
-        assert!(!Global.hidden_by_value("preset", Some("global")));
+        assert!(Global.hidden_by_value("workflow", Some("project")));
+        assert!(!Project.hidden_by_value("workflow", Some("project")));
+        assert!(!ProjectLocal.hidden_by_value("workflow", Some("project")));
+        assert!(!Global.hidden_by_value("workflow", Some("global")));
         // Picked by default or by a flag, the preset sits above every file.
-        assert!(ProjectLocal.hidden_by_value("preset", None));
-        assert!(!Session.hidden_by_value("preset", None));
+        assert!(ProjectLocal.hidden_by_value("workflow", None));
+        assert!(!Session.hidden_by_value("workflow", None));
         // Other layers ignore where the preset was picked.
         assert!(Global.hidden_by_value("project", Some("global")));
     }

@@ -135,7 +135,7 @@ mod tests {
             run: run(),
             card: card(CARD),
             state: CardState::Running,
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             worker: worker("claude-code/opus-4"),
             end: SessionEnd {
                 vendor_session: None,
@@ -160,7 +160,7 @@ mod tests {
 
         match limits.after_stop(&context).await {
             RecoveryAction::HandOff { to, .. } => assert_eq!(to.to_string(), "claude-code/opus-5"),
-            other => panic!("expected a handoff to the successor, got {other:?}"),
+            other => panic!("expected a fallback to the successor, got {other:?}"),
         }
     }
 }

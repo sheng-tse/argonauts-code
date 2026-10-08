@@ -503,7 +503,7 @@ mod tests {
         };
 
         let card = AcpAdapter::new(hermes(Some(template())), Some(argonauts.path().to_owned()));
-        let folder = "/state/cards/c-001/homes/default/hermes";
+        let folder = "/state/cards/c-001/homes/main/hermes";
         let first = card.command(&request("/state/s1", Some(folder))).unwrap();
         let resumed = card.command(&request("/state/s2", Some(folder))).unwrap();
         assert_eq!(home_of(&first).as_deref(), Some(folder));

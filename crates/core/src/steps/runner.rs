@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{StepError, StepObserver, StepOutcome, StepRequest, StepRunner};
+use super::{StepError, StepObserver, StepOutcome, StepRequest, StepRunner, asking};
 use crate::Spend;
 use crate::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
 use crate::future::BoxFuture;
@@ -27,6 +27,7 @@ impl StepRunner for SchemaStepRunner {
                 worker,
                 mut spec,
                 retries_on_mismatch,
+                ask_limit,
                 mut control,
                 cancel,
                 normalize,
@@ -43,6 +44,8 @@ impl StepRunner for SchemaStepRunner {
             };
             let first_prompt = spec.prompt.clone();
             let mut attempts: u8 = 0;
+            let mut mismatches: u8 = 0;
+            let mut asks: u8 = 0;
             loop {
                 attempts = attempts.saturating_add(1);
                 let end = run_session(
@@ -79,10 +82,29 @@ impl StepRunner for SchemaStepRunner {
                 if end.reason != EndReason::Completed || cancel.is_cancelled() {
                     return Err(StepError::Session(Box::new(end)));
                 }
-                let retries_used = attempts - 1;
-                if retries_used >= retries_on_mismatch {
-                    return Err(mismatch(&end, output, errors));
-                }
+                // A turn that ends with a question has no one to answer it, so nothing would
+                // ever read it. The session is told to decide, and that counts against its own
+                // limit, never against the retries a wrong answer gets.
+                let told = asking::reply(&end, u32::from(asks), ask_limit.map(u32::from))
+                    .filter(|_| output.is_none());
+                let reply = if let Some(decide) = told {
+                    asks += 1;
+                    decide
+                } else {
+                    if mismatches >= retries_on_mismatch {
+                        return Err(mismatch(&end, output, errors));
+                    }
+                    mismatches += 1;
+                    let resumes = end.vendor_session.is_some() && worker.capabilities().resume;
+                    retry_part(
+                        &errors,
+                        if resumes {
+                            Retry::SameSession
+                        } else {
+                            Retry::NewSession
+                        },
+                    )
+                };
                 let resumable = end
                     .vendor_session
                     .clone()
@@ -90,13 +112,13 @@ impl StepRunner for SchemaStepRunner {
                 match resumable {
                     Some(vendor_session) => {
                         spec.resume = Some(vendor_session);
-                        spec.prompt = vec![retry_part(&errors, Retry::SameSession)];
+                        spec.prompt = vec![reply];
                     }
                     // An endpoint keeps no session, so it gets the whole prompt again.
                     None => {
                         spec.resume = None;
                         spec.prompt = first_prompt.clone();
-                        spec.prompt.push(retry_part(&errors, Retry::NewSession));
+                        spec.prompt.push(reply);
                     }
                 }
             }
@@ -391,7 +413,7 @@ mod tests {
             run: None,
             card: None,
             key: SessionKey::numbered(1),
-            role: RoleName::Default,
+            role: RoleName::Main,
             step: Some(super::super::StepName::TriageEstimate),
             worker: WorkerRef::new("fake", None),
             effort: None,
@@ -407,7 +429,7 @@ mod tests {
             }],
             json_schema: Some(output_schema::<TriageEstimate>()),
             resume: None,
-            lifetime: SessionLifetime::Card,
+            lifetime: SessionLifetime::Task,
             keep_input_open: false,
             limits: SessionLimits::default(),
             goal_sha256: None,
@@ -415,9 +437,11 @@ mod tests {
             compaction: Compaction::Inherit,
             native_fanout: NativeFanout::default(),
             isolated: false,
+            autopilot: false,
             status_file: None,
             env: Vec::new(),
             asking: None,
+            cli_workflow: crate::worker::CliWorkflow::default(),
         }
     }
 
@@ -494,6 +518,83 @@ mod tests {
             "{}",
             specs[1].prompt[0].text
         );
+    }
+
+    async fn run_asking(
+        worker: Arc<Scripted>,
+        ask_limit: Option<u8>,
+    ) -> Result<StepOutcome, StepError> {
+        let mut request = StepRequest::new(worker, spec());
+        request.ask_limit = ask_limit;
+        SchemaStepRunner.run(request, Box::new(|_| {})).await
+    }
+
+    /// A turn that ends with a question is told to decide and carry on, in the same session,
+    /// and that doesn't use up the retry a wrong answer gets.
+    #[tokio::test]
+    async fn a_turn_that_ends_with_a_question_is_told_to_decide() {
+        let wrong = json!({"kind": "maybe", "answer_markdown": "?", "estimate": null});
+        let worker = Scripted::new(vec![
+            ending(
+                EndReason::Completed,
+                Some("I found two ways.\n\nShould I proceed?"),
+                None,
+            ),
+            ending(EndReason::Completed, None, Some(wrong)),
+            ending(EndReason::Completed, None, Some(answer())),
+        ]);
+        let outcome = run_asking(worker.clone(), Some(2)).await.unwrap();
+        assert_eq!(outcome.attempts, 3);
+        let specs = worker.specs.lock().unwrap();
+        assert_eq!(specs[1].resume.as_deref(), Some("vendor-1"));
+        assert_eq!(specs[1].prompt.len(), 1);
+        assert_eq!(specs[1].prompt[0].label, "decide and carry on");
+        assert!(
+            specs[1].prompt[0].text.contains("Decide yourself"),
+            "{}",
+            specs[1].prompt[0].text
+        );
+        assert_eq!(specs[2].prompt[0].label, "schema errors");
+    }
+
+    /// After `ask_limit` it is told to take the option it recommended, once, and one more
+    /// question is an answer that doesn't match.
+    #[tokio::test]
+    async fn past_the_limit_it_takes_its_recommended_option_and_then_fails() {
+        let asks = || {
+            ending(
+                EndReason::Completed,
+                Some("Which do you prefer, A or B?"),
+                None,
+            )
+        };
+        let worker = Scripted::new(vec![asks(), asks(), asks(), asks()]);
+        let result = run_asking(worker.clone(), Some(1)).await;
+        assert!(matches!(result, Err(StepError::SchemaMismatch { .. })));
+        let specs = worker.specs.lock().unwrap();
+        assert_eq!(specs.len(), 4);
+        assert!(specs[1].prompt[0].text.contains("Decide yourself"));
+        assert!(
+            specs[2].prompt[0]
+                .text
+                .contains("Take the option you recommended"),
+            "{}",
+            specs[2].prompt[0].text
+        );
+        // The fourth turn is the one retry any answer without its JSON gets.
+        assert_eq!(specs[3].prompt[0].label, "schema errors");
+    }
+
+    /// With no limit set nobody replies to a question, as before.
+    #[tokio::test]
+    async fn without_an_ask_limit_a_question_is_only_a_wrong_answer() {
+        let asks = || ending(EndReason::Completed, Some("Should I proceed?"), None);
+        let worker = Scripted::new(vec![asks(), asks()]);
+        let result = run_asking(worker.clone(), None).await;
+        assert!(matches!(result, Err(StepError::SchemaMismatch { .. })));
+        let specs = worker.specs.lock().unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[1].prompt[0].label, "schema errors");
     }
 
     #[tokio::test]

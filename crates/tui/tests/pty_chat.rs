@@ -6,7 +6,7 @@ mod pty_support;
 use pty_support::*;
 use serde_json::json;
 
-const HI_ANSWER: &str = "Hi! I'm the default agent (claude-code/haiku). Ask me about this repo, \
+const HI_ANSWER: &str = "Hi! I'm the main agent (claude-code/haiku). Ask me about this repo, \
                          or describe a change and I'll run it solo or with the crew.";
 
 /// Idle, then an answer to each prompt as the test sends it.
@@ -197,7 +197,7 @@ fn main_screen_rows_come_in_order() {
         &[
             "Argonauts",
             "^❯ hi$",
-            &format!("^{BULLET} Hi! I'm the default agent"),
+            &format!("^{BULLET} Hi! I'm the main agent"),
             // At this width the answer ends on the second row.
             "^  \\S.*with the crew\\.$",
             TURN_END,
@@ -207,7 +207,7 @@ fn main_screen_rows_come_in_order() {
             MODE_IDLE,
         ],
     );
-    let answer = expect_row(&screen, "Hi! I'm the default agent");
+    let answer = expect_row(&screen, "Hi! I'm the main agent");
     assert!(
         screen.visible[answer - 1].is_empty(),
         "a blank row before the answer"
@@ -234,22 +234,20 @@ fn idle_screen_keeps_its_layout() {
         usize::from(COLS),
         "the top rule spans the width"
     );
-    assert!(rows[0].ends_with(" peer-crew ─"), "{rows:?}");
+    assert!(rows[0].ends_with(" council · Haiku ─"), "{rows:?}");
     assert!(rows[1].starts_with("❯"), "{rows:?}");
     assert!(
         is_rule(&rows[2]) && width(&rows[2]) == usize::from(COLS),
         "{rows:?}"
     );
-    // The mode line is the bottom row, with what fits of the quotas and spend at its right.
+    // The mode line is the bottom row, with each CLI's plan usage against its right edge. At
+    // 100 columns the chips take the room of the footer's hint.
     assert!(
-        rows[3].starts_with("  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts  "),
+        rows[3].starts_with("  ǁ supervised mode on (shift+tab to cycle)  "),
         "{rows:?}"
     );
-    assert!(
-        rows[3].ends_with("  Claude 5h 71% used · $0.00"),
-        "{rows:?}"
-    );
-    assert_eq!(width(&rows[3]), usize::from(COLS) - 1, "{rows:?}");
+    assert_eq!(expect_row(&screen, STATUS_IDLE), rule + 3, "{rows:?}");
+    assert_eq!(width(&rows[3]), usize::from(COLS), "{rows:?}");
     assert_eq!(
         rule + 4 + blank_rows_at_bottom(&screen),
         screen.visible.len(),
@@ -264,28 +262,35 @@ fn busy_screen_keeps_its_layout() {
     let (_, _, events) = crew_run(3);
     let script = Script::idle().all(0, events);
     let harness = Harness::launch(script).ui("[panel]\nagents = true").start();
-    harness.wait_visible("◐ GPT 5.6 on Codex");
-    let screen = harness.wait_visible("esc to interrupt · ← 3 agents · ↓ to manage");
+    harness.wait_visible("^    ○ task-003 ");
+    let screen = harness.wait_visible("← 3 agents · ↓ to manage");
     assert_order(
         &screen,
         &[
-            &format!("^{BULLET} Opus on Claude Code · owner · card-002 \\(Add the JSON writer\\)"),
+            &format!("^{BULLET} Opus on Claude Code · worker · task-002 \\(Add the JSON writer\\)"),
             "^  ⎿  ",
             WORKING_LINE,
             TOP_RULE,
             INPUT_ROW,
             "^─+$",
-            "^  ǁ supervised mode on \\(shift\\+tab to cycle\\) · esc to interrupt · ← 3 agents · ↓ to manage( {2,}\\S.*)?$",
-            // The panel has a row per run, named by its workflow and title, with its agents
-            // under it, and the kit keeps Claude Code's space
-            // after the arrow. An agent's row is its circle, name, card, bar, and stats in
-            // columns with the time at the edge. Names longer than the column take the room the
-            // row has to spare, and are cut only past it.
-            "^  ○ peer-crew · Add a --json flag to export +0/3 agents · ",
-            &format!("^    ◐ Opus on Claude Code +card-\\d+ +↓ [\\d.]+k tokens +{ELAPSED}"),
-            &format!("^    ◐ GPT 5\\.6 on Codex +card-\\d+ +↓ [\\d.]+k tokens +{ELAPSED}"),
+            // A run's agents keep going past Esc, so with only a run at work
+            // the mode line makes no offer to interrupt. At 100 columns the chips take the room
+            // of the mode's first two hints.
+            "^  ǁ supervised mode on( \\(shift\\+tab to cycle\\))?( · \\? for shortcuts)? · ← 3 agents · ↓ to manage( {2,}\\S.*)?$",
+            // The list is Claude Code's: your conversation as `main`, then a row per run,
+            // named by its workflow and title, with its agents
+            // under it, each by its name, what it's doing, and how long and how many tokens.
+            // This recording is from before agents had labels, so each goes by its task.
+            "^  ● main$",
+            "^  ○ council · Add a --json flag to export +0/3 agents · ",
             &format!(
-                "^    ◐ Gemini 3\\.6 Pro on Antigravity CLI +card-\\d+ +↓ [\\d.]+k tokens +{ELAPSED}"
+                "^    ○ task-002 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
+            ),
+            &format!(
+                "^    ○ task-003 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
+            ),
+            &format!(
+                "^    ○ task-004 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
             ),
         ],
     );
@@ -323,8 +328,8 @@ fn recap_after_long_run() {
             status_with(json!({"run": RUN, "title": "Add a --json flag to export"})),
             mode_working(RUN),
             run.started("Add a --json flag to export", "crew"),
-            run.finished("merged", "4 cards, 7 files, +120 -18"),
-            recap("Export now takes --json, all 4 cards merged, and the tests pass."),
+            run.finished("merged", "4 tasks, 7 files, +120 -18"),
+            recap("Export now takes --json, all 4 tasks merged, and the tests pass."),
             mode_idle(),
         ],
     );
@@ -334,4 +339,78 @@ fn recap_after_long_run() {
     harness.wait_visible(r"disable recaps in\s+/config");
     assert_order(&screen, &["※ recap: Export now takes --json", TOP_RULE]);
     assert_eq!(count_rows(&screen, "※ recap"), 1, "{}", screen.text());
+}
+
+/// Esc with the main agent's own subagents running stops its turn alone: the
+/// line Esc leaves shows under what it wrote, the subagent stays in the list, still going, and
+/// with only the subagent at work there is no working line and nothing more for Esc to stop.
+#[test]
+fn esc_stops_the_main_turn_and_leaves_its_subagents_running() {
+    let subagent = |status: &str, doing: &str| {
+        chat_agent(
+            "t-001",
+            json!({"type": "subagent", "update": {"id": "toolu_a", "parent": null,
+                "kind": "subagent", "label": "Count slowly", "prompt": null, "status": status,
+                "last_message": doing, "log_uri": null, "steps_visible": true,
+                "tokens": 11823}}),
+        )
+    };
+    let background = chat_agent(
+        "t-001",
+        json!({"type": "background_tasks", "running": ["task-a"]}),
+    );
+    let mut turn = vec![
+        (0, mode_answering("t-001")),
+        (0, turn_started("t-001", "count in the background")),
+        (0, subagent("running", "Counting to four hundred")),
+        (0, background),
+    ];
+    turn.extend(
+        words("The count runs on its own while I")
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (10 * i as u64, text_delta("t-001", w))),
+    );
+    let stopped = [
+        json!({"type": "error", "category": "interrupted", "message": "interrupted",
+               "retryable": false}),
+        json!({"type": "result", "text": null, "structured": null, "is_error": true}),
+    ];
+    let script = Script::idle()
+        .await_command("submit")
+        .timed(turn)
+        .await_command("cancel_turn")
+        .all(0, stopped.map(|event| chat_agent("t-001", event)).to_vec());
+    // Wide enough that the bottom line leaves the mode its `esc to interrupt`.
+    let mut harness = Harness::launch(script).size(ROWS, 160).start();
+    harness.wait_for(TOP_RULE);
+    harness.submit("count in the background");
+    harness.wait_visible("on its own while I");
+    harness.wait_visible("esc to interrupt");
+    harness.press(Key::Esc);
+    harness.wait_command("cancel_turn");
+    let screen = harness.wait_visible("⎿  Interrupted · What should Argonauts do instead\\?");
+    let partial = expect_row(&screen, "The count runs on its own while I");
+    let interrupted = expect_row(&screen, "Interrupted · What should Argonauts do instead");
+    assert_eq!(interrupted, partial + 1, "{}", screen.visible_text());
+    // Its subagent is still listed and going, with its time and the tokens Claude Code counted
+    // for it, and the main agent rests.
+    let screen = harness.wait_gone("esc to interrupt");
+    let row = expect_row(
+        &screen,
+        "○ Count slowly +Counting to four hundred +\\d+s · ↓ 11.8k tokens",
+    );
+    assert!(row > interrupted, "{}", screen.visible_text());
+    harness.press(Key::Esc);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let cancels = harness
+        .command_types()
+        .iter()
+        .filter(|kind| *kind == "cancel_turn")
+        .count();
+    assert_eq!(cancels, 1, "nothing is left for Esc to stop");
+    expect_row(
+        &harness.screen(),
+        "○ Count slowly +Counting to four hundred",
+    );
 }

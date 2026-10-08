@@ -7,11 +7,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::settings::SettingScope;
+use argonauts_core::settings::workflows::WORKFLOW_FILE_KEYS;
 use toml::{Table, Value};
 
 use super::handoff::drop_entry_billing;
 use crate::catalog::setting_meta;
-use crate::presets::{builtin, is_preset_name, not_a_preset_name, presets, presets_in};
+use crate::presets::{
+    SCRIPT_EXTENSIONS, builtin, is_preset_name, not_a_preset_name, presets, presets_in,
+};
 use crate::resolve::{check_plain_keys, is_safety_key, key_matches, leaves};
 use crate::{SettingsError, SettingsSources};
 
@@ -40,7 +43,7 @@ impl PresetLayer {
     /// The file, or which built-in, for `/config` and for errors.
     pub fn label(&self) -> String {
         if self.source == "built-in" {
-            format!("the built-in {} preset", self.name)
+            format!("the built-in {} workflow", self.name)
         } else {
             self.source.clone()
         }
@@ -51,7 +54,7 @@ impl PresetLayer {
         if self.source == "built-in" {
             self.label()
         } else {
-            format!("the {} preset in {}", self.name, self.source)
+            format!("the {} workflow in {}", self.name, self.source)
         }
     }
 }
@@ -78,13 +81,17 @@ pub(crate) fn preset_layer(
             layer: layer.label(),
             message: err.to_string(),
         })?;
+    // Its name and its steps describe the workflow, and aren't settings.
+    for key in WORKFLOW_FILE_KEYS {
+        layer.table.remove(key);
+    }
     check_plain_keys(&layer.table, &layer.label())?;
     if let Some((key, _)) = leaves(&layer.table)
         .into_iter()
         .find(|(key, _)| is_safety_key(key))
     {
         return Err(SettingsError::Refused(format!(
-            "{key} is a safety setting, so no preset may set it, and {} does; set it in your \
+            "{key} is a safety setting, so no workflow may set it, and {} does; set it in your \
              own config instead",
             layer.label()
         )));
@@ -93,9 +100,9 @@ pub(crate) fn preset_layer(
     if origin == Origin::Repo {
         warnings.extend(repo_warnings(&mut layer));
     }
-    if layer.table.remove("preset").is_some() {
+    if layer.table.remove("workflow").is_some() {
         warnings.push(format!(
-            "preset in {} is ignored: a preset can't pick another preset",
+            "workflow in {} is ignored: a workflow can't pick another workflow",
             layer.label()
         ));
     }
@@ -116,7 +123,7 @@ fn repo_warnings(layer: &mut PresetLayer) -> Vec<String> {
     let mut warnings = Vec::new();
     if builtin(&layer.name).is_some() {
         warnings.push(format!(
-            "the {} preset comes from {}, which replaces the built-in one; delete the file to \
+            "the {} workflow comes from {}, which replaces the built-in one; delete the file to \
              get the built-in back",
             layer.name, layer.source
         ));
@@ -125,7 +132,7 @@ fn repo_warnings(layer: &mut PresetLayer) -> Vec<String> {
     drop_yours(&mut layer.table, "", &mut dropped);
     for key in dropped {
         warnings.push(format!(
-            "{key} in {} is ignored: a preset from the repo can't change your own choices; the \
+            "{key} in {} is ignored: a workflow from the repo can't change your own choices; the \
              team can set it in .argonauts/config.toml, where your config.local.toml still wins",
             layer.source
         ));
@@ -167,7 +174,7 @@ fn is_yours(key: &str) -> bool {
 
 /// The presets folders beside the project files and beside the global file, in lookup order.
 fn preset_dirs(sources: &SettingsSources) -> (Option<PathBuf>, Option<PathBuf>) {
-    let beside = |file: Option<&PathBuf>| Some(file?.parent()?.join("presets"));
+    let beside = |file: Option<&PathBuf>| Some(file?.parent()?.join("workflows"));
     let project = sources.project.as_ref().or(sources.project_local.as_ref());
     (beside(project), beside(sources.global.as_ref()))
 }
@@ -188,8 +195,19 @@ fn find(
     let dirs = [(Origin::Repo, &project), (Origin::Home, &global)];
     for (origin, dir) in dirs {
         let Some(dir) = dir else { continue };
-        if let Some((source, text)) = read_preset(&dir.join(format!("{name}.toml")))? {
+        let file = dir.join(format!("{name}.toml"));
+        if !sources.waiting.contains(&file)
+            && let Some((source, text)) = read_preset(&file)?
+        {
             return Ok((origin, source, text));
+        }
+        // A workflow written as a script carries no settings of its own.
+        let script = SCRIPT_EXTENSIONS
+            .iter()
+            .map(|extension| dir.join(format!("{name}.{extension}")))
+            .find(|path| path.is_file() && !sources.waiting.contains(path));
+        if let Some(script) = script {
+            return Ok((origin, script.display().to_string(), String::new()));
         }
     }
     if let Some(preset) = builtin(name) {
@@ -208,7 +226,7 @@ fn find(
     Err(SettingsError::Invalid {
         layer: set_in.to_owned(),
         message: format!(
-            "preset {name:?} isn't a built-in preset or a file in a presets folder; pick one of \
+            "workflow {name:?} isn't a built-in workflow or a file in a workflows folder; pick one of \
              {}",
             names.join(", ")
         ),

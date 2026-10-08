@@ -1,12 +1,27 @@
-preset = "peer-crew"
-workflow = "peer-crew"
-default_agent = "claude-code"
-crew = [
+workflow = "council"
+phases = "council"
+ultracode = false
+workflow_size = "medium"
+main_agent = "claude-code"
+compaction = "inherit"
+
+[crew]
+orchestrator = "main"
+workers = [
     "claude-code",
     "codex",
     "antigravity-cli",
 ]
-compaction = "inherit"
+reviewers = [
+    "claude-code",
+    "codex",
+    "antigravity-cli",
+]
+judge = [
+    "claude-code",
+    "codex",
+    "antigravity-cli",
+]
 
 [agents.antigravity-cli]
 enabled = true
@@ -36,31 +51,30 @@ exclude_paths = []
 
 [roles]
 
-[handoff]
+[fallback]
 mode = "auto"
-fallback = []
+order = []
 ask_timeout = "none"
 allow_api_billing = false
 return_to_original = false
 broken_work = "continue"
 wrap_up = "let_finish"
 strategy = "first"
-race_count = 2
+together = 1
 on_return = "ask"
 checkpoint = true
 merge_rule = "upgrade_review"
 unknown_tier = "weaker"
-max_handoffs = 3
+max_fallbacks = 3
 context = "note+transcript"
 
-[handoff.replace]
+[fallback.replace]
 
 [intake]
 include_uncommitted = false
 
-[triage]
-all_hands = false
-use_recipes = true
+[solo_or_crew]
+use_learned = true
 solo_max_files = 3
 solo_requires_tests = true
 crew_min_files = 8
@@ -70,15 +84,15 @@ crew_labels = [
     "security",
 ]
 otherwise = "solo_then_crew"
-solo_style = "checked"
+solo_kind = "checked"
 read_instructions = true
 
 [solo]
-style = "direct"
+kind = "direct"
 asks = "like_cli"
 rewind = true
 rewind_max_mb = 50
-start_run_tool = true
+start_workflow_tool = true
 restate_first = false
 review = false
 attempts = 1
@@ -96,10 +110,10 @@ always_ask = [
 majority_assumptions = true
 
 [goal]
-max_attempts = 5
+default = "off"
+check = "auto"
 stuck_after = 3
-idle_after = 2
-checker = "other_company"
+checker = "other_provider"
 
 [drafting]
 by = "crew"
@@ -120,9 +134,9 @@ checklist = [
     "What does it cost to run?",
 ]
 
-[spikes]
+[experiments]
 enabled = true
-budget_usd = 2.0
+limit_usd = 2.0
 time_box_min = 15.0
 
 [judging]
@@ -137,25 +151,25 @@ rubric = [
     "cost",
 ]
 clear_winner_margin = 1.0
-reserve_non_drafting_seat = false
+reserve_non_drafting_judge = false
 
 [divide]
 contracts_first = true
 acceptance_tests_by = "reviewer"
 chores = "rotate"
-max_cards = 12
+max_tasks = 12
 predictions = true
-single_owner = false
+single_worker = false
 
 [review]
 assign = "ring"
-other_family = true
-per_card = 1
+other_provider = true
+per_task = 1
 blind = false
 max_change_rounds = 2
 max_diff_lines = 4000
 
-[gates]
+[checks]
 run = []
 full_suite = []
 timeout = "30m"
@@ -165,7 +179,6 @@ copy_untracked = []
 [routing]
 algorithm = "bandit"
 explore_rate = 0.1
-skip_quota_above = 0.9
 no_explore_labels = [
     "security",
     "migration",
@@ -213,8 +226,11 @@ security_and_performance = [
 [routing.resets]
 
 [approvals]
-full_auto = false
+autopilot = false
+decides = "judge"
 ask_you_about = []
+when_declined = "decide"
+ask_limit = 2
 goal_changes = "ask"
 spot_check_sample = 0.1
 pause_auto_when_spot_checks_waiting = 5
@@ -226,13 +242,36 @@ refuse_ancestor_env = [
 ]
 allow_commands = []
 
+[approvals.rules.plan]
+max_score_spread = 1.0
+min_winner_margin = 1.5
+
+[approvals.rules.merge]
+min_test_coverage_of_changed_lines = 0.8
+max_changed_lines = 400
+allow_debt = false
+
+[approvals.rules.workflow_promotion]
+change_classes = [
+    "checklist_item",
+    "critique_rounds",
+    "drafting_prompt",
+    "task_split",
+    "task_limit",
+]
+min_days_between = 14
+
+[approvals.rules.stuck]
+max_extra_attempts = 1
+
+[approvals.rules.limit]
+use_reserve = true
+
 [approvals.goal]
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
 at_hard_limit = "stop"
-
-[approvals.goal.rules]
 
 [approvals.plan]
 mode = "auto"
@@ -240,53 +279,28 @@ decide_with = "rules_and_model"
 otherwise = "ask"
 at_hard_limit = "stop"
 
-[approvals.plan.rules]
-max_score_spread = 1.0
-min_winner_margin = 1.5
-
 [approvals.merge]
 mode = "auto"
 decide_with = "rules"
 otherwise = "ask"
 at_hard_limit = "stop"
 
-[approvals.merge.rules]
-min_changed_line_coverage = 0.8
-max_combined_diff_lines = 400
-allow_debt = false
-
-[approvals.recipe_promotion]
+[approvals.workflow_promotion]
 mode = "auto"
 decide_with = "rules"
 otherwise = "ask"
 
-[approvals.recipe_promotion.rules]
-change_classes = [
-    "checklist_item",
-    "critique_rounds",
-    "drafting_prompt",
-    "card_split",
-    "card_budget",
-]
-min_days_between = 14
-
-[approvals.escalation]
+[approvals.stuck]
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
 at_hard_limit = "stop"
 
-[approvals.escalation.rules]
-max_extra_attempts = 1
-
-[approvals.budget]
+[approvals.limit]
 mode = "auto"
 decide_with = "rules_and_model"
 otherwise = "ask"
 at_hard_limit = "stop"
-
-[approvals.budget.rules]
-use_reserve = true
 
 [approvals.change_request]
 mode = "auto"
@@ -294,11 +308,9 @@ decide_with = "rules_and_model"
 otherwise = "ask"
 at_hard_limit = "stop"
 
-[approvals.change_request.rules]
-
 [approvals.approver]
 model_rules = "approval-rules.md"
-different_family = true
+different_provider = true
 
 [limits]
 protected_paths = [
@@ -310,15 +322,27 @@ protected_paths = [
     "**/yarn.lock",
 ]
 dependency_allowlist = []
-usd_per_day = 40.0
 auto_merges_per_day = 3
 irreversible_allowlist = []
 evolution_usd_per_month = 1000.0
+soft_stop = 0.85
+when_reached = "fallback"
+from_history = true
+history_min = 5
+
+[limits.lines]
+goal_and_plan = 0.15
+experiments = 0.1
+contracts = 0.1
+tasks = 0.4
+review = 0.1
+integration = 0.05
+reserve = 0.1
 
 [sandbox]
 mode = "os"
 network = true
-agents_see_other_copies = false
+agents_see_other_worktrees = false
 agents_commit = true
 fail_closed = true
 extra_writable = []
@@ -328,27 +352,7 @@ container_image = ""
 user_hooks = "inherit"
 isolated_leak = "stop"
 
-[budget]
-enabled = true
-run_usd = 20.0
-per_card_usd = 3.0
-soft_stop = 0.85
-on_hit = "ask"
-from_history = true
-history_min = 5
-
-[budget.lines]
-goal_and_plan = 0.15
-spikes = 0.1
-contracts = 0.1
-cards = 0.4
-review = 0.1
-integration = 0.05
-reserve = 0.1
-
 [watchdogs]
-max_tool_calls = 150
-wall_clock_min = 30.0
 inactivity_min = 15.0
 repeat_limit = 10
 
@@ -360,16 +364,21 @@ window = "2m"
 cooldown = "5m"
 
 [sessions]
-lifetime = "card"
-rotate_at = "200k"
+lifetime = "task"
+context = "largest"
+rotate_at = 0.9
 chat_resumes = true
+
+[switch]
+carry = "summary"
+recent = 6
 
 [native_fanout]
 max = 3
 
 [concurrency]
 max_sessions = 6
-max_per_vendor = 3
+max_per_agent = 3
 
 [visibility]
 drafts_hidden_until_sealed = true
@@ -383,19 +392,31 @@ mode = "ask"
 pr_draft = false
 leave_out = []
 leave_out_builtin = false
+unborn = "files"
+
+[commit]
+unclaimed = "leave"
+always_keep = []
+max_new_file_mb = 50
+
+[delivery]
+commits = "squash"
+write = "commit"
+
+[history]
+enabled = true
+max_file_mb = 50
+max_total_mb = 2048
+max_files = 100000
+min_free_gb = 5
 
 [workflows]
-lead_designs = true
+orchestrator_designs = true
 allow_composed = true
 max_depth = 2
 adapt_at_phase_ends = true
-style = "follow_lead"
 final_check = true
-
-[workflows.style_by_lead]
-antigravity-cli = "goal"
-claude-code = "workflow"
-codex = "goal"
+adapt_with = "script"
 
 [evolution]
 stage = "evolve"
@@ -403,8 +424,8 @@ evolvable = [
     "critique.rounds",
     "critique.checklist",
     "prompts.drafting",
-    "divide.max_cards",
-    "budget.per_card_usd",
+    "divide.max_tasks",
+    "limits.per_task_usd",
 ]
 propose_every = 1
 min_gain_points = 10.0
@@ -426,7 +447,7 @@ holdout_retire_after = 10
 use_subscriptions = false
 
 [memory]
-max_per_card = 3
+max_per_task = 3
 max_chars = 300
 allow_urls = false
 allow_commands = false
@@ -440,6 +461,7 @@ export_after_canary = true
 share = false
 
 [prompts]
+writer = "orchestrator"
 drafting = ""
 build = ""
 
@@ -467,26 +489,222 @@ heads_up = "when_enabled"
 
 [ui.keymap]
 
+[ui.colors]
+
+[ui.format]
+tokens = "short"
+plan_usage = "used"
+clock = "12h"
+reset = "clock"
+duration = "compact"
+
+[ui.levels]
+warn = "70%"
+danger = "90%"
+hysteresis = "2%"
+notify = []
+
+[ui.states.working]
+glyph = "◐"
+color = "state-working"
+
+[ui.states.waiting]
+glyph = "○"
+color = "state-waiting"
+
+[ui.states.timer]
+glyph = "✢"
+color = "state-timer"
+
+[ui.states.needs_you]
+glyph = "◆"
+color = "state-needs-you"
+
+[ui.states.done]
+glyph = "✔"
+color = "state-done"
+
+[ui.states.failed]
+glyph = "✗"
+color = "state-failed"
+
+[ui.states.stopped]
+glyph = "■"
+color = "state-stopped"
+
+[ui.above_input]
+mods = []
+shown = true
+side_by_side_at = 120
+min_width = 60
+max_rows = 14
+when_question = "fold"
+hidden_line = "numbers"
+refresh = "1s"
+settle = "150ms"
+
+[ui.views]
+side_by_side_at = 100
+
+[ui.views.status]
+mods = [
+    "run",
+    "run-limits",
+    "plan-usage",
+    "waiting",
+    "recent",
+]
+open = "view"
+
+[ui.views.usage]
+mods = [
+    "plan-usage",
+    "spend",
+    "tokens",
+    "history",
+    "runs",
+]
+open = "view"
+period = "day"
+
+[ui.views.context]
+mods = [
+    "context",
+    "sessions",
+]
+open = "view"
+
+[ui.views.limits]
+mods = [
+    "run-limits",
+    "tasks",
+    "limits",
+]
+open = "view"
+
+[ui.mods]
+form = "full"
+border = "round"
+legend_columns = 3
+legend_marker = "▌"
+badge = true
+glyph = "◆"
+
+[ui.mods.context]
+open = true
+width = "full"
+parts = [
+    "amount",
+    "tail",
+    "badge",
+    "bar",
+    "tick",
+    "legend",
+]
+units = "percent"
+warn = "80%"
+danger = "95%"
+glyph_color = "accent"
+session = "main"
+categories = [
+    "system",
+    "tools",
+    "mcp",
+    "agents",
+    "memory",
+    "skills",
+    "messages",
+    "free",
+]
+hide_empty = false
+detail = "summary"
+
+[ui.mods.sessions]
+warn = "80%"
+danger = "95%"
+
+[ui.mods.plan-usage]
+parts = [
+    "meter",
+    "percent",
+    "resets",
+    "plan",
+]
+warn = "90%"
+danger = "100%"
+agents = []
+windows = []
+stale_after = "10m"
+
+[ui.mods.run-limits]
+warn = "soft_stop"
+danger = "100%"
+run = "attached"
+limits = [
+    "spend",
+    "tokens",
+    "time",
+]
+
+[ui.mods.tasks]
+warn = "soft_stop"
+danger = "100%"
+
+[ui.mods.limits]
+
+[ui.mods.spend]
+units = "usd"
+by = "agent"
+
+[ui.mods.tokens]
+
+[ui.mods.history]
+units = "usd"
+days = 14
+
+[ui.mods.runs]
+max_rows = 5
+
+[ui.mods.stats]
+
+[ui.mods.run]
+
+[ui.mods.waiting]
+
+[ui.mods.recent]
+
+[ui.mods.agent]
+
+[ui.mods.narrator]
+
+[ui.mods.receipt]
+show = true
+
 [ui.panel]
-vendor_internals = "discovered"
+subagents = "discovered"
 agents = false
 max_rows = 5
+bar = "agents"
+context = "pills"
 
 [ui.workflow]
 row_cost = false
+
+[mods]
+commands = true
 
 [narrator]
 interval = "45s"
 spend_cap = "0.50 usd"
 
 [supervisor]
-park_grace = "10s"
+wait_grace = "10s"
 snapshot_every = 5000
 journal_deltas_per_second = 10
 retry_wait = "5s"
 
 [runs]
-remind_parked_days = 7
+remind_waiting_days = 7
 
 [notifications]
 bell = true
@@ -497,7 +715,7 @@ command = []
 on = [
     "needs_you",
     "finished",
-    "vendor_down",
+    "agent_down",
 ]
 
 [mcp]
@@ -506,8 +724,14 @@ start_runs = "trusted-repos"
 guidance = true
 pause = true
 share = "summaries"
-run_budget = "60m"
+run_limit = "60m"
 runs_per_day = 5
 
 [registry]
 discover = true
+
+[awake]
+while_working = true
+
+[main_session]
+tools = true

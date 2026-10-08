@@ -23,12 +23,17 @@ pub fn word<T: Serialize>(value: &T) -> String {
     }
 }
 
+/// A serialized name as words, with a state's journal name put the way the screen says it.
+fn plain(name: &str) -> String {
+    argonauts_core::text::state_words(name).replace(['_', '-'], " ")
+}
+
 fn value_word(value: &Value) -> String {
     match value {
-        Value::String(text) => text.replace(['_', '-'], " "),
+        Value::String(text) => plain(text),
         Value::Object(map) => map
             .values()
-            .find_map(|value| value.as_str().map(|text| text.replace(['_', '-'], " ")))
+            .find_map(|value| value.as_str().map(plain))
             .unwrap_or_default(),
         Value::Bool(_) | Value::Number(_) => value.to_string(),
         Value::Null | Value::Array(_) => String::new(),

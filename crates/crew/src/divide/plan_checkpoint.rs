@@ -59,7 +59,7 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         let decided = checkpoints::open_and_wait(host, request).await?;
         if last.as_ref() == Some(&decided.id) {
             return Err(EngineError::Refused(format!(
-                "The plan checkpoint {} couldn't be reopened after: {}",
+                "The plan approval {} couldn't be reopened after: {}",
                 decided.id,
                 reopened.last().map_or("", String::as_str)
             )));
@@ -144,7 +144,7 @@ pub fn verdict(action: &AnswerAction, text: Option<&str>, blocking: &[String]) -
         AnswerAction::SwitchToSolo => Verdict::Solo,
         AnswerAction::Abandon => Verdict::Abandon,
         other => Verdict::Reopen(format!(
-            "{other:?} isn't an answer the plan checkpoint takes."
+            "{other:?} isn't an answer the plan approval takes."
         )),
     }
 }
@@ -240,7 +240,8 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> CheckpointRequest {
         dependency_problem,
         subject,
     } = shown;
-    let settings = host.settings();
+    let settled = roles::cards::settled(host);
+    let settings = &*settled;
     let review = plan_facts::review(host);
     let (decisions, owners) = host.read(|state| {
         let owners: Vec<String> = state
@@ -464,7 +465,7 @@ async fn record_edits(host: &Host, note: &str, edited: &edits::Edited) -> Engine
                 worker: owner.clone(),
                 algorithm,
                 explored: false,
-                reason: "you chose this owner at the plan checkpoint".to_owned(),
+                reason: "you chose this worker at the plan approval".to_owned(),
             };
             host.record(Some(&card.id), None, RunEventKind::Divide(event))?;
         }
@@ -493,7 +494,7 @@ fn finish(host: &Host, graph: &TaskGraph, what: &str) -> EngineResult<StepDone> 
         .filter_map(|card| card.owner.as_ref())
         .collect();
     let summary = format!(
-        "{what}: {} cards for {} agents",
+        "{what}: {} tasks for {} agents",
         graph.cards.len(),
         owners.len()
     );
@@ -538,7 +539,7 @@ mod tests {
         assert!(matches!(
             verdict(
                 &AnswerAction::ApproveWithEdits,
-                Some("card-001 owner codex"),
+                Some("task-001 worker codex"),
                 &blocked
             ),
             Verdict::Reopen(_)
@@ -566,10 +567,10 @@ mod tests {
         assert_eq!(
             verdict(
                 &AnswerAction::ApproveWithEdits,
-                Some(" card-001 owner agy "),
+                Some(" task-001 worker agy "),
                 &[]
             ),
-            Verdict::ApproveWithEdits("card-001 owner agy".to_owned())
+            Verdict::ApproveWithEdits("task-001 worker agy".to_owned())
         );
         assert_eq!(
             verdict(&AnswerAction::ApproveWithEdits, Some("  "), &[]),
@@ -584,7 +585,7 @@ mod tests {
             verdict(&AnswerAction::Merge, None, &[]),
             Verdict::Reopen(_)
         ));
-        let broken = vec!["card-001 owns no paths.".to_owned()];
+        let broken = vec!["task-001 owns no paths.".to_owned()];
         assert!(matches!(
             verdict(&AnswerAction::Approve, None, &broken),
             Verdict::Reopen(_)

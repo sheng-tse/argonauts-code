@@ -57,6 +57,8 @@ pub(super) struct RunStory {
     pub handoffs: BTreeMap<CardId, HandoffPlan>,
     /// The run's own workflow, by the name its start item printed.
     pub workflow: Option<String>,
+    /// Its start item, while it waits for the workflow a step runs to report its phases.
+    pub workflow_start: Option<workflows::Start>,
     /// Printed at the run's end, after the merge line.
     pub closing: Option<ClosingAnswer>,
 }
@@ -82,7 +84,7 @@ impl Milestones {
                 RunLifecycle::Started(started) => {
                     story.started = Some(event.ts);
                     story.crew = started.mode == RunMode::Crew;
-                    steps::triage(started, cx);
+                    steps::run_started(started, cx);
                 }
                 RunLifecycle::Resumed(resumed) => lifecycle::resumed(&event.run_id, resumed, cx),
                 RunLifecycle::PauseRequested { now, .. } => story.pause_now = *now,
@@ -244,7 +246,7 @@ impl Milestones {
                 }
                 VendorEvent::Disabled { vendor, reason } => items.notice(
                     argonauts_core::NoteLevel::Warn,
-                    &format!("{vendor} is off for new cards: {reason}"),
+                    &format!("{vendor} is off for new tasks: {reason}"),
                     cx,
                 ),
                 VendorEvent::Quota(_) => {}
@@ -254,6 +256,9 @@ impl Milestones {
             }
             RunEventKind::Workflow(WorkflowEvent::PhaseAdded { phase, why, .. }) => {
                 workflows::phase_added(&phase.title, why, story, cx);
+            }
+            RunEventKind::Workflow(WorkflowEvent::Reported(report)) => {
+                workflows::reported(report, story, cx);
             }
             RunEventKind::Retro(_) => story.retro = true,
             // The engine's note repeats the line the failed phase printed, without the reason.

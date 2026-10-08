@@ -8,7 +8,7 @@ use argonauts_core::events::checkpoint::{
     AnswerAction, CheckpointKind, CheckpointOpened, CheckpointPacket, VendorDownPacket,
 };
 use argonauts_core::events::vendor::HandoffPlan;
-use argonauts_scenarios::WAIT;
+use argonauts_scenarios::{WAIT, past_the_card_guard};
 use argonauts_testkit::{Key, Pty};
 
 use super::{CARD_WAIT, Limits, events::has_opened, events::opened};
@@ -30,10 +30,10 @@ impl Limits {
         kind: CheckpointKind,
         timeout: Duration,
     ) -> anyhow::Result<CheckpointOpened> {
-        let events = self.wait_for(&format!("{kind:?} card"), timeout, has_opened(kind))?;
+        let events = self.wait_for(&format!("{kind:?} task"), timeout, has_opened(kind))?;
         let card = opened(&events, kind)
             .cloned()
-            .with_context(|| format!("the {kind:?} card went missing"))?;
+            .with_context(|| format!("the {kind:?} task went missing"))?;
         pty.wait_for(&regex::escape(&card.title), WAIT)?;
         Ok(card)
     }
@@ -81,6 +81,7 @@ pub fn answer(pty: &mut Pty, card: &CheckpointOpened, key: char) -> anyhow::Resu
         .position(|option| option.key == key)
         .with_context(|| format!("no option `{key}` on {}", card.title))?;
     let number = char::from_digit(index as u32 + 1, 10).context("more than 9 options")?;
+    past_the_card_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char(number))
 }
@@ -119,13 +120,13 @@ pub fn candidate_workers(card: &CheckpointOpened) -> Vec<String> {
 pub fn handoff_plan(card: &CheckpointOpened) -> anyhow::Result<&HandoffPlan> {
     match &card.packet {
         CheckpointPacket::Handoff(plan) => Ok(plan),
-        other => anyhow::bail!("not a handoff card: {other:?}"),
+        other => anyhow::bail!("not a fallback question: {other:?}"),
     }
 }
 
 pub fn vendor_down_packet(card: &CheckpointOpened) -> anyhow::Result<&VendorDownPacket> {
     match &card.packet {
         CheckpointPacket::VendorDown(packet) => Ok(packet),
-        other => anyhow::bail!("not a vendor down card: {other:?}"),
+        other => anyhow::bail!("not an agent down task: {other:?}"),
     }
 }

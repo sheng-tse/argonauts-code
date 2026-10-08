@@ -570,6 +570,7 @@ mod tests {
             last_message: None,
             log_uri: None,
             steps_visible: true,
+            tokens: None,
         }
     }
 
@@ -577,7 +578,7 @@ mod tests {
         Found {
             run: RunId::new("run-01").unwrap(),
             key: SessionKey::numbered(1),
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             worker: "claude-code".parse().unwrap(),
             kind: WorkerKind::Harness,
             card: card.map(|card| CardId::new(card).unwrap()),
@@ -607,7 +608,7 @@ mod tests {
         assert_eq!(found.helpers[0].label.as_deref(), Some("explorer"));
         assert_eq!(found.helpers[0].status, SubagentStatus::Done);
         assert_eq!(found.label().as_deref(), Some("judge"));
-        assert_eq!(found.who(), "the owner in run-01");
+        assert_eq!(found.who(), "the worker in run-01");
     }
 
     /// An agent the run named goes by that name, as the chat, the panel, and the workflow view
@@ -615,12 +616,12 @@ mod tests {
     /// card.
     #[test]
     fn an_agent_goes_by_the_name_its_run_gave_it() {
-        let named = owner(Some("card-001"), Some(StepName::Build), Some("build:money"));
+        let named = owner(Some("task-001"), Some(StepName::Build), Some("build:money"));
         assert_eq!(named.label().as_deref(), Some("build:money"));
         assert_eq!(named.who(), "build:money in run-01");
-        let unnamed = owner(Some("card-001"), Some(StepName::Build), None);
-        assert_eq!(unnamed.label().as_deref(), Some("card-001"));
-        assert_eq!(unnamed.who(), "the owner of card-001 in run-01");
+        let unnamed = owner(Some("task-001"), Some(StepName::Build), None);
+        assert_eq!(unnamed.label().as_deref(), Some("task-001"));
+        assert_eq!(unnamed.who(), "the worker of task-001 in run-01");
     }
 
     /// A journal is read again only once it changed, so a long list of runs costs a read of
@@ -652,10 +653,10 @@ mod tests {
                 family: "codex".to_owned(),
                 worker: "codex".parse().unwrap(),
                 kind: WorkerKind::Harness,
-                role: RoleName::Owner,
+                role: RoleName::Worker,
                 step: Some(StepName::Build),
                 access: argonauts_core::worker::Access::Build,
-                lifetime: argonauts_core::settings::sessions::SessionLifetime::Card,
+                lifetime: argonauts_core::settings::sessions::SessionLifetime::Task,
                 resumed_from: None,
                 follow_key: None,
                 workflow_step: None,

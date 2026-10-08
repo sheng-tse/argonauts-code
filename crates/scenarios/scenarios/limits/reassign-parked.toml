@@ -1,5 +1,5 @@
 # The fake Claude Code hits its usage limit and the run parks to wait for it. You move the
-# card to Codex while the run is parked.
+# task to Codex while the run is parked.
 
 [version]
 claude = "2.1.284 (Claude Code)"

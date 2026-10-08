@@ -241,7 +241,7 @@ fn words_of_note(text: &str) -> Vec<String> {
 }
 
 /// The plain form two spellings of one example's name share: `Peer Crew`, `peer_crew` and
-/// `peer-crew` are all `peer-crew`. A name with other marks stays as written.
+/// `council` are all `council`. A name with other marks stays as written.
 pub(crate) fn example_name(name: &str) -> String {
     let trimmed = name.trim();
     let plain = trimmed
@@ -446,14 +446,14 @@ mod tests {
         DesignWorkflow::normalize(value)
     }
 
-    /// Haiku's first brief for a peer-crew run on 10-04 named it `rate-limiter-per-api-key`,
+    /// Haiku's first brief for a council run on 10-04 named it `rate-limiter-per-api-key`,
     /// which code refused for its five words, and a new session started over.
     #[test]
     fn a_name_in_five_words_loses_its_filler() {
         let brief = read(json!({
             "name": "rate-limiter-per-api-key",
             "description": "Make rate limiter per API key with Retry-After headers and tests.",
-            "based_on": "peer-crew", "why": "", "workflow": null,
+            "based_on": "council", "why": "", "workflow": null,
             "done_when": [{"id": "G1", "short": "Per-API-key buckets", "check": "review",
                            "text": "Rate limiter creates separate buckets for each X-Api-Key value."}],
         }));
@@ -557,20 +557,20 @@ mod tests {
         let brief = read(json!({
             "name": "look-once",
             "description": "Look once\nthen stop",
-            "based_on": "Peer Crew",
+            "based_on": "Council",
             "params": {"check": "diff", "rounds": 2},
             "workflow": {"name": "look", "phases": [{"title": "Look", "steps": []}]},
             "done_when": {"id": "G1", "short": "Looked", "text": "It looked", "check": "review"},
             "plan": {"task": "Collapse each run of dashes"},
             "questions": [{"topic": "Dashes", "text": "Trim?", "options": "Yes"}],
-            "first_attempt": {"title": "Fix", "detail": "an owner fixes it",
+            "first_attempt": {"title": "Fix", "detail": "a worker fixes it",
                               "steps": [{"kind": "build", "label": "fix:it"}]},
         }));
         assert_eq!(valid(&brief), Vec::<String>::new());
         let brief: DesignOutput = serde_json::from_value(brief).unwrap();
         assert_eq!(brief.description, "Look once");
         // Only code that knows the examples' names can read `based_on`.
-        assert_eq!(brief.based_on.as_deref(), Some("Peer Crew"));
+        assert_eq!(brief.based_on.as_deref(), Some("Council"));
         let params: Vec<(&str, &str)> = brief
             .params
             .iter()
@@ -635,7 +635,7 @@ mod tests {
     /// another spelling of exactly one example's name is read as it.
     #[test]
     fn based_on_reads_as_the_one_example_it_spells() {
-        let examples: Vec<String> = ["peer-crew", "quick_fix", "Hotfix", "look_once", "look-once"]
+        let examples: Vec<String> = ["council", "quick_fix", "Hotfix", "look_once", "look-once"]
             .map(str::to_owned)
             .into();
         let read_as = |written: &str| {
@@ -647,7 +647,7 @@ mod tests {
             brief.read_based_on(&examples);
             brief.based_on.unwrap_or_default()
         };
-        assert_eq!(read_as("Peer Crew"), "peer-crew");
+        assert_eq!(read_as("Council"), "council");
         assert_eq!(read_as("quick_fix"), "quick_fix");
         assert_eq!(read_as("Quick Fix"), "quick_fix");
         assert_eq!(read_as("Hotfix"), "Hotfix");
@@ -665,7 +665,7 @@ mod tests {
         })))
         .unwrap();
         assert!(written.based_on_names("quick_fix") && written.based_on_names("quick-fix"));
-        assert!(!written.based_on_names("peer-crew"));
+        assert!(!written.based_on_names("council"));
     }
 
     #[test]

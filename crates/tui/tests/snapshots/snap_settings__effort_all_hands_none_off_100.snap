@@ -4,7 +4,7 @@ expression: shown
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   Effort
-  How long Haiku 4.5 thinks before it answers, for the default agent
+  How long Haiku 4.5 thinks before it answers, for the main agent
 
     Haiku 4.5 takes no effort setting.
 

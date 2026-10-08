@@ -1,66 +1,73 @@
-//! The mode line is the screen's bottom row, built from parts that give way whole on a narrow
-//! terminal. Quotas, spend, and context sit at its right end when they fit. The mode and the
-//! `←` hint never go.
+//! The mode line is the screen's bottom row: the approval mode with its hints, the parts the
+//! bottom line has, and any notice at the right end. What gives way on a narrow terminal, and
+//! in what order, is [`line`](super::line)'s to decide. The mode never goes, and neither does
+//! the `←` hint.
 
 use std::time::Instant;
 
 use ratatui::text::{Line, Span};
 
-use super::StatusPart;
+use super::line::{self, BottomLine, Give, Joiner, ModePiece, ModePieces};
 use crate::cell::Tone;
 use crate::render::RenderCtx;
-use crate::text::{
-    KEEP, Part, fit_parts, join_parts, sanitize_line, spans_width, truncate_spans, width_of,
-};
+use crate::text::sanitize_line;
 use crate::theme::Role;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum ApprovalMode {
     #[default]
     Supervised,
-    Shadow,
+    AutoPreview,
     Auto,
     /// Nothing waits for you.
-    FullAuto,
+    Autopilot,
 }
 
 impl ApprovalMode {
     pub const ALL: [ApprovalMode; 4] = [
         ApprovalMode::Supervised,
-        ApprovalMode::Shadow,
+        ApprovalMode::AutoPreview,
         ApprovalMode::Auto,
-        ApprovalMode::FullAuto,
+        ApprovalMode::Autopilot,
     ];
 
     /// Shift+Tab's cycle: supervised, auto, full auto. Shadow is a
     /// setting; from it, Shift+Tab goes on to auto.
     pub fn next(self) -> Self {
         match self {
-            ApprovalMode::Supervised | ApprovalMode::Shadow => ApprovalMode::Auto,
-            ApprovalMode::Auto => ApprovalMode::FullAuto,
-            ApprovalMode::FullAuto => ApprovalMode::Supervised,
+            ApprovalMode::Supervised | ApprovalMode::AutoPreview => ApprovalMode::Auto,
+            ApprovalMode::Auto => ApprovalMode::Autopilot,
+            ApprovalMode::Autopilot => ApprovalMode::Supervised,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             ApprovalMode::Supervised => "supervised",
-            ApprovalMode::Shadow => "shadow",
+            ApprovalMode::AutoPreview => "auto preview",
             ApprovalMode::Auto => "auto",
-            ApprovalMode::FullAuto => "full auto",
+            ApprovalMode::Autopilot => "autopilot",
+        }
+    }
+
+    /// What the mode line says: "auto mode on", and "autopilot on" without the extra word.
+    pub fn banner(self) -> String {
+        match self {
+            ApprovalMode::Autopilot => "autopilot on".to_owned(),
+            mode => format!("{} mode on", mode.label()),
         }
     }
 
     pub fn asks_first(self) -> bool {
-        matches!(self, ApprovalMode::Supervised | ApprovalMode::Shadow)
+        matches!(self, ApprovalMode::Supervised | ApprovalMode::AutoPreview)
     }
 
     pub fn role(self) -> Role {
         match self {
             ApprovalMode::Supervised => Role::ModeSupervised,
-            ApprovalMode::Shadow => Role::ModeShadow,
+            ApprovalMode::AutoPreview => Role::ModeShadow,
             ApprovalMode::Auto => Role::ModeAuto,
-            ApprovalMode::FullAuto => Role::ModeFullAuto,
+            ApprovalMode::Autopilot => Role::ModeAutopilot,
         }
     }
 }
@@ -78,6 +85,15 @@ impl VimMode {
             VimMode::Insert => "-- INSERT --",
             VimMode::Normal => "-- NORMAL --",
             VimMode::Visual => "-- VISUAL --",
+        }
+    }
+
+    /// The label on a terminal too narrow for it.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            VimMode::Insert => "-- I --",
+            VimMode::Normal => "-- N --",
+            VimMode::Visual => "-- V --",
         }
     }
 }
@@ -117,7 +133,7 @@ pub struct ModeNotice {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModeState<'a> {
-    /// Takes the whole line.
+    /// Takes the mode's place.
     pub hint: Option<&'a str>,
     pub working: bool,
     /// The input has text, so ← moves the cursor rather than opening the crew view, and the
@@ -133,95 +149,80 @@ pub struct ModeState<'a> {
     pub shell: bool,
     /// Shown in the notice slot while no notice is up.
     pub enter_sends: Option<&'a str>,
-    /// Quotas, spend, and context, at the right end before any notice.
-    pub status: &'a [StatusPart],
-}
-
-/// Columns kept free between the mode line's parts and what sits at its right end.
-const NOTICE_GAP: usize = 2;
-
-/// The lowest gives way first on a narrow terminal. Every status part ranks lower, so quotas
-/// and spend go before the mode's own hints, except the chips that never go.
-mod rank {
-    pub const MANAGE: u16 = 1000;
-    pub const FOOTER: u16 = 1001;
-    pub const CYCLE: u16 = 1002;
-    pub const NOTICE: u16 = 1003;
+    /// The line's parts and each CLI's plan usage. `None` draws the mode alone.
+    pub line: Option<&'a BottomLine>,
 }
 
 impl ModeLine {
+    /// The bottom row: the mode with its hints, the parts the line has, and any notice at the
+    /// right end, in the fullest layout `ctx.width` has room for.
     pub fn line(&self, ctx: &RenderCtx<'_>, state: ModeState<'_>) -> Line<'static> {
+        let (pieces, notice) = self.pieces(ctx, state);
+        let plain = BottomLine::default();
+        line::lay_out(state.line.unwrap_or(&plain), &pieces, notice, ctx)
+    }
+
+    /// The mode's own part, and what sits in the notice slot.
+    pub(super) fn pieces(
+        &self,
+        ctx: &RenderCtx<'_>,
+        state: ModeState<'_>,
+    ) -> (ModePieces, Option<Span<'static>>) {
         let theme = ctx.theme;
         let dim = theme.style(Role::Dim);
-        let width = usize::from(ctx.width);
-        let lead = vec![Span::raw("  ")];
-
+        let words = |joiner, text: &str, style, gives| ModePiece::Words {
+            joiner,
+            span: Span::styled(text.to_owned(), style),
+            gives,
+            short: None,
+        };
+        let mut pieces = Vec::new();
         // A card that has the keys stands in for the input, so the input's vim mode isn't
         // shown while it does.
-        let vim = self.vim.filter(|_| !state.card_focused);
+        if let Some(vim) = self.vim.filter(|_| !state.card_focused) {
+            pieces.push(ModePiece::Words {
+                joiner: Joiner::Space,
+                span: Span::styled(vim.label(), dim),
+                gives: None,
+                short: Some(Span::styled(vim.short_label(), dim)),
+            });
+        }
         if let Some(hint) = state.hint {
-            let mut parts = Vec::new();
-            if let Some(vim) = vim {
-                parts.push(Part::new(vec![Span::styled(vim.label(), dim)], KEEP));
-            }
-            let hint = sanitize_line(hint).into_owned();
-            parts.push(Part::joined(
-                Span::raw(" "),
-                vec![Span::styled(hint, dim)],
-                KEEP,
-            ));
-            return two_sided(lead, &parts, &status_parts(state.status, ctx), width);
+            pieces.push(words(Joiner::Space, &sanitize_line(hint), dim, None));
+            return (ModePieces(pieces), None);
         }
-
-        let dot = || Span::styled(" · ", dim);
-        let mut parts = Vec::new();
-        if let Some(vim) = vim {
-            parts.push(Part::new(vec![Span::styled(vim.label(), dim)], KEEP));
-        }
-        let status = status_parts(state.status, ctx);
         // Claude Code's mode line says only this in bash mode, so Esc and Enter mean one thing.
         if state.shell && !state.card_focused {
-            parts.push(Part::joined(
-                Span::raw(" "),
-                vec![Span::styled("! for shell mode", theme.style(Role::Shell))],
-                KEEP,
-            ));
-            return self.with_notice(lead, parts, status, ctx, None);
+            let shell = theme.style(Role::Shell);
+            pieces.push(words(Joiner::Space, "! for shell mode", shell, None));
+            return (ModePieces(pieces), self.notice(ctx, None));
         }
-        let glyph = if self.approval.asks_first() {
-            theme.glyphs.mode_ask
-        } else {
-            theme.glyphs.mode_go
-        };
-        parts.push(Part::joined(
-            Span::raw(" "),
-            vec![Span::styled(
-                format!("{glyph} {} mode on", self.approval.label()),
-                theme.style(self.approval.role()),
-            )],
-            KEEP,
-        ));
+        pieces.push(ModePiece::Mode {
+            sign: if self.approval.asks_first() {
+                theme.glyphs.mode_ask
+            } else {
+                theme.glyphs.mode_go
+            },
+            word: self.approval.label(),
+            banner: self.approval.banner(),
+            style: theme.style(self.approval.role()),
+        });
         // A focused card holds every key but Shift+Tab and the quit keys, and its own key line
         // names Shift+Tab, so a hint here would name a key that does nothing until it lets go.
         if state.card_focused {
-            return two_sided(lead, &parts, &status, width);
+            return (ModePieces(pieces), None);
         }
         // Claude Code leaves this off for its default mode, which hides how to leave it.
-        parts.push(Part::joined(
-            Span::raw(" "),
-            vec![Span::styled("(shift+tab to cycle)", dim)],
-            rank::CYCLE,
+        pieces.push(words(
+            Joiner::Space,
+            "(shift+tab to cycle)",
+            dim,
+            Some(Give::CycleHint),
         ));
         if state.panel_focused {
-            parts.push(Part::joined(
-                dot(),
-                vec![Span::styled(
-                    "enter to open · x to stop · esc to go back",
-                    dim,
-                )],
-                KEEP,
-            ));
-            return two_sided(lead, &parts, &status, width);
+            let keys = "enter to open · x to stop · esc to go back";
+            pieces.push(words(Joiner::Dot, keys, dim, None));
+            return (ModePieces(pieces), None);
         }
         // Esc in INSERT or VISUAL only goes back to NORMAL, so its hint waits until then.
         if self.footer_hints && !matches!(self.vim, Some(VimMode::Insert | VimMode::Visual)) {
@@ -230,71 +231,39 @@ impl ModeLine {
             } else {
                 "? for shortcuts"
             };
-            parts.push(Part::joined(
-                dot(),
-                vec![Span::styled(footer, dim)],
-                rank::FOOTER,
-            ));
+            pieces.push(words(Joiner::Dot, footer, dim, Some(Give::FooterHint)));
         }
         if !state.typing
             && let Some(arrow) = self.arrow_hint(ctx, state.pinned_cards)
         {
-            parts.push(Part::joined(dot(), vec![arrow], KEEP));
+            pieces.push(ModePiece::Words {
+                joiner: Joiner::Dot,
+                short: Some(self.short_arrow_hint(ctx, state.pinned_cards)),
+                span: arrow,
+                gives: None,
+            });
         }
         if state.panel {
-            parts.push(Part::joined(
-                dot(),
-                vec![Span::styled("↓ to manage", dim)],
-                rank::MANAGE,
+            pieces.push(words(
+                Joiner::Dot,
+                "↓ to manage",
+                dim,
+                Some(Give::ManageHint),
             ));
         }
-
-        self.with_notice(lead, parts, status, ctx, state.enter_sends)
+        (ModePieces(pieces), self.notice(ctx, state.enter_sends))
     }
 
-    /// The notice, or else what Enter sends, at the right end after the status.
-    fn with_notice(
-        &self,
-        lead: Vec<Span<'static>>,
-        parts: Vec<Part>,
-        status: Vec<Part>,
-        ctx: &RenderCtx<'_>,
-        enter_sends: Option<&str>,
-    ) -> Line<'static> {
+    /// The notice, or else what Enter sends, for the right end after the line's parts.
+    fn notice(&self, ctx: &RenderCtx<'_>, enter_sends: Option<&str>) -> Option<Span<'static>> {
         let theme = ctx.theme;
-        let dim = theme.style(Role::Dim);
-        let width = usize::from(ctx.width);
-        let notice = self
-            .notice
+        self.notice
             .as_ref()
             .filter(|notice| notice.until > ctx.clock.now)
             .map(|notice| (notice.text.as_str(), theme.style(notice.tone.role())))
-            .or(enter_sends.map(|text| (text, dim)))
+            .or(enter_sends.map(|text| (text, theme.style(Role::Dim))))
             .map(|(text, style)| Span::styled(sanitize_line(text).trim().to_owned(), style))
-            .filter(|span| span.width() > 0);
-        let mut right = status;
-        if let Some(notice) = notice {
-            // A notice wider than what the kept parts leave is cut to fit, never dropped, since
-            // an error there may be the only word on why Enter did nothing.
-            let kept_width = |parts: &[Part]| -> usize {
-                let kept: Vec<bool> = parts.iter().map(|part| part.rank == KEEP).collect();
-                width_of(parts, &kept)
-            };
-            let kept_right = kept_width(&right);
-            let joiner = if kept_right > 0 { NOTICE_GAP } else { 0 };
-            let room = width.saturating_sub(spans_width(&lead));
-            let cap =
-                room.saturating_sub(kept_width(&parts) + NOTICE_GAP + kept_right + joiner + 1);
-            let notice = truncate_spans(&[notice], cap);
-            if spans_width(&notice) > 0 {
-                right.push(Part::joined(
-                    Span::raw(" ".repeat(NOTICE_GAP)),
-                    notice,
-                    rank::NOTICE,
-                ));
-            }
-        }
-        two_sided(lead, &parts, &right, width)
+            .filter(|span| span.width() > 0)
     }
 
     /// Claude Code's space after the arrow, which some fonts draw two cells wide, keeps it off
@@ -315,77 +284,20 @@ impl ModeLine {
             Span::styled(format!("{arrow} {agents} {noun}"), theme.style(Role::Dim))
         })
     }
-}
 
-/// `left` after `lead`, and `right` against the right end with one column after it. Parts on
-/// either side give way by rank until both fit with a gap between them.
-fn two_sided(
-    lead: Vec<Span<'static>>,
-    left: &[Part],
-    right: &[Part],
-    width: usize,
-) -> Line<'static> {
-    let room = width.saturating_sub(spans_width(&lead));
-    let mut shown_left = vec![true; left.len()];
-    let mut shown_right = vec![true; right.len()];
-    loop {
-        let right_width = width_of(right, &shown_right);
-        let ends = if right_width > 0 {
-            NOTICE_GAP + right_width + 1
-        } else {
-            0
-        };
-        if width_of(left, &shown_left) + ends <= room {
-            break;
+    /// [`Self::arrow_hint`] on a terminal too narrow for its words: `← 1!`, `← 2`.
+    fn short_arrow_hint(&self, ctx: &RenderCtx<'_>, pinned_cards: usize) -> Span<'static> {
+        let theme = ctx.theme;
+        let arrow = theme.glyphs.agents;
+        let waiting = self.needs_you + pinned_cards;
+        if waiting > 0 {
+            return Span::styled(format!("{arrow} {waiting}!"), theme.style(Role::Warning));
         }
-        let next = left
-            .iter()
-            .zip(&shown_left)
-            .chain(right.iter().zip(&shown_right))
-            .enumerate()
-            .filter(|(_, (part, shown))| **shown && part.rank != KEEP)
-            .min_by_key(|(i, (part, _))| (part.rank, std::cmp::Reverse(*i)))
-            .map(|(i, _)| i);
-        match next {
-            Some(i) if i < left.len() => shown_left[i] = false,
-            Some(i) => shown_right[i - left.len()] = false,
-            None => break,
-        }
+        Span::styled(
+            format!("{arrow} {}", self.background_agents),
+            theme.style(Role::Dim),
+        )
     }
-    let mut spans = lead;
-    spans.extend(join_parts(left, &shown_left));
-    let ends = join_parts(right, &shown_right);
-    if !ends.is_empty() {
-        let used = spans_width(&spans) + spans_width(&ends) + 1;
-        let pad = width.saturating_sub(used).max(NOTICE_GAP);
-        spans.push(Span::raw(" ".repeat(pad)));
-        spans.extend(ends);
-    }
-    crate::text::truncate_line(&Line::from(spans), width)
-}
-
-fn status_parts(parts: &[StatusPart], ctx: &RenderCtx<'_>) -> Vec<Part> {
-    let theme = ctx.theme;
-    let dim = theme.style(Role::Dim);
-    parts
-        .iter()
-        .filter_map(|part| {
-            let text = sanitize_line(&part.text).trim().to_owned();
-            (!text.is_empty()).then(|| {
-                Part::joined(
-                    Span::styled(" · ", dim),
-                    vec![Span::styled(text, theme.style(part.tone.role()))],
-                    part.rank,
-                )
-            })
-        })
-        .collect()
-}
-
-/// The status parts alone in one row, as they'd fit with nothing else on it.
-pub fn status_line(parts: &[StatusPart], ctx: &RenderCtx<'_>) -> Option<Line<'static>> {
-    let parts = status_parts(parts, ctx);
-    (!parts.is_empty()).then(|| fit_parts(vec![Span::raw("  ")], &parts, usize::from(ctx.width)))
 }
 
 #[cfg(test)]
@@ -420,10 +332,10 @@ mod tests {
             text(mode.line(&ctx, idle())),
             "  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts"
         );
-        mode.approval = ApprovalMode::Shadow;
+        mode.approval = ApprovalMode::AutoPreview;
         assert_eq!(
             text(mode.line(&ctx, idle())),
-            "  ǁ shadow mode on (shift+tab to cycle) · ? for shortcuts"
+            "  ǁ auto preview mode on (shift+tab to cycle) · ? for shortcuts"
         );
         mode.approval = ApprovalMode::Auto;
         let line = mode.line(&ctx, idle());
@@ -433,13 +345,13 @@ mod tests {
         );
         assert_eq!(line.spans[1].style, theme.style(Role::ModeAuto));
         assert_eq!(line.spans[3].style, theme.style(Role::Dim));
-        mode.approval = ApprovalMode::FullAuto;
+        mode.approval = ApprovalMode::Autopilot;
         let line = mode.line(&ctx, idle());
         assert_eq!(
             text(line.clone()),
-            "  ⏵⏵ full auto mode on (shift+tab to cycle) · ? for shortcuts"
+            "  ⏵⏵ autopilot on (shift+tab to cycle) · ? for shortcuts"
         );
-        assert_eq!(line.spans[1].style, theme.style(Role::ModeFullAuto));
+        assert_eq!(line.spans[1].style, theme.style(Role::ModeAutopilot));
         mode.approval = ApprovalMode::Supervised;
         let line = mode.line(&ctx, idle());
         assert_eq!(line.spans[1].style, theme.style(Role::ModeSupervised));
@@ -448,7 +360,7 @@ mod tests {
     /// The cycle: supervised, auto, full auto. Shadow is a setting, and Shift+Tab goes
     /// on from it to auto.
     #[test]
-    fn shift_tab_goes_from_auto_to_full_auto_and_back_round() {
+    fn shift_tab_goes_from_auto_to_autopilot_and_back_round() {
         let cycle: Vec<ApprovalMode> =
             std::iter::successors(Some(ApprovalMode::Supervised), |mode| Some(mode.next()))
                 .take(4)
@@ -458,12 +370,12 @@ mod tests {
             [
                 ApprovalMode::Supervised,
                 ApprovalMode::Auto,
-                ApprovalMode::FullAuto,
+                ApprovalMode::Autopilot,
                 ApprovalMode::Supervised,
             ]
         );
-        assert_eq!(ApprovalMode::Shadow.next(), ApprovalMode::Auto);
-        assert!(!ApprovalMode::FullAuto.asks_first());
+        assert_eq!(ApprovalMode::AutoPreview.next(), ApprovalMode::Auto);
+        assert!(!ApprovalMode::Autopilot.asks_first());
     }
 
     /// A card that has the keys stands in for the input, so neither the input's vim mode nor a
@@ -544,7 +456,8 @@ mod tests {
             "  -- INSERT -- ǁ supervised mode on (shift+tab to cycle) · ← 3 agents · ↓ to manage"
         );
         mode.vim = Some(VimMode::Normal);
-        assert!(text(mode.line(&ctx, working)).contains("esc to interrupt"));
+        let wide = RenderCtx::new(120, &theme, Clock::still(Instant::now()));
+        assert!(text(mode.line(&wide, working)).contains("esc to interrupt"));
         mode.background_agents = 1;
         mode.vim = None;
         assert!(text(mode.line(&ctx, idle())).ends_with("← 1 agent"));
@@ -635,7 +548,7 @@ mod tests {
             row.ends_with("auto mode unavailable for this model"),
             "{row:?}"
         );
-        assert_eq!(str_width(&row), 79);
+        assert_eq!(str_width(&row), 80);
         assert_eq!(line.spans.last().unwrap().style, theme.style(Role::Warning));
         let later = RenderCtx::new(80, &theme, Clock::still(now + Duration::from_secs(8)));
         assert!(!text(mode.line(&later, idle())).contains("unavailable"));
@@ -664,7 +577,7 @@ mod tests {
     fn narrow_terminals_drop_whole_parts_in_order() {
         let theme = theme();
         let mode = ModeLine {
-            approval: ApprovalMode::Shadow,
+            approval: ApprovalMode::AutoPreview,
             background_agents: 3,
             ..ModeLine::default()
         };
@@ -679,83 +592,73 @@ mod tests {
         };
         assert_eq!(
             at(100),
-            "  ǁ shadow mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage"
+            "  ǁ auto preview mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage"
         );
+        // The footer's hint first, then how to change the mode, then the panel's.
         assert_eq!(
             at(80),
-            "  ǁ shadow mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents"
+            "  ǁ auto preview mode on (shift+tab to cycle) · ← 3 agents · ↓ to manage"
         );
         assert_eq!(
             at(60),
-            "  ǁ shadow mode on (shift+tab to cycle) · ← 3 agents"
+            "  ǁ auto preview mode on · ← 3 agents · ↓ to manage"
         );
-        assert_eq!(at(40), "  ǁ shadow mode on · ← 3 agents");
+        assert_eq!(at(40), "  ǁ auto preview mode on · ← 3 agents");
+        // The mode loses its words before the hint that says something waits.
+        assert_eq!(at(30), "  ǁ auto preview · ← 3 agents");
+        assert_eq!(at(20), "  ǁ · ← 3 agents");
     }
 
+    /// The parts the line has sit against the right edge, and the mode's own hints are the
+    /// first things a narrow terminal takes.
     #[test]
-    fn quotas_and_spend_sit_at_the_right_end_when_they_fit() {
+    fn the_lines_parts_sit_at_the_right_end_and_the_hints_go_first() {
+        use crate::bottom::line::{AddedPart, LinePart};
+
         let theme = theme();
         let mode = ModeLine::default();
-        let status = vec![
-            StatusPart::quota("Claude 5h 71% used", 71, Tone::Dim),
-            StatusPart::quota("Codex 5h 38% used", 38, Tone::Dim),
-            StatusPart::spend("$0.00"),
-        ];
+        let mut line = BottomLine::default();
+        line.right.push(LinePart::Added(AddedPart::words(
+            "spend",
+            "$0.21",
+            Tone::Dim,
+        )));
         let state = ModeState {
-            status: &status,
+            line: Some(&line),
             ..idle()
         };
         let at = |width| {
             let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
             text(mode.line(&ctx, state))
         };
-        let wide = at(140);
+        let wide = at(100);
         assert!(
             wide.starts_with("  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts  "),
             "{wide:?}"
         );
-        assert!(
-            wide.ends_with("Claude 5h 71% used · Codex 5h 38% used · $0.00"),
-            "{wide:?}"
-        );
-        assert_eq!(str_width(&wide), 139);
-        // The least used quota goes first, then the other, and the mode's own hints last.
-        assert!(
-            at(100).ends_with("  Claude 5h 71% used · $0.00"),
-            "{:?}",
-            at(100)
-        );
-        assert!(at(80).ends_with("  $0.00"), "{:?}", at(80));
+        assert!(wide.ends_with("  $0.21"), "{wide:?}");
+        assert_eq!(str_width(&wide), 100, "the right side ends at the edge");
         assert_eq!(
-            at(64),
-            "  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts"
+            at(60),
+            format!(
+                "  ǁ supervised mode on (shift+tab to cycle){}$0.21",
+                " ".repeat(12)
+            )
         );
-        assert_eq!(at(30), "  ǁ supervised mode on");
+        assert_eq!(
+            at(40),
+            format!("  ǁ supervised mode on{}$0.21", " ".repeat(13))
+        );
+        // A part you added goes before the mode loses a word.
+        assert_eq!(at(26), "  ǁ supervised mode on");
+        assert_eq!(at(20), "  ǁ supervised");
+        assert_eq!(at(10), "  ǁ");
     }
 
     #[test]
-    fn an_alert_chip_stays_and_the_mode_hints_give_way_to_it() {
-        let theme = theme();
-        let mode = ModeLine::default();
-        let status = vec![
-            StatusPart::quota("Codex 5h 91% used", 91, Tone::Warning),
-            StatusPart::spend("$0.46"),
-        ];
-        let state = ModeState {
-            status: &status,
-            ..idle()
-        };
-        let ctx = RenderCtx::new(60, &theme, Clock::still(Instant::now()));
-        let line = mode.line(&ctx, state);
-        let row = text(line.clone());
-        assert!(row.starts_with("  ǁ supervised mode on"), "{row:?}");
-        assert!(row.ends_with("  Codex 5h 91% used"), "{row:?}");
-        assert!(!row.contains("$0.46"), "{row:?}");
-        assert_eq!(line.spans.last().unwrap().style, theme.style(Role::Warning));
-    }
+    fn a_notice_goes_after_the_lines_parts_at_the_right_end() {
+        use crate::bottom::line::{AddedPart, LinePart};
 
-    #[test]
-    fn a_notice_goes_after_the_status_at_the_right_end() {
         let theme = theme();
         let now = Instant::now();
         let mode = ModeLine {
@@ -766,78 +669,23 @@ mod tests {
             }),
             ..ModeLine::default()
         };
-        let status = vec![StatusPart::spend("$0.21")];
+        let mut line = BottomLine::default();
+        line.right.push(LinePart::Added(AddedPart::words(
+            "spend",
+            "$0.21",
+            Tone::Dim,
+        )));
         let state = ModeState {
-            status: &status,
+            line: Some(&line),
             ..idle()
         };
         let ctx = RenderCtx::new(100, &theme, Clock::still(now));
         let row = text(mode.line(&ctx, state));
         assert!(row.ends_with("  $0.21  Saved"), "{row:?}");
-        assert_eq!(str_width(&row), 99);
-    }
-
-    #[test]
-    fn the_status_line_drops_chips_by_rank() {
-        let theme = theme();
-        let parts = vec![
-            StatusPart::quota("Claude 5h 42% used", 42, Tone::Dim),
-            StatusPart::quota("Codex 5h 91% used", 91, Tone::Warning),
-            StatusPart::quota("agy 12% used", 12, Tone::Dim),
-            StatusPart::spend("$0.46"),
-            StatusPart::model("opus"),
-            StatusPart::new(" ", Tone::Dim),
-        ];
-        let at = |width| {
-            let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
-            status_line(&parts, &ctx).map(text)
-        };
-        assert_eq!(
-            at(100).unwrap(),
-            "  Claude 5h 42% used · Codex 5h 91% used · agy 12% used · $0.46 · opus"
-        );
-        assert_eq!(
-            at(60).unwrap(),
-            "  Claude 5h 42% used · Codex 5h 91% used · $0.46 · opus"
-        );
-        assert_eq!(at(40).unwrap(), "  Codex 5h 91% used · $0.46 · opus");
-        assert_eq!(at(30).unwrap(), "  Codex 5h 91% used · opus");
-        assert_eq!(at(22).unwrap(), "  Codex 5h 91% used");
-        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
-        let line = status_line(&parts, &ctx).unwrap();
-        assert_eq!(line.spans[3].style, theme.style(Role::Warning));
-        assert_eq!(status_line(&[], &ctx), None);
-    }
-
-    #[test]
-    fn stale_readings_go_first_and_every_open_quota_before_the_spend() {
-        let theme = theme();
-        let parts = vec![
-            StatusPart::model("claude-code/opus"),
-            StatusPart::quota("Claude 5h 71% used", 71, Tone::Dim),
-            StatusPart::quota("Codex 5h 91% used", 91, Tone::Warning),
-            StatusPart::no_quota("OpenRouter $0.06"),
-            StatusPart::stale("Gemini 5h 30% used", 30),
-            StatusPart::spend("$0.21"),
-        ];
-        let at = |width| {
-            let ctx = RenderCtx::new(width, &theme, Clock::still(Instant::now()));
-            status_line(&parts, &ctx).map(text).unwrap()
-        };
-        assert_eq!(
-            at(120),
-            "  claude-code/opus · Claude 5h 71% used · Codex 5h 91% used · OpenRouter $0.06 · Gemini 5h 30% used · $0.21"
-        );
-        assert_eq!(
-            at(100),
-            "  claude-code/opus · Claude 5h 71% used · Codex 5h 91% used · OpenRouter $0.06 · $0.21"
-        );
-        assert_eq!(
-            at(80),
-            "  claude-code/opus · Claude 5h 71% used · Codex 5h 91% used · $0.21"
-        );
-        assert_eq!(at(60), "  claude-code/opus · Codex 5h 91% used · $0.21");
-        assert_eq!(at(40), "  claude-code/opus · Codex 5h 91% used");
-        assert_eq!(at(30), "  Codex 5h 91% used");
+        assert_eq!(str_width(&row), 100);
+        // On a narrow terminal the part goes and the notice stays.
+        let narrow = RenderCtx::new(32, &theme, Clock::still(now));
+        let row = text(mode.line(&narrow, state));
+        assert_eq!(row, "  ǁ supervised mode on     Saved");
     }
 }

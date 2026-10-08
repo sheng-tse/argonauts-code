@@ -966,7 +966,7 @@ fn end_detail(end: &SessionEnd, gates: Option<bool>, glyphs: &Glyphs) -> String 
         } else {
             glyphs.not_ready
         };
-        parts.push(format!("gates {mark}"));
+        parts.push(format!("checks {mark}"));
     }
     parts.push(format::duration(Duration::from_millis(end.duration_ms)));
     let tokens = end.spend.input_tokens + end.spend.output_tokens;
@@ -980,7 +980,7 @@ fn reason_words(reason: &EndReason) -> Option<String> {
     Some(match reason {
         EndReason::Completed | EndReason::Stopped => return None,
         EndReason::Paused => "paused".to_owned(),
-        EndReason::BudgetHit { .. } => "budget reached".to_owned(),
+        EndReason::BudgetHit { .. } => "limit reached".to_owned(),
         EndReason::Stuck {
             watchdog: Watchdog::Inactivity,
         } => "stuck, no activity".to_owned(),

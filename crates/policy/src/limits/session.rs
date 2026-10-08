@@ -22,12 +22,12 @@ pub fn check(
         let detail = if mode.ours_off() {
             format!(
                 "{} runs without our sandbox because you set sandbox.mode to {}, so every \
-                 checkpoint of this run asks you",
+                 approval of this run asks you",
                 spec.worker,
                 mode.as_str()
             )
         } else {
-            format!("{} is a harness and has no sandbox", spec.worker)
+            format!("{} is a CLI and has no sandbox", spec.worker)
         };
         violations.push(violation(HardLimit::NoSandbox, detail, Vec::new()));
     }
@@ -38,7 +38,7 @@ pub fn check(
     if spec.access.writes() && !hashed {
         let what = match spec.access {
             Access::Build => "a build session needs the approved goal's hash",
-            Access::Spike => "a spike session needs the approved goal's hash",
+            Access::Spike => "an experiment session needs the approved goal's hash",
             _ => "a direct turn needs the hash of your message",
         };
         violations.push(violation(

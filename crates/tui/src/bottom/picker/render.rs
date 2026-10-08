@@ -1,4 +1,4 @@
-use argonauts_core::model_picker::{AllHandsToggle, EffortLine, EffortSlider};
+use argonauts_core::model_picker::{EffortLine, EffortSlider, UltracodeToggle};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -8,6 +8,7 @@ use crate::text::marks::decorative;
 use crate::text::{KEEP, Part, fit_lines, fit_parts, sanitize_line, str_width, wrap_text};
 use crate::theme::{Role, Theme};
 use crate::views::layout::cut;
+use crate::views::states;
 
 /// Labels past this are cut, so the descriptions keep their room.
 const MAX_LABEL: usize = 36;
@@ -192,9 +193,18 @@ impl Picker {
         let label_width = longest
             .min(MAX_LABEL)
             .min(width.saturating_sub(prefix + key_room));
+        // A row's state glyph leads its description, so it counts toward the column.
+        let state_mark = |index: usize| {
+            self.rows[index]
+                .state
+                .map(|state| states::mark(state, theme))
+        };
         let described = window
             .iter()
-            .map(|&index| str_width(sanitize_line(&self.rows[index].description).trim()))
+            .map(|&index| {
+                let mark = state_mark(index).map_or(0, |(glyph, _)| str_width(glyph) + 1);
+                mark + str_width(sanitize_line(&self.rows[index].description).trim())
+            })
             .max()
             .unwrap_or(0);
         let description_at = prefix + label_width + GAP;
@@ -256,8 +266,15 @@ impl Picker {
             let description = sanitize_line(&row.description).trim().to_owned();
             if description_width > 0 && !description.is_empty() {
                 spans.push(Span::raw(" ".repeat(description_at.saturating_sub(used))));
-                let description = cut(&description, description_width);
-                used = description_at + str_width(&description);
+                let mut drawn = 0;
+                if let Some((glyph, role)) = state_mark(index) {
+                    let mark = cut(&format!("{glyph} "), description_width);
+                    drawn += str_width(&mark);
+                    spans.push(Span::styled(mark, theme.style(role)));
+                }
+                let description = cut(&description, description_width - drawn);
+                drawn += str_width(&description);
+                used = description_at + drawn;
                 spans.push(Span::styled(description, dim));
             }
             if let Some(key) = row.key {
@@ -338,7 +355,7 @@ impl Picker {
         let unmoving = self.flow.slider.as_ref().filter(|slider| !slider.moves());
         if let Some(slider) = unmoving {
             // Tab is named beside All hands, where the view offers it.
-            if slider.all_hands.is_some() {
+            if slider.ultracode.is_some() {
                 parts.push(Part::new(part(enter), KEEP));
                 parts.push(Part::joined(dot(), part(esc("Esc to cancel")), 1));
             } else {
@@ -454,8 +471,8 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
         used = starts[index] + widths[index];
     }
     lines.push(Line::from(levels));
-    if let Some(toggle) = slider.all_hands {
-        add_all_hands(&mut lines, toggle, scale, ctx);
+    if let Some(toggle) = slider.ultracode {
+        add_ultracode(&mut lines, toggle, scale, ctx);
     }
     lines.push(Line::default());
     let description = sanitize_line(&slider.stops[chosen].description)
@@ -485,13 +502,13 @@ fn slider_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'static>
 /// All hands beside the slider, where Claude Code puts Ultracode: its name and state level with
 /// the line and `Tab to toggle` under them, else one row under the levels where there's no room
 /// beside it. While it's on, a line under the levels says what it does.
-fn add_all_hands(
+fn add_ultracode(
     lines: &mut Vec<Line<'static>>,
-    toggle: AllHandsToggle,
+    toggle: UltracodeToggle,
     scale: usize,
     ctx: &RenderCtx<'_>,
 ) {
-    let column = str_width(AllHandsToggle::NAME) + 2 + str_width("off");
+    let column = str_width(UltracodeToggle::NAME) + 2 + str_width("off");
     let end = SLIDER_INDENT + scale;
     // The rule row and the levels row are the last two, each `end` cells wide.
     let rows = lines.len();
@@ -500,20 +517,20 @@ fn add_all_hands(
             |line: &Line<'static>| " ".repeat((end + TOGGLE_GAP).saturating_sub(line.width()));
         let gap = pad(&lines[rows - 2]);
         lines[rows - 2].spans.push(Span::raw(gap));
-        lines[rows - 2].spans.extend(all_hands_named(toggle, ctx));
+        lines[rows - 2].spans.extend(ultracode_named(toggle, ctx));
         let gap = pad(&lines[rows - 1]);
         lines[rows - 1].spans.push(Span::raw(gap));
         lines[rows - 1]
             .spans
             .push(Span::styled(TOGGLE_HINT, ctx.theme.style(Role::Dim)));
     } else {
-        lines.push(all_hands_row(toggle, ctx));
+        lines.push(ultracode_row(toggle, ctx));
     }
-    lines.extend(all_hands_means(toggle, ctx));
+    lines.extend(ultracode_means(toggle, ctx));
 }
 
 /// `All hands  on`, brighter while it's on.
-fn all_hands_named(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Vec<Span<'static>> {
+fn ultracode_named(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Vec<Span<'static>> {
     let theme = ctx.theme;
     let (name, state) = if toggle.on {
         let label = theme.style(Role::Label);
@@ -523,16 +540,16 @@ fn all_hands_named(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Vec<Span<'sta
     };
     let word = if toggle.on { "on" } else { "off" };
     vec![
-        Span::styled(AllHandsToggle::NAME, name),
+        Span::styled(UltracodeToggle::NAME, name),
         Span::raw("  "),
         Span::styled(word, state),
     ]
 }
 
 /// All hands on a row of its own, with `Tab to toggle` after it.
-fn all_hands_row(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Line<'static> {
+fn ultracode_row(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Line<'static> {
     let mut row = vec![Span::raw(" ".repeat(SLIDER_INDENT))];
-    row.extend(all_hands_named(toggle, ctx));
+    row.extend(ultracode_named(toggle, ctx));
     row.push(Span::styled(
         format!(" · {TOGGLE_HINT}"),
         ctx.theme.style(Role::Dim),
@@ -541,12 +558,12 @@ fn all_hands_row(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Line<'static> {
 }
 
 /// What All hands does, only while it's on.
-fn all_hands_means(toggle: AllHandsToggle, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+fn ultracode_means(toggle: UltracodeToggle, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
     if !toggle.on {
         return Vec::new();
     }
     let lead = [Span::raw(" ".repeat(SLIDER_INDENT))];
-    let means = format!("{}: {}", AllHandsToggle::NAME, AllHandsToggle::MEANS);
+    let means = format!("{}: {}", UltracodeToggle::NAME, UltracodeToggle::MEANS);
     wrap_text(
         &means,
         ctx.theme.style(Role::Dim),
@@ -587,9 +604,9 @@ fn fixed_level_lines(slider: &EffortSlider, ctx: &RenderCtx<'_>) -> Vec<Line<'st
         }
     };
     lines.push(Line::default());
-    if let Some(toggle) = slider.all_hands {
-        lines.push(all_hands_row(toggle, ctx));
-        lines.extend(all_hands_means(toggle, ctx));
+    if let Some(toggle) = slider.ultracode {
+        lines.push(ultracode_row(toggle, ctx));
+        lines.extend(ultracode_means(toggle, ctx));
         lines.push(Line::default());
     }
     lines.extend(wrap_text(then, text, width, &lead, &lead));

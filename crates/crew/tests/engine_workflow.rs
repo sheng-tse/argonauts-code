@@ -125,11 +125,11 @@ fn workflow_validator_rejects_each_rule_break() {
         ),
         (
             Rule::MissingCheckpoint,
-            phase("      - kind: build\n        role: owner\n        input: plan\n"),
+            phase("      - kind: build\n        role: worker\n        input: plan\n"),
         ),
         (
             Rule::BuildNeedsGateAndReview,
-            phase("      - kind: fan_out\n        role: owner\n"),
+            phase("      - kind: fan_out\n        role: worker\n"),
         ),
         (
             Rule::ReviewSameFamily,
@@ -148,7 +148,7 @@ fn workflow_validator_rejects_each_rule_break() {
 
     // A reviewer never reviews its own work.
     let mut crew = settings.clone();
-    crew.crew = vec![WorkerRef::new("codex", None)];
+    crew.crew = vec![WorkerRef::new("codex", None)].into();
     let own = phase(
         "      - kind: draft\n        name: answer\n        role: drafter\n        workers: [codex]\n      - kind: review\n        role: reviewer\n        input: answer\n        workers: [codex]\n",
     );
@@ -156,7 +156,7 @@ fn workflow_validator_rejects_each_rule_break() {
 
     // Over budget: two card builds at $5 each with $3 left.
     let mut budget = settings.clone();
-    budget.budget.per_card_usd = Some(5.0);
+    budget.limits.budget.per_task_usd = Some(5.0);
     let builds =
         argonauts_crew::workflow::builtin::load("solo").unwrap_or_else(|err| panic!("{err}"));
     assert!(rules(&builds, &budget, 0, Some(3.0)).contains("OverBudget"));
@@ -239,7 +239,7 @@ fn nesting_stops_at_depth_two() {
 
     // A nested workflow's builds count toward the budget floor.
     let mut budget = settings.clone();
-    budget.budget.per_card_usd = Some(5.0);
+    budget.limits.budget.per_task_usd = Some(5.0);
     let builds_twice = parse(
         "name: twice\nphases:\n  - name: Build\n    standard: do\n    steps:\n      - kind: workflow\n        workflow: solo\n      - kind: workflow\n        workflow: solo\n",
     );
@@ -253,7 +253,7 @@ fn validator_rules_for_checkpoints_loops_and_families() {
 
     // A crew build needs goal and plan checkpoints that always open.
     let build =
-        "      - kind: build\n        role: owner\n        input: plan\n      - kind: merge\n";
+        "      - kind: build\n        role: worker\n        input: plan\n      - kind: merge\n";
     let unconditional = "      - kind: checkpoint\n        checkpoint: goal\n      - kind: checkpoint\n        checkpoint: plan\n";
     assert!(
         rules(
@@ -295,7 +295,7 @@ fn validator_rules_for_checkpoints_loops_and_families() {
         .contains("MissingCheckpoint")
     );
     // Solo keeps its goal checkpoint behind `restate_first`, and no other may use it.
-    for solo in ["solo", "solo-reviewed", "best-of-n"] {
+    for solo in ["solo", "maker-checker", "best-of-n"] {
         let workflow =
             argonauts_crew::workflow::builtin::load(solo).unwrap_or_else(|err| panic!("{err}"));
         assert!(rules(&workflow, &settings, 0, None).is_empty(), "{solo}");
@@ -327,7 +327,8 @@ fn validator_rules_for_checkpoints_loops_and_families() {
         WorkerRef::new("claude-code", Some("opus".to_owned())),
         WorkerRef::new("claude-code", Some("sonnet".to_owned())),
         WorkerRef::new("codex", None),
-    ];
+    ]
+    .into();
     let reviewed_by = |reviewer: &str| {
         phase(&format!(
             "      - kind: draft\n        name: answer\n        role: drafter\n        workers: [claude-code/opus]\n      - kind: review\n        role: reviewer\n        input: answer\n        different_family_from: answer\n        workers: [{reviewer}]\n"
@@ -340,7 +341,7 @@ fn validator_rules_for_checkpoints_loops_and_families() {
     assert!(rules(&parse(&reviewed_by("codex")), &crew, 0, None).is_empty());
     // With no reviewer named, some reviewer must come from another family.
     let mut one_family = crew.clone();
-    one_family.crew.truncate(2);
+    one_family.crew = one_family.crew.members().into_iter().take(2).collect();
     let unnamed = phase(
         "      - kind: draft\n        name: answer\n        role: drafter\n        workers: [claude-code/opus]\n      - kind: review\n        role: reviewer\n        input: answer\n        different_family_from: author\n",
     );
@@ -522,7 +523,7 @@ phases:
         max: 2
         steps:
           - kind: gate
-  - name: Per card
+  - name: Per task
     standard: do
     steps:
       - kind: for_each
@@ -545,7 +546,7 @@ fn workflow_events(events: &[RunEvent]) -> Vec<&WorkflowEvent> {
 async fn composed_workflow_runs() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.worker("claude-code/opus", "anthropic");
-    crew.settings.workflow = WorkflowRef::new("composed-checks");
+    crew.settings.phases = WorkflowRef::new("composed-checks");
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.critique.rounds = 0;
     crew.repo
@@ -592,8 +593,8 @@ const TWO_PHASES: &str = "name: two-looks\ndescription: Two looks\nphases:\n  - 
 async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     let lead = crew.worker("claude-code/opus", "anthropic");
-    crew.settings.default_agent = WorkerRef::new("claude-code", Some("opus".to_owned()));
-    crew.settings.workflow = WorkflowRef::new("two-looks");
+    crew.settings.main_agent = WorkerRef::new("claude-code", Some("opus".to_owned()));
+    crew.settings.phases = WorkflowRef::new("two-looks");
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.repo
         .write(".argonauts/workflows/two-looks.yaml", TWO_PHASES)?;
@@ -615,7 +616,7 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
         RunEventKind::Checkpoint(CheckpointEvent::Opened(opened)) => Some(opened.clone()),
         _ => None,
     });
-    let opened = opened.unwrap_or_else(|| panic!("no checkpoint opened"));
+    let opened = opened.unwrap_or_else(|| panic!("no approval opened"));
     assert_eq!(opened.kind, CheckpointKind::ChangeRequest);
     assert!(
         workflow_events(&outcome.events)
@@ -652,7 +653,7 @@ async fn workflow_change_mid_run_goes_through_change_request() -> anyhow::Result
 fn quiet_crew(workflow: &str) -> anyhow::Result<support::Crew> {
     let mut crew = support::Crew::new()?;
     crew.worker("claude-code/opus", "anthropic");
-    crew.settings.workflow = WorkflowRef::new(workflow);
+    crew.settings.phases = WorkflowRef::new(workflow);
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     Ok(crew)
@@ -835,7 +836,7 @@ async fn abandoned_run_resumed_in_its_retro_stays_abandoned() -> anyhow::Result<
         .services
         .workers
         .fake("claude-code/opus")
-        .unwrap_or_else(|| panic!("no owner"));
+        .unwrap_or_else(|| panic!("no worker"));
     owner.push(argonauts_testkit::worker::FakeSession::structured(json!({
         "summary": "Fix the typo in the README.",
         "success_criteria": ["The README has no typo"],
@@ -884,7 +885,7 @@ async fn merged_run_resumed_in_its_retro_stays_merged() -> anyhow::Result<()> {
         .services
         .workers
         .fake("claude-code/opus")
-        .unwrap_or_else(|| panic!("no owner"));
+        .unwrap_or_else(|| panic!("no worker"));
     owner.push(argonauts_testkit::worker::FakeSession::structured(
         solo_report(),
     ));
@@ -914,7 +915,7 @@ async fn merged_run_resumed_in_its_retro_stays_merged() -> anyhow::Result<()> {
 async fn peer_crew_plans_with_one_drafter() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.answering_worker("claude-code/opus", "claude");
-    crew.settings.workflow = WorkflowRef::new("peer-crew");
+    crew.settings.phases = WorkflowRef::new("council");
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     let outcomes = crew
@@ -965,7 +966,7 @@ async fn peer_crew_plans_with_one_drafter() -> anyhow::Result<()> {
 async fn abandoned_inside_a_loop_stays_abandoned() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.answering_worker("claude-code/opus", "claude");
-    crew.settings.workflow = WorkflowRef::new("peer-crew");
+    crew.settings.phases = WorkflowRef::new("council");
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     let parked = crew.start(RunMode::Crew, "add a --verbose flag").await?;

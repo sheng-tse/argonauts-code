@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::fs;
 
-use argonauts_scenarios::{ROWS, Scenario, WAIT};
+use argonauts_scenarios::{ROWS, Scenario, WAIT, past_the_card_guard};
 use argonauts_testkit::{Key, Pty, PtyCommand, Screen, argonauts_bin};
 use regex::Regex;
 
@@ -13,7 +13,9 @@ const WIDTHS: [u16; 4] = [80, 100, 120, 200];
 const FIX: &str = "Fix the install command in README.md: it should be npm install @acme/api";
 const README: &str = "# acme-api\n\nInstall it with:\n\n    npm install acme-api\n";
 
-const MODE_LINE: &str = r"(?m)^  ǁ supervised mode on";
+/// The mode by its sign and first word, which stay when a narrow terminal takes the rest of
+/// its words for the CLIs' plan usage.
+const MODE_LINE: &str = r"(?m)^  ǁ supervised";
 
 struct Look {
     name: &'static str,
@@ -44,11 +46,13 @@ fn launch(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<Pty> {
     if let Some(dir) = config.parent() {
         fs::create_dir_all(dir)?;
     }
-    // Merging is automatic by default, and the checkpoint state needs the merge to wait.
+    // Merging is automatic by default, and the checkpoint state needs the merge to wait. The
+    // request ends with the verdict, which a CLI that takes no tools keeps.
     fs::write(
         &config,
         format!(
-            "[ui]\ntheme = \"{}\"\n\n[approvals.merge]\nmode = \"supervised\"\n",
+            "[ui]\ntheme = \"{}\"\n\n[approvals.merge]\nmode = \"supervised\"\n\n\
+             [main_session]\ntools = false\n",
             look.theme
         ),
     )?;
@@ -92,13 +96,14 @@ fn check_with(screen: &Screen, cols: u16, state: &str, input: bool) {
         );
     }
     assert_eq!(
-        count(screen, r"^  ǁ supervised mode on"),
+        count(screen, r"^  ǁ supervised"),
         1,
         "{state} at {cols}:\n{}",
         screen.text()
     );
     assert_eq!(
-        count(screen, r"^─+ \S+ ─$"),
+        // The rule's label is the workflow and the model, so it has spaces.
+        count(screen, r"^─+ \S.* ─$"),
         usize::from(input),
         "{state} at {cols}:\n{}",
         screen.text()
@@ -125,17 +130,22 @@ fn capture(scenario: &Scenario, look: &Look, cols: u16) -> anyhow::Result<()> {
 
     pty.send(FIX)?;
     pty.press(Key::Enter)?;
+    // The working line says the run is going. The mode's `esc to interrupt` hint is the
+    // first thing a narrow terminal takes for the chips, so it's no sign of that here.
     let screen = pty.wait_for(r"(?m)^[∙✢✲✶✻✼*] [\w'-]+… \(", WAIT)?;
-    pty.wait_for("esc to interrupt", WAIT)?;
+    // Esc leaves a run's agents going, so the mode line counts them and makes
+    // no offer to interrupt.
+    pty.wait_for(r"← \d+ agents?", WAIT)?;
     check(&screen, cols, "busy");
     shot(&pty, "busy")?;
 
     pty.wait_for(r"(?m)^◆ Merge", WAIT)?;
-    // The merge card needs you, so it takes the keys once the input is quiet.
-    let screen = pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to set aside", WAIT)?;
+    // The merge card needs you, so it takes the keys as it shows.
+    let screen = pty.wait_for(r"(?m)^  Enter to \w+.* · Esc to carry on without me", WAIT)?;
     check_with(&screen, cols, "checkpoint", false);
     shot(&pty, "checkpoint")?;
 
+    past_the_card_guard();
     pty.press(Key::Up)?;
     pty.press(Key::Char('1'))?;
     pty.wait_for("Enter to merge", WAIT)?;

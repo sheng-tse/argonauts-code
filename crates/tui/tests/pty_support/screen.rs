@@ -6,14 +6,17 @@ use unicode_width::UnicodeWidthStr;
 
 /// Patterns for the parts every screen has.
 pub const BULLET: &str = "[●⏺]";
-pub const TOP_RULE: &str = "^─+ peer-crew ─$";
+pub const TOP_RULE: &str = "^─+ council · Haiku ─$";
 pub const INPUT_ROW: &str = "^❯";
-/// The mode line, with quotas and spend at its right end when they fit.
+/// The mode line, with each CLI's plan usage against its right edge. The mode's hints are the
+/// first things the chips take the room of, so at 100 columns they may be gone.
 pub const MODE_IDLE: &str =
-    r"^  ǁ supervised mode on \(shift\+tab to cycle\) · \? for shortcuts( {2,}\S.*)?$";
-/// The mode line's right end at 100 columns: the header names the agent and the preset, and
-/// the least used quota gives way.
-pub const STATUS_IDLE: &str = r"\? for shortcuts {2,}Claude 5h 71% used · \$0\.00$";
+    r"^  ǁ supervised mode on( \(shift\+tab to cycle\))?( · \? for shortcuts)?( {2,}\S.*)?$";
+/// The mode line's right end at 100 columns: the CLI in use marked and bold, the other dim.
+pub const STATUS_IDLE: &str = r" {2,}● Claude 5h .{6} 71%  ○ Codex 5h .{6} 38%$";
+/// Work is going: the mode line says how to stop it, or, where the chips took that hint's
+/// room, the working line is up.
+pub const WORKING: &str = r"esc to interrupt|^[∙✢✲✶✻✼*] [\w'-]+…";
 /// The turn end, such as `✻ Sailed for 3s · done 10:42 AM`.
 pub const TURN_END: &str = r"^✻ \w+ for \d+s · done \d{1,2}:\d{2}";
 pub const WORKING_LINE: &str = r"^[∙✢✲✶✻✼*] [\w'-]+…";

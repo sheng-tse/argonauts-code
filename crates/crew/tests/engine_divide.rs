@@ -87,9 +87,9 @@ impl Stage {
             services
                 .workers
                 .add(FakeWorker::harness(worker, family).respond_with(answers));
-            settings.crew.push(worker.parse()?);
+            settings.crew.add(worker.parse()?);
         }
-        settings.default_agent = CREW[0].0.parse()?;
+        settings.main_agent = CREW[0].0.parse()?;
         configure(&mut settings);
         let run = RunId::new("run-01")?;
         let state = repo.home().join("state/repo");
@@ -147,13 +147,13 @@ impl Stage {
                 }
                 if step.is_finished() {
                     let ended = (&mut *step).await?;
-                    bail!("the step ended before plan checkpoint {n} opened: {ended:?}");
+                    bail!("the step ended before plan approval {n} opened: {ended:?}");
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
-        .context("the plan checkpoint never opened")??;
+        .context("the plan approval never opened")??;
         checkpoints::answer(
             &self.host,
             CheckpointAnswer {
@@ -171,7 +171,7 @@ impl Stage {
 
 const CHECKPOINT_ONLY: &str = r#"
 name: plan-checkpoint
-description: The plan checkpoint alone
+description: The plan approval alone
 phases:
   - name: Plan
     standard: plan
@@ -223,7 +223,7 @@ async fn plan_checkpoint_after_divide() -> anyhow::Result<()> {
     assert_eq!(kinds[0], &CardKind::Interface);
     assert_eq!(packet.acceptance_tests.len(), 2);
     for card in &packet.graph.cards {
-        let owner = card.owner.as_ref().context("an owner for every card")?;
+        let owner = card.owner.as_ref().context("a worker for every task")?;
         assert_eq!(card.reviewers.len(), 1);
         assert_ne!(
             family(&card.reviewers[0].to_string()),
@@ -356,10 +356,10 @@ async fn plan_approve_with_edits_becomes_decision() -> anyhow::Result<()> {
             &mut step,
             1,
             AnswerAction::ApproveWithEdits,
-            Some("card-002 paths src/limiter/api.rs"),
+            Some("task-002 paths src/limiter/api.rs"),
         )
         .await?;
-    let note = "Keep the store small.\ncard-002 budget 2.5";
+    let note = "Keep the store small.\ntask-002 limit 2.5";
     let reopened = stage
         .answer(&mut step, 2, AnswerAction::ApproveWithEdits, Some(note))
         .await?;
@@ -394,12 +394,12 @@ async fn plan_approve_with_edits_becomes_decision() -> anyhow::Result<()> {
     let store = events
         .iter()
         .find_map(|e| match &e.kind {
-            RunEventKind::Card(CardEvent::Created(spec)) if spec.id.as_str() == "card-002" => {
+            RunEventKind::Card(CardEvent::Created(spec)) if spec.id.as_str() == "task-002" => {
                 Some(spec.clone())
             }
             _ => None,
         })
-        .context("card-002 was never created")?;
+        .context("task-002 was never created")?;
     assert_eq!(store.budget.limit.map(|limit| limit.amount), Some(2.5));
     Ok(())
 }
@@ -409,7 +409,7 @@ async fn a_failed_prediction_is_left_out() -> anyhow::Result<()> {
     fn answers(spec: &SessionSpec) -> FakeSession {
         match (spec.step, spec.card.as_ref().map(|card| card.as_str())) {
             // Not the schema `Predict` asks for.
-            (Some(StepName::Predict), Some("card-002")) => {
+            (Some(StepName::Predict), Some("task-002")) => {
                 FakeSession::structured(json!({ "guess": "soon" }))
             }
             _ => answer(spec),
@@ -423,7 +423,7 @@ async fn a_failed_prediction_is_left_out() -> anyhow::Result<()> {
     step.await??;
     let packet = plan_packet(&opened)?;
     for card in &packet.graph.cards {
-        assert_eq!(card.predictions.is_some(), card.id.as_str() != "card-002");
+        assert_eq!(card.predictions.is_some(), card.id.as_str() != "task-002");
     }
     let events = stage.sink.events();
     let predicted = events
@@ -433,7 +433,7 @@ async fn a_failed_prediction_is_left_out() -> anyhow::Result<()> {
     assert_eq!(predicted, 4);
     assert!(events.iter().any(|e| matches!(
         &e.kind,
-        RunEventKind::Note(note) if note.text.contains("card-002's prediction is left out")
+        RunEventKind::Note(note) if note.text.contains("task-002's prediction is left out")
     )));
     Ok(())
 }
@@ -528,7 +528,7 @@ fn history(
         "pieces": [],
         "choices": [],
         "risks": [],
-        "test_strategy": "Acceptance tests per card.",
+        "test_strategy": "Acceptance tests per task.",
         "new_dependencies": new_dependencies,
     });
     let path = drafts.join("dr-001.md");
@@ -555,7 +555,7 @@ fn history(
         title: "Rate limits".to_owned(),
         mode: RunMode::Crew,
         forced: true,
-        preset: "peer-crew".to_owned(),
+        workflow: "council".to_owned(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -572,6 +572,7 @@ fn history(
         version: "0.0.1".to_owned(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     };
     let kinds = vec![
         RunEventKind::Run(RunLifecycle::Started(Box::new(started))),
@@ -631,7 +632,7 @@ fn step_call() -> StepCall {
         depth: 0,
         standard: StandardPhase::Decide,
         step: serde_json::from_value(json!({"kind": "checkpoint", "checkpoint": "plan"}))
-            .expect("a checkpoint step"),
+            .expect("an approval step"),
         item: None,
     }
 }

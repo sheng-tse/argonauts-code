@@ -96,25 +96,25 @@ fn log() -> Vec<RunEvent> {
             }),
         ),
         (
-            Some("card-001"),
+            Some("task-001"),
             None,
-            RunEventKind::Card(CardEvent::Created(Box::new(spec("card-001", &[])))),
+            RunEventKind::Card(CardEvent::Created(Box::new(spec("task-001", &[])))),
         ),
         (
-            Some("card-002"),
+            Some("task-002"),
             None,
             RunEventKind::Card(CardEvent::Created(Box::new(spec(
-                "card-002",
-                &["card-001"],
+                "task-002",
+                &["task-001"],
             )))),
         ),
         (
-            Some("card-001"),
+            Some("task-001"),
             None,
             state(CardState::Ready, CardState::Running),
         ),
         (
-            Some("card-001"),
+            Some("task-001"),
             Some("s-001"),
             RunEventKind::Agent(AgentEvent::TextDelta {
                 text: "Reading the router".to_owned(),
@@ -122,7 +122,7 @@ fn log() -> Vec<RunEvent> {
             }),
         ),
         (
-            Some("card-001"),
+            Some("task-001"),
             Some("s-001"),
             RunEventKind::Agent(AgentEvent::TextDelta {
                 text: " and the middleware.".to_owned(),
@@ -130,7 +130,7 @@ fn log() -> Vec<RunEvent> {
             }),
         ),
         (
-            Some("card-001"),
+            Some("task-001"),
             None,
             RunEventKind::Gate(GateOutcome {
                 name: "cargo test".to_owned(),
@@ -160,7 +160,7 @@ fn log() -> Vec<RunEvent> {
             })),
         ),
         (
-            Some("card-001"),
+            Some("task-001"),
             None,
             state(CardState::Integrating, CardState::Integrated),
         ),
@@ -176,8 +176,8 @@ fn log() -> Vec<RunEvent> {
 fn status_refresh_is_incremental() {
     let events = log();
     let owner = Viewer::Session {
-        role: RoleName::Owner,
-        card: Some(CardId::new("card-002").unwrap()),
+        role: RoleName::Worker,
+        card: Some(CardId::new("task-002").unwrap()),
         label: None,
     };
     let mut folder = Folder::default();
@@ -201,9 +201,9 @@ fn status_refresh_is_incremental() {
     let waiting = summary
         .cards
         .iter()
-        .find(|card| card.card.as_str() == "card-002")
+        .find(|card| card.card.as_str() == "task-002")
         .unwrap();
-    assert_eq!(waiting.note, "", "card-001 is integrated now");
+    assert_eq!(waiting.note, "", "task-001 is merged into the run now");
     assert!(summary.recent.iter().any(|line| line.contains("41 passed")));
     assert_eq!(summary.budget.as_ref().unwrap().spent.cost_usd, 1.25);
 
@@ -248,11 +248,11 @@ async fn status_summary_injected_at_session_start() -> anyhow::Result<()> {
     })));
     let (context, sink, _commands) = crew.context(Vec::new())?;
     let host = Host::new(Arc::new(Shared::new(&context, RunState::default())?));
-    let card = CardId::new("card-001")?;
+    let card = CardId::new("task-001")?;
     host.record(
         Some(&card),
         None,
-        RunEventKind::Card(CardEvent::Created(Box::new(spec("card-001", &[])))),
+        RunEventKind::Card(CardEvent::Created(Box::new(spec("task-001", &[])))),
     )?;
     let viewer = Viewer::Session {
         role: RoleName::Restater,
@@ -281,6 +281,109 @@ async fn status_summary_injected_at_session_start() -> anyhow::Result<()> {
         .find(|part| part.kind == InputPartKind::Status)
         .expect("the session starts with a status part");
     assert_eq!(status.text, expected);
-    assert!(status.text.contains("card-001"));
+    assert!(status.text.contains("task-001"));
+    Ok(())
+}
+
+/// A session's start or its end with what it spent, as the conductor records them.
+fn session_spend(step: &str, usd: f64) -> anyhow::Result<RunEventKind> {
+    let data = match step {
+        "started" => json!({
+            "event": "started", "worker": "claude-code", "vendor": "claude-code",
+            "family": "claude", "kind": "harness", "role": "worker", "step": "build",
+            "access": "build", "lifetime": "task", "resumed_from": null, "follow_key": null,
+            "workflow_step": null,
+        }),
+        _ => json!({
+            "event": "ended", "vendor_session": null, "exit_code": 0, "signal": null,
+            "duration_ms": 1000, "reason": {"why": "completed"},
+            "spend": {"input_tokens": 1000, "output_tokens": 100, "cached_tokens": 0,
+                      "cost_usd": usd, "cost_partial": false, "cost_estimated": false},
+            "tool_calls": 1, "result_text": null, "structured": null,
+        }),
+    };
+    Ok(serde_json::from_value(
+        json!({"type": "session", "data": data}),
+    )?)
+}
+
+/// What the run did once its own limit was spent: stopped by your rules, or paused.
+async fn at_the_run_limit(autopilot: bool) -> anyhow::Result<(bool, bool, Vec<String>)> {
+    use argonauts_core::events::run::RunLifecycle;
+    use argonauts_core::settings::approvals::ApprovalMode;
+    let mut crew = support::Crew::new()?;
+    crew.settings.limits.budget.spend_per_run = Some(0.02);
+    let (context, sink, _commands) = crew.context(Vec::new())?;
+    let host = Host::new(Arc::new(Shared::new(&context, RunState::default())?));
+    if autopilot {
+        host.record(
+            None,
+            None,
+            RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
+                mode: ApprovalMode::Autopilot,
+                by: Party::User,
+            }),
+        )?;
+    }
+    let session = SessionKey::parse("s-001").expect("a session key");
+    host.record(None, Some(&session), session_spend("started", 0.0)?)?;
+    host.record(None, Some(&session), session_spend("ended", 0.05)?)?;
+    for _ in 0..200 {
+        let settled = sink.events().iter().any(|event| {
+            matches!(
+                &event.kind,
+                RunEventKind::Run(
+                    RunLifecycle::StopRequested { .. } | RunLifecycle::PauseRequested { .. }
+                )
+            )
+        });
+        if settled {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let events = sink.events();
+    let stopped = events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Run(RunLifecycle::StopRequested { by: Party::Rules })
+        )
+    });
+    let paused = events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Run(RunLifecycle::PauseRequested { .. })
+        )
+    });
+    let notes = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Note(note) => Some(note.text.clone()),
+            _ => None,
+        })
+        .collect();
+    Ok((stopped, paused, notes))
+}
+
+/// On autopilot a run that spent its own limit never waits for you: it ends with its work
+/// kept and says which limit. Supervised, it pauses until you raise it.
+#[tokio::test]
+async fn on_autopilot_a_run_at_its_limit_ends_and_supervised_it_pauses() -> anyhow::Result<()> {
+    let (stopped, paused, notes) = at_the_run_limit(true).await?;
+    assert!(stopped && !paused, "{notes:?}");
+    assert!(
+        notes.iter().any(|note| note.starts_with(
+            "The run reached its $0.02 spend limit, so it ends here with its work kept."
+        )),
+        "{notes:?}"
+    );
+    let (stopped, paused, notes) = at_the_run_limit(false).await?;
+    assert!(paused && !stopped, "{notes:?}");
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("so it pauses here with its work kept")),
+        "{notes:?}"
+    );
     Ok(())
 }

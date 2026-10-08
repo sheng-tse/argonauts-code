@@ -33,6 +33,9 @@ pub struct DraftInput {
     pub decisions: Vec<String>,
     /// The status summary, filtered for drafters.
     pub status: String,
+    /// Who may own and who may review the plan's cards, so its pieces suit the crew.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crew: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -313,7 +316,7 @@ pub struct PlanToCardsInput {
     pub decisions: Vec<String>,
     /// Paths no card may own.
     pub forbidden_paths: Vec<String>,
-    pub max_cards: u32,
+    pub max_tasks: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -351,7 +354,7 @@ pub enum ProposedKind {
     Docs,
 }
 
-/// The coordinator plans and delegates in one structured output (`coordinated-crew`).
+/// The coordinator plans and delegates in one structured output (`orchestrator`).
 pub struct Coordinate;
 
 impl Step for Coordinate {

@@ -59,7 +59,7 @@ pub mod user_files {
     pub const MODELS: &str = "models.toml";
     /// What model discovery last found, so `/model` lists it before the next refresh lands.
     pub const MODELS_CACHE: &str = "models-cache.json";
-    pub const PRESETS: &str = "presets";
+    pub const PRESETS: &str = "workflows";
     pub const VENDORS: &str = "vendors.json";
     /// Live supervisors and their session counts, for global concurrency caps.
     pub const REGISTRY: &str = "registry.json";
@@ -101,6 +101,9 @@ pub mod repo_state {
     pub const EVOLUTION: &str = "evolution";
     /// Skills staged for import, never inside the repo.
     pub const IMPORTS: &str = "imports";
+    /// The history Argonauts keeps of a folder that has no git of its own: a git repository
+    /// whose work tree is your folder, so your folder never gets a `.git`.
+    pub const HIDDEN_GIT: &str = "history.git";
 }
 
 /// Reviewable project files in the repo's `.argonauts/`.
@@ -117,11 +120,11 @@ pub mod project_files {
     /// `D-003-<slug>.md`.
     pub const DECISIONS: &str = "decisions";
     /// A preset here overrides yours and the built-in of the same name.
-    pub const PRESETS: &str = "presets";
+    pub const PRESETS: &str = "workflows";
     /// A workflow here overrides yours and the built-in of the same name.
     pub const WORKFLOWS: &str = "workflows";
-    /// Recipes, `<name>/v<N>.yaml`, with `<name>/current` naming the version that runs.
-    pub const RECIPES: &str = "recipes";
+    /// Learned workflows, `<name>/v<N>.yaml`, with `<name>/current` naming the version that runs.
+    pub const RECIPES: &str = "learned";
     /// Finished runs' outcome logs, when `outcomes.share` is on.
     pub const OUTCOMES: &str = "outcomes";
 }

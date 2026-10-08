@@ -37,9 +37,16 @@ pub struct Score {
 /// The plans' authors with their families.
 pub type Authors = BTreeMap<PlanLabel, (WorkerRef, String)>;
 
-/// The fixed rubric, parsed from its prompt file: one `- \`name\`: what a 10 means` line each.
+/// The built-in rubric.
 pub fn rubric() -> Vec<RubricCriterion> {
-    RUBRIC
+    rubric_in(RUBRIC)
+}
+
+/// A rubric parsed from its prompt file, the built-in or your `prompts/plan/rubric.md`: one
+/// `- \`name\`: what a 10 means` line each. A file with no such line is no rubric, so the
+/// built-in is used.
+pub fn rubric_in(text: &str) -> Vec<RubricCriterion> {
+    let criteria: Vec<RubricCriterion> = text
         .lines()
         .filter_map(|line| {
             let rest = line.trim().strip_prefix("- `")?;
@@ -49,7 +56,12 @@ pub fn rubric() -> Vec<RubricCriterion> {
                 description: description.trim().to_owned(),
             })
         })
-        .collect()
+        .collect();
+    if criteria.is_empty() && text != RUBRIC {
+        tracing::warn!("prompts: your plan/rubric.md lists no criterion, so the built-in is used");
+        return rubric();
+    }
+    criteria
 }
 
 /// plan -> judge -> value per order
@@ -65,8 +77,7 @@ struct Counted {
     dropped: BTreeMap<PlanLabel, u32>,
 }
 
-fn count(scores: &[Score], authors: &Authors) -> Counted {
-    let criteria = rubric().len();
+fn count(scores: &[Score], authors: &Authors, criteria: usize) -> Counted {
     let mut counted = Counted {
         values: authors
             .keys()
@@ -209,7 +220,17 @@ fn ranked(tallies: &[PlanTally]) -> Vec<&PlanTally> {
 }
 
 pub fn aggregate(scores: &[Score], authors: &Authors, settings: &JudgingSettings) -> JudgingResult {
-    let counted = count(scores, authors);
+    aggregate_on(scores, authors, settings, rubric().len())
+}
+
+/// [`aggregate`] for a rubric of `criteria` criteria, which a rubric of yours may change.
+pub fn aggregate_on(
+    scores: &[Score],
+    authors: &Authors,
+    settings: &JudgingSettings,
+    criteria: usize,
+) -> JudgingResult {
+    let counted = count(scores, authors, criteria);
     let plans = counted.tallies(authors);
     let order = ranked(&plans);
     let (winner, margin) = match order.as_slice() {
@@ -254,7 +275,17 @@ fn agreed(rankings: &Table, a: &WorkerRef, b: &WorkerRef) -> Option<(PlanLabel, 
 /// `vote`: each judge votes for the plan it scored highest, and a majority of the judges wins.
 /// A split, or a judge with no clear favorite, leaves the choice to you.
 pub fn vote(scores: &[Score], authors: &Authors, settings: &JudgingSettings) -> JudgingResult {
-    let counted = count(scores, authors);
+    vote_on(scores, authors, settings, rubric().len())
+}
+
+/// [`vote`] for a rubric of `criteria` criteria.
+pub fn vote_on(
+    scores: &[Score],
+    authors: &Authors,
+    settings: &JudgingSettings,
+    criteria: usize,
+) -> JudgingResult {
+    let counted = count(scores, authors, criteria);
     let plans = counted.tallies(authors);
     let judges = counted.judges();
     let mut votes: BTreeMap<PlanLabel, u32> = BTreeMap::new();
@@ -335,6 +366,11 @@ mod tests {
             ]
         );
         assert!(rubric()[0].description.contains("lowest risk"));
+        // A rubric of yours is read the same way, and one with no criterion is no rubric.
+        let yours = rubric_in("Score on these:\n\n- `speed`: 10 means the fastest to build.\n");
+        assert_eq!(yours.len(), 1);
+        assert_eq!(yours[0].name, "speed");
+        assert_eq!(rubric_in("Just be fair.\n"), rubric());
     }
 
     #[test]

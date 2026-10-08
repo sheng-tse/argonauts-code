@@ -3,7 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::names::{CheckpointId, WorkflowId};
+use crate::events::session::VendorWorkflow;
+use crate::names::{CheckpointId, SessionKey, WorkflowId};
 use crate::workflow::{StandardPhase, StepKind, StepRef, Workflow, WorkflowRef};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +43,43 @@ pub enum WorkflowEvent {
     /// One line on why the plan moved, by the lead or by code, such as "review:median found
     /// median([]) returns None, so a second round".
     Note(RunNote),
+    /// What the runner says a workflow is doing now: its name, its phases in the order it
+    /// declares them, and its agents. It is the shape a CLI reports its own workflow in, and
+    /// each report holds the whole state, replacing the last one of the same id.
+    Reported(Box<WorkflowReport>),
+}
+
+/// A running workflow as the runner reports it, and the session behind each of its agents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowReport {
+    /// The workflow step that runs it.
+    pub step: StepRef,
+    pub workflow: VendorWorkflow,
+    /// The session behind each agent that has one yet, in the agents' order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<AgentSession>,
+    /// The size the request asked for, which the orchestrator keeps to, as the workflow's row
+    /// says it: "a small workflow, 5 agents at most".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_asked: Option<String>,
+}
+
+/// The session that ran one agent of a reported workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSession {
+    /// The agent's `index` in the report.
+    pub agent: u32,
+    pub session: SessionKey,
+}
+
+impl WorkflowReport {
+    /// The session that ran the agent of this index, once it has one.
+    pub fn session_of(&self, agent: u32) -> Option<&SessionKey> {
+        self.sessions
+            .iter()
+            .find(|ran| ran.agent == agent)
+            .map(|ran| &ran.session)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,6 +88,10 @@ pub struct WorkflowDeclared {
     pub name: String,
     pub description: String,
     pub phases: Vec<DeclaredPhase>,
+    /// The titles of the steps you require, of every workflow or of this request, so the chat
+    /// and the view can mark them as yours where a phase has one of them as its title.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
 }
 
 /// A phase as the workflow declares it.
@@ -79,6 +121,9 @@ pub struct RunNote {
     /// The workflow it's about, when it's about one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<WorkflowId>,
+    /// It says what the run leaves undone, so the run's closing answer lists it too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub left: bool,
 }
 
 impl WorkflowDeclared {
@@ -99,7 +144,22 @@ impl WorkflowDeclared {
                     standard: phase.standard,
                 })
                 .collect(),
+            required: Vec::new(),
         }
+    }
+
+    /// Whether you require the step `phase` is, whatever case its title is written in.
+    pub fn requires(&self, phase: &DeclaredPhase) -> bool {
+        self.requires_step(&phase.title)
+    }
+
+    /// Whether a step of this title is one you require, in a phase of this workflow or of the
+    /// workflow one of its steps runs.
+    pub fn requires_step(&self, title: &str) -> bool {
+        let title = title.trim();
+        self.required
+            .iter()
+            .any(|required| required.trim().eq_ignore_ascii_case(title))
     }
 }
 

@@ -35,7 +35,7 @@ impl PlanReview {
     /// author, so the judges were of other families when every plan has a counted score. With
     /// `judging.method: human` nobody scored, and the facts say nothing.
     pub fn facts(&self) -> EvidenceFacts {
-        let (spread, margin, other_family) = match &self.judging {
+        let (spread, margin, other_provider) = match &self.judging {
             Some(judged) if judged.plans.iter().all(|tally| tally.counted == 0) => {
                 (None, None, None)
             }
@@ -56,7 +56,7 @@ impl PlanReview {
             open_questions: Some(u32::try_from(self.unverified.len()).unwrap_or(u32::MAX)),
             max_score_spread: spread,
             winner_margin: margin,
-            judges_other_family: other_family,
+            judges_other_provider: other_provider,
             disputes_settled: Some(self.disputes_settled),
             flagged_plans: Some(u32::try_from(self.flagged.len()).unwrap_or(u32::MAX)),
             ..EvidenceFacts::default()
@@ -80,7 +80,7 @@ impl PlanReview {
             ));
         }
         if !self.disputes_settled {
-            flags.push("A spike that fit its budget has no report yet.".to_owned());
+            flags.push("An experiment that fit its limit has no report yet.".to_owned());
         }
         flags
     }
@@ -128,7 +128,7 @@ mod tests {
         let facts = review.facts();
         assert_eq!(facts.max_score_spread, Some(1.5));
         assert_eq!(facts.winner_margin, Some(0.4));
-        assert_eq!(facts.judges_other_family, Some(true));
+        assert_eq!(facts.judges_other_provider, Some(true));
         assert_eq!(facts.flagged_plans, Some(1));
         assert_eq!(facts.open_questions, Some(1));
         assert_eq!(facts.disputes_settled, Some(true));
@@ -144,7 +144,7 @@ mod tests {
             ),
             ..review.clone()
         };
-        assert_eq!(lopsided.facts().judges_other_family, Some(false));
+        assert_eq!(lopsided.facts().judges_other_provider, Some(false));
 
         let human = PlanReview {
             judging: judged(JudgingMethod::Human, vec![tally(1, 0, 0.0)]),

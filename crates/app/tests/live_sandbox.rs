@@ -41,19 +41,19 @@ const PROMPT: &str = "Run `ls` and `echo ok > out.txt`, then reply done.";
 const SHELL_TOOLS: &[&str] = &["Bash", "command_execution", "run_command"];
 
 #[tokio::test]
-#[ignore = "live vendor call; see the module docs"]
+#[ignore = "live agent call; see the module docs"]
 async fn claude_code() {
     live(Arc::new(ClaudeCodeAdapter::new()), "haiku").await;
 }
 
 #[tokio::test]
-#[ignore = "live vendor call; see the module docs"]
+#[ignore = "live agent call; see the module docs"]
 async fn codex() {
     live(Arc::new(CodexAdapter::new()), "gpt-5.6-luna").await;
 }
 
 #[tokio::test]
-#[ignore = "live vendor call; see the module docs"]
+#[ignore = "live agent call; see the module docs"]
 async fn antigravity_cli() {
     live(Arc::new(AntigravityCli::new()), "gemini-3.6-flash-low").await;
 }

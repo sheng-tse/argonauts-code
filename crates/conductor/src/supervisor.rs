@@ -100,7 +100,7 @@ impl SessionOutcome {
         if let Some(cause) = self.stopped_by {
             return Some(
                 match cause {
-                    StopCause::Budget => "stopped because the budget ran out",
+                    StopCause::Budget => "stopped because the limit ran out",
                     StopCause::User => "stopped by you",
                     StopCause::Timeout => "stopped because the session time limit passed",
                 }
@@ -519,14 +519,14 @@ impl<'a> Supervisor<'a> {
             self.note(
                 NoteLevel::Info,
                 &format!(
-                    "Argonauts has no price for {model}, so spend shows only once {name} reports its cost, and the budget can't ask for an early wrap-up."
+                    "Argonauts has no price for {model}, so spend shows only once {name} reports its cost, and the limit can't ask for an early wrap-up."
                 ),
             )
         } else {
             self.note(
                 NoteLevel::Warn,
                 &format!(
-                    "{name} reports only tokens and Argonauts has no price for {model}, so the dollar budget can't count its spend. Set agents.{id}.price or use a token budget. The time and tool-call limits still apply."
+                    "{name} reports only tokens and Argonauts has no price for {model}, so the dollar limit can't count its spend. Set agents.{id}.price or use a token limit. The time and tool-call limits still apply."
                 ),
             )
         }
@@ -929,7 +929,7 @@ mod tests {
         assert!(!outcome.succeeded());
         assert_eq!(
             outcome.failure().unwrap(),
-            "stopped because the budget ran out"
+            "stopped because the limit ran out"
         );
 
         let events = h.events();
@@ -1026,7 +1026,7 @@ mod tests {
         assert!(
             notes
                 .iter()
-                .any(|n| n == "The agent finished, but it used up the budget of $0.05."),
+                .any(|n| n == "The agent finished, but it used up the limit of $0.05."),
             "{notes:?}"
         );
         assert!(!notes.iter().any(|n| n.contains("Stopping")), "{notes:?}");

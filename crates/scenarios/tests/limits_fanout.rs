@@ -10,7 +10,7 @@ use limits_support::*;
 fn limits_native_fanout_capped_per_role() -> anyhow::Result<()> {
     let limits = setup(
         "native-fanout-capped",
-        "[roles.owner]\nnative_fanout = { max = 2 }\n",
+        "[roles.worker]\nnative_fanout = { max = 2 }\n",
     )?;
     for agent in ["claude-code", "codex"] {
         let mut pty = limits.run(&["--agent", agent])?;

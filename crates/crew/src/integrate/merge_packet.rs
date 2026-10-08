@@ -2,12 +2,13 @@
 //! integration tree's SHA as evidence, with `EvidenceFacts.subject` naming the base, the
 //! integration head, and its tree.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSetBuilder};
 
 use argonauts_core::events::card::{CardKind, CardState, GateKind, GateOutcome, ReviewEvent};
 use argonauts_core::events::checkpoint::{MergePacket, MergeRow};
+use argonauts_core::events::run::ChangedFile;
 use argonauts_core::events::session::EndReason;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts, EvidenceSubject};
@@ -19,7 +20,7 @@ use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::handoff::{merge_rule, notes};
 use crate::integrate::final_check::{self, FinalCheck};
-use crate::integrate::{branch, conductor};
+use crate::integrate::{branch, conductor, unborn};
 use crate::roles;
 use crate::state::RunState;
 use crate::state::cards::CardRecord;
@@ -65,7 +66,7 @@ pub async fn position(host: &Host) -> EngineResult<Position> {
     let tree_sha = git.tree_of(&worktree, &head).await?;
     let target = final_check::target(host);
     let main = match &target {
-        Some(target) => Some(git.resolve(&host.repo().root, target).await?),
+        Some(target) => Some(final_check::main_commit(host, target).await?),
         None => None,
     };
     let base = match &main {
@@ -88,14 +89,19 @@ pub async fn position(host: &Host) -> EngineResult<Position> {
     })
 }
 
+/// Beside the merge's diff, `git diff --numstat` of it as `ChangedFile`s.
+pub fn merged_files_path(diff_path: &Path) -> PathBuf {
+    diff_path.with_extension("files.json")
+}
+
 pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidence> {
     let git = host.git();
     let Position {
         branch,
         worktree,
-        target,
         main,
         subject,
+        ..
     } = position(host).await?;
     let (base, head, tree_sha) = (
         subject.base_commit.clone(),
@@ -118,6 +124,19 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         tokio::fs::create_dir_all(dir).await?;
     }
     tokio::fs::write(&diff_path, &diff).await?;
+    // Each file's lines as git counts them, for the closing answer's bars.
+    let files: Vec<ChangedFile> = git
+        .diff_files(&worktree, &base, &head)
+        .await?
+        .into_iter()
+        .map(|(path, insertions, deletions)| ChangedFile {
+            path,
+            insertions,
+            deletions,
+        })
+        .collect();
+    let files_json = serde_json::to_vec(&files).map_err(std::io::Error::other)?;
+    tokio::fs::write(merged_files_path(&diff_path), files_json).await?;
 
     let changed = git.changed_paths(&worktree, &base, &head).await?;
     let conductor_paths = conductor::conductor_paths(host, &worktree, &base, &head).await?;
@@ -140,12 +159,12 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
             .collect()
     });
     let mut rows = Vec::new();
-    let mut reviewed_by_other_company = true;
+    let mut reviewed_by_other_provider = true;
     for record in &cards {
         // Every commit that lands names its author in a note.
         notes::catch_up(host, &record.spec.id).await?;
         let row = row(host, record).await?;
-        reviewed_by_other_company &= approved_elsewhere(host, record, row.owner.as_ref());
+        reviewed_by_other_provider &= approved_elsewhere(host, record, row.owner.as_ref());
         rows.push(row);
     }
 
@@ -171,6 +190,7 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
 
     let mut agent_outputs: Vec<String> = rows.iter().map(row_line).collect();
     agent_outputs.extend(host.read(left_out_line));
+    agent_outputs.extend(unborn::approval_line(host).await?);
     if let Some(problem) = &check.problem {
         agent_outputs.push(format!("final check: {problem}"));
     }
@@ -180,7 +200,7 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         .map(|budget| budget.spent)
         .unwrap_or_default();
     let packet = MergePacket {
-        target,
+        target: final_check::lands_on(host).await?,
         branch,
         rows,
         suite_passed_on_latest_main: suite_on_latest_main,
@@ -204,7 +224,7 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
         protected_paths,
         gates_passed: Some(check.passed && cards_passed),
         reviews_approved: Some(reviews_approved),
-        reviewed_by_other_company: Some(reviewed_by_other_company),
+        reviewed_by_other_provider: Some(reviewed_by_other_provider),
         combined_diff_lines: Some(combined.insertions.saturating_add(combined.deletions)),
         suite_on_latest_main: Some(suite_on_latest_main),
         unreviewed_debt: Some(unreviewed_debt),
@@ -276,7 +296,7 @@ fn left_out_line(state: &RunState) -> Option<String> {
         .into_iter()
         .map(|card| match state.cards.get(&card).map(|r| r.state) {
             Some(CardState::Deferred) => format!("{card} (deferred)"),
-            _ => format!("{card} (waits on a deferred card)"),
+            _ => format!("{card} (waits on a deferred task)"),
         })
         .collect();
     (!cards.is_empty()).then(|| format!("left out: {}", cards.join(", ")))
@@ -362,14 +382,14 @@ fn row_line(row: &MergeRow) -> String {
         None => "not reviewed",
     };
     let gates = if row.gates_passed {
-        "gates passed"
+        "checks passed"
     } else {
-        "gates failed"
+        "checks failed"
     };
     let mut line = format!("{}: {gates}, {review}", row.card);
     for debt in &row.debt {
         line.push_str(&format!(
-            ", needs review by {} (work by {} since handoff-{})",
+            ", needs review by {} (work by {} since fallback-{})",
             debt.needs, debt.by, debt.since
         ));
     }

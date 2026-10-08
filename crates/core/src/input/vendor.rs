@@ -51,6 +51,16 @@ pub fn parse_input_with(
             name: found.name.clone(),
             args: args.to_owned(),
         },
+        CommandKind::Workflow if args.trim().is_empty() => {
+            return Err(InputError::BadArguments {
+                command: typed.clone(),
+                problem: format!("needs a request: /{typed} <request>"),
+            });
+        }
+        CommandKind::Workflow => SlashCommand::WorkflowRequest {
+            workflow: found.name.clone(),
+            request: args.trim().to_owned(),
+        },
         CommandKind::ScreenOnly => {
             return Err(InputError::VendorScreenOnly {
                 command: typed.clone(),
@@ -66,6 +76,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::input::ViewAction;
     use crate::names::VendorId;
     use crate::vendor_commands::{
         BuiltinCommand, BuiltinKind, CommandScope, CommandSource, VendorCommand,
@@ -136,7 +147,8 @@ mod tests {
         assert_eq!(
             parse_input_with("/cost weekly", Some(&set)),
             slash(SlashCommand::Usage {
-                period: Some("weekly".into())
+                period: Some("weekly".into()),
+                action: ViewAction::Open
             })
         );
         assert_eq!(
@@ -174,11 +186,54 @@ mod tests {
     }
 
     #[test]
+    fn a_workflow_of_yours_is_a_command_that_runs_one_request_with_it() {
+        let mut set = set();
+        set.commands.insert(
+            0,
+            VendorCommand {
+                name: "spec-first".into(),
+                aliases: Vec::new(),
+                args: "<request>".into(),
+                help: "Write the spec first".into(),
+                kind: CommandKind::Workflow,
+                source: CommandSource::Custom {
+                    scope: CommandScope::Project,
+                    path: PathBuf::from("/repo/.argonauts/workflows/spec-first.toml"),
+                },
+            },
+        );
+        assert_eq!(
+            parse_input_with("/spec-first add  due dates ", Some(&set)),
+            slash(SlashCommand::WorkflowRequest {
+                workflow: "spec-first".into(),
+                request: "add  due dates".into()
+            })
+        );
+        assert_eq!(
+            parse_input_with("/spec-first", Some(&set)),
+            Err(InputError::BadArguments {
+                command: "spec-first".into(),
+                problem: "needs a request: /spec-first <request>".into()
+            })
+        );
+        // `/workflow` itself is Argonauts' own, whatever your workflows are called.
+        assert_eq!(
+            parse_input_with("/workflow spec-first", Some(&set)),
+            slash(SlashCommand::Workflow {
+                name: Some("spec-first".into()),
+                action: crate::input::PresetAction::Use
+            })
+        );
+    }
+
+    #[test]
     fn argonauts_names_come_first_and_unknown_stays_unknown() {
         let set = set();
         assert_eq!(
             parse_input_with("/status", Some(&set)),
-            slash(SlashCommand::Status)
+            slash(SlashCommand::Status {
+                action: ViewAction::Open
+            })
         );
         assert_eq!(
             parse_input_with("/nothing", Some(&set)),

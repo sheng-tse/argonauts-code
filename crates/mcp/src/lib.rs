@@ -14,6 +14,14 @@ use serde_json::Value;
 pub mod session;
 pub mod user;
 
+/// A tool list a client must not cache. Under protocol 2026-07-28 Claude Code (2.1.293)
+/// drops a tool list without `ttlMs` and `cacheScope`, and the session sees no tools at all.
+pub(crate) fn tool_list(tools: Vec<rmcp::model::Tool>) -> rmcp::model::ListToolsResult {
+    rmcp::model::ListToolsResult::with_all_items(tools)
+        .with_ttl_ms(0)
+        .with_cache_scope(rmcp::model::CacheScope::Private)
+}
+
 /// Lets you start and watch runs from inside another agent. `ConductorApi` can't answer a
 /// checkpoint, so this server can ask for a decision but never grant one. It always refuses to
 /// start, since the default options count the repo as untrusted. Front ends and the CLI pass
@@ -59,7 +67,7 @@ pub struct FrontEndSettings {
 }
 
 /// [`serve_user`] for front ends: both MCP protocol generations, guidance and pause, long
-/// polling, and each run started with the client's name, `mcp.run_budget`, and the daily cap.
+/// polling, and each run started with the client's name, `mcp.run_limit`, and the daily cap.
 pub async fn serve_user_with(
     api: Arc<dyn ConductorApi>,
     options: FrontEndOptions,
@@ -97,8 +105,8 @@ pub async fn serve_session(
     session::serve(server, stdin, stdout).await
 }
 
-/// A direct turn's questions: Claude Code's permission prompts, and `argonauts_start_run` when
-/// it's offered, each sent to the app listening at `endpoint`.
+/// A direct turn's questions: Claude Code's permission prompts, and the main session's own
+/// tools, each sent to the app listening at `endpoint`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskTool {
     /// `127.0.0.1:<port>`.
@@ -106,5 +114,25 @@ pub struct AskTool {
     pub token: String,
     /// Offer `approve`, Claude Code's permission prompt tool.
     pub approve: bool,
-    pub start_run: bool,
+    /// The main session's tools this session is offered, by name (see
+    /// [`session::main_tools`]). A name nothing registers offers nothing.
+    pub tools: Vec<String>,
+    /// Crew roles it may ask, each with a tool: `argonauts_ask_reviewers`, `argonauts_ask_judge`.
+    pub roles: Vec<argonauts_core::settings::crew::CrewRole>,
+}
+
+impl AskTool {
+    fn offers(&self, tool: &str) -> bool {
+        self.tools.iter().any(|offered| offered == tool)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_tool_list_says_not_to_cache_it() {
+        let list = serde_json::to_value(super::tool_list(Vec::new())).unwrap();
+        assert_eq!(list["ttlMs"], 0);
+        assert_eq!(list["cacheScope"], "private");
+    }
 }

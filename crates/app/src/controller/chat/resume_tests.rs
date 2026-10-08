@@ -3,10 +3,11 @@
 
 use argonauts_core::Paths;
 use argonauts_core::app::{AppEvent, AppMode, ChatEvent, ReplayTurn, UiCommand, ViewData};
+use argonauts_core::event::AgentEvent;
 use argonauts_core::events::run::Party;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
 use argonauts_core::names::ChatId;
-use argonauts_core::worker::Worker as _;
+use argonauts_core::worker::{Worker as _, WorkerEvent};
 use argonauts_testkit::{FakeSession, FakeWorker};
 use serde_json::json;
 
@@ -82,7 +83,30 @@ fn has_primer(harness: &Harness, index: usize) -> bool {
 #[tokio::test]
 async fn clear_starts_a_new_conversation_and_resume_carries_the_old_one_on() {
     let mut harness = Harness::start().await;
-    harness.agent.push(answer("Hi.").with_vendor_session("v-1"));
+    // The first conversation publishes a page, which its journal keeps.
+    let page = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
+    let publishing = [
+        AgentEvent::ToolStarted {
+            id: "t1".into(),
+            name: "Artifact".into(),
+            input: json!({"file_path": "out/weekly-usage-chart.html", "icon": "document"}),
+            parent: None,
+        },
+        AgentEvent::ToolFinished {
+            id: "t1".into(),
+            ok: true,
+            output: Some(format!(
+                "Published out/weekly-usage-chart.html at {page} (Version 1)"
+            )),
+            parent: None,
+        },
+    ];
+    let hi = publishing
+        .into_iter()
+        .fold(answer("Hi."), |session, event| {
+            session.with_event(WorkerEvent::Agent(event))
+        });
+    harness.agent.push(hi.with_vendor_session("v-1"));
     harness
         .agent
         .push(answer("A new topic.").with_vendor_session("v-2"));
@@ -116,6 +140,7 @@ async fn clear_starts_a_new_conversation_and_resume_carries_the_old_one_on() {
         worker,
         earlier,
         turns,
+        artifacts,
     } = resumed
     else {
         unreachable!()
@@ -124,6 +149,12 @@ async fn clear_starts_a_new_conversation_and_resume_carries_the_old_one_on() {
     assert_eq!(title, "hi");
     assert_eq!(worker, Some("claude-code".parse().unwrap()));
     assert!(earlier.is_empty());
+    // The page it published comes back with it, for /artifacts and the key that opens it.
+    let pages: Vec<(&str, &str)> = artifacts
+        .iter()
+        .map(|page| (page.name.as_str(), page.url.as_str()))
+        .collect();
+    assert_eq!(pages, [("weekly-usage-chart", page)]);
     assert_eq!(
         texts(&turns),
         vec![(true, "hi".to_owned()), (false, "Hi.".to_owned())]
@@ -259,7 +290,7 @@ async fn another_agent_starts_fresh_with_the_conversation_so_far() {
 #[tokio::test]
 async fn a_vendor_that_cannot_resume_gets_a_handoff_note() {
     let mut harness = Harness::start_with(HarnessOptions {
-        flags: vec![r#"default_agent="codex""#.to_owned()],
+        flags: vec![r#"main_agent="codex""#.to_owned()],
         ..HarnessOptions::default()
     })
     .await;

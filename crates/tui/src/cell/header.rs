@@ -16,12 +16,12 @@ pub struct SessionHeader {
     pub app: String,
     pub version: String,
     /// The chat's CLI by name, such as `Claude Code`.
-    pub default_agent: Option<String>,
+    pub main_agent: Option<String>,
     /// Its model by name, such as `Opus 5.5`.
     pub model: Option<String>,
     /// Shown as `with <effort> effort` after the agent, like Claude Code's header.
     pub effort: Option<String>,
-    pub preset: String,
+    pub workflow: String,
     /// Already shortened with `~`. It is cut from the left when it doesn't fit.
     pub folder: String,
     /// The ones that aren't ready each get a note under the header.
@@ -61,7 +61,7 @@ impl HistoryCell for SessionHeader {
         if !version.is_empty() {
             title.push(Span::styled(format!(" {version}"), dim));
         }
-        let setup: Vec<String> = [self.agent_line(), Some(self.preset.clone())]
+        let setup: Vec<String> = [self.agent_line(), Some(self.workflow.clone())]
             .into_iter()
             .flatten()
             .map(|part| sanitize_line(&part).trim().to_owned())
@@ -120,7 +120,7 @@ impl SessionHeader {
                 .filter(|part| !part.is_empty())
                 .map(str::to_owned)
         };
-        let mut line = known(&self.default_agent)?;
+        let mut line = known(&self.main_agent)?;
         if let Some(model) = known(&self.model) {
             line.push_str(&format!(" · {model}"));
         }
@@ -210,12 +210,12 @@ mod tests {
 
     fn header() -> SessionHeader {
         SessionHeader {
-            app: "Argonauts".into(),
+            app: "Argonauts Code".into(),
             version: "0.0.1".into(),
-            default_agent: Some("Claude Code".into()),
+            main_agent: Some("Claude Code".into()),
             model: Some("Opus 5.5".into()),
             effort: Some("xhigh".into()),
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             folder: "~/github/argonauts".into(),
             agents: vec![
                 AgentReady {
@@ -247,8 +247,8 @@ mod tests {
         let lines = header().lines(&ctx);
         assert_eq!(
             plain_text(&lines),
-            "\n    ▟▙     Argonauts v0.0.1\n   \
-             ▟██▙    Claude Code · Opus 5.5 with xhigh effort · peer-crew\n \
+            "\n    ▟▙     Argonauts Code v0.0.1\n   \
+             ▟██▙    Claude Code · Opus 5.5 with xhigh effort · council\n \
              ▝▀▀▀▀▀▀▘  ~/github/argonauts\n\
              \n  \
              Codex: logged out · run codex login\n  \
@@ -320,7 +320,7 @@ mod tests {
         let lines = header.lines(&ctx);
         assert_eq!(
             plain_text(&lines[..4]),
-            "\n  Argonauts v0.0.1\n  Claude Code · peer-crew\n  ~/github/argonauts"
+            "\n  Argonauts Code v0.0.1\n  Claude Code · council\n  ~/github/argonauts"
         );
     }
 
@@ -337,11 +337,11 @@ mod tests {
         };
         let mut header = header();
         header.model = None;
-        assert_eq!(second(&header), "Claude Code with xhigh effort · peer-crew");
+        assert_eq!(second(&header), "Claude Code with xhigh effort · council");
         header.effort = Some("  ".into());
-        assert_eq!(second(&header), "Claude Code · peer-crew");
-        header.default_agent = None;
+        assert_eq!(second(&header), "Claude Code · council");
+        header.main_agent = None;
         header.effort = Some("high".into());
-        assert_eq!(second(&header), "peer-crew");
+        assert_eq!(second(&header), "council");
     }
 }

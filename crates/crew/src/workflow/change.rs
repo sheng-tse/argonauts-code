@@ -297,6 +297,7 @@ pub fn record(
             RunEventKind::Workflow(WorkflowEvent::Note(RunNote {
                 text: reason,
                 workflow: Some(id.clone()),
+                left: false,
             })),
         )?;
     }
@@ -325,13 +326,13 @@ fn apply_opened(
 ) -> EngineResult<()> {
     let CheckpointPacket::ChangeRequest(packet) = &opened.packet else {
         return Err(EngineError::Refused(format!(
-            "checkpoint {} isn't a workflow change",
+            "approval {} isn't a workflow change",
             opened.id
         )));
     };
     let id = WorkflowId::parse(packet.card.as_str()).ok_or_else(|| {
         EngineError::Refused(format!(
-            "checkpoint {} names no workflow: {}",
+            "approval {} names no workflow: {}",
             opened.id, packet.card
         ))
     })?;
@@ -341,10 +342,7 @@ fn apply_opened(
         .iter()
         .find(|document| document.label == PROPOSED)
         .ok_or_else(|| {
-            EngineError::Refused(format!(
-                "checkpoint {} holds no proposed workflow",
-                opened.id
-            ))
+            EngineError::Refused(format!("approval {} holds no proposed workflow", opened.id))
         })?;
     let workflow = yaml::parse(&proposed.text).map_err(EngineError::Refused)?;
     let reason = evidence.agent_outputs.first().cloned().unwrap_or_default();
@@ -397,7 +395,7 @@ fn note_with_detail(host: &Host, level: NoteLevel, line: &str, detail: &str) -> 
 /// to the same session.
 pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> EngineResult<()> {
     if !host.settings().workflows.adapt_at_phase_ends
-        || !host.read(|state| runner::crew_run(state, id))
+        || !host.read(|state| runner::crew_run(state, id) && !crate::script::runs(state, id))
     {
         return Ok(());
     }
@@ -492,7 +490,7 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
             if slot > 0 {
                 return Ok(());
             }
-            let what = format!("The lead's change after phase {}", phase + 1);
+            let what = format!("The main agent's change after phase {}", phase + 1);
             let line = fixing(&what, plainly, resumed);
             let detail = input.errors.join("\n");
             say_once(host, Some(&answered.session), &line, &detail)
@@ -513,7 +511,7 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                 });
                 let proposed = shape::as_written(host, keep_what_ran(&current, proposed, from));
                 if sizes_only && let Err(error) = preset::keeps(host, &current, &proposed) {
-                    send_back("went beyond sizing your preset", vec![error])?;
+                    send_back("went beyond sizing your workflow", vec![error])?;
                     continue;
                 }
                 proposed
@@ -537,8 +535,8 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                 continue;
             }
             let note = match why.trim() {
-                "" => "The lead changed the workflow before anything was written".to_owned(),
-                why => format!("The lead changed the workflow: {why}"),
+                "" => "The main agent changed the workflow before anything was written".to_owned(),
+                why => format!("The main agent changed the workflow: {why}"),
             };
             return record(host, id, proposed, None, note);
         }
@@ -576,7 +574,7 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
                             host,
                             NoteLevel::Info,
                             format!(
-                                "The lead's change to workflow {id} was withdrawn, so it goes on unchanged: {reason}"
+                                "The main agent's change to workflow {id} was withdrawn, so it goes on unchanged: {reason}"
                             ),
                         );
                     }
@@ -590,7 +588,7 @@ pub async fn adapt_at_phase_end(host: &Host, id: &WorkflowId, phase: u32) -> Eng
         };
     }
     let line = format!(
-        "The lead's change after phase {} broke the rules twice, so the workflow goes on \
+        "The main agent's change after phase {} broke the rules twice, so the workflow goes on \
          unchanged.",
         phase + 1
     );
@@ -670,7 +668,7 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
             // A session that ended without a brief has nothing to fix, so a new one writes it.
             Err(err) if slot == 0 && ended_early(&err) => {
-                let line = "The lead's session stopped before its brief was done, so a new \
+                let line = "The main agent's session stopped before its brief was done, so a new \
                             session is writing it.";
                 // A run's brief is written once, so this is said once in its log.
                 say_once(host, None, line, &err.to_string())?;
@@ -680,12 +678,15 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
                 // Said plainly; what the validator or the session said waits for Ctrl+O.
                 let (what, detail) = match &err {
                     EngineError::Step(StepError::SchemaMismatch { errors, .. }) => (
-                        "The lead's design came back incomplete",
+                        "The main agent's design came back incomplete",
                         format!("output didn't match the schema:\n{}", errors.join("\n")),
                     ),
-                    other => ("The lead couldn't design the workflow", other.to_string()),
+                    other => (
+                        "The main agent couldn't design the workflow",
+                        other.to_string(),
+                    ),
                 };
-                let line = format!("{what}, so {} runs as written.", settings.workflow);
+                let line = format!("{what}, so {} runs as written.", settings.phases);
                 note_with_detail(host, NoteLevel::Warn, &line, &detail)?;
                 return Ok(None);
             }
@@ -712,20 +713,20 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
             let plainly = problems
                 .first()
                 .map_or("broke a rule", |problem| problem.plainly.as_str());
-            let line = fixing("The lead's brief", plainly, refused.is_some());
+            let line = fixing("The main agent's brief", plainly, refused.is_some());
             let about = Some(&answered.session);
             say_once(host, about, &line, &input.errors.join("\n"))?;
         }
     }
     let line = if refusals > 1 {
         format!(
-            "The lead's workflow broke the rules twice, so {} runs as written.",
-            settings.workflow
+            "The main agent's workflow broke the rules twice, so {} runs as written.",
+            settings.phases
         )
     } else {
         format!(
-            "The lead's workflow broke the rules, so {} runs as written.",
-            settings.workflow
+            "The main agent's workflow broke the rules, so {} runs as written.",
+            settings.phases
         )
     };
     note_with_detail(host, NoteLevel::Warn, &line, &input.errors.join("\n"))?;
@@ -763,7 +764,7 @@ fn accept(
     // request said how to run it.
     let asked = !input.as_you_asked.is_empty();
     let sizing = preset::check(host, from.as_ref(), &workflow, asked)
-        .map_err(|error| one("went beyond sizing your preset", error))?;
+        .map_err(|error| one("went beyond sizing your workflow", error))?;
     brief::apply_identity(&mut workflow, brief);
     workflow.name = crate::workflow::naming::unique_name(host, &workflow.name);
     let first_attempt = match &brief.first_attempt {
@@ -859,7 +860,7 @@ fn fixing(what: &str, plainly: &str, resumed: bool) -> String {
         format!("{what} {plainly}; it's fixing that.")
     } else {
         format!(
-            "{what} {plainly}; a new session is fixing that, since the lead's session can't be \
+            "{what} {plainly}; a new session is fixing that, since the main agent's session can't be \
              resumed."
         )
     }
@@ -888,7 +889,7 @@ fn ended_early(err: &EngineError) -> bool {
 
 pub(crate) fn lead(host: &Host) -> argonauts_core::names::WorkerRef {
     host.read(|state| crate::lead::phase_lead(state, host.settings()))
-        .unwrap_or_else(|| host.settings().default_agent.clone())
+        .unwrap_or_else(|| host.settings().main_agent.clone())
 }
 
 fn design_input(host: &Host, current: Option<String>, progress: Vec<String>) -> DesignInput {
@@ -1096,25 +1097,25 @@ const STEP_KINDS: &[(StepKind, &str)] = &[
     ),
     (
         StepKind::Review,
-        "review a diff or a result against criteria, by another family",
+        "review a diff or a result against criteria, by another provider",
     ),
     (StepKind::Judge, "score candidates, never the judge's own"),
     (StepKind::Refute, "try to disprove a finding or a claim"),
     (StepKind::Synthesize, "combine results into one"),
     (
         StepKind::Build,
-        "cards: an owner in a worktree, then its gates and review",
+        "tasks: a worker in a worktree, then its checks and review",
     ),
-    (StepKind::Gate, "run the configured gate commands"),
+    (StepKind::Gate, "run the configured check commands"),
     (
         StepKind::LoopUntil,
         "repeat steps until a condition holds, with a hard maximum",
     ),
     (
         StepKind::Checkpoint,
-        "the goal or plan checkpoint, where you or your policy decide",
+        "the goal or plan approval, where you or your policy decide",
     ),
-    (StepKind::Merge, "integration and the merge checkpoint"),
+    (StepKind::Merge, "integration and the merge approval"),
     (StepKind::Workflow, "run another workflow as one step"),
 ];
 
@@ -1179,11 +1180,11 @@ mod tests {
         builtin::load(name).unwrap_or_else(|err| panic!("{err}"))
     }
 
-    /// `coordinated-crew` at the end of Plan takes a change from phase 3 on. Folding Goal and
+    /// `orchestrator` at the end of Plan takes a change from phase 3 on. Folding Goal and
     /// Plan together would shift Build onto a finished index, so it's refused.
     #[test]
     fn a_change_keeps_the_phases_that_started() {
-        let current = builtin("coordinated-crew");
+        let current = builtin("orchestrator");
         let mut folded = current.clone();
         let plan = folded.phases.remove(1);
         folded.phases[0].steps.extend(plan.steps);

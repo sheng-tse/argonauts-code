@@ -79,12 +79,16 @@ impl Limits {
 
     /// Replaces your global config, for settings that name files the scenario made. These
     /// scenarios follow solo runs, so solo is checked unless the settings say how it runs.
+    /// Their fake CLIs write files directly, with none of their edit tools' events, so every
+    /// new file counts as their work unless the settings say what a commit takes.
     pub fn write_settings(&self, settings: &str) -> anyhow::Result<()> {
-        let settings = if settings.contains("[solo]") {
-            settings.to_owned()
-        } else {
-            format!("{settings}\n[solo]\nstyle = \"checked\"\n")
-        };
+        let mut settings = settings.to_owned();
+        if !settings.contains("[solo]") {
+            settings.push_str("\n[solo]\nkind = \"checked\"\n");
+        }
+        if !settings.contains("[commit]") {
+            settings.push_str("\n[commit]\nunclaimed = \"keep\"\n");
+        }
         write_file(&self.paths().global_config(), &settings)
     }
 

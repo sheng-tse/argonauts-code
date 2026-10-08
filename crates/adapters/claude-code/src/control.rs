@@ -1,15 +1,17 @@
 //! Control requests written to Claude Code's stream-json input, and what their replies say.
 //! Each request's id names what it asked, so a reply reads on its own: `initialize`, send now
-//! and take back by the message's uuid, and a screen's attach, render, and press.
+//! and take back by the message's uuid, a screen's attach, render, and press, and the context
+//! by category.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::screen::{ScreenChange, ScreenRequest};
 use argonauts_core::{AgentEvent, MessageStage, ReportedCommand};
 use serde_json::{Value, json};
 
 use crate::json::{array_at, bool_at, str_at, string_at, strings_at};
-use crate::{models, surface};
+use crate::{context, models, surface};
 
 /// How Argonauts joins a session as a screen. Only `desktop`, `mobile`, and `vscode` are
 /// accepted, and a mod that draws for a terminal draws the desktop look closest.
@@ -24,6 +26,9 @@ const CANCEL: &str = "cancel-";
 const ATTACH: &str = "attach-";
 const RENDER: &str = "render-";
 const PRESS: &str = "press-";
+const CONTEXT: &str = "ctx-";
+const STOP_TASK: &str = "stop-task-";
+const STOP_TURN: &str = "stop-turn-";
 
 /// Keeps screen request ids apart within a process.
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -34,8 +39,43 @@ fn request(id: &str, body: Value) -> String {
 }
 
 /// The first line of a main-session turn. Its reply lists the CLI's commands and models.
+///
+/// It also declares that this screen can stop one background task (`perTaskStopAffordance`).
+/// Without that, Claude Code 2.1.292 kills every background agent and workflow when the turn
+/// is interrupted, since nothing else could stop a runaway one. With it, an interrupt stops
+/// the turn alone and they keep running, as Esc does on Claude Code's own screen.
 pub fn initialize_line() -> String {
-    request(INITIALIZE, json!({"subtype": "initialize"}))
+    request(
+        INITIALIZE,
+        json!({"subtype": "initialize", "perTaskStopAffordance": true}),
+    )
+}
+
+/// Stops one background task, a subagent or a workflow, by the id `task_started` gave it. It
+/// keeps its progress, and Claude Code tells the model it was stopped.
+pub fn stop_task_line(task: &str) -> String {
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    request(
+        &format!("{STOP_TASK}{n}"),
+        json!({"subtype": "stop_task", "task_id": task}),
+    )
+}
+
+/// Stops the running turn, as Esc does on Claude Code's own screen. In a session that opened
+/// with [`initialize_line`] the background agents and workflows go on. In any other they are
+/// killed with the turn, so only such a session is sent this ([`opened_by`]).
+pub fn stop_turn_line() -> String {
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    request(&format!("{STOP_TURN}{n}"), json!({"subtype": "interrupt"}))
+}
+
+/// Whether `line` is Claude Code taking [`initialize_line`], and with it this screen's word
+/// that it stops background tasks one by one.
+pub fn opened_by(line: &Value) -> bool {
+    line.get("response").is_some_and(|reply| {
+        str_at(reply, "request_id") == Some(INITIALIZE)
+            && str_at(reply, "subtype") == Some("success")
+    })
 }
 
 /// Hands what waits to the model now, moving a running tool to the background.
@@ -73,6 +113,16 @@ pub fn screen_line(screen: &ScreenRequest) -> String {
     }
 }
 
+/// Asks for the context by category, the numbers Claude Code's /context draws. `summary`
+/// answers from the last response's usage and local estimates, with no token-count calls.
+pub fn context_usage_line(detail: ContextDetail) -> String {
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    request(
+        &format!("{CONTEXT}{n}"),
+        json!({"subtype": "get_context_usage", "detail": detail.as_str()}),
+    )
+}
+
 /// What a `control_response` line says, by the request it answers.
 pub fn from_response(line: &Value) -> Vec<AgentEvent> {
     let Some(reply) = line.get("response") else {
@@ -87,6 +137,14 @@ pub fn from_response(line: &Value) -> Vec<AgentEvent> {
             _ => MessageStage::NothingWaiting,
         };
         return vec![message(uuid, state)];
+    }
+    if id.starts_with(CONTEXT) {
+        // An error, such as a session that can't answer it, gives nothing, and nothing asks
+        // again until the next fill.
+        if !ok {
+            return Vec::new();
+        }
+        return context::breakdown(body).into_iter().collect();
     }
     if let Some(uuid) = id.strip_prefix(CANCEL) {
         let state = if ok && bool_at(body, "cancelled") {
@@ -111,8 +169,10 @@ pub fn from_response(line: &Value) -> Vec<AgentEvent> {
                 why: string_at(reply, "error").unwrap_or_else(|| "no tree came back".to_owned()),
             },
         }
-    } else if id.starts_with(PRESS) {
-        // A press that didn't land was on a button a redraw took away.
+    } else if id.starts_with(PRESS) || id.starts_with(STOP_TASK) || id.starts_with(STOP_TURN) {
+        // A press that didn't land was on a button a redraw took away. A stop that didn't was
+        // of a task that had ended, and the task's own events say when one did land. A turn
+        // that stopped says so in its result.
         return Vec::new();
     } else {
         // `initialize`, whatever its id.
@@ -128,7 +188,8 @@ fn message(uuid: &str, state: MessageStage) -> AgentEvent {
     }
 }
 
-/// `initialize`'s reply: the commands, then the models.
+/// `initialize`'s reply: the commands, the models, then the account's plan. Nothing else
+/// about the account is kept.
 fn initialized(line: &Value, body: &Value, ok: bool) -> Vec<AgentEvent> {
     let mut events = Vec::new();
     if ok && body.get("commands").is_some() {
@@ -137,6 +198,17 @@ fn initialized(line: &Value, body: &Value, ok: bool) -> Vec<AgentEvent> {
         });
     }
     events.extend(models::from_control_response(line));
+    if ok
+        && let Some(plan) = body
+            .get("account")
+            .and_then(|account| str_at(account, "subscriptionType"))
+            .map(str::trim)
+            .filter(|plan| !plan.is_empty())
+    {
+        events.push(AgentEvent::Plan {
+            plan: plan.to_owned(),
+        });
+    }
     events
 }
 
@@ -243,6 +315,84 @@ mod tests {
                 change: ScreenChange::Unreadable { .. }
             }]
         ));
+    }
+
+    #[test]
+    fn the_context_request_and_its_reply() {
+        let asked = parsed(&context_usage_line(ContextDetail::Summary));
+        assert_eq!(asked["request"]["subtype"], "get_context_usage");
+        assert_eq!(asked["request"]["detail"], "summary");
+        let id = asked["request_id"].as_str().unwrap().to_owned();
+        assert!(id.starts_with(CONTEXT));
+        let reply = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": id, "response": {"maxTokens": 200000, "categories": [
+                {"name": "Messages", "tokens": 900, "kind": "used"}]}}});
+        assert!(matches!(
+            from_response(&reply).as_slice(),
+            [AgentEvent::ContextBreakdown { window: 200000, .. }]
+        ));
+        // An error gives no breakdown, and nothing else that would ask again.
+        let refused = json!({"type": "control_response", "response": {"subtype": "error",
+            "request_id": id, "error": "get_context_usage is not supported in this context"}});
+        assert_eq!(from_response(&refused), []);
+    }
+
+    #[test]
+    fn a_stop_names_the_task_and_its_reply_adds_nothing() {
+        let line: Value = serde_json::from_str(stop_task_line("a1b2c3").trim_end()).unwrap();
+        assert_eq!(line["type"], "control_request");
+        assert_eq!(
+            line["request"],
+            json!({"subtype": "stop_task", "task_id": "a1b2c3"})
+        );
+        let id = line["request_id"].as_str().unwrap();
+        assert!(id.starts_with("stop-task-"), "{id}");
+        for subtype in ["success", "error"] {
+            let reply = json!({"type": "control_response",
+                "response": {"subtype": subtype, "request_id": id, "response": {}}});
+            assert!(from_response(&reply).is_empty(), "{subtype}");
+        }
+        // The session is told at its start that this screen stops tasks one by one, so an
+        // interrupt leaves the background agents running.
+        let first: Value = serde_json::from_str(initialize_line().trim_end()).unwrap();
+        assert_eq!(first["request"]["perTaskStopAffordance"], true);
+    }
+
+    #[test]
+    fn a_turn_stops_alone_only_in_a_session_that_took_initialize() {
+        let line: Value = serde_json::from_str(stop_turn_line().trim_end()).unwrap();
+        assert_eq!(line["type"], "control_request");
+        assert_eq!(line["request"], json!({"subtype": "interrupt"}));
+        let id = line["request_id"].as_str().unwrap();
+        assert!(id.starts_with("stop-turn-"), "{id}");
+        // Its reply says nothing: the stopped turn's own result does.
+        let reply = json!({"type": "control_response",
+            "response": {"subtype": "success", "request_id": id, "response": {}}});
+        assert!(from_response(&reply).is_empty());
+        assert!(!opened_by(&reply));
+
+        let taken = |subtype: &str| {
+            json!({"type": "control_response", "response": {"subtype": subtype,
+                "request_id": "initialize", "response": {"commands": []}}})
+        };
+        assert!(opened_by(&taken("success")));
+        assert!(!opened_by(&taken("error")));
+    }
+
+    #[test]
+    fn the_initialize_reply_names_the_plan_and_keeps_nothing_else_of_the_account() {
+        let reply = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "initialize", "response": {"account": {
+                "email": "someone@example.com", "subscriptionType": "Claude Max"}}}});
+        assert_eq!(
+            from_response(&reply),
+            [AgentEvent::Plan {
+                plan: "Claude Max".into()
+            }]
+        );
+        let api_key = json!({"type": "control_response", "response": {"subtype": "success",
+            "request_id": "initialize", "response": {"account": {"apiProvider": "firstParty"}}}});
+        assert_eq!(from_response(&api_key), []);
     }
 
     #[test]

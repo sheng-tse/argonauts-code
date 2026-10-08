@@ -133,11 +133,11 @@ fn glob_set(globs: &[String]) -> Result<GlobSet, SetupError> {
         let glob = GlobBuilder::new(glob)
             .literal_separator(true)
             .build()
-            .map_err(|err| SetupError::Io(format!("gates.copy_untracked: {err}")))?;
+            .map_err(|err| SetupError::Io(format!("checks.copy_untracked: {err}")))?;
         set.add(glob);
     }
     set.build()
-        .map_err(|err| SetupError::Io(format!("gates.copy_untracked: {err}")))
+        .map_err(|err| SetupError::Io(format!("checks.copy_untracked: {err}")))
 }
 
 fn stays_inside(relative: &Path) -> bool {

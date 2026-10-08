@@ -11,7 +11,7 @@ expression: "picker_lines(picker, width)"
   ❯ 2. Opus 5.5                For complex work and everyday tasks
     3. Sonnet 5.5              Most efficient for simpler tasks
     4. Opus 4.8                Best for everyday, complex tasks
-    5. Claude 3.7 Sonnet       retired · ~4% of quota a card
+    5. Claude 3.7 Sonnet       retired · ~4% of plan usage a task
     6. Other model…            type any model name it takes
 
   ◉ xhigh effort (default)  ←/→ to adjust

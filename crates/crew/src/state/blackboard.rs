@@ -54,7 +54,7 @@ impl Addressee {
     fn owns_card(&self) -> bool {
         matches!(
             self.role,
-            RoleName::Owner | RoleName::Default | RoleName::Spike
+            RoleName::Worker | RoleName::Main | RoleName::Spike
         )
     }
 }
@@ -204,7 +204,7 @@ mod tests {
         Addressee {
             session: SessionKey::numbered(session),
             worker: WorkerRef::new("codex", Some("gpt-5.6".to_owned())),
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             card: Some(CardId::new(card).unwrap()),
         }
     }
@@ -213,7 +213,7 @@ mod tests {
     fn pending_skips_delivered_taken_back_settled_and_own_messages() {
         let mut board = Board::default();
         let card = Recipient::Card {
-            card: CardId::new("card-002").unwrap(),
+            card: CardId::new("task-002").unwrap(),
         };
         let post = |board: &mut Board, message: BlackboardMessage| {
             board.apply(&BlackboardEvent::Posted(message), &envelope(None));
@@ -246,7 +246,7 @@ mod tests {
         back.refs = vec![TAKEN_BACK.to_owned()];
         post(&mut board, back);
 
-        let first = owner(7, "card-002");
+        let first = owner(7, "task-002");
         let ids = |pending: Vec<&BlackboardMessage>| -> Vec<String> {
             pending
                 .iter()
@@ -260,11 +260,11 @@ mod tests {
                 message: MessageId::numbered(2),
                 to: SessionKey::numbered(7),
             },
-            &envelope(Some("card-002")),
+            &envelope(Some("task-002")),
         );
         assert_eq!(ids(board.pending_for(&first)), ["m-001"]);
         // The card's next session doesn't get the card's message again, but does get guidance.
-        let second = owner(8, "card-002");
+        let second = owner(8, "task-002");
         assert_eq!(ids(board.pending_for(&second)), ["m-001", "m-004"]);
 
         let mut answer = message(6, BlackboardKind::Answer, Party::Conductor, Recipient::User);
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn recipients_match_sessions() {
-        let who = owner(1, "card-002");
+        let who = owner(1, "task-002");
         assert!(who.is(&Recipient::All));
         assert!(who.is(&Recipient::Worker {
             worker: WorkerRef::new("codex", None)
@@ -285,14 +285,14 @@ mod tests {
             worker: WorkerRef::new("codex", Some("other".to_owned()))
         }));
         assert!(who.is(&Recipient::Role {
-            role: RoleName::Owner
+            role: RoleName::Worker
         }));
         let reviewer = Addressee {
             role: RoleName::Reviewer,
             ..who.clone()
         };
         let card = Recipient::Card {
-            card: CardId::new("card-002").unwrap(),
+            card: CardId::new("task-002").unwrap(),
         };
         assert!(who.is(&card) && !reviewer.is(&card));
         let narrator = Addressee {

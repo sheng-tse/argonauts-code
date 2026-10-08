@@ -20,6 +20,7 @@ impl<W: Write> Ui<W> {
         now: Instant,
         state: &AppState,
     ) -> Vec<UiAction> {
+        self.settle_card_keys(now);
         if let Some(actions) = self.selection_key(&event) {
             return actions;
         }
@@ -65,6 +66,9 @@ impl<W: Write> Ui<W> {
 
     /// A controller answer for the view that asked. False when no open view takes it.
     pub fn offer_view_data(&mut self, data: &ViewData) -> bool {
+        if let ViewData::Mods { view } = data {
+            self.model.mod_chords = crate::mods::keys::Chords::of(view);
+        }
         let taken = self.views.last_mut().is_some_and(|view| view.accept(data));
         if taken {
             self.dirty = true;
@@ -129,6 +133,8 @@ impl<W: Write> Ui<W> {
                 actions.push(UiAction::ConfirmTakeOver { run, card });
             }
             ViewOutcome::Notice(text) => actions.push(UiAction::Notice(text)),
+            ViewOutcome::Copy(text) => actions.push(UiAction::Copy(text)),
+            ViewOutcome::OpenLink { url, name } => actions.push(UiAction::OpenLink { url, name }),
         }
     }
 

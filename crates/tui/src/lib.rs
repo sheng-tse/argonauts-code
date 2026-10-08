@@ -18,6 +18,7 @@ pub mod render;
 pub mod terminal;
 pub mod text;
 pub mod theme;
+pub mod widgets;
 
 // What connects the screen to the app controller.
 pub mod a11y;
@@ -26,6 +27,8 @@ pub mod cards;
 pub mod commands;
 pub mod keymap;
 pub mod mentions;
+pub mod mods;
+pub mod overview;
 pub mod prompt_history;
 pub mod runtime;
 pub mod stability;

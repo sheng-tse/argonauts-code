@@ -21,7 +21,7 @@ const POLL: Duration = Duration::from_millis(100);
 
 pub(crate) fn record_of(host: &Host, card: &CardId) -> EngineResult<CardRecord> {
     host.read(|state| state.cards.get(card).cloned())
-        .ok_or_else(|| EngineError::Refused(format!("there is no card {card}")))
+        .ok_or_else(|| EngineError::Refused(format!("there is no task {card}")))
 }
 
 /// The pipeline's bookkeeping for `card`.
@@ -67,7 +67,7 @@ pub(crate) fn owner_of(host: &Host, record: &CardRecord) -> WorkerRef {
         .owner
         .clone()
         .or_else(|| record.spec.owner.clone())
-        .unwrap_or_else(|| host.settings().default_agent.clone())
+        .unwrap_or_else(|| host.settings().main_agent.clone())
 }
 
 /// The card's newest owner session, finished or not.

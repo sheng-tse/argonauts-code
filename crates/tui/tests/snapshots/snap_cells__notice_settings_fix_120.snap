@@ -2,8 +2,8 @@
 source: crates/tui/tests/snap_cells.rs
 expression: text(&lines)
 ---
-● .argonauts/config.local.toml needs a fix before you can trust it: gates.run can't be a list of strings; it takes a
-  list of checks, each a [[gates.run]] table with a name and a command. Write it like this:
-  [[gates.run]]
+● .argonauts/config.local.toml needs a fix before you can trust it: checks.run can't be a list of strings; it takes a
+  list of checks, each a [[checks.run]] table with a name and a command. Write it like this:
+  [[checks.run]]
   name = "python3"
   command = ["python3", "-m", "unittest", "-q"]

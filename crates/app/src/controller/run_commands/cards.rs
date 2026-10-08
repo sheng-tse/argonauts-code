@@ -7,6 +7,7 @@ use argonauts_core::events::card::CardState;
 use argonauts_core::events::checkpoint::{AnswerAction, CheckpointPacket};
 use argonauts_core::events::{CheckpointEvent, RunEvent, RunEventKind, SessionEvent};
 use argonauts_core::names::{CheckpointId, RoleName, VendorId, WorkerRef};
+use argonauts_core::settings::handoff::CrewRole;
 use argonauts_core::{CardId, NoteLevel, RunId};
 
 use super::views::run_events;
@@ -34,7 +35,7 @@ pub(crate) async fn reassign(
             let name = ctx.names.worker(&to);
             ctx.notice(
                 NoteLevel::Info,
-                format!("Moving {card} to {name}, with its work saved and a handoff packet."),
+                format!("Moving {card} to {name}, with its work saved and a fallback packet."),
             );
             Ok(Vec::new())
         }
@@ -69,14 +70,14 @@ fn confirm_override(
         ChoiceKind::ConfirmSafetySetting,
         format!("Give {card} to {name} anyway?"),
         vec![
-            format!("{name} breaks a rule of the card's role: {rule}."),
-            "Overriding it applies to this card only, and the run's log records it.".to_owned(),
+            format!("{name} breaks a rule of the task's role: {rule}."),
+            "Overriding it applies to this task only, and the run's log records it.".to_owned(),
         ],
         vec![
             choices::option('y', "Override the rule", AnswerAction::Approve, false),
             choices::option(
                 'n',
-                "Keep the card where it is",
+                "Keep the task where it is",
                 AnswerAction::Cancel,
                 false,
             ),
@@ -111,7 +112,7 @@ pub(crate) async fn slash_reassign(
             let summary = match ctx.services.conductor.status(&run).await {
                 Ok(summary) => summary,
                 Err(err) => {
-                    return super::refused(ctx, err, || "Couldn't read the run's cards".to_owned());
+                    return super::refused(ctx, err, || "Couldn't read the run's tasks".to_owned());
                 }
             };
             let cards: Vec<CardId> = summary
@@ -131,7 +132,7 @@ pub(crate) async fn slash_reassign(
                 let name = ctx.names.harness(&vendor.0);
                 ctx.notice(
                     NoteLevel::Info,
-                    format!("No open card of {run} is with {name}."),
+                    format!("No open task of {run} is with {name}."),
                 );
             }
             cards
@@ -139,7 +140,7 @@ pub(crate) async fn slash_reassign(
         (None, None) => {
             ctx.notice(
                 NoteLevel::Info,
-                "Name a card or a vendor: /reassign <card> <worker>, or /reassign --from <vendor> \
+                "Name a task or an agent: /reassign <task> <worker>, or /reassign --from <agent> \
                  <worker>.",
             );
             return Ok(Vec::new());
@@ -174,7 +175,7 @@ pub(super) fn remember(
     let Some(rule) = handoff_rule(&events, id, pick) else {
         ctx.notice(
             NoteLevel::Info,
-            format!("{id} has no handoff pick to remember."),
+            format!("{id} has no fallback pick to remember."),
         );
         return Ok(Vec::new());
     };
@@ -200,15 +201,15 @@ pub(super) fn handoff_rule(
     let pick = pick.or_else(|| recorded_pick(events, id))?;
     let role = stopped_role(events, &plan.card, &plan.stopped);
     let key = format!(
-        "roles.{}.handoff.replace.{}.with",
-        role.as_str(),
+        "fallback.{}.replace.{}.with",
+        CrewRole::of(role).as_str(),
         plan.stopped.vendor()
     );
     let value = toml::Value::Array(vec![toml::Value::String(pick.to_string())]).to_string();
     Some(ScopeRequest {
         key,
         value,
-        command: "handoff".to_owned(),
+        command: "fallback".to_owned(),
     })
 }
 
@@ -241,7 +242,7 @@ fn stopped_role(events: &[RunEvent], card: &CardId, stopped: &WorkerRef) -> Role
         }
         any.get_or_insert(started.role);
     }
-    any.unwrap_or(RoleName::Owner)
+    any.unwrap_or(RoleName::Worker)
 }
 
 /// `/rewind [card]`: a picker of the card's handoff checkpoints, or every card's. Picking one
@@ -258,8 +259,8 @@ pub(crate) async fn checkpoints(
     let checkpoints = views::checkpoint_rows(&events, card.as_ref());
     if checkpoints.is_empty() {
         let text = match &card {
-            Some(card) => format!("{card} has no handoff checkpoints to go back to."),
-            None => format!("No card of {run} has a handoff checkpoint to go back to."),
+            Some(card) => format!("{card} has no fallback checkpoints to go back to."),
+            None => format!("No task of {run} has a fallback checkpoint to go back to."),
         };
         ctx.notice(NoteLevel::Info, text);
         return Ok(Vec::new());
@@ -288,9 +289,9 @@ pub(crate) async fn revert(
     let choice = choices::app_choice(
         id.clone(),
         ChoiceKind::ConfirmRevert,
-        format!("Revert {card} to handoff-{checkpoint}?"),
+        format!("Revert {card} to fallback-{checkpoint}?"),
         vec![
-            format!("Its branch goes back to argonauts/{run}/{card}/handoff-{checkpoint}."),
+            format!("Its branch goes back to argonauts/{run}/{card}/fallback-{checkpoint}."),
             format!(
                 "The work after it stays on argonauts/{run}/{card}-replaced-{checkpoint}, so \
                  nothing is lost."

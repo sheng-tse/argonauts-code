@@ -139,7 +139,7 @@ pub(crate) fn milestones(events: &[RunEvent]) -> Vec<String> {
                     (
                         Some((CheckpointKind::Plan, cards)),
                         AnswerAction::Approve | AnswerAction::ApproveWithEdits,
-                    ) => Some(format!("Plan approved · {}", count(*cards, "card"))),
+                    ) => Some(format!("Plan approved · {}", count(*cards, "task"))),
                     _ => None,
                 }
             }
@@ -154,14 +154,14 @@ pub(crate) fn milestones(events: &[RunEvent]) -> Vec<String> {
                     .map(|title| format!(" · {title}"))
                     .unwrap_or_default();
                 match to {
-                    CardState::Integrated => Some(format!("{card} integrated{title}")),
+                    CardState::Integrated => Some(format!("{card} merged into the run{title}")),
                     CardState::Failed => Some(format!("{card} failed{title}")),
-                    CardState::Escalated => Some(format!("{card} escalated to you{title}")),
+                    CardState::Escalated => Some(format!("{card} needs you{title}")),
                     _ => None,
                 }
             }
             RunEventKind::Card(CardEvent::Reverted { to, .. }) => Some(format!(
-                "{} reverted to handoff-{to}",
+                "{} reverted to fallback-{to}",
                 card.unwrap_or_default()
             )),
             RunEventKind::Handoff(HandoffEvent::HandedOff { card, to, .. }) => {
@@ -176,7 +176,7 @@ pub(crate) fn milestones(events: &[RunEvent]) -> Vec<String> {
                 .to_owned(),
             ),
             RunEventKind::Integration(IntegrationEvent::Landed { target, .. }) => {
-                Some(format!("Landed on {}", sanitize_for_terminal(target)))
+                Some(format!("Merged into {}", sanitize_for_terminal(target)))
             }
             RunEventKind::Integration(IntegrationEvent::PullRequest { url, .. }) => {
                 Some(match url {
@@ -219,7 +219,7 @@ fn lifecycle_line(lifecycle: &RunLifecycle) -> Option<String> {
                 ResumeCause::User => "Resumed",
                 ResumeCause::Answer => "Resumed for your answer",
                 ResumeCause::VendorBack => "Resumed as an agent came back",
-                ResumeCause::AskTimeout => "Resumed as a handoff question timed out",
+                ResumeCause::AskTimeout => "Resumed as a fallback question timed out",
                 ResumeCause::Crash => "Resumed after a crash",
             }
             .to_owned(),
@@ -228,7 +228,7 @@ fn lifecycle_line(lifecycle: &RunLifecycle) -> Option<String> {
             Some(format!("Approval mode set to {}", mode.label()))
         }
         RunLifecycle::Parked { reason, .. } => Some(format!(
-            "Parked · {}",
+            "Waiting · {}",
             match reason {
                 ParkReason::Checkpoint => "waiting for you".to_owned(),
                 ParkReason::Paused => "paused".to_owned(),
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn milestones_are_one_line_each_oldest_first() {
-        let card = argonauts_core::CardId::new("card-001").unwrap();
+        let card = argonauts_core::CardId::new("task-001").unwrap();
         let plan = CheckpointId::numbered(1);
         let events = vec![
             run_started(0, "Add --json to export", None),
@@ -306,9 +306,9 @@ mod tests {
         assert_eq!(
             milestones(&events),
             [
-                "Plan approved · 5 cards",
-                "card-001 integrated",
-                "Parked · paused",
+                "Plan approved · 5 tasks",
+                "task-001 merged into the run",
+                "Waiting · paused",
                 "Resumed"
             ]
         );
@@ -336,7 +336,7 @@ mod tests {
             ),
             checkpoint_decided(3, &plan, AnswerAction::Approve, Party::User, None),
         ];
-        assert_eq!(milestones(&events), ["Plan approved · 5 cards"]);
+        assert_eq!(milestones(&events), ["Plan approved · 5 tasks"]);
     }
 
     #[test]
@@ -378,7 +378,7 @@ mod tests {
             texts,
             ["note 3", "note 4", "note 5", "note 6", "note 7", "ship it"]
         );
-        assert_eq!(milestones, ["Plan approved · 2 cards"]);
+        assert_eq!(milestones, ["Plan approved · 2 tasks"]);
         assert_eq!((recap.as_str(), recap_model), ("※ recap", None));
 
         let short = condensed_replay(&events[..2], &run_id(), String::new()).unwrap();
@@ -402,7 +402,7 @@ mod tests {
         use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 
         let id = CheckpointId::numbered(1);
-        let card = argonauts_core::CardId::new("card-001").unwrap();
+        let card = argonauts_core::CardId::new("task-001").unwrap();
         let opened = CheckpointOpened {
             id: id.clone(),
             kind: CheckpointKind::Question,

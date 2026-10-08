@@ -9,7 +9,7 @@ use regex::Regex;
 use argonauts_core::CardId;
 
 static CARD: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(card|test|spike)-\d{3,}$").expect("a valid pattern"));
+    LazyLock::new(|| Regex::new(r"^(task|test|spike)-\d{3,}$").expect("a valid pattern"));
 static RECORD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(m|D)-\d{3,}$").expect("a valid pattern"));
 static TEST: LazyLock<Regex> = LazyLock::new(|| {
@@ -112,14 +112,14 @@ mod tests {
     #[test]
     fn refs_are_paths_cards_tests_and_records() {
         let refs = refs_in(
-            "Should `src/limiter/mod.rs` use Redis? card-003 relies on it, and \
+            "Should `src/limiter/mod.rs` use Redis? task-003 relies on it, and \
              limiter::tests::burst fails since m-004. See Cargo.toml, or https://example.com.",
         );
         assert_eq!(
             refs,
             [
                 "src/limiter/mod.rs",
-                "card-003",
+                "task-003",
                 "limiter::tests::burst",
                 "m-004",
                 "Cargo.toml"
@@ -137,7 +137,7 @@ mod tests {
         assert!(under("src/limiter/**", "src/limiter/**"));
         assert!(under("src/**", "src/limiter/*.rs"));
         assert!(!under("src/limiter/**", "src/api/*.rs"));
-        assert_eq!(card_in("card-004"), Some(CardId::new("card-004").unwrap()));
-        assert_eq!(card_in("src/card-004"), None);
+        assert_eq!(card_in("task-004"), Some(CardId::new("task-004").unwrap()));
+        assert_eq!(card_in("src/task-004"), None);
     }
 }

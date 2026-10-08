@@ -3,7 +3,7 @@ source: crates/tui/tests/snap_overlays.rs
 expression: "screen(&mut view, width, height, &state)"
 ---
 Raw · s-002
-The vendor's own lines, unparsed · the last 4 lines                           /state/raw/s-002.jsonl
+The agent's own lines, unparsed · the last 4 lines                            /state/raw/s-002.jsonl
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ {"type":"thread.started","thread_id":"th_01"}                                                    │

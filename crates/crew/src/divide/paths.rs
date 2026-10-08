@@ -96,7 +96,7 @@ mod tests {
         assert!(overlap("src/a.rs", "./src/a.rs"));
         assert!(!overlap("src/store/**", "src/store.rs"));
         assert!(!overlap("src/a.rs", "src/b.rs"));
-        assert!(!overlap("src/api/**", "tests/acceptance/card-002/**"));
+        assert!(!overlap("src/api/**", "tests/acceptance/task-002/**"));
     }
 
     #[test]

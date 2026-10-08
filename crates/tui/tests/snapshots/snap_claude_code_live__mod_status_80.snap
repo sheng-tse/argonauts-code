@@ -7,4 +7,4 @@ expression: text(&view.lines)
 ───────────────────────────────────────────────────────────────────────── solo ─
 ❯
 ────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt    Claude 5h 53% used
+  ⏵⏵ auto mode on            ● Claude 5h ▄▄▄▄▄▄ 53%  PR #482 · 2 reviews waiting

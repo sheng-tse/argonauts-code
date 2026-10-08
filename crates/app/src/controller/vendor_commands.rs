@@ -1,11 +1,14 @@
 //! The conversation's CLI's own commands and keywords: which ones the screen offers, and
 //! sending one to the chat. They're the main agent's, or those of the agent whose session the
 //! conversation carries on, and they're looked up again whenever that CLI or its folder changes.
+//! A command a CLI lists as its own that its adapter's table doesn't have, as a newer version
+//! adds, joins them too.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use argonauts_conductor::cli_versions::{CliVersions, new_command};
 use argonauts_core::Adapter;
 use argonauts_core::NoteLevel;
 use argonauts_core::ReportedCommand;
@@ -57,10 +60,26 @@ pub(crate) fn refresh(ctx: &Ctx, state: &mut VendorCommands, chat: &ChatState) {
             None
         }
     };
-    let set = match &adapter {
+    let mut set = match &adapter {
         Some(adapter) => command_set(ctx, adapter.as_ref(), &folder),
         None => VendorCommandSet::new(VendorId(cli.clone()), cli.clone(), &[], Vec::new()),
     };
+    // A workflow never takes the name of one of the CLI's own commands, so a
+    // cloned `simplify.toml` never runs in place of the CLI's /simplify. Your other workflows
+    // come first, so a name of yours is never taken for a command the CLI only lists.
+    let builtin: Vec<String> = set
+        .commands
+        .iter()
+        .filter(|command| command.kind != CommandKind::Workflow)
+        .flat_map(|command| std::iter::once(&command.name).chain(&command.aliases))
+        .cloned()
+        .collect();
+    let mut commands: Vec<VendorCommand> = super::workflows::commands(ctx)
+        .into_iter()
+        .filter(|workflow| !builtin.contains(&workflow.name))
+        .collect();
+    commands.append(&mut set.commands);
+    set.commands = commands;
     if state.set.as_ref() != Some(&set) {
         ctx.send(AppEvent::VendorCommands { set: set.clone() });
     }
@@ -83,7 +102,8 @@ pub(crate) fn follow(ctx: &Ctx, state: &mut VendorCommands, chat: &ChatState) {
 
 /// The list the conversation's own session just reported, such as Claude Code's `initialize`
 /// reply or `commands_changed`. A plugin's or a mod's commands join the menu, kept for this
-/// folder; the CLI's own are in its table already.
+/// folder. The CLI's own are in its table already, and one a newer version added that the
+/// table doesn't have joins the menu in every folder.
 pub(crate) fn reported(
     ctx: &Ctx,
     state: &mut VendorCommands,
@@ -92,27 +112,59 @@ pub(crate) fn reported(
 ) {
     let cli = chat.cli(ctx).to_owned();
     let folder = chat.folder(ctx).to_path_buf();
-    let theirs: Vec<ReportedCommand> = commands
+    let (own, theirs): (Vec<ReportedCommand>, Vec<ReportedCommand>) = commands
         .iter()
-        .filter(|command| !command.builtin)
         .cloned()
-        .collect();
-    let mut kept = load_reported(ctx, &cli);
+        .partition(|command| command.builtin);
+    let mut changed = keep_for_folder(ctx, &cli, &folder, theirs);
+    if let Some(adapter) = state.adapter.clone().filter(|adapter| adapter.id() == cli) {
+        let new = own
+            .into_iter()
+            .filter(|command| new_command(adapter.as_ref(), command))
+            .collect();
+        changed |= learn_new_commands(ctx, &cli, new);
+    }
+    if changed {
+        refresh(ctx, state, chat);
+    }
+}
+
+/// Keeps a plugin's or a mod's commands for `folder`. True when they changed.
+fn keep_for_folder(ctx: &Ctx, cli: &str, folder: &Path, theirs: Vec<ReportedCommand>) -> bool {
+    let mut kept = load_reported(ctx, cli);
     let key = folder.to_string_lossy().into_owned();
     if kept.get(&key) == Some(&theirs) {
-        return;
+        return false;
     }
     kept.insert(key, theirs);
-    if let Err(err) = save_reported(ctx, &cli, &kept) {
-        ctx.notice(
-            NoteLevel::Warn,
-            format!(
-                "Couldn't keep {}'s command list: {err:#}",
-                ctx.names.harness(&cli)
-            ),
-        );
+    if let Err(err) = save_reported(ctx, cli, &kept) {
+        warn_unkept(ctx, cli, &err);
     }
-    refresh(ctx, state, chat);
+    true
+}
+
+/// Keeps the CLI's own commands its table lacks where Doctor counts them. True when they
+/// changed.
+fn learn_new_commands(ctx: &Ctx, cli: &str, new: Vec<ReportedCommand>) -> bool {
+    let path = ctx.env.paths.cli_versions();
+    let mut file = CliVersions::load(&path);
+    if !file.learn_commands(cli, new) {
+        return false;
+    }
+    if let Err(err) = file.save(&path) {
+        warn_unkept(ctx, cli, &err.into());
+    }
+    true
+}
+
+fn warn_unkept(ctx: &Ctx, cli: &str, err: &anyhow::Error) {
+    ctx.notice(
+        NoteLevel::Warn,
+        format!(
+            "Couldn't keep {}'s command list: {err:#}",
+            ctx.names.harness(cli)
+        ),
+    );
 }
 
 fn reported_path(ctx: &Ctx, cli: &str) -> PathBuf {
@@ -143,8 +195,8 @@ fn save_reported(
     Ok(())
 }
 
-/// A reported command as the menu lists it: sent to the session as itself, marked with its
-/// plugin where its name says.
+/// A reported command as the menu lists it: sent to the session as itself, marked as the CLI's
+/// own or with its plugin where its name says.
 fn as_vendor_command(command: &ReportedCommand) -> VendorCommand {
     VendorCommand {
         name: command.name.clone(),
@@ -157,20 +209,30 @@ fn as_vendor_command(command: &ReportedCommand) -> VendorCommand {
             .unwrap_or_default()
             .to_owned(),
         kind: CommandKind::Vendor,
-        source: CommandSource::Plugin {
-            plugin: command.plugin().unwrap_or_default().to_owned(),
+        source: if command.builtin {
+            CommandSource::BuiltIn
+        } else {
+            CommandSource::Plugin {
+                plugin: command.plugin().unwrap_or_default().to_owned(),
+            }
         },
     }
 }
 
 /// The CLI's tables, then what it loads from the project and your home, then what it reported
-/// last for `folder` that neither knows, such as a mod's commands, a name listed once. A
-/// discovery that fails still leaves the rest.
+/// that neither knows: its own commands a newer version added, then what it reported last for
+/// `folder`, such as a mod's commands, a name listed once. A discovery that fails still leaves
+/// the rest.
 fn command_set(ctx: &Ctx, adapter: &dyn Adapter, folder: &Path) -> VendorCommandSet {
-    let reported: Vec<VendorCommand> = load_reported(ctx, adapter.id())
-        .get(folder.to_string_lossy().as_ref())
-        .map(|commands| commands.iter().map(as_vendor_command).collect())
+    let own = CliVersions::load(&ctx.env.paths.cli_versions()).commands(adapter.id());
+    let for_folder = load_reported(ctx, adapter.id())
+        .remove(folder.to_string_lossy().as_ref())
         .unwrap_or_default();
+    let reported = own
+        .iter()
+        .chain(&for_folder)
+        .map(as_vendor_command)
+        .collect();
     with_reported(base_set(ctx, adapter, folder), reported)
 }
 
@@ -328,6 +390,37 @@ mod tests {
         harness.exit().await;
     }
 
+    /// A workflow file named after one of the CLI's own commands never takes its place: the
+    /// CLI's /init stays the CLI's. Another name of yours is a command.
+    #[tokio::test]
+    async fn a_workflow_never_takes_a_name_the_cli_uses() {
+        let mut harness = Harness::start_with(HarnessOptions {
+            prepare: Some(Box::new(|repo: &TempRepo| {
+                for name in ["init", "sweep"] {
+                    write(
+                        &repo.root().join(format!(".argonauts/workflows/{name}.toml")),
+                        &format!(
+                            "name = \"{name}\"\nabout = \"Mine\"\n[[step]]\nname = \"Do\"\nrole = \"workers\"\n"
+                        ),
+                    );
+                }
+            })),
+            ..HarnessOptions::default()
+        })
+        .await;
+        let event = harness
+            .until(|event| matches!(event, AppEvent::VendorCommands { .. }))
+            .await;
+        let AppEvent::VendorCommands { set } = event else {
+            unreachable!()
+        };
+        let init = set.find("init").expect("the CLI's own");
+        assert_ne!(init.kind, CommandKind::Workflow);
+        let sweep = set.find("sweep").expect("your workflow");
+        assert_eq!(sweep.kind, CommandKind::Workflow);
+        harness.exit().await;
+    }
+
     #[tokio::test]
     async fn a_command_that_runs_inside_the_cli_goes_to_the_chat_session_as_typed() {
         let (mut harness, _) = start().await;
@@ -450,6 +543,43 @@ mod tests {
         harness.exit().await;
     }
 
+    /// A newer Claude Code lists `/heapdump` as its own, which the table doesn't have. It joins
+    /// the menu as the CLI's own, kept for every folder where Doctor counts it.
+    #[tokio::test]
+    async fn a_command_a_newer_cli_lists_as_its_own_joins_the_menu() {
+        let (mut harness, _) = start().await;
+        let heapdump = reported("heapdump", "Dump the JS heap", true);
+        let list = vec![
+            reported("compact", "Compact", true),
+            heapdump.clone(),
+            reported("__remote-workflow", "Run the delivered workflow", true),
+        ];
+        let init = WorkerEvent::Agent(AgentEvent::CommandsChanged { commands: list });
+        harness
+            .agent
+            .push(FakeSession::completed("Hello.").with_event(init));
+        harness.submit("hi").await;
+        let event = harness
+            .until(|event| {
+                matches!(event, AppEvent::VendorCommands { set } if set.find("heapdump").is_some())
+            })
+            .await;
+        let AppEvent::VendorCommands { set } = event else {
+            unreachable!()
+        };
+        let command = set.find("heapdump").unwrap();
+        assert_eq!(command.kind, CommandKind::Vendor);
+        assert_eq!(command.source, CommandSource::BuiltIn);
+        assert_eq!(command.help, "Dump the JS heap");
+        assert!(
+            set.find("__remote-workflow").is_none(),
+            "the CLI's plumbing"
+        );
+        let kept = CliVersions::load(&harness.env.paths.cli_versions());
+        assert_eq!(kept.commands("claude-code"), [heapdump]);
+        harness.exit().await;
+    }
+
     /// A review runs in a session of its own, maybe on another company's CLI, so the list it
     /// reports isn't the conversation's. Filed under the conversation's CLI, Claude Code's
     /// skills would be offered to Codex and sent to it.
@@ -465,10 +595,10 @@ mod tests {
         };
         // Another company's agent reviews, and with none in the crew, the main agent does,
         // in a session of its own all the same.
-        for other_company in [true, false] {
+        for other_provider in [true, false] {
             let (mut harness, _) = start().await;
             harness.repo.write("a.txt", "a\n").unwrap();
-            if other_company {
+            if other_provider {
                 let codex = harness.directory.add(FakeWorker::harness("codex", "gpt"));
                 codex.push(reviewed("One bug."));
             } else {
@@ -485,7 +615,7 @@ mod tests {
             let state = harness.env.state_dir.parent().unwrap().to_path_buf();
             for cli in ["claude-code", "codex"] {
                 let kept = state.join(format!("{cli}-commands.json"));
-                assert!(!kept.exists(), "{other_company}: {}", kept.display());
+                assert!(!kept.exists(), "{other_provider}: {}", kept.display());
             }
             harness.exit().await;
         }

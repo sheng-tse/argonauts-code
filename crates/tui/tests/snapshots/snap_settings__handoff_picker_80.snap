@@ -3,12 +3,12 @@ source: crates/tui/tests/snap_settings.rs
 expression: "picker_lines(picker, width)"
 ---
 ────────────────────────────────────────────────────────────────────────────────
-  Handoff
+  Fallback
   Who takes over when an agent stops, and what it's told
 
   ❯ 1. When an agent stops              auto · built-in
     2. Broken work in progress          continue · built-in
-    3. What the replacement is told     note+summary · this project
+    3. What the fallback is told        note+summary · this project
     4. Who summarizes the old session   unset · built-in
 
   Enter to choose · ↑↓ to move · type to filter · Esc to close

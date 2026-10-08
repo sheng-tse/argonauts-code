@@ -296,12 +296,12 @@ pub(super) fn while_parked(request: &ControlRequest) -> Option<&'static str> {
             ..
         } => None,
         ControlRequest::Status | ControlRequest::Diff { .. } | ControlRequest::Raw { .. } => {
-            Some("the run is parked, so its log is complete")
+            Some("the run is waiting, so its log is complete")
         }
         ControlRequest::Steer { .. } | ControlRequest::StopSession { .. } => {
-            Some("the run is parked, so no agent is running")
+            Some("the run is waiting, so no agent is running")
         }
-        ControlRequest::Pause { .. } => Some("the run is already parked"),
+        ControlRequest::Pause { .. } => Some("the run is already waiting"),
         _ => None,
     }
 }
@@ -329,7 +329,7 @@ pub(crate) async fn parked_reply(state: &ServerState, request: &ControlRequest) 
                 .map(|raw| ControlReply::Raw { raw: Box::new(raw) })
         }),
         other => {
-            return error(while_parked(&other).unwrap_or("the run is parked"));
+            return error(while_parked(&other).unwrap_or("the run is waiting"));
         }
     };
     match view.await {

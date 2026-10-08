@@ -118,7 +118,7 @@ fn stricter(start: &McpSettings, now: &McpSettings) -> McpSettings {
         guidance: start.guidance && now.guidance,
         pause: start.pause && now.pause,
         share,
-        run_budget: shorter(&start.run_budget, &now.run_budget),
+        run_limit: shorter(&start.run_limit, &now.run_limit),
         runs_per_day: start.runs_per_day.min(now.runs_per_day),
     }
 }
@@ -177,9 +177,7 @@ impl ServerHandler for UserServer {
         if !options.repo_trusted {
             return Err(ErrorData::invalid_request(tools::NOT_TRUSTED, None));
         }
-        Ok(ListToolsResult::with_all_items(tools::definitions(
-            &options,
-        )))
+        Ok(crate::tool_list(tools::definitions(&options)))
     }
 
     async fn call_tool(
@@ -570,7 +568,7 @@ mod tests {
                 "long ".repeat(200)
             ),
             mode: RunMode::Crew,
-            preset: "PRESET-TEXT".to_owned(),
+            workflow: "PRESET-TEXT".to_owned(),
             state: RunState::Parked,
             stopped_at: "STOPPED-TEXT".to_owned(),
             updated: OffsetDateTime::UNIX_EPOCH,
@@ -594,7 +592,7 @@ mod tests {
             goal: vec![format!("GOAL-TEXT {}", secret()), "second line".to_owned()],
             plan: Some("PLAN-TEXT".to_owned()),
             cards: vec![CardBrief {
-                card: CardId::new("card-001").expect("card id"),
+                card: CardId::new("task-001").expect("task id"),
                 title: "CARD-TITLE \x1b]0;evil\x07".to_owned(),
                 state: CardState::Running,
                 owner: Some(WorkerRef::new("claude", None)),
@@ -634,7 +632,7 @@ mod tests {
             kind: CheckpointKind::Merge,
             title: format!("CHECKPOINT-TITLE \x1b]0;x\x07 {}", secret()),
             card: None,
-            packet: CheckpointPacket::RecipePromotion(json!({ "recipe": "PACKET-TEXT" })),
+            packet: CheckpointPacket::WorkflowPromotion(json!({ "recipe": "PACKET-TEXT" })),
             evidence_sha256: EVIDENCE.to_owned(),
             mode: ApprovalMode::Supervised,
             decide_with: DecideWith::Rules,
@@ -1024,7 +1022,7 @@ mod tests {
             ("approvals.mode=auto", "approvals.mode"),
             ("sandbox.network=true", "sandbox.network"),
             ("mcp.start_runs=trusted-repos", "mcp.start_runs"),
-            ("budget.run_usd=1000", "budget.run_usd"),
+            ("limits.spend_per_run=1000", "limits.spend_per_run"),
             ("agents.claude.binary=/bin/sh", "agents.claude.binary"),
         ] {
             let result = wire
@@ -1283,7 +1281,7 @@ mod tests {
         );
         assert!(
             !said.contains("cp-002"),
-            "a withdrawn checkpoint is listed: {said}"
+            "a withdrawn approval is listed: {said}"
         );
         let agent_only = AGENT_ONLY.iter().map(|&marker| marker.to_owned());
         for marker in agent_only.chain(never_sent()) {
@@ -1402,7 +1400,7 @@ mod tests {
         let status = wire.call(RUN_STATUS, json!({ "run": RUN })).await;
         assert_code_written(RUN_STATUS, &status);
         let fields = &status["structuredContent"];
-        assert_eq!(fields["cards"][0]["card"], json!("card-001"));
+        assert_eq!(fields["cards"][0]["card"], json!("task-001"));
         assert_eq!(fields["cards"][0]["state"], json!("running"));
         assert_eq!(fields["card_counts"]["running"], json!(1));
         assert!(
@@ -1625,7 +1623,7 @@ mod tests {
     fn stricter_takes_the_tighter_side_of_every_key() {
         let loose = McpSettings {
             runs_per_day: 9,
-            run_budget: Span::new("none"),
+            run_limit: Span::new("none"),
             ..McpSettings::default()
         };
         let tight = McpSettings {
@@ -1634,7 +1632,7 @@ mod tests {
             guidance: false,
             pause: false,
             share: Share::StatusOnly,
-            run_budget: Span::new("30m"),
+            run_limit: Span::new("30m"),
             runs_per_day: 1,
         };
         assert_eq!(stricter(&loose, &tight), tight);

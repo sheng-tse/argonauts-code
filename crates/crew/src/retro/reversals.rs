@@ -49,7 +49,7 @@ pub fn rejects(kind: CheckpointKind, action: &AnswerAction) -> bool {
 /// checkpoint".
 pub fn at_checkpoint(kind: CheckpointKind, action: &AnswerAction) -> String {
     format!(
-        "you answered {} at the {} checkpoint",
+        "you answered {} at the {} approval",
         word(action),
         word(&kind)
     )

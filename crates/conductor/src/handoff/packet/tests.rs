@@ -33,7 +33,7 @@ impl Log {
             seq: self.events.len() as u64,
             ts: OffsetDateTime::UNIX_EPOCH,
             run_id: run(),
-            card_id: card.map(|id| CardId::new(id).expect("a valid card id")),
+            card_id: card.map(|id| CardId::new(id).expect("a valid task id")),
             session: session.map(SessionKey::numbered),
             source: "conductor".to_owned(),
             kind,
@@ -167,7 +167,7 @@ fn card_log() -> Log {
     );
     log.card(CardEvent::Worktree {
         path: PathBuf::from("/tmp/wt"),
-        branch: "argonauts/run-01/card-003".to_owned(),
+        branch: "argonauts/run-01/task-003".to_owned(),
         base: "main".to_owned(),
     });
     log.push(
@@ -231,7 +231,7 @@ fn card_log() -> Log {
     );
     // Another card's session, which the packet must leave out.
     log.push(
-        Some("card-004"),
+        Some("task-004"),
         Some(2),
         RunEventKind::Session(input(vec![part(InputPartKind::Notes, "notes/other.md")])),
     );
@@ -266,9 +266,9 @@ fn card_log() -> Log {
         RunEventKind::Session(ended(EndReason::UsageLimit { resets_at: None }, 1.25, 12)),
     );
     log.card(CardEvent::Committed(CommitInfo {
-        branch: "argonauts/run-01/card-003".to_owned(),
+        branch: "argonauts/run-01/task-003".to_owned(),
         sha: Some("7c1e2a0ffee".to_owned()),
-        message: "card-003: work so far".to_owned(),
+        message: "task-003: work so far".to_owned(),
         stat: DiffStat {
             files_changed: 4,
             insertions: 96,
@@ -294,7 +294,7 @@ fn handoff_packet_contents() {
         packet.notes,
         ["notes/rate-limit-middleware.md", "D-003 Store: Redis"]
     );
-    assert_eq!(packet.work.branch, "argonauts/run-01/card-003");
+    assert_eq!(packet.work.branch, "argonauts/run-01/task-003");
     assert_eq!(packet.work.commit.as_deref(), Some("7c1e2a0ffee"));
     assert_eq!(
         packet.work.stat,
@@ -314,14 +314,14 @@ fn handoff_packet_contents() {
     );
     assert_eq!(packet.last_todo.len(), 2);
     assert_eq!(packet.last_todo[1].text, "Fix the failing test");
-    assert_eq!(packet.gates.len(), 1, "only the latest run of each gate");
+    assert_eq!(packet.gates.len(), 1, "only the latest run of each check");
     assert!(!packet.gates[0].passed);
     assert_eq!(packet.why_stopped, "usage limit");
     assert_eq!(
         packet.last_words.as_ref().map(|report| report.status),
         Some(ReportStatus::Blocked)
     );
-    let left = packet.budget_left.expect("a dollar budget");
+    let left = packet.budget_left.expect("a dollar limit");
     assert_eq!(left.unit, BudgetUnit::Usd);
     assert!((left.amount - 1.75).abs() < 1e-9);
 
@@ -329,16 +329,16 @@ fn handoff_packet_contents() {
     assert_eq!(part.kind, InputPartKind::Handoff);
     assert_eq!(part.source.as_deref(), Some(CARD));
     for expected in [
-        "Handoff · card-003 Middleware",
+        "Fallback · task-003 Middleware",
         "Goal: sha256 goal-sha",
         "notes/rate-limit-middleware.md",
-        "Work so far: commit 7c1e2a0 on argonauts/run-01/card-003: 4 files, +96 -12",
+        "Work so far: commit 7c1e2a0 on argonauts/run-01/task-003: 4 files, +96 -12",
         "  read src/lib.rs",
         "  [~] Fix the failing test",
         "  tests: failed, 41 passed, 1 failed",
         "Why it stopped: usage limit",
         "Limiter written",
-        "Budget left: $1.75",
+        "Limit left: $1.75",
     ] {
         assert!(
             part.text.contains(expected),
@@ -367,7 +367,10 @@ fn packet_from_no_events_still_names_the_card() {
     );
     assert_eq!(packet.work.branch, "");
     assert!(packet.happened.is_empty());
-    assert_eq!(packet.budget_left, None, "quota spend isn't known per card");
+    assert_eq!(
+        packet.budget_left, None,
+        "plan usage spend isn't known per task"
+    );
     assert!(prompt_part(&packet).text.contains("nothing committed yet"));
 }
 
@@ -396,5 +399,5 @@ fn long_histories_keep_the_latest_steps() {
         packet.happened.last().map(String::as_str),
         Some("ran `step 99`")
     );
-    assert_eq!(packet.work.branch, "argonauts/run-01/card-003");
+    assert_eq!(packet.work.branch, "argonauts/run-01/task-003");
 }

@@ -130,24 +130,22 @@ async fn codex_coordinates_and_gemini_reviews_as_asked() {
     assert!(!start.forced);
     let triage = start.triage.clone().expect("the triage decision");
     assert!(triage.as_you_asked(), "{triage:?}");
-    assert_eq!(start.default_agent, Some(WorkerRef::new("codex", None)));
+    assert_eq!(start.main_agent, Some(WorkerRef::new("codex", None)));
     assert_eq!(said(&start, "have codex coordinate"), "Codex coordinates");
     assert_eq!(said(&start, "gemini review"), "Antigravity CLI reviews");
     assert_eq!(
         why(&start, "use opencode to build"),
-        "OpenCode isn't installed, so the crew's owners build"
+        "OpenCode isn't installed, so the crew's workers build"
     );
     let settings = run_settings(&start);
-    assert_eq!(settings.workflow.to_string(), "coordinated-crew");
-    // Codex designs and leads the run, and it stays the coordinated crew's workflow.
-    assert_eq!(settings.default_agent.worker, "codex");
-    assert_eq!(
-        settings.workflows.style_for_lead("codex"),
-        argonauts_core::settings::workflows::RunStyle::Workflow
-    );
-    assert_eq!(workers(&settings, RoleName::Coordinator), ["codex"]);
+    assert_eq!(settings.phases.to_string(), "orchestrator");
+    // Codex designs and leads the run. Leading brings no goal with it: a goal is only what
+    // you set.
+    assert_eq!(settings.main_agent.worker, "codex");
+    assert_eq!(settings.goal.until, None);
+    assert_eq!(workers(&settings, RoleName::Orchestrator), ["codex"]);
     assert_eq!(workers(&settings, RoleName::Reviewer), ["antigravity-cli"]);
-    assert!(!workers(&settings, RoleName::Owner).contains(&"antigravity-cli".to_owned()));
+    assert!(!workers(&settings, RoleName::Worker).contains(&"antigravity-cli".to_owned()));
     harness
         .until(|event| matches!(event, AppEvent::Status { .. }))
         .await;
@@ -163,18 +161,18 @@ async fn codex_coordinates_and_gemini_reviews_as_asked() {
     harness.exit().await;
 }
 
-/// Words beat All hands, and `/plan`, a command, beats the words.
+/// Words beat ultracode, and `/plan`, a command, beats the words.
 #[tokio::test]
 async fn words_beat_settings_and_a_command_beats_words() {
-    let all_hands = || HarnessOptions {
+    let ultracode = || HarnessOptions {
         prepare: Some(Box::new(|repo: &TempRepo| {
-            std::fs::write(repo.global_config(), "[triage]\nall_hands = true\n").unwrap();
+            std::fs::write(repo.global_config(), "ultracode = true\n").unwrap();
         })),
         ..HarnessOptions::default()
     };
     let solo = || instruction("mode", "just do it solo", "", "solo", "this_request");
     // Solo your words chose works in your checkout, as `solo.style` says, and All hands loses.
-    let mut harness = crew_harness(all_hands()).await;
+    let mut harness = crew_harness(ultracode()).await;
     harness.agent.push(reply("change", 2, vec![solo()]));
     harness
         .agent
@@ -196,7 +194,7 @@ async fn words_beat_settings_and_a_command_beats_words() {
         prepare: Some(Box::new(|repo: &TempRepo| {
             std::fs::write(
                 repo.global_config(),
-                "[triage]\nall_hands = true\n[solo]\nstyle = \"checked\"\n",
+                "ultracode = true\n[solo]\nkind = \"checked\"\n",
             )
             .unwrap();
         })),
@@ -210,7 +208,7 @@ async fn words_beat_settings_and_a_command_beats_words() {
     assert!(start.triage.as_ref().is_some_and(|t| t.as_you_asked()));
     harness.exit().await;
 
-    let harness = crew_harness(all_hands()).await;
+    let harness = crew_harness(ultracode()).await;
     harness.agent.push(reply("change", 2, vec![solo()]));
     harness
         .send(UiCommand::Slash {
@@ -248,17 +246,14 @@ async fn instructions_in_a_mentioned_file_are_never_applied() {
         InstructionOutcome::Dropped
     );
     assert!(start.request_settings.is_empty());
-    assert_eq!(
-        start.default_agent,
-        Some(WorkerRef::new("claude-code", None))
-    );
+    assert_eq!(start.main_agent, Some(WorkerRef::new("claude-code", None)));
     harness.exit().await;
 }
 
 #[tokio::test]
 async fn with_read_instructions_off_a_request_runs_as_it_always_did() {
     let options = HarnessOptions {
-        flags: vec!["triage.read_instructions=false".to_owned()],
+        flags: vec!["solo_or_crew.read_instructions=false".to_owned()],
         ..HarnessOptions::default()
     };
     let harness = crew_harness(options).await;
@@ -391,6 +386,86 @@ async fn from_now_on_asks_where_to_keep_it() {
     harness.exit().await;
 }
 
+/// Words that set the crew show the crew understood, each role with where it
+/// came from, then ask once where to keep it. Saving writes `[crew]` in the repository's
+/// shared settings.
+#[tokio::test]
+async fn words_that_set_the_crew_show_it_and_ask_where_to_keep_it() {
+    let mut harness = crew_harness(HarnessOptions::default()).await;
+    harness.agent.push(reply(
+        "change",
+        3,
+        vec![
+            this("others", "all the other agents need to be codex", "codex"),
+            this("review", "the reviewer will be gemini", "gemini"),
+        ],
+    ));
+    harness
+        .submit(
+            "all the other agents need to be codex, and the reviewer will be gemini. add due dates",
+        )
+        .await;
+    let crew = harness
+        .until(|event| {
+            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Crew for this request"))
+        })
+        .await;
+    let AppEvent::Notice { text, .. } = crew else {
+        unreachable!()
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[1].ends_with("your main session"), "{text}");
+    assert!(lines[2].ends_with("as you asked"), "{text}");
+    assert!(lines[3].ends_with("as you asked"), "{text}");
+    assert!(
+        lines[4].ends_with("as you asked: \"all the other agents\""),
+        "{text}"
+    );
+    let event = harness
+        .until(|event| matches!(event, AppEvent::Choice { choice } if choice.kind == ChoiceKind::KeepInstructions))
+        .await;
+    let AppEvent::Choice { choice } = event else {
+        unreachable!()
+    };
+    assert_eq!(choice.title, "Keep this crew?");
+    let labels: Vec<&str> = choice.options.iter().map(|o| o.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "Just this request",
+            "This conversation",
+            "Save for this repository"
+        ]
+    );
+    let start = first_start(&harness).await;
+    assert_eq!(start.mode, RunMode::Crew);
+    harness
+        .send(UiCommand::Answer {
+            to: AnswerTarget::Choice { id: choice.id },
+            action: AnswerAction::Choose {
+                value: "project".to_owned(),
+            },
+            text: None,
+            evidence_sha256: None,
+            cards: Vec::new(),
+            remember: false,
+        })
+        .await;
+    let shared = harness.env.project_config();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let text = std::fs::read_to_string(&shared).unwrap_or_default();
+        if text.contains("[crew]") {
+            assert!(text.contains("antigravity-cli"), "{text}");
+            assert!(text.contains("codex"), "{text}");
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "not saved: {text}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    harness.exit().await;
+}
+
 #[test]
 fn every_kind_has_a_schema_name() {
     // The estimate's schema lists every kind the checks know, by the names the prompt uses.
@@ -401,6 +476,8 @@ fn every_kind_has_a_schema_name() {
         "build",
         "for_the_lead",
         "isolation",
+        "judge",
+        "others",
     ] {
         let parsed: InstructionKind = serde_json::from_value(json!(kind)).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), json!(kind));
@@ -438,7 +515,7 @@ async fn crew_and_solo_commands_read_the_words_too() {
     assert_eq!(why(&start, "just do it solo"), "you typed /crew");
     let settings = run_settings(&start);
     assert_eq!(
-        workers(&settings, RoleName::Coordinator),
+        workers(&settings, RoleName::Orchestrator),
         ["codex".to_owned()]
     );
     harness.exit().await;
@@ -590,84 +667,61 @@ async fn workflow_reads_the_words_and_stays_a_workflow() {
     ));
     harness
         .send(UiCommand::Slash {
-            command: SlashCommand::Workflow {
+            command: SlashCommand::WorkflowRun {
                 task: Some("Fix the rounding. Have codex coordinate, just do it solo.".into()),
             },
         })
         .await;
     let start = first_start(&harness).await;
     assert_eq!((start.mode, start.forced), (RunMode::Crew, true));
-    assert!(
-        start
-            .overrides
-            .contains(&"workflows.style=\"workflow\"".to_owned()),
-        "{:?}",
-        start.overrides
-    );
     assert_eq!(said(&start, "Have codex coordinate"), "Codex coordinates");
     assert_eq!(why(&start, "just do it solo"), "you typed /workflow");
     let settings = run_settings(&start);
     assert_eq!(
-        workers(&settings, RoleName::Coordinator),
+        workers(&settings, RoleName::Orchestrator),
         ["codex".to_owned()]
     );
     // Codex is the run's own default agent, so it's Codex that designs the workflow as lead.
-    assert_eq!(settings.default_agent.worker, "codex");
+    assert_eq!(settings.main_agent.worker, "codex");
     harness.exit().await;
 }
 
-/// `/goal` reads your words as `/workflow` does, and its run stays a goal toward your words:
-/// who coordinates is followed, words for solo lose to the command, and the goal knows its run.
+/// "Keep going until its tests pass": the request's own words set a goal for that request, on
+/// whichever CLI leads, and the Triage line states it back before work starts. The
+/// conversation takes no goal from it.
 #[tokio::test]
-async fn goal_reads_the_words_and_stays_a_goal() {
-    use argonauts_core::input::SlashCommand;
-
-    let objective = "Fix the rounding. Have codex coordinate, just do it solo.";
-    let mut harness = crew_harness(HarnessOptions::default()).await;
+async fn the_requests_own_words_set_a_goal_for_that_request() {
+    let harness = crew_harness(HarnessOptions::default()).await;
+    let says = "keep going until its tests pass";
     harness.agent.push(reply(
         "change",
-        1,
-        vec![
-            this("coordinate", "Have codex coordinate", "codex"),
-            instruction("mode", "just do it solo", "", "solo", "this_request"),
-        ],
+        4,
+        vec![instruction(
+            "goal",
+            says,
+            "",
+            "its tests pass",
+            "this_request",
+        )],
     ));
     harness
-        .send(UiCommand::Slash {
-            command: SlashCommand::Goal {
-                text: Some(objective.into()),
-            },
-        })
+        .submit("Fix the export, and keep going until its tests pass.")
         .await;
     let start = first_start(&harness).await;
-    assert_eq!((start.mode, start.forced), (RunMode::Crew, true));
-    assert_eq!(start.request, objective);
+    // No check command is set up here, so the judge reads it.
+    assert_eq!(
+        said(&start, says),
+        "goal: its tests pass · checked by the judge"
+    );
+    let settings = run_settings(&start);
+    assert_eq!(settings.goal.until.as_deref(), Some("its tests pass"));
     assert!(
-        start
+        !start
             .overrides
-            .contains(&"workflows.style=\"goal\"".to_owned()),
+            .iter()
+            .any(|set| set.starts_with("goal.until")),
         "{:?}",
         start.overrides
     );
-    assert_eq!(said(&start, "Have codex coordinate"), "Codex coordinates");
-    assert_eq!(why(&start, "just do it solo"), "you typed /goal");
-    let settings = run_settings(&start);
-    assert_eq!(
-        workers(&settings, RoleName::Coordinator),
-        ["codex".to_owned()]
-    );
-    harness
-        .until(|event| matches!(event, AppEvent::Attached { .. }))
-        .await;
-    harness
-        .send(UiCommand::Slash {
-            command: SlashCommand::Goal { text: None },
-        })
-        .await;
-    harness
-        .until(|event| {
-            matches!(event, AppEvent::Notice { text, .. } if text.contains("run-001 works toward it"))
-        })
-        .await;
     harness.exit().await;
 }

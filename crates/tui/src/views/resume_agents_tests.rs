@@ -28,7 +28,7 @@ fn run(id: &str, hours_ago: i64, state: RunPhase) -> RunSummary {
         run: RunId::new(id).unwrap(),
         title: format!("{id} title"),
         mode: RunMode::Crew,
-        preset: "crew".into(),
+        workflow: "crew".into(),
         state,
         stopped_at: "merged".into(),
         updated: WALL - Duration::hours(hours_ago),
@@ -46,7 +46,7 @@ fn agent(run: &str, n: u32, role: RoleName, worker: &str, resume: Resume) -> Age
         run: RunId::new(run).unwrap(),
         session: SessionKey::numbered(n),
         role,
-        label: Some("card-001".into()),
+        label: Some("task-001".into()),
         worker: worker.parse().unwrap(),
         last_message: Some("Fixed both functions.".into()),
         updated: WALL - Duration::hours(5),
@@ -68,7 +68,7 @@ fn helper(id: &str, kind: SubagentKind) -> Helper {
 /// run-02, still parked, with its finished owner, then run-01, merged, with its owner (who
 /// started two explorers and a workflow) and its reviewer, whose CLI can't resume.
 fn picker() -> ResumePicker {
-    let mut owner = agent("run-01", 1, RoleName::Owner, "claude-code", Resume::Ready);
+    let mut owner = agent("run-01", 1, RoleName::Worker, "claude-code", Resume::Ready);
     owner.helpers = vec![
         helper("toolu_01", SubagentKind::Subagent),
         helper("toolu_02", SubagentKind::Subagent),
@@ -83,7 +83,7 @@ fn picker() -> ResumePicker {
             why: "OpenCode can't resume a session".into(),
         },
     );
-    let parked = agent("run-02", 1, RoleName::Owner, "codex", Resume::RunOwns);
+    let parked = agent("run-02", 1, RoleName::Worker, "codex", Resume::RunOwns);
     let runs = vec![
         run("run-02", 1, RunPhase::Parked),
         run("run-01", 5, RunPhase::Merged),
@@ -195,7 +195,7 @@ fn a_runs_agents_fold_under_it_until_you_open_it() {
     for cell in [
         "  s-001",
         // Two subagents and a workflow, counted on the session's row.
-        "owner · card-001 · 3 helpers · Fixed both functions.",
+        "worker · task-001 · 3 helpers · Fixed both functions.",
         "Claude Code",
         "5h ago",
     ] {
@@ -286,7 +286,7 @@ fn slash_narrows_the_list_to_the_rows_that_match() {
     for _ in 0.."opencode".len() {
         press(&mut view, KeyCode::Backspace);
     }
-    typed(&mut view, "OWNER run-02");
+    typed(&mut view, "WORKER run-02");
     assert_eq!(listed(&view), ["run run-02", "agent s-001"]);
     typed(&mut view, "x");
     let text = rows(&view);
@@ -312,7 +312,7 @@ fn an_older_runs_agents_are_asked_for_when_you_open_it() {
         run("run-02", 1, RunPhase::Merged),
         run("run-01", 30, RunPhase::Merged),
     ];
-    let owner = agent("run-02", 1, RoleName::Owner, "claude-code", Resume::Ready);
+    let owner = agent("run-02", 1, RoleName::Worker, "claude-code", Resume::Ready);
     let mut view =
         ResumePicker::new(runs).with_agents(vec![owner], vec![RunId::new("run-02").unwrap()]);
     select(&mut view, 1);
@@ -322,7 +322,7 @@ fn an_older_runs_agents_are_asked_for_when_you_open_it() {
         }
         other => panic!("{other:?}"),
     }
-    let older = agent("run-01", 1, RoleName::Owner, "codex", Resume::Ready);
+    let older = agent("run-01", 1, RoleName::Worker, "codex", Resume::Ready);
     assert!(view.accept(&ViewData::AgentSessions {
         run: RunId::new("run-01").unwrap(),
         agents: vec![older],
@@ -338,7 +338,7 @@ fn an_older_runs_agents_are_asked_for_when_you_open_it() {
         agents: vec![agent(
             "run-02",
             1,
-            RoleName::Owner,
+            RoleName::Worker,
             "claude-code",
             Resume::Ready,
         )],
@@ -401,8 +401,8 @@ fn a_title_says_its_role_once_and_leaves_the_report_block_out() {
     retro.label = Some("retro".into());
     retro.last_message = None;
     assert_eq!(super::agent_title(&retro), "retro");
-    let mut owner = agent("run-01", 1, RoleName::Owner, "claude-code", Resume::Ready);
+    let mut owner = agent("run-01", 1, RoleName::Worker, "claude-code", Resume::Ready);
     owner.label = Some("build:money".into());
     owner.last_message = Some("Done\n```json\n{\"status\": \"done\"}\n```".into());
-    assert_eq!(super::agent_title(&owner), "owner · build:money · Done");
+    assert_eq!(super::agent_title(&owner), "worker · build:money · Done");
 }

@@ -4,9 +4,10 @@
 
 pub use crate::bottom::verbs::{VerbPicker, VerbStyle};
 pub use crate::bottom::{
-    Activity, AgentPanel, AgentRow, AgentState, ApprovalMode, BottomState, CardAgent, CardChip,
-    CardNote, CardOption, CardPrompt, Checklist, Composer, Hint, MenuItem, Menus, ModeLine,
-    ModeNotice, OptionKind, StatusPart, VimMode, WorkingLine,
+    Activity, AddedPart, AgentPanel, AgentRow, AgentState, ApprovalMode, BottomLine, BottomState,
+    CardAgent, CardChip, CardNote, CardOption, CardPrompt, Checklist, CliState, CliUse, Composer,
+    Hint, LinePart, MenuItem, Menus, ModeLine, ModeNotice, OptionKind, PartBody, VimMode,
+    WindowUse, WorkingLine,
 };
 pub use crate::cell::{
     AgentReady, AgentsStarted, AssistantMessage, Cell, CollapsedGroup, DiffCell, DiffHunk,
@@ -29,6 +30,8 @@ pub struct ViewModel {
     pub verb_picker: VerbPicker,
     /// Each agent's name color for the whole run, handed out as agents first appear.
     pub agent_colors: AgentColors,
+    /// Each mod's own chord, from the mods the controller last sent.
+    pub mod_chords: crate::mods::keys::Chords,
 }
 
 impl ViewModel {

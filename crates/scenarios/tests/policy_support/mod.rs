@@ -40,8 +40,8 @@ pub const RUN_WAIT: Duration = Duration::from_secs(90);
 /// the owner's, here the fake Codex. Codex names no model it ran, so the reviewer names one.
 pub const AUTO_MERGE_RULES: &str = concat!(
     "[approvals.merge]\nmode = \"auto\"\ndecide_with = \"rules\"\n\n",
-    "[approvals.merge.rules]\nmin_changed_line_coverage = 0.0\nmax_combined_diff_lines = 400\n\n",
-    "[gates]\nrun = [{ name = \"hello\", command = [\"test\", \"-f\", \"hello.txt\"] }]\n\n",
+    "[approvals.rules.merge]\nmin_test_coverage_of_changed_lines = 0.0\nmax_changed_lines = 400\n\n",
+    "[checks]\nrun = [{ name = \"hello\", command = [\"test\", \"-f\", \"hello.txt\"] }]\n\n",
     "[solo]\nreview = true\n\n[roles.reviewer]\nworkers = [\"codex/gpt-5.6-luna\"]\n",
 );
 /// Merges wait for you, for the scenarios about a merge checkpoint that does. Merging is
@@ -49,7 +49,7 @@ pub const AUTO_MERGE_RULES: &str = concat!(
 pub const SUPERVISED_MERGE: &str = "[approvals.merge]\nmode = \"supervised\"\n";
 /// The gate alone, for merges the approver decides once the hard limits pass.
 pub const HELLO_GATE: &str =
-    "[gates]\nrun = [{ name = \"hello\", command = [\"test\", \"-f\", \"hello.txt\"] }]\n";
+    "[checks]\nrun = [{ name = \"hello\", command = [\"test\", \"-f\", \"hello.txt\"] }]\n";
 
 pub fn scenario(name: &str) -> anyhow::Result<Scenario> {
     Scenario::new(&format!("policy/{name}"))
@@ -75,7 +75,7 @@ pub fn write_global_config(scenario: &Scenario, text: &str) -> anyhow::Result<()
     let text = if text.contains("[solo]") {
         text.to_owned()
     } else {
-        format!("{text}\n[solo]\nstyle = \"checked\"\n")
+        format!("{text}\n[solo]\nkind = \"checked\"\n")
     };
     fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
 }
@@ -461,5 +461,5 @@ pub fn merge_waits(events: &[Value]) -> bool {
 /// The one global config every policy scenario starts from: a solo crew of the fake Claude
 /// Code, with `extra` appended.
 pub fn solo_config(extra: &str) -> String {
-    format!("preset = \"solo\"\ndefault_agent = \"claude-code\"\n\n{extra}")
+    format!("workflow = \"solo\"\nmain_agent = \"claude-code\"\n\n{extra}")
 }

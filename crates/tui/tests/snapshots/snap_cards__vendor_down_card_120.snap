@@ -4,18 +4,18 @@ expression: text(&lines)
 ---
 ● claude-code is down
   overload errors on 3 sessions in 2 min
-  A test card tries it again at 2:40 PM
+  A test task tries it again at 2:40 PM
   paused    title        role
-  card-003  Middleware   owner
-  card-002  Redis store  reviewer
+  task-003  Middleware   worker
+  task-002  Redis store  reviewer
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Claude Code is down
-  overload errors on 3 sessions in 2 min · test card at 2:40 PM
-  Paused with work committed: card-003 Middleware (owner), card-002 Redis store (reviewer)
+  overload errors on 3 sessions in 2 min · test task at 2:40 PM
+  Paused with work committed: task-003 Middleware (worker), task-002 Redis store (reviewer)
 
-  ❯ 1. One agent for every paused card
-    2. Choose per card
+  ❯ 1. One agent for every paused task
+    2. Choose per task
     3. Wait for Claude Code
 
-  Enter to choose · Tab to add a note · Esc to set aside · shift+tab to cycle modes
+  Enter to choose · Tab to add a note · Esc to carry on without me · shift+tab to cycle modes

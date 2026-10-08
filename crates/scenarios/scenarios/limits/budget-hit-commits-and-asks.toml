@@ -1,12 +1,12 @@
-# The fake Claude Code spends past the card's budget and stops. With more budget, the resumed
-# session finishes the card.
+# The fake Claude Code spends past the task's limit and stops. With more limit, the resumed
+# session finishes the task.
 
 [version]
 claude = "2.1.284 (Claude Code)"
 codex = "codex-cli 0.158.0"
 agy = "1.2.13"
 
-# A resumed session finishes the card, for less than the half again that "More budget" adds.
+# A resumed session finishes the task, for less than the half again that "More limit" adds.
 [[rule]]
 argv0 = "claude"
 args_contain = ["-p", "--resume", "limits-claude-1"]

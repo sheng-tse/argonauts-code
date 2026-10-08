@@ -2,10 +2,14 @@
 source: crates/tui/tests/snap_composer.rs
 expression: text(&view.lines)
 ---
-──────────────────────────────────────────────────────────────────── peer-crew ─
-❯ tell @c
+────────────────────────────────────────────────────────────────────── council ─
+❯ tell @
 ────────────────────────────────────────────────────────────────────────────────
-  @claude-code                  opus · owner on card-002                  agent
-  @codex                        2 sessions: owner on card-003, reviewer … agent
-  @card-002                     Add the JSON writer                        card
-  @card-003                     修复导出测试中的竞态条件并添加回归测试     card
+  @claude-code                  opus · worker on task-002                 agent
+  @codex                        2 sessions: worker on task-003, reviewer… agent
+  @task-002                     Add the JSON writer                        task
+  @task-003                     修复导出测试中的竞态条件并添加回归测试     task
+  @worker                       claude-code/opus on task-002, codex on ta… role
+  @reviewer                     codex on task-002                          role
+  @1                            claude-code/opus on task-002             follow
+  @2                            codex on task-003                        follow

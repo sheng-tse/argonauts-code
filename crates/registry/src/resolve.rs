@@ -11,13 +11,15 @@ use argonauts_core::layout::{project_files, user_files};
 use argonauts_core::names::RoleName;
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
 use argonauts_core::settings::protocol::UNDERSTAND_RENAMES;
+use argonauts_core::settings::ui::{BadValue, drop_bad_values};
 use argonauts_core::settings::{FILE_LAYERS, GLOBAL_ONLY_KEYS, LAYERS, SAFETY_KEYS, Settings};
 use argonauts_core::{canonical_json, sha256_hex};
 use toml::{Table, Value};
 
 use crate::harnesses::declared_harness_ids;
 use crate::presets::DEFAULT_PRESET;
-use crate::settings::budget_units::BudgetUnits;
+use crate::settings::budget_units::{BudgetUnits, other_units};
+use crate::settings::crew;
 use crate::settings::handoff::{drop_entry_billing, entry_billing, merge_top_level};
 use crate::settings::plain;
 use crate::settings::preset_layer::{PresetLayer, preset_layer};
@@ -30,7 +32,7 @@ const BUILT_IN: &str = "built-in";
 const GLOBAL: &str = "global";
 const PROJECT: &str = "project";
 const PROJECT_LOCAL: &str = "project-local";
-const PRESET: &str = "preset";
+const PRESET: &str = "workflow";
 const FLAG: &str = "flag";
 const REQUEST: &str = "request";
 
@@ -116,6 +118,7 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
 
     for (source, mut table) in flags {
         warnings.extend(moved_keys(&mut table, &source));
+        crew::spell_out(&mut table);
         set_by.record(&table, FLAG, &source);
         budget_units.note(FLAG, &source, &table)?;
         merge(&mut merged, table);
@@ -134,15 +137,26 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
             .map(|(_, warning)| warning),
     );
 
+    crew::follow_what_is_set(&mut merged, &set_by);
     for (from, to) in merge_top_level(&mut merged) {
         set_by.copy(&from, to);
     }
     fill_fresh_sessions(&mut merged);
+    // A typo in how the screen looks never stops the app: the value falls back and is named.
+    let bad_values = drop_bad_values(&mut merged, &defaults);
+    warnings.extend(bad_values.iter().map(|bad| ui_warning(bad, &set_by)));
 
     let mut settings: Settings = Value::Table(merged.clone())
         .try_into()
         .map_err(|err: toml::de::Error| type_error(&err, &set_by, &merged))?;
-    let cleared = budget_units.apply(&mut settings.budget, &mut set_by);
+    let cleared = budget_units.apply(&mut settings.limits.budget, &mut set_by);
+    warnings.extend(
+        settings
+            .ui
+            .tidy()
+            .into_iter()
+            .map(|problem| format!("{} (in {})", problem.message, set_by.source(&problem.key))),
+    );
 
     let resolved = leaves(&to_table(&settings, "the merged settings")?);
     let harness_ids = declared_harnesses(sources);
@@ -156,19 +170,20 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
 
     // Serde drops keys it doesn't know, so anything a layer set that didn't survive is unknown.
     let known: BTreeSet<&str> = resolved.iter().map(|(key, _)| key.as_str()).collect();
+    let named: BTreeSet<&str> = bad_values.iter().map(|bad| bad.key.as_str()).collect();
     warnings.extend(
         set_by
             .keys()
-            .filter(|(key, _)| !known.contains(key))
+            .filter(|(key, _)| !known.contains(key) && !named.contains(key))
             .map(|(key, source)| format!("unknown setting {key} in {source}, ignored")),
     );
     if settings
         .roles
-        .get(&RoleName::Default)
+        .get(&RoleName::Main)
         .is_some_and(|role| !role.workers.is_empty())
     {
         warnings.push(
-            "roles.default.workers is ignored: the default agent is default_agent, which /model \
+            "roles.main.workers is ignored: the main agent is main_agent, which /model \
              sets"
                 .to_owned(),
         );
@@ -221,6 +236,15 @@ pub fn resolve(sources: &SettingsSources) -> Result<ResolvedSettings, SettingsEr
     })
 }
 
+/// A value that didn't read, in plain words, with the layer that set it.
+fn ui_warning(bad: &BadValue, set_by: &SetBy) -> String {
+    let problem = plain::type_message(&bad.key, &bad.problem, Some(&bad.written));
+    format!(
+        "{problem} (in {}), so the default is used",
+        set_by.source(&bad.key)
+    )
+}
+
 fn to_table(settings: &Settings, layer: &str) -> Result<Table, SettingsError> {
     Table::try_from(settings).map_err(|err| SettingsError::Invalid {
         layer: layer.to_owned(),
@@ -243,6 +267,7 @@ fn read_file_layer(
         return Ok(None);
     };
     warnings.extend(moved_keys(&mut table, source));
+    crew::spell_out(&mut table);
     check_plain_keys(&table, source)?;
     if layer != GLOBAL
         && let Some((key, _)) = leaves(&table).into_iter().find(|(key, _)| {
@@ -389,10 +414,17 @@ fn read_flag(flag: &str, interactive: bool) -> Result<(String, Table), SettingsE
 /// One setting a request asked for. A safety key passes only when it tightens what `merged`
 /// says, by the fixed rules of [`tightens`](crate::tightens).
 fn read_request(entry: &str, merged: &Table) -> Result<Table, SettingsError> {
-    let table = parse_flag(entry)?;
+    let mut table = parse_flag(entry)?;
+    crew::spell_out(&mut table);
     check_plain_keys(&table, &format!("your request: {entry}"))?;
     for (key, value) in leaves(&table) {
-        if is_safety_key(&key) && !crate::tightens(&key, &value, value_at(merged, &key)) {
+        let stricter = crate::tightens(&key, &value, value_at(merged, &key));
+        // A first limit in this unit would clear one you set in another.
+        let switches_unit = value_at(merged, &key).is_none()
+            && other_units(&key)
+                .iter()
+                .any(|other| value_at(merged, other).is_some());
+        if is_safety_key(&key) && (!stricter || switches_unit) {
             return Err(SettingsError::Refused(format!(
                 "{key} is a safety setting, and a request may only make it stricter"
             )));
@@ -411,7 +443,7 @@ fn value_at<'a>(table: &'a Table, key: &str) -> Option<&'a Value> {
     Some(value)
 }
 
-const WORKFLOW: &str = "workflow";
+const WORKFLOW: &str = "phases";
 
 /// The preset the files and flags pick.
 struct PresetChoice {
@@ -429,14 +461,14 @@ fn preset_choice(
     let (value, source, layer) = match flags
         .iter()
         .rev()
-        .find_map(|(source, table)| Some((table.get("preset")?, source.clone())))
+        .find_map(|(source, table)| Some((table.get("workflow")?, source.clone())))
     {
         Some((value, source)) => (value, source, FLAG),
-        None => match merged.get("preset") {
+        None => match merged.get("workflow") {
             Some(value) => (
                 value,
-                set_by.source("preset"),
-                set_by.layer("preset").unwrap_or(BUILT_IN),
+                set_by.source("workflow"),
+                set_by.layer("workflow").unwrap_or(BUILT_IN),
             ),
             None => {
                 return Ok(PresetChoice {
@@ -455,7 +487,7 @@ fn preset_choice(
         }),
         other => Err(SettingsError::Invalid {
             layer: source,
-            message: format!("preset must be a preset's name, not {other}"),
+            message: format!("workflow must be a workflow's name, not {other}"),
         }),
     }
 }
@@ -481,7 +513,7 @@ fn recipe_layer(recipe: &crate::RecipeOverlay, merged: &Table) -> Result<Table, 
         .collect();
     if !barred.is_empty() {
         return Err(format!(
-            "{} is left out: a recipe can't set {}",
+            "{} is left out: a learned workflow can't set {}",
             recipe.label,
             barred.join(", ")
         ));
@@ -506,10 +538,10 @@ fn recipe_layer(recipe: &crate::RecipeOverlay, merged: &Table) -> Result<Table, 
     }
     if let Some(usd) = recipe.replay_budget_usd {
         let budget = table
-            .entry("budget")
+            .entry("limits")
             .or_insert_with(|| Value::Table(Table::new()));
         if let Some(budget) = budget.as_table_mut() {
-            budget.insert("run_usd".to_owned(), Value::Float(usd as f64));
+            budget.insert("spend_per_run".to_owned(), Value::Float(usd as f64));
         }
     }
     Ok(table)
@@ -828,6 +860,43 @@ mod tests {
         path
     }
 
+    /// A file of two lines, the orchestrator and the reviewers: the workers nobody set follow
+    /// the orchestrator, and the judge follows the reviewers, though the built-in crew lists
+    /// all three. A file that sets the workers too keeps them.
+    #[test]
+    fn a_crew_set_with_two_lines_follows_across_the_files() {
+        use argonauts_core::settings::crew::CrewRole;
+        let dir = tempfile::tempdir().unwrap();
+        let global = write(
+            dir.path(),
+            "config.toml",
+            "[crew]\norchestrator = \"claude-code/opus-5-5\"\nreviewers = [\"codex\"]\n",
+        );
+        let sources = SettingsSources {
+            global: Some(global.clone()),
+            ..SettingsSources::default()
+        };
+        let settings = resolve(&sources).unwrap().settings;
+        let seats = |role: CrewRole| -> Vec<String> {
+            settings
+                .seats(role)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        assert_eq!(seats(CrewRole::Workers), ["claude-code/opus-5-5"]);
+        assert_eq!(seats(CrewRole::Judge), ["codex"]);
+
+        let workers_too = SettingsSources {
+            global: Some(global),
+            overrides: vec!["crew.workers=[\"antigravity-cli\"]".to_owned()],
+            ..SettingsSources::default()
+        };
+        let settings = resolve(&workers_too).unwrap().settings;
+        assert_eq!(settings.crew.workers.len(), 1);
+        assert_eq!(settings.crew.workers[0].worker, "antigravity-cli");
+    }
+
     #[test]
     fn built_in_defaults_alone_are_peer_crew_with_nothing_overridden() {
         let resolved = resolve(&SettingsSources::default()).unwrap();
@@ -846,28 +915,28 @@ mod tests {
         let home = dir.path().join("home");
         let dot = dir.path().join("repo/.argonauts");
         fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(dot.join("presets")).unwrap();
+        fs::create_dir_all(dot.join("workflows")).unwrap();
         let global = write(
             &home,
             "config.toml",
             "[ui]\nnarrator = \"live\"\nkeys = \"vim\"\n[critique]\nrounds = 1\n\
-             [divide]\nmax_cards = 11\n[judging]\nmethod = \"single\"\n",
+             [divide]\nmax_tasks = 11\n[judging]\nmethod = \"single\"\n",
         );
         let project = write(
             &dot,
             "config.toml",
-            "preset = \"team\"\n[ui]\nnarrator = \"off\"\n[critique]\nrounds = 2\n\
+            "workflow = \"team\"\n[ui]\nnarrator = \"off\"\n[critique]\nrounds = 2\n\
              [roles.reviewer]\nworkers = [\"codex\"]\n",
         );
         let local = write(
             &dot,
             "config.local.toml",
-            "[critique]\nrounds = 3\n[divide]\nmax_cards = 12\n",
+            "[critique]\nrounds = 3\n[divide]\nmax_tasks = 12\n",
         );
         write(
-            &dot.join("presets"),
+            &dot.join("workflows"),
             "team.toml",
-            "[critique]\nrounds = 4\n[divide]\nmax_cards = 13\n[judging]\nmethod = \"vote\"\n",
+            "[critique]\nrounds = 4\n[divide]\nmax_tasks = 13\n[judging]\nmethod = \"vote\"\n",
         );
         let resolved = resolve(&SettingsSources {
             global: Some(global),
@@ -882,9 +951,9 @@ mod tests {
         assert_eq!(settings.roles[&RoleName::Reviewer].workers.len(), 1);
         assert_eq!(settings.critique.rounds, 5);
         // A file later than the one that picks the preset wins over it.
-        assert_eq!(settings.divide.max_cards, 12);
+        assert_eq!(settings.divide.max_tasks, 12);
         assert_eq!(settings.judging.method, JudgingMethod::Vote);
-        assert_eq!(settings.preset, "team");
+        assert_eq!(settings.workflow, "team");
         let layer = |key: &str| {
             resolved
                 .entries
@@ -894,8 +963,8 @@ mod tests {
         };
         assert_eq!(layer("ui.keys").as_deref(), Some(GLOBAL));
         assert_eq!(layer("ui.narrator").as_deref(), Some(PROJECT));
-        assert_eq!(layer("preset").as_deref(), Some(PROJECT));
-        assert_eq!(layer("divide.max_cards").as_deref(), Some(PROJECT_LOCAL));
+        assert_eq!(layer("workflow").as_deref(), Some(PROJECT));
+        assert_eq!(layer("divide.max_tasks").as_deref(), Some(PROJECT_LOCAL));
         assert_eq!(layer("judging.method").as_deref(), Some(PRESET));
         assert_eq!(layer("critique.rounds").as_deref(), Some(FLAG));
         assert_eq!(layer("critique.critic").as_deref(), Some(BUILT_IN));
@@ -946,7 +1015,7 @@ mod tests {
         let project = write(
             dir.path(),
             "project.toml",
-            "[goal]\ndiffers = 3\nrestaters = 2\nmax_attempts = 4\n",
+            "[goal]\ndiffers = 3\nrestaters = 2\nmax_rounds = 4\n",
         );
         let resolved = resolve(&SettingsSources {
             project: Some(project),
@@ -959,7 +1028,7 @@ mod tests {
         assert_eq!(settings.understand.comparers, 3);
         assert_eq!(settings.understand.readers, Some(2));
         assert_eq!(settings.understand.max_questions, 1);
-        assert_eq!(settings.goal.max_attempts, 4);
+        assert_eq!(settings.goal.max_rounds, Some(4));
         let notices = resolved.warnings.join("\n");
         for (old, new) in [
             ("goal.differs", "understand.comparers"),
@@ -1017,47 +1086,46 @@ mod tests {
         // A fallback entry that may bill an API is yours to give, like a safety key.
         let billing = SettingsSources {
             overrides: vec![
-                "roles.owner.handoff.fallback=[{ worker = \"codex\", allow_api_billing = true }]"
-                    .into(),
+                "fallback.workers.order=[{ worker = \"codex\", allow_api_billing = true }]".into(),
             ],
             ..SettingsSources::default()
         };
         let err = resolve(&billing).unwrap_err();
         assert!(
             matches!(&err, SettingsError::Refused(message)
-            if message.contains("roles.owner.handoff.fallback[0].allow_api_billing")),
+            if message.contains("fallback.workers.order[0].allow_api_billing")),
             "{err}"
         );
         let without = SettingsSources {
-            overrides: vec!["roles.owner.handoff.fallback=[{ worker = \"codex\" }]".into()],
+            overrides: vec!["fallback.workers.order=[{ worker = \"codex\" }]".into()],
             ..SettingsSources::default()
         };
         assert!(resolve(&without).is_ok());
         for key in [
             "limits.protected_paths",
             "approvals.merge.mode",
-            "budget.run_usd",
+            "limits.spend_per_run",
             "agents.codex.auth",
             "endpoints.openrouter.base_url",
             "endpoints.openrouter.header_env.Authorization",
-            "roles.owner.handoff.allow_api_billing",
+            "fallback.workers.allow_api_billing",
             "agents.codex.extra_args",
             "agents.codex.binary",
             "mcp.status_tool",
             "merge.mode",
-            "gates.run",
+            "checks.run",
             "sandbox.proxy_allow",
             "sandbox.agents_commit",
-            "roles.owner.sandbox.mode",
-            "roles.reviewer.sandbox.agents_see_other_copies",
+            "roles.worker.sandbox.mode",
+            "roles.reviewer.sandbox.agents_see_other_worktrees",
         ] {
             assert!(is_safety_key(key), "{key}");
         }
         for key in [
-            "budget.per_card_usd",
+            "limits.per_task_usd",
             "agents.codex.model",
             "ui.keys",
-            "roles.owner.workers",
+            "roles.worker.workers",
         ] {
             assert!(!is_safety_key(key), "{key}");
         }
@@ -1069,8 +1137,8 @@ mod tests {
         let project = write(
             dir.path(),
             "project.toml",
-            "ui.keys = \"vim\"\n[sandbox]\nagents_see_other_copies = true\n\
-             [roles.owner.sandbox]\nmode = \"none\"\n",
+            "ui.keys = \"vim\"\n[sandbox]\nagents_see_other_worktrees = true\n\
+             [roles.worker.sandbox]\nmode = \"none\"\n",
         );
         let untrusted = resolve(&SettingsSources {
             project: Some(project.clone()),
@@ -1078,7 +1146,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(untrusted.settings.sandbox, SandboxSettings::default());
-        let owner = untrusted.settings.sandbox_for(&RoleName::Owner);
+        let owner = untrusted.settings.sandbox_for(&RoleName::Worker);
         assert_eq!(
             owner.mode,
             SandboxChoice::Os,
@@ -1098,10 +1166,10 @@ mod tests {
             ..SettingsSources::default()
         })
         .unwrap();
-        assert!(trusted.settings.sandbox.agents_see_other_copies);
-        let owner = trusted.settings.sandbox_for(&RoleName::Owner);
+        assert!(trusted.settings.sandbox.agents_see_other_worktrees);
+        let owner = trusted.settings.sandbox_for(&RoleName::Worker);
         assert_eq!(owner.mode, SandboxChoice::None);
-        assert!(owner.agents_see_other_copies);
+        assert!(owner.agents_see_other_worktrees);
         assert!(trusted.warnings.is_empty());
 
         // A dot inside a quoted id would split it into names no safety rule matches, so the
@@ -1135,7 +1203,7 @@ mod tests {
         let home = dir.path().join("home");
         let dot = dir.path().join("repo/.argonauts");
         fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(dot.join("presets")).unwrap();
+        fs::create_dir_all(dot.join("workflows")).unwrap();
         let refused = |sources: &SettingsSources, file: &str, name: &str| {
             let err = resolve(sources).unwrap_err();
             assert!(
@@ -1158,8 +1226,8 @@ mod tests {
 
         let project = write(&dot, "config.toml", "[ui]\nkeys = \"vim\"\n");
         let preset = write(
-            &dot.join("presets"),
-            "peer-crew.toml",
+            &dot.join("workflows"),
+            "council.toml",
             "[endpoints.\"evil.x\"]\nbase_url = \"https://attacker/v1\"\n\
              api_key_env = \"OPENROUTER_API_KEY\"\n",
         );
@@ -1241,7 +1309,7 @@ mod tests {
         let local = write(
             dir.path(),
             "local.toml",
-            "[ui]\nmotion = \"normal\"\n[sandbox]\nagents_see_other_copies = true\n",
+            "[ui]\nmotion = \"normal\"\n[sandbox]\nagents_see_other_worktrees = true\n",
         );
         let sources = SettingsSources {
             global: Some(global),
@@ -1262,29 +1330,29 @@ mod tests {
         assert_eq!(layer("ui.bell"), "project");
         assert_eq!(layer("ui.motion"), "project-local");
         assert_eq!(layer("ui.keys"), "flag");
-        assert!(!resolved.settings.sandbox.agents_see_other_copies);
+        assert!(!resolved.settings.sandbox.agents_see_other_worktrees);
         let shared_only = resolve(&SettingsSources {
             project_trusted: true,
             ..sources.clone()
         })
         .unwrap();
-        assert!(!shared_only.settings.sandbox.agents_see_other_copies);
+        assert!(!shared_only.settings.sandbox.agents_see_other_worktrees);
         let trusted = resolve(&SettingsSources {
             project_local_trusted: true,
             ..sources
         })
         .unwrap();
-        assert!(trusted.settings.sandbox.agents_see_other_copies);
+        assert!(trusted.settings.sandbox.agents_see_other_worktrees);
     }
 
     #[test]
     fn budget_unit_switch_in_a_later_layer() {
         let dir = tempfile::tempdir().unwrap();
-        let global = write(dir.path(), "global.toml", "[budget]\nrun_minutes = 30.0\n");
+        let global = write(dir.path(), "global.toml", "[limits]\nrun_minutes = 30.0\n");
         let project = write(
             dir.path(),
             "project.toml",
-            "[budget]\nrun_tokens = 200000\nper_card_minutes = 10.0\n",
+            "[limits]\nrun_tokens = 200000\nper_task_minutes = 10.0\n",
         );
         let sources = SettingsSources {
             global: Some(global),
@@ -1293,11 +1361,11 @@ mod tests {
             ..SettingsSources::default()
         };
         let resolved = resolve(&sources).unwrap();
-        let budget = &resolved.settings.budget;
-        assert_eq!((budget.run_usd, budget.run_minutes), (None, None));
+        let budget = &resolved.settings.limits.budget;
+        assert_eq!((budget.spend_per_run, budget.run_minutes), (None, None));
         assert_eq!(budget.run_tokens, Some(200_000));
         assert_eq!(
-            (budget.per_card_usd, budget.per_card_minutes),
+            (budget.per_task_usd, budget.per_task_minutes),
             (None, Some(10.0))
         );
         assert!(resolved.warnings.is_empty(), "{:?}", resolved.warnings);
@@ -1308,24 +1376,28 @@ mod tests {
                 .find(|entry| entry.key == key)
                 .map(|entry| entry.layer.clone())
         };
-        assert_eq!(layer("budget.run_tokens").as_deref(), Some(PROJECT));
-        assert_eq!(layer("budget.run_minutes"), None);
+        assert_eq!(layer("limits.run_tokens").as_deref(), Some(PROJECT));
+        assert_eq!(layer("limits.run_minutes"), None);
         let flagged = resolve(&SettingsSources {
-            overrides: vec!["budget.run_usd=5".into()],
+            overrides: vec!["limits.spend_per_run=5".into()],
             interactive: true,
             ..sources
         })
         .unwrap();
-        assert_eq!(flagged.settings.budget.run_usd, Some(5.0));
-        assert_eq!(flagged.settings.budget.run_tokens, None);
+        assert_eq!(flagged.settings.limits.budget.spend_per_run, Some(5.0));
+        assert_eq!(flagged.settings.limits.budget.run_tokens, None);
         let built_in = resolve(&SettingsSources::default()).unwrap();
-        assert_eq!(built_in.settings.budget.run_usd, Some(20.0));
+        assert_eq!(built_in.settings.limits.budget.spend_per_run, None);
     }
 
     #[test]
-    fn budget_unit_switch_lists_the_cleared_default_as_an_override() {
+    fn budget_unit_switch_clears_without_an_override_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = write(dir.path(), "tasks.toml", "[limits]\nper_task_usd = 3.0\n");
         let resolved = resolve(&SettingsSources {
-            overrides: vec!["budget.per_card_tokens=5000".into()],
+            project: Some(project),
+            project_trusted: true,
+            overrides: vec!["limits.per_task_tokens=5000".into()],
             ..SettingsSources::default()
         })
         .unwrap();
@@ -1334,18 +1406,13 @@ mod tests {
             .iter()
             .map(|o| (o.key.as_str(), o.value.as_str(), o.from.as_str()))
             .collect();
-        assert_eq!(
-            overridden,
-            [
-                ("budget.per_card_tokens", "5000", FLAG),
-                ("budget.per_card_usd", UNSET, FLAG),
-            ]
-        );
+        // A cleared key the built-ins leave unset matches them, so it's not an override, and
+        // the built-ins set no limit at all.
+        assert_eq!(overridden, [("limits.per_task_tokens", "5000", FLAG)]);
+        assert_eq!(resolved.settings.limits.budget.per_task_usd, None);
 
-        // A cleared key the built-ins leave unset matches them, so it's not an override.
-        let dir = tempfile::tempdir().unwrap();
-        let global = write(dir.path(), "global.toml", "[budget]\nrun_minutes = 30.0\n");
-        let project = write(dir.path(), "project.toml", "[budget]\nrun_tokens = 900\n");
+        let global = write(dir.path(), "global.toml", "[limits]\nrun_minutes = 30.0\n");
+        let project = write(dir.path(), "project.toml", "[limits]\nrun_tokens = 900\n");
         let resolved = resolve(&SettingsSources {
             global: Some(global),
             project: Some(project),
@@ -1359,7 +1426,9 @@ mod tests {
             .filter(|o| o.value == UNSET)
             .map(|o| (o.key.as_str(), o.from.as_str()))
             .collect();
-        assert_eq!(cleared, [("budget.run_usd", PROJECT)]);
+        assert_eq!(cleared, []);
+        assert_eq!(resolved.settings.limits.budget.run_minutes, None);
+        assert_eq!(resolved.settings.limits.budget.run_tokens, Some(900));
     }
 
     #[test]
@@ -1378,37 +1447,37 @@ mod tests {
             };
             resolve(&sources).unwrap()
         };
-        let workflow = |resolved: &ResolvedSettings| resolved.settings.workflow.0.clone();
+        let workflow = |resolved: &ResolvedSettings| resolved.settings.phases.0.clone();
 
-        let later = resolve_with("preset = \"solo\"\n", "workflow = \"review-panel\"\n", &[]);
+        let later = resolve_with("workflow = \"solo\"\n", "phases = \"review-panel\"\n", &[]);
         assert_eq!(workflow(&later), "review-panel");
         assert!(later.warnings.is_empty(), "{:?}", later.warnings);
         let layer = later.entries.iter().find(|entry| entry.key == WORKFLOW);
         assert_eq!(layer.map(|entry| entry.layer.as_str()), Some(PROJECT_LOCAL));
 
-        let beside = resolve_with("preset = \"solo\"\nworkflow = \"review-panel\"\n", "", &[]);
+        let beside = resolve_with("workflow = \"solo\"\nphases = \"review-panel\"\n", "", &[]);
         assert_eq!(workflow(&beside), "review-panel");
 
         // Picked in an earlier file than the preset, the preset's workflow hides it, and the
         // warning names the key, the file, and the preset.
-        let earlier = resolve_with("workflow = \"review-panel\"\n", "preset = \"solo\"\n", &[]);
+        let earlier = resolve_with("phases = \"review-panel\"\n", "workflow = \"solo\"\n", &[]);
         assert_eq!(workflow(&earlier), "solo");
         assert_eq!(earlier.warnings.len(), 1, "{:?}", earlier.warnings);
         let warning = &earlier.warnings[0];
         assert!(
-            warning.starts_with("workflow in ")
+            warning.starts_with("phases in ")
                 && warning.contains(&home.join("config.toml").display().to_string())
-                && warning.contains("the built-in solo preset"),
+                && warning.contains("the built-in solo workflow"),
             "{warning}"
         );
 
-        let flagged = resolve_with("", "workflow = \"review-panel\"\n", &["preset=solo"]);
+        let flagged = resolve_with("", "phases = \"review-panel\"\n", &["workflow=solo"]);
         assert_eq!(workflow(&flagged), "solo");
         assert_eq!(flagged.warnings.len(), 1, "{:?}", flagged.warnings);
         let both = resolve_with(
             "",
-            "workflow = \"review-panel\"\n",
-            &["preset=solo", "workflow=review-panel"],
+            "phases = \"review-panel\"\n",
+            &["workflow=solo", "phases=review-panel"],
         );
         assert_eq!(workflow(&both), "review-panel");
         assert!(both.warnings.is_empty(), "{:?}", both.warnings);
@@ -1420,7 +1489,7 @@ mod tests {
         let global = write(
             dir.path(),
             "global.toml",
-            "[budget]\nrun_usd = 5.0\nrun_tokens = 100\n",
+            "[limits]\nspend_per_run = 5.0\nrun_tokens = 100\n",
         );
         let err = resolve(&SettingsSources {
             global: Some(global.clone()),
@@ -1465,15 +1534,15 @@ mod tests {
     }
 
     #[test]
-    fn roles_default_workers_warns_that_default_agent_decides() {
+    fn roles_default_workers_warns_that_main_agent_decides() {
         let resolved = resolve(&SettingsSources {
-            overrides: vec!["roles.default.workers=[\"codex\"]".into()],
+            overrides: vec!["roles.main.workers=[\"codex\"]".into()],
             ..SettingsSources::default()
         })
         .unwrap();
         assert_eq!(resolved.warnings.len(), 1, "{:?}", resolved.warnings);
-        assert!(resolved.warnings[0].contains("default_agent"));
-        assert_eq!(resolved.settings.default_agent.worker, "claude-code");
+        assert!(resolved.warnings[0].contains("main_agent"));
+        assert_eq!(resolved.settings.main_agent.worker, "claude-code");
     }
 
     #[test]
@@ -1482,6 +1551,7 @@ mod tests {
             overrides: vec![
                 "roles.reviewer.workers=[\"claude-code\"]".into(),
                 "approvals.merge.mode=\"supervised\"".into(),
+                "limits.spend_per_run=20".into(),
             ],
             interactive: true,
             request: entries.iter().map(|entry| (*entry).to_owned()).collect(),
@@ -1490,9 +1560,9 @@ mod tests {
         let resolved = resolve(&request(&[
             "roles.reviewer.workers=[\"codex\"]",
             "approvals.merge.mode=\"supervised\"",
-            "budget.run_usd=1",
+            "limits.spend_per_run=1",
             "sandbox.network=false",
-            "solo.style=\"checked\"",
+            "solo.kind=\"checked\"",
         ]))
         .unwrap();
         let settings = &resolved.settings;
@@ -1500,7 +1570,7 @@ mod tests {
             settings.roles[&RoleName::Reviewer].workers[0].worker,
             "codex"
         );
-        assert_eq!(settings.budget.run_usd, Some(1.0));
+        assert_eq!(settings.limits.budget.spend_per_run, Some(1.0));
         assert!(!settings.sandbox.network);
         let from = |key: &str| {
             resolved
@@ -1512,18 +1582,18 @@ mod tests {
         for key in [
             "roles.reviewer.workers",
             "approvals.merge.mode",
-            "budget.run_usd",
+            "limits.spend_per_run",
             "sandbox.network",
-            "solo.style",
+            "solo.kind",
         ] {
             assert_eq!(from(key).as_deref(), Some("request"), "{key}");
         }
         for loosening in [
             "approvals.merge.mode=\"auto\"",
-            "budget.run_usd=50",
+            "limits.spend_per_run=50",
             "sandbox.network=true",
-            "gates.run=[]",
-            "solo.style=\"direct\"",
+            "checks.run=[]",
+            "solo.kind=\"direct\"",
         ] {
             let refused = resolve(&request(&[loosening])).unwrap_err();
             assert!(
@@ -1533,8 +1603,27 @@ mod tests {
         }
         // The next run's sources carry no request, so nothing of it stays.
         let next = resolve(&request(&[])).unwrap();
-        assert_eq!(next.settings.budget.run_usd, Some(20.0));
+        assert_eq!(next.settings.limits.budget.spend_per_run, Some(20.0));
         assert!(next.overrides.iter().all(|record| record.from != "request"));
+    }
+
+    #[test]
+    fn a_request_may_set_the_first_run_limit_but_not_switch_its_unit() {
+        let request = |overrides: &[&str]| SettingsSources {
+            overrides: overrides.iter().map(|entry| (*entry).to_owned()).collect(),
+            interactive: true,
+            request: vec!["limits.spend_per_run=5".to_owned()],
+            ..SettingsSources::default()
+        };
+        // Nothing limits the run, so $5 is its first limit.
+        let first = resolve(&request(&[])).unwrap();
+        assert_eq!(first.settings.limits.budget.spend_per_run, Some(5.0));
+        // You limited it in tokens, and dollars would clear that.
+        let refused = resolve(&request(&["limits.run_tokens=100000"])).unwrap_err();
+        assert!(
+            matches!(&refused, SettingsError::Refused(message) if message.contains("only make it stricter")),
+            "{refused:?}"
+        );
     }
 
     #[test]
@@ -1549,7 +1638,7 @@ mod tests {
 
         let recipe = |settings: &str, canary: bool| SettingsSources {
             recipe: Some(crate::RecipeOverlay {
-                label: "recipe api-feature v4".to_owned(),
+                label: "learned workflow api-feature v4".to_owned(),
                 settings: settings.to_owned(),
                 canary,
                 replay_budget_usd: None,
@@ -1558,50 +1647,50 @@ mod tests {
             ..SettingsSources::default()
         };
         let resolved = resolve(&recipe(
-            "critique.rounds = 2\n[divide]\nmax_cards = 6\n",
+            "critique.rounds = 2\n[divide]\nmax_tasks = 6\n",
             false,
         ))
         .unwrap();
         // The recipe sits over the preset, and your flags over it.
-        assert_eq!(resolved.settings.divide.max_cards, 6);
+        assert_eq!(resolved.settings.divide.max_tasks, 6);
         assert_eq!(resolved.settings.critique.rounds, 3);
-        let max_cards = resolved
+        let max_tasks = resolved
             .entries
             .iter()
-            .find(|entry| entry.key == "divide.max_cards")
+            .find(|entry| entry.key == "divide.max_tasks")
             .unwrap();
-        assert_eq!(max_cards.layer, PRESET);
+        assert_eq!(max_tasks.layer, PRESET);
         assert_eq!(resolved.settings.merge.mode, MergeMode::Ask);
 
         // A canary run merges as a pull request.
-        let canary = resolve(&recipe("[divide]\nmax_cards = 6\n", true)).unwrap();
+        let canary = resolve(&recipe("[divide]\nmax_tasks = 6\n", true)).unwrap();
         assert_eq!(canary.settings.merge.mode, MergeMode::PullRequest);
 
         // A replay never merges and spends at most its budget.
-        let mut replay = recipe("[divide]\nmax_cards = 6\n", false);
+        let mut replay = recipe("[divide]\nmax_tasks = 6\n", false);
         if let Some(overlay) = replay.recipe.as_mut() {
             overlay.replay_budget_usd = Some(12);
         }
         let replay = resolve(&replay).unwrap();
         assert_eq!(replay.settings.merge.mode, MergeMode::Leave);
-        assert_eq!(replay.settings.budget.run_usd, Some(12.0));
+        assert_eq!(replay.settings.limits.budget.spend_per_run, Some(12.0));
 
         // One barred key leaves the whole recipe out, with a warning.
         for barred in [
-            "[divide]\nmax_cards = 6\n[review]\nper_card = 0\n",
-            "[divide]\nmax_cards = 6\n[merge]\nmode = \"leave\"\n",
-            "[divide]\nmax_cards = 6\n[evolution]\nmin_gain_points = 0.0\n",
+            "[divide]\nmax_tasks = 6\n[review]\nper_task = 0\n",
+            "[divide]\nmax_tasks = 6\n[merge]\nmode = \"leave\"\n",
+            "[divide]\nmax_tasks = 6\n[evolution]\nmin_gain_points = 0.0\n",
         ] {
             let resolved = resolve(&recipe(barred, false)).unwrap();
             assert_eq!(
-                resolved.settings.divide.max_cards,
-                Settings::default().divide.max_cards
+                resolved.settings.divide.max_tasks,
+                Settings::default().divide.max_tasks
             );
             assert!(
                 resolved
                     .warnings
                     .iter()
-                    .any(|warning| warning.contains("recipe api-feature v4 is left out")),
+                    .any(|warning| warning.contains("learned workflow api-feature v4 is left out")),
                 "{:?}",
                 resolved.warnings
             );

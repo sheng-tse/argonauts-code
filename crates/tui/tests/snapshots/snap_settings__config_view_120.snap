@@ -7,22 +7,22 @@ Every setting and the layer it comes from. ! marks a safety key                 
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ general                                                                                                              │
-│ ❯   preset                 peer-crew         this project              How the crew works together                   │
-│     default_agent          claude-code/opus  everywhere (global)       Chat, triage, and solo work                   │
+│ ❯   workflow               council           this project              How the crew works together                   │
+│     main_agent             claude-code/opus  everywhere (global)       Chat, triage, and solo work                   │
 │                                                                                                                      │
 │ ui                                                                                                                   │
 │     ui.theme               dark              everywhere (global)       Light or dark colors, or follow the terminal  │
 │     ui.keys                vim               this session              Standard or vim keys in the input             │
 │     ui.accent              unset             built-in                  A hex color for the accent                    │
 │                                                                                                                      │
-│ budget                                                                                                               │
-│   ! budget.run_usd         30.0              just you (project-local)  The most one run may spend                    │
+│ limits                                                                                                               │
+│   ! limits.spend_per_run   30.0              just you (project-local)  The most one run may spend                    │
 │                                                                                                                      │
 │ approvals                                                                                                            │
-│   ! approvals.merge.mode   shadow            --set                     Who approves a merge                          │
+│   ! approvals.merge.mode   auto_preview      --set                     Who approves a merge                          │
 │                                                                                                                      │
 │ roles                                                                                                                │
-│     roles.reviewer.effort  high              preset                    How hard the reviewer thinks                  │
+│     roles.reviewer.effort  high              workflow                  How hard the reviewer thinks                  │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

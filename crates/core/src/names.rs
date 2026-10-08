@@ -105,10 +105,11 @@ impl fmt::Display for VendorId {
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum RoleName {
-    /// Chat answers, the triage estimate, solo work, and the last fallback.
-    Default,
-    /// Optional fixed LLM that plans and delegates (`coordinated-crew`).
-    Coordinator,
+    /// The agent you talk to: chat answers, the triage estimate, solo work, and the last
+    /// fallback.
+    Main,
+    /// Plans and delegates. The main agent unless you name another.
+    Orchestrator,
     /// Rotating hat that synthesizes and breaks ties within a phase.
     PhaseLead,
     /// Restates the goal read-only. Every crew member by default.
@@ -125,7 +126,8 @@ pub enum RoleName {
     Spike,
     /// Scores the other plans.
     Judge,
-    Owner,
+    /// Builds one task in its own worktree.
+    Worker,
     /// On-demand advice; owns nothing.
     Consultant,
     /// Reviews another owner's card and writes its acceptance tests.
@@ -141,8 +143,8 @@ pub enum RoleName {
 impl RoleName {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Default => "default",
-            Self::Coordinator => "coordinator",
+            Self::Main => "main",
+            Self::Orchestrator => "orchestrator",
             Self::PhaseLead => "phase-lead",
             Self::Restater => "restater",
             Self::Differ => "differ",
@@ -151,7 +153,7 @@ impl RoleName {
             Self::Critic => "critic",
             Self::Spike => "spike",
             Self::Judge => "judge",
-            Self::Owner => "owner",
+            Self::Worker => "worker",
             Self::Consultant => "consultant",
             Self::Reviewer => "reviewer",
             Self::Adjudicator => "adjudicator",
@@ -159,6 +161,31 @@ impl RoleName {
             Self::Approver => "approver",
             Self::Narrator => "narrator",
         }
+    }
+
+    pub const ALL: [Self; 17] = [
+        Self::Main,
+        Self::Orchestrator,
+        Self::PhaseLead,
+        Self::Restater,
+        Self::Differ,
+        Self::Drafter,
+        Self::Mapper,
+        Self::Critic,
+        Self::Spike,
+        Self::Judge,
+        Self::Worker,
+        Self::Consultant,
+        Self::Reviewer,
+        Self::Adjudicator,
+        Self::Retro,
+        Self::Approver,
+        Self::Narrator,
+    ];
+
+    /// The reverse of [`Self::as_str`].
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|role| role.as_str() == name)
     }
 }
 

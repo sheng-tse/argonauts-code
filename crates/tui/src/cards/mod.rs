@@ -1,7 +1,8 @@
-//! ◆ cards: a run's checkpoints and the app's own choices, drawn in the live region above the
-//! input like Claude Code's permission prompt. A run's card never takes the keys by itself and
-//! the first Esc sets it aside; a choice you set off yourself opens with the keys and Esc closes
-//! it. Every answer is bound to the evidence hash you saw.
+//! ◆ cards: a run's questions and approvals and the app's own choices, drawn in the live
+//! region in place of the input like Claude Code's permission prompt. Each takes the keys the
+//! moment it shows. Esc on one a run waits on hands it on, so whoever asked decides and goes
+//! on; Esc on a choice you set off yourself closes it. Every answer is bound to
+//! the evidence hash you saw.
 
 mod about;
 mod checkpoint;
@@ -58,7 +59,7 @@ const RECENT_DECISIONS: usize = 32;
 
 #[derive(Debug, Default)]
 pub struct Cards {
-    /// Every card on screen or set aside, by the kit's card id.
+    /// Every card on screen, waiting behind it, or handed on, by the kit's card id.
     pub open: BTreeMap<u64, OpenCard>,
     next_id: u64,
     /// What each open card was built from, and its prompt while another card is on screen.
@@ -182,7 +183,7 @@ impl Cards {
         }
     }
 
-    /// Takes `Answer`, `OpenView`, `SetAside`, `AnswerCard`, and `ConfirmTakeOver`, and sees a
+    /// Takes `Answer`, `OpenView`, `Dismiss`, `AnswerCard`, and `ConfirmTakeOver`, and sees a
     /// spot check marked in `/approvals` go out.
     pub fn on_action(&mut self, action: &UiAction, cx: &mut Cx<'_>) -> bool {
         match action {
@@ -193,7 +194,7 @@ impl Cards {
                 checked,
             } => self.answer(*card, *option, note.clone(), checked, cx),
             UiAction::OpenView { card, option } => self.open_view(*card, *option, cx),
-            UiAction::SetAside { card } => self.set_aside(*card, cx),
+            UiAction::Dismiss { card } => self.dismiss(*card, cx),
             UiAction::AnswerCard(target) => {
                 let wanted = CardTarget::Controller(target.clone());
                 let Some(id) = self.find(&wanted) else {
@@ -654,6 +655,21 @@ impl Cards {
                 clock_offset(cx),
                 &cx.state.names,
             ),
+            // What a repository's files say is the app's to read: it prints each one above the
+            // question, which stays open.
+            (CardTarget::Controller(to @ AnswerTarget::Choice { .. }), Source::Choice(choice))
+                if choice.kind == ChoiceKind::TrustProject =>
+            {
+                cx.out.send(UiCommand::Answer {
+                    to: to.clone(),
+                    action: AnswerAction::ShowDiff,
+                    text: None,
+                    evidence_sha256: None,
+                    cards: Vec::new(),
+                    remember: false,
+                });
+                return true;
+            }
             (_, Source::Choice(choice)) => views::choice_view(choice),
             _ => return true,
         };
@@ -666,22 +682,34 @@ impl Cards {
         true
     }
 
-    /// The kit has already folded the card to its pinned line.
-    fn set_aside(&mut self, card: u64, cx: &mut Cx<'_>) -> bool {
+    /// Esc took the card off the screen with nothing picked. A choice closes as the controller
+    /// says for its kind, and a confirm of this screen's own just closes. A run's question or
+    /// approval is handed on: the engine has whoever asked decide and go on, and until it
+    /// settles the card waits out of sight, where the list of what needs you still opens it.
+    /// Nothing waits on a spot check, so it closes and stays in `/approvals`.
+    fn dismiss(&mut self, card: u64, cx: &mut Cx<'_>) -> bool {
         let Some(open) = self.open.get(&card) else {
             return false;
         };
         match &open.target {
-            CardTarget::Controller(AnswerTarget::Choice { id }) => {
-                // The controller closes it by kind and sends `ChoiceClosed`.
-                cx.out.send(UiCommand::SetAside {
-                    to: AnswerTarget::Choice { id: id.clone() },
-                });
+            CardTarget::Controller(to @ AnswerTarget::Choice { .. }) => {
+                cx.out.send(UiCommand::SetAside { to: to.clone() });
             }
-            // It stays pinned and is listed under "needs you".
-            CardTarget::Controller(AnswerTarget::Checkpoint { .. })
-            | CardTarget::SpotCheck { .. } => {}
-            CardTarget::Local(_) => {
+            // Esc on a run's question or approval means "carry on without me":
+            // the engine takes an option in your place and its decision closes this, so
+            // nothing sits under "needs you".
+            CardTarget::Controller(to @ AnswerTarget::Checkpoint { .. }) => {
+                cx.out.send(UiCommand::SetAside { to: to.clone() });
+                if let Some(Source::Checkpoint(opened)) =
+                    self.held.get(&card).map(|held| &held.source)
+                    && !cx.replaying()
+                {
+                    let at = OffsetDateTime::now_utc();
+                    let cell = records::handed_on_cell(opened.kind, at, clock_offset(cx));
+                    cx.model.history.push(cell);
+                }
+            }
+            CardTarget::SpotCheck { .. } | CardTarget::Local(_) => {
                 self.close(card, cx);
             }
         }
@@ -748,17 +776,16 @@ impl Cards {
 
     /// Several cards can wait at once. One you set off yourself comes first, since you're
     /// waiting on it. Then the one on screen stays while it holds the keys, then the oldest
-    /// card work waits on, then the spot check on screen or the oldest one, and last the oldest
-    /// card set aside. A card that asks nothing yet, as one your rules still decide, stays off
-    /// the screen, so a card on screen always holds the keys or sits pinned to its one line.
+    /// card work waits on, then the spot check on screen or the oldest one. A card that asks
+    /// nothing, as one your rules still decide or one you handed on, stays off the screen, so
+    /// a card on screen always holds the keys.
     fn show(&mut self, cx: &mut Cx<'_>) {
         let shown = cx.model.bottom.card.as_ref();
         let prompt = |id: &u64| match shown.filter(|card| card.id == *id) {
             Some(card) => Some(card),
             None => self.held.get(id).and_then(|held| held.stashed.as_ref()),
         };
-        let pinned = |id: &u64| prompt(id).is_some_and(|card| card.pinned);
-        let yours = |id: &u64| prompt(id).is_some_and(|card| card.takes_focus && !card.pinned);
+        let yours = |id: &u64| prompt(id).is_some_and(|card| card.takes_focus && !card.dismissed);
         let asks = |id: &u64| prompt(id).is_some_and(CardPrompt::claims_keys);
         // A spot check asks too, but nothing waits on it, so it holds its place only while
         // you work it.
@@ -788,35 +815,40 @@ impl Cards {
                 self.open.keys().find(waits).copied()
             })
             .or(current)
-            .or_else(|| self.open.keys().find(|id| asks(id)).copied())
-            .or_else(|| self.open.keys().find(|id| pinned(id)).copied());
+            .or_else(|| self.open.keys().find(|id| asks(id)).copied());
         match wanted {
             Some(id) => self.display(id, false, cx),
-            None => cx.model.bottom.card = None,
+            None => self.take_off_screen(cx),
+        }
+    }
+
+    /// Clears the card's place on screen, keeping the prompt of one that's still open.
+    fn take_off_screen(&mut self, cx: &mut Cx<'_>) {
+        if let Some(mut card) = cx.model.bottom.card.take()
+            && let Some(held) = self.held.get_mut(&card.id)
+        {
+            // A run's card set back waits again, so it never comes back holding the keys.
+            card.focused &= card.takes_focus;
+            held.stashed = Some(card);
         }
     }
 
     /// Puts card `id` on screen, keeping the one it replaces for later. A card you set off
-    /// takes the keys whenever it shows, and one work waits on until you set it aside, once
-    /// the input is empty; any other card only when `focus` asks.
+    /// takes the keys whenever it shows, and one work waits on until you hand it on, from
+    /// wherever they were; any other card only when `focus` asks.
     fn display(&mut self, id: u64, focus: bool, cx: &mut Cx<'_>) {
         let on_screen = cx.model.bottom.card.as_ref().map(|card| card.id);
         if on_screen != Some(id) {
-            if let Some(mut card) = cx.model.bottom.card.take()
-                && let Some(held) = self.held.get_mut(&card.id)
-            {
-                // A run's card set back waits again, so it never comes back holding the keys.
-                card.focused &= card.takes_focus;
-                held.stashed = Some(card);
-            }
+            self.take_off_screen(cx);
             cx.model.bottom.card = self.held.get_mut(&id).and_then(|held| held.stashed.take());
         }
         if focus {
             if let Some(card) = cx.model.bottom.card.as_mut() {
                 card.focus();
             }
-        } else {
-            cx.model.bottom.hand_keys_to_card(cx.now);
+        } else if cx.model.bottom.hand_keys_to_card(cx.now) {
+            // It took the keys from wherever they were, and a view on top would keep them.
+            cx.out.close_views = true;
         }
     }
 }

@@ -190,7 +190,7 @@ fn state_words(state: RunState) -> &'static str {
     match state {
         RunState::Running => "Running",
         RunState::Pausing => "Pausing",
-        RunState::Parked => "Parked",
+        RunState::Parked => "Waiting",
         RunState::Crashed => "Stopped by a crash · /resume recovers it",
         RunState::Merged => "Merged",
         RunState::PullRequest => "Ready for a pull request",

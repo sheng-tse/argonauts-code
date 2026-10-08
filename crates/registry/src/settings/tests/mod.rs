@@ -3,6 +3,7 @@
 mod checks;
 mod presets;
 mod roles;
+mod ui;
 
 use std::fs;
 use std::path::PathBuf;
@@ -21,8 +22,8 @@ impl Repo {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let repo = Self { dir };
-        fs::create_dir_all(repo.home().join("presets")).unwrap();
-        fs::create_dir_all(repo.dot().join("presets")).unwrap();
+        fs::create_dir_all(repo.home().join("workflows")).unwrap();
+        fs::create_dir_all(repo.dot().join("workflows")).unwrap();
         repo
     }
 
@@ -55,13 +56,13 @@ impl Repo {
     }
 
     fn global_preset(&self, name: &str, text: &str) -> PathBuf {
-        let path = self.home().join(format!("presets/{name}.toml"));
+        let path = self.home().join(format!("workflows/{name}.toml"));
         fs::write(&path, text).unwrap();
         path
     }
 
     fn project_preset(&self, name: &str, text: &str) -> PathBuf {
-        let path = self.dot().join(format!("presets/{name}.toml"));
+        let path = self.dot().join(format!("workflows/{name}.toml"));
         fs::write(&path, text).unwrap();
         path
     }

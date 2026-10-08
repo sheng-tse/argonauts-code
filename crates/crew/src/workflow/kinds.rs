@@ -34,7 +34,7 @@ pub fn execute<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineRe
             )
         {
             return Err(EngineError::Refused(format!(
-                "{}: only reviewers, and the solo card's review, pick their workers by `different_family_from`; a `{}` step picks its own",
+                "{}: only reviewers, and the solo task's review, pick their workers by `different_family_from`; a `{}` step picks its own",
                 describe(&call.at.step),
                 crate::workflow::validate::kind_name(call.step.kind)
             )));
@@ -60,6 +60,7 @@ pub fn execute<'a>(host: &'a Host, call: &'a StepCall) -> BoxFuture<'a, EngineRe
             StepKind::Gate => gate(host, call).await,
             StepKind::Workflow => nested(host, call).await,
             StepKind::Check => goal::pursue::check_step(host, call).await,
+            StepKind::Script => crate::script::script_step(host, call).await,
         }
     })
 }
@@ -95,7 +96,7 @@ async fn generic_checkpoint(host: &Host, call: &StepCall) -> EngineResult<StepDo
         .checkpoint
         .map_or_else(|| "no".to_owned(), |kind| format!("a {kind:?}"));
     Err(EngineError::Refused(format!(
-        "{} opens {kind} checkpoint; a `checkpoint` step opens only the goal or plan checkpoint",
+        "{} opens {kind} approval; a `checkpoint` step opens only the goal or plan approval",
         describe(&call.at.step)
     )))
 }
@@ -105,13 +106,13 @@ pub fn kind_for_role(role: RoleName) -> Option<StepKind> {
     Some(match role {
         RoleName::Restater => StepKind::Restate,
         RoleName::Differ => StepKind::Differ,
-        RoleName::Drafter | RoleName::Coordinator => StepKind::Draft,
+        RoleName::Drafter | RoleName::Orchestrator => StepKind::Draft,
         RoleName::Mapper => StepKind::Map,
         RoleName::Critic => StepKind::Refute,
         RoleName::Judge | RoleName::Adjudicator => StepKind::Judge,
         RoleName::Reviewer => StepKind::Review,
-        RoleName::Owner | RoleName::Spike => StepKind::Build,
-        RoleName::Default | RoleName::Consultant | RoleName::PhaseLead => StepKind::Synthesize,
+        RoleName::Worker | RoleName::Spike => StepKind::Build,
+        RoleName::Main | RoleName::Consultant | RoleName::PhaseLead => StepKind::Synthesize,
         RoleName::Retro | RoleName::Approver | RoleName::Narrator => return None,
     })
 }
@@ -235,6 +236,7 @@ fn note_round(host: &Host, call: &StepCall, round: usize, until: &str) -> Engine
         RunEventKind::Workflow(WorkflowEvent::Note(RunNote {
             text: format!("{what} runs round {round}, since {until} doesn't hold yet"),
             workflow: Some(call.workflow().clone()),
+            left: false,
         })),
     )?;
     Ok(())
@@ -391,7 +393,7 @@ async fn gate(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         }),
     };
     if cards.is_empty() {
-        return Ok(StepDone::skipped("no card to run the gates on"));
+        return Ok(StepDone::skipped("no task to run the checks on"));
     }
     let mut failed = Vec::new();
     for card in &cards {
@@ -404,13 +406,13 @@ async fn gate(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     }
     Ok(if failed.is_empty() {
         StepDone::done(match cards.len() {
-            1 => format!("gates passed on {}", cards[0]),
-            count => format!("gates passed on {count} cards"),
+            1 => format!("checks passed on {}", cards[0]),
+            count => format!("checks passed on {count} tasks"),
         })
     } else {
         StepDone {
             end: StepEnd::Failed,
-            summary: Some(format!("gates failed on {}", failed.join(", "))),
+            summary: Some(format!("checks failed on {}", failed.join(", "))),
             flow: Flow::Continue,
         }
     })
@@ -746,6 +748,7 @@ mod tests {
                 phases_started: Default::default(),
                 phases_ended: Default::default(),
                 phases_skipped: Default::default(),
+                left: Vec::new(),
             },
         );
         state
@@ -753,11 +756,11 @@ mod tests {
 
     #[test]
     fn the_goal_loop_has_a_round_left_only_before_its_last() {
-        let first = goal_loop("peer-crew", 1);
+        let first = goal_loop("council", 1);
         assert!(another_round(&first, &at(&[0, 2])));
-        let last = goal_loop("peer-crew", 2);
+        let last = goal_loop("council", 2);
         assert!(!another_round(&last, &at(&[0, 2])));
-        let last = goal_loop("coordinated-crew", 2);
+        let last = goal_loop("orchestrator", 2);
         assert!(!another_round(&last, &at(&[0, 2])));
     }
 

@@ -34,7 +34,7 @@ struct Setup {
 impl Setup {
     fn new() -> Self {
         let mut config = Config::default();
-        config.gates.commands = vec![argv(&["test", "-f", "hello.txt"])];
+        config.checks.commands = vec![argv(&["test", "-f", "hello.txt"])];
         Self {
             repo: TestRepo::new(),
             home: tempfile::tempdir().unwrap(),
@@ -79,7 +79,7 @@ impl Setup {
     }
 }
 
-const BRANCH: &str = "argonauts/run-test/card-001";
+const BRANCH: &str = "argonauts/run-test/task-001";
 
 fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|p| (*p).to_owned()).collect()
@@ -126,7 +126,7 @@ fn merge_card(events: &[RunEvent]) -> MergeCard {
             RunEventKind::Checkpoint(Checkpoint::Merge(card)) => Some(card.clone()),
             _ => None,
         })
-        .expect("no merge card")
+        .expect("no merge approval")
 }
 
 fn decision(events: &[RunEvent]) -> DecisionRecord {
@@ -178,7 +178,7 @@ struct NeverAsked;
 
 impl MergeDecider for NeverAsked {
     async fn decide(&mut self, _request: MergeRequest) -> anyhow::Result<MergeDecision> {
-        panic!("the merge card should not have been shown")
+        panic!("the merge approval should not have been shown")
     }
 }
 
@@ -303,7 +303,7 @@ async fn approve_merges_into_the_starting_branch() {
 #[tokio::test]
 async fn failing_gate_shows_on_the_merge_card() {
     let mut setup = Setup::new();
-    setup.config.gates.commands = vec![
+    setup.config.checks.commands = vec![
         argv(&["test", "-f", "missing.txt"]),
         argv(&["test", "-f", "hello.txt"]),
     ];
@@ -352,7 +352,7 @@ async fn a_dirty_tree_blocks_the_merge() {
 #[tokio::test]
 async fn budget_stop_keeps_the_work_so_far() {
     let mut setup = Setup::new();
-    setup.config.budget.per_card = 0.05;
+    setup.config.budget.per_task = 0.05;
     let script = format!(
         "echo hi > hello.txt
          echo '{}'
@@ -586,7 +586,7 @@ async fn a_detached_start_has_nothing_to_merge_into() {
 #[tokio::test]
 async fn interrupted_wrap_up_resumes_for_the_report() {
     let mut setup = Setup::new();
-    setup.config.budget.per_card = 1.0;
+    setup.config.budget.per_task = 1.0;
     let script = format!(
         r#"if [ -z "$2" ]; then
   trap 'exit 130' INT
@@ -659,7 +659,7 @@ fi"#,
 #[tokio::test]
 async fn no_resume_after_the_agent_changed_agent_config() {
     let mut setup = Setup::new();
-    setup.config.budget.per_card = 1.0;
+    setup.config.budget.per_task = 1.0;
     let (outcome, events) = setup
         .run(
             &wrap_up_agent_writing(".claude/settings.json"),
@@ -690,7 +690,7 @@ async fn no_resume_after_the_agent_changed_agent_config() {
 #[tokio::test]
 async fn usage_with_the_final_result_does_not_stop_or_fail_the_agent() {
     let mut setup = Setup::new();
-    setup.config.budget.per_card = 0.05;
+    setup.config.budget.per_task = 0.05;
     // Like Codex, usage arrives only with the result, after the work is done.
     let script = format!(
         "echo hi > hello.txt
@@ -718,7 +718,7 @@ async fn usage_with_the_final_result_does_not_stop_or_fail_the_agent() {
     assert!(
         notes(&events)
             .iter()
-            .any(|n| n == "The agent finished, but it used up the budget of $0.05.")
+            .any(|n| n == "The agent finished, but it used up the limit of $0.05.")
     );
     assert_eq!(outcome.outcome, RunOutcome::BranchLeft);
 }
@@ -817,7 +817,7 @@ fn the_run_future_can_be_spawned() {
 fn budget_units_other_than_usd_have_no_native_cap() {
     let mut config = Config::default();
     config.budget.unit = BudgetUnit::Tokens;
-    assert_eq!(native_cap(config.budget.per_card_limit(), 0.0), None);
+    assert_eq!(native_cap(config.budget.per_task_limit(), 0.0), None);
 }
 
 #[test]
@@ -855,7 +855,7 @@ fn dollar_budgets_need_dollars() {
 #[tokio::test]
 async fn a_dollar_budget_counts_tokens_at_the_model_price() {
     let mut setup = Setup::new();
-    setup.config.budget.per_card = 0.05;
+    setup.config.budget.per_task = 0.05;
     setup.config.agents.insert(
         "fake".into(),
         argonauts_core::AgentConfig {
@@ -915,7 +915,7 @@ async fn an_unenforceable_budget_is_refused_before_anything_starts() {
     .await
     .unwrap_err();
     assert!(
-        err.to_string().contains("can't enforce a dollar budget"),
+        err.to_string().contains("can't enforce a dollar limit"),
         "{err}"
     );
     assert!(
@@ -1026,7 +1026,7 @@ async fn a_gate_that_commits_to_the_card_branch_blocks_the_merge() {
     let sneaky = format!(
         "echo x > sneaky.txt && {ISOLATED_GIT} add sneaky.txt && {ISOLATED_GIT} commit --quiet -m sneaky"
     );
-    setup.config.gates.commands = vec![argv(&["/bin/sh", "-c", &sneaky])];
+    setup.config.checks.commands = vec![argv(&["/bin/sh", "-c", &sneaky])];
     let (outcome, events) = setup
         .run(&hello_agent(), &mut FixedDecider(MergeDecision::Approve))
         .await;
@@ -1037,7 +1037,7 @@ async fn a_gate_that_commits_to_the_card_branch_blocks_the_merge() {
         outcome.detail
     );
     assert!(
-        outcome.detail.contains("card branch moved"),
+        outcome.detail.contains("task branch moved"),
         "{}",
         outcome.detail
     );
@@ -1050,7 +1050,7 @@ async fn a_gate_that_commits_to_the_card_branch_blocks_the_merge() {
 async fn a_gate_that_moves_the_target_branch_blocks_the_merge() {
     let mut setup = Setup::new();
     let moved = format!("{ISOLATED_GIT} update-ref refs/heads/main HEAD");
-    setup.config.gates.commands = vec![argv(&["/bin/sh", "-c", &moved])];
+    setup.config.checks.commands = vec![argv(&["/bin/sh", "-c", &moved])];
     let (outcome, _) = setup
         .run(&hello_agent(), &mut FixedDecider(MergeDecision::Approve))
         .await;
@@ -1061,7 +1061,7 @@ async fn a_gate_that_moves_the_target_branch_blocks_the_merge() {
         outcome.detail
     );
     assert!(
-        outcome.detail.contains("main moved while the gates ran"),
+        outcome.detail.contains("main moved while the checks ran"),
         "{}",
         outcome.detail
     );

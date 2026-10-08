@@ -74,6 +74,7 @@ fn a_resumed_conversation_prints_its_last_turns_and_keeps_the_rest_for_ctrl_o() 
         worker: Some(WorkerRef::new("claude-code", None)),
         earlier: vec![you("hi"), agent("Hi. Ask me anything.")],
         turns: vec![you("what does export do?"), agent("It writes CSV.")],
+        artifacts: Vec::new(),
     });
     let printed = screen.printed();
     assert_eq!(

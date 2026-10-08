@@ -1,0 +1,19 @@
+# A mod is one card. /mods lists it beside the built-in ones.
+name   = "checks"              # also its command: /checks shows or hides it
+title  = "checks"
+body   = "stack"               # stack · meters · list · columns · text
+places = ["above"]             # above · mode-line · usage · status · context
+form   = "full"                # full · compact · line
+key    = "ctrl+x k"            # optional
+
+[data]
+command = ["./checks.sh"]       # a program of yours that prints the JSON below
+every   = "60s"
+timeout = "2s"
+# source = "plan_usage"         # or a built-in source: context · plan_usage · spend · tokens · runs · waiting
+
+# What checks.sh prints:
+# {"summary": "7 of 9 passed", "level": "danger",
+#  "parts": [{"label": "passed", "value": 7, "color": "green"},
+#            {"label": "running", "value": 1, "color": "amber"},
+#            {"label": "failed", "value": 1, "color": "red"}]}

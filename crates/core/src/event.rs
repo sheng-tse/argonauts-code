@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::events::context::{ContextCategory, ContextItem};
 use crate::events::session::{SubagentUpdate, VendorWorkflow};
 use crate::limits::QuotaReading;
 use crate::screen::ScreenChange;
@@ -82,6 +83,34 @@ pub enum AgentEvent {
         /// in from the registry.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<u64>,
+        /// What Argonauts sent the session so far (brief, card, handoff pack, messages), by
+        /// the budget's estimate. The worker fills it in; a CLI never reports it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sent: Option<u64>,
+    },
+    /// The session's context by category, as the CLI's own /context counts it. Claude Code's
+    /// `get_context_usage` reply. Each one replaces the last.
+    ContextBreakdown {
+        /// In /context's order, each part once. Rows out of the window are left out.
+        categories: Vec<ContextCategory>,
+        /// Where the CLI compacts on its own, when it does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auto_compact_at: Option<u64>,
+        window: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        memory_files: Vec<ContextItem>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mcp_tools: Vec<ContextItem>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agents: Vec<ContextItem>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skills: Vec<ContextItem>,
+    },
+    /// The account's plan, as the CLI names it, such as Claude Code's `Claude Max`.
+    Plan {
+        plan: String,
     },
     Retry {
         reason: RetryReason,
@@ -192,6 +221,8 @@ impl AgentEvent {
             Self::Todo { .. } => "todo",
             Self::Usage { .. } => "usage",
             Self::ContextFill { .. } => "context_fill",
+            Self::ContextBreakdown { .. } => "context_breakdown",
+            Self::Plan { .. } => "plan",
             Self::Retry { .. } => "retry",
             Self::QuotaSignal { .. } => "quota_signal",
             Self::Subagent { .. } => "subagent",
@@ -360,6 +391,7 @@ pub enum ErrorCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::context::ContextPart;
     use crate::events::session::{SubagentKind, SubagentStatus};
     use crate::limits::{QuotaSource, QuotaStatus};
     use crate::names::VendorId;
@@ -414,6 +446,37 @@ mod tests {
                 cost_usd: Some(0.01),
                 cumulative: false,
             },
+            AgentEvent::ContextFill {
+                used: 212_000,
+                size: Some(1_000_000),
+                sent: Some(3_400),
+            },
+            AgentEvent::ContextBreakdown {
+                categories: vec![
+                    ContextCategory {
+                        part: ContextPart::Messages,
+                        tokens: 186_000,
+                    },
+                    ContextCategory {
+                        part: ContextPart::Free,
+                        tokens: 788_000,
+                    },
+                ],
+                auto_compact_at: Some(950_000),
+                window: 1_000_000,
+                model: Some("claude-opus-5-5".into()),
+                memory_files: vec![ContextItem {
+                    name: "CLAUDE.md".into(),
+                    tokens: 4_900,
+                    source: Some("Project".into()),
+                }],
+                mcp_tools: Vec::new(),
+                agents: Vec::new(),
+                skills: Vec::new(),
+            },
+            AgentEvent::Plan {
+                plan: "Claude Max".into(),
+            },
             AgentEvent::Retry {
                 reason: RetryReason::Other("flaky".into()),
                 delay_ms: Some(500),
@@ -432,6 +495,7 @@ mod tests {
                     last_message: None,
                     log_uri: None,
                     steps_visible: false,
+                    tokens: None,
                 },
             },
             AgentEvent::Quota {
@@ -490,6 +554,25 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&retry).unwrap(),
             json!({"type": "retry", "reason": "rate_limit", "delay_ms": null})
+        );
+    }
+
+    #[test]
+    fn an_old_context_fill_reads_with_nothing_sent() {
+        let old: AgentEvent =
+            serde_json::from_value(json!({"type": "context_fill", "used": 40, "size": 200}))
+                .unwrap();
+        assert_eq!(
+            old,
+            AgentEvent::ContextFill {
+                used: 40,
+                size: Some(200),
+                sent: None
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            json!({"type": "context_fill", "used": 40, "size": 200})
         );
     }
 

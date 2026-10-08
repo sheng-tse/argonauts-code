@@ -72,13 +72,13 @@ pub enum CheckpointKind {
     VendorDown,
     /// A card used up its attempts.
     Escalation,
-    /// A card or the run hit its budget and `budget.on_hit` is `ask`.
+    /// A task reached its limit and no fallback could take it.
     Budget,
     /// An owner's change request that the decision rules send to you.
     ChangeRequest,
     GoalChange,
     /// A recipe candidate passed replay.
-    RecipePromotion,
+    WorkflowPromotion,
     TakeOverReturn,
     /// An owner asked you something directly.
     Question,
@@ -100,7 +100,7 @@ pub enum CheckpointPacket {
     GoalChange(GoalChangePacket),
     /// Must be a JSON object without a `kind` key, since the packet's tag goes beside its
     /// fields; anything else fails to serialize.
-    RecipePromotion(serde_json::Value),
+    WorkflowPromotion(serde_json::Value),
     TakeOverReturn(TakeOverReturnPacket),
     Question(QuestionPacket),
     OriginalReturned(OriginalReturnedPacket),
@@ -346,7 +346,7 @@ pub enum AnswerAction {
     /// Vendor down: one agent for every paused card.
     OneForAll,
     /// Vendor down: choose per card.
-    PerCard,
+    PerTask,
     /// The amount in the note, or the default step without one.
     MoreBudget,
     HandOff,
@@ -374,7 +374,20 @@ pub enum AnswerAction {
     Redo,
     /// The replacement keeps the card, and the debt stays for the merge rule.
     KeepReplacement,
+    /// Esc on a question or an approval: carry on without me. No card offers
+    /// it. The engine takes an option in your place, as `approvals.when_declined` says, and
+    /// records that one, so this never reaches the journal.
+    CarryOn,
 }
+
+/// What an agent reads as the answer to a question you pressed Esc on. What it then assumed
+/// comes back in its report's concerns, marked so the run can show it for you to review.
+pub const LEFT_TO_THE_AGENT: &str = "The user left this to you. Decide, carry on, and list \
+                                     what you assumed in your report's `concerns`, each line \
+                                     starting with \"Assumed:\".";
+
+/// How an agent marks, in its report's concerns, something it decided in your place.
+pub const ASSUMED: &str = "Assumed:";
 
 /// What a note added with Tab on an option, or the Type my own answer line, carries on this
 /// card. Text typed at the prompt never answers a card.

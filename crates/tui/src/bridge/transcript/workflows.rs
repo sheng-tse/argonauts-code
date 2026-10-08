@@ -2,18 +2,21 @@
 //! it starts, with the description and the phases it declares, a line when the lead adds a
 //! phase, and `● Workflow(<name>) · done` when it ends, or `· failed` or
 //! `· stopped` as the run ended.
+//!
+//! A run whose step runs another workflow's steps declares only that they run. Its start item
+//! waits for that workflow's first report, and lists the phases the report names in place of
+//! the step's own, so the chat shows the workflow that runs, as the view does.
 
 use std::time::Duration;
 
 use argonauts_core::RunId;
 use argonauts_core::events::run::RunOutcome;
-use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared};
+use argonauts_core::events::workflow::{WorkflowDeclared, WorkflowReport};
 
 use crate::bottom::WorkflowRowState;
-use crate::cell::{ToolCall, ToolItem, ToolKind, ToolState};
+use crate::cell::{PhaseLine, ToolCall, ToolItem, ToolKind, ToolState};
 use crate::format;
-use crate::text::{sanitize_line, str_width};
-use crate::views::layout::left;
+use crate::text::sanitize_line;
 
 use super::milestones::RunStory;
 use super::steps::plural;
@@ -47,59 +50,120 @@ pub(super) fn declared(
         .filter(|text| !text.is_empty())
         .unwrap_or(declared.description.trim())
         .to_owned();
-    let mut call = ToolCall::call(
-        ToolKind::Other,
-        "Workflow",
-        sanitize_line(&name).into_owned(),
-    )
-    .with_state(ToolState::Done);
-    if !description.is_empty() {
-        call.push(ToolItem::text(sanitize_line(&description)));
-    }
-    for phase in phase_lines(&declared.phases) {
-        call.push(phase);
-    }
-    let watch = match named
+    let based_on = named
         .and_then(|named| named.based_on.as_deref())
         .map(str::trim)
         .filter(|based_on| !based_on.is_empty() && *based_on != name)
-    {
-        Some(based_on) => format!("Started from {} · ctrl+t to watch", sanitize_line(based_on)),
-        None => "ctrl+t to watch".to_owned(),
+        .map(|based_on| sanitize_line(based_on).into_owned());
+    // The workflow in use, as your settings name it, unless the run goes by that name.
+    let in_use = state
+        .and_then(|run| run.workflow.as_deref())
+        .map(str::trim)
+        .filter(|in_use| !in_use.is_empty() && *in_use != name)
+        .map(|in_use| sanitize_line(in_use).into_owned());
+    let start = Start {
+        name: name.clone(),
+        description,
+        declared: declared.clone(),
+        in_use,
+        based_on,
     };
-    call.push(ToolItem::text(watch));
+    let waits = state.is_some_and(|run| run.reported.expected_from(&declared.id));
     story.workflow = Some(name);
-    emit(cx, call);
+    if waits {
+        story.workflow_start = Some(start);
+    } else {
+        emit(cx, start.item(None));
+    }
 }
 
-/// `1. Understand  three models read the issue`, the titles padded so the details line up, and
-/// a detail too long for one row wraps under its own column.
-fn phase_lines(phases: &[DeclaredPhase]) -> Vec<ToolItem> {
-    let titles: Vec<String> = phases
-        .iter()
-        .map(|phase| sanitize_line(phase.title.trim()).into_owned())
-        .collect();
-    let widest = titles
-        .iter()
-        .map(|title| str_width(title))
-        .max()
-        .unwrap_or(0);
-    phases
-        .iter()
-        .zip(&titles)
-        .enumerate()
-        .map(|(i, (phase, title))| {
-            let detail = sanitize_line(phase.detail.trim()).into_owned();
-            if detail.is_empty() {
-                ToolItem::text(format!("{}. {title}", i + 1))
-            } else {
-                ToolItem::Hanging {
-                    lead: format!("{}. {}  ", i + 1, left(title, widest)),
-                    text: detail,
-                }
+/// The workflow one of the run's steps runs reported. Its first report prints the start item
+/// that waited for it, with the phases it names.
+pub(super) fn reported(report: &WorkflowReport, story: &mut RunStory, cx: &mut Cx<'_>) {
+    // A report that names nothing yet leaves the item waiting for one that does.
+    let named = !report.workflow.phases.is_empty() || !report.workflow.agents.is_empty();
+    let ours = named
+        && story
+            .workflow_start
+            .as_ref()
+            .is_some_and(|start| start.declared.id == report.step.workflow);
+    if let Some(start) = story.workflow_start.take_if(|_| ours) {
+        emit(cx, start.item(Some(report)));
+    }
+}
+
+/// A run's start item that hasn't printed: what it says, and the phases its workflow declared.
+#[derive(Debug)]
+pub(super) struct Start {
+    name: String,
+    description: String,
+    declared: WorkflowDeclared,
+    /// The workflow your settings have in use, when the run goes by another name.
+    in_use: Option<String>,
+    /// The learned workflow it started from.
+    based_on: Option<String>,
+}
+
+impl Start {
+    /// `● Workflow(<name>) · <workflow in use> · ctrl+t to open`, then its phases on one line.
+    /// The description stands in for phases it hasn't named.
+    fn item(&self, report: Option<&WorkflowReport>) -> ToolCall {
+        let mut tail = String::new();
+        for part in [&self.in_use, &self.based_on].into_iter().flatten() {
+            tail.push_str(" · ");
+            if Some(part) == self.based_on.as_ref() {
+                tail.push_str("started from ");
             }
-        })
-        .collect()
+            tail.push_str(part);
+        }
+        tail.push_str(" · ctrl+t to open");
+        let mut call = ToolCall::call(
+            ToolKind::Other,
+            "Workflow",
+            sanitize_line(&self.name).into_owned(),
+        )
+        .with_state(ToolState::Done)
+        .with_tail(tail);
+        // The size your request asked for, which the orchestrator keeps to.
+        if let Some(size) = report.and_then(|report| report.size_asked.as_deref()) {
+            call.push(ToolItem::text(format!(
+                "As you asked: {}",
+                sanitize_line(size)
+            )));
+        }
+        let phases = phase_lines(&self.declared, report);
+        if !phases.is_empty() {
+            call.push(ToolItem::Phases(phases));
+        } else if !self.description.is_empty() {
+            call.push(ToolItem::text(sanitize_line(&self.description)));
+        }
+        call
+    }
+}
+
+/// The phases as the workflow declares them, in its order, each saying whether it is a step
+/// you require. The phases `report` names stand in for the phase whose step runs them.
+fn phase_lines(declared: &WorkflowDeclared, report: Option<&WorkflowReport>) -> Vec<PhaseLine> {
+    let report = report
+        .filter(|report| report.step.workflow == declared.id && !report.workflow.phases.is_empty());
+    let mut lines = Vec::new();
+    for phase in &declared.phases {
+        match report.filter(|report| report.step.phase == phase.index) {
+            Some(report) => {
+                lines.extend(report.workflow.phases.iter().map(|reported| PhaseLine {
+                    title: reported.title.clone(),
+                    detail: reported.detail.clone(),
+                    required: declared.requires_step(&reported.title),
+                }));
+            }
+            None => lines.push(PhaseLine {
+                title: phase.title.clone(),
+                detail: phase.detail.clone(),
+                required: declared.requires(phase),
+            }),
+        }
+    }
+    lines
 }
 
 /// `● The lead changed the workflow · added Fix again`, with why under it.
@@ -110,7 +174,7 @@ pub(super) fn phase_added(title: &str, why: &str, story: &RunStory, cx: &mut Cx<
     let mut call = ToolCall::described(
         ToolKind::Other,
         format!(
-            "The lead changed the workflow · added {}",
+            "The main agent changed the workflow · added {}",
             sanitize_line(title.trim())
         ),
     )
@@ -127,11 +191,15 @@ pub(super) fn phase_added(title: &str, why: &str, story: &RunStory, cx: &mut Cx<
 /// failed run's workflow reads `· failed` above "The run failed", never `· done`.
 pub(super) fn done(
     run: &RunId,
-    story: &RunStory,
+    story: &mut RunStory,
     outcome: RunOutcome,
     elapsed: Option<Duration>,
     cx: &mut Cx<'_>,
 ) {
+    // A start item still waiting for a report prints as declared: none will come now.
+    if let Some(start) = story.workflow_start.take() {
+        emit(cx, start.item(None));
+    }
     let Some(name) = &story.workflow else {
         return;
     };
@@ -166,4 +234,51 @@ pub(super) fn done(
         call.push(ToolItem::text(parts.join(" · ")));
     }
     emit(cx, call);
+}
+
+#[cfg(test)]
+mod tests {
+    use argonauts_core::events::workflow::DeclaredPhase;
+    use argonauts_core::names::WorkflowId;
+    use argonauts_core::workflow::StandardPhase;
+
+    use super::*;
+
+    /// The chat lists the phases a workflow declares, whatever they are called and however
+    /// often a name comes, and marks the ones it says you require.
+    #[test]
+    fn the_phases_listed_are_the_workflows_own_with_your_steps_marked() {
+        let titles = ["Draft", "Critique", "Draft", "secrets scan"];
+        let declared = WorkflowDeclared {
+            id: WorkflowId::numbered(1),
+            name: "write-the-paper".into(),
+            description: String::new(),
+            phases: titles
+                .iter()
+                .zip(0..)
+                .map(|(title, index)| DeclaredPhase {
+                    index,
+                    title: (*title).into(),
+                    detail: format!("part {index}"),
+                    standard: StandardPhase::Do,
+                })
+                .collect(),
+            required: vec!["Secrets scan".into()],
+        };
+        let lines = phase_lines(&declared, None);
+        let listed: Vec<(&str, bool)> = lines
+            .iter()
+            .map(|line| (line.title.as_str(), line.required))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("Draft", false),
+                ("Critique", false),
+                ("Draft", false),
+                ("secrets scan", true)
+            ]
+        );
+        assert_eq!(lines[2].detail, "part 2");
+    }
 }

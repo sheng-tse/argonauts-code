@@ -39,7 +39,7 @@ pub fn default_pattern(kind: StepKind, role: Option<RoleName>) -> &'static str {
     match (kind, role) {
         (StepKind::Restate, _) => "read:{family}",
         (StepKind::Differ, _) => "compare:{n}",
-        (StepKind::Draft, Some(RoleName::Coordinator)) => "plan:coordinator",
+        (StepKind::Draft, Some(RoleName::Orchestrator)) => "plan:orchestrator",
         (StepKind::Draft, _) => "draft:{family}",
         (StepKind::Map, _) => "map:{n}",
         (StepKind::Refute, _) => "critique:{family}",
@@ -179,6 +179,28 @@ pub fn slug(text: &str, words: usize) -> String {
         .join("-")
 }
 
+/// A slug an id can carry, as `task-<slug>`: lowercase ASCII letters and digits joined by `-`,
+/// from the first `words` words that have any, short enough to leave room in an id for the
+/// `task-` before it and a `-2` after it. A request written in another script has none, and
+/// its slug is `task`.
+pub fn id_slug(text: &str, words: usize) -> String {
+    /// `task-` and a `-99` leave this much of an id's 64 bytes.
+    const MOST: usize = crate::ids::MAX_ID_LEN - "task-".len() - "-99".len();
+    let slug = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(words)
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = slug[..slug.len().min(MOST)].trim_end_matches('-');
+    if slug.is_empty() {
+        "task".to_owned()
+    } else {
+        slug.to_owned()
+    }
+}
+
 /// A card's item from its title: its first two words, less a leading verb that only repeats
 /// the phase (`Fix slugify's dashes` under `Fix` is `slugify-dashes`).
 pub fn item_from_title(title: &str, phase: &str) -> String {
@@ -241,6 +263,21 @@ mod tests {
             ..LabelParts::default()
         }
     }
+
+    #[test]
+    fn an_id_slug_is_ascii_whatever_the_request_is_written_in() {
+        assert_eq!(id_slug("修復登入頁面的錯誤", 4), "task");
+        assert_eq!(id_slug("Réparer l'élément du formulaire", 4), "r-parer-l-l");
+        assert_eq!(id_slug("Fix the login page", 4), "fix-the-login-page");
+        let long = id_slug(&"abcdefghij ".repeat(10), 10);
+        assert!(long.len() <= MAX_SLUG, "{long}");
+        for slug in [id_slug("修復 x", 4), long] {
+            crate::CardId::new(format!("task-{slug}-99")).expect("a valid id");
+        }
+    }
+
+    /// What `task-` and a `-99` leave of an id.
+    const MAX_SLUG: usize = crate::ids::MAX_ID_LEN - 8;
 
     #[test]
     fn patterns_fill_from_the_item_and_the_family() {

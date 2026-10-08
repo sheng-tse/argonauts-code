@@ -132,7 +132,7 @@ pub(crate) fn check_reverts(
         );
         notices.push(format!(
             "The auto-merge of {} was reverted on {} ({}), so it counts as a wrong auto-approval. \
-             Merges are back in shadow mode: they wait for you until you turn auto on again in \
+             Merges are back in auto preview mode: they wait for you until you turn auto on again in \
              /approvals.",
             merge.run,
             merge.target,

@@ -10,6 +10,6 @@ expression: text(&view.lines)
   ❯ 1. Yes
     2. No
 
-  Enter to choose · Esc to set aside
+  Enter to choose · Esc to carry on without me
 
-  ⏵⏵ auto mode on                                            Claude 5h 53% used
+  ⏵⏵ auto mode on                                         ● Claude 5h ▄▄▄▄▄▄ 53%

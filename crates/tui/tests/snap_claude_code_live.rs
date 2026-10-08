@@ -7,7 +7,8 @@ mod common;
 use argonauts_core::screen::{Drawn, DrawnButton, DrawnLook, DrawnRow, DrawnSpan};
 use argonauts_tui::bottom::HeadsUp;
 use argonauts_tui::model::{
-    ApprovalMode, BottomState, CardOption, CardPrompt, ModeNotice, StatusPart, Tone, WorkingLine,
+    AddedPart, ApprovalMode, BottomState, CardOption, CardPrompt, CliUse, LinePart, ModeNotice,
+    Tone, WindowUse, WorkingLine,
 };
 use argonauts_tui::stability;
 use argonauts_tui::theme::Role;
@@ -29,8 +30,18 @@ fn solo() -> BottomState {
     let mut working = WorkingLine::new("Rowing", t0());
     working.tokens_down = 2_900;
     bottom.working = Some(working);
-    bottom.status_line = vec![StatusPart::quota("Claude 5h 53% used", 53, Tone::Dim)];
+    let mut claude = CliUse::new("Claude", Role::CliClaude);
+    claude.main = true;
+    claude.windows = vec![WindowUse::new("5h", 0.53)];
+    bottom.line.right = vec![LinePart::PlanUsage(vec![claude])];
     bottom
+}
+
+/// A Claude Code mod's status text, as the sync puts it on the line: last, and first to go.
+fn push_mod_status(bottom: &mut BottomState, text: &str) {
+    let part = AddedPart::words("pr-tools", text, Tone::Dim);
+    bottom.line.right.push(LinePart::Added(part));
+    bottom.line.drop_first.insert(0, "pr-tools".into());
 }
 
 fn heads_up(line: &str) -> HeadsUp {
@@ -167,11 +178,7 @@ fn a_message_waits_with_the_send_now_hint() {
 fn what_a_mod_pushes_on_the_notice_and_status_lines() {
     let mut bottom = solo();
     bottom.working = None;
-    bottom.status_line.push(StatusPart {
-        text: "PR #482 · 2 reviews waiting".into(),
-        tone: Tone::Dim,
-        rank: 0,
-    });
+    push_mod_status(&mut bottom, "PR #482 · 2 reviews waiting");
     bottom.mode.notice = Some(ModeNotice {
         text: "pr-tools: 檢查清單已載入".into(),
         tone: Tone::Dim,
@@ -186,20 +193,16 @@ fn what_a_mod_pushes_on_the_notice_and_status_lines() {
 #[test]
 fn a_mods_status_line_sits_after_the_chips_and_gives_way_first() {
     let mut bottom = solo();
-    bottom.status_line.push(StatusPart {
-        text: "PR #482 · 2 reviews waiting".into(),
-        tone: Tone::Dim,
-        rank: 0,
-    });
+    push_mod_status(&mut bottom, "PR #482 · 2 reviews waiting");
     snapshot_widths("mod_status", &bottom);
     let theme = theme();
     let wide = text(&bottom.render(&ctx(&theme, 120, NOW)).lines);
-    let chip = wide.find("Claude 5h 53% used").unwrap();
+    let chip = wide.find("● Claude 5h").unwrap();
     let status = wide.find("PR #482").expect("room for it at 120");
     assert!(chip < status, "{wide}");
-    let narrow = text(&bottom.render(&ctx(&theme, 80, NOW)).lines);
+    let narrow = text(&bottom.render(&ctx(&theme, 60, NOW)).lines);
     assert!(
-        !narrow.contains("PR #482") && narrow.contains("Claude 5h"),
+        !narrow.contains("PR #482") && narrow.contains("● Claude 5h"),
         "{narrow}"
     );
 }

@@ -1,7 +1,6 @@
 //! What one run event changes for the app: the mode, the lifecycle stage, the spend, and
 //! whether something now needs you.
 
-use argonauts_core::RunId;
 use argonauts_core::app::AppMode;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::checkpoint::CheckpointKind;
@@ -105,16 +104,16 @@ pub(super) fn trigger(kind: CheckpointKind) -> ChatTrigger {
 
 pub(super) fn checkpoint_label(kind: CheckpointKind) -> &'static str {
     match kind {
-        CheckpointKind::Goal => "goal checkpoint",
-        CheckpointKind::Plan => "plan checkpoint",
-        CheckpointKind::Merge => "merge checkpoint",
-        CheckpointKind::Handoff => "handoff checkpoint",
-        CheckpointKind::VendorDown => "vendor down",
-        CheckpointKind::Escalation => "card out of attempts",
-        CheckpointKind::Budget => "budget limit",
+        CheckpointKind::Goal => "goal approval",
+        CheckpointKind::Plan => "plan approval",
+        CheckpointKind::Merge => "merge approval",
+        CheckpointKind::Handoff => "fallback question",
+        CheckpointKind::VendorDown => "agent down",
+        CheckpointKind::Escalation => "task out of attempts",
+        CheckpointKind::Budget => "spend limit",
         CheckpointKind::ChangeRequest => "change request",
         CheckpointKind::GoalChange => "goal change",
-        CheckpointKind::RecipePromotion => "recipe promotion",
+        CheckpointKind::WorkflowPromotion => "workflow promotion",
         CheckpointKind::TakeOverReturn => "return from a take-over",
         CheckpointKind::Question => "question from an agent",
         CheckpointKind::OriginalReturned => "original agent back",
@@ -132,7 +131,7 @@ pub(super) fn outcome_label(outcome: RunOutcome) -> &'static str {
     }
 }
 
-pub(super) fn outcome_sentence(run: &RunId, outcome: RunOutcome) -> String {
+pub(super) fn outcome_sentence(run: impl std::fmt::Display, outcome: RunOutcome) -> String {
     match outcome {
         RunOutcome::Merged => format!("{run} is merged."),
         RunOutcome::PullRequest => format!("{run} finished with a pull request."),

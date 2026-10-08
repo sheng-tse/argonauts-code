@@ -1,0 +1,9 @@
+# This repository's workflows, newest first, and how each ended.
+name   = "runs"
+title  = "workflows"
+body   = "list"
+places = ["usage"]
+form   = "full"
+
+[data]
+source = "runs"

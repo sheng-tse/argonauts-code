@@ -1,6 +1,7 @@
-//! A race: one card to several candidates at once (`race_count`), each in its own worktree,
-//! sharing the card's remaining budget. The first attempt that passes its gates and its review
-//! wins. The others stop, and once their sessions end their work is committed on their own
+//! Several fallbacks on one task at once (`together` of 2 or more), each in its own worktree,
+//! sharing the task's remaining limit. `pick` says whose work is kept: the first attempt that
+//! passes its checks and its review, and then the others stop; or the judge's choice among
+//! all that passed, once every attempt has ended. The others' work is committed on their own
 //! branches under their names.
 //!
 //! Attempts take numbers no earlier attempt used, read from the log, so a tree or branch is
@@ -17,21 +18,26 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tokio_util::sync::CancellationToken;
 
-use argonauts_core::CardId;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::card::CardEvent;
 use argonauts_core::events::session::SessionEvent;
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::HandoffPacket;
 use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::settings::handoff::Pick;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::SessionControl;
+use argonauts_core::{CardId, Note, NoteLevel};
 
 use crate::card::pipeline::{self, AttemptCall, AttemptEnd};
-use crate::card::support::card_events;
+use crate::card::support::{card_events, newest_owner_session};
 use crate::card::worktree::{self, CardTree};
 use crate::engine::host::Host;
+use crate::engine::stand_in;
 use crate::error::{EngineError, EngineResult};
-use crate::handoff::{assign, notes, rules, upgrade};
+use crate::handoff::{assign, judge, notes, rules, upgrade};
+use crate::labels;
+use crate::roles::display_name;
 use crate::state::RunState;
 use crate::state::sessions::SessionRecord;
 use crate::workflow::StepAt;
@@ -59,11 +65,12 @@ struct RaceLog {
     started: BTreeMap<WorkerRef, u32>,
 }
 
-/// Returns the winner.
+/// Returns the fallback whose work the task keeps.
 pub async fn run(
     host: &Host,
     card: &CardId,
     to: &[WorkerRef],
+    pick: Pick,
     packet: &HandoffPacket,
 ) -> EngineResult<Option<WorkerRef>> {
     let at = rules::step_now(host)?;
@@ -79,10 +86,37 @@ pub async fn run(
     let entrants = entrants(host, card, to, &at, &log, packet).await?;
     let stop = CancellationToken::new();
     let rounds = AtomicU32::new(first_round(host, card)?);
-    let (winner, error) = race(host, card, &entrants, &at, &rounds, &stop).await;
+    // What a task builds has no findings to merge, so `merge` keeps the first to pass too.
+    let until = match pick {
+        Pick::Judge => Until::AllEnded,
+        Pick::FirstPassing | Pick::Merge => Until::FirstPassed,
+    };
+    // Re-entered after a restart, its attempts are under way and it was said then.
+    if log.started.is_empty() {
+        say_who_takes_it(host, card, &entrants, until)?;
+    }
+    let (passed, error) = race(host, card, &entrants, &at, &rounds, &stop, until).await;
     if matches!(error, Some(EngineError::Interrupted)) {
         return Err(EngineError::Interrupted);
     }
+    let winner = match passed.as_slice() {
+        [] => None,
+        [only] => {
+            say_who_passed(host, card, only, &entrants, until)?;
+            Some(only.clone())
+        }
+        several => {
+            let attempts: Vec<judge::Passed<'_>> = several
+                .iter()
+                .filter_map(|worker| entrants.iter().find(|entrant| &entrant.worker == worker))
+                .map(|entrant| judge::Passed {
+                    worker: &entrant.worker,
+                    tree: &entrant.tree,
+                })
+                .collect();
+            Some(judge::pick(host, card, &attempts).await?)
+        }
+    };
     for entrant in &entrants {
         if Some(&entrant.worker) != winner.as_ref() {
             keep(host, card, entrant, log.since).await?;
@@ -99,8 +133,101 @@ pub async fn run(
     Ok(Some(winner))
 }
 
-/// Runs every attempt at once until one passes its gates and review, then stops the others
-/// and waits for each to end. Also returns the first error, for when none passed.
+/// `Sonnet 5.5 on Claude Code and GPT 5.6 on Codex both take build:add-due`, and how their
+/// results combine. After the worker went again and stopped again, the line opens with `Still
+/// unreachable` and is a warning, as the retry line before it was.
+fn say_who_takes_it(
+    host: &Host,
+    card: &CardId,
+    entrants: &[Entrant],
+    until: Until,
+) -> EngineResult<()> {
+    let (label, stopped) = host.read(|state| {
+        let stopped = newest_owner_session(state, card).cloned();
+        (labels::card_label(state, card), stopped)
+    });
+    let still = stopped.and_then(|session| stand_in::still_out(host, &session));
+    let names: Vec<String> = entrants
+        .iter()
+        .map(|entrant| display_name(&entrant.worker))
+        .collect();
+    let together = match names.as_slice() {
+        [one, other] => format!("{one} and {other} both take {label}"),
+        names => format!("{} all take {label}", joined(names)),
+    };
+    let how = match until {
+        Until::FirstPassed => "the first to pass the checks wins",
+        Until::AllEnded => "the judge picks among those that pass the checks",
+    };
+    let text = format!("{together} · {how} · /fallback changes this");
+    match still {
+        Some(still) => note(host, card, NoteLevel::Warn, format!("{still} · {text}")),
+        None => note(host, card, NoteLevel::Info, text),
+    }
+}
+
+/// `build:add-due · GPT 5.6 on Codex passed first · Sonnet 5.5's attempt stopped`, or that
+/// only one passed when each ran to its end.
+fn say_who_passed(
+    host: &Host,
+    card: &CardId,
+    winner: &WorkerRef,
+    entrants: &[Entrant],
+    until: Until,
+) -> EngineResult<()> {
+    let label = host.read(|state| labels::card_label(state, card));
+    // The line that said who takes it named each in full, so the model alone names a loser.
+    let names = DisplayNames::default();
+    let others: Vec<String> = entrants
+        .iter()
+        .filter(|entrant| &entrant.worker != winner)
+        .map(|entrant| names.short(&entrant.worker))
+        .collect();
+    let winner = display_name(winner);
+    let text = match until {
+        Until::FirstPassed => format!(
+            "{label} · {winner} passed first · {} stopped",
+            attempts_of(&others)
+        ),
+        Until::AllEnded => format!("{label} · only {winner}'s attempt passed the checks"),
+    };
+    note(host, card, NoteLevel::Info, text)
+}
+
+/// `Sonnet 5.5 on Claude Code's attempt`, or `the attempts of A and B`.
+fn attempts_of(names: &[String]) -> String {
+    match names {
+        [one] => format!("{one}'s attempt"),
+        names => format!("the attempts of {}", joined(names)),
+    }
+}
+
+/// `A, B and C`.
+fn joined(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn note(host: &Host, card: &CardId, level: NoteLevel, text: String) -> EngineResult<()> {
+    host.record(Some(card), None, RunEventKind::Note(Note { level, text }))?;
+    Ok(())
+}
+
+/// When the attempts stop running side by side.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Until {
+    /// At the first that passes: the others are stopped.
+    FirstPassed,
+    /// Each runs to its own end.
+    AllEnded,
+}
+
+/// Runs every attempt at once and waits for each to end: all of them on their own, or the
+/// rest stopped once one passes its checks and review. Returns those that passed, in the
+/// order they did, and the first error, for when none passed.
 async fn race(
     host: &Host,
     card: &CardId,
@@ -108,7 +235,8 @@ async fn race(
     at: &StepAt,
     rounds: &AtomicU32,
     stop: &CancellationToken,
-) -> (Option<WorkerRef>, Option<EngineError>) {
+    until: Until,
+) -> (Vec<WorkerRef>, Option<EngineError>) {
     let mut running: FuturesUnordered<_> = entrants
         .iter()
         .map(|entrant| async move {
@@ -125,12 +253,12 @@ async fn race(
             (&entrant.worker, pipeline::run_attempt(host, call).await)
         })
         .collect();
-    let mut winner: Option<WorkerRef> = None;
+    let mut passed: Vec<WorkerRef> = Vec::new();
     let mut error = None;
     let mut stopped: Vec<SessionKey> = Vec::new();
     loop {
         let next = if stop.is_cancelled() {
-            stop_losers(host, card, entrants, winner.as_ref(), &mut stopped);
+            stop_losers(host, card, entrants, passed.first(), &mut stopped);
             tokio::select! {
                 next = running.next() => next,
                 () = tokio::time::sleep(STOP_POLL) => continue,
@@ -142,18 +270,21 @@ async fn race(
             break;
         };
         match end {
-            Ok(AttemptEnd::Passed) if winner.is_none() => {
-                winner = Some(worker.clone());
-                stop.cancel();
+            // After the first to pass, a stopped attempt can't have passed too.
+            Ok(AttemptEnd::Passed) if !stop.is_cancelled() => {
+                passed.push(worker.clone());
+                if until == Until::FirstPassed {
+                    stop.cancel();
+                }
             }
             Ok(_) => {}
-            Err(EngineError::Interrupted) => return (winner, Some(EngineError::Interrupted)),
+            Err(EngineError::Interrupted) => return (passed, Some(EngineError::Interrupted)),
             Err(err) => {
                 error.get_or_insert(err);
             }
         }
     }
-    (winner, error)
+    (passed, error)
 }
 
 /// Stops the owner sessions of the attempts that lost, each once.
@@ -170,7 +301,7 @@ fn stop_losers(
             .running()
             .filter(|session| {
                 session.card.as_ref() == Some(card)
-                    && session.started.role == RoleName::Owner
+                    && session.started.role == RoleName::Worker
                     && Some(&session.started.worker) != winner
                     && entrants
                         .iter()
@@ -274,7 +405,7 @@ async fn own_copy(packet: &HandoffPacket, card_tree: Option<&Path>, tree: &Path)
         Err(error) => tracing::warn!(
             path = %own.display(),
             %error,
-            "a race attempt is told of the card's transcript, not a copy in its own tree"
+            "a race attempt is told of the task's transcript, not a copy in its own tree"
         ),
     }
     packet
@@ -383,7 +514,7 @@ fn owner_sessions<'a>(
     state.sessions.by_key.values().filter(move |session| {
         session.card.as_ref() == Some(card)
             && session.started.worker == *worker
-            && session.started.role == RoleName::Owner
+            && session.started.role == RoleName::Worker
             && session.started.step == Some(StepName::Build)
     })
 }

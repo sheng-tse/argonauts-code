@@ -1,40 +1,32 @@
 //! The live region's own rows from the app state: the working line, the narrator's live line,
-//! queued messages, the mode line, the status line with its quota chips, and the title.
+//! queued messages, the input rule's label, the mode line, and the title. The bottom line's
+//! parts are [`bottom_line`]'s.
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::app::{AppMode, ChoiceKind, QuotaChip};
+use argonauts_core::KeyScheme;
+use argonauts_core::app::{AppMode, AwakeHold, ChoiceKind};
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::card::CardState;
 use argonauts_core::events::run::{Party, RunPhase};
 use argonauts_core::events::session::{Delivery, QueuedMessage};
 use argonauts_core::input::MentionTarget;
-use argonauts_core::limits::{HealthState, QuotaStatus};
 use argonauts_core::settings::approvals::ApprovalMode as CoreApproval;
-use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
+use argonauts_core::settings::bottom_line::AWAKE;
 use argonauts_core::settings::ui::{
-    HeadsUp as HeadsUpSetting, ModOutput, NarratorMode, UiSettings, VerbTheme,
+    HeadsUp as HeadsUpSetting, NarratorMode, UiSettings, VerbTheme,
 };
-use argonauts_core::{KeyScheme, Spend};
 use time::{OffsetDateTime, UtcOffset};
 
+use crate::bottom::line::PartBody;
 use crate::bottom::verbs::VerbStyle;
-use crate::bottom::{
-    Activity, ApprovalMode, BottomState, HeadsUp, ModeLine, StatusPart, VimMode, WorkingLine,
-};
+use crate::bottom::{Activity, ApprovalMode, BottomState, HeadsUp, ModeLine, VimMode, WorkingLine};
 use crate::cell::Tone;
-use crate::format::{self, ClockTime};
+use crate::format;
 use crate::keymap::{Action, Keymap};
-use crate::state::{AppState, ChatState, Doing, RunState, binding_reading};
-use crate::text::sanitize_line;
+use crate::state::{AppState, ChatState, Doing, RunState};
 
-use super::Cx;
-
-/// A quota reading older than this is drawn dim, since the vendor may have moved on.
-pub const QUOTA_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
-
-/// A chip turns the warning color here, and never gives way on a narrow screen.
-const QUOTA_WARN: f64 = 0.9;
+use super::{Cx, bottom_line};
 
 /// Brings every row under the transcript in line with the state. Runs after every event and
 /// action, so it must be cheap and idempotent.
@@ -65,6 +57,8 @@ pub fn sync(cx: &mut Cx<'_>) {
     if let Some(label) = composer_label(state) {
         bottom.composer.label = Some(label);
     }
+    bottom.composer.ultracode = state.status.as_ref().is_some_and(|status| status.ultracode);
+    bottom.workflow_key = workflow_key(cx.settings);
 
     apply_keys(&mut bottom.mode, keys);
     if let Some(approval) = controller_approval(state)
@@ -82,18 +76,25 @@ pub fn sync(cx: &mut Cx<'_>) {
     bottom.send_now_hint = send_now_hint(state, cx.settings);
     sync_heads_up(state, cx.settings, bottom);
 
-    let wall = OffsetDateTime::now_utc();
-    bottom.status_line = status_parts(state, wall);
-    if cx.settings.mod_output == ModOutput::Show {
-        // A mod's status line is dim after the chips, and gives way first.
-        bottom
-            .status_line
-            .extend(state.chat.mod_status.iter().map(|(_, text)| StatusPart {
-                text: sanitize_line(text).into_owned(),
-                tone: Tone::Dim,
-                rank: 0,
-            }));
+    let now = OffsetDateTime::now_utc();
+    let clock = bottom_line::Clock {
+        now,
+        utc_offset: state.terminal.utc_offset.unwrap_or(UtcOffset::UTC),
+    };
+    match awake_part(state, &clock) {
+        Some(awake) => {
+            bottom.line_slots.insert(AWAKE.to_owned(), awake);
+        }
+        None => {
+            bottom.line_slots.remove(AWAKE);
+        }
     }
+    let line = bottom_line::build(state, cx.settings, &bottom.line_slots, now);
+    // Your mods placed above the input draw under the band's own cards.
+    if bottom.file_mods.as_ref() != state.mods.as_ref() {
+        bottom.file_mods = state.mods.clone();
+    }
+    bottom.line = line;
     bottom.enter_sends = enter_sends(state);
     bottom.run_takes_text = run_takes_text(state);
     bottom.shell_running = state.shell.is_some();
@@ -204,6 +205,9 @@ fn current_work(state: &AppState) -> Option<Work<'_>> {
         .any(|choice| choice.kind == ChoiceKind::Permission);
     match &state.mode {
         Some(AppMode::Answering { .. }) if asks_you => None,
+        // Only what the main agent's CLI runs in the background works now. Its rows show
+        // that, and there is no turn for Esc to stop.
+        Some(AppMode::Answering { .. }) if state.chat.waits_on_background() => None,
         Some(AppMode::Answering { .. }) => Some(Work::Chat(&state.chat)),
         Some(AppMode::Working { run }) => run_work(run),
         Some(AppMode::Pausing { run }) => state.runs.get(run).map(Work::Pausing),
@@ -262,6 +266,7 @@ fn sync_working(
             line.activity = activity(previous.as_ref().map(|l| &l.activity), chat.doing, now);
             line.details.clear();
             line.hide_while_text_streams = true;
+            line.esc_stops = true;
         }
         Work::Run(run) => {
             line.tokens_down = run.tokens_out();
@@ -274,12 +279,15 @@ fn sync_working(
                 _ => Activity::None,
             };
             line.details = run_details(run);
+            // Esc leaves a run's agents going. It still stops a chat turn answered meanwhile.
+            line.esc_stops = state.chat.turn.is_some();
         }
         Work::Pausing(_) => {
             line.tokens_down = 0;
             line.activity = Activity::None;
             line.details = vec!["esc again to stop now".to_owned()];
             line.timed = false;
+            line.esc_stops = true;
         }
     }
     // The fade runs from the stall the conductor reported, never from a quiet spell, since a
@@ -347,7 +355,7 @@ fn run_details(run: &RunState) -> Vec<String> {
     details.extend(phase.filter(|phase| !phase.trim().is_empty()));
     let (done, total) = run.cards_done();
     if total > 0 {
-        details.push(format!("{done}/{total} cards"));
+        details.push(format!("{done}/{total} tasks"));
     }
     match run.running_sessions().count() {
         0 => {}
@@ -370,7 +378,7 @@ pub fn phase_name(phase: RunPhase) -> &'static str {
         RunPhase::Build => "Build",
         RunPhase::FinalCheck => "Final check",
         RunPhase::Merge => "Merge",
-        RunPhase::Retro => "Retro",
+        RunPhase::Retro => "Run review",
     }
 }
 
@@ -395,7 +403,7 @@ fn queued(state: &AppState) -> (Vec<String>, Vec<Option<String>>) {
             .iter()
             .filter(|message| message.from == Party::User)
         {
-            texts.push(message.text.clone());
+            texts.push(own_words(&message.text).to_owned());
             places.push(destination(run, message, &state.names));
         }
     }
@@ -404,6 +412,15 @@ fn queued(state: &AppState) -> (Vec<String>, Vec<Option<String>>) {
         places.push(None);
     }
     (texts, places)
+}
+
+/// What you typed, without the line the engine frames it with for the agents, such as
+/// `Guidance m-001 from you:`, which would stand in for your words on the screen.
+fn own_words(text: &str) -> &str {
+    match text.split_once('\n') {
+        Some((frame, words)) if frame.ends_with(':') && frame.contains(" from you") => words,
+        _ => text,
+    }
 }
 
 /// `to Opus 5.5 on Claude Code, after its current tool call` or `to Antigravity CLI, at its
@@ -431,34 +448,71 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
     Some(format!("to {to}, {when}"))
 }
 
-/// Your preset, what your next message would use, with `all hands` after it while that's on.
-/// A run's own workflow shows on its panel row, never here.
+/// The input rule's label: the main session's model by name alone, such as `Opus 5.5`, with
+/// the workflow's name first when it isn't solo. Which CLI the model runs on is
+/// the marked chip on the bottom line. A run's own workflow shows on its panel row, never here.
 fn composer_label(state: &AppState) -> Option<String> {
-    let label = preset_label(state);
-    let all_hands = state.status.as_ref().is_some_and(|status| status.all_hands);
-    match label {
-        Some(label) if all_hands => Some(format!("{label} · {ALL_HANDS_LABEL}")),
-        None if all_hands => Some(ALL_HANDS_LABEL.to_owned()),
-        label => label,
+    let workflow = workflow_label(state).filter(|workflow| workflow != SOLO);
+    match (workflow, main_model(state)) {
+        (Some(workflow), Some(model)) => Some(format!("{workflow} · {model}")),
+        (workflow, model) => workflow.or(model),
     }
 }
 
-/// All hands on the input rule, lowercase like the preset beside it.
-const ALL_HANDS_LABEL: &str = "all hands";
+/// The workflow in which the main session's CLI does everything itself.
+const SOLO: &str = "solo";
 
-fn preset_label(state: &AppState) -> Option<String> {
+/// The model the main session runs, or its CLI's name while nobody knows the model.
+fn main_model(state: &AppState) -> Option<String> {
+    let agent = state
+        .status
+        .as_ref()
+        .map(|status| &status.main_agent)
+        .or_else(|| state.welcome.as_ref()?.main_agent.as_ref())?;
+    let agent = state.names.running(agent);
+    let cli = agent.worker.as_str();
+    Some(
+        state
+            .names
+            .model(cli, agent.model.as_deref())
+            .unwrap_or_else(|| state.names.harness(cli)),
+    )
+}
+
+/// The key that ignores the word `ultracode` in a draft, as the notice names it: `opt+w` on a
+/// Mac keyboard, where Alt is the Option key.
+fn workflow_key(settings: &UiSettings) -> String {
+    let keymap = Keymap::with_overrides(&settings.keymap).0;
+    let key = keymap
+        .keys(Action::WorkflowKeywordToggle)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        key.replace("alt+", "opt+")
+    } else {
+        key
+    }
+}
+
+fn workflow_label(state: &AppState) -> Option<String> {
     state
         .status
         .as_ref()
-        .map(|status| status.preset.clone())
+        .map(|status| status.workflow.clone())
         .filter(|preset| !preset.is_empty())
-        .or_else(|| state.welcome.as_ref().map(|welcome| welcome.preset.clone()))
+        .or_else(|| {
+            state
+                .welcome
+                .as_ref()
+                .map(|welcome| welcome.workflow.clone())
+        })
         .filter(|preset| !preset.is_empty())
 }
 
-/// The run plain text and the budget meter are about: the one the app mode names, else the
+/// The run plain text and the spend part are about: the one the app mode names, else the
 /// attached one.
-fn focus_run(state: &AppState) -> Option<&RunState> {
+pub(super) fn focus_run(state: &AppState) -> Option<&RunState> {
     let named = match &state.mode {
         Some(AppMode::Working { run } | AppMode::Pausing { run } | AppMode::Parked { run, .. }) => {
             state.runs.get(run)
@@ -474,9 +528,9 @@ fn controller_approval(state: &AppState) -> Option<ApprovalMode> {
         .or_else(|| state.status.as_ref().map(|status| status.approval_mode))?;
     Some(match mode {
         CoreApproval::Supervised => ApprovalMode::Supervised,
-        CoreApproval::Shadow => ApprovalMode::Shadow,
+        CoreApproval::AutoPreview => ApprovalMode::AutoPreview,
         CoreApproval::Auto => ApprovalMode::Auto,
-        CoreApproval::FullAuto => ApprovalMode::FullAuto,
+        CoreApproval::Autopilot => ApprovalMode::Autopilot,
     })
 }
 
@@ -495,189 +549,26 @@ fn title(state: &AppState) -> Option<String> {
     Some(title.to_owned())
 }
 
-/// Only what the startup header lacks: the quota chips, the budget meter, and the narrator's
-/// spend, with the default agent once it differs from the header's. The preset never shows,
-/// since the input's top rule names it.
-fn status_parts(state: &AppState, wall: OffsetDateTime) -> Vec<StatusPart> {
-    let mut parts = Vec::new();
-    if let Some(status) = &state.status {
-        let header = state.welcome.as_ref();
-        if header.and_then(|welcome| welcome.default_agent.as_ref()) != Some(&status.default_agent)
-        {
-            parts.push(StatusPart::model(state.names.worker(&status.default_agent)));
-        }
-    }
-    let facts = |chip: &QuotaChip| ChipFacts {
-        now: wall,
-        utc_offset: state.terminal.utc_offset.unwrap_or(UtcOffset::UTC),
-        spend_usd: vendor_spend(state, &chip.label),
+/// `☕ awake until you quit`, or until a time, while `/awake` holds the computer's sleep off.
+fn awake_part(state: &AppState, clock: &bottom_line::Clock) -> Option<PartBody> {
+    let until = match state.status.as_ref()?.awake.as_ref()? {
+        AwakeHold::UntilQuit => "you quit".to_owned(),
+        AwakeHold::Until { at } if *at <= clock.now => return None,
+        AwakeHold::Until { at } => bottom_line::clock_time(*at, clock),
     };
-    for chip in chips(state) {
-        parts.extend(quota_part(&chip, &facts(&chip)));
-    }
-    parts.extend(budget_meter(state));
-    parts.extend(narrator_spend(state));
-    parts
-}
-
-/// The controller's chips with newer readings and health from the run's events folded in. A
-/// vendor with more than one chip (agy splits by model family) keeps the controller's.
-fn chips(state: &AppState) -> Vec<QuotaChip> {
-    let mut chips = state
-        .status
-        .as_ref()
-        .map(|status| status.quotas.clone())
-        .unwrap_or_default();
-    let vendor_of = |chip: &QuotaChip| {
-        chip.reading
-            .as_ref()
-            .map(|reading| reading.vendor.0.clone())
-            .or_else(|| vendor_for_label(&chip.label).map(str::to_owned))
-    };
-    let vendors: Vec<Option<String>> = chips.iter().map(vendor_of).collect();
-    for (chip, vendor) in chips.iter_mut().zip(&vendors) {
-        let Some(vendor) = vendor else { continue };
-        if vendors
-            .iter()
-            .filter(|other| other.as_ref() == Some(vendor))
-            .count()
-            > 1
-        {
-            continue;
-        }
-        if let Some(readings) = state.quotas.get(vendor) {
-            let mut all = readings.clone();
-            all.extend(chip.reading.clone());
-            chip.reading = binding_reading(&all).cloned();
-        }
-        if let Some(health) = state.health.get(vendor) {
-            chip.health = health.state;
-        }
-    }
-    for (vendor, readings) in &state.quotas {
-        if vendors.iter().any(|known| known.as_ref() == Some(vendor)) {
-            continue;
-        }
-        chips.push(QuotaChip {
-            label: label_for_vendor(vendor),
-            reading: binding_reading(readings).cloned(),
-            health: state
-                .health
-                .get(vendor)
-                .map_or(HealthState::Healthy, |health| health.state),
-        });
-    }
-    chips
-}
-
-/// What a chip can't say about itself.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ChipFacts {
-    pub now: OffsetDateTime,
-    pub utc_offset: UtcOffset,
-    /// Spend on that vendor, for an agent without a quota.
-    pub spend_usd: Option<f64>,
-}
-
-/// `Claude 5h 71% used`, `Codex down`, `agy out until 3:45 PM`, `Claude wrapping up`,
-/// `OpenRouter $0.06`, or `Local`,
-/// with the tone for 90% used and a stale reading. A quota not read yet, or not readable, shows
-/// nothing, since a chip like `Codex ?` only takes room.
-pub fn quota_part(chip: &QuotaChip, facts: &ChipFacts) -> Option<StatusPart> {
-    let label = chip.label.trim();
-    if chip.health == HealthState::Down {
-        return Some(StatusPart::new(format!("{label} down"), Tone::Warning));
-    }
-    let Some(reading) = &chip.reading else {
-        if label == "Local" {
-            return Some(StatusPart::no_quota(label));
-        }
-        if has_quota(label) {
-            return None;
-        }
-        return Some(match facts.spend_usd.filter(|spend| *spend > 0.0) {
-            Some(spend) => StatusPart::no_quota(format!("{label} {}", format::usd(spend))),
-            None => StatusPart::no_quota(label),
-        });
-    };
-    match reading.status {
-        // Out for new work, while the running turn finishes on the CLI's allowance.
-        QuotaStatus::Rejected if reading.wrap_up => {
-            return Some(StatusPart::new(
-                format!("{label} wrapping up"),
-                Tone::Warning,
-            ));
-        }
-        QuotaStatus::Rejected => {
-            let text = match reading.resets_at {
-                Some(at) => format!("{label} out until {}", clock_time(at, facts)),
-                None => format!("{label} out"),
-            };
-            return Some(StatusPart::new(text, Tone::Warning));
-        }
-        QuotaStatus::Unknown => return None,
-        QuotaStatus::Allowed | QuotaStatus::Warning => {}
-    }
-    let window = reading.window.as_deref().map(window_name);
-    let name = match window.as_deref() {
-        Some(window) if !window.is_empty() => format!("{label} {window}"),
-        _ => label.to_owned(),
-    };
-    let stale = Duration::try_from(facts.now - reading.observed_at)
-        .is_ok_and(|age| age > QUOTA_STALE_AFTER);
-    let Some(used) = reading.used else {
-        // Some readings say only that the vendor warned, not how much is used.
-        return Some(match reading.status {
-            QuotaStatus::Warning => StatusPart::new(format!("{name} near limit"), Tone::Warning),
-            _ if stale => StatusPart::stale(format!("{name} ok"), 0),
-            _ => StatusPart::quota(format!("{name} ok"), 0, Tone::Normal),
-        });
-    };
-    let used = used.clamp(0.0, 1.0);
-    let percent = (used * 100.0).round() as u8;
-    let text = format!("{name} {percent}% used");
-    let warn = used >= QUOTA_WARN;
-    Some(match (stale, warn) {
-        (true, true) => StatusPart::quota(text, 100, Tone::Dim),
-        (true, false) => StatusPart::stale(text, percent),
-        (false, true) => StatusPart::quota(text, percent.max(90), Tone::Warning),
-        (false, false) => StatusPart::quota(text, percent, Tone::Normal),
+    // The ASCII glyph set is for fonts that draw symbols at the wrong width, so the cup goes.
+    let ascii = state.ui.as_ref().is_some_and(|ui| {
+        crate::theme::Glyphs::for_settings(ui.glyphs, ui.ambiguous_width).is_ascii()
+    });
+    let cup = if ascii { "" } else { "☕ " };
+    Some(PartBody::Words {
+        text: format!("{cup}awake until {until}"),
+        tone: Tone::Code,
     })
 }
 
-/// `3:45 PM` today, or `Mon 9:00 AM` on another day.
-fn clock_time(at: OffsetDateTime, facts: &ChipFacts) -> String {
-    let local = at.to_offset(facts.utc_offset);
-    let clock = ClockTime::new(local.hour(), local.minute()).map_or_else(
-        || format!("{:02}:{:02}", local.hour(), local.minute()),
-        |t| t.to_string(),
-    );
-    if local.date() == facts.now.to_offset(facts.utc_offset).date() {
-        clock
-    } else {
-        let day = local.weekday().to_string();
-        format!("{} {clock}", &day[..3.min(day.len())])
-    }
-}
-
-/// `five_hour` → `5h`, `seven_day` → `7d`, and other windows in plain words.
-fn window_name(window: &str) -> String {
-    match window.trim() {
-        "five_hour" | "5h" => "5h".to_owned(),
-        "seven_day" | "weekly" | "7d" => "7d".to_owned(),
-        "seven_day_opus" => "7d Opus".to_owned(),
-        "seven_day_sonnet" => "7d Sonnet".to_owned(),
-        "daily" | "one_day" => "1d".to_owned(),
-        other => other.replace('_', " "),
-    }
-}
-
-/// Subscription CLIs report a quota, so a chip without a reading means the reading failed.
-fn has_quota(label: &str) -> bool {
-    matches!(label, "Claude" | "Codex") || label == "agy" || label.starts_with("agy ")
-}
-
-fn vendor_for_label(label: &str) -> Option<&'static str> {
+/// The adapter id behind a chip's short name.
+pub(super) fn vendor_for_label(label: &str) -> Option<&'static str> {
     Some(match label.trim() {
         "Claude" => "claude-code",
         "Codex" => "codex",
@@ -702,142 +593,6 @@ pub fn label_for_vendor(vendor: &str) -> String {
     .to_owned()
 }
 
-/// What this app's runs spent on the vendor a chip names.
-fn vendor_spend(state: &AppState, label: &str) -> Option<f64> {
-    let vendor = vendor_for_label(label).unwrap_or(label);
-    let spend: f64 = state
-        .runs
-        .values()
-        .flat_map(|run| run.sessions.values())
-        .filter(|session| session.vendor.eq_ignore_ascii_case(vendor))
-        .filter_map(|session| session.cost_usd)
-        .sum();
-    (spend > 0.0).then_some(spend)
-}
-
-/// The run's spend against its limit, then the busiest live session's context against its
-/// cap: `$0.21/$5.00 · ctx 150k/200k`.
-fn budget_meter(state: &AppState) -> Vec<StatusPart> {
-    let mut parts = Vec::new();
-    let Some(run) = focus_run(state) else {
-        if let Some(status) = &state.status
-            && let Some(spent) = &status.spent
-        {
-            parts.push(StatusPart::spend(spend_text(
-                spent,
-                spent.input_tokens + spent.output_tokens,
-                status.limit.as_ref(),
-            )));
-        }
-        return parts;
-    };
-    let limit = run
-        .budget
-        .as_ref()
-        .and_then(|budget| budget.limit)
-        .or_else(|| state.status.as_ref().and_then(|status| status.limit));
-    let tokens = run
-        .budget
-        .as_ref()
-        .map_or(run.spent.total_tokens(), |budget| {
-            budget.spent.total_tokens()
-        });
-    parts.push(StatusPart::spend(spend_text(
-        &run.spend(),
-        tokens,
-        limit.as_ref(),
-    )));
-    let busiest = run
-        .running_sessions()
-        .filter_map(|session| session.context)
-        .filter(|context| context.cap > 0)
-        .max_by(|a, b| {
-            let share = |c: &argonauts_core::views::ContextUse| c.used as f64 / c.cap as f64;
-            share(a).total_cmp(&share(b))
-        });
-    if let Some(context) = busiest {
-        let full = context.used as f64 >= context.cap as f64 * QUOTA_WARN;
-        let tone = if full { Tone::Warning } else { Tone::Dim };
-        parts.push(StatusPart::context(
-            format!(
-                "ctx {}/{}",
-                format::tokens(context.used),
-                format::tokens(context.cap)
-            ),
-            tone,
-        ));
-    }
-    parts
-}
-
-/// `$0.21/$5.00`, `48.2k/2m tokens`, or the spend alone without a limit it can be read against.
-fn spend_text(spent: &Spend, tokens: u64, limit: Option<&BudgetAmount>) -> String {
-    let spent = format::spend(spent);
-    match limit {
-        Some(BudgetAmount {
-            unit: BudgetUnit::Usd,
-            amount,
-        }) => format!("{spent}/{}", format::usd(*amount)),
-        Some(BudgetAmount {
-            unit: BudgetUnit::Tokens,
-            amount,
-        }) => format!(
-            "{}/{} tokens",
-            format::tokens(tokens),
-            format::tokens(amount.max(0.0) as u64)
-        ),
-        Some(BudgetAmount {
-            unit: BudgetUnit::Minutes,
-            amount,
-        }) => format!("{spent} · limit {}m", amount.max(0.0).round() as u64),
-        Some(BudgetAmount {
-            unit: BudgetUnit::Quota,
-            amount,
-        }) => format!(
-            "{spent} · limit {}% of quota",
-            (amount.clamp(0.0, 1.0) * 100.0).round() as u64
-        ),
-        None => spent,
-    }
-}
-
-/// `narrator $0.06/$0.50` while it's on, in the warning color once capped.
-fn narrator_spend(state: &AppState) -> Option<StatusPart> {
-    let status = state.narrator_status.as_ref()?;
-    let on = match status.mode {
-        NarratorMode::Off => false,
-        NarratorMode::Live => true,
-        NarratorMode::OnDemand => status.spent.cost_usd > 0.0,
-    };
-    if !on {
-        return None;
-    }
-    let tone = if status.capped {
-        Tone::Warning
-    } else {
-        Tone::Dim
-    };
-    Some(StatusPart::narrator(
-        format!(
-            "narrator {}/{}",
-            format::spend(&status.spent),
-            cap_text(&status.cap)
-        ),
-        tone,
-    ))
-}
-
-/// `0.50 usd` → `$0.50`; other caps as written.
-fn cap_text(cap: &str) -> String {
-    let mut words = cap.split_whitespace();
-    match (words.next(), words.next(), words.next()) {
-        (Some(amount), Some(unit), None) if unit.eq_ignore_ascii_case("usd") => amount
-            .parse::<f64>()
-            .map_or_else(|_| cap.trim().to_owned(), format::usd),
-        _ => cap.trim().to_owned(),
-    }
-}
-
 /// Where Enter sends a draft now, while a run works or a card waits.
 fn enter_sends(state: &AppState) -> Option<String> {
     match &state.mode {
@@ -848,7 +603,7 @@ fn enter_sends(state: &AppState) -> Option<String> {
         Some(AppMode::Idle) | None => state
             .status
             .as_ref()
-            .map(|status| format!("Enter asks {}", state.names.worker(&status.default_agent))),
+            .map(|status| format!("Enter asks {}", state.names.worker(&status.main_agent))),
     }
 }
 
@@ -882,6 +637,21 @@ mod tests {
 
     use super::*;
     use crate::state::{StepState, WorkflowState};
+
+    /// A queued message reads as you typed it, without the frame the agents get with it.
+    #[test]
+    fn a_queued_message_reads_as_you_typed_it() {
+        assert_eq!(
+            own_words("Guidance m-001 from you:\nkeep the date format ISO only"),
+            "keep the date format ISO only"
+        );
+        assert_eq!(
+            own_words("Message m-002 from you, about m-001:\nand the tests"),
+            "and the tests"
+        );
+        assert_eq!(own_words("keep: ISO\nonly"), "keep: ISO\nonly");
+        assert_eq!(own_words("plain words"), "plain words");
+    }
 
     #[test]
     fn a_run_parked_at_a_card_still_takes_text() {
@@ -920,65 +690,81 @@ mod tests {
         state.status = Some(argonauts_core::app::StatusLine {
             title: String::new(),
             repo: "~/code".into(),
-            preset: "peer-crew".into(),
-            all_hands: true,
+            workflow: "council".into(),
+            ultracode: true,
             run: None,
-            default_agent: "claude-code".parse().unwrap(),
+            main_agent: "claude-code".parse().unwrap(),
             quotas: Vec::new(),
+            line: Default::default(),
             spent: None,
             limit: None,
             narrator: NarratorMode::Off,
             approval_mode: CoreApproval::Supervised,
+            awake: None,
         });
         let mut run = crate::state::RunState::new(id.clone());
         run.mode = Some(RunMode::Crew);
-        run.preset = Some("peer-crew".into());
+        run.workflow = Some("council".into());
         run.workflows
-            .push(workflow(1, "solo-reviewed", &["Build"], None));
+            .push(workflow(1, "maker-checker", &["Build"], None));
         state.runs.insert(id.clone(), run);
         state.mode = Some(AppMode::Working { run: id.clone() });
         assert_eq!(
             composer_label(&state).as_deref(),
-            Some("peer-crew · all hands")
+            Some("council · Claude Code")
         );
 
         state.runs.get_mut(&id).unwrap().mode = Some(RunMode::Solo);
         assert_eq!(
             composer_label(&state).as_deref(),
-            Some("peer-crew · all hands")
+            Some("council · Claude Code")
         );
     }
 
+    /// The model by name alone, the workflow first when it isn't solo, and
+    /// ultracode as the rule's own tag, never a word in the label.
     #[test]
-    fn the_input_rule_shows_all_hands_beside_the_preset_while_it_is_on() {
+    fn the_input_rule_names_the_main_model_with_the_workflow_first() {
         let mut state = AppState::default();
-        let status = |all_hands: bool| argonauts_core::app::StatusLine {
+        let status = |workflow: &str, agent: &str| argonauts_core::app::StatusLine {
             title: String::new(),
             repo: "~/code".into(),
-            preset: "peer-crew".into(),
-            all_hands,
+            workflow: workflow.into(),
+            ultracode: true,
             run: None,
-            default_agent: "claude-code".parse().unwrap(),
+            main_agent: agent.parse().unwrap(),
             quotas: Vec::new(),
+            line: Default::default(),
             spent: None,
             limit: None,
             narrator: NarratorMode::Off,
             approval_mode: CoreApproval::Supervised,
+            awake: None,
         };
-        state.status = Some(status(false));
-        assert_eq!(composer_label(&state).as_deref(), Some("peer-crew"));
-        state.status = Some(status(true));
+        state.status = Some(status("solo", "claude-code/claude-opus-5-5"));
+        assert_eq!(composer_label(&state).as_deref(), Some("Opus 5.5"));
+        state.status = Some(status("council", "claude-code/claude-opus-5-5"));
         assert_eq!(
             composer_label(&state).as_deref(),
-            Some("peer-crew · all hands")
+            Some("council · Opus 5.5")
         );
+        // After /model the rule names the new model, and nothing else says which CLI.
+        state.status = Some(status("solo", "codex/gpt-6.1-sol"));
+        let label = composer_label(&state).unwrap();
+        assert!(
+            !label.contains("Codex") && !label.contains("solo"),
+            "{label}"
+        );
+        // While nobody knows the model, the CLI's name stands in for it.
+        state.status = Some(status("solo", "codex"));
+        assert_eq!(composer_label(&state).as_deref(), Some("Codex"));
     }
 
     fn workflow(id: u32, name: &str, phases: &[&str], parent: Option<StepRef>) -> WorkflowState {
         WorkflowState {
             id: WorkflowId::numbered(id),
             name: name.into(),
-            from: Some("peer-crew".into()),
+            from: Some("council".into()),
             description: String::new(),
             phases: phases.iter().map(|phase| (*phase).to_owned()).collect(),
             parent,
@@ -1022,7 +808,7 @@ mod tests {
 
         // Once the run's own workflow runs, its phases name the line, with a nested
         // workflow's steps counted in the phase they run in.
-        let mut own = workflow(1, "peer-crew", &["Goal", "Plan", "Build", "Merge"], None);
+        let mut own = workflow(1, "council", &["Goal", "Plan", "Build", "Merge"], None);
         own.steps.push(step(1, 0, true));
         own.steps.push(step(1, 1, false));
         run.workflows.insert(0, own);
@@ -1088,11 +874,70 @@ mod tests {
         assert_eq!(stalled_since(&state, 651), None);
     }
 
+    /// The working line offers Esc only for what Esc stops: a chat turn, a turn
+    /// answered while a run works, and a run that's pausing. A run's own agents keep going.
+    /// While the main agent rests and only its CLI's subagents work, there is no line at all.
     #[test]
-    fn a_chat_turns_quota_reading_shows_on_the_mode_line() {
+    fn the_working_line_offers_esc_only_for_what_esc_stops() {
+        let run = RunId::new("run-01").unwrap();
+        let turn = TurnId::numbered(1);
+        let t0 = Instant::now();
+        let synced = |state: &AppState| {
+            let mut bottom = crate::bottom::BottomState::new();
+            sync_working(state, &mut bottom, || "Rowing", t0);
+            bottom.working.map(|line| line.esc_stops)
+        };
+        let mut state = AppState::default();
+        state.runs.insert(run.clone(), RunState::new(run.clone()));
+        state.mode = Some(AppMode::Working { run: run.clone() });
+        assert_eq!(synced(&state), Some(false), "a run alone");
+        state.chat.turn = Some(turn.clone());
+        assert_eq!(synced(&state), Some(true), "a turn answered meanwhile");
+        state.chat.turn = None;
+        state.mode = Some(AppMode::Pausing { run });
+        assert_eq!(synced(&state), Some(true), "a pausing run stops now");
+
+        let mut state = AppState::default();
+        state.mode = Some(AppMode::Answering { turn: turn.clone() });
+        state.chat.turn = Some(turn.clone());
+        assert_eq!(synced(&state), Some(true), "a chat turn");
+        let agent = |event| AppEvent::Chat {
+            event: ChatEvent::Agent {
+                turn: turn.clone(),
+                event,
+            },
+        };
+        state.apply(&agent(AgentEvent::Subagent {
+            update: argonauts_core::events::session::SubagentUpdate {
+                id: "toolu_a".into(),
+                parent: None,
+                kind: argonauts_core::events::session::SubagentKind::Subagent,
+                label: Some("Count slowly".into()),
+                prompt: None,
+                status: argonauts_core::events::session::SubagentStatus::Running,
+                last_message: None,
+                log_uri: None,
+                steps_visible: true,
+                tokens: None,
+            },
+        }));
+        state.apply(&agent(AgentEvent::BackgroundTasks {
+            running: vec!["task-a".into()],
+            ended: false,
+        }));
+        state.apply(&agent(AgentEvent::Result {
+            text: None,
+            structured: None,
+            is_error: true,
+        }));
+        assert_eq!(synced(&state), None, "only its subagents work");
+    }
+
+    #[test]
+    fn a_chat_turns_quota_reading_is_kept_for_the_bottom_line() {
         let wall = OffsetDateTime::now_utc();
         let mut state = AppState::default();
-        assert!(status_parts(&state, wall).is_empty());
+        assert!(state.quotas.is_empty());
         let reading = QuotaReading {
             vendor: VendorId("claude-code".into()),
             status: QuotaStatus::Allowed,
@@ -1107,13 +952,81 @@ mod tests {
         state.apply(&AppEvent::Chat {
             event: ChatEvent::Agent {
                 turn: TurnId::numbered(1),
-                event: AgentEvent::Quota { reading },
+                event: AgentEvent::Quota {
+                    reading: reading.clone(),
+                },
             },
         });
-        let parts: Vec<String> = status_parts(&state, wall)
-            .iter()
-            .map(|part| part.text.clone())
-            .collect();
-        assert_eq!(parts, ["Claude 5h 71% used"]);
+        assert_eq!(state.quotas["claude-code"], [reading]);
+    }
+
+    fn status_with(awake: Option<AwakeHold>) -> argonauts_core::app::StatusLine {
+        argonauts_core::app::StatusLine {
+            title: String::new(),
+            repo: "~/code".into(),
+            workflow: "council".into(),
+            ultracode: false,
+            run: None,
+            main_agent: "claude-code".parse().unwrap(),
+            quotas: Vec::new(),
+            line: Default::default(),
+            spent: None,
+            limit: None,
+            narrator: NarratorMode::Off,
+            approval_mode: CoreApproval::Supervised,
+            awake,
+        }
+    }
+
+    /// The words the bottom line's `awake` part shows at `wall`, if any.
+    fn awake_words(state: &AppState, wall: OffsetDateTime) -> Option<String> {
+        let clock = bottom_line::Clock {
+            now: wall,
+            utc_offset: UtcOffset::UTC,
+        };
+        match awake_part(state, &clock)? {
+            PartBody::Words { text, tone } => {
+                assert_eq!(tone, Tone::Code);
+                Some(text)
+            }
+            other => panic!("not words: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_bottom_line_names_a_hold_on_sleep_you_asked_for() {
+        let wall = time::macros::datetime!(2026-10-07 13:45 UTC);
+        let words = |awake: Option<AwakeHold>| {
+            let mut state = AppState::default();
+            state.status = Some(status_with(awake));
+            awake_words(&state, wall)
+        };
+        assert_eq!(
+            words(Some(AwakeHold::UntilQuit)).as_deref(),
+            Some("☕ awake until you quit")
+        );
+        let later = wall + time::Duration::hours(2);
+        assert_eq!(
+            words(Some(AwakeHold::Until { at: later })).as_deref(),
+            Some("☕ awake until 3:45pm")
+        );
+        // A time that's up, or no hold of yours, shows nothing.
+        assert_eq!(words(Some(AwakeHold::Until { at: wall })), None);
+        assert_eq!(words(None), None);
+    }
+
+    #[test]
+    fn the_ascii_glyph_set_drops_the_cup() {
+        let mut state = AppState::default();
+        state.ui = Some(UiSettings {
+            glyphs: argonauts_core::settings::ui::Glyphs::Ascii,
+            ..UiSettings::default()
+        });
+        state.status = Some(status_with(Some(AwakeHold::UntilQuit)));
+        let wall = time::macros::datetime!(2026-10-07 13:45 UTC);
+        assert_eq!(
+            awake_words(&state, wall).as_deref(),
+            Some("awake until you quit")
+        );
     }
 }

@@ -21,7 +21,7 @@ pub fn check(
     match spec.sandbox.mode {
         SandboxMode::None if !sandbox.mode.ours_off() => {
             return Err(WorkerError::Refused(
-                "a harness session needs a sandbox. Only sandbox.mode = \"tool\" or \"none\", \
+                "a CLI session needs a sandbox. Only sandbox.mode = \"tool\" or \"none\", \
                  which you set yourself, lets one run without ours"
                     .to_owned(),
             ));
@@ -30,7 +30,7 @@ pub fn check(
         SandboxMode::Os | SandboxMode::Container => {
             if sandbox.fail_closed && !self_test.ok {
                 return Err(WorkerError::Refused(format!(
-                    "the sandbox self-test failed, so no harness session starts: {}",
+                    "the sandbox self-test failed, so no CLI session starts: {}",
                     self_test.detail
                 )));
             }

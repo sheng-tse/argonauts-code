@@ -1,6 +1,8 @@
-//! A card that hit its budget: `budget.on_hit` hands it off or escalates it by rule, or opens
-//! the budget checkpoint, where you (or your rules, within the reserve) add budget, hand it
-//! off, or escalate. A budget hit is never a failure and uses no retry.
+//! A task that reached a limit you set. `limits.when_reached = "fallback"` hands it to a
+//! fallback, and when none can take it opens the limit approval, where you (or your rules,
+//! within the reserve) add to the limit, hand it off, or stop it; on autopilot that approval
+//! is settled without you. `"stop"` stops the task with its work kept. A reached limit is
+//! never a failure and uses no retry.
 
 use argonauts_core::CardId;
 use argonauts_core::budget::{
@@ -31,30 +33,27 @@ use crate::state::cards::CardRecord;
 /// How much more budget "more budget" adds without an amount in your note.
 const STEP: f64 = 0.5;
 
-/// Applies `budget.on_hit` to a card waiting in `NeedsDecision`.
+/// Applies `limits.when_reached` to a card waiting in `NeedsDecision`.
 pub(crate) async fn on_hit(host: &Host, card: &CardId, on_hit: OnHit) -> EngineResult<()> {
     match on_hit {
-        OnHit::Handoff => {
+        OnHit::Fallback => {
             // Out of NeedsDecision at once, as an answered budget card does, or the pipeline
             // decides the old owner's stop again and hands the card on a second time.
             if hand_off(host, card, Party::Rules)? {
-                let reason = "handed off after a budget hit";
+                let reason = "handed off after a limit hit";
                 transition(host, card, Trigger::Decided, reason)?;
-            } else {
-                let reason = "the card hit its budget and no other agent can take it";
-                transition(host, card, Trigger::Escalate, reason)?;
+                return Ok(());
             }
+            ask(host, card).await
+        }
+        OnHit::Stop => {
+            transition(host, card, Trigger::Escalate, "the task hit its limit")?;
             Ok(())
         }
-        OnHit::Escalate => {
-            transition(host, card, Trigger::Escalate, "the card hit its budget")?;
-            Ok(())
-        }
-        OnHit::Ask | OnHit::Extend => ask(host, card).await,
     }
 }
 
-/// `Budget(Hit)`: the card's work is committed, and `budget.on_hit` decides next.
+/// `Budget(Hit)`: the card's work is committed, and `limits.when_reached` decides next.
 pub(crate) fn record_hit(host: &Host, card: &CardId) -> EngineResult<()> {
     let record = record_of(host, card)?;
     let (dimension, status) = hit_of(host, &record);
@@ -88,7 +87,7 @@ fn in_force(host: &Host, spec: &CardSpec) -> CardBudget {
     let limits = host
         .services()
         .limits
-        .session_limits(Some(spec), RoleName::Owner);
+        .session_limits(Some(spec), RoleName::Worker);
     let own = &spec.budget;
     CardBudget {
         limit: own.limit.or(limits.budget),
@@ -98,7 +97,8 @@ fn in_force(host: &Host, spec: &CardSpec) -> CardBudget {
     }
 }
 
-/// The budget checkpoint. With `extend`, your approval rules may answer it from the reserve.
+/// The limit approval, for a task no fallback can take. Your approval rules may answer it
+/// from the reserve, and autopilot settles it without you.
 async fn ask(host: &Host, card: &CardId) -> EngineResult<()> {
     let record = record_of(host, card)?;
     let (dimension, status) = hit_of(host, &record);
@@ -118,7 +118,7 @@ async fn ask(host: &Host, card: &CardId) -> EngineResult<()> {
     let request = CheckpointRequest {
         at: None,
         kind: CheckpointKind::Budget,
-        title: format!("{card} hit its budget · {}", record.spec.title),
+        title: format!("{card} hit its limit · {}", record.spec.title),
         card: Some(card.clone()),
         packet: CheckpointPacket::Budget(packet),
         facts: EvidenceFacts {
@@ -149,7 +149,7 @@ async fn ask(host: &Host, card: &CardId) -> EngineResult<()> {
                 };
                 host.record(Some(card), None, RunEventKind::Budget(event))?;
             }
-            transition(host, card, Trigger::Decided, "more budget")?;
+            transition(host, card, Trigger::Decided, "more limit")?;
         }
         AnswerAction::HandOff | AnswerAction::OtherCandidates | AnswerAction::Candidate { .. } => {
             let moved = match &decided.action {
@@ -160,12 +160,7 @@ async fn ask(host: &Host, card: &CardId) -> EngineResult<()> {
                 _ => hand_off(host, card, decided.by.clone())?,
             };
             if moved {
-                transition(
-                    host,
-                    card,
-                    Trigger::Decided,
-                    "handed off after a budget hit",
-                )?;
+                transition(host, card, Trigger::Decided, "handed off after a limit hit")?;
             } else {
                 transition(host, card, Trigger::Escalate, "no other agent can take it")?;
             }
@@ -175,7 +170,7 @@ async fn ask(host: &Host, card: &CardId) -> EngineResult<()> {
                 host,
                 card,
                 Trigger::Escalate,
-                "you escalated the budget hit",
+                "you asked to decide the limit hit",
             )?;
         }
     }
@@ -357,7 +352,7 @@ mod tests {
             reserve_left: reserve,
         });
         for (n, (card_state, limit)) in cards.iter().enumerate() {
-            let mut spec = card_spec(&format!("card-{:03}", n + 1), &[], None);
+            let mut spec = card_spec(&format!("task-{:03}", n + 1), &[], None);
             spec.budget.limit = *limit;
             let mut record = CardRecord::new(spec);
             record.state = *card_state;

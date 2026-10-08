@@ -15,21 +15,22 @@ const WIDTHS: [u16; 4] = [80, 100, 120, 200];
 
 fn typed(text: &str) -> BottomState {
     let mut bottom = BottomState::new();
-    bottom.composer.label = Some("peer-crew".into());
+    bottom.composer.label = Some("council".into());
     bottom.menus.commands = command_items(None);
     bottom.menus.mentions = vec![
-        MenuItem::new("claude-code", "opus · owner on card-002").with_kind("agent"),
+        MenuItem::new("claude-code", "opus · worker on task-002").with_kind("agent"),
         MenuItem::new(
             "codex",
-            "2 sessions: owner on card-003, reviewer on card-002",
+            "2 sessions: worker on task-003, reviewer on task-002",
         )
         .with_kind("agent"),
-        MenuItem::new("card-002", "Add the JSON writer").with_kind("card"),
-        MenuItem::new("card-003", samples::CJK).with_kind("card"),
-        MenuItem::new("owner", "claude-code/opus on card-002, codex on card-003").with_kind("role"),
-        MenuItem::new("reviewer", "codex on card-002").with_kind("role"),
-        MenuItem::new("1", "claude-code/opus on card-002").with_kind("follow"),
-        MenuItem::new("2", "codex on card-003").with_kind("follow"),
+        MenuItem::new("task-002", "Add the JSON writer").with_kind("task"),
+        MenuItem::new("task-003", samples::CJK).with_kind("task"),
+        MenuItem::new("worker", "claude-code/opus on task-002, codex on task-003")
+            .with_kind("role"),
+        MenuItem::new("reviewer", "codex on task-002").with_kind("role"),
+        MenuItem::new("1", "claude-code/opus on task-002").with_kind("follow"),
+        MenuItem::new("2", "codex on task-003").with_kind("follow"),
         MenuItem::new("all", "Every agent in this run").with_kind("run"),
     ];
     bottom.composer.set_text(text);
@@ -101,7 +102,7 @@ fn slash_menu_under_input() {
         .filter_map(|row| row.strip_prefix("  /"))
         .filter_map(|row| row.split_whitespace().next())
         .collect();
-    assert_eq!(names, ["workflow", "workflows"], "{narrowed}");
+    assert_eq!(names, ["workflows", "workflow"], "{narrowed}");
 }
 
 #[test]
@@ -149,7 +150,7 @@ fn slash_menu_with_the_main_agents_commands() {
 
 #[test]
 fn mention_list_under_input() {
-    let bottom = typed("tell @c");
+    let bottom = typed("tell @");
     snapshot_widths("mention_list_under_input", &bottom);
 
     let theme = theme();
@@ -161,7 +162,16 @@ fn mention_list_under_input() {
         .collect();
     assert_eq!(
         names,
-        ["claude-code", "codex", "card-002", "card-003"],
+        [
+            "claude-code",
+            "codex",
+            "task-002",
+            "task-003",
+            "worker",
+            "reviewer",
+            "1",
+            "2"
+        ],
         "{shown}"
     );
 }

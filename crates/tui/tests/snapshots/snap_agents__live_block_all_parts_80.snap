@@ -2,7 +2,7 @@
 source: crates/tui/tests/snap_agents.rs
 expression: text(lines)
 ---
-● Opus on Claude Code · owner · card-003 · 4m12s · ↓ 18.1k · retrying in 12s
+● Opus on Claude Code · worker · task-003 · 4m12s · ↓ 18.1k · retrying in 12s
   ⎿  Update(src/app.rs)
         Added 2 lines, removed 1 line
                 let area = frame.area();

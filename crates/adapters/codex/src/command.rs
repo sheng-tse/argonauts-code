@@ -18,7 +18,7 @@ pub const LOCAL_PROVIDERS: &[&str] = &["ollama", "lmstudio"];
 const REFUSED_EXTRA_FLAGS: &[&str] = &[
     "-a",
     "--ask-for-approval",
-    "--full-auto",
+    "--autopilot",
     "--approve-for-me",
     "--dangerously-bypass-approvals-and-sandbox",
     "--dangerously-bypass-hook-trust",
@@ -143,7 +143,7 @@ fn local_provider_args(launch: Option<&LaunchHints>) -> anyhow::Result<Vec<Strin
 }
 
 fn launch_tweak_args(req: &SessionRequest) -> Vec<String> {
-    let mut args = Vec::new();
+    let mut args = tweaks::context_window(req.context);
     if let Some(setting) = req.compaction {
         args.extend(tweaks::compaction(setting).args);
     }

@@ -28,9 +28,11 @@ use crate::format::{WallClock, vendor_label};
 use crate::state::AppState;
 use crate::text::sanitize_line;
 use crate::theme::{Role, Theme};
+use crate::widgets::State;
 
 use super::list::{self, Column, ListState, fit_columns};
 use super::panes::{self, Footer, Header, Marks, Side};
+use super::states;
 use super::{View, ViewCtx, ViewOutcome};
 
 /// Cells between columns.
@@ -291,7 +293,7 @@ impl ResumePicker {
         !self.chats.is_empty() || !self.sessions.is_empty() || !self.agents.is_empty()
     }
 
-    fn columns(&self, width: usize, names: &DisplayNames) -> Vec<Column> {
+    fn columns(&self, width: usize, names: &DisplayNames, theme: &Theme) -> Vec<Column> {
         let now = self.clock.now();
         let cells = |cell: &dyn Fn(Row) -> String| -> Vec<String> {
             self.rows.iter().map(|row| cell(*row)).collect()
@@ -332,7 +334,7 @@ impl ResumePicker {
             Column::new(
                 "State",
                 cells(&|row| match row {
-                    Row::Run(i) => state_word(self.runs[i].state).to_owned(),
+                    Row::Run(i) => state_cell(self.runs[i].state, theme),
                     Row::Agent(a) => agent_state(&self.agents[a]).to_owned(),
                     _ => String::new(),
                 }),
@@ -404,7 +406,7 @@ impl ResumePicker {
         let dim = theme.style(Role::Dim);
         // The selection mark and the ◆ slot lead every row.
         let lead = 4;
-        let columns = self.columns(width.saturating_sub(lead), names);
+        let columns = self.columns(width.saturating_sub(lead), names, theme);
         let mut heading = vec![Span::raw(" ".repeat(lead))];
         for (i, column) in columns.iter().enumerate() {
             if i > 0 {
@@ -421,12 +423,12 @@ impl ResumePicker {
             };
             let mut spans = vec![
                 if selected {
-                    Span::styled(format!("{} ", marks.selected), theme.style(Role::Label))
+                    Span::styled(format!("{} ", marks.selected), theme.style(Role::Card))
                 } else {
                     Span::raw("  ")
                 },
                 if run.is_some_and(|run| run.remind) {
-                    Span::styled(marks.needs_you, theme.style(Role::Card))
+                    Span::styled(marks.needs_you, theme.style(Role::StateNeedsYou))
                 } else {
                     Span::raw(" ")
                 },
@@ -437,7 +439,7 @@ impl ResumePicker {
                     spans.push(Span::raw(" ".repeat(GAP)));
                 }
                 let style = match (column.heading, run) {
-                    ("Title", _) if selected => theme.style(Role::Label),
+                    ("Title", _) if selected => theme.style(Role::Card),
                     ("Title", _) => theme.style(Role::Text),
                     ("State", Some(run)) => theme.style(state_role(run.state)),
                     _ => dim,
@@ -448,7 +450,7 @@ impl ResumePicker {
         }
         if self.rows.is_empty() {
             let text = if self.filter.trim().is_empty() {
-                "  No parked or stopped runs"
+                "  No waiting or stopped runs"
             } else {
                 "  Nothing matches"
             };
@@ -708,7 +710,7 @@ impl ResumePicker {
         if !self.mixed() {
             return Header {
                 title: Line::from(Span::styled("Resume a run", theme.style(Role::Label))),
-                description: "Parked runs never expire, so resume it or stop it".to_owned(),
+                description: "Waiting runs never expire, so resume it or stop it".to_owned(),
                 summary: self.matching(panes::count(self.runs.len(), "run")),
             };
         }
@@ -733,7 +735,7 @@ impl ResumePicker {
         };
         Header {
             title: Line::from(Span::styled(title, theme.style(Role::Label))),
-            description: "Pick one to carry on. Parked runs never expire".to_owned(),
+            description: "Pick one to carry on. Waiting runs never expire".to_owned(),
             summary: self.matching(summary.join(" · ")),
         }
     }
@@ -894,7 +896,7 @@ pub(crate) fn diff_request(state: &AppState, run: &RunId) -> Result<ViewRequest,
             scope: DiffScope::Card,
         }),
         None => Err(format!(
-            "No cards of {} on this screen yet. Resume it to see its diff",
+            "No tasks of {} on this screen yet. Resume it to see its diff",
             sanitize_line(run.as_str())
         )),
     }
@@ -939,7 +941,7 @@ pub(crate) fn state_word(state: RunPhase) -> &'static str {
     match state {
         RunPhase::Running => "running",
         RunPhase::Pausing => "pausing",
-        RunPhase::Parked => "parked",
+        RunPhase::Parked => "waiting",
         RunPhase::Crashed => "crashed",
         RunPhase::Merged => "merged",
         RunPhase::PullRequest => "pull request",
@@ -950,14 +952,26 @@ pub(crate) fn state_word(state: RunPhase) -> &'static str {
     }
 }
 
-pub(crate) fn state_role(state: RunPhase) -> Role {
+/// Which of the states every view draws a run's is. A run that waits in this list waits for
+/// you to pick it up.
+fn state_of(state: RunPhase) -> State {
     match state {
-        RunPhase::Running | RunPhase::Pausing => Role::Accent,
-        RunPhase::Parked => Role::Warning,
-        RunPhase::Crashed | RunPhase::Failed => Role::Error,
-        RunPhase::Merged | RunPhase::PullRequest => Role::Success,
-        RunPhase::BranchLeft | RunPhase::Stopped | RunPhase::Abandoned => Role::Dim,
+        RunPhase::Running | RunPhase::Pausing => State::Working,
+        RunPhase::Parked => State::NeedsYou,
+        RunPhase::Crashed | RunPhase::Failed => State::Failed,
+        RunPhase::Merged | RunPhase::PullRequest => State::Done,
+        RunPhase::BranchLeft | RunPhase::Stopped | RunPhase::Abandoned => State::Stopped,
     }
+}
+
+pub(crate) fn state_role(state: RunPhase) -> Role {
+    state_of(state).role()
+}
+
+/// `✔ merged`: the state's glyph and its word, which the row draws in the state's color.
+fn state_cell(state: RunPhase, theme: &Theme) -> String {
+    let (glyph, _) = states::mark(state_of(state), theme);
+    format!("{glyph} {}", state_word(state))
 }
 
 /// `just now`, `12m ago`, `3h ago`, `4d ago`.
@@ -1138,9 +1152,9 @@ mod tests {
             run: RunId::new(id).unwrap(),
             title: format!("{id} title"),
             mode: RunMode::Crew,
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             state: RunPhase::Parked,
-            stopped_at: "merge checkpoint".into(),
+            stopped_at: "merge approval".into(),
             updated: WALL - Duration::hours(hours_ago),
             spent: Spend::default(),
             sessions_to_resume: 1,
@@ -1210,7 +1224,7 @@ mod tests {
             .collect();
         assert_eq!(order, vec!["chat-002", "run-02", "chat-001", "run-01"]);
         assert!(text[1].contains("chat") && text[1].contains("2 turns with Claude Code"));
-        assert!(text[2].contains("run ") && text[2].contains("parked"));
+        assert!(text[2].contains("run ") && text[2].contains("waiting"));
     }
 
     /// A conversation that only started or opened runs counts those, not "0 turns".
@@ -1331,7 +1345,7 @@ mod tests {
         let text = rows(&view, 120);
         let row = |id: &str| text.iter().find(|row| row.contains(id)).unwrap().clone();
         assert_eq!(row("run-02").matches("merged").count(), 1, "{text:#?}");
-        assert!(row("run-01").contains("merge checkpoint"), "{text:#?}");
+        assert!(row("run-01").contains("merge approval"), "{text:#?}");
     }
 
     #[test]

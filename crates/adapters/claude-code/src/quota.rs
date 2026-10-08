@@ -11,12 +11,7 @@ use crate::json::{bool_at, str_at, string_at};
 
 /// `info` is the event's `rate_limit_info`. `None` when it has no status to normalize.
 pub fn reading(info: &Value, observed_at: OffsetDateTime) -> Option<QuotaReading> {
-    let status = match str_at(info, "status")? {
-        "allowed" => QuotaStatus::Allowed,
-        "allowed_warning" => QuotaStatus::Warning,
-        "rejected" => QuotaStatus::Rejected,
-        _ => QuotaStatus::Unknown,
-    };
+    let status = status(info)?;
     // 2.1.284 sends utilization per window under `unifiedWindows` rather than at the top, and
     // `rateLimitType` names the window that changed, which isn't always the fullest. A model's
     // own bucket says how full the account is only when it's what turned a request down.
@@ -54,6 +49,54 @@ pub fn reading(info: &Value, observed_at: OffsetDateTime) -> Option<QuotaReading
         detail: Some(info.clone()),
         wrap_up: false,
     })
+}
+
+fn status(info: &Value) -> Option<QuotaStatus> {
+    Some(match str_at(info, "status")? {
+        "allowed" => QuotaStatus::Allowed,
+        "allowed_warning" => QuotaStatus::Warning,
+        "rejected" => QuotaStatus::Rejected,
+        _ => QuotaStatus::Unknown,
+    })
+}
+
+/// The account's other windows, one reading each, beside the one [`reading`] gave, so every
+/// window shows on its own. The window Claude Code names carries the event's status, and the
+/// rest allow. A model's own bucket stays in the detail: it may pass 100% while the account
+/// still allows, and would read as the fullest.
+pub fn other_windows(info: &Value, headline: &QuotaReading) -> Vec<QuotaReading> {
+    let Some(windows) = info.get("unifiedWindows").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let named = str_at(info, "rateLimitType");
+    windows
+        .iter()
+        .filter(|(name, _)| ACCOUNT_WINDOWS.contains(&name.as_str()))
+        .filter(|(name, _)| headline.window.as_deref() != Some(name.as_str()))
+        .filter_map(|(name, window)| {
+            let used = window.get("utilization")?.as_f64()?.clamp(0.0, 1.0);
+            let resets_at = window
+                .get("resetsAt")
+                .and_then(Value::as_i64)
+                .and_then(|secs| OffsetDateTime::from_unix_timestamp(secs).ok());
+            let status = if named == Some(name.as_str()) {
+                status(info).unwrap_or(QuotaStatus::Unknown)
+            } else {
+                QuotaStatus::Allowed
+            };
+            Some(QuotaReading {
+                vendor: VendorId("claude-code".to_owned()),
+                status,
+                used: Some(used),
+                resets_at,
+                window: Some(name.clone()),
+                source: QuotaSource::RateLimitEvent,
+                observed_at: headline.observed_at,
+                detail: None,
+                wrap_up: false,
+            })
+        })
+        .collect()
 }
 
 /// The account's own limits. The other windows are a model's own weekly bucket, such as

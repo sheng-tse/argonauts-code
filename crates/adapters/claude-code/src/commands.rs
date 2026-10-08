@@ -122,13 +122,15 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("setup-bedrock", &[], "", "Set up Amazon Bedrock", ScreenOnly),
     command("setup-vertex", &[], "", "Set up Google Vertex AI", ScreenOnly),
     command("install", &[], "", "Install the native build", ScreenOnly),
-    command("restart", &["update"], "", "Restart Claude Code and keep this session", ScreenOnly),
+    // Its `/update` alias is Argonauts' own `/update` here, which runs `claude update`.
+    command("restart", &[], "", "Restart Claude Code and keep this session", ScreenOnly),
     command("brief", &[], "", "Brief-only mode", ScreenOnly),
     command("wellbeing", &[], "", "Break reminders and quiet hours", ScreenOnly),
     // Account and usage.
     command("login", &[], "", "Log in", Argonauts("login")),
     command("logout", &[], "", "Log out", Argonauts("logout")),
-    command("usage", &["cost", "stats"], "", "Plan usage and spend", Argonauts("usage")),
+    // Its `/stats` alias is Argonauts' own `/stats` here, the Overview's Stats tab.
+    command("usage", &["cost"], "", "Plan usage and spend", Argonauts("usage")),
     command("usage-credits", &["extra-usage"], "", "Usage credits", ScreenOnly),
     command("claim-credit", &[], "", "Claim the one-time credit for cloud sessions, by October 7", ScreenOnly),
     command("rate-limit-options", &[], "", "What to do at a rate limit", ScreenOnly),
@@ -146,7 +148,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command("feedback", &[], "", "Send feedback", Argonauts("feedback")),
     command("insights", &[], "", "A report on how you use Claude Code", Vendor),
     command("team-onboarding", &[], "", "A guide for teammates new to this repo", Vendor),
-    command("artifacts", &[], "", "Your artifacts", ScreenOnly),
+    command("artifacts", &[], "", "The pages this conversation published", Argonauts("artifacts")),
     command("install-slack-app", &[], "", "Set up the Slack app", ScreenOnly),
     command("mobile", &["ios", "android"], "", "Get the mobile app", ScreenOnly),
     command("stickers", &[], "", "Order stickers", ScreenOnly),

@@ -202,7 +202,7 @@ mod tests {
         let text = std::fs::read_to_string(state.join("outcomes/run-01.jsonl")).unwrap();
         assert_eq!(text.lines().count(), 3);
         let line: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-        assert_eq!(line["card"], "card-001");
+        assert_eq!(line["card"], "task-001");
         assert_eq!(line["worker"], "codex");
         assert_eq!(line["first_try"], false);
 
@@ -262,7 +262,7 @@ mod tests {
             .open(state.join("outcomes/run-01.jsonl"))
             .unwrap();
         file.write_all(
-            b"{\"run\":\"run-01\",\"card\":\"card-004\",\"worker\":\"codex\",\"task_type\":\"build\",\"first_try\":true,\"attempts\":1,\"integrated\":true,\"spent_usd\":0.5}\n",
+            b"{\"run\":\"run-01\",\"card\":\"task-004\",\"worker\":\"codex\",\"task_type\":\"build\",\"first_try\":true,\"attempts\":1,\"integrated\":true,\"spent_usd\":0.5}\n",
         )
         .unwrap();
 

@@ -162,7 +162,7 @@ mod tests {
             last_message: None,
         };
         let mut session: AgentSession = serde_json::from_value(json!({
-            "run": "run-03", "session": "s-002", "role": "owner", "worker": "claude-code",
+            "run": "run-03", "session": "s-002", "role": "worker", "worker": "claude-code",
             "updated": "2026-09-21T14:13:20Z", "resume": {"kind": "run_owns"}
         }))
         .unwrap();
@@ -181,8 +181,8 @@ mod tests {
         let value = json!({
             "run": "run-03",
             "session": "s-002",
-            "role": "owner",
-            "label": "card-001",
+            "role": "worker",
+            "label": "task-001",
             "worker": "claude-code/opus",
             "last_message": "Fixed both functions.",
             "updated": "2026-09-21T14:13:20Z",

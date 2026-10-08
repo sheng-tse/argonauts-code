@@ -15,6 +15,7 @@ use argonauts_core::steps::card::ReportStatus;
 use argonauts_core::worker::WorkerKind;
 
 use crate::blackboard;
+use crate::card::asked_anyway;
 use crate::card::escalation::{self, Decision};
 use crate::card::gates::{self, GateVerdict};
 use crate::card::machine::{self, Trigger};
@@ -29,6 +30,8 @@ use crate::card::takeover;
 use crate::card::worktree::{self, CardTree};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
+use crate::goal;
+use crate::goal::task::AfterTry;
 use crate::handoff;
 use crate::handoff::on_return::Applied;
 use crate::integrate::{self, CardMerge, card_merge};
@@ -54,10 +57,10 @@ pub async fn send_back(
 ) -> EngineResult<CardState> {
     transition(host, card, Trigger::SentBack, note)?;
     let text = format!(
-        "The merge checkpoint sent this card back for changes: {note}\nMake them, then end \
+        "The merge approval sent this task back for changes: {note}\nMake them, then end \
          with your report again."
     );
-    let parts = vec![prompt::message_part("merge checkpoint", text)];
+    let parts = vec![prompt::message_part("merge approval", text)];
     // A card you finished yourself has no owner session to resume.
     let next = if host.read(|state| newest_owner_session(state, card).is_some()) {
         Next::resume(AttemptCause::ReviewChanges, parts)
@@ -70,6 +73,25 @@ pub async fn send_back(
         }
     };
     drive_from(host, card, at, Until::Integrated, Some(Carry::Next(next))).await
+}
+
+/// A workflow's own review step sent the task back: its worker goes again with `note`, as far
+/// as its checks. The workflow reviews it again itself, so no review of the engine's runs.
+pub(crate) async fn revise(
+    host: &Host,
+    card: &CardId,
+    at: &StepAt,
+    note: &str,
+) -> EngineResult<CardState> {
+    transition(
+        host,
+        card,
+        Trigger::ChangesRequested,
+        "the workflow's review sent it back",
+    )?;
+    let parts = vec![prompt::message_part("review", note)];
+    let next = Next::resume(AttemptCause::ReviewChanges, parts);
+    drive_from(host, card, at, Until::GatesPassed, Some(Carry::Next(next))).await
 }
 
 /// Gives an integrated card to a new owner from the merge checkpoint, who starts fresh with
@@ -92,7 +114,7 @@ pub async fn take_over_back(host: &Host, card: &CardId, at: &StepAt) -> EngineRe
         host,
         card,
         Trigger::SentBack,
-        "you took it over at the merge checkpoint",
+        "you took it over at the merge approval",
     )?;
     takeover::take_over(host, card)
         .await
@@ -213,6 +235,10 @@ pub(crate) async fn run_attempt(host: &Host, call: AttemptCall<'_>) -> EngineRes
                 return Ok(AttemptEnd::Failed { why });
             }
             (EndReason::Completed, None) => {
+                if let Some(decide) = asked_anyway::reply(host, card, owner, &ended)? {
+                    next = Next::resume(AttemptCause::Resumed, vec![decide]);
+                    continue;
+                }
                 let why = "it ended without a report that matches the schema".to_owned();
                 return Ok(AttemptEnd::Failed { why });
             }
@@ -261,7 +287,7 @@ pub(crate) async fn run_attempt(host: &Host, call: AttemptCall<'_>) -> EngineRes
                 return Ok(AttemptEnd::Failed { why });
             }
             review::Verdict::Escalated { reasons } => {
-                let why = format!("its review escalated it: {}", reasons.join("; "));
+                let why = format!("its review sent it to you: {}", reasons.join("; "));
                 return Ok(AttemptEnd::Failed { why });
             }
         }
@@ -332,11 +358,11 @@ async fn drive_from(
         let step = match state_of(host, card)? {
             CardState::Waiting => waiting(host, card)?,
             CardState::Ready => {
-                transition(host, card, Trigger::Start, "owner, slot, and budget free")?;
+                transition(host, card, Trigger::Start, "worker, slot, and limit free")?;
                 Step::Moved
             }
             CardState::Running => running(host, card, at, &mut carry).await?,
-            CardState::Gating => gating(host, card, &mut carry).await?,
+            CardState::Gating => gating(host, card, at, &mut carry).await?,
             CardState::InReview => reviewing(host, card, &mut carry).await?,
             CardState::Integrating => integrating(host, card, &mut carry).await?,
             CardState::Failed => failed(host, card, &mut carry).await?,
@@ -371,7 +397,7 @@ fn waiting(host: &Host, card: &CardId) -> EngineResult<Step> {
     if !host.read(|state| dependencies_done(state, card)) {
         return Ok(Step::Wait);
     }
-    let reason = "its dependencies are integrated";
+    let reason = "its dependencies are merged into the run";
     transition(host, card, Trigger::DependenciesIntegrated, reason)?;
     Ok(Step::Moved)
 }
@@ -404,11 +430,32 @@ async fn running(
     let next = match next {
         Next::Resume { parts, .. } if resume.is_none() => Next::Fresh {
             cause: AttemptCause::Reassigned,
-            why: "the card has a new owner".to_owned(),
+            why: "the task has a new worker".to_owned(),
             packet: None,
             extra: parts,
         },
         next => next,
+    };
+    // A task worked as a goal takes its goal as it starts, and a fresh session is told of it.
+    let next = match (next, goal::task::brief(host, card, &owner)?) {
+        (
+            Next::Fresh {
+                cause,
+                why,
+                packet,
+                mut extra,
+            },
+            Some(told),
+        ) => {
+            extra.push(told);
+            Next::Fresh {
+                cause,
+                why,
+                packet,
+                extra,
+            }
+        }
+        (next, _) => next,
     };
     if !open {
         let cause = next.cause();
@@ -485,7 +532,7 @@ fn next_session(
     let next = match newest_worker {
         None => Next::fresh(AttemptCause::First, ""),
         Some(worker) if worker != *owner => {
-            Next::fresh(AttemptCause::Reassigned, "the card has a new owner")
+            Next::fresh(AttemptCause::Reassigned, "the task has a new worker")
         }
         Some(_) => Next::resume(AttemptCause::Resumed, vec![continue_part()]),
     };
@@ -503,7 +550,7 @@ fn after_restart(cause: AttemptCause) -> Next {
 }
 
 fn continue_part() -> argonauts_core::events::session::InputPart {
-    prompt::message_part("continue", "Continue the card where you left off.")
+    prompt::message_part("continue", "Continue the task where you left off.")
 }
 
 async fn after_session(
@@ -525,7 +572,7 @@ async fn after_session(
         return Ok(Step::Moved);
     }
     match &ended.end.reason {
-        EndReason::Completed => completed(host, card, &ended, carry).await,
+        EndReason::Completed => completed(host, card, owner, &ended, carry).await,
         EndReason::Paused => {
             host.admitted().await?;
             let part = prompt::message_part(
@@ -563,30 +610,49 @@ async fn after_session(
 async fn completed(
     host: &Host,
     card: &CardId,
+    owner: &WorkerRef,
     ended: &Ended,
     carry: &mut Option<Carry>,
 ) -> EngineResult<Step> {
     let Some(report) = ended.report.clone() else {
+        // A turn that ended with a question goes on in its own session, told to decide.
+        if let Some(decide) = asked_anyway::reply(host, card, owner, ended)? {
+            let next = Next::resume(AttemptCause::Resumed, vec![decide]);
+            *carry = Some(Carry::Next(next));
+            return Ok(Step::Moved);
+        }
         let reason = "the session ended without a report that matches the schema";
         transition(host, card, Trigger::Broke, reason)?;
         return Ok(Step::Moved);
     };
     let reported = CardEvent::Reported(Box::new(report.clone()));
     record_card_in(host, card, &ended.key, reported)?;
+    asked_anyway::on_report(host, card, &ended.key, &report)?;
     blackboard::on_report(host, card, &report).await?;
     if state_of(host, card)? != CardState::Running {
         return Ok(Step::Moved);
     }
+    let carries_on = goal::task::after_report(host, card, &report)?;
     match report.status {
+        // Its CLI keeps the goal and says it's still at it: the same session goes on.
+        ReportStatus::Done if carries_on.is_some() => {
+            let parts = carries_on.into_iter().collect();
+            *carry = Some(Carry::Next(Next::resume(AttemptCause::Resumed, parts)));
+        }
         ReportStatus::Done => {
-            transition(host, card, Trigger::ReportedDone, "the owner reported done")?;
+            transition(
+                host,
+                card,
+                Trigger::ReportedDone,
+                "the worker reported done",
+            )?;
         }
         ReportStatus::Blocked => {
-            let reason = "the owner asked a question and waits for the answer";
+            let reason = "the worker asked a question and waits for the answer";
             transition(host, card, Trigger::Question, reason)?;
         }
         ReportStatus::NeedsDecision => {
-            let reason = "the owner needs a decision";
+            let reason = "the worker needs a decision";
             transition(host, card, Trigger::NeedsDecision, reason)?;
             *carry = Some(Carry::Ask(report.summary.clone()));
         }
@@ -595,26 +661,48 @@ async fn completed(
                 host,
                 card,
                 Trigger::Broke,
-                "the owner reported that it failed",
+                "the worker reported that it failed",
             )?;
         }
     }
     Ok(Step::Moved)
 }
 
-async fn gating(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> EngineResult<Step> {
-    match gates::run(host, card).await? {
+async fn gating(
+    host: &Host,
+    card: &CardId,
+    at: &StepAt,
+    carry: &mut Option<Carry>,
+) -> EngineResult<Step> {
+    let verdict = gates::run(host, card).await?;
+    // A task worked as a goal is checked against its lines after every try, and what still
+    // fails goes back to the same session, with no fixed number of tries.
+    if !matches!(verdict, GateVerdict::Stopped { .. })
+        && host.read(|state| goal::task::pursued(state, card))
+    {
+        let passed = verdict == GateVerdict::Passed;
+        if let AfterTry::Again(told) = goal::task::after_try(host, card, at, passed).await? {
+            let reason = "the goal doesn't hold yet; the same session gets what still fails";
+            transition(host, card, Trigger::GoalNotMet, reason)?;
+            *carry = Some(Carry::Next(Next::resume(
+                AttemptCause::GoalRetry,
+                vec![told],
+            )));
+            return Ok(Step::Moved);
+        }
+    }
+    match verdict {
         GateVerdict::Passed => {
-            transition(host, card, Trigger::GatesPassed, "the gates passed")?;
+            transition(host, card, Trigger::GatesPassed, "the checks passed")?;
         }
         GateVerdict::Failed { output } => {
             if progress_of(host, card).gate_retries == 0 {
-                let reason = "the gates failed; the same session gets their output";
+                let reason = "the checks failed; the same session gets their output";
                 transition(host, card, Trigger::FirstGateFailure, reason)?;
                 let parts = vec![prompt::gate_output_part(&output)];
                 *carry = Some(Carry::Next(Next::resume(AttemptCause::GateRetry, parts)));
             } else {
-                let reason = "the gates failed again after the resume";
+                let reason = "the checks failed again after the resume";
                 transition(host, card, Trigger::GatesFailedAgain, reason)?;
             }
         }
@@ -633,7 +721,7 @@ async fn reviewing(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> Eng
             host,
             card,
             Trigger::Approved,
-            "no review is set for this card",
+            "no review is set for this task",
         )?;
         return Ok(Step::Moved);
     }
@@ -646,7 +734,7 @@ async fn reviewing(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> Eng
     }
     let review::Verdict::ChangesRequested { comments } = &verdict else {
         // The reviewers rejected the approach or couldn't review: it's yours to decide.
-        let reason = format!("the review escalated it: {verdict:?}");
+        let reason = format!("the review sent it to you: {verdict:?}");
         transition(host, card, Trigger::ChangesRequestedAgain, &reason)?;
         return Ok(Step::Moved);
     };
@@ -699,7 +787,8 @@ async fn integrating(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> E
         CardMerge::TestsFailed { output } => {
             let reason = "the affected tests failed after the merge";
             transition(host, card, Trigger::AffectedTestsFailed, reason)?;
-            let parts = vec![prompt::gate_output_part(&output)];
+            let mut parts = vec![prompt::gate_output_part(&output)];
+            parts.extend(worktree::left_out_part(host, card).await?);
             *carry = Some(Carry::Next(Next::resume(
                 AttemptCause::IntegrationFailed,
                 parts,
@@ -710,7 +799,7 @@ async fn integrating(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> E
             let reason = format!("the merge conflicted in {}", files.join(", "));
             transition(host, card, Trigger::AffectedTestsFailed, &reason)?;
             let text = format!(
-                "Your card conflicts with the integration branch in: {}. The conductor merged \
+                "Your task conflicts with the integration branch in: {}. The conductor merged \
                  the integration branch into your worktree, and those files hold conflict \
                  markers. Resolve them so both sides' work survives, then end with your report \
                  again. Don't run git yourself.",
@@ -770,7 +859,7 @@ const INTEGRATION_RETURNS: u32 = 3;
 
 /// The retry ladder: a fresh session on another family once, then escalation.
 fn ladder(host: &Host, card: &CardId, why: &str, carry: &mut Option<Carry>) -> EngineResult<()> {
-    if recovery::retry_on_other_family(host, card, why)?.is_some() {
+    if recovery::retry_on_other_provider(host, card, why)?.is_some() {
         *carry = Some(Carry::Next(Next::fresh(AttemptCause::AfterFailure, why)));
     }
     Ok(())
@@ -808,7 +897,7 @@ async fn needs_decision(
         return Ok(Step::Wait);
     }
     let why = match carry.take() {
-        Some(Carry::Ask(summary)) => format!("its owner needs a decision: {summary}"),
+        Some(Carry::Ask(summary)) => format!("its worker needs a decision: {summary}"),
         Some(Carry::Action(action)) => return apply_and_settle(host, card, action).await,
         _ => match end_of(host, card) {
             Some(end) if end.reason == EndReason::Stopped => "you stopped its session".to_owned(),
@@ -885,13 +974,13 @@ fn failure_summary(record: &CardRecord, end: Option<&SessionEnd>) -> String {
 fn end_text(reason: &EndReason) -> String {
     match reason {
         EndReason::Completed => "completed".to_owned(),
-        EndReason::BudgetHit { dimension } => format!("hit its {dimension:?} budget"),
+        EndReason::BudgetHit { dimension } => format!("hit its {dimension:?} limit"),
         EndReason::Paused => "paused".to_owned(),
         EndReason::Stopped => "stopped".to_owned(),
         EndReason::Stuck { watchdog } => format!("stuck ({watchdog:?})"),
         EndReason::UsageLimit { .. } => "usage limit".to_owned(),
         EndReason::RateLimited => "rate limited".to_owned(),
-        EndReason::VendorError { message, .. } => format!("vendor error: {message}"),
+        EndReason::VendorError { message, .. } => format!("agent error: {message}"),
         EndReason::Auth { message } => format!("logged out: {message}"),
         EndReason::Billing { message } => format!("billing: {message}"),
         EndReason::ContextFull => "context full".to_owned(),
@@ -924,22 +1013,22 @@ mod tests {
     fn a_card_waits_until_every_dependency_is_integrated_or_dropped() {
         let id = |s: &str| CardId::new(s).unwrap();
         let state = state_with(&[
-            ("card-001", &[], CardState::Integrated),
-            ("card-002", &[], CardState::Running),
-            ("card-003", &["card-001"], CardState::Waiting),
-            ("card-004", &["card-001", "card-002"], CardState::Waiting),
-            ("card-005", &["card-006"], CardState::Waiting),
-            ("card-006", &[], CardState::Cancelled),
+            ("task-001", &[], CardState::Integrated),
+            ("task-002", &[], CardState::Running),
+            ("task-003", &["task-001"], CardState::Waiting),
+            ("task-004", &["task-001", "task-002"], CardState::Waiting),
+            ("task-005", &["task-006"], CardState::Waiting),
+            ("task-006", &[], CardState::Cancelled),
         ]);
-        assert!(dependencies_done(&state, &id("card-003")));
-        assert!(!dependencies_done(&state, &id("card-004")));
-        assert!(dependencies_done(&state, &id("card-005")));
-        assert!(!dependencies_done(&state, &id("card-404")));
+        assert!(dependencies_done(&state, &id("task-003")));
+        assert!(!dependencies_done(&state, &id("task-004")));
+        assert!(dependencies_done(&state, &id("task-005")));
+        assert!(!dependencies_done(&state, &id("task-404")));
     }
 
     #[test]
     fn failure_summary_prefers_the_newest_failed_gate() {
-        let mut record = CardRecord::new(card_spec("card-001", &[], None));
+        let mut record = CardRecord::new(card_spec("task-001", &[], None));
         assert_eq!(failure_summary(&record, None), "it failed");
         record
             .gates
@@ -961,7 +1050,7 @@ mod tests {
 
     #[test]
     fn a_card_with_no_report_says_how_its_session_ended() {
-        let record = CardRecord::new(card_spec("card-001", &[], None));
+        let record = CardRecord::new(card_spec("task-001", &[], None));
         let end = |reason: EndReason| SessionEnd {
             vendor_session: None,
             exit_code: Some(0),

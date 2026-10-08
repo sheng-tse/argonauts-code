@@ -29,7 +29,7 @@ pub const CHEAPEST_MODEL: &str = "gemini-3.6-flash-low";
 
 pub const CHEAPEST_EFFORT: &str = "low";
 
-pub const TESTED_VERSIONS: &[&str] = &["1.2.13"];
+pub const TESTED_VERSIONS: &[&str] = &["1.2.13", "1.3.1"];
 
 /// Words Antigravity CLI treats specially in a prompt: none in 1.2.16. Its rainbow belongs to
 /// the effort menu's max level, not to anything you type.
@@ -156,6 +156,10 @@ impl Adapter for AntigravityCli {
             login: Some(LOGIN_COMMAND.to_owned()),
             login_check: None,
         }
+    }
+
+    fn update_args(&self) -> Option<&'static [&'static str]> {
+        Some(&["update"])
     }
 }
 
@@ -327,11 +331,11 @@ mod tests {
     #[test]
     fn take_over_resumes_the_conversation_in_the_worktree() {
         let spec = AntigravityCli
-            .interactive_resume("055a398f", Path::new("/work/card-001"))
+            .interactive_resume("055a398f", Path::new("/work/task-001"))
             .unwrap();
         assert_eq!(spec.program, "agy");
         assert_eq!(spec.args, ["--conversation", "055a398f"]);
-        assert_eq!(spec.cwd, PathBuf::from("/work/card-001"));
+        assert_eq!(spec.cwd, PathBuf::from("/work/task-001"));
     }
 
     #[test]

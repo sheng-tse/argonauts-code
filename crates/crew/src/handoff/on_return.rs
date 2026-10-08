@@ -191,7 +191,7 @@ pub fn returning(host: &Host, record: &CardRecord) -> Option<Returning> {
         .as_ref()
         .map(|debt| debt.needs.clone())
         .or_else(|| record.spec.owner.clone())
-        .unwrap_or_else(|| host.settings().default_agent.clone());
+        .unwrap_or_else(|| host.settings().main_agent.clone());
     if original.vendor() == replacement.vendor() || !rules::vendor_usable(host, &original.vendor())
     {
         return None;
@@ -326,15 +326,15 @@ async fn review(host: &Host, record: &CardRecord, back: &Returning) -> EngineRes
 
 pub(crate) fn hand_back_why(back: &Returning, since: u32) -> String {
     format!(
-        "{} is back and continues the card from its current state. {} worked on it since \
-         handoff-{since}.",
+        "{} is back and continues the task from its current state. {} worked on it since \
+         fallback-{since}.",
         back.original, back.replacement
     )
 }
 
 pub(crate) fn redo_why(back: &Returning, since: u32) -> String {
     format!(
-        "{} is back and redoes the card from handoff-{since}. The work {} did after it is \
+        "{} is back and redoes the task from fallback-{since}. The work {} did after it is \
          kept on a side branch.",
         back.original, back.replacement
     )
@@ -431,13 +431,13 @@ fn ask_in_background(host: &Host, card: &CardId, since: u32) {
             result = ask(&host, &card) => result,
         };
         if let Err(err) = result {
-            let text = format!("The \"original is back\" card for {card} failed: {err}");
+            let text = format!("The \"original is back\" question for {card} failed: {err}");
             let note = RunEventKind::Note(Note {
                 level: NoteLevel::Error,
                 text,
             });
             if let Err(err) = host.record(Some(&card), None, note) {
-                tracing::error!(%card, %err, "could not record a failed return card");
+                tracing::error!(%card, %err, "could not record a failed return question");
             }
         }
     });
@@ -478,7 +478,7 @@ pub(crate) async fn request(
     let card = &record.spec.id;
     let packet = packet(host, record, back, debt).await?;
     let summary = format!(
-        "{} commits by {} since handoff-{}, {} files changed",
+        "{} commits by {} since fallback-{}, {} files changed",
         packet.commits, back.replacement, debt.since, packet.changed.files_changed
     );
     Ok(CheckpointRequest {

@@ -23,7 +23,7 @@ impl CheckpointTag {
 
     /// `handoff-<n>`, as `/rewind` and the transcript name it.
     pub fn label(&self) -> String {
-        format!("handoff-{}", self.n)
+        format!("fallback-{}", self.n)
     }
 
     /// Where `/rewind` keeps the work after this checkpoint: `argonauts/<run>/<card>-replaced-<n>`.
@@ -34,7 +34,7 @@ impl CheckpointTag {
     /// The `n` of a `handoff-<n>` label.
     pub fn parse_label(label: &str) -> Option<u32> {
         label
-            .strip_prefix("handoff-")
+            .strip_prefix("fallback-")
             .filter(|n| n.chars().all(|c| c.is_ascii_digit()))
             .and_then(|n| n.parse().ok())
             .filter(|n| *n > 0)

@@ -21,16 +21,17 @@ pub async fn run(args: &DoctorArgs, set: &[String]) -> anyhow::Result<ExitCode> 
     });
     // The built-in four and every harness profile your settings turn on, such as Hermes.
     let adapters = argonauts_app::doctor_adapters(None, set.to_vec()).unwrap_or_else(|err| {
-        problems.push(format!("! couldn't read your harness profiles: {err:#}"));
+        problems.push(format!("! couldn't read your CLI profiles: {err:#}"));
         argonauts_app::builtin_adapters()
     });
     let report = doctor(&adapters, &settings).await;
     let extras = argonauts_app::doctor_extras(None)
         .await
         .unwrap_or_else(|err| {
-            problems.push(format!("! couldn't check for parked runs: {err:#}"));
+            problems.push(format!("! couldn't check for waiting runs: {err:#}"));
             DoctorExtras::default()
         });
+    problems.extend(argonauts_app::mod_problems(None));
     if args.json {
         println!(
             "{}",
@@ -85,14 +86,14 @@ pub fn render(report: &DoctorReport, extras: &DoctorExtras, problems: &[String])
 /// with its worktrees and their size.
 fn parked_line(parked: &ParkedReminder) -> String {
     let mut line = format!(
-        "! {} has been parked for {}",
+        "! {} has been waiting for {}",
         parked.run,
         count(parked.days, "day", "days")
     );
     if !parked.stopped_at.is_empty() {
         line.push_str(&format!(", at {}", parked.stopped_at));
     }
-    line.push_str(". Parked runs never expire.");
+    line.push_str(". Waiting runs never expire.");
     if parked.worktrees > 0 {
         let worktrees = u64::try_from(parked.worktrees).unwrap_or(u64::MAX);
         let verb = if worktrees == 1 { "holds" } else { "hold" };
@@ -128,7 +129,7 @@ fn verdict(report: &DoctorReport) -> String {
     });
     if any_untested {
         verdict
-            .push_str(" Untested versions may still work; unknown events are kept and shown raw.");
+            .push_str(" Versions Argonauts wasn't checked with may still work; unknown events are kept and shown raw.");
     }
     verdict
 }
@@ -179,7 +180,7 @@ mod tests {
         ParkedReminder {
             run: RunId::new("run-03").unwrap(),
             days,
-            stopped_at: "the plan checkpoint".to_owned(),
+            stopped_at: "the plan approval".to_owned(),
             worktrees,
             worktree_bytes: 14 * 1024 * 1024 + 200 * 1024,
         }
@@ -225,7 +226,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("claude-code  1.0.0       tested           off"),
+            text.contains("claude-code  1.0.0       checked             off"),
             "{text}"
         );
 
@@ -245,7 +246,10 @@ mod tests {
             &DoctorExtras::default(),
             &[],
         );
-        assert!(text.contains("Untested versions may still work"), "{text}");
+        assert!(
+            text.contains("Versions Argonauts wasn't checked with may still work"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -264,12 +268,12 @@ mod tests {
     fn doctor_names_each_run_parked_too_long() {
         assert_eq!(
             parked_line(&parked(9, 2)),
-            "! run-03 has been parked for 9 days, at the plan checkpoint. Parked runs never \
+            "! run-03 has been waiting for 9 days, at the plan approval. Waiting runs never \
              expire. Its 2 worktrees hold 14.2 MB."
         );
         assert_eq!(
             parked_line(&parked(1, 0)),
-            "! run-03 has been parked for 1 day, at the plan checkpoint. Parked runs never expire."
+            "! run-03 has been waiting for 1 day, at the plan approval. Waiting runs never expire."
         );
         let extras = DoctorExtras {
             parked: vec![parked(9, 1)],

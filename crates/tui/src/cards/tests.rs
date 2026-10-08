@@ -77,14 +77,14 @@ impl Screen {
     }
 
     fn card(&self) -> &CardPrompt {
-        self.model.bottom.card.as_ref().expect("a card on screen")
+        self.model.bottom.card.as_ref().expect("a task on screen")
     }
 
     /// Presses keys on the card as the app does, and hands what they report to the cards.
     fn keys(&mut self, codes: &[KeyCode]) -> Vec<Effects> {
         let mut effects = Vec::new();
         for &code in codes {
-            let card = self.model.bottom.card.as_mut().expect("a card on screen");
+            let card = self.model.bottom.card.as_mut().expect("a task on screen");
             card.focused = true;
             let id = card.id;
             let action = match card.handle_key(KeyEvent::new(code, KeyModifiers::NONE)) {
@@ -105,7 +105,7 @@ impl Screen {
                     card: id,
                     option: index,
                 }),
-                CardEvent::Pinned => Some(UiAction::SetAside { card: id }),
+                CardEvent::Dismissed => Some(UiAction::Dismiss { card: id }),
                 CardEvent::BackToInput | CardEvent::Moved | CardEvent::Unhandled => None,
             };
             if let Some(action) = action {
@@ -138,7 +138,7 @@ fn run() -> RunId {
 }
 
 fn card_id(n: u32) -> CardId {
-    CardId::new(format!("card-{n:03}")).unwrap()
+    CardId::new(format!("task-{n:03}")).unwrap()
 }
 
 fn worker(text: &str) -> WorkerRef {
@@ -234,7 +234,7 @@ fn merge() -> CheckpointOpened {
             option('p', "Open a pull request", AnswerAction::PullRequest),
             option(
                 'b',
-                "Request changes on some cards",
+                "Request changes on some tasks",
                 AnswerAction::RequestChanges,
             ),
             option('k', "Keep the branch", AnswerAction::KeepBranch),
@@ -270,7 +270,7 @@ fn handoff() -> CheckpointOpened {
     };
     let mut opened = opened(
         CheckpointKind::Handoff,
-        "Handoff · card-003 Middleware",
+        "Fallback · task-003 Middleware",
         CheckpointPacket::Handoff(plan),
         vec![
             option(
@@ -293,7 +293,7 @@ fn handoff() -> CheckpointOpened {
 fn escalation() -> CheckpointOpened {
     opened(
         CheckpointKind::Escalation,
-        "card-004 is stuck",
+        "task-004 is stuck",
         CheckpointPacket::Escalation(EscalationPacket {
             card: card_id(4),
             title: "Parser".into(),
@@ -303,7 +303,7 @@ fn escalation() -> CheckpointOpened {
         }),
         vec![
             option('r', "Retry with a note", AnswerAction::Retry),
-            option('x', "Cancel the card", AnswerAction::Cancel),
+            option('x', "Cancel the task", AnswerAction::Cancel),
             option('d', "Show the details", AnswerAction::ShowDiff),
         ],
     )
@@ -328,7 +328,7 @@ fn choice(kind: ChoiceKind, options: Vec<AnswerOption>) -> AppChoice {
         id: ChoiceId::numbered(7),
         kind,
         title: "Save effort = high where?".into(),
-        body: vec!["reasoning effort for the default agent".into()],
+        body: vec!["reasoning effort for the main agent".into()],
         options,
         free_text: FreeText::None,
         bell: false,
@@ -369,7 +369,7 @@ fn decided(action: AnswerAction, by: Party) -> CheckpointDecided {
 fn answer_carries_rendered_evidence_hash() {
     let mut screen = Screen::new();
     let out = screen.event(opened_event(merge()));
-    assert!(out.bell, "a card that needs you rings once");
+    assert!(out.bell, "a task that needs you rings once");
     assert!(screen.card().focused, "and takes the keys as it shows");
 
     let id = screen.card().id;
@@ -468,19 +468,54 @@ fn scope_choice() -> AppChoice {
 }
 
 #[test]
-fn a_change_made_in_a_view_asks_over_it() {
-    for kind in [ChoiceKind::SettingScope, ChoiceKind::ConfirmSafetySetting] {
+fn a_question_asks_over_any_view() {
+    // One a change in a view raised, and one work raised: a view on top would keep the keys.
+    for kind in [
+        ChoiceKind::SettingScope,
+        ChoiceKind::ConfirmSafetySetting,
+        ChoiceKind::StartWork,
+    ] {
         let mut screen = Screen::new();
         let out = screen.event(AppEvent::Choice {
             choice: choice(kind, Vec::new()),
         });
         assert!(out.close_views, "{kind:?} would wait behind the view");
     }
-    let mut screen = Screen::new();
-    let out = screen.event(AppEvent::Choice {
-        choice: choice(ChoiceKind::StartWork, Vec::new()),
-    });
-    assert!(!out.close_views);
+}
+
+/// A dry run's card is its table, so a workflow of many steps shows them all.
+#[test]
+fn a_dry_runs_card_shows_its_whole_table_and_esc_closes_it() {
+    let mut tried = choice(
+        ChoiceKind::TryWorkflow,
+        vec![
+            option('y', "Run it", AnswerAction::Approve),
+            option(
+                'e',
+                "Edit it",
+                AnswerAction::Choose {
+                    value: "edit".into(),
+                },
+            ),
+        ],
+    );
+    tried.title = "spec-first for \"add due dates\" · nothing runs".into();
+    tried.body = (1..=12).map(|step| format!("{step} Step {step}")).collect();
+    let card = choice_card(1, &tried);
+    assert_eq!(card.body.len(), 12, "{:?}", card.body);
+    assert!(card.detail.is_empty());
+    assert_eq!(card.esc_hint, "Esc to close");
+    assert!(card.focused && card.esc_answers);
+
+    // Any other card keeps to a few rows.
+    let mut long = choice(ChoiceKind::ConfirmConnect, Vec::new());
+    long.body = tried.body.clone();
+    let shortened = choice_card(2, &long);
+    assert_eq!(shortened.body.len(), 8);
+    assert_eq!(
+        shortened.body.last().map(String::as_str),
+        Some("… +5 more lines")
+    );
 }
 
 #[test]
@@ -498,6 +533,7 @@ fn a_choice_you_set_off_opens_with_the_keys() {
         ChoiceKind::ConfirmConnect,
         ChoiceKind::TrustProject,
         ChoiceKind::DetectedGates,
+        ChoiceKind::TryWorkflow,
     ] {
         let card = choice_card(1, &choice(kind, Vec::new()));
         assert!(card.focused && card.esc_answers, "{kind:?}");
@@ -541,7 +577,7 @@ fn a_choice_you_set_off_goes_before_a_waiting_run_card() {
     let run_card = screen.card().id;
     assert!(
         screen.card().focused,
-        "a run's card that needs you takes the keys"
+        "a run's task that needs you takes the keys"
     );
     screen.event(AppEvent::Choice {
         choice: scope_choice(),
@@ -557,13 +593,13 @@ fn a_choice_you_set_off_goes_before_a_waiting_run_card() {
         id: ChoiceId::numbered(7),
         outcome: "Saved.".into(),
     });
-    assert_eq!(screen.card().id, run_card, "the run's card comes back");
+    assert_eq!(screen.card().id, run_card, "the run's task comes back");
     assert!(
         screen.card().focused,
-        "and takes the keys again, since you never set it aside"
+        "and takes the keys again, since you never handed it on"
     );
 
-    // Set aside, it comes back after the next question as its pinned line.
+    // Handed on, it stays off the screen after the next question.
     screen.keys(&[KeyCode::Esc]);
     screen.event(AppEvent::Choice {
         choice: scope_choice(),
@@ -573,8 +609,37 @@ fn a_choice_you_set_off_goes_before_a_waiting_run_card() {
         id: ChoiceId::numbered(7),
         outcome: "Saved.".into(),
     });
-    assert_eq!(screen.card().id, run_card);
-    assert!(screen.card().pinned && !screen.card().focused);
+    assert!(screen.model.bottom.card.is_none());
+    assert!(screen.cards.open.contains_key(&run_card));
+}
+
+/// "Show the file" on a trust question asks the app, which prints the files above it: the
+/// question's own words aren't what you need to read.
+#[test]
+fn a_trust_question_s_files_are_shown_by_the_app() {
+    let mut screen = Screen::new();
+    let trust = choice(
+        ChoiceKind::TrustProject,
+        vec![
+            option('y', "Trust them", AnswerAction::Approve),
+            option('n', "Not now", AnswerAction::Cancel),
+            option('d', "Show the file", AnswerAction::ShowDiff),
+        ],
+    );
+    screen.event(AppEvent::Choice { choice: trust });
+    let effects = screen.keys(&[KeyCode::Char('3')]);
+    let commands: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    assert!(
+        matches!(
+            commands.as_slice(),
+            [UiCommand::Answer {
+                action: AnswerAction::ShowDiff,
+                ..
+            }]
+        ),
+        "{commands:?}"
+    );
+    assert!(screen.model.bottom.card.is_some(), "the question stays");
 }
 
 #[test]
@@ -644,14 +709,86 @@ fn not_changed_leaves_a_neutral_mark() {
     assert_eq!(tone("Saved to this project."), crate::cell::Tone::Success);
 }
 
+/// Esc on a run's question or approval hands it on: the engine takes an option in your place,
+/// and its decision closes the question.
 #[test]
-fn run_card_esc_sends_nothing() {
+fn esc_hands_a_run_card_on() {
     let mut screen = Screen::new();
     screen.event(opened_event(merge()));
     let effects = screen.keys(&[KeyCode::Esc]);
-    assert!(effects.iter().all(|out| out.commands.is_empty()));
-    assert!(screen.card().pinned, "it folds to its pinned line");
-    assert_eq!(screen.cards.open.len(), 1, "and still waits for you");
+    let sent: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [UiCommand::SetAside {
+                to: AnswerTarget::Checkpoint { .. }
+            }]
+        ),
+        "the engine hears it, so whoever asked decides: {sent:?}"
+    );
+    assert!(screen.model.bottom.card.is_none(), "no line stays behind");
+    let record = screen.history().last().cloned().unwrap_or_default();
+    assert!(
+        record.starts_with("◆ Merge approval left to the main agent · you, "),
+        "{record}"
+    );
+
+    // Until the engine settles it, the list of what needs you still opens it, as it was.
+    assert_eq!(screen.cards.open.len(), 1);
+    let (taken, _) = screen.action(UiAction::AnswerCard(AnswerTarget::Checkpoint {
+        run: run(),
+        id: merge().id,
+    }));
+    assert!(taken);
+    assert!(screen.card().focused && !screen.card().dismissed);
+}
+
+/// What Esc left reads as left, by you, and never quotes what the agent was told.
+#[test]
+fn a_question_you_left_is_recorded_as_left_to_the_agent() {
+    use argonauts_core::events::checkpoint::LEFT_TO_THE_AGENT;
+
+    let mut left = decided(AnswerAction::Answer, Party::Declined);
+    left.text = Some(LEFT_TO_THE_AGENT.to_owned());
+    let mut opened = merge();
+    opened.kind = CheckpointKind::Question;
+    let record = records::record(
+        &opened,
+        &left,
+        None,
+        None,
+        time::UtcOffset::UTC,
+        &DisplayNames::default(),
+        &records::by_id,
+    );
+    assert_eq!(record.text, "Question left to the agent");
+    assert_eq!(record.decided.as_deref(), Some("you"));
+    assert!(record.detail.is_empty(), "{:?}", record.detail);
+}
+
+#[test]
+fn an_agents_own_question_is_left_to_that_agent() {
+    let at = datetime!(2026-10-06 20:47 UTC);
+    let record = |kind| {
+        let cell = records::handed_on_cell(kind, at, UtcOffset::UTC);
+        let crate::cell::Cell::Notice(notice) = cell else {
+            panic!("a notice");
+        };
+        assert_eq!(
+            notice.tone,
+            crate::cell::Tone::Dim,
+            "nothing is settled yet"
+        );
+        format!("{} · {}", notice.text, notice.decided.unwrap_or_default())
+    };
+    assert_eq!(
+        record(CheckpointKind::Question),
+        "Question left to the agent · you, 8:47 PM"
+    );
+    assert_eq!(
+        record(CheckpointKind::Plan),
+        "Plan approval left to the main agent · you, 8:47 PM"
+    );
 }
 
 #[test]
@@ -669,7 +806,7 @@ fn handoff_remember_toggle_sets_remember() {
     screen.keys(&[KeyCode::Char(number)]);
     assert!(
         !screen.cards.open[&id].remember,
-        "nor the number after it, until a key meant for the card"
+        "nor the number after it, until a key meant for the task"
     );
     screen.keys(&[KeyCode::Down, KeyCode::Char(number)]);
     assert!(screen.cards.open[&id].remember);
@@ -721,7 +858,7 @@ fn an_answered_pick_is_offered_as_a_rule() {
         (&run(), &CheckpointId::numbered(1), false)
     );
     assert!(
-        pick.outcome.starts_with("card-003 handed to "),
+        pick.outcome.starts_with("task-003 handed to "),
         "{}",
         pick.outcome
     );
@@ -788,6 +925,37 @@ fn spot_check_sends_spot_check() {
     );
 }
 
+/// A spot check takes the keys like any question, so Esc has to give them back: it closes
+/// the card and answers nothing, and the check still waits in `/approvals`.
+#[test]
+fn esc_closes_a_spot_check_and_answers_nothing() {
+    let mut screen = Screen::new();
+    let mut auto = merge();
+    auto.mode = ApprovalMode::Auto;
+    auto.needs_you = false;
+    screen.event(opened_event(auto));
+    screen.event(checkpoint(CheckpointEvent::Decided(decided(
+        AnswerAction::Merge,
+        Party::Rules,
+    ))));
+    screen.event(checkpoint(CheckpointEvent::SpotCheckQueued {
+        id: CheckpointId::numbered(1),
+    }));
+    assert_eq!(
+        screen.card().title,
+        "Spot check · Merge this run into main?"
+    );
+
+    let effects = screen.keys(&[KeyCode::Esc]);
+    let sent: Vec<&UiCommand> = effects.iter().flat_map(|out| &out.commands).collect();
+    assert!(sent.is_empty(), "nothing is decided for you: {sent:?}");
+    assert!(
+        screen.model.bottom.card.is_none(),
+        "the keys are yours again"
+    );
+    assert!(screen.cards.open.is_empty());
+}
+
 #[test]
 fn a_card_auto_leaves_to_you_rings_and_says_why_once() {
     let mut screen = Screen::new();
@@ -809,11 +977,11 @@ fn a_card_auto_leaves_to_you_rings_and_says_why_once() {
             },
         ))
     };
-    let out = screen.event(check(false, &["a hard limit, the gates didn't run"]));
-    assert!(out.bell, "a card auto couldn't settle rings");
+    let out = screen.event(check(false, &["a hard limit, the checks didn't run"]));
+    assert!(out.bell, "a task auto couldn't settle rings");
     // The shadow record that follows carries every reason, which Ctrl+O shows instead.
-    screen.event(check(true, &["the gates didn't run", "no review result"]));
-    screen.event(check(false, &["a hard limit, the gates didn't run"]));
+    screen.event(check(true, &["the checks didn't run", "no review result"]));
+    screen.event(check(false, &["a hard limit, the checks didn't run"]));
     let why: Vec<&String> = screen
         .card()
         .detail
@@ -822,7 +990,7 @@ fn a_card_auto_leaves_to_you_rings_and_says_why_once() {
         .collect();
     assert_eq!(
         why,
-        ["Auto couldn't decide: a hard limit, the gates didn't run"]
+        ["Auto couldn't decide: a hard limit, the checks didn't run"]
     );
 }
 
@@ -918,7 +1086,7 @@ fn record_line_after_decided() {
     screen.event(opened_event(merge()));
     let about = screen.history();
     assert_eq!(about.len(), 1, "the merge table goes in first");
-    assert!(about[0].contains("card-002") && about[0].contains("Suite passed"));
+    assert!(about[0].contains("task-002") && about[0].contains("Suite passed"));
 
     screen.event(checkpoint(CheckpointEvent::Decided(decided(
         AnswerAction::Merge,
@@ -967,7 +1135,7 @@ fn card_times_are_in_the_terminals_zone() {
             .card()
             .detail
             .iter()
-            .any(|line| line.ends_with("test card at 7:40 AM")),
+            .any(|line| line.ends_with("test task at 7:40 AM")),
         "{:?}",
         screen.card().detail
     );
@@ -1011,10 +1179,10 @@ fn several_cards_show_the_oldest_and_answer_card_focuses_one() {
     assert_eq!(screen.card().title, "Merge this run into main?");
     assert_eq!(screen.cards.open.len(), 2);
 
-    // Setting the oldest aside brings the next one up.
+    // Handing the oldest on brings the next one up.
     screen.keys(&[KeyCode::Esc]);
-    assert_eq!(screen.card().title, "Handoff · card-003 Middleware");
-    assert!(!screen.card().pinned);
+    assert_eq!(screen.card().title, "Fallback · task-003 Middleware");
+    assert!(!screen.card().dismissed);
 
     let (taken, out) = screen.action(UiAction::AnswerCard(AnswerTarget::Checkpoint {
         run: run(),
@@ -1022,7 +1190,7 @@ fn several_cards_show_the_oldest_and_answer_card_focuses_one() {
     }));
     assert!(taken && out.close_views);
     assert_eq!(screen.card().title, "Merge this run into main?");
-    assert!(screen.card().focused && !screen.card().pinned);
+    assert!(screen.card().focused && !screen.card().dismissed);
 }
 
 #[test]
@@ -1078,23 +1246,6 @@ fn show_the_diff_asks_for_the_card_diff_and_keeps_the_card() {
 }
 
 #[test]
-fn show_the_file_opens_the_pager_and_sends_nothing() {
-    let mut screen = Screen::new();
-    let trust = choice(
-        ChoiceKind::TrustProject,
-        vec![
-            option('y', "Trust them", AnswerAction::Approve),
-            option('n', "Not now", AnswerAction::Cancel),
-            option('d', "Show the file", AnswerAction::ShowDiff),
-        ],
-    );
-    screen.event(AppEvent::Choice { choice: trust });
-    let effects = screen.keys(&[KeyCode::Char('3')]);
-    assert!(effects[0].commands.is_empty());
-    assert_eq!(effects[0].views.len(), 1);
-}
-
-#[test]
 fn a_choice_rings_only_when_it_asks_to() {
     let mut screen = Screen::new();
     let mut start = choice(
@@ -1128,7 +1279,7 @@ fn review_plan() -> CheckpointOpened {
 
     let workflow = serde_json::from_value(serde_json::json!({
         "name": "review-panel",
-        "description": "Two reviewers from other families",
+        "description": "Two reviewers from other providers",
         "params": {"target": "diff", "reviewers": 2},
         "phases": [
             {"name": "Review", "standard": "check", "steps": [{
@@ -1141,7 +1292,7 @@ fn review_plan() -> CheckpointOpened {
         ]
     }))
     .expect("a workflow");
-    let why = "A review: two reviewers from other families";
+    let why = "A review: two reviewers from other providers";
     let packet = PlanPacket {
         summary: why.into(),
         judging: None,
@@ -1189,7 +1340,7 @@ fn a_plan_shows_the_workflow_it_follows() {
     let history = screen.history().join("\n");
     let item = &history[history.find("The plan").expect("the plan's item")..];
     for shown in [
-        "Workflow  review-panel · Two reviewers from other families",
+        "Workflow  review-panel · Two reviewers from other providers",
         "reviewers 2 · target diff",
         "    review → adjudicate (if needed)\n    … +2 lines (ctrl+o to expand)",
     ] {
@@ -1202,12 +1353,12 @@ fn a_plan_shows_the_workflow_it_follows() {
     assert_eq!(item.matches("A review: two reviewers").count(), 1, "{item}");
     assert_eq!(
         screen.card().detail.first().map(String::as_str),
-        Some("review-panel · review → adjudicate (if needed) · budget $20.00")
+        Some("review-panel · review → adjudicate (if needed) · limit $20.00")
     );
 
     let expanded = screen.history_as(true).join("\n");
     for shown in [
-        "Review: fan_out reviewer ×2, blind, another family than author",
+        "Review: fan_out reviewer ×2, blind, another provider than author",
         "Adjudicate: judge adjudicator, when reviewers_disagree",
     ] {
         assert!(
@@ -1223,18 +1374,18 @@ fn a_plan_shows_the_workflow_it_follows() {
 fn a_looping_phase_says_its_rounds() {
     let mut opened = review_plan();
     let CheckpointPacket::Plan(plan) = &mut opened.packet else {
-        unreachable!("a plan checkpoint")
+        unreachable!("a plan approval")
     };
     let shown = plan.workflow.as_mut().expect("a workflow");
     shown.workflow = serde_json::from_value(serde_json::json!({
-        "name": "peer-crew",
+        "name": "council",
         "description": "",
         "phases": [
             {"name": "Goal", "standard": "understand", "steps": [{
                 "kind": "loop_until", "until": "goal_approved", "max": 2,
                 "steps": [{"kind": "restate"}, {"kind": "checkpoint", "checkpoint": "goal"}]
             }]},
-            {"name": "Build", "standard": "do", "steps": [{"kind": "build", "role": "owner"}]},
+            {"name": "Build", "standard": "do", "steps": [{"kind": "build", "role": "worker"}]},
             {"name": "Merge", "standard": "decide", "steps": [{"kind": "merge"}]}
         ]
     }))
@@ -1249,13 +1400,63 @@ fn a_looping_phase_says_its_rounds() {
     assert!(!history.contains("goal_approved"), "{history}");
 }
 
+/// Steps the runner runs have no step kinds, so each phase shows the line its script gave it.
+#[test]
+fn a_plan_of_a_scripts_steps_shows_each_phase_with_its_line() {
+    use argonauts_core::workflow::WorkflowRef;
+
+    let mut opened = review_plan();
+    let CheckpointPacket::Plan(plan) = &mut opened.packet else {
+        unreachable!("a plan approval")
+    };
+    plan.summary = "The orchestrator wrote these steps for your request".into();
+    let shown = plan.workflow.as_mut().expect("a workflow");
+    shown.from = Some(WorkflowRef::new("council"));
+    shown.why = None;
+    shown.workflow = serde_json::from_value(serde_json::json!({
+        "name": "add-due-dates",
+        "description": "Add due dates to tasks",
+        "phases": [
+            {"name": "Plan", "detail": "orchestrator · 1 agent", "standard": "do", "steps": []},
+            {"name": "Build", "detail": "workers · one per task", "standard": "do", "steps": []},
+            {"name": "Sign off", "standard": "do", "steps": []}
+        ]
+    }))
+    .expect("a workflow");
+    let mut screen = Screen::new();
+    screen.event(opened_event(opened));
+    let history = screen.history().join("\n");
+    for shown in [
+        "Workflow  add-due-dates · Add due dates to tasks · started from council",
+        "plan → build → sign off",
+    ] {
+        assert!(history.contains(shown), "{shown} missing from:\n{history}");
+    }
+    assert_eq!(
+        screen.card().detail.first().map(String::as_str),
+        Some("add-due-dates · plan → build → sign off · limit $20.00")
+    );
+    let expanded = screen.history_as(true).join("\n");
+    for shown in [
+        "Plan: orchestrator · 1 agent",
+        "Build: workers · one per task",
+        "Sign off",
+    ] {
+        assert!(
+            expanded.contains(shown),
+            "{shown} missing from:\n{expanded}"
+        );
+    }
+    assert!(!expanded.contains("Sign off:"), "{expanded}");
+}
+
 #[test]
 fn a_plan_names_the_agents_its_workflow_names() {
     use argonauts_core::workflow::StepWorkers;
 
     let mut opened = review_plan();
     let CheckpointPacket::Plan(plan) = &mut opened.packet else {
-        unreachable!("a plan checkpoint")
+        unreachable!("a plan approval")
     };
     let shown = plan.workflow.as_mut().expect("a workflow");
     shown.workflow.phases[0].steps[0].workers =
@@ -1291,7 +1492,7 @@ fn the_merge_table_names_owners_as_the_run_knows_them() {
         argonauts_core::names::SessionKey::numbered(1),
         worker("claude-code/claude-haiku-4-5"),
         "claude-code",
-        argonauts_core::names::RoleName::Owner,
+        argonauts_core::names::RoleName::Worker,
         datetime!(2026-09-30 10:00 UTC),
     );
     session.card = Some(card_id(2));
@@ -1305,7 +1506,7 @@ fn the_merge_table_names_owners_as_the_run_knows_them() {
     };
     let named = with_run_owners(&opened, Some(&run), &names);
     let CheckpointPacket::Merge(packet) = &named.packet else {
-        unreachable!("a merge checkpoint")
+        unreachable!("a merge approval")
     };
     let owners: Vec<String> = packet
         .rows
@@ -1328,7 +1529,7 @@ fn the_merge_table_names_cards_by_label() {
         argonauts_core::names::SessionKey::numbered(1),
         worker("codex/gpt-5.6"),
         "codex",
-        argonauts_core::names::RoleName::Owner,
+        argonauts_core::names::RoleName::Worker,
         datetime!(2026-09-30 10:00 UTC),
     );
     session.card = Some(card_id(2));
@@ -1346,10 +1547,10 @@ fn the_merge_table_names_cards_by_label() {
         labeled.contains("build:writer  Add the JSON writer"),
         "{labeled}"
     );
-    assert!(!labeled.contains("card-002"), "{labeled}");
-    assert!(labeled.contains("card-003"), "{labeled}");
+    assert!(!labeled.contains("task-002"), "{labeled}");
+    assert!(labeled.contains("task-003"), "{labeled}");
     // Without the run, as the screen reader reads it to type ids, the ids stay.
-    assert!(table(None).contains("card-002"));
+    assert!(table(None).contains("task-002"));
 }
 
 /// With no command gates set nothing ran on the latest main, and the card says so rather than
@@ -1401,7 +1602,7 @@ fn the_merge_card_counts_the_spend_the_mode_line_does() {
         argonauts_core::names::SessionKey::numbered(1),
         worker("claude-code"),
         "claude-code",
-        argonauts_core::names::RoleName::Owner,
+        argonauts_core::names::RoleName::Worker,
         datetime!(2026-09-30 10:00 UTC),
     );
     session.cost_usd = Some(0.26);
@@ -1425,7 +1626,7 @@ fn an_escalation_counts_attempts_that_reported_nothing() {
             argonauts_core::names::SessionKey::numbered(n),
             worker("opencode"),
             "opencode",
-            argonauts_core::names::RoleName::Owner,
+            argonauts_core::names::RoleName::Worker,
             datetime!(2026-09-30 10:00 UTC),
         );
         session.card = Some(card_id(4));
@@ -1437,7 +1638,7 @@ fn an_escalation_counts_attempts_that_reported_nothing() {
         packet.attempts.clear();
     }
     let detail = checkpoint_card(1, &opened, Some(&run)).detail.join("\n");
-    assert!(detail.contains("card-004 Parser · 2 attempts"), "{detail}");
+    assert!(detail.contains("task-004 Parser · 2 attempts"), "{detail}");
     let detail = checkpoint_card(1, &opened, None).detail.join("\n");
     assert!(detail.contains("· 0 attempts"), "{detail}");
 }
@@ -1595,7 +1796,7 @@ fn check(verdict: Option<Verdict>, shadow: bool) -> AppEvent {
         verdict,
         by: Some(DecideWith::Rules),
         approver: None,
-        reasons: vec!["The plan goes over the budget".into()],
+        reasons: vec!["The plan goes over the limit".into()],
         shadow,
     }))
 }
@@ -1614,7 +1815,7 @@ fn a_card_your_rules_still_decide_takes_the_keys_once_it_needs_you() {
     let out = screen.event(check(Some(Verdict::Escalate), true));
     assert!(
         !out.bell && screen.model.bottom.card.is_none(),
-        "a shadow check is only recorded"
+        "an auto preview check is only recorded"
     );
     // The engine's own shape for "ask the user": no verdict, and maybe no reason either.
     let out = screen.event(checkpoint(CheckpointEvent::Checked(PolicyCheck {
@@ -1662,37 +1863,29 @@ fn a_card_that_needs_you_goes_before_a_waiting_spot_check() {
     let mut next = handoff();
     next.id = CheckpointId::numbered(2);
     screen.event(opened_event(next));
-    assert_eq!(screen.card().title, "Handoff · card-003 Middleware");
+    assert_eq!(screen.card().title, "Fallback · task-003 Middleware");
     assert!(screen.card().focused);
     screen.keys(&[KeyCode::Esc]);
     assert!(screen.card().title.starts_with("Spot check"));
     assert!(
         screen.card().focused,
-        "and it asks again once the handoff is set aside"
+        "and it asks again once the fallback is handed on"
     );
 }
 
+/// A run's card takes the keys as it shows, even mid-draft: the draft goes aside, and comes
+/// back once the card is handed on.
 #[test]
-fn a_card_that_shows_while_you_type_waits_for_the_draft() {
+fn a_card_that_shows_while_you_type_sets_the_draft_aside() {
     let mut screen = Screen::new();
-    let t0 = std::time::Instant::now();
     screen.model.bottom.composer.set_text("keep the CSV pa");
-    screen.model.bottom.typed_at(t0);
     screen.event(opened_event(merge()));
-    assert!(screen.card().waits(), "the draft keeps the keys");
-    assert!(!screen.model.bottom.hand_keys_to_card(t0));
-    screen.model.bottom.composer.clear();
-    let soon = t0 + std::time::Duration::from_millis(200);
-    assert!(
-        !screen.model.bottom.hand_keys_to_card(soon),
-        "just cleared, the input may be rewritten"
-    );
-    let quiet = t0 + crate::bottom::CARD_WAITS_FOR_QUIET;
-    assert!(screen.model.bottom.hand_keys_to_card(quiet));
-    assert!(
-        screen.card().focused,
-        "sent or cleared and left alone, the card takes them"
-    );
+    assert!(screen.card().focused, "the card took the keys");
+    assert!(screen.model.bottom.composer.is_empty());
+    screen.keys(&[KeyCode::Esc]);
+    assert!(screen.model.bottom.card.is_none());
+    assert!(screen.model.bottom.settle_draft());
+    assert_eq!(screen.model.bottom.composer.text(), "keep the CSV pa");
 }
 
 /// An answered question's record goes by its title, which names the asking agent's label, so
@@ -1800,7 +1993,10 @@ fn next_choice_kind(kind: Option<ChoiceKind>) -> Option<ChoiceKind> {
         Some(RefusedCommands) => Some(RewindTurn),
         Some(RewindTurn) => Some(GoAhead),
         Some(GoAhead) => Some(HandOff),
-        Some(HandOff) => None,
+        Some(HandOff) => Some(TryWorkflow),
+        Some(TryWorkflow) => Some(Setup),
+        Some(Setup) => Some(Git),
+        Some(Git) => None,
     }
 }
 
@@ -1817,8 +2013,8 @@ fn next_checkpoint_kind(kind: Option<CheckpointKind>) -> Option<CheckpointKind> 
         Some(Escalation) => Some(Budget),
         Some(Budget) => Some(ChangeRequest),
         Some(ChangeRequest) => Some(GoalChange),
-        Some(GoalChange) => Some(RecipePromotion),
-        Some(RecipePromotion) => Some(TakeOverReturn),
+        Some(GoalChange) => Some(WorkflowPromotion),
+        Some(WorkflowPromotion) => Some(TakeOverReturn),
         Some(TakeOverReturn) => Some(Question),
         Some(Question) => Some(OriginalReturned),
         Some(OriginalReturned) => None,
@@ -1881,12 +2077,12 @@ fn every_card_that_asks_takes_the_keys_and_hides_the_input() {
 /// auto leaves it to you, it asks and holds the keys with the input hidden, never waiting for ↑
 /// under a ruled input.
 #[test]
-fn a_go_ahead_full_auto_leaves_to_you_holds_the_keys() {
+fn a_go_ahead_autopilot_leaves_to_you_holds_the_keys() {
     let mut screen = Screen::new();
     let mut go_ahead = merge();
     go_ahead.kind = CheckpointKind::Goal;
     go_ahead.title = "Run this workflow?".into();
-    go_ahead.mode = ApprovalMode::FullAuto;
+    go_ahead.mode = ApprovalMode::Autopilot;
     go_ahead.decide_with = DecideWith::RulesAndModel;
     go_ahead.needs_you = false;
     go_ahead.options = vec![
@@ -1896,7 +2092,7 @@ fn a_go_ahead_full_auto_leaves_to_you_holds_the_keys() {
     screen.event(opened_event(go_ahead));
     assert_eq!(
         screen.model.bottom.card, None,
-        "a card full auto still decides isn't on screen"
+        "a task autopilot still decides isn't on screen"
     );
     screen.event(checkpoint(CheckpointEvent::Checked(PolicyCheck {
         id: CheckpointId::numbered(1),
@@ -1916,7 +2112,7 @@ fn a_go_ahead_full_auto_leaves_to_you_holds_the_keys() {
     assert!(
         !rows
             .iter()
-            .any(|row| row.contains("to answer the card") || row.starts_with('❯')),
+            .any(|row| row.contains("to answer the question") || row.starts_with('❯')),
         "{}",
         rows.join("\n")
     );

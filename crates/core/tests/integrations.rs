@@ -182,7 +182,7 @@ error_message = "/error/message"
 "#,
     );
     let [grok, openclaw] = &file.harnesses[..] else {
-        panic!("expected two harnesses");
+        panic!("expected two CLIs");
     };
     assert_eq!(grok.transport, Transport::Lines);
     assert_eq!(grok.prompt, PromptChannel::Argument);
@@ -334,7 +334,8 @@ fn transports_and_the_context_fill_event_keep_their_wire_format() {
         without_window,
         AgentEvent::ContextFill {
             used: 120000,
-            size: None
+            size: None,
+            sent: None,
         }
     );
 }
@@ -353,17 +354,17 @@ fn front_ends_are_a_party_by_the_name_they_report() {
 fn run_started() -> Value {
     json!({"event": "started", "request": "add per-key rate limiting",
         "title": "Per-key rate limiting", "mode": "crew", "forced": false,
-        "preset": "peer-crew", "estimate": null, "triage": null, "chat_turn": null,
+        "workflow": "council", "estimate": null, "triage": null, "chat_turn": null,
         "continues": null, "repo_root": "/repo", "base_branch": "main",
         "base_commit": "8b41d07", "uncommitted": [], "uncommitted_included": false,
-        "settings_sha256": "5e7f", "settings": {"preset": "peer-crew"}, "overrides": [],
+        "settings_sha256": "5e7f", "settings": {"workflow": "council"}, "overrides": [],
         "harness_versions": {"codex": "0.158.0"}, "version": "0.0.1"})
 }
 
 fn start_run() -> Value {
     json!({"request": "fix the typo", "mode": "solo", "forced": true, "estimate": null,
         "triage": null, "chat_turn": "t-001", "continues": null, "overrides": [],
-        "include_uncommitted": false, "default_agent": "codex/gpt-x",
+        "include_uncommitted": false, "main_agent": "codex/gpt-x",
         "approval_mode": "supervised"})
 }
 
@@ -409,12 +410,12 @@ fn every_driver_stop_keeps_its_wire_format() {
 #[test]
 fn driver_starts_and_frames_round_trip() {
     let start: DriverStart = round_trip(json!({
-        "cwd": "/state/run-01/worktrees/card-002", "prompt": "Add the token bucket store",
+        "cwd": "/state/run-01/worktrees/task-002", "prompt": "Add the token bucket store",
         "model": "z-ai/glm-5", "effort": null, "access": "build", "resume": "019a-abc",
         "mcp_servers": [{"name": "argonauts", "command": "/usr/local/bin/argonauts",
                          "args": ["mcp", "session"]}],
-        "scope": {"roots": ["/state/run-01/worktrees/card-002"],
-                  "writable": ["/state/run-01/worktrees/card-002"], "deny": ["/repo/.git"],
+        "scope": {"roots": ["/state/run-01/worktrees/task-002"],
+                  "writable": ["/state/run-01/worktrees/task-002"], "deny": ["/repo/.git"],
                   "forbidden": [".env*"], "network": false},
         "json_schema": {"type": "object"},
         "report_file": "/state/run-01/sessions/s-003/report.json"}));
@@ -596,7 +597,7 @@ fn the_new_integration_defaults_hold() {
     assert!(mcp.status_tool && mcp.guidance && mcp.pause);
     assert_eq!(mcp.start_runs, StartRuns::TrustedRepos);
     assert_eq!(mcp.share, Share::Summaries);
-    assert_eq!(mcp.run_budget, Span::new("60m"));
+    assert_eq!(mcp.run_limit, Span::new("60m"));
     assert_eq!(mcp.runs_per_day, 5);
     assert_eq!(settings.approvals.presence, Presence::Warn);
     assert_eq!(
@@ -625,7 +626,7 @@ start_runs = "off"
 guidance = false
 pause = false
 share = "status-only"
-run_budget = "30m"
+run_limit = "30m"
 runs_per_day = 2
 [approvals]
 presence = "required"

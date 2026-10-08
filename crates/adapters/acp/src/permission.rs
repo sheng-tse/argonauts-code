@@ -166,7 +166,7 @@ impl Policy {
                     .any(|glob| glob.is_match(&relative) || glob.is_match(&as_folder))
                 {
                     return Verdict::Reject(format!(
-                        "an edit of {relative}, which no card may touch"
+                        "an edit of {relative}, which no task may touch"
                     ));
                 }
             }
@@ -504,10 +504,10 @@ mod tests {
         reject(&build, edit("../other/file"), "outside the writable paths");
         reject(&build, edit("/ref/notes.md"), "outside the writable paths");
         reject(&build, edit("secrets/key.pem"), "denied");
-        reject(&build, edit(".argonauts/state.json"), "no card may touch");
-        reject(&build, edit(".hermes/config.yaml"), "no card may touch");
-        reject(&build, edit("docs/HERMES.md"), "no card may touch");
-        reject(&build, edit("Cargo.lock"), "no card may touch");
+        reject(&build, edit(".argonauts/state.json"), "no task may touch");
+        reject(&build, edit(".hermes/config.yaml"), "no task may touch");
+        reject(&build, edit("docs/HERMES.md"), "no task may touch");
+        reject(&build, edit("Cargo.lock"), "no task may touch");
         reject(
             &build,
             json!({ "toolCallId": "t", "title": "Edit", "kind": "edit" }),

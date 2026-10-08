@@ -232,6 +232,20 @@ impl Reader {
             SlashCommand::Help => said
                 .lines
                 .extend(help_lines(self.state.vendor_commands.as_ref())),
+            // One line each, newest first, with the link to copy from the terminal.
+            SlashCommand::Artifacts => {
+                let published = self.state.artifacts.all();
+                if published.is_empty() {
+                    said.lines
+                        .push(crate::views::artifacts::NONE_YET.to_owned());
+                }
+                said.lines.extend(published.iter().rev().map(|published| {
+                    format!(
+                        "artifact {}: {}",
+                        published.artifact.name, published.artifact.url
+                    )
+                }));
+            }
             // What the run's row opens on screen: the lead's session while it
             // designs, else the workflow, printed as text.
             SlashCommand::Workflows => match shown_run(&self.state).map(|run| run.id.clone()) {
@@ -522,6 +536,6 @@ fn help_lines(vendor: Option<&VendorCommandSet>) -> Vec<String> {
             lines.push(format!("help: {usage}, {help}"));
         }
     }
-    lines.push("help: answer a card with its number or letter, and put a note after a colon. Ctrl+D leaves.".to_owned());
+    lines.push("help: answer a question with its number or letter, and put a note after a colon. Ctrl+D leaves.".to_owned());
     lines
 }

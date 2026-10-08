@@ -1,18 +1,21 @@
 //! What stops landing in your checkout. Landing moves your checkout of the target forward, and
 //! git won't overwrite your untracked files at paths the run brings, or merge over your
 //! uncommitted edits to files it changes, so landing looks first. They're yours, so only you
-//! decide: move the untracked ones aside and merge, try again once you've dealt with them, or
-//! merge later. When git refuses for a reason of its own, the same card says so in git's words.
-//! Until then the run waits to merge; it hasn't failed.
+//! decide: move the untracked ones aside and merge, try again once you've dealt with them,
+//! merge later, or end the run without merging, on its branch or as a pull request. When git
+//! refuses for a reason of its own, the same card says so in git's words. Until then the run
+//! waits to merge; it hasn't failed.
 
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::IntegrationEvent;
 use argonauts_core::events::checkpoint::{
     AnswerAction, AnswerOption, CheckpointKind, CheckpointPacket, FreeText, MergePacket,
 };
+use argonauts_core::events::run::Party;
 use argonauts_core::names::CheckpointId;
 use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::{Note, NoteLevel};
@@ -21,6 +24,7 @@ use crate::checkpoints::{self, CheckpointRequest};
 use crate::engine::host::Host;
 use crate::error::EngineResult;
 use crate::git::GitError;
+use crate::integrate::unborn;
 
 pub const MOVE_ASIDE: &str = "Move them aside and merge";
 pub const TRY_AGAIN: &str = "Try again";
@@ -29,7 +33,8 @@ pub const MERGE_LATER: &str = "Merge later";
 /// The most files a note names before it says how many more.
 const NAMED: usize = 5;
 
-/// What's in the way of moving your checkout from main to the run's head.
+/// What's in the way of moving your checkout from main to the run's head, and what of yours
+/// already holds what it brings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Blocked {
     /// Your untracked files, ignored ones too, at paths the run brings. A folder ends in `/`.
@@ -38,6 +43,27 @@ pub struct Blocked {
     pub edited: Vec<String>,
     /// Git's words, when it refused with nothing of yours found in the way.
     pub refused: Option<String>,
+    /// Your files at paths the run writes that hold what it brings there already, so they
+    /// aren't in its way. Landing takes them as they are.
+    pub holding: Holding,
+}
+
+/// Your files that already hold what the run brings: the same bytes, or nothing where it
+/// removes a file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Holding {
+    /// Untracked, or ignored, at paths the run adds.
+    pub untracked: Vec<String>,
+    /// Edits, and deletions, of files the run changes.
+    pub edited: Vec<String>,
+}
+
+impl Holding {
+    pub fn all(&self) -> Vec<String> {
+        let mut all: Vec<String> = self.untracked.iter().chain(&self.edited).cloned().collect();
+        all.sort();
+        all
+    }
 }
 
 impl Blocked {
@@ -53,21 +79,40 @@ impl Blocked {
     }
 }
 
-/// Your files in the way of moving your checkout from `main` to `head`.
+/// Your files in the way of moving your checkout from `main` to `head`. A file that holds
+/// what `head` has there already isn't, and is listed apart.
 pub async fn find(host: &Host, main: &str, head: &str) -> Result<Blocked, GitError> {
     let git = host.git();
     let root = &host.repo().root;
-    let edited = git.edited_in_the_way(root, main, head).await?;
-    let untracked = git
+    let unborn = unborn::base(host).await?.is_some();
+    let edited = if unborn {
+        unborn::edited_in_the_way(host, main, head).await?
+    } else {
+        git.edited_in_the_way(root, main, head).await?
+    };
+    let untracked: Vec<String> = git
         .in_the_way(root, main, head)
         .await?
         .into_iter()
         .filter(|path| !edited.contains(path))
         .collect();
+    let mut holding = git.holding(root, head, &edited).await?;
+    // Taking an edit as it is stages it, which would lose a version you staged on the way.
+    // Before a first commit your index is never touched, so it can't lose anything there.
+    if !unborn {
+        let apart = git.staged_apart(root, main, head, &holding).await?;
+        holding.retain(|path| !apart.contains(path));
+    }
+    let holding = Holding {
+        untracked: git.holding(root, head, &untracked).await?,
+        edited: holding,
+    };
+    let held = |path: &String| !holding.untracked.contains(path) && !holding.edited.contains(path);
     Ok(Blocked {
-        untracked,
-        edited,
+        untracked: untracked.into_iter().filter(held).collect(),
+        edited: edited.into_iter().filter(held).collect(),
         refused: None,
+        holding,
     })
 }
 
@@ -78,15 +123,25 @@ pub enum Way {
     Again,
     /// You chose to merge later.
     Later,
+    /// The run ends with its work on its branch, not merged.
+    KeepBranch,
+    /// The run ends as a pull request, `yours` when you chose it rather than your rules.
+    PullRequest { yours: bool },
 }
 
+/// How often a waiting merge looks whether your files are still in the way.
+const LOOK_AGAIN: Duration = Duration::from_secs(3);
+
 /// Asks you what to do about `blocked`, once, and does the moving you chose. `approved` is the
-/// merge card you or your rules answered, whose evidence the question shows again.
+/// merge card you or your rules answered, whose evidence the question shows again. With
+/// `range`, the main and head the files are in the way of, the wait also ends by itself once
+/// you've moved them: the question is withdrawn, and landing looks again.
 pub async fn ask(
     host: &Host,
     approved: &CheckpointId,
     target: &str,
     blocked: &Blocked,
+    range: Option<(&str, &str)>,
 ) -> EngineResult<Way> {
     let files = blocked.files();
     if !files.is_empty() && host.read(|state| state.integration.waiting_to_merge != files) {
@@ -100,12 +155,33 @@ pub async fn ask(
         )?;
     }
     let opening = checkpoints::open(host, request(host, approved, target, blocked))?;
+    let id = opening.id().clone();
+    let answer = opening.decided_or_withdrawn(host);
+    tokio::pin!(answer);
+    let answered = loop {
+        tokio::select! {
+            answered = &mut answer => break answered?,
+            () = tokio::time::sleep(LOOK_AGAIN), if range.is_some() => {
+                if let Some((main, head)) = range
+                    && find(host, main, head).await.is_ok_and(|now| now.is_empty())
+                {
+                    // Answered in the same moment: the answer stands, and nothing is lost.
+                    let _ = checkpoints::withdraw(host, &id, "nothing is in the way anymore");
+                }
+            }
+        }
+    };
     // Withdrawn because what's in the way changed: landing looks again.
-    let Ok(decided) = opening.decided_or_withdrawn(host).await? else {
+    let Ok(decided) = answered else {
         return Ok(Way::Again);
     };
     match &decided.action {
         AnswerAction::Choose { value } if value == MERGE_LATER => return Ok(Way::Later),
+        AnswerAction::KeepBranch => return Ok(Way::KeepBranch),
+        AnswerAction::PullRequest => {
+            let yours = matches!(decided.by, Party::User);
+            return Ok(Way::PullRequest { yours });
+        }
         AnswerAction::Choose { value } if value == MOVE_ASIDE => {
             move_aside(host, &host.repo().root, &blocked.untracked)?;
         }
@@ -188,6 +264,34 @@ fn request(
         false,
         format!("the run pauses here; /resume {run} merges it"),
     ));
+    // The history Argonauts keeps of a folder without git has no branch you'd look at, and
+    // no remote.
+    if host.repo().hidden_git().is_none() {
+        let ending = |key: char, label: &str, action: AnswerAction, detail: String| AnswerOption {
+            key,
+            label: label.to_owned(),
+            action,
+            recommended: false,
+            detail: Some(detail),
+        };
+        let branch = if packet.branch.is_empty() {
+            "its branch".to_owned()
+        } else {
+            packet.branch.clone()
+        };
+        options.push(ending(
+            'p',
+            "Open a pull request",
+            AnswerAction::PullRequest,
+            format!("the run ends, and {branch} goes up for review"),
+        ));
+        options.push(ending(
+            'k',
+            "Keep the branch",
+            AnswerAction::KeepBranch,
+            format!("the run ends with its work on {branch}, not merged"),
+        ));
+    }
     let mut documents = Vec::new();
     if !blocked.untracked.is_empty() {
         documents.push(document(
@@ -294,7 +398,7 @@ fn free_folder(base: &Path) -> PathBuf {
 }
 
 /// A rename, or a copy and delete when the run's folder is on another file system.
-fn move_path(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn move_path(from: &Path, to: &Path) -> io::Result<()> {
     match std::fs::rename(from, to) {
         Err(err) if err.kind() == io::ErrorKind::CrossesDevices => {
             copy_all(from, to)?;
@@ -326,7 +430,7 @@ fn copy_all(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// A relative path that stays inside the repository.
-fn is_inside(path: &str) -> bool {
+pub(crate) fn is_inside(path: &str) -> bool {
     !path.is_empty()
         && Path::new(path)
             .components()

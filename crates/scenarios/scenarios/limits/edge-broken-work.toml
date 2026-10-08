@@ -1,5 +1,5 @@
-# The fake Claude Code leaves broken work (broken.txt fails the gate) and hits its usage
-# limit. Codex restarts the card from the base and finishes it.
+# The fake Claude Code leaves broken work (broken.txt fails the checks) and hits its usage
+# limit. Codex restarts the task from the base and finishes it.
 
 [version]
 claude = "2.1.284 (Claude Code)"

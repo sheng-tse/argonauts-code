@@ -1,7 +1,0 @@
-workflow = "best-of-n"
-
-[triage]
-force = "solo"
-
-[solo]
-attempts = 3

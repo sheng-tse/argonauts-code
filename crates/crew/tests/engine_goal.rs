@@ -32,7 +32,7 @@ use support::{Crew, Outcome, answer};
 
 const REQUEST: &str = "Add a rate limit to the public API";
 
-/// Goal alignment alone, as `peer-crew` runs it, so these scenarios stop at the approved goal.
+/// Goal alignment alone, as `council` runs it, so these scenarios stop at the approved goal.
 const GOAL_ALIGNMENT: &str = "\
 name: goal-alignment
 description: Goal alignment alone
@@ -102,9 +102,9 @@ fn crew(listing: &Value, rounds: usize) -> anyhow::Result<(Crew, Vec<Arc<FakeWor
     crew.repo
         .write(".argonauts/workflows/goal-alignment.yaml", GOAL_ALIGNMENT)?;
     crew.repo.commit_all("Add the goal alignment workflow")?;
-    crew.settings.workflow = WorkflowRef::new("goal-alignment");
+    crew.settings.phases = WorkflowRef::new("goal-alignment");
     // These cover the questions you answer; `engine_autonomy` covers the lead answering them.
-    crew.settings.approvals.answered_by = Some(Answerer::You);
+    crew.settings.approvals.answers = Some(Answerer::You);
     let summaries = [
         "Add a per user rate limit to the public API.",
         "Limit each user's requests to the public API.",
@@ -154,7 +154,7 @@ fn opened(events: &[RunEvent], kind: CheckpointKind) -> Vec<&CheckpointOpened> {
 fn questions_of(opened: &CheckpointOpened) -> Vec<GoalQuestion> {
     match &opened.packet {
         CheckpointPacket::Goal(packet) => packet.questions.clone(),
-        other => panic!("a goal checkpoint with {other:?}"),
+        other => panic!("a goal approval with {other:?}"),
     }
 }
 

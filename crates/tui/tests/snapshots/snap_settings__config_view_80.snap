@@ -7,22 +7,22 @@ Every setting and the layer it comes from. ! marks a safety key       8 settings
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ general                                                                      │
-│ ❯   preset                 peer-crew         this project                    │
-│     default_agent          claude-code/opus  everywhere (global)             │
+│ ❯   workflow               council           this project                    │
+│     main_agent             claude-code/opus  everywhere (global)             │
 │                                                                              │
 │ ui                                                                           │
 │     ui.theme               dark              everywhere (global)             │
 │     ui.keys                vim               this session                    │
 │     ui.accent              unset             built-in                        │
 │                                                                              │
-│ budget                                                                       │
-│   ! budget.run_usd         30.0              just you (project-local)        │
+│ limits                                                                       │
+│   ! limits.spend_per_run   30.0              just you (project-local)        │
 │                                                                              │
 │ approvals                                                                    │
-│   ! approvals.merge.mode   shadow            --set                           │
+│   ! approvals.merge.mode   auto_preview      --set                           │
 │                                                                              │
 │ roles                                                                        │
-│     roles.reviewer.effort  high              preset                          │
+│     roles.reviewer.effort  high              workflow                        │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ↑↓ select · ⏎ edit · type to search · esc back

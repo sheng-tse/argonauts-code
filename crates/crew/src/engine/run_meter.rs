@@ -30,7 +30,7 @@ struct SessionSpend {
 
 #[derive(Debug, Default)]
 pub struct RunMeter {
-    /// `None` when budgets are off or no run limit is set: the meter still counts.
+    /// `None` when no run limit is set: the meter still counts.
     plan: Option<BudgetPlan>,
     sessions: BTreeMap<SessionKey, SessionSpend>,
     last_sent: Option<OffsetDateTime>,
@@ -42,11 +42,7 @@ pub struct RunMeter {
 
 impl RunMeter {
     pub fn new(settings: &BudgetSettings) -> Self {
-        let plan = if settings.enabled {
-            budget_lines::plan(settings).ok()
-        } else {
-            None
-        };
+        let plan = budget_lines::plan(settings).ok().flatten();
         Self {
             plan,
             ..Self::default()
@@ -200,7 +196,7 @@ fn amount(spend: &Spend, unit: BudgetUnit) -> f64 {
 
 fn line_of(role: Option<RoleName>) -> BudgetLineKind {
     match role {
-        Some(RoleName::Owner) => BudgetLineKind::Cards,
+        Some(RoleName::Worker) => BudgetLineKind::Cards,
         Some(RoleName::Reviewer | RoleName::Adjudicator) => BudgetLineKind::Review,
         Some(RoleName::Spike) => BudgetLineKind::Spikes,
         Some(RoleName::Retro) => BudgetLineKind::Integration,
@@ -245,7 +241,7 @@ mod tests {
             json!({
                 "event": "started", "worker": "claude-code", "vendor": "claude-code",
                 "family": "claude", "kind": "harness", "role": role, "step": "build",
-                "access": "build", "lifetime": "card", "resumed_from": null, "follow_key": null,
+                "access": "build", "lifetime": "task", "resumed_from": null, "follow_key": null,
                 "workflow_step": null,
             }),
         )
@@ -283,9 +279,9 @@ mod tests {
         )
     }
 
-    fn meter(run_usd: f64) -> RunMeter {
+    fn meter(spend_per_run: f64) -> RunMeter {
         RunMeter::new(&BudgetSettings {
-            run_usd: Some(run_usd),
+            spend_per_run: Some(spend_per_run),
             ..BudgetSettings::default()
         })
     }
@@ -293,7 +289,7 @@ mod tests {
     #[test]
     fn readings_add_up_across_sessions_and_resumes_at_most_once_a_second() {
         let mut meter = meter(1.0);
-        assert!(meter.observe(&started(1, "s-001", "owner")).is_none());
+        assert!(meter.observe(&started(1, "s-001", "worker")).is_none());
         let first = meter.observe(&reading(2, 1, "s-001", 0.10)).unwrap();
         assert!((first.spent.cost_usd - 0.10).abs() < 1e-9);
         // Within the second: counted, not sent.
@@ -301,7 +297,7 @@ mod tests {
         // An end always sends, and a resumed process starts its meter from zero again.
         let after_end = meter.observe(&ended(4, 1, "s-001", 0.25)).unwrap();
         assert!((after_end.spent.cost_usd - 0.25).abs() < 1e-9);
-        meter.observe(&started(5, "s-001", "owner"));
+        meter.observe(&started(5, "s-001", "worker"));
         let resumed = meter.observe(&reading(6, 3, "s-001", 0.05)).unwrap();
         assert!((resumed.spent.cost_usd - 0.30).abs() < 1e-9);
         meter.observe(&started(7, "s-002", "reviewer"));
@@ -316,11 +312,11 @@ mod tests {
     #[test]
     fn an_unchanged_budget_is_not_sent_again() {
         let mut meter = meter(1.0);
-        meter.observe(&started(1, "s-001", "owner"));
+        meter.observe(&started(1, "s-001", "worker"));
         assert!(meter.observe(&reading(2, 1, "s-001", 0.10)).is_some());
         assert!(meter.observe(&reading(3, 5, "s-001", 0.10)).is_none());
         assert!(meter.observe(&ended(4, 6, "s-001", 0.10)).is_none());
-        meter.observe(&started(5, "s-001", "owner"));
+        meter.observe(&started(5, "s-001", "worker"));
         let moved = meter.observe(&reading(6, 8, "s-001", 0.05)).unwrap();
         assert!((moved.spent.cost_usd - 0.15).abs() < 1e-9);
         assert!(meter.observe(&reading(7, 10, "s-001", 0.05)).is_none());
@@ -337,7 +333,7 @@ mod tests {
     #[test]
     fn a_spent_limit_holds_once_until_the_run_resumes() {
         let mut meter = meter(0.02);
-        meter.observe(&started(1, "s-001", "owner"));
+        meter.observe(&started(1, "s-001", "worker"));
         let budget = meter.observe(&ended(2, 1, "s-001", 0.05)).unwrap();
         assert_eq!(budget.reserve_left.unwrap().amount, 0.0);
         assert_eq!(meter.left().unwrap().amount, 0.0);
@@ -354,12 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn budgets_off_still_count_but_never_hold() {
-        let mut meter = RunMeter::new(&BudgetSettings {
-            enabled: false,
-            ..BudgetSettings::default()
-        });
-        meter.observe(&started(1, "s-001", "owner"));
+    fn with_no_limit_the_meter_counts_but_never_holds() {
+        let mut meter = RunMeter::new(&BudgetSettings::default());
+        meter.observe(&started(1, "s-001", "worker"));
         let budget = meter.observe(&ended(2, 1, "s-001", 5.0)).unwrap();
         assert_eq!(budget.limit, None);
         assert!((budget.spent.cost_usd - 5.0).abs() < 1e-9);

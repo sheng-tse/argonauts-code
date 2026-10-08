@@ -1,0 +1,13 @@
+phases = "draft-and-vote"
+
+[judging]
+method = "vote"
+
+[critique]
+rounds = 0
+
+[experiments]
+enabled = false
+
+[divide]
+single_worker = true

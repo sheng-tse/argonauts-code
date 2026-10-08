@@ -42,7 +42,7 @@ pub fn export(loaded: &LoadedRecipe) -> Result<Skill> {
     let problems = document::validate(&text, &name);
     if !problems.is_empty() {
         return Err(LearningError::Refused(format!(
-            "The {name} recipe can't be exported as a skill: {}.",
+            "The {name} workflow can't be exported as a skill: {}.",
             problems.join("; ")
         )));
     }
@@ -58,7 +58,7 @@ fn refuse_unsafe(text: &str) -> Result<()> {
     {
         return Err(LearningError::Refused(format!(
             "The skill would carry a {kind}, so the export is refused. Take it out of the \
-             recipe first."
+             learned workflow first."
         )));
     }
     if let Some(hidden) = findings.iter().find(|finding| finding.refuses()) {
@@ -153,7 +153,7 @@ fn body(recipe: &Recipe) -> String {
     }
     let _ = writeln!(
         text,
-        "These steps are version {} of the `{name}` recipe: the workflow that worked best for \
+        "These steps are version {} of `{name}`, the learned workflow that worked best for \
          this kind of task when a crew of agents ran it in this repository, written out for one \
          agent working alone.\n",
         recipe.version
@@ -180,7 +180,7 @@ fn body(recipe: &Recipe) -> String {
         text.push('\n');
     }
     if !gates.is_empty() {
-        text.push_str("## Gates\n\nThe work is done only when each of these holds.\n\n");
+        text.push_str("## Checks\n\nThe work is done only when each of these holds.\n\n");
         for gate in &gates {
             let _ = writeln!(text, "- {gate}");
         }
@@ -211,9 +211,9 @@ fn default_phases(recipe: &Recipe, checklist: &[String], gates: &[String]) -> Ph
          it."
         .to_owned(),
     ];
-    if enabled(recipe, "spikes") {
+    if enabled(recipe, "experiments") {
         plan.push(
-            "Try the riskiest assumption in a small throwaway spike, and keep only what you \
+            "Try the riskiest assumption in a small throwaway experiment, and keep only what you \
              learn."
                 .to_owned(),
         );
@@ -246,7 +246,7 @@ fn default_phases(recipe: &Recipe, checklist: &[String], gates: &[String]) -> Ph
     let mut check = vec![if gates.is_empty() {
         "Run the project's tests and linters, and fix what fails.".to_owned()
     } else {
-        "Check each gate below, and fix what fails.".to_owned()
+        "Check each check below, and fix what fails.".to_owned()
     }];
     check.push(
         "Review your own diff as a reviewer from another team would: correctness, tests, \
@@ -327,7 +327,7 @@ fn instruction(step: &Step, depth: usize) -> String {
         StepKind::Build => {
             "Make the change in small steps, running the tests as you go.".to_owned()
         }
-        StepKind::Gate => "Check the gates below, and fix what fails.".to_owned(),
+        StepKind::Gate => "Check the checks below, and fix what fails.".to_owned(),
         StepKind::Check => {
             "Check each done-when criterion against evidence: a passing test, or a file and line."
                 .to_owned()
@@ -341,6 +341,7 @@ fn instruction(step: &Step, depth: usize) -> String {
         }
         StepKind::Merge => "Hand the change over for review. Never merge it yourself.".to_owned(),
         StepKind::Workflow => "Follow the nested workflow's steps.".to_owned(),
+        StepKind::Script => "Follow the steps of the workflow in use.".to_owned(),
     };
     if step.steps.is_empty() || depth > 2 {
         return text;
@@ -383,7 +384,7 @@ fn checklist(recipe: &Recipe) -> Vec<String> {
 
 /// The gates by name, never their commands.
 fn gates(recipe: &Recipe) -> Vec<String> {
-    let Some(gates) = section(recipe, "gates") else {
+    let Some(gates) = section(recipe, "checks") else {
         return Vec::new();
     };
     let names = match gates {

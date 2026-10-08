@@ -2,15 +2,15 @@
 source: crates/tui/tests/snap_cards.rs
 expression: text(&lines)
 ---
-● card-004 Parser · attempts
+● task-004 Parser · attempts
   1. tests failed: 2 of 41
   2. review asked for changes: the error type leaks
   3. tests failed: 1 of 41
 
 ────────────────────────────────────────────────────────────────────────────────
-◆ card-004 is stuck after 3 attempts
+◆ task-004 is stuck after 3 attempts
   Agent: build:parser · GPT 5.6 on Codex
-  card-004 Parser · 3 attempts
+  task-004 Parser · 3 attempts
   Last failure: parser::tests::nested_quotes failed
 
   ❯ 1. Retry with a note
@@ -18,7 +18,7 @@ expression: text(&lines)
     3. Split
     4. Take over myself
     5. Defer it
-    6. Cancel the card
+    6. Cancel the task
     7. Show the details
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Enter to choose · Tab to add a note · Esc to carry on without me

@@ -7,7 +7,7 @@
 //! harness's records of your other sessions stay unreadable. No session reads `~/.argonauts`
 //! (but its own session files and what its launch names there), any worktree but its own (and
 //! the run's base worktree for read-only run sessions, or the run's other worktrees when
-//! `sandbox.agents_see_other_copies` is on), other vendors' or other agents' state and
+//! `sandbox.agents_see_other_worktrees` is on), other vendors' or other agents' state and
 //! credentials, or `~/.ssh`, and none reaches a socket that acts for you, such as the ssh
 //! agent's or docker's.
 //!
@@ -18,7 +18,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use argonauts_core::CommandSpec;
-use argonauts_core::layout::session_files;
+use argonauts_core::layout::{repo_state, session_files};
 use argonauts_core::worker::{Access, SandboxProfile};
 
 use super::SandboxError;
@@ -41,7 +41,7 @@ pub struct ProfileInput<'a> {
     pub status_file: Option<&'a Path>,
     /// `sandbox.extra_writable`, already absolute.
     pub extra_writable: &'a [PathBuf],
-    /// `sandbox.agents_see_other_copies`: the run's other worktrees are readable.
+    /// `sandbox.agents_see_other_worktrees`: the run's other worktrees are readable.
     pub sees_other_copies: bool,
     /// `sandbox.agents_commit`: a build or spike session in a linked worktree may commit on its
     /// own branch.
@@ -389,7 +389,20 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
     }
     let git = LinkedGit::of(input.workdir);
     let git_dirs = git.as_ref().map(LinkedGit::dirs).unwrap_or_default();
-    readable.extend(outside_all(git_dirs.iter(), &hard_deny));
+    // A folder with no git keeps its history in Argonauts' home, so that one folder there is
+    // open to git's files as a repository's `.git` is: the history of the session's own
+    // project, and no other.
+    let history = own_history(input.argonauts_home, input.workdir);
+    let open_to_git = |paths: &[PathBuf]| -> Vec<PathBuf> {
+        let (in_history, elsewhere): (Vec<PathBuf>, Vec<PathBuf>) = paths
+            .iter()
+            .cloned()
+            .partition(|path| history.as_ref().is_some_and(|dir| is_within(path, dir)));
+        let mut open = outside_all(elsewhere.iter(), &hard_deny);
+        open.extend(in_history);
+        open
+    };
+    readable.extend(open_to_git(&git_dirs));
     // Your home and your checkout stay read-only even when they sit in a writable temp folder.
     let checkout = git.as_ref().and_then(LinkedGit::checkout);
     readable.extend(
@@ -399,8 +412,8 @@ pub fn session_profile(requested: &SandboxProfile, input: &ProfileInput<'_>) -> 
             .filter(|path| inside_any(path, &temp)),
     );
     if let Some(git) = git.filter(|git| input.commits && builds && git.is_of(input.workdir)) {
-        writable.extend(outside_all(git.commit_paths().iter(), &hard_deny));
-        readable.extend(outside_all(git.kept_read_only().iter(), &hard_deny));
+        writable.extend(open_to_git(&git.commit_paths()));
+        readable.extend(open_to_git(&git.kept_read_only()));
     }
 
     SandboxProfile {
@@ -581,6 +594,29 @@ fn run_worktrees(argonauts_home: &Path, workdir: &Path) -> Option<PathBuf> {
         ] => Some(trees.join(repo).join(run)),
         _ => None,
     }
+}
+
+/// Where the history of the session's own project is kept when its folder has no git:
+/// `~/.argonauts/state/<repo>/history.git`, for a session working under
+/// `~/.argonauts/worktrees/<repo>/`.
+fn own_history(argonauts_home: &Path, workdir: &Path) -> Option<PathBuf> {
+    let inside = workdir
+        .strip_prefix(argonauts_home.join("worktrees"))
+        .ok()?;
+    let Some(Component::Normal(repo)) = inside.components().next() else {
+        return None;
+    };
+    Some(
+        argonauts_home
+            .join("state")
+            .join(repo)
+            .join(repo_state::HIDDEN_GIT),
+    )
+}
+
+/// Whether `path` is `dir` or inside it, once every link on the way is followed.
+fn is_within(path: &Path, dir: &Path) -> bool {
+    path.is_absolute() && resolve_path(path).starts_with(resolve_path(dir))
 }
 
 /// Everything a harness keeps in your home, such as `~/.claude` and `~/.claude.json` for Claude
@@ -976,15 +1012,15 @@ mod tests {
         let run = argonauts.join("state/repo-1/runs/run-1");
         let session = run.join("sessions/s-1");
         let trees = argonauts.join("worktrees/repo-1/run-1");
-        for dir in [&session, &trees.join("card-a"), &trees.join("card-b")] {
+        for dir in [&session, &trees.join("task-a"), &trees.join("task-b")] {
             std::fs::create_dir_all(dir).unwrap();
         }
         Layout {
             home,
             argonauts,
             session,
-            own_tree: trees.join("card-a"),
-            other_tree: trees.join("card-b"),
+            own_tree: trees.join("task-a"),
+            other_tree: trees.join("task-b"),
             base_tree: trees.join("base"),
             run,
             _temp: temp,
@@ -1064,7 +1100,7 @@ mod tests {
     #[test]
     fn a_replacement_reads_its_handoff_transcripts_but_cant_change_them() {
         let l = layout();
-        let transcript = l.own_tree.join(".argonauts/handoff/1/transcript.md");
+        let transcript = l.own_tree.join(".argonauts/fallback/1/transcript.md");
         for access in [Access::Build, Access::Spike] {
             for vendor in ["claude-code", "codex", "antigravity-cli", "opencode"] {
                 let profile = profile_for(&l, access, vendor, &[]);
@@ -1072,9 +1108,9 @@ mod tests {
                 assert!(!can_write(&profile, &transcript), "{access:?} {vendor}");
                 assert!(can_write(&profile, &l.own_tree.join("src/lib.rs")));
                 // Only its own worktree's, and never the run's copy in the state folder.
-                let other = l.other_tree.join(".argonauts/handoff/1/transcript.md");
+                let other = l.other_tree.join(".argonauts/fallback/1/transcript.md");
                 assert!(!can_read(&profile, &other), "{access:?} {vendor}");
-                let kept = l.run.join("cards/card-a/handoff-1/transcript.md");
+                let kept = l.run.join("cards/task-a/fallback-1/transcript.md");
                 assert!(!can_read(&profile, &kept), "{access:?} {vendor}");
             }
         }
@@ -1433,7 +1469,7 @@ mod tests {
         // The main repository in temp, which every session may write.
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().canonicalize().unwrap().join("repo");
-        let own_git_dir = repo.join(".git/worktrees/card-a");
+        let own_git_dir = repo.join(".git/worktrees/task-a");
         std::fs::create_dir_all(&own_git_dir).unwrap();
         std::fs::write(own_git_dir.join("commondir"), "../..\n").unwrap();
         std::fs::write(
@@ -1459,7 +1495,7 @@ mod tests {
         assert!(can_write(&profile, &l.own_tree.join("src/lib.rs")));
     }
 
-    /// A profile for `workdir` with `sandbox.agents_see_other_copies` and
+    /// A profile for `workdir` with `sandbox.agents_see_other_worktrees` and
     /// `sandbox.agents_commit` as given.
     fn switched(
         l: &Layout,
@@ -1492,12 +1528,12 @@ mod tests {
         own: PathBuf,
     }
 
-    const BRANCH: &str = "refs/heads/argonauts/run-1/card-a";
+    const BRANCH: &str = "refs/heads/argonauts/run-1/task-a";
 
     fn linked_repo(l: &Layout, head: &str) -> Repo {
         let temp = tempfile::tempdir().unwrap();
         let common = temp.path().canonicalize().unwrap().join("repo/.git");
-        let own = common.join("worktrees/card-a");
+        let own = common.join("worktrees/task-a");
         for dir in [
             own.clone(),
             common.join("refs/heads/argonauts/run-1"),
@@ -1571,6 +1607,56 @@ mod tests {
         }
     }
 
+    /// A folder without git keeps its history in Argonauts' home. A worktree of that history
+    /// reads it as it would a repository's `.git`, and another project's history stays shut.
+    #[test]
+    fn a_worktree_of_a_hidden_history_reads_its_own_history_and_no_other() {
+        let l = layout();
+        let link = |history: &Path| {
+            let own = history.join("worktrees/task-a");
+            for dir in [
+                own.clone(),
+                history.join("objects/pack"),
+                history.join("refs/heads"),
+            ] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            std::fs::write(own.join("commondir"), "../..\n").unwrap();
+            let back = format!("{}\n", l.own_tree.join(".git").display());
+            std::fs::write(own.join("gitdir"), back).unwrap();
+            std::fs::write(own.join("HEAD"), format!("ref: {BRANCH}\n")).unwrap();
+            let pointer = format!("gitdir: {}\n", own.display());
+            std::fs::write(l.own_tree.join(".git"), pointer).unwrap();
+            own
+        };
+        let plain = SandboxProfile::default();
+        let history = l.argonauts.join("state/repo-1/history.git");
+        let own = link(&history);
+        let profile = switched(&l, Access::Build, &l.own_tree, &plain, false, true);
+        for path in [
+            history.join("objects/pack/pack-1.pack"),
+            history.join("refs/heads/main"),
+            history.join("config"),
+        ] {
+            assert!(can_read(&profile, &path), "can't read {path:?}");
+            assert!(!can_write(&profile, &path), "writes {path:?}");
+        }
+        for path in [own.join("index"), history.join("objects/ab/cdef0123")] {
+            assert!(can_write(&profile, &path), "can't write {path:?}");
+        }
+        // The rest of the project's state stays shut.
+        assert!(!can_read(
+            &profile,
+            &l.argonauts.join("state/repo-1/trusted.json")
+        ));
+
+        let other = l.argonauts.join("state/repo-2/history.git");
+        link(&other);
+        let profile = switched(&l, Access::Build, &l.own_tree, &plain, false, true);
+        assert!(!can_read(&profile, &other.join("objects/pack/pack-1.pack")));
+        assert!(!can_write(&profile, &other.join("objects/ab/cdef0123")));
+    }
+
     /// A `.git` file rewritten to name another folder, as an agent could while only its tool's
     /// own sandbox held it, opens nothing for writing.
     #[test]
@@ -1578,7 +1664,7 @@ mod tests {
         let l = layout();
         let _repo = linked_repo(&l, &format!("ref: {BRANCH}\n"));
         let plain = SandboxProfile::default();
-        let elsewhere = l.home.join("Documents/worktrees/card-a");
+        let elsewhere = l.home.join("Documents/worktrees/task-a");
         std::fs::create_dir_all(&elsewhere).unwrap();
         std::fs::write(elsewhere.join("commondir"), "../..\n").unwrap();
         std::fs::write(elsewhere.join("HEAD"), format!("ref: {BRANCH}\n")).unwrap();
@@ -1608,8 +1694,8 @@ mod tests {
     #[test]
     fn only_a_plain_branch_counts_as_head_naming_one() {
         assert_eq!(
-            branch_ref("ref: refs/heads/argonauts/run-1/card-a\n"),
-            Some(PathBuf::from("refs/heads/argonauts/run-1/card-a"))
+            branch_ref("ref: refs/heads/argonauts/run-1/task-a\n"),
+            Some(PathBuf::from("refs/heads/argonauts/run-1/task-a"))
         );
         for head in [
             "0123456789abcdef",
@@ -1623,7 +1709,7 @@ mod tests {
     }
 
     #[test]
-    fn agents_see_other_copies_reads_the_runs_other_worktrees() {
+    fn agents_see_other_worktrees_reads_the_runs_other_worktrees() {
         let l = layout();
         // The engine lists the other copies to deny, which the switch overrides.
         let requested = SandboxProfile {
@@ -1655,11 +1741,11 @@ mod tests {
     fn the_runs_worktrees_are_found_only_from_one_of_them() {
         let home = Path::new("/h/.argonauts");
         let run = home.join("worktrees/repo-1/run-1");
-        assert_eq!(run_worktrees(home, &run.join("card-a")), Some(run.clone()));
+        assert_eq!(run_worktrees(home, &run.join("task-a")), Some(run.clone()));
         assert_eq!(run_worktrees(home, &run.join("base")), Some(run.clone()));
         for elsewhere in [
             run.clone(),
-            run.join("card-a/src"),
+            run.join("task-a/src"),
             home.join("state/repo-1"),
             PathBuf::from("/h/code/app"),
         ] {

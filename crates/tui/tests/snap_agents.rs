@@ -45,7 +45,7 @@ const WIDTHS: [u16; 2] = [80, 100];
 const START: OffsetDateTime = datetime!(2026-09-30 10:00 UTC);
 
 /// A worktree path as Claude Code reports it, which calls show from inside the worktree.
-const WORKTREE: &str = "/Users/me/.argonauts/worktrees/repo-1/run-01/card-003";
+const WORKTREE: &str = "/Users/me/.argonauts/worktrees/repo-1/run-01/task-003";
 
 /// A run's events driven through the agents part of the bridge, with a clock in seconds.
 struct Crew {
@@ -167,10 +167,10 @@ impl Crew {
             worker,
             family: "test".to_owned(),
             kind: WorkerKind::Harness,
-            role: RoleName::Owner,
+            role: RoleName::Worker,
             step,
             access: Access::Build,
-            lifetime: SessionLifetime::Card,
+            lifetime: SessionLifetime::Task,
             resumed_from: None,
             follow_key: None,
             workflow_step: None,
@@ -296,7 +296,7 @@ fn session_state(
         worker: worker.clone(),
         model_assumed: false,
         vendor: worker.worker.clone(),
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         step: None,
         card,
         workflow_step: None,
@@ -452,7 +452,7 @@ fn live_block_all_parts() {
     let wide = text(&crew.live(140));
     assert!(
         wide.starts_with(
-            "● Opus on Claude Code · owner · card-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)"
+            "● Opus on Claude Code · worker · task-003 (Middleware) · 4m12s · ↓ 18.1k · retrying in 12s (attempt 2)"
         ),
         "{wide}"
     );
@@ -578,6 +578,7 @@ fn codex_block_says_messages_arrive_whole() {
                     last_message: Some("Reading the store's tests".to_owned()),
                     log_uri: None,
                     steps_visible: false,
+                    tokens: None,
                 },
             },
         )
@@ -774,7 +775,7 @@ fn verbosity_full_normal_quiet() {
     let full = text(&one_session(Verbosity::Full).printed(100));
     assert!(full.contains("⎿  Read(src/app.rs)"), "{full}");
     assert!(
-        full.ends_with("⎿  Done · 4 tool uses · report ✓ · gates ✓ · 9m 40s · 61k tokens"),
+        full.ends_with("⎿  Done · 4 tool uses · report ✓ · checks ✓ · 9m 40s · 61k tokens"),
         "{full}"
     );
     let normal = text(&one_session(Verbosity::Normal).printed(100));
@@ -784,7 +785,7 @@ fn verbosity_full_normal_quiet() {
     );
     assert!(!normal.contains("Read(src/app.rs)"), "{normal}");
     assert!(
-        normal.ends_with("⎿  Done · 4 tool uses · report ✓ · gates ✓ · 9m 40s · 61k tokens"),
+        normal.ends_with("⎿  Done · 4 tool uses · report ✓ · checks ✓ · 9m 40s · 61k tokens"),
         "{normal}"
     );
     assert!(one_session(Verbosity::Quiet).printed(100).is_empty());
@@ -839,7 +840,7 @@ fn agents_started_rows() {
     }
     assert_eq!(
         text(&crew.printed(100)),
-        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · owner · card-002 Redis store\n   ├ Opus on Claude Code · owner · card-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · owner · card-004 Docs"
+        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · worker · task-002 Redis store\n   ├ Opus on Claude Code · worker · task-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · worker · task-004 Docs"
     );
     assert_eq!(crew.model.history.active_cells().count(), 3);
 
@@ -873,7 +874,7 @@ fn agents_started_between_card_events() {
         .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
     assert_eq!(
         text(&crew.printed(100)),
-        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · owner · card-002 Redis store\n   ├ Opus on Claude Code · owner · card-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · owner · card-004 Docs"
+        "● 3 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · worker · task-002 Redis store\n   ├ Opus on Claude Code · worker · task-003 Middleware\n   └ Gemini 3.6 Flash on Antigravity CLI · worker · task-004 Docs"
     );
 }
 
@@ -894,16 +895,16 @@ fn an_owner_forecasting_its_card_is_an_estimator() {
     let printed = text(&crew.printed(100));
     assert!(
         printed.starts_with(
-            "● 2 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · estimator · card-001 Limiter interface\n   └ Opus on Claude Code · estimator · card-002 Redis store"
+            "● 2 agents started (↓ to manage)\n   ├ GPT 5.6 on Codex · estimator · task-001 Limiter interface\n   └ Opus on Claude Code · estimator · task-002 Redis store"
         ),
         "{printed}"
     );
     assert!(
         printed
-            .contains("● GPT 5.6 on Codex · estimator · card-001 (Limiter interface)\n  ⎿  Done"),
+            .contains("● GPT 5.6 on Codex · estimator · task-001 (Limiter interface)\n  ⎿  Done"),
         "{printed}"
     );
-    assert!(!printed.contains("owner"), "{printed}");
+    assert!(!printed.contains("worker"), "{printed}");
 }
 
 #[test]
@@ -919,7 +920,7 @@ fn stopped_agent_prints_one_line() {
     let printed = text(&crew.printed(80));
     assert_eq!(
         printed,
-        "● Opus on Claude Code · owner · card-003 (Middleware)\n  ⎿  Stopped · 2 tool uses · 2m 3s · 12k tokens"
+        "● Opus on Claude Code · worker · task-003 (Middleware)\n  ⎿  Stopped · 2 tool uses · 2m 3s · 12k tokens"
     );
     assert_eq!(crew.model.history.cells().len(), 1);
     assert_eq!(crew.model.history.active_cells().count(), 0);
@@ -955,7 +956,7 @@ fn an_agent_is_named_from_the_catalog() {
         .end("s-001", EndReason::Completed, 123, 12_000);
     let printed = text(&crew.printed(80));
     assert!(
-        printed.starts_with("● Opus 5.5 on Claude Code · owner · card-003 (Middleware)"),
+        printed.starts_with("● Opus 5.5 on Claude Code · worker · task-003 (Middleware)"),
         "{printed}"
     );
 }
@@ -991,19 +992,19 @@ fn an_agent_keeps_one_name_from_its_start() {
     );
     let live = text(&crew.live(100));
     assert!(
-        live.contains("● Haiku 4.5 on Claude Code · owner"),
+        live.contains("● Haiku 4.5 on Claude Code · worker"),
         "{live}"
     );
-    assert!(live.contains("● GPT 5.6 Luna on Codex · owner"), "{live}");
+    assert!(live.contains("● GPT 5.6 Luna on Codex · worker"), "{live}");
     crew.at(3.0)
         .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
     let printed = text(&crew.printed(100));
     assert!(
-        printed.contains("├ GPT 5.6 Luna on Codex · owner · card-002 Redis store"),
+        printed.contains("├ GPT 5.6 Luna on Codex · worker · task-002 Redis store"),
         "{printed}"
     );
     assert!(
-        printed.contains("└ Haiku 4.5 on Claude Code · owner · card-003 Middleware"),
+        printed.contains("└ Haiku 4.5 on Claude Code · worker · task-003 Middleware"),
         "{printed}"
     );
 }
@@ -1025,12 +1026,12 @@ fn an_agent_on_its_clis_default_is_named_by_it_from_its_start() {
         .tool("s-001", "t1", "command_execution", json!({"command": "ls"}));
     let printed = text(&crew.printed(100));
     assert!(
-        printed.contains("└ Opus 5.5 on Claude Code · owner · card-003 Middleware"),
+        printed.contains("└ Opus 5.5 on Claude Code · worker · task-003 Middleware"),
         "{printed}"
     );
     let live = text(&crew.live(100));
     assert!(
-        live.contains("Opus 5.5 on Claude Code · owner · card-003 (Middleware)"),
+        live.contains("Opus 5.5 on Claude Code · worker · task-003 (Middleware)"),
         "{live}"
     );
 }
@@ -1194,13 +1195,13 @@ fn replay_keeps_finished_sessions_for_the_overlay() {
     assert!(!crew.model.history.has_unprinted());
     assert_eq!(
         text(&crew.printed(100)),
-        "● GPT 5.6 on Codex · owner · card-002 (Redis store)\n  ⎿  Done · 1 tool use · report ✓ · 1m 0s · 2k tokens"
+        "● GPT 5.6 on Codex · worker · task-002 (Redis store)\n  ⎿  Done · 1 tool use · report ✓ · 1m 0s · 2k tokens"
     );
     // The session still going keeps its block, timed from its start to the newest event rather
     // than from the replay.
     let live = text(&crew.live(100));
     assert!(
-        live.starts_with("● Opus on Claude Code · owner · card-003 (Middleware) · 1m0s"),
+        live.starts_with("● Opus on Claude Code · worker · task-003 (Middleware) · 1m0s"),
         "{live}"
     );
 }
@@ -1284,7 +1285,7 @@ fn a_session_known_only_from_state_still_gets_a_block() {
         .tool("s-004", "t1", "command_execution", json!({"command": "ls"}));
     let live = text(&crew.live(100));
     assert!(
-        live.starts_with("● GPT 5.6 on Codex · owner · card-003 (Middleware)"),
+        live.starts_with("● GPT 5.6 on Codex · worker · task-003 (Middleware)"),
         "{live}"
     );
 
@@ -1324,7 +1325,7 @@ fn argonauts_own_calls_stay_in_the_overlay() {
         let live = text(&crew.live(100));
         assert!(live.contains("Read"), "{live}");
         assert!(!live.contains("argonauts_status"), "{live}");
-        crew.done("s-001", "t2", true, Some("card-003 running"))
+        crew.done("s-001", "t2", true, Some("task-003 running"))
             .message("s-001", "Wired the middleware in front of the router.")
             .tool("s-001", "t3", "StructuredOutput", json!({"status": "done"}))
             .done("s-001", "t3", true, Some("ok"));

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::Context as _;
 use argonauts_adapter_opencode::{LocalUrls, OpenCodeAdapter};
+use argonauts_conductor::harness_worker::capabilities;
 use argonauts_conductor::{
     HarnessWorker, boards_with, gate_runner, handoff_planner, limits_service,
 };
@@ -270,6 +271,14 @@ impl WorkerDirectory for Directory {
             .iter()
             .find(|adapter| adapter.id() == worker.worker)
             .is_some_and(|adapter| adapter.capabilities().enforces_read_only)
+    }
+
+    fn takes_session_tools(&self, worker: &WorkerRef) -> bool {
+        self.current()
+            .adapters
+            .iter()
+            .find(|adapter| adapter.id() == worker.worker)
+            .is_some_and(|adapter| capabilities::takes_session_tools(adapter.as_ref()))
     }
 
     fn isolates(&self, worker: &WorkerRef) -> bool {

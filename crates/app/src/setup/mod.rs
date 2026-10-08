@@ -7,6 +7,7 @@ pub(crate) mod probe;
 mod questions;
 mod roles;
 mod steps;
+mod templates;
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -26,9 +27,14 @@ use crate::controller::{Ctx, Effect, Internal};
 use crate::startup::{RunCounts, run_counts, settings_warnings, welcome_from};
 use crate::trust::cant_trust;
 
+pub(crate) use finish::project_dir as project_folder;
 pub(crate) use probe::{FoundAgent, LocalServer, LoginState};
 use questions::{SetupView, Step};
 use steps::Answers;
+#[allow(unused_imports)]
+pub(crate) use templates::guide;
+#[cfg(test)]
+pub(crate) use templates::guide_topics;
 
 /// What Esc on a setup card leaves in the chat, so you know how to get back to the questions.
 const TOOK_THE_RECOMMENDED: &str =
@@ -117,7 +123,7 @@ impl Setup {
             view,
             answers: Answers::default(),
             steps,
-            agent_before: ctx.settings().default_agent.clone(),
+            agent_before: ctx.settings().main_agent.clone(),
             header,
             done: false,
         };
@@ -280,10 +286,10 @@ impl Setup {
             }
             Step::Preset => {
                 // A crew's roles come after who coordinates it.
-                if self.answers.preset != steps::SOLO {
+                if self.answers.workflow != steps::SOLO {
                     self.steps.push_front(Step::WhoDoesWhat);
                 }
-                if self.answers.preset == steps::COORDINATED_CREW {
+                if self.answers.workflow == steps::COORDINATED_CREW {
                     self.steps.push_front(Step::Coordinator);
                 }
             }
@@ -375,6 +381,8 @@ impl Setup {
                 ));
             }
         }
+        // After the project's folder is made, so its READMEs go in with it.
+        notices.extend(templates::write(&env));
         if let Err(err) = ctx.settings.reload(&env) {
             notices.push((NoteLevel::Error, format!("{err:#}")));
         }
@@ -407,7 +415,7 @@ impl Setup {
                 keys: keys.into_iter().map(|(key, _)| key).collect(),
             });
         }
-        if ctx.settings().default_agent != self.agent_before {
+        if ctx.settings().main_agent != self.agent_before {
             effects.push(Effect::FreshChat);
         }
         effects.push(Effect::SetupDone);

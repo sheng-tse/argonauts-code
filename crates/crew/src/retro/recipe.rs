@@ -22,7 +22,7 @@ pub struct RunRecipe {
     /// One of the version's canary runs, which merge as pull requests.
     #[serde(default)]
     pub canary: bool,
-    /// The folder the version file sits in: your checkout's `.argonauts/recipes/<name>/`, or a
+    /// The folder the version file sits in: your checkout's `.argonauts/learned/<name>/`, or a
     /// candidate's folder in the conductor's state. The run reads the recipe's prompt and
     /// workflow files from here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,7 +61,7 @@ pub fn recipe_file(run_dir: &Path, file: &Path) -> Option<PathBuf> {
     kind.is_file().then(|| file.to_path_buf())
 }
 
-/// `.argonauts/recipes/<name>` in a checkout, or `evolution/candidates/<id>` in a repo's state.
+/// `.argonauts/learned/<name>` in a checkout, or `evolution/candidates/<id>` in a repo's state.
 fn is_recipe_folder(dir: &Path) -> bool {
     let up = dir.parent();
     let parent = up.and_then(Path::file_name);
@@ -123,7 +123,7 @@ mod tests {
         recorded.dir = Some(elsewhere.clone());
         write(&run_dir, &recorded).unwrap();
         assert_eq!(recipe_file(&run_dir, &elsewhere.join("build-v5.md")), None);
-        let checkout = dir.path().join("repo/.argonauts/recipes/api-feature");
+        let checkout = dir.path().join("repo/.argonauts/learned/api-feature");
         std::fs::create_dir_all(&checkout).unwrap();
         std::fs::write(checkout.join("drafting.md"), "Draft it.").unwrap();
         recorded.dir = Some(checkout.clone());

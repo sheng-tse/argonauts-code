@@ -86,7 +86,7 @@ fn single_agent(run: &RunState) -> Option<SessionKey> {
     if run.mode == Some(RunMode::Solo) && run.workflows.len() <= 1 {
         let owners: Vec<&SessionState> = run
             .sessions_in_order()
-            .filter(|session| session.role == RoleName::Owner)
+            .filter(|session| session.role == RoleName::Worker)
             .collect();
         let owner = owners
             .iter()
@@ -159,7 +159,7 @@ impl WaitingView {
         Heading {
             names: vec![name],
             description,
-            totals: String::new(),
+            ..Heading::default()
         }
     }
 
@@ -203,10 +203,10 @@ pub(crate) fn waiting_for(run: Option<&RunState>) -> String {
         );
     }
     match &run.parked {
-        Some(ParkReason::Checkpoint) => "Waiting for you to answer its card.".to_owned(),
+        Some(ParkReason::Checkpoint) => "Waiting for you to answer its question.".to_owned(),
         Some(ParkReason::Paused) => "Paused. /resume goes on.".to_owned(),
         Some(ParkReason::AllVendorsOut { .. }) => {
-            "Every vendor is out, so it waits for one to come back.".to_owned()
+            "Every agent is out, so it waits for one to come back.".to_owned()
         }
         Some(ParkReason::WaitingForVendor { vendor, .. }) => format!("Waiting for {vendor}."),
         Some(ParkReason::NoStandIn { detail, until }) => {
@@ -220,7 +220,7 @@ pub(crate) fn waiting_for(run: Option<&RunState>) -> String {
         None if run.stopping => "Stopping.".to_owned(),
         None if run.pausing => "Pausing at a safe point.".to_owned(),
         None if run.mode == Some(RunMode::Solo) => "Waiting for its agent to start.".to_owned(),
-        None => "Waiting for the lead to start designing the workflow.".to_owned(),
+        None => "Waiting for the main agent to start designing the workflow.".to_owned(),
     }
 }
 
@@ -314,7 +314,7 @@ pub(crate) mod fixture {
             log.send(
                 None,
                 json!({"type": "run", "data": {"event": "started", "request": request,
-                    "title": request, "mode": mode, "forced": false, "preset": "peer-crew",
+                    "title": request, "mode": mode, "forced": false, "workflow": "council",
                     "estimate": null, "triage": null, "chat_turn": null, "continues": null,
                     "repo_root": "/repo", "base_branch": "main", "base_commit": "8b41d07",
                     "uncommitted": [], "uncommitted_included": false, "settings_sha256": "",
@@ -353,7 +353,7 @@ pub(crate) mod fixture {
                 json!({"type": "session", "data": {"event": "started",
                     "worker": "claude-code/haiku", "vendor": "claude-code", "family": "claude",
                     "kind": "harness", "role": "phase-lead", "step": "design_workflow",
-                    "access": "read_only", "lifetime": "card", "resumed_from": from,
+                    "access": "read_only", "lifetime": "task", "resumed_from": from,
                     "follow_key": null, "label": label}}),
             );
         }
@@ -364,8 +364,8 @@ pub(crate) mod fixture {
                 Some(session),
                 json!({"type": "session", "data": {"event": "started",
                     "worker": "claude-code/haiku", "vendor": "claude-code", "family": "claude",
-                    "kind": "harness", "role": "owner", "step": null, "access": "build",
-                    "lifetime": "card", "resumed_from": null, "follow_key": 1,
+                    "kind": "harness", "role": "worker", "step": null, "access": "build",
+                    "lifetime": "task", "resumed_from": null, "follow_key": 1,
                     "label": "build:limiter"}}),
             );
         }
@@ -394,7 +394,7 @@ pub(crate) mod fixture {
             self.send(
                 None,
                 json!({"type": "workflow", "data": {"event": "started", "id": id,
-                    "from": "peer-crew", "version": "1", "parent": null,
+                    "from": "council", "version": "1", "parent": null,
                     "workflow": {"name": "add-per-api-key",
                         "description": "Add per-API-key rate limiting", "phases": []}}}),
             );
@@ -408,7 +408,7 @@ pub(crate) mod fixture {
                 json!({"type": "session", "data": {"event": "started",
                     "worker": "codex/gpt-5.6-luna", "vendor": "codex", "family": "gpt",
                     "kind": "harness", "role": "restater", "step": "restate",
-                    "access": "read_only", "lifetime": "card", "resumed_from": null,
+                    "access": "read_only", "lifetime": "task", "resumed_from": null,
                     "follow_key": follow, "label": label,
                     "workflow_step": {"workflow": "wf-001", "phase": 0, "path": [0]}}}),
             );
@@ -433,12 +433,12 @@ mod tests {
     fn enter_opens_the_lead_at_work_until_the_workflow_is_declared() {
         let mut log = RunLog::started();
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Waiting);
-        log.design("s-001", "lead:design");
+        log.design("s-001", "main:design");
         assert_eq!(entry(&log.state, &run_id()), session("s-001"));
         // The first brief didn't hold, so a second design starts over.
         log.ended("s-001");
         assert_eq!(entry(&log.state, &run_id()), session("s-001"));
-        log.design("s-002", "lead:design-2");
+        log.design("s-002", "main:design-2");
         assert_eq!(entry(&log.state, &run_id()), session("s-002"));
         log.ended("s-002");
         log.declare();
@@ -503,7 +503,7 @@ mod tests {
         let mut log = RunLog::started();
         let mut waiting = WaitingView::new(run_id());
         assert_eq!(followed(&mut waiting, &log.state), "");
-        log.design("s-001", "lead:design");
+        log.design("s-001", "main:design");
         let next = followed(&mut waiting, &log.state);
         assert!(
             next.contains("SessionView") && next.contains("s-001"),
@@ -514,7 +514,7 @@ mod tests {
         assert_eq!(followed(&mut lead, &log.state), "");
         log.ended("s-001");
         assert_eq!(followed(&mut lead, &log.state), "");
-        log.design_from("s-002", "lead:design", Some("vendor-7"));
+        log.design_from("s-002", "main:design", Some("vendor-7"));
         let next = followed(&mut lead, &log.state);
         assert!(next.contains("s-002"), "{next}");
 
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn a_declared_workflow_opens_its_view_before_its_first_agent() {
         let mut log = RunLog::started();
-        log.design("s-001", "lead:design");
+        log.design("s-001", "main:design");
         log.declare();
         assert_eq!(entry(&log.state, &run_id()), RunEntry::Workflow);
     }
@@ -598,7 +598,7 @@ mod tests {
         let shown = text(&mut view, &log.state);
         assert!(shown.contains("add-per-api-key"), "{shown}");
         assert!(
-            shown.contains("Waiting for the lead to start designing the workflow."),
+            shown.contains("Waiting for the main agent to start designing the workflow."),
             "{shown}"
         );
         assert!(
@@ -609,11 +609,11 @@ mod tests {
             "nothing to open yet, said on the notice line"
         );
 
-        log.design("s-001", "lead:design");
+        log.design("s-001", "main:design");
         let shown = text(&mut view, &log.state);
-        assert!(shown.contains("lead:design started."), "{shown}");
+        assert!(shown.contains("main:design started."), "{shown}");
         let ViewOutcome::Replace(opened) = press(&mut view, KeyCode::Enter, &log.state) else {
-            panic!("Enter opens the lead's session");
+            panic!("Enter opens the main agent's session");
         };
         assert!(format!("{opened:?}").contains("SessionView"), "{opened:?}");
 

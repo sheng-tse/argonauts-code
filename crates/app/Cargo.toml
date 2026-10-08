@@ -23,9 +23,10 @@ argonauts-learning.workspace = true
 argonauts-mcp.workspace = true
 argonauts-policy.workspace = true
 argonauts-registry.workspace = true
+argonauts-runner.workspace = true
 argonauts-tui.workspace = true
 futures.workspace = true
-nix = { workspace = true, features = ["user"] }
+nix = { workspace = true, features = ["fs", "user"] }
 reqwest.workspace = true
 regex.workspace = true
 schemars.workspace = true
@@ -38,6 +39,8 @@ time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
+unicode-width.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

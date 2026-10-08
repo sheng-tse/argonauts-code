@@ -50,6 +50,9 @@ pub struct WorkflowRecord {
     pub phases_ended: BTreeSet<u32>,
     #[serde(default)]
     pub phases_skipped: BTreeSet<u32>,
+    /// What its notes said the run leaves undone, for the closing answer.
+    #[serde(default)]
+    pub left: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,10 +100,14 @@ impl WorkflowRecord {
     }
 
     /// Every top-level step of the phase has finished. Phases before an approved change count
-    /// as finished, since the change only takes effect after them.
+    /// as finished, since the change only takes effect after them, except the one that was
+    /// running when it came: that one goes on until its end is recorded, so a run picked up
+    /// in the middle of it finishes it.
     pub fn phase_finished(&self, phase: u32) -> bool {
         if phase < self.changed_from_phase.unwrap_or(0) {
-            return true;
+            return !self.phases_started.contains(&phase)
+                || self.phases_ended.contains(&phase)
+                || self.phases_skipped.contains(&phase);
         }
         let Some(definition) = self.workflow.phases.get(phase as usize) else {
             return false;
@@ -177,6 +184,7 @@ impl Workflows {
                         phases_started: BTreeSet::new(),
                         phases_ended: BTreeSet::new(),
                         phases_skipped: BTreeSet::new(),
+                        left: Vec::new(),
                     },
                 );
             }
@@ -200,9 +208,17 @@ impl Workflows {
                     record.phases_skipped.insert(phase.index);
                 }
             }
+            WorkflowEvent::Note(note) if note.left => {
+                let id = note.workflow.as_ref().or(self.root.as_ref());
+                if let Some(record) = id.and_then(|id| self.by_id.get_mut(id)) {
+                    record.left.push(note.text.clone());
+                }
+            }
             // The lead adds a phase through a change, which redefines the workflow, so the
             // record already holds it.
-            WorkflowEvent::PhaseAdded { .. } | WorkflowEvent::Note(_) => {}
+            WorkflowEvent::PhaseAdded { .. }
+            | WorkflowEvent::Note(_)
+            | WorkflowEvent::Reported(_) => {}
             WorkflowEvent::StepStarted(started) => {
                 if let Some(record) = self.by_id.get_mut(&started.step.workflow) {
                     record.steps.push(StepProgress {
@@ -335,7 +351,7 @@ mod tests {
     use argonauts_core::RunId;
     use argonauts_core::events::RunEventKind;
     use argonauts_core::events::workflow::{
-        StepFinished, StepStarted, WorkflowChanged, WorkflowStarted,
+        PhaseMark, StepFinished, StepStarted, WorkflowChanged, WorkflowStarted,
     };
     use argonauts_core::names::CheckpointId;
 
@@ -447,5 +463,53 @@ mod tests {
         assert!(record.phase_definition(0).is_none());
         assert!(record.step_definition(&step(&id, 0, &[0, 0])).is_none());
         assert_eq!(record.phase_definition(1).unwrap().name, "Check");
+    }
+
+    /// A change recorded while a phase runs takes effect after it, and the phase still has to
+    /// end: a run picked up before then goes on with it rather than skipping the rest.
+    #[test]
+    fn the_phase_running_when_a_change_came_is_finished_only_when_it_ends() {
+        let id = WorkflowId::numbered(1);
+        let mark = PhaseMark {
+            id: id.clone(),
+            index: 0,
+            title: "Build".to_owned(),
+        };
+        let events = [
+            WorkflowEvent::Started(Box::new(WorkflowStarted {
+                id: id.clone(),
+                from: None,
+                version: "v1".to_owned(),
+                parent: None,
+                workflow: workflow("Build"),
+            })),
+            WorkflowEvent::PhaseStarted(mark.clone()),
+            started(step(&id, 0, &[0]), StepKind::LoopUntil),
+            WorkflowEvent::Changed(Box::new(WorkflowChanged {
+                id: id.clone(),
+                version: "v2".to_owned(),
+                workflow: workflow("Build"),
+                checkpoint: Some(CheckpointId::numbered(1)),
+                reason: "one more check".to_owned(),
+            })),
+        ];
+        let mut workflows = Workflows::default();
+        for (seq, event) in (1..).zip(&events) {
+            workflows.apply(event, &envelope(seq, event));
+        }
+        let record = &workflows.by_id[&id];
+        assert_eq!(record.changed_from_phase, Some(1));
+        assert!(!record.phase_finished(0));
+        assert_eq!(record.next_phase(), 0);
+        assert_eq!(record.change_from(), 1, "a second change also waits for it");
+
+        let ended = WorkflowEvent::PhaseEnded {
+            phase: mark,
+            end: StepEnd::Done,
+        };
+        workflows.apply(&ended, &envelope(5, &ended));
+        let record = &workflows.by_id[&id];
+        assert!(record.phase_finished(0));
+        assert_eq!(record.next_phase(), 1);
     }
 }

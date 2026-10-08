@@ -130,13 +130,17 @@ mod tests {
     #[test]
     fn a_table_key_names_the_latest_layer_under_it() {
         let mut set_by = SetBy::default();
-        set_by.record(&table("[budget.lines]\ncards = 0.5\n"), "project", "p.toml");
-        set_by.record(&table("[budget.lines]\nreview = 0.2\n"), "global", "g.toml");
-        assert_eq!(set_by.source("budget.lines"), "p.toml");
-        assert_eq!(set_by.source("budget.lines.cards"), "p.toml");
+        set_by.record(&table("[limits.lines]\ntasks = 0.5\n"), "project", "p.toml");
+        set_by.record(&table("[limits.lines]\nreview = 0.2\n"), "global", "g.toml");
+        assert_eq!(set_by.source("limits.lines"), "p.toml");
+        assert_eq!(set_by.source("limits.lines.tasks"), "p.toml");
         assert_eq!(set_by.source("critique.rounds"), "built-in");
-        set_by.record(&table("gates = { run = [] }"), "flag", "--set gates.run=[]");
-        assert_eq!(set_by.source("gates.run.0.cmd"), "--set gates.run=[]");
+        set_by.record(
+            &table("checks = { run = [] }"),
+            "flag",
+            "--set checks.run=[]",
+        );
+        assert_eq!(set_by.source("checks.run.0.cmd"), "--set checks.run=[]");
         // A table written empty sets nothing, yet it's still the file's.
         set_by.record(&table("[steps.review]\n"), "project", "p.toml");
         assert_eq!(set_by.source("steps.review"), "p.toml");

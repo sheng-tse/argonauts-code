@@ -2,6 +2,7 @@
 //! agy, or an ACP agent, and each call says what it did (`Read 120 lines`, not `Read 1 file`).
 //! Names and input keys differ by vendor, so matching ignores case, `_`, and `-`.
 
+use argonauts_core::artifacts;
 use argonauts_core::steps::summary_line;
 use serde_json::{Map, Value};
 
@@ -29,6 +30,8 @@ enum Tool {
     Task,
     Mcp,
     Report,
+    /// Claude Code's Artifact tool, which publishes a page on claude.ai.
+    Artifact,
     Other,
 }
 
@@ -74,6 +77,7 @@ impl Tool {
                 Tool::Task
             }
             "structuredoutput" | "finish" => Tool::Report,
+            "artifact" => Tool::Artifact,
             _ => Tool::Other,
         }
     }
@@ -93,13 +97,15 @@ impl Tool {
             Tool::Todos => "Update Todos",
             Tool::Task => "Task",
             Tool::Report => "Report",
+            Tool::Artifact => argonauts_core::artifacts::TOOL,
             Tool::Mcp | Tool::Other => return None,
         })
     }
 
     /// Back from a title's name, for [`finish_call`].
     fn labelled(label: &str, kind: ToolKind) -> Self {
-        const ALL: [Tool; 12] = [
+        const ALL: [Tool; 13] = [
+            Tool::Artifact,
             Tool::Read,
             Tool::List,
             Tool::Search,
@@ -132,7 +138,7 @@ impl Tool {
             Tool::Fetch | Tool::WebSearch => ToolKind::Fetch,
             Tool::Mcp => ToolKind::Mcp,
             Tool::Task => ToolKind::Agent,
-            Tool::Todos | Tool::Report | Tool::Other => ToolKind::Other,
+            Tool::Todos | Tool::Report | Tool::Artifact | Tool::Other => ToolKind::Other,
         }
     }
 }
@@ -172,6 +178,13 @@ pub fn report_summary(name: &str, input: &Value) -> Option<String> {
 /// its step's result out: the words before the JSON, and the report's summary when it has one.
 /// `None` when no JSON object ends the message.
 pub fn written_report(text: &str) -> Option<(String, Option<String>)> {
+    let (words, report) = written_object(text)?;
+    Some((words, summary_line(&report)))
+}
+
+/// The words before the JSON object that ends a message, and the object itself, for a view
+/// that draws the result as what it means.
+pub fn written_object(text: &str) -> Option<(String, Value)> {
     let body = text.trim_end();
     let unfenced = body.strip_suffix("```").map_or(body, str::trim_end);
     if !unfenced.ends_with('}') {
@@ -187,7 +200,7 @@ pub fn written_report(text: &str) -> Option<(String, Option<String>)> {
         .or_else(|| before.strip_suffix("```"))
         .unwrap_or(before)
         .trim();
-    Some((words.to_owned(), summary_line(&report)))
+    Some((words.to_owned(), report))
 }
 
 /// Where each line that opens with `{` opens it. A written report starts its own line, and
@@ -288,6 +301,19 @@ fn result_items(tool: Tool, call: &ToolCall, target: &str, output: Option<&str>)
             }
         }
         Tool::Report => "Sent the report".to_owned(),
+        // `Published <link>`, dim, as Claude Code's own row under the call. Anything else the
+        // tool did, such as a read, shows what it said.
+        Tool::Artifact => {
+            let made = output.and_then(|text| artifacts::published(&Value::Null, text));
+            return vec![match (made, output) {
+                (Some(page), _) => ToolItem::Text {
+                    text: format!("{} {}", page.verb(), page.url),
+                    tone: Tone::Dim,
+                },
+                (None, Some(text)) => output_item(text),
+                (None, None) => ToolItem::text("(No output)"),
+            }];
+        }
         Tool::Shell | Tool::Mcp | Tool::Other => {
             return vec![match output {
                 Some(text) => output_item(text),
@@ -476,9 +502,28 @@ fn args_of(tool: Tool, input: &Value) -> String {
         Tool::Task => string_field(input, TASK_KEYS).map(|task| first_line(&task)),
         Tool::Report => string_field(input, &["status"]),
         Tool::Todos => None,
+        Tool::Artifact => Some(artifact_args(input)),
         Tool::Mcp | Tool::Other => Some(call_args(input)),
     };
     text.unwrap_or_default()
+}
+
+/// A publish shows the file in quotes, as Claude Code's own call line does. Any other action
+/// of the tool says what it is and which artifact.
+fn artifact_args(input: &Value) -> String {
+    let file = string_field(input, &["filepath"]).map(|path| short_path(&path));
+    if artifacts::publishes(artifacts::TOOL, input) {
+        return match (file, string_field(input, &["title"])) {
+            (Some(file), _) => format!("\"{file}\""),
+            (None, Some(title)) => format!("\"{}\"", first_line(&title)),
+            (None, None) => String::new(),
+        };
+    }
+    let action = string_field(input, &["action"]).unwrap_or_else(|| "upload".to_owned());
+    match string_field(input, URL_KEYS) {
+        Some(url) => format!("{action} {url}"),
+        None => action,
+    }
 }
 
 /// Codex reports added, changed, and deleted files as one call, named for what it did.
@@ -788,9 +833,73 @@ mod tests {
         call
     }
 
+    /// An artifact reads as Claude Code draws it: the published file in quotes on the call's
+    /// line, and `Published <link>` under it. The link stays whole on a row of
+    /// its own where the row is too narrow for both, so it can still be clicked.
+    #[test]
+    fn an_artifact_reads_as_claude_code_draws_it() {
+        let url = "https://claude.ai/code/artifact/0b1e7c9a-4f1d-4c57-9a55-2f6f0d3a8e11";
+        let input = json!({"file_path": "out/weekly-usage-chart.html", "icon": "chart",
+                           "description": "This week's spending"});
+        let output = format!(
+            "Published out/weekly-usage-chart.html at {url} (Version 1) Icon: chart. Not \
+             previewed this session."
+        );
+        let call = done("claude-code", "Artifact", input.clone(), Some(&output));
+        assert_eq!(call.kind, ToolKind::Other);
+        assert_eq!(
+            rows(&call, 100),
+            format!("● Artifact(\"out/weekly-usage-chart.html\")\n  ⎿  Published {url}")
+        );
+        assert_eq!(
+            rows(&call, 80),
+            format!("● Artifact(\"out/weekly-usage-chart.html\")\n  ⎿  Published\n     {url}")
+        );
+        let theme = theme();
+        let lines = call.lines(&RenderCtx::new(100, &theme, Clock::still(Instant::now())));
+        let link = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Published"))
+            .expect("the row under the call");
+        assert_eq!(link.style, theme.style(Role::Dim));
+
+        // One made from a type is updated in place, and a long name is cut like any call's.
+        let updated = done(
+            "claude-code",
+            "Artifact",
+            json!({"title": "This week", "url": url}),
+            Some(&format!("Updated the Artifact at {url} with (unknown).")),
+        );
+        assert_eq!(
+            rows(&updated, 100),
+            format!("● Artifact(\"This week\")\n  ⎿  Updated {url}")
+        );
+
+        // A publish that was refused shows what the tool said, and the tool's other actions
+        // say which one they are.
+        let mut refused = start_call("claude-code", "Artifact", &input);
+        finish_call(
+            &mut refused,
+            false,
+            Some("content must first be written to a file"),
+        );
+        assert!(rows(&refused, 100).ends_with("⎿  content must first be written to a file"));
+        let listed = done(
+            "claude-code",
+            "Artifact",
+            json!({"action": "list"}),
+            Some("2 artifacts (newest first)"),
+        );
+        assert_eq!(
+            rows(&listed, 100),
+            "● Artifact(list)\n  ⎿  2 artifacts (newest first)"
+        );
+    }
+
     #[test]
     fn tool_names_every_vendor() {
-        let worktree = "/home/me/.argonauts/worktrees/repo-1/run-01/card-003";
+        let worktree = "/home/me/.argonauts/worktrees/repo-1/run-01/task-003";
         let cases = [
             // Claude Code
             (
@@ -1434,7 +1543,7 @@ mod tests {
         );
 
         // Edits and writes stay out of groups, with their diffs.
-        let mut session = ToolCall::agent("Codex", None, "owner", "");
+        let mut session = ToolCall::agent("Codex", None, "worker", "");
         session.push_call(done("claude-code", "Read", json!({"file_path": "a"}), None));
         session.push_call(done(
             "codex",

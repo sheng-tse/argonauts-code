@@ -37,7 +37,7 @@ use crate::chat_store::{ChatPlace, ChatStore};
 use crate::controller::test_support::{Call, Harness, HarnessOptions, TestCtx};
 
 const RUN: &str = "run-01";
-const BRANCH: &str = "argonauts/run-01/card-001";
+const BRANCH: &str = "argonauts/run-01/task-001";
 const OWNER_SESSION: &str = "0a1b2c3d-1111-4aaa-8bbb-000000000001";
 const REVIEWER_SESSION: &str = "ses_review01";
 const OWNER_SAID: &str = "Fixed both functions.\nAll 6 tests pass.";
@@ -53,7 +53,7 @@ fn copy_of(harness: &Harness) -> PathBuf {
         .home()
         .join("worktrees/repo")
         .join(RUN)
-        .join("card-001")
+        .join("task-001")
 }
 
 /// A session as a run starts it, with the name the run gives its agent, such as `build:money`.
@@ -71,7 +71,7 @@ fn started(worker: &str, role: RoleName, step: StepName, access: Access) -> RunE
         role,
         step: Some(step),
         access,
-        lifetime: SessionLifetime::Card,
+        lifetime: SessionLifetime::Task,
         resumed_from: None,
         follow_key: None,
         workflow_step: None,
@@ -119,7 +119,7 @@ fn write_run_as(
     live: bool,
     more: Vec<(Option<SessionKey>, RunEventKind)>,
 ) {
-    let card = CardId::new("card-001").unwrap();
+    let card = CardId::new("task-001").unwrap();
     let (owner, review) = (SessionKey::numbered(1), SessionKey::numbered(2));
     let copy = copy_of(harness);
     let explorer = SubagentUpdate {
@@ -132,6 +132,7 @@ fn write_run_as(
         last_message: Some("The parser reads the sign last.".to_owned()),
         log_uri: None,
         steps_visible: true,
+        tokens: None,
     };
     let mut kinds: Vec<(Option<SessionKey>, RunEventKind)> = vec![
         (
@@ -146,7 +147,7 @@ fn write_run_as(
             Some(owner.clone()),
             started(
                 "claude-code/claude-opus-5-5",
-                RoleName::Owner,
+                RoleName::Worker,
                 StepName::Build,
                 Access::Build,
             ),
@@ -210,7 +211,7 @@ fn summary(run: RunId, state: RunState, live: bool) -> RunSummary {
         run,
         title: "Fix the money parser".to_owned(),
         mode: RunMode::Crew,
-        preset: "crew".to_owned(),
+        workflow: "crew".to_owned(),
         state,
         stopped_at: "merged".to_owned(),
         updated: OffsetDateTime::now_utc(),
@@ -249,9 +250,9 @@ async fn start() -> Harness {
 fn card_branch(harness: &Harness) {
     let repo = &harness.repo;
     repo.git(&["checkout", "-q", "-b", BRANCH]).unwrap();
-    repo.write("only-on-card.txt", "added on the card\n")
+    repo.write("only-on-card.txt", "added on the task\n")
         .unwrap();
-    repo.commit_all("add a file on the card").unwrap();
+    repo.commit_all("add a file on the task").unwrap();
     repo.git(&["checkout", "-q", "main"]).unwrap();
 }
 
@@ -316,7 +317,7 @@ fn owner_of(agents: &[AgentSession]) -> &AgentSession {
     agents
         .iter()
         .find(|agent| agent.session == SessionKey::numbered(1))
-        .expect("the owner's session")
+        .expect("the worker's session")
 }
 
 /// Carries the owner's session on and waits until it's on screen.
@@ -353,6 +354,7 @@ async fn turn(harness: &mut Harness, command: UiCommand) {
 fn said_text(text: &str) -> UiCommand {
     UiCommand::Submit {
         text: text.to_owned(),
+        workflow_requested: false,
     }
 }
 
@@ -373,7 +375,7 @@ async fn resume_lists_each_agents_session_under_its_run() {
     assert_eq!(ids, ["run-01/s-001", "run-01/s-002"]);
 
     let owner = &agents[0];
-    assert_eq!(owner.role, RoleName::Owner);
+    assert_eq!(owner.role, RoleName::Worker);
     // Its name in the run, as the chat and the panel call it, not its card.
     assert_eq!(owner.label.as_deref(), Some("build:money"));
     assert_eq!(owner.worker.to_string(), "claude-code/claude-opus-5-5");
@@ -429,7 +431,7 @@ async fn a_session_whose_run_hasnt_ended_stays_the_runs() {
             Some(working.clone()),
             started(
                 "claude-code/claude-opus-5-5",
-                RoleName::Owner,
+                RoleName::Worker,
                 StepName::Build,
                 Access::Build,
             ),
@@ -600,9 +602,9 @@ async fn copies_made_again_for_earlier_conversations_go_at_start() {
     let repo = &parts.repo;
     let ctx = &parts.ctx;
     let base = repo.home().join("worktrees/repo/run-01");
-    let (clean, dirty) = (base.join("card-001"), base.join("card-002"));
+    let (clean, dirty) = (base.join("task-001"), base.join("task-002"));
     for (n, folder) in [(1, &clean), (2, &dirty)] {
-        let branch = format!("card-00{n}");
+        let branch = format!("task-00{n}");
         repo.git(&["branch", &branch]).unwrap();
         repo.git(&["worktree", "add", folder.to_str().unwrap(), &branch])
             .unwrap();
@@ -875,7 +877,7 @@ async fn cli_commands_and_a_new_main_agent_keep_the_carried_on_session() {
 
     harness
         .send(UiCommand::SetSetting {
-            key: "default_agent".to_owned(),
+            key: "main_agent".to_owned(),
             value: "\"codex\"".to_owned(),
             scope: SettingScope::Session,
         })
@@ -946,7 +948,7 @@ async fn rewind_puts_back_a_carried_on_turns_files_in_the_copy() {
     repo.git(&["checkout", "-q", "-b", BRANCH]).unwrap();
     repo.write(".gitignore", ".env\n").unwrap();
     repo.write("money.py", "sign = 1\n").unwrap();
-    repo.commit_all("the card's work").unwrap();
+    repo.commit_all("the task's work").unwrap();
     repo.git(&["checkout", "-q", "main"]).unwrap();
     let checkout = repo.root().to_owned();
     let copy = copy_of(&harness);

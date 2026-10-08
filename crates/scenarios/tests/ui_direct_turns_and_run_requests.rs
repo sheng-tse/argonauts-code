@@ -1,7 +1,7 @@
 //! Direct turns and run requests through the real binary with fake vendors, at 100 and 120
 //! columns: a supervised direct turn asks before its edit on a card and goes on when you say
-//! yes, a request that names who coordinates and who reviews says what was followed on its
-//! Triage line, and one that would loosen a safety setting says why it wasn't. The screens are
+//! yes, a request that names who coordinates and who reviews says what was followed as its run
+//! starts, and one that would loosen a safety setting says why it wasn't. The screens are
 //! captured for review.
 
 use std::fs;
@@ -20,7 +20,11 @@ fn configure(scenario: &Scenario, extra: &str) -> anyhow::Result<()> {
     }
     fs::write(
         config,
-        format!("default_agent = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n{extra}"),
+        // These requests end with the verdict, which a CLI that takes no tools keeps.
+        format!(
+            "main_agent = \"claude-code/haiku\"\n\n[ui]\ntheme = \"dark\"\n\n\
+             [main_session]\ntools = false\n\n{extra}"
+        ),
     )?;
     Ok(())
 }
@@ -66,7 +70,7 @@ fn ui_a_supervised_direct_turn_asks_before_its_edit() -> anyhow::Result<()> {
         let scenario = Scenario::new(SCENARIO)?;
         configure(
             &scenario,
-            "[triage]\nforce = \"solo\"\n\n[approvals.goal]\nmode = \"supervised\"\n",
+            "[solo_or_crew]\nforce = \"solo\"\n\n[approvals.goal]\nmode = \"supervised\"\n",
         )?;
         scenario.repo.write("notes.txt", "This is a draft.\n")?;
         scenario.repo.commit_all("add the notes")?;
@@ -114,7 +118,6 @@ fn ui_a_request_that_says_who_coordinates_and_who_reviews() -> anyhow::Result<()
         pty.wait_for(MODE_LINE, WAIT)?;
         pty.send("Add due dates to tasks. Have codex coordinate, gemini review it, and use grok to build.")?;
         pty.press(Key::Enter)?;
-        pty.wait_for(r"Triage\(crew, as you asked\)", WAIT)?;
         let screen = pty.wait_for(r"Not followed:", WAIT)?;
         scenario.shot(&pty, &format!("request-roles-{cols}"))?;
         let text = flat(&screen);
@@ -128,16 +131,8 @@ fn ui_a_request_that_says_who_coordinates_and_who_reviews() -> anyhow::Result<()
             "{}",
             screen.text()
         );
-        // The Triage item wraps at 100 columns however wide the screen is.
-        let all = screen.text();
-        let triage: Vec<&str> = all
-            .lines()
-            .skip_while(|line| !line.contains("Triage("))
-            .take_while(|line| !line.trim().is_empty())
-            .collect::<Vec<_>>();
-        for line in &triage[1..] {
-            assert!(line.chars().count() <= 100, "{line:?}");
-        }
+        // A run's start prints no Triage row.
+        assert!(!screen.text().contains("Triage("), "{}", screen.text());
         exit(&mut pty)?;
     }
     Ok(())
@@ -155,7 +150,6 @@ fn ui_a_request_that_would_loosen_a_safety_setting() -> anyhow::Result<()> {
              sandbox off.",
         )?;
         pty.press(Key::Enter)?;
-        pty.wait_for(r"Triage\(solo, checked\)", WAIT)?;
         let screen = pty.wait_for(r"the sandbox is a safety setting", WAIT)?;
         scenario.shot(&pty, &format!("request-refused-{cols}"))?;
         let text = flat(&screen);

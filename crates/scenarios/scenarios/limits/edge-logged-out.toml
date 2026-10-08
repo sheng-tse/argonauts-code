@@ -1,5 +1,5 @@
-# The fake Claude Code is logged out partway through the card, as its own login check says. After
-# you log in, retrying resumes the same session, which finishes the card. Codex is still offered.
+# The fake Claude Code is logged out partway through the task, as its own login check says. After
+# you log in, retrying resumes the same session, which finishes the task. Codex is still offered.
 
 [version]
 claude = "2.1.284 (Claude Code)"
@@ -13,7 +13,7 @@ args_contain = ["auth", "status"]
 [[rule.step]]
 exit = 1
 
-# A resumed session finishes the card.
+# A resumed session finishes the task.
 [[rule]]
 argv0 = "claude"
 args_contain = ["-p", "--resume", "limits-claude-1"]

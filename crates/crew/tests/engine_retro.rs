@@ -46,7 +46,7 @@ async fn retro_commits_notes_decisions_and_one_candidate() -> anyhow::Result<()>
         services
             .workers
             .add(FakeWorker::harness(worker, family).respond_with(answer));
-        settings.crew.push(worker.parse()?);
+        settings.crew.add(worker.parse()?);
     }
     let run = RunId::new("run-01")?;
     let state_dir = repo.home().join("state/repo");
@@ -191,7 +191,7 @@ fn answer(spec: &SessionSpec) -> FakeSession {
             "change": {
                 "setting": "critique.rounds",
                 "value": "2",
-                "why": "The store card failed review for a risk the plan never named.",
+                "why": "The store task failed review for a risk the plan never named.",
             }
         })),
         _ => FakeSession::completed("done"),
@@ -275,7 +275,7 @@ fn history(run: &RunId, context: &RepoContext, base: &str) -> anyhow::Result<Vec
         title: "Rate limits".to_owned(),
         mode: RunMode::Crew,
         forced: true,
-        preset: "peer-crew".to_owned(),
+        workflow: "council".to_owned(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -292,6 +292,7 @@ fn history(run: &RunId, context: &RepoContext, base: &str) -> anyhow::Result<Vec
         version: "0.0.1".to_owned(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     };
     let kinds = vec![
         (

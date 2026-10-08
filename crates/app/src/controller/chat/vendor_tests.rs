@@ -155,6 +155,7 @@ async fn picking_a_session_reprints_it_and_the_next_turn_resumes_it() {
         worker,
         earlier,
         turns,
+        ..
     } = harness
         .until(|event| matches!(event, AppEvent::ChatResumed { .. }))
         .await

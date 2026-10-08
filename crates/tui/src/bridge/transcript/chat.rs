@@ -10,7 +10,7 @@ use argonauts_core::events::session::VendorWorkflow;
 use argonauts_core::names::{TurnId, WorkerRef};
 use argonauts_core::settings::protocol::SoloStyle;
 use argonauts_core::settings::ui::VerbTheme;
-use argonauts_core::{AgentEvent, Verbosity};
+use argonauts_core::{AgentEvent, ErrorCategory, Verbosity};
 
 use crate::bottom::verbs::VerbStyle;
 use crate::bridge::{mods, tools};
@@ -67,6 +67,8 @@ struct OpenTurn {
     own: Vec<ToolCall>,
     /// The workflows the CLI runs itself that already have their row.
     workflows: std::collections::BTreeSet<String>,
+    /// Esc stopped the main agent's turn alone, its line shows, and nothing came since.
+    interrupted: bool,
 }
 
 impl ChatTurns {
@@ -105,10 +107,13 @@ impl ChatTurns {
             ChatEvent::TurnCancelled { turn } => {
                 if let Some(mut open) = self.take(turn) {
                     end_parts(&mut open, ToolState::Stopped, cx);
-                    emit(
-                        cx,
-                        Cell::Custom(Box::new(ResultLine::new(Tone::Dim, INTERRUPTED))),
-                    );
+                    // A turn Esc stopped alone left the line when it stopped.
+                    if !open.interrupted {
+                        emit(
+                            cx,
+                            Cell::Custom(Box::new(ResultLine::new(Tone::Dim, INTERRUPTED))),
+                        );
+                    }
                 }
             }
             ChatEvent::HandedOff {
@@ -132,9 +137,9 @@ impl ChatTurns {
                     end_parts(&mut open, ToolState::Failed, cx);
                     let error = error.trim();
                     let text = if error.is_empty() {
-                        "The default agent couldn't answer".to_owned()
+                        "The main agent couldn't answer".to_owned()
                     } else {
-                        format!("The default agent couldn't answer: {error}")
+                        format!("The main agent couldn't answer: {error}")
                     };
                     emit(cx, Notice::new(Tone::Error, text));
                 }
@@ -183,6 +188,7 @@ impl ChatTurns {
             calls: Vec::new(),
             own: Vec::new(),
             workflows: std::collections::BTreeSet::new(),
+            interrupted: false,
         });
     }
 
@@ -213,16 +219,15 @@ impl ChatTurns {
             cx.model.history.push(message);
         }
         keep_own(&mut open, Some(ToolState::Stopped), cx);
-        // Solo in your checkout has no run to give it a Triage line, so the reply does.
+        // Solo in your checkout has no run to say what your words asked, so the reply does.
         if let TurnReply::Change {
-            estimate,
             triage,
             instructions,
             ..
         } = reply
             && triage.solo == Some(SoloStyle::Direct)
         {
-            steps::direct_triage(estimate, triage, instructions, cx);
+            steps::direct_asked(instructions, cx);
         }
         // A change goes on as a run, or a turn in your checkout, whose own end gets the line.
         let changes = matches!(reply, TurnReply::Change { .. });
@@ -285,6 +290,15 @@ fn agent_event(
     clock: &WallClock,
     cx: &mut Cx<'_>,
 ) {
+    // More from the main agent, so the line a stopped turn left isn't its last word.
+    if matches!(
+        event,
+        AgentEvent::TextDelta { parent: None, .. }
+            | AgentEvent::Message { parent: None, .. }
+            | AgentEvent::ToolStarted { parent: None, .. }
+    ) {
+        open.interrupted = false;
+    }
     match event {
         AgentEvent::TextDelta { text, parent: None } => {
             open.from_deltas = true;
@@ -373,8 +387,36 @@ fn agent_event(
             print_done(open, cx);
             emit(cx, workflow_row(workflow));
         }
+        AgentEvent::Error {
+            category: ErrorCategory::Interrupted,
+            ..
+        } => interrupted(open, cx),
         _ => {}
     }
+}
+
+/// Esc stopped the main agent's turn alone: what it had so far ends here with
+/// the line Esc leaves, as on Claude Code's screen. The turn stays open for the subagents it
+/// left running and for what it says once they are done.
+fn interrupted(open: &mut OpenTurn, cx: &mut Cx<'_>) {
+    if open.interrupted {
+        return;
+    }
+    settle_tools(open, ToolState::Stopped, cx);
+    if open.replaying {
+        let said = std::mem::take(&mut open.text);
+        if !said.trim().is_empty() {
+            cx.model.history.keep(AssistantMessage::new(said.clone()));
+            open.parts.push(said);
+        }
+    } else {
+        end_stream(open, cx);
+    }
+    emit(
+        cx,
+        Cell::Custom(Box::new(ResultLine::new(Tone::Dim, INTERRUPTED))),
+    );
+    open.interrupted = true;
 }
 
 /// Claude Code's Workflow tool, which runs a script the views mirror from its reports.
@@ -382,7 +424,8 @@ fn is_vendor_workflow(vendor: &str, name: &str) -> bool {
     vendor == "claude-code" && name == "Workflow"
 }
 
-/// `Workflow(release-check)` with how to watch it, as a crew run's workflow starts.
+/// `Workflow(release-check) · Claude Code's own · ctrl+t to open`, as a crew run's workflow
+/// starts, with what it does under it.
 fn workflow_row(workflow: &VendorWorkflow) -> ToolCall {
     let name = Some(workflow.name.trim())
         .filter(|name| !name.is_empty())
@@ -392,13 +435,13 @@ fn workflow_row(workflow: &VendorWorkflow) -> ToolCall {
         "Workflow",
         sanitize_line(name).into_owned(),
     )
-    .with_state(ToolState::Done);
-    let mut details = Vec::new();
+    .with_state(ToolState::Done)
+    .with_tail(" · Claude Code's own · ctrl+t to open");
     if !workflow.description.trim().is_empty() {
-        details.push(sanitize_line(workflow.description.trim()).into_owned());
+        call.push(ToolItem::text(
+            sanitize_line(workflow.description.trim()).into_owned(),
+        ));
     }
-    details.push("ctrl+t to watch".to_owned());
-    call.push(ToolItem::text(details.join("\n")));
     call
 }
 

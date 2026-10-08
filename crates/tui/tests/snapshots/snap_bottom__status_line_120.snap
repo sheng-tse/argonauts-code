@@ -1,8 +1,0 @@
----
-source: crates/tui/tests/snap_bottom.rs
-expression: text(&view.lines)
----
-──────────────────────────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
-❯ Try "review the last commit"
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts      Claude 5h 38% used · Codex 5h 92% used · $0.46 today

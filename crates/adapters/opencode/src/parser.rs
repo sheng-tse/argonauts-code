@@ -124,7 +124,11 @@ fn step_finish(part: &Value) -> Option<Vec<AgentEvent>> {
             cost_usd: part["cost"].as_f64(),
             cumulative: false,
         },
-        AgentEvent::ContextFill { used, size: None },
+        AgentEvent::ContextFill {
+            used,
+            size: None,
+            sent: None,
+        },
     ])
 }
 
@@ -138,7 +142,8 @@ fn tool_use(part: &Value) -> Option<Vec<AgentEvent>> {
         "error" => (false, state["error"].as_str()),
         _ => return None,
     };
-    Some(vec![
+    let changed = if ok { file_change(&name, state) } else { None };
+    let mut events = vec![
         AgentEvent::ToolStarted {
             id: id.clone(),
             name,
@@ -151,7 +156,29 @@ fn tool_use(part: &Value) -> Option<Vec<AgentEvent>> {
             output: output.map(str::to_owned),
             parent: None,
         },
-    ])
+    ];
+    events.extend(changed);
+    Some(events)
+}
+
+/// OpenCode's tools that write a file, which name it in `filePath`.
+const FILE_TOOLS: &[&str] = &["write", "edit", "multiedit"];
+
+/// The file a finished edit tool wrote, as the other CLIs' adapters report theirs. It's how a
+/// new file is known to be the agent's own work and not something a command left behind.
+fn file_change(tool: &str, state: &Value) -> Option<AgentEvent> {
+    if !FILE_TOOLS.contains(&tool) {
+        return None;
+    }
+    let path = state["input"]["filePath"].as_str()?.to_owned();
+    let kind = match state["metadata"]["exists"].as_bool() {
+        Some(false) => "add",
+        _ => "update",
+    };
+    Some(AgentEvent::FileChanged {
+        path,
+        kind: kind.to_owned(),
+    })
 }
 
 /// OpenCode's named errors, `{name, data: {message, ...}}`.

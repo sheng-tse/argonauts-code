@@ -3,16 +3,16 @@ source: crates/tui/tests/snap_bottom.rs
 expression: text(&view.lines)
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◆ Merge card-002 into main?
+◆ Merge task-002 into main?
   3 files · +48 -6 · tests passed · agy reviewed it and approved
 
   ❯ 1. Merge
     2. Open a pull request
-    3. Request changes on some cards
+    3. Request changes on some tasks
     4. Keep the branch
     5. Abandon the run
     6. Show the diff
 
-  Enter to choose · Tab to add a note · Esc to set aside
+  Enter to choose · Tab to add a note · Esc to carry on without me
 
   ǁ supervised mode on

@@ -2,23 +2,23 @@
 source: crates/tui/tests/snap_bottom.rs
 expression: text(&tight.lines)
 ---
-● Opus on Claude Code · owner · card-002 (Add the JSON writer)
+● Opus on Claude Code · worker · task-002 (Add the JSON writer)
   ⎿  … +6 lines (ctrl+o to expand)
      Update(src/export.rs)
      Adding the JSON writer next to the CSV one.
 
-● GPT 5.6 on Codex · owner · card-003 (Wire --json into the CLI)
+● GPT 5.6 on Codex · worker · task-003 (Wire --json into the CLI)
   ⎿  … +6 lines (ctrl+o to expand)
      Update(src/cli.rs)
      Adding the JSON writer next to the CSV one.
 
 ✻ Building… (4m 12s · ↓ 48.2k tokens · build · 3 agents)
 
-──────────────────────────────────────────────────────────────────────────────────────── peer-crew ─
+────────────────────────────────────────────────────────────────────────────────────────── council ─
 ❯
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt · ← 3 agents · ↓ to manage
+  ǁ supervised mode on (shift+tab to cycle) · ? for shortcuts · ← 3 agents · ↓ to manage
 
-  ◐ claude-code/opus  card-002                        2/5  ↓ 18.1k tokens                     4m12s
-  ◐ codex/gpt-5.6     card-003                        1/5  ↓ 12.9k tokens                     3m40s
-  ○ agy/gemini-3.6    review                          waiting for card-002
+  ○ claude-code/opus  task-002                                           2/5 · 4m · ↓ 18.1k tokens
+  ○ codex/gpt-5.6     task-003                                           1/5 · 3m · ↓ 12.9k tokens
+  ○ agy/gemini-3.6    review                                             0/3 · waiting for task-002

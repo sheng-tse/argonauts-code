@@ -22,8 +22,8 @@ use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
 use argonauts_core::settings::Span;
 use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit, OnHit};
 use argonauts_core::settings::handoff::{
-    FallbackEntry, FallbackRules, HandoffMode, HandoffSettings, HandoffStrategy, OnReturn,
-    VendorReplacement,
+    CrewRole, FallbackEntry, FallbackRules, HandoffMode, HandoffSettings, HandoffStrategy,
+    OnReturn, OrderStrategy, Pick, VendorReplacement,
 };
 use argonauts_core::settings::sessions::SessionLifetime;
 use argonauts_core::worker::{Access, WorkerKind};
@@ -60,7 +60,7 @@ fn context(stopped: &str, reason: EndReason, events: &Path) -> StopContext {
         run: run(),
         card: card(CARD),
         state: CardState::Running,
-        role: RoleName::Owner,
+        role: RoleName::Worker,
         worker: worker(stopped),
         end: SessionEnd {
             vendor_session: Some("v-1".to_owned()),
@@ -113,7 +113,7 @@ fn event(seq: u64, kind: RunEventKind) -> RunEvent {
         seq,
         ts: OffsetDateTime::UNIX_EPOCH,
         run_id: run(),
-        card_id: Some(CardId::new(CARD).expect("a valid card id")),
+        card_id: Some(CardId::new(CARD).expect("a valid task id")),
         session: None,
         source: "conductor".to_owned(),
         kind,
@@ -146,7 +146,7 @@ fn handed_to(action: &RecoveryAction) -> (String, Option<u32>) {
         RecoveryAction::HandOff { to, checkpoint, .. } => {
             (to.to_string(), checkpoint.as_ref().map(|tag| tag.n))
         }
-        other => panic!("expected a handoff, got {other:?}"),
+        other => panic!("expected a fallback, got {other:?}"),
     }
 }
 
@@ -167,7 +167,7 @@ fn names(candidates: &[Candidate]) -> Vec<String> {
 #[tokio::test]
 async fn handoff_modes_ask_auto_wait() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    fixture.settings_mut().fallback.mode = HandoffMode::Ask;
     let resets = OffsetDateTime::now_utc() + time::Duration::hours(2);
     let limit = EndReason::UsageLimit {
         resets_at: Some(resets),
@@ -189,7 +189,7 @@ async fn handoff_modes_ask_auto_wait() {
         ["codex/gpt-5", "antigravity-cli/gemini-3"]
     );
 
-    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    fixture.settings_mut().fallback.mode = HandoffMode::Auto;
     let limits = fixture.limits();
     assert_eq!(
         handed_to(&decide(&limits, "claude-code/opus", limit.clone(), &[]).await),
@@ -201,7 +201,7 @@ async fn handoff_modes_ask_auto_wait() {
         "codex/gpt-5"
     );
 
-    fixture.settings_mut().handoff.mode = HandoffMode::Wait;
+    fixture.settings_mut().fallback.mode = HandoffMode::Wait;
     assert_eq!(
         decide(&fixture.limits(), "claude-code/opus", limit, &[]).await,
         RecoveryAction::Wait {
@@ -217,7 +217,7 @@ async fn handoff_modes_ask_auto_wait() {
 #[tokio::test]
 async fn a_blind_role_that_loaded_your_plugins_moves_only_to_an_agent_that_isolates() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    fixture.settings_mut().fallback.mode = HandoffMode::Auto;
     let leaked = EndReason::IsolationBroken {
         plugins: vec!["memory-keeper".to_owned(), "lint-helper".to_owned()],
         skills: Vec::new(),
@@ -239,7 +239,7 @@ async fn a_blind_role_that_loaded_your_plugins_moves_only_to_an_agent_that_isola
     let action = decide(&limits, "claude-code/opus", leaked.clone(), &[]).await;
     assert_eq!(handed_to(&action).0, "antigravity-cli/gemini-3");
 
-    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    fixture.settings_mut().fallback.mode = HandoffMode::Ask;
     let limits = fixture.limits().with_workers(workers);
     let action = decide(&limits, "claude-code/opus", leaked, &[]).await;
     let plan = asked(&action);
@@ -247,15 +247,20 @@ async fn a_blind_role_that_loaded_your_plugins_moves_only_to_an_agent_that_isola
     assert_eq!(names(&plan.candidates), ["antigravity-cli/gemini-3"]);
 }
 
+/// `[fallback.workers]`, the table the worker's fallbacks go by.
+fn workers_table(fixture: &mut Fixture) -> &mut HandoffSettings {
+    fixture
+        .settings_mut()
+        .fallback
+        .roles
+        .entry(CrewRole::Workers)
+        .or_default()
+}
+
 #[tokio::test]
 async fn ask_timeout_falls_back_to_auto() {
     let mut fixture = Fixture::with_models();
-    fixture
-        .settings_mut()
-        .roles
-        .entry(RoleName::Owner)
-        .or_default()
-        .handoff = HandoffSettings {
+    *workers_table(&mut fixture) = HandoffSettings {
         mode: HandoffMode::Ask,
         ask_timeout: Span::new("10m"),
         ..HandoffSettings::default()
@@ -263,7 +268,7 @@ async fn ask_timeout_falls_back_to_auto() {
     let limits = fixture.limits();
     let claude = vendor("claude-code");
     assert_eq!(
-        limits.ask_timeout(RoleName::Owner, &claude),
+        limits.ask_timeout(RoleName::Worker, &claude),
         Ok(Some(Duration::from_secs(600)))
     );
     assert_eq!(limits.ask_timeout(RoleName::Reviewer, &claude), Ok(None));
@@ -288,7 +293,7 @@ async fn ask_timeout_falls_back_to_auto() {
         .observe(quota("antigravity-cli", QuotaStatus::Rejected, Some(1.0)));
     let plan = limits.after_ask_timeout(&stop).await;
     assert!(asked(&plan).candidates.is_empty());
-    assert!(asked(&plan).reason.ends_with("no valid replacement"));
+    assert!(asked(&plan).reason.ends_with("no valid fallback"));
 }
 
 #[tokio::test]
@@ -342,7 +347,7 @@ async fn retry_ladder() {
         .set(&vendor("antigravity-cli"), HealthState::Down, None);
     match limits.after_stop(&stop).await {
         RecoveryAction::Escalate { reason } => {
-            assert!(reason.contains("no agent of another family"), "{reason}");
+            assert!(reason.contains("no agent of another provider"), "{reason}");
         }
         other => panic!("expected an escalation, got {other:?}"),
     }
@@ -353,7 +358,7 @@ async fn retry_ladder() {
 #[tokio::test]
 async fn a_passing_sign_in_error_hands_the_card_on_without_a_login() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    fixture.settings_mut().fallback.mode = HandoffMode::Auto;
     let limits = fixture.limits();
     let unauthorized = || EndReason::Auth {
         message: "workspace routing discovery unauthorized (401)".to_owned(),
@@ -377,7 +382,7 @@ async fn a_passing_sign_in_error_hands_the_card_on_without_a_login() {
     }
 
     // Asked how to go on, the card offers no login when the CLI says it's logged in.
-    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    fixture.settings_mut().fallback.mode = HandoffMode::Ask;
     let limits = fixture.limits();
     let action = decide_logged(&limits, "claude-code/opus", unauthorized(), Some(true)).await;
     let plan = asked(&action);
@@ -388,7 +393,7 @@ async fn a_passing_sign_in_error_hands_the_card_on_without_a_login() {
 async fn logged_out_and_billing_ask_with_reason() {
     let mut fixture = Fixture::with_models();
     // Even in auto mode, a login or a top-up is yours to do.
-    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    fixture.settings_mut().fallback.mode = HandoffMode::Auto;
     let limits = fixture.limits();
     let auth = EndReason::Auth {
         message: "token expired".to_owned(),
@@ -432,8 +437,8 @@ async fn logged_out_and_billing_ask_with_reason() {
         .registry
         .add(api_model("openrouter", "kimi", "kimi", 1.0));
     let settings = fixture.settings_mut();
-    settings.handoff.allow_api_billing = true;
-    settings.handoff.fallback = vec![entry("openrouter/kimi"), entry("codex/gpt-5")];
+    settings.fallback.allow_api_billing = true;
+    settings.fallback.order = vec![entry("openrouter/kimi"), entry("codex/gpt-5")];
     let limits = fixture.limits();
     let journal = journal(&[]);
     let stop = context("claude-code/opus", billing, &journal.path);
@@ -450,7 +455,7 @@ async fn logged_out_and_billing_ask_with_reason() {
 #[tokio::test]
 async fn outage_follows_handoff_mode() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    fixture.settings_mut().fallback.mode = HandoffMode::Ask;
     fixture.health.set(
         &vendor("claude-code"),
         HealthState::Down,
@@ -465,23 +470,13 @@ async fn outage_follows_handoff_mode() {
     assert!(asked(&action).reason.starts_with("overloaded"));
 
     // The role's own mode wins over the top-level one.
-    let role = fixture
-        .settings_mut()
-        .roles
-        .entry(RoleName::Owner)
-        .or_default();
-    role.handoff.mode = HandoffMode::Auto;
+    workers_table(&mut fixture).mode = HandoffMode::Auto;
     assert_eq!(
         handed_to(&decide(&fixture.limits(), "claude-code/opus", outage(), &[]).await).0,
         "codex/gpt-5"
     );
 
-    let role = fixture
-        .settings_mut()
-        .roles
-        .entry(RoleName::Owner)
-        .or_default();
-    role.handoff.mode = HandoffMode::Wait;
+    workers_table(&mut fixture).mode = HandoffMode::Wait;
     let (waits_for, _) =
         waited(&decide(&fixture.limits(), "claude-code/opus", outage(), &[]).await);
     assert_eq!(waits_for, vendor("claude-code"));
@@ -502,7 +497,7 @@ fn waited(action: &RecoveryAction) -> (VendorId, OffsetDateTime) {
 #[tokio::test]
 async fn a_wait_with_no_known_return_wakes_after_the_cooldown() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Wait;
+    fixture.settings_mut().fallback.mode = HandoffMode::Wait;
     let limits = fixture.limits();
     let cooldown = time::Duration::minutes(5);
     for reason in [
@@ -585,13 +580,46 @@ async fn all_out_parks_until_earliest_reset() {
 }
 
 #[tokio::test]
+async fn agents_at_your_plan_limit_count_as_out_until_their_windows_reset() {
+    let mut fixture = Fixture::with_models();
+    let now = OffsetDateTime::now_utc();
+    let workers = [worker("claude-code/opus"), worker("codex/gpt-5")];
+    let used = |name: &str, used: f64, hours: i64| {
+        let mut reading = quota(name, QuotaStatus::Allowed, Some(used));
+        reading.resets_at = Some(now + time::Duration::hours(hours));
+        reading
+    };
+    fixture.quota.observe(used("claude-code", 0.9, 2));
+    fixture.quota.observe(used("codex", 0.85, 1));
+    assert_eq!(
+        fixture.limits().all_out(&workers),
+        None,
+        "with no limit of yours, a plan is used until it runs out"
+    );
+
+    fixture.settings_mut().limits.budget.plan_usage = Some(0.8);
+    assert_eq!(
+        fixture.limits().all_out(&workers),
+        Some(ParkReason::AllVendorsOut {
+            until: Some(now + time::Duration::hours(1)),
+        })
+    );
+    fixture.settings_mut().limits.budget.plan_usage = Some(0.88);
+    assert_eq!(
+        fixture.limits().all_out(&workers),
+        None,
+        "codex is under it"
+    );
+}
+
+#[tokio::test]
 async fn auto_parks_when_the_whole_crew_is_out() {
     let mut fixture = Fixture::with_models();
     let settings = fixture.settings_mut();
-    settings.handoff.mode = HandoffMode::Auto;
-    settings.crew = vec![worker("claude-code/opus")];
-    settings.default_agent = worker("claude-code/opus");
-    settings.handoff.fallback.clear();
+    settings.fallback.mode = HandoffMode::Auto;
+    settings.crew = vec![worker("claude-code/opus")].into();
+    settings.main_agent = worker("claude-code/opus");
+    settings.fallback.order.clear();
     let resets = OffsetDateTime::now_utc() + time::Duration::minutes(5);
     let mut reading = quota("claude-code", QuotaStatus::Rejected, Some(1.0));
     reading.resets_at = Some(resets);
@@ -609,7 +637,7 @@ async fn auto_parks_when_the_whole_crew_is_out() {
     );
 
     // A crew member that still works takes the card instead.
-    fixture.settings_mut().crew.push(worker("codex/gpt-5"));
+    fixture.settings_mut().crew.add(worker("codex/gpt-5"));
     let action = decide(&fixture.limits(), "claude-code/opus", limit, &[]).await;
     assert_eq!(handed_to(&action).0, "codex/gpt-5");
 }
@@ -726,7 +754,7 @@ async fn a_default_model_hands_to_a_full_reference_successor() {
                     "model claude-old-1 is no longer available"
                 );
             }
-            other => panic!("expected a handoff, got {other:?}"),
+            other => panic!("expected a fallback, got {other:?}"),
         }
     }
 }
@@ -741,10 +769,10 @@ fn started(seq: u64, stopped: &str) -> RunEvent {
                 vendor: worker(stopped).vendor(),
                 family: "claude".to_owned(),
                 kind: WorkerKind::Harness,
-                role: RoleName::Owner,
+                role: RoleName::Worker,
                 step: None,
                 access: Access::Build,
-                lifetime: SessionLifetime::Card,
+                lifetime: SessionLifetime::Task,
                 resumed_from: None,
                 follow_key: None,
                 workflow_step: None,
@@ -786,7 +814,7 @@ async fn context_full_rotates() {
         match decide(&limits, "claude-code/opus", reason, &[]).await {
             RecoveryAction::Rotate { packet } => {
                 assert_eq!(packet.card, card(CARD));
-                assert_eq!(packet.work.branch, "argonauts/run-01/card-003");
+                assert_eq!(packet.work.branch, "argonauts/run-01/task-003");
             }
             other => panic!("expected a rotation, got {other:?}"),
         }
@@ -794,17 +822,18 @@ async fn context_full_rotates() {
 }
 
 #[tokio::test]
-async fn budget_hit_applies_on_hit() {
+async fn a_reached_limit_goes_by_when_reached() {
     let mut fixture = Fixture::with_models();
     let hit = || EndReason::BudgetHit {
         dimension: BudgetDimension::Spend,
     };
+    // The fallbacks take over unless you say to stop.
     assert_eq!(
         decide(&fixture.limits(), "claude-code/opus", hit(), &[]).await,
-        RecoveryAction::BudgetHit(OnHit::Ask)
+        RecoveryAction::BudgetHit(OnHit::Fallback)
     );
-    for on_hit in [OnHit::Extend, OnHit::Handoff, OnHit::Escalate] {
-        fixture.settings_mut().budget.on_hit = on_hit;
+    for on_hit in [OnHit::Stop, OnHit::Fallback] {
+        fixture.settings_mut().limits.budget.when_reached = on_hit;
         assert_eq!(
             decide(&fixture.limits(), "claude-code/opus", hit(), &[]).await,
             RecoveryAction::BudgetHit(on_hit)
@@ -813,19 +842,19 @@ async fn budget_hit_applies_on_hit() {
 }
 
 #[tokio::test]
-async fn max_handoffs_escalates() {
+async fn max_fallbacks_escalates() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    fixture.settings_mut().fallback.mode = HandoffMode::Auto;
     let three = [tagged(1), tagged(2), tagged(3)];
     match decide(&fixture.limits(), "claude-code/opus", usage(), &three).await {
         RecoveryAction::Escalate { reason } => assert_eq!(
-            reason, "\"Middleware\" stopped after 3 handoffs, the most /handoff allows",
-            "the card by its title and the limit by where it's set, never an id or a key"
+            reason, "\"Middleware\" stopped after 3 fallbacks, the most /fallback allows",
+            "the task by its title and the limit by where it's set, never an id or a key"
         ),
         other => panic!("expected an escalation, got {other:?}"),
     }
 
-    fixture.settings_mut().handoff.max_handoffs = Some(4);
+    fixture.settings_mut().fallback.max_fallbacks = Some(4);
     assert_eq!(
         handed_to(&decide(&fixture.limits(), "claude-code/opus", usage(), &three).await),
         ("codex/gpt-5".to_owned(), Some(4))
@@ -833,8 +862,8 @@ async fn max_handoffs_escalates() {
 
     // With checkpoints off, handoff attempts count instead.
     let settings = fixture.settings_mut();
-    settings.handoff.max_handoffs = Some(2);
-    settings.handoff.checkpoint = Some(false);
+    settings.fallback.max_fallbacks = Some(2);
+    settings.fallback.checkpoint = Some(false);
     let attempts: Vec<RunEvent> = (1..=2)
         .map(|attempt| {
             card_event(
@@ -853,7 +882,7 @@ async fn max_handoffs_escalates() {
     ));
 
     // Waiting isn't another handoff.
-    fixture.settings_mut().handoff.mode = HandoffMode::Wait;
+    fixture.settings_mut().fallback.mode = HandoffMode::Wait;
     assert!(matches!(
         decide(&fixture.limits(), "claude-code/opus", usage(), &attempts).await,
         RecoveryAction::Wait { .. }
@@ -863,7 +892,7 @@ async fn max_handoffs_escalates() {
 #[tokio::test]
 async fn a_checkpointed_race_is_one_handoff() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    fixture.settings_mut().fallback.mode = HandoffMode::Auto;
     let racers = [
         "codex/gpt-5",
         "antigravity-cli/gemini-3",
@@ -890,7 +919,7 @@ async fn a_checkpointed_race_is_one_handoff() {
 /// An event of `card`.
 fn on_card(card: &str, seq: u64, kind: CardEvent) -> RunEvent {
     RunEvent {
-        card_id: Some(CardId::new(card).expect("a valid card id")),
+        card_id: Some(CardId::new(card).expect("a valid task id")),
         ..card_event(seq, kind)
     }
 }
@@ -912,9 +941,9 @@ fn logged_handoff(card: &str, seq: u64, to: &str) -> RunEvent {
 async fn spread_rotates_a_vendors_cards_across_candidates() {
     let mut fixture = Fixture::with_models();
     let settings = fixture.settings_mut();
-    settings.handoff.mode = HandoffMode::Auto;
-    settings.handoff.strategy = Some(HandoffStrategy::Spread);
-    let cards = ["card-003", "card-004", "card-005"];
+    settings.fallback.mode = HandoffMode::Auto;
+    settings.fallback.strategy = Some(OrderStrategy::Spread);
+    let cards = ["task-003", "task-004", "task-005"];
     // Each card was running on Claude Code when it went out.
     let running: Vec<RunEvent> = (0u64..)
         .zip(cards)
@@ -960,14 +989,14 @@ async fn spread_rotates_a_vendors_cards_across_candidates() {
 
     // A fresh service reads the same from the log once the handoffs are logged.
     let mut logged = running.clone();
-    logged.push(logged_handoff("card-003", 7, "codex/gpt-5"));
-    logged.push(logged_handoff("card-004", 8, "antigravity-cli/gemini-3"));
+    logged.push(logged_handoff("task-003", 7, "codex/gpt-5"));
+    logged.push(logged_handoff("task-004", 8, "antigravity-cli/gemini-3"));
     let log = journal(&logged);
     assert_eq!(
         handed_to(
             &fixture
                 .limits()
-                .after_stop(&stop("card-005", &log.path))
+                .after_stop(&stop("task-005", &log.path))
                 .await
         )
         .0,
@@ -975,13 +1004,13 @@ async fn spread_rotates_a_vendors_cards_across_candidates() {
     );
 
     // Asked instead, the plan puts the least loaded first and names the cards still to move.
-    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    fixture.settings_mut().fallback.mode = HandoffMode::Ask;
     let mut one_moved = running;
-    one_moved.push(logged_handoff("card-003", 7, "codex/gpt-5"));
+    one_moved.push(logged_handoff("task-003", 7, "codex/gpt-5"));
     let log = journal(&one_moved);
     let action = fixture
         .limits()
-        .after_stop(&stop("card-004", &log.path))
+        .after_stop(&stop("task-004", &log.path))
         .await;
     let plan = asked(&action);
     assert_eq!(plan.strategy, HandoffStrategy::Spread);
@@ -991,14 +1020,14 @@ async fn spread_rotates_a_vendors_cards_across_candidates() {
     );
     assert_eq!(
         plan.also_moving,
-        [CardId::new("card-005").expect("a valid card id")]
+        [CardId::new("task-005").expect("a valid task id")]
     );
 
     // The strategy `first` sends every card to the same candidate and lists no others.
-    fixture.settings_mut().handoff.strategy = None;
+    fixture.settings_mut().fallback.strategy = None;
     let plan = fixture
         .limits()
-        .after_stop(&stop("card-004", &log.path))
+        .after_stop(&stop("task-004", &log.path))
         .await;
     assert!(asked(&plan).also_moving.is_empty());
     assert_eq!(
@@ -1008,41 +1037,44 @@ async fn spread_rotates_a_vendors_cards_across_candidates() {
 }
 
 #[tokio::test]
-async fn race_only_when_a_list_sets_it() {
+async fn several_take_over_at_once_when_together_says_so() {
     let mut fixture = Fixture::with_models();
-    let role = fixture
-        .settings_mut()
-        .roles
-        .entry(RoleName::Owner)
-        .or_default();
-    role.handoff.mode = HandoffMode::Auto;
-    role.handoff.replace.insert(
+    // One at a time unless a table says otherwise.
+    assert_eq!(
+        handed_to(&decide(&fixture.limits(), "claude-code/opus", usage(), &[]).await).0,
+        "codex/gpt-5"
+    );
+
+    let role = workers_table(&mut fixture);
+    role.mode = HandoffMode::Auto;
+    role.together = Some(2);
+    role.pick = Some(Pick::Judge);
+    role.replace.insert(
         vendor("claude-code"),
         VendorReplacement {
             with: vec![entry("codex/gpt-5"), entry("antigravity-cli/gemini-3")],
-            strategy: Some(HandoffStrategy::Race),
             ..VendorReplacement::default()
         },
     );
     let limits = fixture.limits();
     match decide(&limits, "claude-code/opus", usage(), &[]).await {
-        RecoveryAction::Race { to, checkpoint, .. } => {
+        RecoveryAction::Race {
+            to,
+            pick,
+            checkpoint,
+            ..
+        } => {
             assert_eq!(
                 to,
                 [worker("codex/gpt-5"), worker("antigravity-cli/gemini-3")]
             );
+            assert_eq!(pick, Pick::Judge);
             assert_eq!(checkpoint.map(|tag| tag.n), Some(1));
         }
-        other => panic!("expected a race, got {other:?}"),
+        other => panic!("expected two at once, got {other:?}"),
     }
 
-    // Codex's stop has no list that sets a race, so one candidate takes it.
-    assert_eq!(
-        handed_to(&decide(&limits, "codex/gpt-5", usage(), &[]).await).0,
-        "claude-code/opus"
-    );
-
-    // A race needs two valid racers; with one left it's a plain handoff.
+    // Several at once needs two that can take it; with one left it's a plain fallback.
     fixture
         .health
         .set(&vendor("antigravity-cli"), HealthState::Down, None);
@@ -1055,19 +1087,19 @@ async fn race_only_when_a_list_sets_it() {
 #[tokio::test]
 async fn checkpoint_tag_on_handoff_and_race() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Auto;
+    fixture.settings_mut().fallback.mode = HandoffMode::Auto;
     let expected = |n| CheckpointTag {
         run: run(),
-        card: CardId::new(CARD).expect("a valid card id"),
+        card: CardId::new(CARD).expect("a valid task id"),
         n,
     };
     match decide(&fixture.limits(), "claude-code/opus", usage(), &[]).await {
         RecoveryAction::HandOff { checkpoint, .. } => {
-            let tag = checkpoint.expect("a checkpoint");
+            let tag = checkpoint.expect("an approval");
             assert_eq!(tag, expected(1));
-            assert_eq!(tag.tag_name(), "argonauts/run-01/card-003/handoff-1");
+            assert_eq!(tag.tag_name(), "argonauts/run-01/task-003/fallback-1");
         }
-        other => panic!("expected a handoff, got {other:?}"),
+        other => panic!("expected a fallback, got {other:?}"),
     }
     // The next handoff of the same card is handoff-2.
     assert_eq!(
@@ -1075,18 +1107,18 @@ async fn checkpoint_tag_on_handoff_and_race() {
         Some(2)
     );
 
-    fixture.settings_mut().handoff.strategy = Some(HandoffStrategy::Race);
+    fixture.settings_mut().fallback.together = Some(2);
     match decide(&fixture.limits(), "claude-code/opus", usage(), &[tagged(1)]).await {
         RecoveryAction::Race { checkpoint, .. } => assert_eq!(checkpoint, Some(expected(2))),
         other => panic!("expected a race, got {other:?}"),
     }
 
-    fixture.settings_mut().handoff.checkpoint = Some(false);
+    fixture.settings_mut().fallback.checkpoint = Some(false);
     match decide(&fixture.limits(), "claude-code/opus", usage(), &[]).await {
         RecoveryAction::Race { checkpoint, .. } => assert_eq!(checkpoint, None),
         other => panic!("expected a race, got {other:?}"),
     }
-    fixture.settings_mut().handoff.strategy = None;
+    fixture.settings_mut().fallback.together = None;
     assert_eq!(
         handed_to(&decide(&fixture.limits(), "claude-code/opus", usage(), &[]).await).1,
         None
@@ -1097,8 +1129,8 @@ async fn checkpoint_tag_on_handoff_and_race() {
 async fn auto_handoff_carries_the_entry_rules() {
     let mut fixture = Fixture::with_models();
     let settings = fixture.settings_mut();
-    settings.handoff.mode = HandoffMode::Auto;
-    settings.handoff.fallback = vec![FallbackEntry::WithRules(FallbackRules {
+    settings.fallback.mode = HandoffMode::Auto;
+    settings.fallback.order = vec![FallbackEntry::WithRules(FallbackRules {
         worker: worker("codex/gpt-5"),
         max_budget_usd: None,
         instructions: Some("Only finish the failing test.".to_owned()),
@@ -1120,14 +1152,14 @@ async fn auto_handoff_carries_the_entry_rules() {
                     .any(|note| note.starts_with("Read-only"))
             );
         }
-        other => panic!("expected a handoff, got {other:?}"),
+        other => panic!("expected a fallback, got {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn journal_feeds_the_plan_and_a_missing_one_is_noted() {
     let mut fixture = Fixture::with_models();
-    fixture.settings_mut().handoff.mode = HandoffMode::Ask;
+    fixture.settings_mut().fallback.mode = HandoffMode::Ask;
     let limits = fixture.limits();
     let gate = argonauts_core::events::card::GateOutcome {
         name: "tests".to_owned(),
@@ -1193,9 +1225,25 @@ async fn paused_resumes_and_stopped_escalates() {
 #[test]
 fn session_limits_follow_budget_and_watchdogs() {
     let mut fixture = Fixture::new();
-    let limits = fixture.limits();
     let spec = card(CARD);
-    let owner = limits.session_limits(Some(&spec), RoleName::Owner);
+
+    // Nothing is set, so nothing stops a task: only a hung or looping session is caught.
+    let unlimited = fixture
+        .limits()
+        .session_limits(Some(&spec), RoleName::Worker);
+    assert_eq!(unlimited.budget, None);
+    assert_eq!(unlimited.native_cap_usd, None);
+    assert_eq!(unlimited.max_minutes, None);
+    assert_eq!(unlimited.max_tool_calls, None);
+    assert_eq!(unlimited.inactivity_min, Some(15.0));
+    assert_eq!(unlimited.repeat_limit, Some(10));
+
+    let settings = fixture.settings_mut();
+    settings.limits.budget.per_task_usd = Some(3.0);
+    settings.watchdogs.wall_clock_min = Some(30.0);
+    settings.watchdogs.max_tool_calls = Some(150);
+    let limits = fixture.limits();
+    let owner = limits.session_limits(Some(&spec), RoleName::Worker);
     assert_eq!(
         owner.budget,
         Some(BudgetAmount {
@@ -1217,7 +1265,7 @@ fn session_limits_follow_budget_and_watchdogs() {
         amount: 200_000.0,
     });
     own.budget.max_minutes = Some(5.0);
-    let custom = limits.session_limits(Some(&own), RoleName::Owner);
+    let custom = limits.session_limits(Some(&own), RoleName::Worker);
     assert_eq!(
         custom.budget.map(|budget| budget.unit),
         Some(BudgetUnit::Tokens)
@@ -1229,22 +1277,22 @@ fn session_limits_follow_budget_and_watchdogs() {
     fixture
         .settings_mut()
         .roles
-        .entry(RoleName::Coordinator)
+        .entry(RoleName::Orchestrator)
         .or_default()
         .lifetime = Some(argonauts_core::settings::sessions::SessionLifetime::Run);
-    let coordinator = fixture.limits().session_limits(None, RoleName::Coordinator);
+    let coordinator = fixture
+        .limits()
+        .session_limits(None, RoleName::Orchestrator);
     assert_eq!(coordinator.budget, None);
     assert_eq!(coordinator.max_minutes, None);
     assert_eq!(coordinator.inactivity_min, Some(15.0));
 
-    // Budgets off: the meter counts, nothing stops for budget.
-    let settings = fixture.settings_mut();
-    settings.budget.enabled = false;
-    settings.budget.soft_stop = f64::NAN;
-    let off = fixture.limits().session_limits(Some(&own), RoleName::Owner);
-    assert_eq!(off.budget, None);
-    assert_eq!(off.native_cap_usd, None);
-    assert!((off.soft_stop - argonauts_core::DEFAULT_SOFT_RATIO).abs() < 1e-9);
+    // A share that can't be read falls back to the built-in one.
+    fixture.settings_mut().limits.budget.soft_stop = f64::NAN;
+    let odd = fixture
+        .limits()
+        .session_limits(Some(&own), RoleName::Worker);
+    assert!((odd.soft_stop - argonauts_core::DEFAULT_SOFT_RATIO).abs() < 1e-9);
 }
 
 /// The card started on `claude-code/opus` and auto handed it to `codex/gpt-5`.
@@ -1261,7 +1309,7 @@ fn handed_to_codex() -> Vec<RunEvent> {
         event(
             2,
             RunEventKind::Handoff(HandoffEvent::HandedOff {
-                card: CardId::new(CARD).expect("a valid card id"),
+                card: CardId::new(CARD).expect("a valid task id"),
                 to: worker("codex/gpt-5"),
                 mode: HandoffMode::Auto,
                 by: Party::Rules,
@@ -1280,9 +1328,9 @@ fn a_returning_original_leaves_the_card_with_a_notice() {
     assert_eq!(
         limits.original_returned(&claude, "Claude Code", &events),
         vec![OriginalBack::Stays {
-            card: CardId::new(CARD).expect("a valid card id"),
-            notice: "Claude Code is back · card-003 stays with codex/gpt-5 · \
-                     /reassign card-003 claude-code/opus moves it back"
+            card: CardId::new(CARD).expect("a valid task id"),
+            notice: "Claude Code is back · task-003 stays with codex/gpt-5 · \
+                     /reassign task-003 claude-code/opus moves it back"
                 .to_owned(),
         }]
     );
@@ -1321,7 +1369,7 @@ fn a_returning_original_leaves_the_card_with_a_notice() {
 fn a_returning_original_follows_on_return() {
     let mut fixture = Fixture::with_models();
     let claude = vendor("claude-code");
-    let card_id = || CardId::new(CARD).expect("a valid card id");
+    let card_id = || CardId::new(CARD).expect("a valid task id");
 
     let mut events = handed_to_codex();
     events.push(card_event(
@@ -1351,7 +1399,7 @@ fn a_returning_original_follows_on_return() {
             by: worker("claude-code/opus"),
         },
     ));
-    let handoff = &mut fixture.settings_mut().handoff;
+    let handoff = &mut fixture.settings_mut().fallback;
     handoff.on_return = None;
     handoff.return_to_original = true;
     assert_eq!(

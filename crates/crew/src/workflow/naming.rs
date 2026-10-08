@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunNamed};
+use argonauts_core::events::run::{RunLifecycle, RunNamed};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::layout;
 use argonauts_core::settings::workflows::RunStyle;
@@ -19,18 +19,12 @@ use argonauts_core::workflow::{Workflow, WorkflowRef};
 
 use crate::engine::host::Host;
 use crate::error::EngineResult;
-use crate::workflow::{brief, runner};
+use crate::workflow::brief;
 
-/// The style a new run takes: `workflows.style` (whose layers already hold the preset's), then
-/// what the lead's CLI does. A solo run is a workflow of one.
-pub fn style(host: &Host) -> RunStyle {
-    if host.read(runner::run_mode) == Some(RunMode::Solo) {
-        return RunStyle::Workflow;
-    }
-    let settings = host.settings();
-    settings
-        .workflows
-        .style_for_lead(&settings.default_agent.worker)
+/// Every run is a workflow. A goal is a condition around it, which the run takes from how it
+/// was started (`goal::pursue`), and no longer a kind of run the lead's CLI picks.
+pub fn style(_host: &Host) -> RunStyle {
+    RunStyle::Workflow
 }
 
 /// Names a new run from intake, or from your request, unless it's named already.

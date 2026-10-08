@@ -10,6 +10,11 @@ use crate::bottom::CardPrompt;
 
 /// Rows of a choice's body shown on the card. The rest waits for Show the file.
 const MAX_BODY_ROWS: usize = 8;
+/// Rows of a dry run's table, which is all the card is for.
+const MAX_TABLE_ROWS: usize = 24;
+
+/// A setup is what its card asks about, so it may run longer.
+const MAX_SETUP_ROWS: usize = 16;
 
 pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
     let options = card_options(&choice.options, false);
@@ -18,21 +23,24 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
     card.allow_note = choice.free_text != FreeText::None;
     card.esc_hint = esc_hint(choice.kind).to_owned();
     // Every choice asks you, so every one takes the keys. What differs is who set it off. Work
-    // raised these after the lead's or the CLI's reply, which you may answer by typing, so once
-    // you do it leaves the keys with you, and Esc sets it aside. You set off the rest, so they
-    // open with the keys and Esc closes them.
+    // raised these after the main agent's or the CLI's reply, which you may rather answer by
+    // typing, so Esc hands them on and gives you the input. You set off the rest, so they open
+    // with the keys and Esc closes them.
     if raised_by_work(choice.kind) {
         card.needs_you = true;
-        card.yields_to_typing = true;
     } else {
         card = card.yours();
         card.esc_answers = true;
     }
 
     let mut rows: Vec<String> = choice.body.clone();
-    if rows.len() > MAX_BODY_ROWS {
-        let hidden = rows.len() - (MAX_BODY_ROWS - 1);
-        rows.truncate(MAX_BODY_ROWS - 1);
+    let most = match choice.kind {
+        ChoiceKind::TryWorkflow => MAX_TABLE_ROWS,
+        _ => MAX_BODY_ROWS,
+    };
+    if rows.len() > most {
+        let hidden = rows.len() - (most - 1);
+        rows.truncate(most - 1);
         rows.push(format!("… +{hidden} more lines"));
     }
     match choice.kind {
@@ -42,7 +50,8 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
         | ChoiceKind::DetectedGates
         | ChoiceKind::ConfirmRevert
         | ChoiceKind::ConfirmConnect
-        | ChoiceKind::Permission => card.body = rows,
+        | ChoiceKind::Permission
+        | ChoiceKind::TryWorkflow => card.body = rows,
         ChoiceKind::StartWork
         | ChoiceKind::RefusedCommands
         | ChoiceKind::GoAhead
@@ -52,9 +61,27 @@ pub fn choice_card(id: u64, choice: &AppChoice) -> CardPrompt {
         | ChoiceKind::TermsNote
         | ChoiceKind::Init
         | ChoiceKind::SettingScope
-        | ChoiceKind::KeepInstructions => card.detail = rows,
+        | ChoiceKind::KeepInstructions
+        | ChoiceKind::Git => card.detail = rows,
+        ChoiceKind::Setup => card.detail = setup_rows(&choice.body),
     }
     card
+}
+
+/// A setup's card shows the setup, which ends at the first blank line. What each place would
+/// write follows it, for Show what would be written.
+fn setup_rows(body: &[String]) -> Vec<String> {
+    let mut rows: Vec<String> = body
+        .iter()
+        .take_while(|line| !line.trim().is_empty())
+        .cloned()
+        .collect();
+    if rows.len() > MAX_SETUP_ROWS {
+        let hidden = rows.len() - (MAX_SETUP_ROWS - 1);
+        rows.truncate(MAX_SETUP_ROWS - 1);
+        rows.push(format!("… +{hidden} more lines"));
+    }
+    rows
 }
 
 /// Work raised it after a reply in the chat, rather than a command or key of yours. A CLI's
@@ -76,7 +103,10 @@ fn raised_by_work(kind: ChoiceKind) -> bool {
         | ChoiceKind::ConfirmRevert
         | ChoiceKind::ConfirmConnect
         | ChoiceKind::KeepInstructions
-        | ChoiceKind::RewindTurn => false,
+        | ChoiceKind::RewindTurn
+        | ChoiceKind::TryWorkflow
+        | ChoiceKind::Setup
+        | ChoiceKind::Git => false,
     }
 }
 
@@ -84,7 +114,7 @@ fn raised_by_work(kind: ChoiceKind) -> bool {
 pub fn esc_hint(kind: ChoiceKind) -> &'static str {
     match kind {
         ChoiceKind::StartWork | ChoiceKind::KeepInstructions | ChoiceKind::RefusedCommands => {
-            "Esc to set aside"
+            crate::bottom::ESC_HINT
         }
         ChoiceKind::Permission | ChoiceKind::GoAhead => "Esc for No",
         ChoiceKind::HandOff => "Esc to stop",
@@ -92,10 +122,13 @@ pub fn esc_hint(kind: ChoiceKind) -> &'static str {
         | ChoiceKind::SettingScope
         | ChoiceKind::ConfirmSafetySetting
         | ChoiceKind::ConfirmRevert
-        | ChoiceKind::RewindTurn => "Esc to cancel",
-        ChoiceKind::TrustProject | ChoiceKind::DetectedGates | ChoiceKind::ConfirmConnect => {
-            "Esc for not now"
-        }
+        | ChoiceKind::RewindTurn
+        | ChoiceKind::Git => "Esc to cancel",
+        ChoiceKind::TrustProject
+        | ChoiceKind::DetectedGates
+        | ChoiceKind::ConfirmConnect
+        | ChoiceKind::Setup => "Esc for not now",
         ChoiceKind::TermsNote | ChoiceKind::Init => "Esc to take the recommended answers",
+        ChoiceKind::TryWorkflow => "Esc to close",
     }
 }

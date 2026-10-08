@@ -9,9 +9,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use argonauts_core::events::VendorEvent;
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::session::{LimitEvent, SessionEvent, loaded_words};
 use argonauts_core::limits::{HealthSignal, QuotaStatus};
 use argonauts_core::settings::approvals::IsolatedLeak;
+use argonauts_core::settings::budget::OnHit;
 use argonauts_core::settings::handoff::WrapUp;
 use argonauts_core::settings::sessions::{FanoutSwitch, NativeFanout};
 use argonauts_core::{
@@ -22,6 +24,7 @@ use time::OffsetDateTime;
 
 use super::boards::Boards;
 use super::context::Context;
+use super::context_watch::ContextWatch;
 use super::diffs::Diffs;
 use super::end::{EndFacts, SeenError};
 use super::outbox::Outbox;
@@ -53,6 +56,8 @@ pub enum Action {
         times: u32,
     },
     Stop(StopCause),
+    /// Ask the CLI for its context by category.
+    AskContext(ContextDetail),
 }
 
 /// What the end needs to know.
@@ -99,6 +104,8 @@ pub struct Observer {
     diffs: Diffs,
     boards: Boards,
     context_window: Option<u64>,
+    /// `sessions.context` in tokens, when it lowers the window.
+    context_cap: Option<u64>,
     pub facts: Facts,
     started: Instant,
     budget_sent: Option<(BudgetStatus, Instant)>,
@@ -114,25 +121,32 @@ pub struct Observer {
     /// Kinds of events the adapter didn't read, with counts, kept per version for `/doctor`.
     unread: BTreeMap<String, u64>,
     wrap_up_stopped: bool,
+    plan_limit_stopped: bool,
+    context_watch: ContextWatch,
 }
 
 impl Observer {
     pub fn new(ctx: Arc<Context>, out: Outbox, started: Instant) -> Self {
         let spec = &ctx.spec;
-        let context_window = ctx
-            .registry
-            .as_ref()
-            .and_then(|registry| registry.get(&spec.worker))
-            .and_then(|entry| entry.context_window);
-        let rotate_at = ctx
-            .settings
-            .sessions
-            .rotate_at
-            .tokens(context_window)
-            .unwrap_or_else(|err| {
+        let sessions = &ctx.settings.sessions;
+        let context_cap = sessions.context.cap().unwrap_or_else(|err| {
+            out.notice(format!("sessions.{err}, so the largest window is used"));
+            None
+        });
+        // The largest window the CLI offers for the model, held to `sessions.context`.
+        let context_window = sessions.context.window(
+            ctx.registry
+                .as_ref()
+                .and_then(|registry| registry.get(&spec.worker))
+                .and_then(|entry| entry.context_window),
+        );
+        let rotate_at = match sessions.rotate_at.tokens(context_window) {
+            Ok(_) => Some(sessions.rotate_at.clone()),
+            Err(err) => {
                 out.notice(format!("sessions.{err}, so the session won't rotate"));
                 None
-            });
+            }
+        };
         let mut meter = SessionMeter::new(MeterSetup {
             limits: spec.limits.clone(),
             pricing: meter::pricing(
@@ -142,9 +156,9 @@ impl Observer {
                 ctx.adapter.model_base_url().as_deref(),
             ),
             capabilities: ctx.adapter.capabilities(),
-            budgets_enabled: ctx.settings.budget.enabled,
             rotate_at,
             context_window,
+            context_cap,
         });
         meter.resumed_from(meter::spent_before(spec, ctx.adapter.id()));
         let watchdogs =
@@ -163,6 +177,7 @@ impl Observer {
             diffs,
             boards,
             context_window,
+            context_cap,
             facts: Facts {
                 model: asked_for,
                 ..Facts::default()
@@ -177,7 +192,19 @@ impl Observer {
             cli_version: None,
             unread: BTreeMap::new(),
             wrap_up_stopped: false,
+            plan_limit_stopped: false,
+            context_watch: ContextWatch::default(),
         }
+    }
+
+    /// Something started or stopped showing this session's context.
+    pub fn watch_context(&mut self, detail: Option<ContextDetail>) {
+        self.context_watch.set(detail);
+    }
+
+    /// The breakdown was asked for outright.
+    pub fn asked_context(&mut self) {
+        self.context_watch.asked(Instant::now());
     }
 
     pub fn spend(&self) -> Spend {
@@ -232,10 +259,13 @@ impl Observer {
     }
 
     pub fn event(&mut self, mut event: AgentEvent) -> Vec<Action> {
-        if let AgentEvent::ContextFill { size, .. } = &mut event
-            && size.is_none()
-        {
-            *size = self.context_window;
+        if let AgentEvent::ContextFill { size, .. } = &mut event {
+            // The window the session is held to: what its CLI reports, else the registry's,
+            // and never more than `sessions.context` allows.
+            *size = match (size.or(self.context_window), self.context_cap) {
+                (Some(window), Some(cap)) => Some(window.min(cap)),
+                (window, _) => window,
+            };
         }
         self.events += 1;
         if !matches!(
@@ -251,7 +281,13 @@ impl Observer {
             self.diffs.changed(path);
         }
         let mut actions: Vec<Action> = self.isolation(&event).into_iter().collect();
+        if matches!(event, AgentEvent::ContextFill { .. })
+            && let Some(detail) = self.context_watch.after_fill(Instant::now())
+        {
+            actions.push(Action::AskContext(detail));
+        }
         actions.extend(self.wrap_up_stop(&event));
+        actions.extend(self.plan_limit_stop(&event));
         let verdict = self.meter.observe(&event);
         actions.extend(meter_action(verdict));
         if matches!(event, AgentEvent::Usage { .. }) {
@@ -286,8 +322,9 @@ impl Observer {
         self.keep_unread().await;
         self.diffs.flush(&self.out).await;
         if !self.boards.settle().await {
-            self.out
-                .notice("the quota and health boards didn't take this session's last readings");
+            self.out.notice(
+                "the plan usage and health boards didn't take this session's last readings",
+            );
         }
         self.record_spend();
         self.budget(true);
@@ -349,6 +386,7 @@ impl Observer {
                 self.boards.quota(reading.clone());
                 self.out.vendor(VendorEvent::Quota(reading.clone()));
             }
+            AgentEvent::Plan { plan } => self.boards.plan(plan.clone()),
             AgentEvent::Retry { reason, .. } => self.signal(HealthSignal::Retry {
                 vendor: self.ctx.vendor.clone(),
                 session: self.ctx.spec.key.clone(),
@@ -553,14 +591,10 @@ impl Observer {
             return None;
         };
         // A role's own table has the top-level value unless it sets one.
-        let wanted = self
-            .ctx
-            .settings
-            .roles
-            .get(&self.ctx.spec.role)
-            .map_or(self.ctx.settings.handoff.wrap_up, |role| {
-                role.handoff.wrap_up
-            });
+        let fallback = &self.ctx.settings.fallback;
+        let wanted = fallback
+            .for_role(self.ctx.spec.role)
+            .map_or(fallback.wrap_up, |role| role.wrap_up);
         if !reading.wrap_up
             || wanted != WrapUp::HandOff
             || std::mem::replace(&mut self.wrap_up_stopped, true)
@@ -569,6 +603,28 @@ impl Observer {
         }
         Some(Action::Stop(StopCause::WrapUp {
             resets_at: reading.resets_at,
+        }))
+    }
+
+    /// A plan window as full as your `limits.plan_usage` ends the turn once. `when_reached`
+    /// says how: as a plan that ran out, so the fallbacks take over, or as a reached limit,
+    /// so the task stops.
+    fn plan_limit_stop(&mut self, event: &AgentEvent) -> Option<Action> {
+        let AgentEvent::Quota { reading } = event else {
+            return None;
+        };
+        let limits = &self.ctx.settings.limits.budget;
+        let limit = limits.plan_usage?;
+        if reading.used.is_none_or(|used| used < limit)
+            || std::mem::replace(&mut self.plan_limit_stopped, true)
+        {
+            return None;
+        }
+        Some(Action::Stop(match limits.when_reached {
+            OnHit::Fallback => StopCause::PlanLimit {
+                resets_at: reading.resets_at,
+            },
+            OnHit::Stop => StopCause::Limit(BudgetDimension::Spend),
         }))
     }
 

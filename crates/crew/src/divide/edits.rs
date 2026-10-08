@@ -70,7 +70,7 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
         };
         let rest = words.next().unwrap_or("").trim();
         let keyword = second.trim_end_matches(':').to_ascii_lowercase();
-        if first.eq_ignore_ascii_case("budget") {
+        if first.eq_ignore_ascii_case("limit") {
             let Some(line_kind) = budget_lines::line_named(second.trim_end_matches(':')) else {
                 continue;
             };
@@ -82,13 +82,13 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
             continue;
         }
         if !looks_like_card(first)
-            || !matches!(keyword.as_str(), "owner" | "reviewers" | "paths" | "budget")
+            || !matches!(keyword.as_str(), "worker" | "reviewers" | "paths" | "limit")
         {
             continue;
         }
-        let card = CardId::new(first).map_err(|_| format!("`{first}` isn't a card id."))?;
+        let card = CardId::new(first).map_err(|_| format!("`{first}` isn't a task id."))?;
         let edit = match keyword.as_str() {
-            "owner" => Edit::Owner {
+            "worker" => Edit::Owner {
                 card,
                 worker: worker(rest, line)?,
             },
@@ -125,13 +125,13 @@ pub fn apply(
     let mut cards = graph.cards.clone();
     let mut budget = budget.clone();
     let (mut owners, mut reviewers, mut budget_changed) = (Vec::new(), Vec::new(), false);
-    let owner_pool = roles::candidates(settings, RoleName::Owner);
+    let owner_pool = roles::candidates(settings, RoleName::Worker);
     let reviewer_pool = roles::candidates(settings, RoleName::Reviewer);
     for edit in edits {
         match edit {
             Edit::Owner { card, worker } => {
                 if !owner_pool.contains(worker) {
-                    return Err(format!("{worker} isn't one of the owner candidates."));
+                    return Err(format!("{worker} isn't one of the worker candidates."));
                 }
                 find(&mut cards, card)?.owner = Some(worker.clone());
                 owners.push(card.clone());
@@ -148,7 +148,7 @@ pub fn apply(
             }
             Edit::CardBudget { card, amount } => {
                 if !amount.is_finite() || *amount <= 0.0 {
-                    return Err(format!("{card}'s budget must be more than 0."));
+                    return Err(format!("{card}'s limit must be more than 0."));
                 }
                 let spec = find(&mut cards, card)?;
                 let unit = spec
@@ -163,7 +163,7 @@ pub fn apply(
             Edit::Line { line, share } => {
                 if !(0.0..=1.0).contains(share) {
                     return Err(format!(
-                        "The {} budget line's share must be between 0 and 1.",
+                        "The {} limit line's share must be between 0 and 1.",
                         budget_lines::line_name(*line)
                     ));
                 }
@@ -207,7 +207,7 @@ pub fn decision(id: DecisionId, note: &str) -> DesignDecision {
         id,
         title: DECISION_TITLE.to_owned(),
         choice: note.trim().to_owned(),
-        rationale: "You approved the plan with these edits at the plan checkpoint.".to_owned(),
+        rationale: "You approved the plan with these edits at the plan approval.".to_owned(),
         alternatives: Vec::new(),
         path: None,
     }
@@ -243,9 +243,9 @@ fn conflicts(
             if let Some(reason) = roles::conflict(RoleName::Reviewer, reviewer, Some(owner), family)
             {
                 broken.push(format!("{reason} ({}).", card.id));
-            } else if settings.review.other_family && family(reviewer) == family(owner) {
+            } else if settings.review.other_provider && family(reviewer) == family(owner) {
                 broken.push(format!(
-                    "{reviewer} is in the same model family as {owner}, {}'s owner.",
+                    "{reviewer} is in the same provider as {owner}, {}'s worker.",
                     card.id
                 ));
             }
@@ -256,7 +256,7 @@ fn conflicts(
             && roles::conflict(RoleName::Reviewer, owner, Some(tested_owner), family).is_some()
         {
             broken.push(format!(
-                "{owner} can't write the acceptance tests for its own card {for_card}."
+                "{owner} can't write the acceptance tests for its own task {for_card}."
             ));
         }
     }
@@ -336,7 +336,7 @@ mod tests {
 
     fn fixture() -> (TaskGraph, BudgetPlan, Settings) {
         let settings = Settings {
-            crew: vec![worker("claude-code"), worker("codex"), worker("agy")],
+            crew: vec![worker("claude-code"), worker("codex"), worker("agy")].into(),
             ..Settings::default()
         };
         let tests = CardKind::AcceptanceTests {
@@ -347,12 +347,12 @@ mod tests {
                 spec(
                     "test-002",
                     tests,
-                    "tests/acceptance/card-001/**",
+                    "tests/acceptance/task-001/**",
                     "codex",
                     "agy",
                 ),
                 spec(
-                    "card-001",
+                    "task-001",
                     CardKind::Build,
                     "src/store/**",
                     "claude-code",
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn edits_parse_from_the_note() {
-        let note = "Keep the store small.\ncard-001 owner: codex\ncard-001 paths src/store/**, src/cache.rs\nbudget cards 0.5\ntest-002 budget $2\nThe budget matters.";
+        let note = "Keep the store small.\ntask-001 worker: codex\ntask-001 paths src/store/**, src/cache.rs\nlimit tasks 0.5\ntest-002 limit $2\nThe limit matters.";
         let edits = parse(note).unwrap();
         assert_eq!(
             edits,
@@ -406,7 +406,7 @@ mod tests {
                 },
             ]
         );
-        assert!(parse("card-001 budget lots").is_err());
+        assert!(parse("task-001 limit lots").is_err());
     }
 
     #[test]
@@ -416,19 +416,18 @@ mod tests {
             |note: &str| apply(&graph, &budget, &parse(note).unwrap(), &settings, &family);
 
         // The test card follows its card's new reviewer, and then needs another reviewer.
-        let reason = try_edit("card-001 reviewers agy").unwrap_err();
+        let reason = try_edit("task-001 reviewers agy").unwrap_err();
         assert!(
-            reason.contains("agy can't review its own card (test-002)"),
+            reason.contains("agy can't review its own task (test-002)"),
             "{reason}"
         );
         let edited =
-            try_edit("card-001 reviewers agy\ntest-002 reviewers codex\ncard-001 budget 4")
-                .unwrap();
+            try_edit("task-001 reviewers agy\ntest-002 reviewers codex\ntask-001 limit 4").unwrap();
         let tests = &edited.graph.cards[0];
         assert_eq!(
             tests.owner,
             Some(worker("agy")),
-            "the test card follows the reviewer"
+            "the test task follows the reviewer"
         );
         assert_eq!(
             edited.reviewers,
@@ -437,49 +436,49 @@ mod tests {
         assert_eq!(edited.graph.cards[1].budget.limit.unwrap().amount, 4.0);
         assert!(!edited.budget_changed);
 
-        let reason = try_edit("card-001 owner codex").unwrap_err();
+        let reason = try_edit("task-001 worker codex").unwrap_err();
         assert!(
-            reason.contains("codex can't review its own card"),
+            reason.contains("codex can't review its own task"),
             "{reason}"
         );
         assert!(
-            reason.contains("acceptance tests for its own card card-001"),
+            reason.contains("acceptance tests for its own task task-001"),
             "{reason}"
         );
         assert_eq!(
-            try_edit("card-001 owner agy").unwrap().owners,
+            try_edit("task-001 worker agy").unwrap().owners,
             [CardId::numbered(1)]
         );
-        let reason = try_edit("card-001 paths tests/acceptance/**").unwrap_err();
+        let reason = try_edit("task-001 paths tests/acceptance/**").unwrap_err();
         assert!(reason.contains("overlap"), "{reason}");
-        let reason = try_edit("budget cards 0.7").unwrap_err();
+        let reason = try_edit("limit tasks 0.7").unwrap_err();
         assert_eq!(
             reason,
-            "The budget lines add up to $11.00, not the run budget of $10.00."
+            "The limit lines add up to $11.00, not the run limit of $10.00."
         );
         assert!(
-            try_edit("budget cards 0.7\nbudget reserve 0.3")
+            try_edit("limit tasks 0.7\nlimit reserve 0.3")
                 .unwrap()
                 .budget_changed
         );
         assert!(
-            try_edit("card-009 owner agy")
+            try_edit("task-009 worker agy")
                 .unwrap_err()
-                .contains("no card-009")
+                .contains("no task-009")
         );
         assert!(
-            try_edit("card-001 owner ollama")
+            try_edit("task-001 worker ollama")
                 .unwrap_err()
-                .contains("owner candidates")
+                .contains("worker candidates")
         );
         assert!(try_edit("Just be careful.").is_ok());
     }
 
     #[test]
     fn plan_edits_become_a_decision_titled_your_edits() {
-        let record = decision(DecisionId::numbered(4), "  card-001 owner agy\n");
+        let record = decision(DecisionId::numbered(4), "  task-001 worker agy\n");
         assert_eq!(record.title, "Your edits");
-        assert_eq!(record.choice, "card-001 owner agy");
+        assert_eq!(record.choice, "task-001 worker agy");
         assert_eq!(record.id.as_str(), "D-004");
     }
 }

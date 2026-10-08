@@ -12,9 +12,12 @@ mod controller;
 mod env;
 mod example_prompt;
 mod git;
+mod hidden_git;
 mod host;
+mod keep_awake;
 mod learning;
 mod live_registry;
+mod mods;
 mod prompts;
 mod repo_files;
 mod run_command;
@@ -23,9 +26,11 @@ mod setup;
 mod startup;
 mod trace;
 mod trust;
+mod usage_ledger;
 mod views;
 mod wake;
 mod wire;
+mod work_ledger;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +50,7 @@ pub use commands::{
 };
 pub use learning::shell::{LearningShell, ShellOutput, learning, learning_inbox};
 pub use live_registry::{LiveSupervisor, live_supervisors};
+pub use mods::doctor_problems as mod_problems;
 pub use run_command::{RunCommand, RunCommandExit, run_command};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -100,6 +106,13 @@ pub async fn run_interactive_with(
 /// Hosts one run: takes its lock, rebuilds it from its log, and drives the engine until it
 /// finishes or parks.
 pub async fn supervise(repo_root: &Path, run: &RunId) -> anyhow::Result<()> {
+    if let Ok(env) = Paths::from_env()
+        .map_err(anyhow::Error::from)
+        .and_then(|paths| env::AppEnv::for_repo(paths, repo_root, false))
+    {
+        // The approver and the narrator run here, and read your templates for their prompts.
+        prompts::catalog::use_files_of(&env);
+    }
     host::supervise(repo_root, run).await
 }
 

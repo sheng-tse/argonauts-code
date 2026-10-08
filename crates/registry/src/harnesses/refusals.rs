@@ -78,7 +78,7 @@ const CODE_LOADING_VARIABLES: &[&str] = &[
 const CODE_LOADING_PREFIXES: &[&str] = &["LD_", "DYLD_", "GIT_CONFIG"];
 
 pub(super) const OPENCLAW_ACP: &str = "`openclaw acp` isn't a profile: its ACP bridge runs tools \
-    in the Gateway, outside the card's sandbox and worktree, passes the working folder only as \
+    in the Gateway, outside the task's sandbox and worktree, passes the working folder only as \
     text at the top of the prompt, and refuses per-session MCP servers";
 
 /// Why `name` can't be set by an entry, if it can't.

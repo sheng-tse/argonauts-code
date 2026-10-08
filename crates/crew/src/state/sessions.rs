@@ -1,6 +1,6 @@
 //! Every session the run started, with its vendor session id and how it ended.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use argonauts_core::CardId;
 use argonauts_core::event::AgentEvent;
 use argonauts_core::events::RunEvent;
-use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent, SessionStarted};
+use argonauts_core::events::session::{
+    EndReason, SessionEnd, SessionEvent, SessionStarted, VendorWorkflow,
+};
 use argonauts_core::names::{SessionKey, WorkerRef};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -38,6 +40,9 @@ pub struct SessionRecord {
     pub transcript: Option<PathBuf>,
     /// The newest context fill the harness reported, in tokens.
     pub context_used: Option<u64>,
+    /// The window that fill was of, when it came with one.
+    #[serde(default)]
+    pub context_window: Option<u64>,
     pub end: Option<SessionEnd>,
     /// It ended `Stopped` because the whole run stopped, so a reopened run resumes it.
     #[serde(default)]
@@ -50,6 +55,13 @@ pub struct SessionRecord {
     /// Each time it ended for a vendor reason: the worker then, and the seq of the end.
     #[serde(default)]
     pub vendor_failures: Vec<(WorkerRef, u64)>,
+    /// The files its edit tools wrote, as its CLI named them: from its folder, or absolute.
+    #[serde(default)]
+    pub written: BTreeSet<String>,
+    /// The workflow its own CLI ran, as it last reported it, which the steps you require are
+    /// checked against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Box<VendorWorkflow>>,
 }
 
 impl SessionRecord {
@@ -107,10 +119,13 @@ impl Sessions {
                         vendor_session: started.resumed_from.clone(),
                         transcript: None,
                         context_used: None,
+                        context_window: None,
                         end: None,
                         stopped_with_run: false,
                         asked: started.asked.clone(),
                         vendor_failures: Vec::new(),
+                        written: BTreeSet::new(),
+                        workflow: None,
                     };
                     self.by_key.insert(key.clone(), record);
                 }
@@ -137,10 +152,14 @@ impl Sessions {
                     record.end = Some((**end).clone());
                 }
             }
+            SessionEvent::FileDiff(diff) => {
+                if let Some(record) = self.by_key.get_mut(key) {
+                    record.written.insert(diff.path.clone());
+                }
+            }
             SessionEvent::Input(_)
             | SessionEvent::Queued(_)
             | SessionEvent::Delivered { .. }
-            | SessionEvent::FileDiff(_)
             | SessionEvent::Limit(_) => {}
         }
     }
@@ -164,7 +183,14 @@ impl Sessions {
                 session_id: Some(id),
                 ..
             } if record.vendor_session.is_none() => record.vendor_session = Some(id.clone()),
-            AgentEvent::ContextFill { used, .. } => record.context_used = Some(*used),
+            AgentEvent::ContextFill { used, size, .. } => {
+                record.context_used = Some(*used);
+                record.context_window = size.or(record.context_window);
+            }
+            AgentEvent::FileChanged { path, .. } => {
+                record.written.insert(path.clone());
+            }
+            AgentEvent::Workflow { workflow } => record.workflow = Some(workflow.clone()),
             _ => {}
         }
     }

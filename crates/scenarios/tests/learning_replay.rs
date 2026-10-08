@@ -28,25 +28,25 @@ const HOUSE_RULE: &str = "House rule: name the scoped package @acme/api in READM
 
 /// Replays run on the crew's one agent, once per task, and your rules promote a build prompt.
 const CONFIG: &str = "\
-default_agent = \"claude-code\"
+main_agent = \"claude-code\"
 crew = [\"claude-code\"]
 
 [ui]
 keys = \"default\"
 
 [supervisor]
-park_grace = \"1s\"
+wait_grace = \"1s\"
 
 [evolution.replay]
 runs_per_task = 1
 sequential = false
 use_subscriptions = true
 
-[approvals.recipe_promotion.rules]
+[approvals.rules.workflow_promotion]
 change_classes = [\"build_prompt\"]
 ";
 
-const V1: &str = "recipe: docs-fix\nversion: 1\ndescription: Small docs fixes\nmode: solo\n\
+const V1: &str = "name: docs-fix\nversion: 1\ndescription: Small docs fixes\nmode: solo\n\
                   match: { task_types: [docs] }\nsolo: { restate_first: true }\n";
 
 /// The app scenario's fakes, with one owner first that fixes README.md when its prompt
@@ -155,7 +155,7 @@ fn add_task(
         .find(|&seed| holdout_draw(seed, 0.25) == holdout)
         .context("a seed")?;
     let entry = ReplaySet::open(store)?.accept(id, seed)?;
-    anyhow::ensure!(entry.holdout == holdout, "{id} landed on the wrong side");
+    anyhow::ensure!(entry.holdout == holdout, "{id} merged into the wrong side");
     Ok(())
 }
 
@@ -166,7 +166,7 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
     std::fs::write(scenario.repo.global_config(), CONFIG)?;
     let repo = &scenario.repo;
     repo.write("README.md", "# Test repo\n\nnpm install api\n")?;
-    repo.write(".argonauts/recipes/docs-fix/v1.yaml", V1)?;
+    repo.write(".argonauts/learned/docs-fix/v1.yaml", V1)?;
     let base = repo.commit_all("a docs recipe")?;
     repo.write("README.md", "# Test repo\n\nnpm install @acme/api\n")?;
     repo.write("tests/readme.sh", "grep -q '@acme/api' README.md\n")?;
@@ -197,7 +197,7 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
     let proposal = ProcessChange {
         setting: "prompts.build".to_owned(),
         value: format!("\"{HOUSE_RULE}\""),
-        why: "the owner never looked at the package name".to_owned(),
+        why: "the worker never looked at the package name".to_owned(),
     };
     let evolution = Evolution::open(&store)?;
     evolution.after_run(&settings, &ran, Some(&proposal))?;
@@ -211,7 +211,7 @@ fn a_replay_finishes_on_its_own_and_reaches_promotion() -> anyhow::Result<()> {
 
     let output = run_cli_within(
         &scenario,
-        &["recipes", "replay"],
+        &["learned", "replay"],
         std::time::Duration::from_secs(300),
     )?;
     let said = output_text(&output);

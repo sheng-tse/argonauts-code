@@ -272,7 +272,7 @@ mod tests {
         let mut table = Table::new(vec![
             Column::new("title", 0).flex(),
             Column::new("files", 4).right(),
-            Column::new("owner", 3).cut_to(16),
+            Column::new("worker", 3).cut_to(16),
         ]);
         table.row(vec![
             TableCell::text("Acceptance tests for the load test"),

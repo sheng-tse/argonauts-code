@@ -23,7 +23,7 @@ pub(super) fn push(
     item.blank();
     let mut name = workflow.name.clone();
     if shown.from.is_none() {
-        name.push_str(" (composed by the lead)");
+        name.push_str(" (composed by the main agent)");
     }
     if !workflow.description.trim().is_empty() {
         name.push_str(&format!(" · {}", workflow.description.trim()));
@@ -56,11 +56,18 @@ pub(super) fn push(
             .iter()
             .map(|step| step_text(step, names))
             .collect();
-        item.more(
-            format!("{}: {}", phase.name, steps.join("; ")),
-            Role::Dim,
-            1,
-        );
+        // A phase of a script has no steps of this kind: its one line says who does what.
+        let says = if steps.is_empty() {
+            phase.detail.trim().to_owned()
+        } else {
+            steps.join("; ")
+        };
+        let line = if says.is_empty() {
+            phase.name.clone()
+        } else {
+            format!("{}: {says}", phase.name)
+        };
+        item.more(line, Role::Dim, 1);
     }
 }
 
@@ -124,7 +131,7 @@ fn scalar(value: &Value) -> String {
 fn step_text(step: &Step, names: &DisplayNames) -> String {
     if step.kind == StepKind::Checkpoint {
         return match step.checkpoint.and_then(|kind| word(&kind)) {
-            Some(kind) => format!("{kind} checkpoint"),
+            Some(kind) => format!("{kind} approval"),
             None => "checkpoint".to_owned(),
         };
     }
@@ -161,7 +168,7 @@ fn step_text(step: &Step, names: &DisplayNames) -> String {
         text.push_str(", blind");
     }
     if let Some(other) = &step.different_family_from {
-        text.push_str(&format!(", another family than {other}"));
+        text.push_str(&format!(", another provider than {other}"));
     }
     if let Some(until) = &step.until {
         text.push_str(&format!(" until {until}"));

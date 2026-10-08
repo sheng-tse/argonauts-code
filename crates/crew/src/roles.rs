@@ -5,33 +5,42 @@
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::crew::CrewRole;
 
 use crate::engine::host::Host;
 
-/// In order, without repeats. The default role is `default_agent` alone, and an empty crew
-/// falls back to it too.
+pub mod cards;
+
+/// In order, without repeats: `roles.<role>.workers` when set, else the seats of the one of the
+/// five roles it follows, or of the role that one follows while it has none of its own. The
+/// main role is `main_agent` alone, and a role nobody can fill falls back to it too.
 pub fn candidates(settings: &Settings, role: RoleName) -> Vec<WorkerRef> {
-    if role == RoleName::Default {
-        return vec![settings.default_agent.clone()];
+    if role == RoleName::Main {
+        return vec![settings.main_agent.clone()];
     }
     let configured = settings
         .roles
         .get(&role)
         .map(|role| role.workers.as_slice())
         .unwrap_or_default();
-    let pool = if configured.is_empty() {
-        settings.crew.as_slice()
+    let seat = CrewRole::followed_by(role);
+    let pool = if !configured.is_empty() {
+        configured.to_vec()
+    } else if let Some(followed) = settings.crew.followed(seat) {
+        // What isn't set follows what is, the followed role's own workers included: a judge
+        // follows reviewers named for the reviewer role, as your words name them.
+        candidates(settings, followed.fine_role())
     } else {
-        configured
+        settings.seats(seat)
     };
     let mut workers: Vec<WorkerRef> = Vec::with_capacity(pool.len());
     for worker in pool {
-        if !workers.contains(worker) {
-            workers.push(worker.clone());
+        if !workers.contains(&worker) {
+            workers.push(worker);
         }
     }
     if workers.is_empty() {
-        workers.push(settings.default_agent.clone());
+        workers.push(settings.main_agent.clone());
     }
     workers
 }
@@ -46,6 +55,11 @@ pub fn display_name(worker: &WorkerRef) -> String {
     DisplayNames::default().worker(worker)
 }
 
+/// The model alone where it runs on its own CLI, such as `Opus 5.5`, for a narrow place.
+pub fn short_name(worker: &WorkerRef) -> String {
+    DisplayNames::default().short(worker)
+}
+
 /// Why `worker` can't take `role` for this card, if it can't. `owner` is whoever made the work
 /// the role judges: the card's owner, or the plan's author for a judge.
 pub fn conflict(
@@ -56,8 +70,8 @@ pub fn conflict(
 ) -> Option<String> {
     let owner = owner?;
     let what = match role {
-        RoleName::Reviewer => "review its own card",
-        RoleName::Adjudicator => "adjudicate its own card",
+        RoleName::Reviewer => "review its own task",
+        RoleName::Adjudicator => "adjudicate its own task",
         RoleName::Judge => "judge its own plan",
         RoleName::Approver => "approve its own work",
         _ => return None,
@@ -98,7 +112,7 @@ mod tests {
     #[test]
     fn candidates_come_from_the_role_else_the_crew() {
         let mut settings = Settings {
-            crew: vec![worker("claude-code/opus"), worker("codex"), worker("codex")],
+            crew: vec![worker("claude-code/opus"), worker("codex"), worker("codex")].into(),
             ..Settings::default()
         };
         assert_eq!(
@@ -117,13 +131,13 @@ mod tests {
             vec![worker("agy/gemini-3.6-pro")]
         );
         assert_eq!(
-            candidates(&settings, RoleName::Default),
-            vec![settings.default_agent.clone()]
+            candidates(&settings, RoleName::Main),
+            vec![settings.main_agent.clone()]
         );
         settings.crew.clear();
         assert_eq!(
-            candidates(&settings, RoleName::Owner),
-            vec![settings.default_agent.clone()]
+            candidates(&settings, RoleName::Worker),
+            vec![settings.main_agent.clone()]
         );
     }
 
@@ -142,7 +156,7 @@ mod tests {
         }
         assert_eq!(
             conflict(RoleName::Reviewer, &owner, Some(&owner), &family_of).as_deref(),
-            Some("claude-code/opus can't review its own card")
+            Some("claude-code/opus can't review its own task")
         );
         // The harness's default model may be the owner's model, and the family says so.
         let default_model = worker("claude-code");
@@ -160,7 +174,7 @@ mod tests {
             .is_none()
         );
         // Roles that judge nobody's work have nothing to conflict with.
-        assert!(conflict(RoleName::Owner, &owner, Some(&owner), &family_of).is_none());
+        assert!(conflict(RoleName::Worker, &owner, Some(&owner), &family_of).is_none());
         assert!(conflict(RoleName::Reviewer, &owner, None, &family_of).is_none());
     }
 }

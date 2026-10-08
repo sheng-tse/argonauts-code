@@ -1,5 +1,5 @@
 //! An approver must not be an author or owner of what it approves, and with
-//! `different_family` it must not share a model family with any of them.
+//! `different_provider` it must not share a model family with any of them.
 
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::names::WorkerRef;
@@ -11,7 +11,7 @@ use argonauts_core::worker::WorkerDirectory;
 pub fn check(
     candidate: &WorkerRef,
     authors: &[WorkerRef],
-    different_family: bool,
+    different_provider: bool,
     workers: &dyn WorkerDirectory,
 ) -> Result<(), String> {
     let name = |worker: &WorkerRef| DisplayNames::default().worker(worker);
@@ -21,13 +21,13 @@ pub fn check(
             name(candidate)
         ));
     }
-    if !different_family {
+    if !different_provider {
         return Ok(());
     }
     let Some(family) = family(candidate, workers) else {
         return Err(format!(
-            "the company behind {} isn't known, so it can't be shown to come from another \
-             company",
+            "the provider behind {} isn't known, so it can't be shown to come from another \
+             provider",
             name(candidate)
         ));
     };
@@ -36,15 +36,15 @@ pub fn check(
             Some(theirs) if theirs != family => {}
             Some(_) => {
                 return Err(format!(
-                    "{} comes from the same company as {}, so it can't approve this",
+                    "{} comes from the same provider as {}, so it can't approve this",
                     name(candidate),
                     name(author)
                 ));
             }
             None => {
                 return Err(format!(
-                    "the company behind {} isn't known, so {} can't be shown to come from \
-                     another company",
+                    "the provider behind {} isn't known, so {} can't be shown to come from \
+                     another provider",
                     name(author),
                     name(candidate)
                 ));
@@ -101,18 +101,18 @@ mod tests {
         );
         let same = check(&r("openrouter/gpt-oss"), &[r("codex")], true, &workers);
         let same = same.unwrap_err();
-        assert!(same.contains("same company as Codex"), "{same}");
+        assert!(same.contains("same provider as Codex"), "{same}");
         assert!(!same.contains("codex"), "{same}");
     }
 
     #[test]
-    fn another_family_is_independent() {
+    fn another_provider_is_independent() {
         let workers = directory();
         assert!(check(&r("claude-code"), &[r("codex")], true, &workers).is_ok());
     }
 
     #[test]
-    fn an_author_is_refused_even_without_different_family() {
+    fn an_author_is_refused_even_without_different_provider() {
         let workers = directory();
         assert!(check(&r("codex"), &[r("codex")], false, &workers).is_err());
         // An unset model could be the author's.

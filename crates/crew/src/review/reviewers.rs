@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn an_unknown_card_has_no_reviewers() {
-        let other = CardId::new("card-009").unwrap();
+        let other = CardId::new("task-009").unwrap();
         assert!(for_card(&RunState::default(), &other, &family).is_empty());
     }
 }

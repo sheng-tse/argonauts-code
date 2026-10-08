@@ -89,16 +89,16 @@ fn crew_state() -> RunState {
     let mut state = RunState::default();
     let cards = [
         (
-            spec("card-001", "codex", &["src/api/**"], &[], &[]),
+            spec("task-001", "codex", &["src/api/**"], &[], &[]),
             CardState::Running,
         ),
         (
-            spec("card-002", "claude-code", &["src/limiter/**"], &[], &[]),
+            spec("task-002", "claude-code", &["src/limiter/**"], &[], &[]),
             CardState::Running,
         ),
         (
             spec(
-                "card-003",
+                "task-003",
                 "agy",
                 &["src/store/**"],
                 &["src/limiter/mod.rs"],
@@ -107,11 +107,11 @@ fn crew_state() -> RunState {
             CardState::Running,
         ),
         (
-            spec("card-004", "codex", &["docs/**"], &[], &["card-002"]),
+            spec("task-004", "codex", &["docs/**"], &[], &["task-002"]),
             CardState::Waiting,
         ),
         (
-            spec("card-005", "claude-code", &["src/old/**"], &[], &[]),
+            spec("task-005", "claude-code", &["src/old/**"], &[], &[]),
             CardState::Integrated,
         ),
     ];
@@ -136,7 +136,7 @@ fn change_request_decision_rules() {
     let state = crew_state();
     let mut settings = Settings::default();
     settings.limits.protected_paths = vec!["infra/**".to_owned()];
-    let asker = card("card-001");
+    let asker = card("task-001");
     let decide =
         |paths: &[&str]| rules::decider_for(&state, &settings, Some(&asker), &request(paths));
 
@@ -177,7 +177,7 @@ fn change_request_decision_rules() {
     // Dependents: owners and readers of the paths, and cards built on them.
     assert_eq!(
         rules::dependents(&state, &request(&["src/limiter/mod.rs"])),
-        [card("card-002"), card("card-003"), card("card-004")]
+        [card("task-002"), card("task-003"), card("task-004")]
     );
 
     // Majority wins; the phase lead breaks a tie only when it isn't a party.
@@ -211,7 +211,7 @@ fn posted(n: u32, kind: BlackboardKind, text: &str, refs: &[&str]) -> Blackboard
             worker: worker("codex"),
         },
         to: Recipient::Card {
-            card: card("card-002"),
+            card: card("task-002"),
         },
         text: text.to_owned(),
         in_reply_to: None,
@@ -224,7 +224,7 @@ fn envelope(kind: RunEventKind) -> RunEvent {
         seq: 0,
         ts: OffsetDateTime::UNIX_EPOCH,
         run_id: RunId::new("run-01").unwrap(),
-        card_id: Some(card("card-001")),
+        card_id: Some(card("task-001")),
         session: None,
         source: "conductor".to_owned(),
         kind,
@@ -331,7 +331,7 @@ fn run_session(
             role,
             step: None,
             access: Access::Build,
-            lifetime: SessionLifetime::Card,
+            lifetime: SessionLifetime::Task,
             resumed_from: None,
             follow_key: u8::try_from(n).ok(),
             workflow_step: None,
@@ -385,16 +385,16 @@ async fn blackboard_delivered_at_next_turn() -> anyhow::Result<()> {
     let (host, sink) = host(&crew)?;
     add_card(
         &host,
-        spec("card-002", "codex", &["src/limiter/**"], &[], &[]),
+        spec("task-002", "codex", &["src/limiter/**"], &[], &[]),
         CardState::Running,
     )?;
     add_card(
         &host,
-        spec("card-003", "agy", &["src/store/**"], &[], &[]),
+        spec("task-003", "agy", &["src/store/**"], &[], &[]),
         CardState::Ready,
     )?;
     let (owner, mut controls) =
-        run_session(&host, 1, RoleName::Owner, Some("card-002"), "codex", false)?;
+        run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
 
     // Guidance reaches the running session at its next turn, once.
     let guidance = commands::guidance(&host, "Retry-After is in seconds.".to_owned())
@@ -426,18 +426,18 @@ async fn blackboard_delivered_at_next_turn() -> anyhow::Result<()> {
                 worker: worker("codex"),
             },
             to: Recipient::Card {
-                card: card("card-003"),
+                card: card("task-003"),
             },
             text: "Does the store expire keys itself?".to_owned(),
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: Some(card("card-002")),
+            from_card: Some(card("task-002")),
         },
     )?;
     assert!(delivery::to_running(&host, &question)?.is_empty());
     assert!(delivered(&sink.events(), &question).is_empty());
     let (store, _store_controls) =
-        run_session(&host, 2, RoleName::Owner, Some("card-003"), "agy", false)?;
+        run_session(&host, 2, RoleName::Worker, Some("task-003"), "agy", false)?;
     let parts = delivery::at_session_start(&host, &store)?;
     let texts: Vec<&str> = parts.iter().map(|part| part.text.as_str()).collect();
     assert_eq!(parts.len(), 2, "the guidance and the question: {texts:?}");
@@ -455,12 +455,12 @@ async fn mention_to_blind_session_is_text_only() -> anyhow::Result<()> {
     let (host, _sink) = host(&crew)?;
     add_card(
         &host,
-        spec("card-002", "codex", &["src/limiter/**"], &[], &[]),
+        spec("task-002", "codex", &["src/limiter/**"], &[], &[]),
         CardState::Running,
     )?;
     let (_drafter, mut drafter) = run_session(&host, 1, RoleName::Drafter, None, "agy", true)?;
     let (owner, mut owned) =
-        run_session(&host, 2, RoleName::Owner, Some("card-002"), "codex", false)?;
+        run_session(&host, 2, RoleName::Worker, Some("task-002"), "codex", false)?;
 
     let text = "Keep the counters in Redis.";
     commands::mention(&host, MentionTarget::All, text.to_owned())
@@ -486,7 +486,7 @@ async fn mention_to_blind_session_is_text_only() -> anyhow::Result<()> {
             text: "Which plan uses Redis?".to_owned(),
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: Some(card("card-002")),
+            from_card: Some(card("task-002")),
         },
     )?;
     delivery::to_running(&host, &question)?;
@@ -521,11 +521,11 @@ async fn hand_over_records_nothing_a_session_cannot_take() -> anyhow::Result<()>
     let (host, sink) = host(&crew)?;
     add_card(
         &host,
-        spec("card-002", "codex", &["src/limiter/**"], &[], &[]),
+        spec("task-002", "codex", &["src/limiter/**"], &[], &[]),
         CardState::Running,
     )?;
     let (owner, controls) =
-        run_session(&host, 1, RoleName::Owner, Some("card-002"), "codex", false)?;
+        run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
     let queued = |events: &[RunEvent], message: &MessageId| {
         events.iter().any(|event| {
             matches!(&event.kind, RunEventKind::Session(SessionEvent::Queued(queued)) if &queued.id == message)
@@ -569,7 +569,7 @@ async fn hand_over_records_nothing_a_session_cannot_take() -> anyhow::Result<()>
 
     // Both reach the card's next session when it starts.
     let (next, _next_controls) =
-        run_session(&host, 2, RoleName::Owner, Some("card-002"), "codex", false)?;
+        run_session(&host, 2, RoleName::Worker, Some("task-002"), "codex", false)?;
     let parts = delivery::at_session_start(&host, &next)?;
     assert_eq!(parts.len(), 2);
     let events = sink.events();
@@ -583,31 +583,31 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
     let crew = support::Crew::new()?;
     let (host, sink) = host(&crew)?;
     let running = [
-        spec("card-001", "codex", &["src/api/**"], &[], &[]),
-        spec("card-002", "claude-code", &["src/limiter/**"], &[], &[]),
-        spec("card-003", "agy", &["src/store/**"], &[], &["card-002"]),
-        spec("card-004", "codex", &["docs/**"], &[], &[]),
+        spec("task-001", "codex", &["src/api/**"], &[], &[]),
+        spec("task-002", "claude-code", &["src/limiter/**"], &[], &[]),
+        spec("task-003", "agy", &["src/store/**"], &[], &["task-002"]),
+        spec("task-004", "codex", &["docs/**"], &[], &[]),
     ];
     for spec in running {
         add_card(&host, spec, CardState::Running)?;
     }
-    run_session(&host, 1, RoleName::Owner, Some("card-001"), "codex", false)?;
+    run_session(&host, 1, RoleName::Worker, Some("task-001"), "codex", false)?;
     let (_limiter, mut limiter) = run_session(
         &host,
         2,
-        RoleName::Owner,
-        Some("card-002"),
+        RoleName::Worker,
+        Some("task-002"),
         "claude-code",
         false,
     )?;
 
     let asked = request(&["src/limiter/redis.rs"]);
-    blackboard::on_report(&host, &card("card-001"), &report(&[], vec![asked])).await?;
+    blackboard::on_report(&host, &card("task-001"), &report(&[], vec![asked])).await?;
 
     // The owner of the limiter decides; its card and the card built on it wait meanwhile.
-    assert_eq!(card_state(&host, "card-002"), Some(CardState::Blocked));
-    assert_eq!(card_state(&host, "card-003"), Some(CardState::Blocked));
-    assert_eq!(card_state(&host, "card-004"), Some(CardState::Running));
+    assert_eq!(card_state(&host, "task-002"), Some(CardState::Blocked));
+    assert_eq!(card_state(&host, "task-003"), Some(CardState::Blocked));
+    assert_eq!(card_state(&host, "task-004"), Some(CardState::Running));
     let events = sink.events();
     let request = events
         .iter()
@@ -646,7 +646,7 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
             matches!(&event.kind, RunEventKind::Session(SessionEvent::Queued(queued)) if queued.id == request.1.id)
         })
         .map(|event| event.seq)
-        .expect("queued for the owner's next turn");
+        .expect("queued for the worker's next turn");
     assert!(blocked_at < queued_at, "dependents pause first");
     assert!(
         delivered_now(&mut limiter)[0]
@@ -656,14 +656,14 @@ async fn change_request_pauses_dependents() -> anyhow::Result<()> {
 
     // The owner accepts in its next report: the record settles it and the cards go on.
     let vote = format!("accept {}: a trait keeps the store swappable", request.1.id);
-    blackboard::on_report(&host, &card("card-002"), &report(&[&vote], Vec::new())).await?;
+    blackboard::on_report(&host, &card("task-002"), &report(&[&vote], Vec::new())).await?;
     let record = host
         .read(|state| state.blackboard.settled(&request.1.id).cloned())
         .expect("a decision record");
     assert!(record.text.starts_with("Accepted: "), "{}", record.text);
     assert_eq!(record.from, Party::Conductor);
-    assert_eq!(card_state(&host, "card-002"), Some(CardState::Running));
-    assert_eq!(card_state(&host, "card-003"), Some(CardState::Running));
+    assert_eq!(card_state(&host, "task-002"), Some(CardState::Running));
+    assert_eq!(card_state(&host, "task-003"), Some(CardState::Running));
     Ok(())
 }
 
@@ -673,22 +673,22 @@ async fn settled_question_answered_with_record_id() -> anyhow::Result<()> {
     let (host, sink) = host(&crew)?;
     add_card(
         &host,
-        spec("card-002", "codex", &["src/api/**"], &[], &[]),
+        spec("task-002", "codex", &["src/api/**"], &[], &[]),
         CardState::Running,
     )?;
     add_card(
         &host,
-        spec("card-003", "agy", &["src/limiter/**"], &[], &[]),
+        spec("task-003", "agy", &["src/limiter/**"], &[], &[]),
         CardState::Running,
     )?;
-    run_session(&host, 1, RoleName::Owner, Some("card-002"), "codex", false)?;
-    run_session(&host, 2, RoleName::Owner, Some("card-003"), "agy", false)?;
+    run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
+    run_session(&host, 2, RoleName::Worker, Some("task-003"), "agy", false)?;
     let question = "Does src/limiter/mod.rs count per key or per user?";
     let asking = CardReport {
         questions: vec![question.to_owned()],
         ..report(&[], Vec::new())
     };
-    blackboard::on_report(&host, &card("card-002"), &asking).await?;
+    blackboard::on_report(&host, &card("task-002"), &asking).await?;
     let first = host
         .read(|state| {
             state
@@ -699,7 +699,7 @@ async fn settled_question_answered_with_record_id() -> anyhow::Result<()> {
         })
         .expect("the question is posted");
     let answer = format!("answer {first}: per key");
-    blackboard::on_report(&host, &card("card-003"), &report(&[&answer], Vec::new())).await?;
+    blackboard::on_report(&host, &card("task-003"), &report(&[&answer], Vec::new())).await?;
     let record = host
         .read(|state| {
             state
@@ -711,9 +711,9 @@ async fn settled_question_answered_with_record_id() -> anyhow::Result<()> {
 
     // Asked again by the card's next session with nothing new, the conductor answers with the
     // record's id.
-    run_session(&host, 3, RoleName::Owner, Some("card-002"), "codex", false)?;
+    run_session(&host, 3, RoleName::Worker, Some("task-002"), "codex", false)?;
     let before = sink.events().len();
-    blackboard::on_report(&host, &card("card-002"), &asking).await?;
+    blackboard::on_report(&host, &card("task-002"), &asking).await?;
     let replies: Vec<BlackboardMessage> = sink.events()[before..]
         .iter()
         .filter_map(|event| match &event.kind {
@@ -748,11 +748,11 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
     let (host, sink) = host(&crew)?;
     add_card(
         &host,
-        spec("card-002", "codex", &["src/api/**"], &[], &[]),
+        spec("task-002", "codex", &["src/api/**"], &[], &[]),
         CardState::Running,
     )?;
     let (asker, _controls) =
-        run_session(&host, 1, RoleName::Owner, Some("card-002"), "codex", false)?;
+        run_session(&host, 1, RoleName::Worker, Some("task-002"), "codex", false)?;
     let question = blackboard::post(
         &host,
         Post {
@@ -767,7 +767,7 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
             text: "Token bucket or sliding window?".to_owned(),
             in_reply_to: None,
             refs: Vec::new(),
-            from_card: Some(card("card-002")),
+            from_card: Some(card("task-002")),
         },
     )?;
     let before = sink.events().len();
@@ -781,7 +781,7 @@ async fn consultant_answers_question_owns_nothing() -> anyhow::Result<()> {
     assert_eq!(
         posted.to,
         Recipient::Card {
-            card: card("card-002")
+            card: card("task-002")
         },
         "back to the asker, for its next turn"
     );

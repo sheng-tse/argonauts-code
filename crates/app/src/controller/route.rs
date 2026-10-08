@@ -18,6 +18,11 @@ pub(crate) enum Route {
     NextTurn {
         text: String,
     },
+    /// `Idle` or `Answering`, and you typed `ultracode` with the request: it goes through a
+    /// workflow.
+    WorkflowRequest {
+        text: String,
+    },
     /// `Working`, `Pausing`, or `Parked`: queued for every working agent's next turn.
     Guidance {
         run: RunId,
@@ -54,8 +59,22 @@ pub(crate) fn route(
     leads_with_file: impl Fn(&str) -> bool,
 ) -> Route {
     match command {
-        UiCommand::Submit { text } if leads_with_file(&text) => plain(mode, text.trim().to_owned()),
-        UiCommand::Submit { text } => submitted(mode, &text, commands),
+        UiCommand::Submit {
+            text,
+            workflow_requested,
+        } => {
+            let route = if leads_with_file(&text) {
+                plain(mode, text.trim().to_owned())
+            } else {
+                submitted(mode, &text, commands)
+            };
+            match route {
+                Route::NewRequest { text } | Route::NextTurn { text } if workflow_requested => {
+                    Route::WorkflowRequest { text }
+                }
+                route => route,
+            }
+        }
         UiCommand::Mention { target, text } => mention(mode, target, text),
         _ => Route::Nothing,
     }
@@ -129,6 +148,7 @@ mod tests {
     fn submit(text: &str) -> UiCommand {
         UiCommand::Submit {
             text: text.to_owned(),
+            workflow_requested: false,
         }
     }
 
@@ -152,6 +172,36 @@ mod tests {
                 reason: ParkReason::Checkpoint,
             },
         ]
+    }
+
+    /// A request you typed `ultracode` in asks for a workflow, and while a run works it is
+    /// guidance like any other text. A command stays a command.
+    #[test]
+    fn the_typed_keyword_asks_for_a_workflow() {
+        let asked = |text: &str| UiCommand::Submit {
+            text: text.to_owned(),
+            workflow_requested: true,
+        };
+        let workflow = Route::WorkflowRequest {
+            text: "ultracode tidy the helpers".to_owned(),
+        };
+        for mode in &modes()[..2] {
+            assert_eq!(
+                route(mode, asked(" ultracode tidy the helpers"), None),
+                workflow
+            );
+        }
+        assert_eq!(
+            route(&modes()[2], asked("ultracode tidy the helpers"), None),
+            Route::Guidance {
+                run: run(),
+                text: "ultracode tidy the helpers".to_owned()
+            }
+        );
+        assert!(matches!(
+            route(&AppMode::Idle, asked("/help"), None),
+            Route::Slash { .. }
+        ));
     }
 
     #[test]
@@ -197,7 +247,9 @@ mod tests {
             assert_eq!(
                 route(mode, submit("/status"), None),
                 Route::Slash {
-                    command: SlashCommand::Status
+                    command: SlashCommand::Status {
+                        action: Default::default()
+                    }
                 },
                 "{mode:?}"
             );

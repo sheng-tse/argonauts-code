@@ -210,7 +210,7 @@ pub(crate) fn deferrable(request: &ControlRequest) -> bool {
 pub(crate) fn deferred_reply(request: &ControlRequest) -> ControlReply {
     match request {
         ControlRequest::Guidance { .. } | ControlRequest::Mention { .. } => {
-            error("the run parked; the message is delivered when it resumes")
+            error("the run is waiting; the message is delivered when it resumes")
         }
         _ => ControlReply::Ok,
     }

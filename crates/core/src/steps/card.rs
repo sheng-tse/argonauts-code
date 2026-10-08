@@ -63,6 +63,10 @@ pub struct CardReport {
     pub status: ReportStatus,
     /// What was done, in a few sentences.
     pub summary: String,
+    /// The files you changed or created that belong in the change, by path from the working
+    /// directory. A new file your edit tools didn't write is committed only when it's listed
+    /// here, so list scaffolds and generated code, and leave out caches, build output and
+    /// test leftovers.
     pub files_changed: Vec<String>,
     /// Test commands run and their outcomes.
     pub tests_run: Vec<String>,

@@ -1,5 +1,5 @@
-# The fake Claude Code hits its usage limit, and nobody answers the handoff card. When the
-# role's ask timeout passes, Codex takes the card.
+# The fake Claude Code hits its usage limit, and nobody answers the fallback question. When the
+# role's ask timeout passes, Codex takes the task.
 
 [version]
 claude = "2.1.284 (Claude Code)"

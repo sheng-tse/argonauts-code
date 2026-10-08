@@ -1,0 +1,27 @@
+# Orchestrator: one agent plans and delegates. The literature's "orchestrator-workers".
+name  = "orchestrator"
+about = "The orchestrator plans and delegates; workers build, reviewers check"
+adapt = true     # true: the orchestrator writes the steps for each request, as Claude Code would,
+                 #       and keeps who plans, who builds, who reviews and who signs off as below.
+                 # false: the steps below run exactly as written.
+
+[[step]]
+name = "Plan"
+role = "orchestrator"
+does = "Split the request into tasks and say what done means for each."
+
+[[step]]
+name     = "Build"
+role     = "workers"
+for_each = "task"           # one worker per task, side by side, each in its own worktree
+
+[[step]]
+name         = "Review"
+role         = "reviewers"
+for_each     = "task"
+send_back_to = "Build"      # until the reviewer accepts
+
+[[step]]
+name = "Sign off"
+role = "judge"
+does = "Check the result against what done means."

@@ -51,7 +51,7 @@ fn limits(settings: Settings) -> BuiltinLimits {
 
 fn card(forbidden: &[&str]) -> CardSpec {
     serde_json::from_value(json!({
-        "id": "card-001", "title": "Parser", "task": "Trim fields", "kind": {"kind": "build"},
+        "id": "task-001", "title": "Parser", "task": "Trim fields", "kind": {"kind": "build"},
         "owned_paths": ["src/**"], "read_only_paths": [], "forbidden_paths": forbidden,
         "hidden_paths": [], "depends_on": [], "criteria": ["G1"], "owner": "claude-code/haiku",
         "reviewers": [],
@@ -183,7 +183,7 @@ fn builtin_gates_detect_secrets_tamper_deps_paths() {
     let forbidden = limits.check_card_diff(&card, FORBIDDEN_PATH);
     assert_eq!(kinds(&forbidden), vec![HardLimit::ProtectedPath]);
     assert_eq!(forbidden[0].paths, vec!["src/api/frozen.rs"]);
-    assert!(forbidden[0].detail.contains("card-001"));
+    assert!(forbidden[0].detail.contains("task-001"));
     assert_eq!(
         limits.check_card_diff(&self::card(&[]), FORBIDDEN_PATH),
         Vec::new()
@@ -690,7 +690,7 @@ fn sandbox_off_makes_every_checkpoint_ask() {
         CheckpointKind::Budget,
         CheckpointKind::ChangeRequest,
         CheckpointKind::GoalChange,
-        CheckpointKind::RecipePromotion,
+        CheckpointKind::WorkflowPromotion,
         CheckpointKind::TakeOverReturn,
         CheckpointKind::Question,
         CheckpointKind::OriginalReturned,
@@ -814,6 +814,7 @@ fn check_session_refuses_unsandboxed_harness() {
 fn decision_points_check_every_limit_the_evidence_shows() {
     let mut settings = sandboxed();
     settings.limits.dependency_allowlist = vec!["serde".to_owned(), "lodash@4.17.21".to_owned()];
+    settings.limits.spend_per_day = Some(40.0);
     let merge = |facts: EvidenceFacts| check_point(settings.clone(), CheckpointKind::Merge, facts);
 
     assert_eq!(merge(good_merge()), Vec::new());
@@ -939,9 +940,9 @@ fn decision_points_check_every_limit_the_evidence_shows() {
         plan(&["**/Cargo.lock"]),
         vec![HardLimit::Lockfile, HardLimit::ProtectedPath]
     );
-    // No daily ceiling set means none to hit.
-    let mut unlimited = sandboxed();
-    unlimited.limits.usd_per_day = None;
+    // No daily ceiling set means none to hit, and none is set unless you set one.
+    let unlimited = sandboxed();
+    assert_eq!(unlimited.limits.spend_per_day, None);
     let spent = EvidenceFacts {
         spent_today_usd: 1e6,
         ..good_merge()

@@ -1,7 +1,7 @@
-# The fake installed as `opencode` owns a solo card: `opencode run --format json` writes
+# The fake installed as `opencode` owns a solo task: `opencode run --format json` writes
 # hello.txt and prints the events in opencode-owner.stdout.jsonl. Those events are synthetic,
 # shaped like `opencode run --format json` output as the OpenCode research describes it
-# (step_start, tool_use, text, step_finish), and end with the owner's JSON report.
+# (step_start, tool_use, text, step_finish), and end with the worker's JSON report.
 
 [version]
 claude = "2.1.284 (Claude Code)"

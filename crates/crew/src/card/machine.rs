@@ -28,6 +28,8 @@ pub enum Trigger {
     FirstGateFailure,
     GatesFailedAgain,
     GatesPassed,
+    /// The task is worked as a goal, and its check found a line that doesn't hold yet.
+    GoalNotMet,
     /// Rounds 1 to `review.max_change_rounds`.
     ChangesRequested,
     ChangesRequestedAgain,
@@ -71,6 +73,7 @@ pub const TABLE: &[(CardState, Trigger, CardState)] = &[
     (Gating, Trigger::FirstGateFailure, Running),
     (Gating, Trigger::GatesFailedAgain, Failed),
     (Gating, Trigger::GatesPassed, InReview),
+    (Gating, Trigger::GoalNotMet, Running),
     (Gating, Trigger::NewOwner, Running),
     (InReview, Trigger::ChangesRequested, Running),
     (InReview, Trigger::ChangesRequestedAgain, Escalated),
@@ -151,6 +154,7 @@ mod tests {
             (Gating, Trigger::FirstGateFailure, Running),
             (Gating, Trigger::GatesFailedAgain, Failed),
             (Gating, Trigger::GatesPassed, InReview),
+            (Gating, Trigger::GoalNotMet, Running),
             (Gating, Trigger::NewOwner, Running),
             (InReview, Trigger::ChangesRequested, Running),
             (InReview, Trigger::ChangesRequestedAgain, Escalated),

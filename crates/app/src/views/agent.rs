@@ -63,9 +63,11 @@ pub(crate) fn agent_view(
             }
         })
         .collect();
+    let row = facts.agent_row(this);
     Some(AgentView {
         run: run.clone(),
-        row: facts.agent_row(this),
+        goal: super::goal_feed::goal_of(events, &row),
+        row,
         prompt: this.prompt.clone(),
         activity,
         tool_calls: this
@@ -74,7 +76,26 @@ pub(crate) fn agent_view(
         diff: diff_of(events, this),
         subagents: subagents_of(this),
         outcome: this.ended.as_ref().and_then(outcome_of),
+        plan: this.ended.as_ref().and_then(plan_of),
     })
+}
+
+/// The plan the agent ended with, when its result is one: an orchestrator's tasks with their
+/// assignments, or a draft's pieces. The screen draws it as a table.
+fn plan_of(end: &SessionEnd) -> Option<Value> {
+    let texts = || [&end.result_text, &end.last_message].into_iter().flatten();
+    let result = end
+        .structured
+        .clone()
+        .filter(Value::is_object)
+        .or_else(|| texts().find_map(|text| last_json_object(text)))?;
+    let lists = |key: &str| {
+        result
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+    };
+    (lists("cards") || lists("pieces")).then_some(result)
 }
 
 /// What the agent ended with, in its own words: its report as Markdown, else its final text.
@@ -262,7 +283,7 @@ mod tests {
 
     #[test]
     fn the_agent_view_shows_prompt_latest_activity_diff_subagents_and_outcome() {
-        let card = argonauts_core::CardId::new("card-002").unwrap();
+        let card = argonauts_core::CardId::new("task-002").unwrap();
         let key = SessionKey::numbered(1);
         let child = SubagentUpdate {
             id: "thread-1".to_owned(),
@@ -274,16 +295,17 @@ mod tests {
             last_message: None,
             log_uri: None,
             steps_visible: false,
+            tokens: None,
         };
         let events = vec![
-            session_started(0, &key, Some(&card), RoleName::Owner, "codex"),
+            session_started(0, &key, Some(&card), RoleName::Worker, "codex"),
             input(1, &key, "Build the export.\n"),
             card_event(
                 2,
                 &card,
                 CardEvent::Worktree {
                     path: "/tmp/wt".into(),
-                    branch: "argonauts/run/card-002".to_owned(),
+                    branch: "argonauts/run/task-002".to_owned(),
                     base: "abc".to_owned(),
                 },
             ),
@@ -335,7 +357,7 @@ mod tests {
     }
 
     fn owner_started(seq: u64, key: &SessionKey, card: &CardId, worker: &str) -> RunEvent {
-        let mut event = session_started(seq, key, Some(card), RoleName::Owner, worker);
+        let mut event = session_started(seq, key, Some(card), RoleName::Worker, worker);
         if let RunEventKind::Session(SessionEvent::Started(started)) = &mut event.kind {
             started.step = Some(StepName::Build);
         }
@@ -359,7 +381,7 @@ mod tests {
     /// the shell around them, and paths read from the session's folder.
     #[test]
     fn activity_reads_as_the_transcript_names_calls() {
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let (codex, claude) = (SessionKey::numbered(1), SessionKey::numbered(2));
         let events = vec![
             owner_started(0, &codex, &card, "codex"),
@@ -394,7 +416,7 @@ mod tests {
     /// commit, the latest diff of each file; once it ends, the conductor's commit counts.
     #[test]
     fn a_working_owners_diff_counts_its_changes_so_far() {
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let key = SessionKey::numbered(1);
         let changed = |seq, path: &str, added, removed| {
             session_event(
@@ -417,7 +439,7 @@ mod tests {
                 &card,
                 CardEvent::Worktree {
                     path: "/tmp/wt".into(),
-                    branch: "argonauts/run/card-001".to_owned(),
+                    branch: "argonauts/run/task-001".to_owned(),
                     base: "abc".to_owned(),
                 },
             ),
@@ -469,7 +491,7 @@ mod tests {
             ..tokens
         };
         let events = vec![
-            session_started(0, &key, None, RoleName::Owner, "claude-code"),
+            session_started(0, &key, None, RoleName::Worker, "claude-code"),
             agent(
                 1,
                 &key,
@@ -508,7 +530,7 @@ mod tests {
     /// so that its card failed, reads as failed.
     #[test]
     fn a_retry_reads_as_its_attempt_and_a_silent_end_as_failed() {
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let (first, second) = (SessionKey::numbered(1), SessionKey::numbered(2));
         let attempt = |seq, attempt, cause| {
             card_event(
@@ -542,13 +564,13 @@ mod tests {
             session_ended(6, &second, EndReason::Completed, 1_000),
         ];
         let row = |key: &SessionKey| agent_view(&events, &run_id(), key).unwrap().row;
-        assert_eq!(row(&first).label, "owner · card-001");
+        assert_eq!(row(&first).label, "worker · task-001");
         assert_eq!(row(&first).status, RowStatus::Failed);
-        assert_eq!(row(&second).label, "owner · card-001 · attempt 2");
+        assert_eq!(row(&second).label, "worker · task-001 · attempt 2");
         assert_eq!(
             row(&second).status,
             RowStatus::Done,
-            "its card hasn't moved on yet"
+            "its task hasn't moved on yet"
         );
 
         let mut reported = events.clone();
@@ -627,6 +649,31 @@ mod tests {
         );
     }
 
+    /// An orchestrator's plan, or a draft's pieces, is kept whole for the screen's table. A
+    /// report, which reads as its summary, is no plan.
+    #[test]
+    fn a_plan_is_kept_for_the_table_and_a_report_is_not_one() {
+        let plan = serde_json::json!({
+            "plan": {"summary": "Two tasks."},
+            "cards": [{"key": "iface", "title": "Due-date stubs"}],
+            "assignments": [{"card": "iface", "owner": "codex", "reviewers": []}]
+        });
+        let text = plan.to_string();
+        assert_eq!(
+            plan_of(&ended(None, Some(plan.clone()), None)),
+            Some(plan.clone())
+        );
+        let written = format!("Here is the plan.\n\n```json\n{text}\n```");
+        assert_eq!(plan_of(&ended(Some(&written), None, None)), Some(plan));
+
+        let draft = serde_json::json!({"summary": "One piece.", "pieces": [{"name": "store"}]});
+        assert!(plan_of(&ended(None, Some(draft), None)).is_some());
+
+        let report = serde_json::json!({"status": "done", "summary": "Built it.", "cards": []});
+        assert_eq!(plan_of(&ended(None, Some(report), None)), None);
+        assert_eq!(plan_of(&ended(Some("All done."), None, None)), None);
+    }
+
     fn ended_with(key: &SessionKey, result_text: &str, structured: Option<Value>) -> RunEvent {
         let mut event = session_ended(9, key, EndReason::Completed, 1_000);
         if let RunEventKind::Session(argonauts_core::events::session::SessionEvent::Ended(end)) =
@@ -657,7 +704,7 @@ mod tests {
             parent: None,
         };
         let events = vec![
-            session_started(0, &key, None, RoleName::Owner, "antigravity-cli"),
+            session_started(0, &key, None, RoleName::Worker, "antigravity-cli"),
             agent(1, &key, tool("t1", "npm test")),
             agent(2, &key, finish),
             ended_with(&key, &report.to_string(), None),

@@ -19,7 +19,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::names::CheckpointId;
 use argonauts_core::sanitize::sanitize_for_terminal;
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::protocol::{ForcedMode, TriageMiddle, TriageSettings};
+use argonauts_core::settings::protocol::{ForcedMode, TriageMiddle};
 use argonauts_core::{Note, NoteLevel};
 use argonauts_registry::safety_keys_in;
 use serde::Serialize;
@@ -27,6 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::ancestry::{AgentMarkers, check_self};
 use crate::app_settings::AppSettings;
+use crate::controller::ultra;
 use crate::env::AppEnv;
 use crate::{FirstView, InteractiveOptions, client, startup};
 
@@ -92,7 +93,7 @@ pub async fn run_command(command: RunCommand) -> anyhow::Result<RunCommandExit> 
 }
 
 /// The safety keys `run` has flags for, besides `--set`, with those flags.
-const SAFETY_FLAGS: &[(&str, &str)] = &[("gates.run", "--gate"), ("merge.mode", "--merge")];
+const SAFETY_FLAGS: &[(&str, &str)] = &[("checks.run", "--check"), ("merge.mode", "--merge")];
 
 /// Resolving refuses every safety key without a terminal. For the ones `run` has a flag for,
 /// this names the flag and says what works in scripts and CI.
@@ -112,10 +113,15 @@ fn refuse_safety_flags(overrides: &[String]) -> anyhow::Result<()> {
 }
 
 fn start_request(command: &RunCommand, settings: &Settings) -> StartRun {
+    // A task from the command line is real work, so with ultracode on in solo on a CLI with no
+    // workflow of its own it runs as one, every agent on that CLI and model, as in the chat.
+    // `--solo` decides for this task, as "just do it yourself" does.
+    let same_model = command.mode.is_none() && ultra::runs_on_the_same_model(settings);
     let (mode, triage) = match command.mode {
         Some(mode) => (mode, None),
+        None if same_model => (RunMode::Crew, Some(same_model_decision())),
         None => {
-            let decision = triage_without_estimate(&settings.triage);
+            let decision = triage_without_estimate(settings);
             (decision.mode, Some(decision))
         }
     };
@@ -129,20 +135,36 @@ fn start_request(command: &RunCommand, settings: &Settings) -> StartRun {
         continues: None,
         overrides: command.overrides.clone(),
         include_uncommitted: settings.intake.include_uncommitted,
-        default_agent: None,
+        main_agent: None,
         approval_mode: None,
         front_end: None,
         instructions: Vec::new(),
-        request_settings: Vec::new(),
+        request_settings: if same_model {
+            ultra::same_model(settings)
+        } else {
+            Vec::new()
+        },
+        required_steps: Vec::new(),
     }
 }
 
-/// Without a chat there's no estimate, so only the settings decide: All hands, a forced mode,
+fn same_model_decision() -> TriageDecision {
+    TriageDecision {
+        mode: RunMode::Crew,
+        escalate_to_crew: false,
+        rule: "ultracode".to_owned(),
+        reason: "Ultracode is on, so a workflow runs it on the main agent's model".to_owned(),
+        solo: None,
+    }
+}
+
+/// Without a chat there's no estimate, so only the settings decide: ultracode, a forced mode,
 /// or what triage does between its thresholds.
-fn triage_without_estimate(triage: &TriageSettings) -> TriageDecision {
-    if let Some(crew) = argonauts_crew::triage::all_hands(triage) {
+fn triage_without_estimate(settings: &Settings) -> TriageDecision {
+    if let Some(crew) = argonauts_crew::triage::ultracode(settings) {
         return crew;
     }
+    let triage = &settings.triage;
     if let Some(forced) = triage.force {
         let mode = match forced {
             ForcedMode::Solo => RunMode::Solo,
@@ -152,7 +174,7 @@ fn triage_without_estimate(triage: &TriageSettings) -> TriageDecision {
             mode,
             escalate_to_crew: false,
             rule: "force".to_owned(),
-            reason: "triage.force picks the mode".to_owned(),
+            reason: "solo_or_crew.force picks the mode".to_owned(),
             solo: None,
         };
     }
@@ -308,13 +330,13 @@ fn park_words(
                 .filter_map(|id| titles.get(id).map(String::as_str))
                 .collect();
             if named.is_empty() {
-                "a checkpoint".to_owned()
+                "an approval".to_owned()
             } else {
                 named.join(", ")
             }
         }
         ParkReason::Paused => "the pause you asked for".to_owned(),
-        ParkReason::AllVendorsOut { .. } => "a vendor to come back".to_owned(),
+        ParkReason::AllVendorsOut { .. } => "an agent to come back".to_owned(),
         ParkReason::WaitingForVendor { vendor, .. } => format!("{vendor} to come back"),
         ParkReason::NoStandIn { .. } => "an agent to take over".to_owned(),
     }
@@ -384,7 +406,7 @@ fn plain_line(event: &RunEvent) -> Option<String> {
 /// The note's line, then its detail indented under it, since a log keeps both.
 fn note_line(note: &Note) -> String {
     let mut line = match note.level {
-        NoteLevel::Info => note.line().to_owned(),
+        NoteLevel::Info | NoteLevel::Aside => note.line().to_owned(),
         NoteLevel::Warn => format!("warning: {}", note.line()),
         NoteLevel::Error => format!("error: {}", note.line()),
     };
@@ -435,7 +457,7 @@ mod tests {
             run: run_id(),
             title: "Add a flag".to_owned(),
             mode: RunMode::Solo,
-            preset: "peer-crew".to_owned(),
+            workflow: "council".to_owned(),
             state,
             stopped_at: stopped_at.to_owned(),
             updated: OffsetDateTime::now_utc(),
@@ -499,8 +521,8 @@ mod tests {
             "{merge}"
         );
         assert!(merge.contains(".argonauts/config.toml"), "{merge}");
-        let gates = refusal(r#"gates.run=[{ command = ["true"], name = "true" }]"#);
-        assert!(gates.contains("--gate and --set gates.run"), "{gates}");
+        let gates = refusal(r#"checks.run=[{ command = ["true"], name = "true" }]"#);
+        assert!(gates.contains("--check and --set checks.run"), "{gates}");
         let table = refusal(r#"merge={ mode = "ask" }"#);
         assert!(table.contains("--merge and --set merge.mode"), "{table}");
     }
@@ -509,7 +531,7 @@ mod tests {
     fn other_settings_are_left_to_resolving() {
         let overrides = [
             "ui.bell=false".to_owned(),
-            "budget.per_card_usd=2.0".to_owned(),
+            "limits.per_task_usd=2.0".to_owned(),
             "approvals.merge.mode=auto".to_owned(),
         ];
         assert!(refuse_safety_flags(&overrides).is_ok());
@@ -540,10 +562,8 @@ mod tests {
             (triage.mode, triage.escalate_to_crew),
             (RunMode::Solo, true)
         );
-        let forced = TriageSettings {
-            force: Some(ForcedMode::Crew),
-            ..TriageSettings::default()
-        };
+        let mut forced = Settings::default();
+        forced.triage.force = Some(ForcedMode::Crew);
         assert_eq!(triage_without_estimate(&forced).mode, RunMode::Crew);
     }
 
@@ -575,11 +595,11 @@ mod tests {
         assert!(start_request(&command, by_file.settings()).include_uncommitted);
     }
 
-    /// All hands sends a task from the command line to the crew as the chat's triage does,
-    /// whether a file or `--set` turns it on, and over a preset's forced solo. `--solo` still
-    /// runs it solo.
+    /// Ultracode sends a task from the command line to the crew as the chat's triage does,
+    /// whether a file or `--set` turns it on. `--solo` still runs it solo, and so does the solo
+    /// workflow, whose CLI runs its own.
     #[test]
-    fn all_hands_sends_a_command_line_task_to_the_crew() {
+    fn ultracode_sends_a_command_line_task_to_the_crew() {
         let command = RunCommand::default();
         let off = start_request(&command, settings_with(&[], "").settings());
         let triage = off.triage.unwrap();
@@ -588,11 +608,15 @@ mod tests {
             (RunMode::Solo, "otherwise")
         );
 
-        let forced_solo = "[triage]\nforce = \"solo\"\n";
+        let forced_solo = "[solo_or_crew]\nforce = \"solo\"\n";
+        let in_solo = start_request(
+            &command,
+            settings_with(&["ultracode=true"], forced_solo).settings(),
+        );
+        assert_eq!(in_solo.mode, RunMode::Solo);
         for settings in [
-            settings_with(&["triage.all_hands=true"], ""),
-            settings_with(&[], "[triage]\nall_hands = true\n"),
-            settings_with(&["triage.all_hands=true"], forced_solo),
+            settings_with(&["ultracode=true"], ""),
+            settings_with(&[], "ultracode = true\n"),
         ] {
             let request = start_request(&command, settings.settings());
             assert_eq!(request.mode, RunMode::Crew);
@@ -600,7 +624,7 @@ mod tests {
             let triage = request.triage.unwrap();
             assert_eq!(
                 (triage.rule.as_str(), triage.reason.as_str()),
-                ("all_hands", "All hands is on")
+                ("ultracode", "Ultracode is on")
             );
             assert!(!triage.escalate_to_crew);
 
@@ -611,6 +635,44 @@ mod tests {
             let request = start_request(&solo, settings.settings());
             assert_eq!((request.mode, request.forced), (RunMode::Solo, true));
         }
+    }
+
+    /// In solo on Codex, which has no workflow of its own, ultracode runs a task from the
+    /// command line as a workflow with every agent on Codex's model, as the chat does. `--solo`
+    /// still runs it alone, and so does ultracode off.
+    #[test]
+    fn ultracode_in_solo_on_codex_runs_a_workflow_on_its_model() {
+        let solo_on_codex =
+            "main_agent = \"codex/gpt-5.6-luna\"\n[solo_or_crew]\nforce = \"solo\"\n";
+        let on = settings_with(&["ultracode=true"], solo_on_codex);
+        let request = start_request(&RunCommand::default(), on.settings());
+        assert_eq!((request.mode, request.forced), (RunMode::Crew, false));
+        assert_eq!(request.triage.unwrap().rule, "ultracode");
+        assert_eq!(
+            request.request_settings,
+            ultra::same_model(on.settings()),
+            "every role on the main agent's model"
+        );
+        assert!(
+            request
+                .request_settings
+                .contains(&"crew.workers=[\"codex/gpt-5.6-luna\"]".to_owned()),
+            "{:?}",
+            request.request_settings
+        );
+
+        let alone = RunCommand {
+            mode: Some(RunMode::Solo),
+            ..RunCommand::default()
+        };
+        let request = start_request(&alone, on.settings());
+        assert_eq!(request.mode, RunMode::Solo);
+        assert!(request.request_settings.is_empty());
+
+        let off = settings_with(&[], solo_on_codex);
+        let request = start_request(&RunCommand::default(), off.settings());
+        assert_eq!(request.mode, RunMode::Solo);
+        assert!(request.request_settings.is_empty());
     }
 
     fn started_with(uncommitted: &[&str], included: bool) -> RunEvent {
@@ -674,7 +736,7 @@ mod tests {
     #[tokio::test]
     async fn a_parked_run_waits_for_you_at_its_checkpoint() {
         let conductor = FakeConductor::default();
-        conductor.set_runs(vec![summary(RunState::Parked, "the plan checkpoint")]);
+        conductor.set_runs(vec![summary(RunState::Parked, "the plan approval")]);
         let parked = event(RunEventKind::Run(RunLifecycle::Parked {
             reason: ParkReason::Checkpoint,
             waiting_on: Vec::new(),
@@ -684,7 +746,7 @@ mod tests {
             result.unwrap(),
             RunCommandExit::Waiting {
                 run: run_id(),
-                checkpoint: "the plan checkpoint".to_owned(),
+                checkpoint: "the plan approval".to_owned(),
             }
         );
 
@@ -694,7 +756,7 @@ mod tests {
             result.unwrap(),
             RunCommandExit::Waiting {
                 run: run_id(),
-                checkpoint: "a checkpoint".to_owned(),
+                checkpoint: "an approval".to_owned(),
             }
         );
     }

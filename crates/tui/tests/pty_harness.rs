@@ -44,7 +44,7 @@ fn every_builder_makes_a_contract_event() {
             Some("A project file sets this."),
         ),
         choice_closed("ch-001", "No run started."),
-        run.session_input(agent, &[("card", "Add the JSON writer")]),
+        run.session_input(agent, &[("task", "Add the JSON writer")]),
         run.text_delta(agent, "Adding"),
         run.message(agent, "Added."),
         run.file_diff(agent, "src/export.rs", "@@ -41,2 +41,3 @@"),
@@ -62,7 +62,7 @@ fn every_builder_makes_a_contract_event() {
         run.spot_check_queued("cp-001"),
         run.parked("checkpoint"),
         run.paused(2),
-        run.finished("merged", "landed on main"),
+        run.finished("merged", "merged into main"),
         run.note("info", "hello"),
         workflow_view(&crew[..3], Some(nested_workflow_row("wf-002", "review"))),
         agent_view(agent),
@@ -78,8 +78,8 @@ fn every_builder_makes_a_contract_event() {
         )]),
         raw_view(agent, &["{}"]),
         diff_view(agent, "diff --git"),
-        take_over(agent, &["sh", "-c", "exit 0"], "/wt/card-002"),
-        take_over(&Agent::endpoint(4), &[], "/wt/card-005"),
+        take_over(agent, &["sh", "-c", "exit 0"], "/wt/task-002"),
+        take_over(&Agent::endpoint(4), &[], "/wt/task-005"),
     ]);
     events.extend(
         chat_turn("t-002", "hi", "Hi there.", 10)

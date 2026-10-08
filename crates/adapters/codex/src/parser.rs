@@ -500,6 +500,7 @@ impl WireUsage {
                 .saturating_sub(self.cached_input_tokens)
                 .saturating_add(self.output_tokens),
             size: None,
+            sent: None,
         }
     }
 
@@ -703,7 +704,8 @@ mod tests {
             events[5],
             AgentEvent::ContextFill {
                 used: 437,
-                size: None
+                size: None,
+                sent: None,
             }
         );
         assert_eq!(

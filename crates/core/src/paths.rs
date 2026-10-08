@@ -62,6 +62,11 @@ impl Paths {
         self.home.join("state").join(repo.as_str())
     }
 
+    /// The usage ledger, one `<yyyy-mm>.jsonl` file a month.
+    pub fn usage_dir(&self) -> PathBuf {
+        self.home.join("usage")
+    }
+
     pub fn global_config(&self) -> PathBuf {
         self.home.join("config.toml")
     }
@@ -77,7 +82,7 @@ impl Paths {
     }
 
     pub fn global_presets(&self) -> PathBuf {
-        self.home.join("presets")
+        self.home.join("workflows")
     }
 
     /// Each agent CLI's newer versions already noticed, and the events each version sent that
@@ -295,7 +300,7 @@ mod tests {
         (
             RepoId::new("api-3f9a1c2b4d5e").unwrap(),
             RunId::new("run-01").unwrap(),
-            CardId::new("card-001").unwrap(),
+            CardId::new("task-001").unwrap(),
         )
     }
 
@@ -317,11 +322,11 @@ mod tests {
         );
         assert_eq!(
             paths.card_dir(&repo, &run, &card),
-            Path::new("/h/state/api-3f9a1c2b4d5e/runs/run-01/cards/card-001")
+            Path::new("/h/state/api-3f9a1c2b4d5e/runs/run-01/cards/task-001")
         );
         assert_eq!(
             paths.worktree_dir(&repo, &run, &card),
-            Path::new("/h/worktrees/api-3f9a1c2b4d5e/run-01/card-001")
+            Path::new("/h/worktrees/api-3f9a1c2b4d5e/run-01/task-001")
         );
     }
 
@@ -398,7 +403,7 @@ mod tests {
             paths.global_config(),
             Path::new("/u/.argonauts/config.toml")
         );
-        assert_eq!(paths.global_presets(), Path::new("/u/.argonauts/presets"));
+        assert_eq!(paths.global_presets(), Path::new("/u/.argonauts/workflows"));
         let moved = Paths::resolve(Some("/x".into()), Some("/u".into())).unwrap();
         assert_eq!(moved.global_config(), Path::new("/x/config.toml"));
         assert_eq!(

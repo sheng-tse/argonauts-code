@@ -22,7 +22,7 @@ use argonauts_core::settings::Settings;
 
 use crate::ENGINE_NOT_BUILT;
 use crate::engine::host::Host;
-use crate::engine::shared::{Admission, PolicyResult, Shared};
+use crate::engine::shared::{Admission, PolicyResult, Shared, lock};
 use crate::error::{EngineError, EngineResult};
 use crate::git::GitError;
 use crate::goal::pursue;
@@ -199,6 +199,11 @@ async fn root_workflow(host: Host) -> EngineResult<RunOutcome> {
 /// before any workflow starts.
 async fn first_workflow(host: &Host) -> EngineResult<Result<WorkflowId, Flow>> {
     naming::name_from_intake(host)?;
+    // A workflow with steps of its own is run by the runner, as one step before the merge.
+    if crate::script::for_run(host)?.is_some() {
+        let (from, workflow) = crate::script::phases(host)?;
+        return Ok(Ok(runner::start(host, Some(from), workflow, None)?));
+    }
     let (from, workflow) = match change::design_for_task(host).await? {
         Some(designed) => designed,
         None => {
@@ -341,10 +346,12 @@ impl Loop {
         let host = &self.host;
         let shared = host.shared();
         let all_out = shared.services.limits.all_out(&crew(host.settings()));
+        // A goal's check you asked for holds the park the way a session at work does.
+        let at_work = shared.live.len() + lock(&shared.checking_goals).len();
         let (stopping, reason) = host.read(|state| {
             (
                 state.run.stop_requested,
-                park::reason(state, shared.live.len(), all_out),
+                park::reason(state, at_work, all_out),
             )
         });
         if stopping {
@@ -651,9 +658,9 @@ impl Loop {
 
 /// Every worker the run may use: the crew and the default agent.
 fn crew(settings: &Settings) -> Vec<WorkerRef> {
-    let mut workers = settings.crew.clone();
-    if !workers.contains(&settings.default_agent) {
-        workers.push(settings.default_agent.clone());
+    let mut workers = settings.crew.members();
+    if !workers.contains(&settings.main_agent) {
+        workers.push(settings.main_agent.clone());
     }
     workers
 }
@@ -694,14 +701,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_crew_includes_the_default_agent_once() {
+    fn the_crew_includes_the_main_agent_once() {
         let mut settings = Settings {
-            crew: vec![WorkerRef::new("codex", None)],
-            default_agent: WorkerRef::new("claude-code", None),
+            crew: vec![WorkerRef::new("codex", None)].into(),
+            main_agent: WorkerRef::new("claude-code", None),
             ..Settings::default()
         };
         assert_eq!(crew(&settings).len(), 2);
-        settings.crew.push(WorkerRef::new("claude-code", None));
+        settings.crew.add(WorkerRef::new("claude-code", None));
         assert_eq!(crew(&settings).len(), 2);
     }
 }

@@ -26,7 +26,7 @@ use argonauts_core::settings::workflows::RunStyle;
 use argonauts_core::steps::goal::{DiffTag, DifferOutput};
 use argonauts_core::workflow::StepRef;
 
-use crate::checkpoints::{self, CheckpointRequest, full_auto, options};
+use crate::checkpoints::{self, CheckpointRequest, autopilot, options};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::solo;
@@ -71,7 +71,7 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
         if questions.is_empty() && plan_card_follows {
             solo::prompt_is_the_goal(host).await?;
             return Ok(Some(StepDone::skipped(
-                "Your prompt is the goal, and the plan card gives the go-ahead",
+                "Your prompt is the goal, and the plan approval gives the go-ahead",
             )));
         }
         draft_from_the_prompt(host, questions).await?;
@@ -83,7 +83,7 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
         .ok_or_else(|| EngineError::Refused("there is no goal draft to check yet".to_owned()))?;
 
     let by_lead = checkpoints::answerer(host, CheckpointKind::Goal).answers_for_you();
-    let full_auto = checkpoints::full_auto::applies_now(host, CheckpointKind::Goal);
+    let autopilot = checkpoints::autopilot::applies_now(host, CheckpointKind::Goal);
     let mut drafted = drafted;
     let mut lead_answered = None;
     let questions = &view.settled.questions;
@@ -99,7 +99,7 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
             .iter()
             .map(|question| {
                 by_lead
-                    && materiality::lead_may_answer(question, host.settings(), full_auto)
+                    && materiality::lead_may_answer(question, host.settings(), autopilot)
                     && yours_answered(question).is_none()
             })
             .collect();
@@ -157,10 +157,10 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
                     lead::answered_line(
                         host.settings()
                             .approvals
-                            .answered_by
+                            .answers
                             .as_ref()
                             .and_then(Answerer::model)
-                            .filter(|_| full_auto),
+                            .filter(|_| autopilot),
                         assumed.len(),
                         yours.len(),
                     ),
@@ -189,7 +189,7 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
                     let opening = checkpoints::open_because(host, request, because)?;
                     match opening.decided_or_withdrawn(host).await? {
                         Ok(decided) => (decided, true),
-                        Err(why) if why == full_auto::LEFT_TO_THE_LEAD => return Ok(None),
+                        Err(why) if why == autopilot::LEFT_TO_THE_LEAD => return Ok(None),
                         Err(why) => {
                             return Err(EngineError::Refused(format!(
                                 "the goal's question was withdrawn: {why}"
@@ -269,14 +269,16 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
                 answered_by(host, GO_AHEAD, LET_THE_LEAD_ANSWER, decider(&decided.by))?;
             }
             approve(host, drafted, decided.by)?;
-            StepDone::done("The goal is approved, and the lead answers from here")
+            StepDone::done("The goal is approved, and the main agent answers from here")
         }
         AnswerAction::Approve => {
             approve(host, drafted, decided.by)?;
             StepDone::done(match lead_answered {
-                Some((_, 1)) => "The lead answered 1 question, and the goal is approved".to_owned(),
+                Some((_, 1)) => {
+                    "The main agent answered 1 question, and the goal is approved".to_owned()
+                }
                 Some((_, n)) => {
-                    format!("The lead answered {n} questions, and the goal is approved")
+                    format!("The main agent answered {n} questions, and the goal is approved")
                 }
                 None => "The goal is approved".to_owned(),
             })
@@ -295,7 +297,7 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
         },
         other => {
             return Err(EngineError::Refused(format!(
-                "the goal checkpoint doesn't offer {other:?}"
+                "the goal approval doesn't offer {other:?}"
             )));
         }
     };
@@ -325,7 +327,7 @@ fn brief_questions(state: &RunState) -> Vec<GoalQuestion> {
                     label: one_line(label),
                     recommended: choice == 0,
                     basis: (choice == 0)
-                        .then(|| format!("the lead recommends it · {}", question.topic)),
+                        .then(|| format!("the main agent recommends it · {}", question.topic)),
                 })
                 .collect(),
             tag: DiffTag::Detail,
@@ -501,8 +503,8 @@ impl View {
                 differences: differences.clone(),
             })
             .collect();
-        let full_auto = checkpoints::full_auto::applies(state, settings, CheckpointKind::Goal);
-        let goal_settings = materiality::goal_settings(settings, full_auto);
+        let autopilot = checkpoints::autopilot::applies(state, settings, CheckpointKind::Goal);
+        let goal_settings = materiality::goal_settings(settings, autopilot);
         let settled = materiality::settle(&listings, goal.restated.len(), &goal_settings);
         let held_back = settled.held_back;
         // Nothing waits for you in full auto, whatever `approvals.ask_you_about` names.
@@ -510,7 +512,7 @@ impl View {
             .over_limit
             .iter()
             .filter(|(tag, topic)| {
-                !full_auto
+                !autopilot
                     && checkpoints::asks_you_about(settings, &[materiality::tag_name(*tag), topic])
             })
             .count();
@@ -718,7 +720,8 @@ pub fn lead_answers_for_you(state: &RunState) -> bool {
 /// Who a decision's party is, as a record of an answer names them.
 pub fn decider(party: &Party) -> Decider {
     match party {
-        Party::User => Decider::You,
+        // Leaving it was your call.
+        Party::User | Party::Declined => Decider::You,
         Party::Rules | Party::Config | Party::Conductor => Decider::Rules,
         _ => Decider::Lead,
     }

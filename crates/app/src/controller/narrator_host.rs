@@ -66,7 +66,7 @@ impl NarratorHost {
             .narrator
             .model
             .clone()
-            .unwrap_or_else(|| settings.default_agent.clone());
+            .unwrap_or_else(|| settings.main_agent.clone());
         if before.mode != settings.ui.narrator {
             self.narrator.set_mode(settings.ui.narrator);
         }
@@ -186,7 +186,7 @@ mod tests {
             ts: OffsetDateTime::UNIX_EPOCH,
             run: RunId::new("run-001").ok(),
             kind: NarratorLineKind::Update,
-            text: "Two owners are building.".to_owned(),
+            text: "Two workers are building.".to_owned(),
             model: argonauts_core::names::WorkerRef::new("claude-code", None),
             spend: Spend::default(),
         };

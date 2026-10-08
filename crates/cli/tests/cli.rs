@@ -111,8 +111,11 @@ fn config_set_of_a_safety_key_without_a_terminal_refuses() {
 #[test]
 fn config_show_prints_the_settings_as_toml() {
     let repo = TempRepo::new().unwrap();
-    repo.write(".argonauts/config.toml", "[triage]\nsolo_max_files = 5\n")
-        .unwrap();
+    repo.write(
+        ".argonauts/config.toml",
+        "[solo_or_crew]\nsolo_max_files = 5\n",
+    )
+    .unwrap();
     let output = argonauts(
         &repo,
         repo.root(),
@@ -124,7 +127,10 @@ fn config_show_prints_the_settings_as_toml() {
     assert!(text.contains("# --set ui.bell=false"), "{text}");
     assert!(text.contains(".argonauts/config.toml (read)"), "{text}");
     let table: toml::Table = text.parse().unwrap();
-    assert_eq!(table["triage"]["solo_max_files"].as_integer(), Some(5));
+    assert_eq!(
+        table["solo_or_crew"]["solo_max_files"].as_integer(),
+        Some(5)
+    );
     assert_eq!(table["ui"]["bell"].as_bool(), Some(false));
 }
 
@@ -165,10 +171,7 @@ fn config_schema_is_json_schema() {
     let output = argonauts(&repo, repo.root(), &["config", "schema"]);
     assert!(output.status.success(), "{}", describe(&output));
     let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        schema["properties"]["default_agent"].is_object(),
-        "{schema}"
-    );
+    assert!(schema["properties"]["main_agent"].is_object(), "{schema}");
 }
 
 /// `ARGONAUTS_HOME` holds everything a first start writes: the setup's answers, the preset
@@ -191,8 +194,11 @@ fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
         .size(34, 100);
     let mut pty = Pty::spawn(command).unwrap();
     let wait = Duration::from_secs(30);
-    pty.wait_for(r"Welcome to Argonauts(.|\n)*Continue \(recommended\)", wait)
-        .unwrap();
+    pty.wait_for(
+        r"Welcome to Argonauts Code(.|\n)*Continue \(recommended\)",
+        wait,
+    )
+    .unwrap();
     // Esc in the input never answers a card, so ↑ hands it the keys first.
     pty.press(Key::Up).unwrap();
     pty.wait_for(r"Esc to take the recommended answers", wait)
@@ -206,7 +212,7 @@ fn a_first_start_with_argonauts_home_set_writes_nothing_under_your_home() {
     pty.wait_for_exit(wait).unwrap();
 
     assert!(repo.global_config().is_file(), "the answers are saved");
-    assert!(repo.home().join("presets").is_dir());
+    assert!(repo.home().join("workflows").is_dir());
     let stray = repo.user_home().join(".argonauts");
     assert!(!stray.exists(), "{} was written", stray.display());
 }
@@ -236,8 +242,11 @@ fn at_lists_the_repos_files_and_completes_one() {
         .size(34, 100);
     let mut pty = Pty::spawn(command).unwrap();
     let wait = Duration::from_secs(30);
-    pty.wait_for(r"Welcome to Argonauts(.|\n)*Continue \(recommended\)", wait)
-        .unwrap();
+    pty.wait_for(
+        r"Welcome to Argonauts Code(.|\n)*Continue \(recommended\)",
+        wait,
+    )
+    .unwrap();
     pty.press(Key::Up).unwrap();
     pty.wait_for(r"Esc to take the recommended answers", wait)
         .unwrap();
@@ -340,25 +349,27 @@ fn doctor_lists_every_cli_with_its_version() {
     let report = describe(&output);
     assert_eq!(output.status.code(), Some(0), "{report}");
     let text = stdout(&output);
-    let line = |id: &str| {
+    // Doctor names each CLI.
+    let line = |name: &str| {
         text.lines()
-            .find(|line| line.split_whitespace().next() == Some(id))
-            .unwrap_or_else(|| panic!("no {id} line in {report}"))
+            .find(|line| line.starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("no {name} line in {report}"))
             .to_owned()
     };
-    // The exact word: "untested" holds "tested" too.
+    // The exact words: "newer than checked" holds "checked" too.
     let says = |line: &str, word: &str| line.split_whitespace().any(|w| w == word);
-    assert!(says(&line("claude-code"), "2.1.284"), "{report}");
-    assert!(says(&line("claude-code"), "tested"), "{report}");
-    assert!(says(&line("codex"), "0.158.0"), "{report}");
-    assert!(says(&line("codex"), "tested"), "{report}");
+    let checked = |line: &str| says(line, "checked") && !line.contains("newer than");
+    assert!(says(&line("Claude Code"), "2.1.284"), "{report}");
+    assert!(checked(&line("Claude Code")), "{report}");
+    assert!(says(&line("Codex"), "0.158.0"), "{report}");
+    assert!(checked(&line("Codex")), "{report}");
     assert!(
-        line("antigravity-cli").contains("not installed"),
+        line("Antigravity CLI").contains("not installed"),
         "{report}"
     );
-    assert!(line("opencode").contains("not installed"), "{report}");
+    assert!(line("OpenCode").contains("not installed"), "{report}");
     assert!(text.contains("Ready with 2 of "), "{report}");
-    assert!(!text.contains("Untested versions"), "{report}");
+    assert!(!text.contains("wasn't checked with"), "{report}");
 
     let output = doctor(&["doctor", "--json"]);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -382,24 +393,12 @@ fn doctor_lists_every_cli_with_its_version() {
 }
 
 #[test]
-fn run_outside_a_repository_fails() {
-    let repo = TempRepo::new().unwrap();
-    let output = argonauts(&repo, &elsewhere(&repo), &["run", "--solo", "Add a flag"]);
-    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
-    assert!(
-        stderr(&output).contains("isn't inside a git repository"),
-        "{}",
-        describe(&output)
-    );
-}
-
-#[test]
 fn run_flag_mistakes_are_usage_errors() {
     let repo = TempRepo::new().unwrap();
     for args in [
-        &["run", "--gate", "test -f 'x", "task"][..],
+        &["run", "--check", "test -f 'x", "task"][..],
         &["run", "--solo", "--crew", "task"][..],
-        &["run", "--budget-usd", "0", "task"][..],
+        &["run", "--limit-usd", "0", "task"][..],
     ] {
         let output = argonauts(&repo, repo.root(), args);
         assert_eq!(
@@ -420,8 +419,8 @@ fn run_gate_and_merge_without_a_terminal_are_refused_by_name() {
             "--merge",
         ),
         (
-            &["run", "--solo", "--gate", "true", "--detach", "say hi"][..],
-            "--gate",
+            &["run", "--solo", "--check", "true", "--detach", "say hi"][..],
+            "--check",
         ),
     ] {
         let output = argonauts(&repo, repo.root(), args);
@@ -457,12 +456,18 @@ fn status_outside_a_repo_lists_nothing() {
     assert_eq!(stdout(&output), "Nothing is running.\n");
 }
 
+/// Any folder is a project, so a folder Argonauts never worked in has nothing waiting, and
+/// looking keeps no state for it.
 #[test]
-fn inbox_needs_a_repo() {
+fn inbox_outside_a_repo_lists_nothing() {
     let repo = TempRepo::new().unwrap();
     let output = argonauts(&repo, &elsewhere(&repo), &["inbox"]);
-    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
-    assert!(stderr(&output).contains("inside a git repository"));
+    assert!(output.status.success(), "{}", describe(&output));
+    assert_eq!(stdout(&output), "Nothing waits for you.\n");
+    let state = repo.home().join("state");
+    let kept = fs::read_dir(&state).map_or(0, Iterator::count);
+    assert_eq!(kept, 0, "state was kept under {}", state.display());
+    assert!(!elsewhere(&repo).join(".git").exists());
 }
 
 #[test]

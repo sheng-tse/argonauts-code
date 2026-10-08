@@ -71,9 +71,9 @@ pub async fn run_gate(
     let (exit_code, output) = match ran {
         Ok(process) => match execute(&process, timeout, stop).await {
             Ok(ran) => (ran.exit_code, ran.output_with_note()),
-            Err(err) => (None, format!("could not run the gate: {err}")),
+            Err(err) => (None, format!("could not run the checks: {err}")),
         },
-        Err(err) => (None, format!("could not run the gate: {err}")),
+        Err(err) => (None, format!("could not run the checks: {err}")),
     };
     GateResult {
         command: command.to_vec(),
@@ -134,7 +134,7 @@ impl Ran {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
             }
-            text.push_str("[argonauts] gate ");
+            text.push_str("[argonauts] check ");
             text.push_str(why);
         }
         text
@@ -217,7 +217,7 @@ fn kill(group: u32) {
         return;
     }
     if let Err(err) = signal_group(group, StopSignal::Kill) {
-        tracing::warn!("could not stop the gate: {err}");
+        tracing::warn!("could not stop the checks: {err}");
     }
 }
 
@@ -329,7 +329,7 @@ mod tests {
         assert!(
             result
                 .output
-                .ends_with("[argonauts] gate timed out after 200ms")
+                .ends_with("[argonauts] check timed out after 200ms")
         );
     }
 
@@ -350,7 +350,7 @@ mod tests {
         )
         .await;
         assert!(!result.passed);
-        assert_eq!(result.output, "[argonauts] gate stopped by you");
+        assert_eq!(result.output, "[argonauts] check stopped by you");
     }
 
     #[tokio::test]
@@ -358,7 +358,7 @@ mod tests {
         let result = gate(&["argonauts-no-such-gate"], Duration::from_secs(5)).await;
         assert!(!result.passed);
         assert!(
-            result.output.starts_with("could not run the gate"),
+            result.output.starts_with("could not run the checks"),
             "{}",
             result.output
         );

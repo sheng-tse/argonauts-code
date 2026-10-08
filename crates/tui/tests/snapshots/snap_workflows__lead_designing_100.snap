@@ -2,9 +2,8 @@
 source: crates/tui/tests/snap_workflows.rs
 expression: text
 ---
-● lead:design-2 · Haiku on Claude Code · 1m22s
-[ Output ]   Input                                                                         following
-────────────────────────────────────────────────────────────────────────────────────────────────────
+◐ main:design-2 · Haiku on Claude Code                   Output  Input  Raw                    1m22s
+
 ● Reading the rate limiter and its failing test.
 
 ● Each X-Api-Key gets its own bucket; requests without one share a bucket.
@@ -17,4 +16,5 @@ expression: text
 
 
 
-↑↓ scroll · i input · s steer · r raw · ← crew · esc back
+
+↑↓ scroll · tab input · m message it · x stop it · r raw · ← crew · esc back

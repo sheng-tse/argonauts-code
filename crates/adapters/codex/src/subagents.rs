@@ -63,6 +63,7 @@ impl Threads {
                     .or_else(|| previous.and_then(|p| p.last_message.clone())),
                 log_uri: None,
                 steps_visible: false,
+                tokens: None,
             };
             if previous != Some(&update) {
                 self.sent.insert(child.clone(), update.clone());

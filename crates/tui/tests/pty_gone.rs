@@ -37,11 +37,11 @@ struct Detached {
 
 impl Detached {
     fn start(script: Script) -> Self {
-        let dir = tempfile::tempdir().expect("a folder for the harness");
+        let dir = tempfile::tempdir().expect("a folder for the CLI");
         let home = dir.path().join("home");
         let work = dir.path().join("work");
         for folder in [&home, &work] {
-            fs::create_dir_all(folder).expect("the harness folders");
+            fs::create_dir_all(folder).expect("the CLI folders");
         }
         let script_file = dir.path().join("script.jsonl");
         fs::write(&script_file, script.to_jsonl()).expect("the script");
@@ -70,7 +70,7 @@ impl Detached {
             .stderr(stdio())
             .process_group(0)
             .spawn()
-            .expect("starting the harness");
+            .expect("starting the CLI");
         drop(pty.slave);
         Self {
             child,

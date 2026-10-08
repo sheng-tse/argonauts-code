@@ -6,15 +6,15 @@ use crate::workflow::yaml;
 
 /// `(name, YAML source)` for every built-in workflow.
 pub const BUILTIN: &[(&str, &str)] = &[
-    ("peer-crew", include_str!("../../workflows/peer-crew.yaml")),
+    ("council", include_str!("../../workflows/council.yaml")),
     (
-        "coordinated-crew",
-        include_str!("../../workflows/coordinated-crew.yaml"),
+        "orchestrator",
+        include_str!("../../workflows/orchestrator.yaml"),
     ),
     ("solo", include_str!("../../workflows/solo.yaml")),
     (
-        "solo-reviewed",
-        include_str!("../../workflows/solo-reviewed.yaml"),
+        "maker-checker",
+        include_str!("../../workflows/maker-checker.yaml"),
     ),
     ("best-of-n", include_str!("../../workflows/best-of-n.yaml")),
     (

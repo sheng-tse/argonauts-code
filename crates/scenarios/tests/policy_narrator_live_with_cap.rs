@@ -31,7 +31,7 @@ fn policy_narrator_live_with_cap() -> anyhow::Result<()> {
 
     pty.wait_for("※ narrator:", WAIT)?;
     pty.wait_for("(?i)narrator.*(cap|limit)", WAIT)?;
-    wait_for_events(&scenario, "the merge checkpoint", RUN_WAIT, merge_opened)?;
+    wait_for_events(&scenario, "the merge approval", RUN_WAIT, merge_opened)?;
     // The owner worked for 8 seconds at a 1 second interval; the cap held it to one call.
     std::thread::sleep(Duration::from_secs(3));
     let narrations = invocations_of(&scenario, "codex")?;

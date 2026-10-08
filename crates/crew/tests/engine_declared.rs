@@ -110,15 +110,15 @@ async fn a_solo_run_is_named_and_declares_only_what_it_runs() -> anyhow::Result<
         "{labels:?}"
     );
     assert!(
-        labels.iter().all(|label| !label.contains("card-")),
+        labels.iter().all(|label| !label.contains("task-")),
         "{labels:?}"
     );
     Ok(())
 }
 
 const LOOK_THEN_MAYBE: &str = "name: look-then-maybe\ndescription: A look, then one more if the \
-    reviewers disagree\nphases:\n  - title: Look\n    detail: the gates\n    standard: check\n    \
-    steps:\n      - kind: gate\n        label: \"look:gates\"\n  - title: Maybe\n    detail: only \
+    reviewers disagree\nphases:\n  - title: Look\n    detail: the checks\n    standard: check\n    \
+    steps:\n      - kind: gate\n        label: \"look:checks\"\n  - title: Maybe\n    detail: only \
     when reviewers disagree\n    standard: check\n    steps:\n      - kind: gate\n        when: \
     reviewers_disagree\n";
 
@@ -126,7 +126,7 @@ const LOOK_THEN_MAYBE: &str = "name: look-then-maybe\ndescription: A look, then 
 async fn a_phase_whose_steps_all_skip_is_skipped_with_its_reason() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.worker("claude-code/opus", "anthropic");
-    crew.settings.workflow = WorkflowRef::new("look-then-maybe");
+    crew.settings.phases = WorkflowRef::new("look-then-maybe");
     crew.settings.workflows.lead_designs = false.into();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.repo
@@ -155,7 +155,7 @@ async fn a_phase_whose_steps_all_skip_is_skipped_with_its_reason() -> anyhow::Re
     assert_eq!(
         reasons,
         [
-            "no card to run the gates on",
+            "no task to run the checks on",
             "reviewers_disagree doesn't hold"
         ]
     );

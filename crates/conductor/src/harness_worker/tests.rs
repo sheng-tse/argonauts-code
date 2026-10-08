@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::events::session::{
     Delivery, EndReason, InputPartKind, LimitEvent, PromptVia, SessionEvent, SessionInput,
     Watchdog, WrapUpVia,
@@ -20,7 +21,9 @@ use argonauts_core::worker::{
     Access, SandboxMode, SessionControl, SessionHandle, SessionSpec, Worker, WorkerError,
     WorkerEvent,
 };
-use argonauts_core::{Adapter, AgentEvent, BudgetDimension, MessageStage, WRAP_UP_MESSAGE};
+use argonauts_core::{
+    Adapter, AgentEvent, BudgetDimension, ErrorCategory, MessageStage, WRAP_UP_MESSAGE,
+};
 use argonauts_testkit::services::StaticRegistry;
 use nix::errno::Errno;
 use nix::sys::signal::kill;
@@ -257,7 +260,7 @@ async fn session_input_parts_equal_prompt() {
         part(
             InputPartKind::Card,
             "card",
-            "Card: café ✓ \"quoted\"\n",
+            "Task: café ✓ \"quoted\"\n",
             None,
         ),
         part(
@@ -432,7 +435,7 @@ async fn a_roles_own_mode_decides_whether_it_needs_our_sandbox() {
     settings.sandbox.mode = SandboxChoice::Os;
     settings
         .roles
-        .entry(RoleName::Owner)
+        .entry(RoleName::Worker)
         .or_default()
         .sandbox
         .mode = Some(SandboxChoice::Tool);
@@ -447,7 +450,7 @@ async fn a_roles_own_mode_decides_whether_it_needs_our_sandbox() {
     .with_sandbox(Arc::new(Unsandboxed));
     assert!(worker.start(dirs.spec("hi")).await.is_err());
     let mut owner = dirs.spec("hi");
-    owner.role = RoleName::Owner;
+    owner.role = RoleName::Worker;
     assert!(worker.start(owner).await.is_ok());
 
     // The other way round: everyone runs on their tool's own sandbox but the owner, whose
@@ -455,7 +458,7 @@ async fn a_roles_own_mode_decides_whether_it_needs_our_sandbox() {
     let mut settings = Settings::default();
     settings
         .roles
-        .entry(RoleName::Owner)
+        .entry(RoleName::Worker)
         .or_default()
         .sandbox
         .mode = Some(SandboxChoice::Os);
@@ -463,11 +466,11 @@ async fn a_roles_own_mode_decides_whether_it_needs_our_sandbox() {
     let mut spec = dirs.spec("hi");
     spec.sandbox.mode = SandboxMode::None;
     assert!(h.worker.start(spec.clone()).await.is_ok());
-    spec.role = RoleName::Owner;
+    spec.role = RoleName::Worker;
     match h.worker.start(spec).await {
         Err(WorkerError::Refused(why)) => assert!(why.contains("sandbox"), "{why}"),
         Err(other) => panic!("{other:?}"),
-        Ok(_) => panic!("the owner started without a sandbox"),
+        Ok(_) => panic!("the worker started without a sandbox"),
     }
 }
 
@@ -722,6 +725,186 @@ async fn send_now_from_the_agent_view_hands_over_steering_held_for_the_tool_call
     assert_eq!(lines[0]["text"], "use the cache", "{got}");
     assert_eq!(lines[1]["send_now"], lines[0]["uuid"], "{got}");
     assert_eq!(end.reason, EndReason::Completed);
+}
+
+/// Reads agent events as they are, and stops a subagent, or the turn alone, with a line that
+/// says which.
+struct StoppingParser;
+
+impl argonauts_core::adapter::StreamParser for StoppingParser {
+    fn parse_stdout_line(&mut self, line: &str) -> Vec<AgentEvent> {
+        vec![serde_json::from_str(line).unwrap_or_else(|_| AgentEvent::unknown_line(line))]
+    }
+    fn parse_stderr_line(&mut self, _line: &str) -> Vec<AgentEvent> {
+        Vec::new()
+    }
+    fn finish(&mut self, _exit_code: Option<i32>) -> Vec<AgentEvent> {
+        Vec::new()
+    }
+    fn stop_subagent_line(&self, id: &str) -> Option<String> {
+        Some(format!("{}\n", serde_json::json!({ "stop_task": id })))
+    }
+    fn stop_turn_line(&self) -> Option<String> {
+        Some(format!("{}\n", serde_json::json!({ "stop_turn": true })))
+    }
+}
+
+/// What a CLI says when its turn was stopped: the error, then the turn's result.
+fn interrupted() -> String {
+    let error = event_line(&AgentEvent::Error {
+        category: ErrorCategory::Interrupted,
+        message: "the turn was interrupted".into(),
+        retryable: false,
+    });
+    let result = event_line(&AgentEvent::Result {
+        text: None,
+        structured: None,
+        is_error: true,
+    });
+    format!("{}; {}", echo(&error), echo(&result))
+}
+
+/// Esc stops the turn alone: the CLI's own stop line goes in, nothing is
+/// signalled, and the session stays open for what runs in the background, whose end starts
+/// the CLI's next turn as always.
+#[tokio::test]
+async fn stopping_the_turn_leaves_the_background_running_and_the_session_open() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; {}; IFS= read -r stop; printf '%s\\n' \"$stop\" >> got-input; \
+         {}; {}; {}; {}; {}; while IFS= read -r line; do :; done; : > input-closed",
+        echo(&background(&["b1"], false)),
+        echo(&tool("t1", true)),
+        echo(&tool("t1", false)),
+        interrupted(),
+        wait_for_go(),
+        echo(&background(&[], true)),
+        echo(&result("the agent finished")),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_input_joining_the_turn()
+        .with_parser(|| Box::new(StoppingParser));
+    let h = Harness::new(adapter);
+    let mut handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let mut seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::ToolStarted { .. }))
+    })
+    .await;
+    handle.control.send(SessionControl::StopTurn).await.unwrap();
+    seen.extend(
+        read_until(&mut handle.events, |e| {
+            matches!(
+                e,
+                WorkerEvent::Agent(AgentEvent::Result { is_error: true, .. })
+            )
+        })
+        .await,
+    );
+    let got: serde_json::Value = serde_json::from_str(dirs.read("got-input").trim()).unwrap();
+    assert_eq!(got["stop_turn"], true);
+    // The stopped turn has its result, and the input stays open for the task still running.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!dirs.work.join("input-closed").exists());
+    std::fs::write(dirs.work.join("go"), "").unwrap();
+    let (_, end) = finish(seen, handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert_eq!(end.result_text.as_deref(), Some("the agent finished"));
+    assert!(dirs.work.join("input-closed").exists());
+}
+
+/// A session whose last word is the turn you stopped was stopped by you: it didn't fail. And
+/// a CLI with no way to stop a turn alone is stopped whole.
+#[tokio::test]
+async fn a_stopped_turn_with_nothing_after_it_ends_as_stopped() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; IFS= read -r stop; {}; {}; \
+         while IFS= read -r line; do :; done",
+        echo(&tool("t1", true)),
+        echo(&tool("t1", false)),
+        interrupted(),
+    );
+    let adapter = TestAdapter::new(&script)
+        .with_input_joining_the_turn()
+        .with_parser(|| Box::new(StoppingParser));
+    let h = Harness::new(adapter);
+    let mut handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::ToolStarted { .. }))
+    })
+    .await;
+    handle.control.send(SessionControl::StopTurn).await.unwrap();
+    let (_, end) = finish(seen, handle).await;
+    assert_eq!(end.reason, EndReason::Stopped);
+
+    let dirs = Dirs::new();
+    let script = format!("IFS= read -r first; {}; sleep 30", echo(&tool("t1", true)));
+    let h = Harness::new(TestAdapter::new(&script).with_input_joining_the_turn());
+    let mut handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::ToolStarted { .. }))
+    })
+    .await;
+    handle.control.send(SessionControl::StopTurn).await.unwrap();
+    let (_, end) = finish(seen, handle).await;
+    assert_eq!(end.reason, EndReason::Stopped);
+}
+
+/// Stopping one subagent writes the CLI's own stop line and leaves the session running.
+/// A CLI with no such line says so, and nothing else stops.
+#[tokio::test]
+async fn stopping_one_subagent_writes_the_clis_stop_line_and_the_session_goes_on() {
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; IFS= read -r stop; printf '%s\\n' \"$stop\" >> got-input; \
+         {}; {}; while IFS= read -r line; do :; done",
+        echo(&tool("t1", true)),
+        echo(&tool("t1", false)),
+        echo(&result("done")),
+    );
+    let stop = || SessionControl::StopSubagent {
+        id: "toolu_a".into(),
+    };
+    let adapter = TestAdapter::new(&script)
+        .with_input_joining_the_turn()
+        .with_parser(|| Box::new(StoppingParser));
+    let h = Harness::new(adapter);
+    let mut handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::ToolStarted { .. }))
+    })
+    .await;
+    handle.control.send(stop()).await.unwrap();
+    let (events, end) = finish(seen, handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    let got: serde_json::Value = serde_json::from_str(dirs.read("got-input").trim()).unwrap();
+    assert_eq!(got["stop_task"], "toolu_a");
+    assert!(notices(&events).is_empty(), "{:?}", notices(&events));
+
+    // The same session with a CLI that has no stop of its own.
+    let dirs = Dirs::new();
+    let script = format!(
+        "IFS= read -r first; {}; sleep 0.3; {}; {}",
+        echo(&tool("t1", true)),
+        echo(&tool("t1", false)),
+        echo(&result("done")),
+    );
+    let h = Harness::new(TestAdapter::new(&script).with_input_joining_the_turn());
+    let mut handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::ToolStarted { .. }))
+    })
+    .await;
+    handle.control.send(stop()).await.unwrap();
+    let (events, end) = finish(seen, handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    assert!(
+        notices(&events)
+            .iter()
+            .any(|notice| notice.contains("can't stop that subagent on its own")),
+        "{:?}",
+        notices(&events)
+    );
 }
 
 #[tokio::test]
@@ -1211,7 +1394,7 @@ async fn budget_wraps_up_then_stops() {
     );
     assert!(
         dirs.read("got-input")
-            .contains("budget for this task is almost used up")
+            .contains("limit for this task is almost used up")
     );
     let sent = inputs(&events)
         .into_iter()
@@ -1256,6 +1439,7 @@ async fn context_cap_rotates() {
     let fill = event_line(&AgentEvent::ContextFill {
         used: 150_000,
         size: None,
+        sent: None,
     });
     let script = format!("{}; exec sleep 30", echo(&fill));
     let mut settings = Settings::default();
@@ -1267,12 +1451,75 @@ async fn context_cap_rotates() {
     let (events, end) = collect(worker.start(dirs.spec("hi")).await.unwrap()).await;
     assert_eq!(end.reason, EndReason::ContextFull);
     let filled = agent_events(&events).into_iter().any(|e| {
-        *e == AgentEvent::ContextFill {
-            used: 150_000,
-            size: Some(200_000),
-        }
+        matches!(
+            e,
+            AgentEvent::ContextFill {
+                used: 150_000,
+                size: Some(200_000),
+                sent: Some(_),
+            }
+        )
     });
     assert!(filled, "the window size comes from the registry");
+}
+
+#[tokio::test]
+async fn a_watched_session_is_asked_for_its_context_after_a_fill_and_counts_what_was_sent() {
+    let dirs = Dirs::new();
+    let fill = |used| {
+        echo(&event_line(&AgentEvent::ContextFill {
+            used,
+            size: Some(200_000),
+            sent: None,
+        }))
+    };
+    // The second fill comes within 10 seconds of the ask, so it asks nothing more.
+    let script = format!(
+        "IFS= read -r first; IFS= read -r steer; {}; IFS= read -r ask; \
+         printf '%s\\n' \"$ask\" >> got-input; {}; {}; \
+         while IFS= read -r line; do printf '%s\\n' \"$line\" >> got-input; done",
+        fill(1000),
+        fill(2000),
+        echo(&result("done")),
+    );
+    let h = Harness::new(
+        TestAdapter::new(&script)
+            .with_send_now()
+            .with_context_asks(),
+    );
+    let handle = h.worker.start(dirs.spec("start")).await.unwrap();
+    handle
+        .control
+        .send(SessionControl::WatchContext(Some(ContextDetail::Full)))
+        .await
+        .unwrap();
+    // Sent after the watch, so the fill that follows it is watched.
+    let steer = queued(1, "use the cache", Delivery::Steer);
+    handle
+        .control
+        .send(SessionControl::Deliver(steer))
+        .await
+        .unwrap();
+    let (events, end) = collect(handle).await;
+    assert_eq!(end.reason, EndReason::Completed);
+    let got = dirs.read("got-input");
+    let asks: Vec<&str> = got
+        .lines()
+        .filter(|line| line.contains("context"))
+        .collect();
+    assert_eq!(asks, [r#"{"context":"full"}"#], "{got}");
+    let sent: Vec<u64> = agent_events(&events)
+        .into_iter()
+        .filter_map(|e| match e {
+            AgentEvent::ContextFill { sent, .. } => *sent,
+            _ => None,
+        })
+        .collect();
+    let [first, second] = sent.as_slice() else {
+        panic!("{sent:?}");
+    };
+    // The prompt and the delivered message, by the budget's estimate.
+    assert!(*first > 0 && first == second, "{sent:?}");
 }
 
 #[tokio::test]
@@ -1359,10 +1606,56 @@ async fn hand_off_on_wrap_up_stops_at_the_first_sign() {
         "sleep 20"
     );
     let mut settings = Settings::default();
-    settings.handoff.wrap_up = argonauts_core::settings::handoff::WrapUp::HandOff;
+    settings.fallback.wrap_up = argonauts_core::settings::handoff::WrapUp::HandOff;
     let h = Harness::with_settings(TestAdapter::new(&script), settings);
     let (_, end) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
     assert_eq!(end.reason, EndReason::UsageLimit { resets_at: None });
+}
+
+/// A plan window as full as `limits.plan_usage` ends the session: as a plan that ran out, so
+/// the fallbacks take over, or as a reached limit when `when_reached` is `stop`. With no limit
+/// set, the same reading stops nothing.
+#[tokio::test]
+async fn your_plan_limit_ends_the_session_as_when_reached_says() {
+    use argonauts_core::settings::budget::OnHit;
+
+    let reading = argonauts_core::limits::QuotaReading {
+        status: argonauts_core::limits::QuotaStatus::Allowed,
+        used: Some(0.82),
+        ..wrap_up_reading(false)
+    };
+    let quota = echo(&event_line(&AgentEvent::Quota { reading }));
+    let run = async |plan_usage: Option<f64>, when_reached: OnHit, then: String| {
+        let dirs = Dirs::new();
+        let mut settings = Settings::default();
+        settings.limits.budget.plan_usage = plan_usage;
+        settings.limits.budget.when_reached = when_reached;
+        let script = format!("{quota}; {then}");
+        let h = Harness::with_settings(TestAdapter::new(&script), settings);
+        collect(h.worker.start(dirs.spec("hi")).await.unwrap())
+            .await
+            .1
+            .reason
+    };
+    assert_eq!(
+        run(Some(0.8), OnHit::Fallback, "sleep 20".to_owned()).await,
+        EndReason::UsageLimit { resets_at: None }
+    );
+    assert_eq!(
+        run(Some(0.8), OnHit::Stop, "sleep 20".to_owned()).await,
+        EndReason::BudgetHit {
+            dimension: BudgetDimension::Spend
+        }
+    );
+    let carries_on = [echo(&message("hi")), echo(&result("ok"))].join("; ");
+    assert_eq!(
+        run(Some(0.9), OnHit::Fallback, carries_on.clone()).await,
+        EndReason::Completed
+    );
+    assert_eq!(
+        run(None, OnHit::Fallback, carries_on).await,
+        EndReason::Completed
+    );
 }
 
 /// A CLI newer than its adapter's recordings says so once per version, and what it sent that

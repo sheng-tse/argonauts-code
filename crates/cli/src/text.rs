@@ -7,6 +7,11 @@ pub fn words(value: &impl Serialize) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(|name| name.replace('_', " ")))
+        .map(|name| match name.as_str() {
+            // A worker's kind on the wire. On screen it is the agent's CLI.
+            "harness" => "CLI".to_owned(),
+            name => argonauts_core::text::state_words(name).to_owned(),
+        })
         .unwrap_or_default()
 }
 
@@ -58,7 +63,7 @@ mod tests {
     #[test]
     fn names_become_words() {
         assert_eq!(words(&RunState::PullRequest), "pull request");
-        assert_eq!(words(&RunState::Parked), "parked");
+        assert_eq!(words(&RunState::Parked), "waiting");
         assert_eq!(count(1, "day", "days"), "1 day");
         assert_eq!(count(9, "day", "days"), "9 days");
     }

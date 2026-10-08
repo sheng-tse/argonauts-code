@@ -63,7 +63,7 @@ pub fn amount(amount: &BudgetAmount) -> String {
     match amount.unit {
         BudgetUnit::Usd => format::usd(amount.amount),
         BudgetUnit::Tokens => format!("{} tokens", format::tokens(amount.amount.max(0.0) as u64)),
-        BudgetUnit::Quota => format!("{} of quota", percent(amount.amount)),
+        BudgetUnit::Quota => format!("{} of plan usage", percent(amount.amount)),
         BudgetUnit::Minutes => minutes(amount.amount),
     }
 }
@@ -117,11 +117,11 @@ pub fn dimension(dimension: BudgetDimension) -> &'static str {
 /// Who decided, for a record line: `you`, `your rules`, `the approver model`.
 pub fn party(party: &Party, names: &DisplayNames) -> String {
     match party {
-        Party::User => "you".to_owned(),
+        Party::User | Party::Declined => "you".to_owned(),
         Party::Rules => "your rules".to_owned(),
         Party::Approver { .. } => "the approver model".to_owned(),
         Party::Config => "a setting".to_owned(),
-        Party::FullAuto => "full auto".to_owned(),
+        Party::Autopilot => "autopilot".to_owned(),
         Party::Conductor => "the conductor".to_owned(),
         Party::Agent { worker, .. } => names.worker(worker),
         Party::FrontEnd { client } => client.clone(),
@@ -148,7 +148,7 @@ pub fn track_record(record: Option<&TrackRecord>) -> String {
 pub fn cost(candidate: &Candidate) -> String {
     let mut text = match candidate.cost {
         CostEstimate::Usd(usd) => format!("~{}", format::usd(usd)),
-        CostEstimate::Quota(share) => format!("~{} of quota", percent(share)),
+        CostEstimate::Quota(share) => format!("~{} of plan usage", percent(share)),
         CostEstimate::Free => "free".to_owned(),
         CostEstimate::Unknown => "unknown".to_owned(),
     };

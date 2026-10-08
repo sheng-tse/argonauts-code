@@ -143,7 +143,7 @@ fn records_pool_sparse_cells_into_groups() {
     assert_eq!(data.pooled_from.as_deref(), Some("backend_and_data"));
     assert_eq!(backend.pass, data.pass);
     assert!(close(data.evidence, 8.0, 1e-9));
-    assert_eq!(data.counts.of, 0, "no card of its own yet");
+    assert_eq!(data.counts.of, 0, "no task of its own yet");
 
     // A group with nothing in it falls to the worker's rate on every type.
     let docs = book.record(&worker("codex"), "docs");

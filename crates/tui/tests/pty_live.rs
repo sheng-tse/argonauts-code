@@ -28,7 +28,7 @@ fn live_block_updates_in_place() {
         run.usage(agent, 24_300),
     ];
     let harness = Harness::start(script.await_signal("more").all(0, more));
-    let header = format!("^{BULLET} Opus on Claude Code · owner · card-002");
+    let header = format!("^{BULLET} Opus on Claude Code · worker · task-002");
     let before = harness.wait_visible("src/export.rs");
     assert_eq!(count_rows(&before, &header), 1, "{}", before.text());
     harness.signal("more");
@@ -44,7 +44,7 @@ fn live_block_updates_in_place() {
         after
             .scrollback
             .iter()
-            .all(|row| !row.contains("card-002 (Add")),
+            .all(|row| !row.contains("task-002 (Add")),
         "a live block never goes to the scrollback while it runs:\n{}",
         after.text()
     );
@@ -54,7 +54,7 @@ fn live_block_updates_in_place() {
 fn live_region_working_line_rules_mode_line() {
     let (_, _, script) = working(2);
     let harness = Harness::start(script);
-    let screen = harness.wait_visible("esc to interrupt");
+    let screen = harness.wait_visible(WORKING);
     let working = expect_row(&screen, WORKING_LINE);
     let rule = expect_row(&screen, TOP_RULE);
     assert!(
@@ -73,9 +73,13 @@ fn live_region_working_line_rules_mode_line() {
         "{}",
         screen.visible_text()
     );
+    // At 100 columns the chips take the room of the mode's first two hints, and Esc leaves a
+    // run's agents going, so the line doesn't offer to interrupt.
+    let mode = &screen.visible[rule + 3];
     assert!(
-        screen.visible[rule + 3]
-            .starts_with("  ǁ supervised mode on (shift+tab to cycle) · esc to interrupt"),
+        mode.starts_with("  ǁ supervised mode on")
+            && mode.contains("← 2 agents")
+            && !mode.contains("esc to interrupt"),
         "{}",
         screen.visible_text()
     );
@@ -86,7 +90,10 @@ fn live_region_keeps_its_order() {
     let (mut run, crew, events) = crew_run(2);
     let script = Script::idle()
         .all(0, events)
-        .at(0, status_with(json!({"run": RUN, "narrator": "live"})))
+        .at(
+            0,
+            status_with(json!({"run": RUN, "narrator": "live", "line": line_with_spend()})),
+        )
         .at(0, narrator_status(0.06, "$0.50"))
         .at(
             0,
@@ -102,28 +109,31 @@ fn live_region_keeps_its_order() {
         .start();
     harness.wait_visible("※ narrator:");
     harness.wait_visible("◆");
-    // The question takes the keys, so guiding the run sets it aside first.
+    // The question takes the keys, so guiding the run hands it on first.
+    past_the_card_guard();
     harness.press(Key::Esc);
-    harness.wait_visible("· needs you · ↑ to answer");
+    harness.wait_visible("◆ Question left to the agent · you, ");
     harness.submit("keep the CSV path");
-    let screen = harness.wait_visible("keep the CSV path");
+    harness.wait_visible("keep the CSV path");
+    // A working agent's bullet blinks, so the order is read from a frame that shows it.
+    let opus = format!("^{BULLET} Opus on Claude Code · worker · task-002");
+    let screen = harness.wait_visible(&opus);
     assert_order(
         &screen,
         &[
-            &format!("^{BULLET} Opus on Claude Code · owner · card-002"),
+            &opus,
             "※ narrator: Both agents",
             WORKING_LINE,
-            "◆",
             "keep the CSV path",
             TOP_RULE,
             INPUT_ROW,
             "ǁ supervised mode on .* narrator \\$0\\.06/\\$0\\.50",
             // Agent rows sit indented under their run's row.
-            "^ +◐ Opus on Claude Code",
-            "^ +◐ GPT 5\\.6 on Codex",
+            "^    ○ task-002 ",
+            "^    ○ task-003 ",
         ],
     );
-    let last = expect_row(&screen, "^ +◐ GPT 5\\.6 on Codex");
+    let last = expect_row(&screen, "^    ○ task-003 ");
     assert_eq!(
         last + 1 + blank_rows_at_bottom(&screen),
         screen.visible.len(),
@@ -153,7 +163,7 @@ fn working_line_elapsed_tokens_esc_hint() {
         "{}",
         screen.visible_text()
     );
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     let later = harness.wait_visible(r"… \([1-9]\d*s ");
     assert!(row_of(&later, WORKING_LINE).is_some());
 }
@@ -168,7 +178,7 @@ fn queued_message_gray_and_taken_back() {
         .await_command("take_back")
         .at(0, taken_back(&["keep a fallback"]));
     let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.submit("keep a fallback");
     let screen = harness.wait_visible("^❯ keep a fallback");
     let queued_row = expect_row(&screen, "^❯ keep a fallback");
@@ -207,7 +217,7 @@ fn shift_tab_cycles_approval_mode() {
         .await_command("approval_mode")
         .at(0, status_with(json!({"approval_mode": "auto"})))
         .await_command("approval_mode")
-        .at(0, status_with(json!({"approval_mode": "full_auto"})))
+        .at(0, status_with(json!({"approval_mode": "autopilot"})))
         .await_command("approval_mode")
         .at(0, status_with(json!({"approval_mode": "supervised"})));
     let mut harness = Harness::start(script);
@@ -216,8 +226,8 @@ fn shift_tab_cycles_approval_mode() {
     assert_eq!(harness.wait_command("approval_mode")["mode"], "auto");
     harness.wait_visible("^  ⏵⏵ auto mode on \\(shift\\+tab to cycle\\)");
     harness.press(Key::ShiftTab);
-    assert_eq!(harness.wait_command("approval_mode")["mode"], "full_auto");
-    harness.wait_visible("^  ⏵⏵ full auto mode on \\(shift\\+tab to cycle\\)");
+    assert_eq!(harness.wait_command("approval_mode")["mode"], "autopilot");
+    harness.wait_visible("^  ⏵⏵ autopilot on \\(shift\\+tab to cycle\\)");
     harness.press(Key::ShiftTab);
     assert_eq!(harness.wait_command("approval_mode")["mode"], "supervised");
     harness.wait_visible(MODE_IDLE);
@@ -226,35 +236,33 @@ fn shift_tab_cycles_approval_mode() {
 #[test]
 fn status_line_changed_agent_quota_spend() {
     let status = status_with(json!({
-        "default_agent": "claude-code/opus",
+        "main_agent": "claude-code/opus",
         "quotas": [chip("Claude", Some(quota("claude-code", 0.71)), "healthy"),
                    chip("Codex", Some(quota("codex", 0.38)), "healthy"),
                    chip("agy", None, "healthy")],
-        "spent": spend(9000, 0.21)}));
+        "spent": spend(9000, 0.21), "line": line_with_spend()}));
     let harness = Harness::launch(Script::idle().at(0, status))
         .size(ROWS, 200)
         .start();
-    // The header names haiku and the preset, so only the agent that differs comes back here,
-    // at the mode line's right end.
-    let screen = harness.wait_visible(
-        r"^  ǁ supervised mode on .*  Opus on Claude Code · Claude 5h 71% used · Codex 5h 38% used · \$0\.21$",
-    );
-    let status = expect_row(&screen, r"Opus on Claude Code · Claude");
+    // The rule names the model, so the bottom line never does. It marks the CLI in use, and
+    // keeps a CLI nothing was read for yet by its name.
+    let chips =
+        r"^  ǁ supervised mode on .*  ● Claude 5h .{6} 71%  ○ Codex 5h .{6} 38%  ○ agy  \$0\.21$";
+    let screen = harness.wait_visible(chips);
+    let status = expect_row(&screen, chips);
     assert_eq!(
         status + 1 + blank_rows_at_bottom(&screen),
         screen.visible.len()
     );
-    let rule = expect_row(&screen, TOP_RULE);
-    assert!(screen.visible[rule].ends_with(" peer-crew ─"));
+    let rule = expect_row(&screen, "^─+ council · Opus ─$");
+    assert!(screen.visible[rule].ends_with(" council · Opus ─"));
 }
 
 #[test]
 fn status_line_quota_chips() {
+    // Out until its window resets, three hours from now.
     let mut out = quota("claude-code", 1.0);
     out["status"] = json!("rejected");
-    // Today, in the harness's UTC clock, so the chip reads a time without a weekday.
-    let today = time::OffsetDateTime::now_utc().date();
-    out["resets_at"] = json!(format!("{today}T15:45:00Z"));
     let status = status_with(json!({
         "quotas": [chip("Claude", Some(out), "healthy"),
                    chip("Codex", Some(quota("codex", 0.38)), "down"),
@@ -262,14 +270,14 @@ fn status_line_quota_chips() {
     let harness = Harness::launch(Script::idle().at(0, status))
         .size(ROWS, 200)
         .start();
-    let screen = harness.wait_visible("Claude out until 3:45 PM");
-    let row = &screen.visible[expect_row(&screen, "Claude out until")];
-    assert!(row.contains("Codex down"), "{row}");
-    // agy's quota isn't known yet, so it has no chip.
-    assert!(!row.contains("agy"), "{row}");
+    let out_until = r"● Claude .{6} out until (\w{3} )?\d{1,2}:\d{2}[ap]m  ○ Codex down  ○ agy$";
+    let screen = harness.wait_visible(out_until);
+    let row = &screen.visible[expect_row(&screen, out_until)];
+    // agy's plan usage isn't known yet, and it still has its place by name.
+    assert!(row.ends_with("○ agy"), "{row}");
     assert!(
         !row.contains("38%"),
-        "a down vendor shows down, not its reading: {row}"
+        "a down agent shows down, not its reading: {row}"
     );
 
     let fine = status_with(json!({
@@ -278,18 +286,43 @@ fn status_line_quota_chips() {
     let harness = Harness::launch(Script::idle().at(0, fine))
         .size(ROWS, 200)
         .start();
-    let screen = harness.wait_visible("Claude 5h 92% used");
-    let row = &screen.visible[expect_row(&screen, "Claude 5h 92% used")];
+    // From 90% the window shows when it resets.
+    let near = r"● Claude 5h .{6} 92% resets (\w{3} )?\d{1,2}:\d{2}[ap]m  ○ Codex 5h .{6} 38%$";
+    let screen = harness.wait_visible(near);
+    assert!(row_of(&screen, near).is_some());
+}
+
+/// With `run` among its parts, the bottom line names the workflow under way and counts its
+/// tasks as they merge.
+#[test]
+fn the_bottom_line_names_the_workflow_under_way() {
+    let (mut run, crew, events) = crew_run(5);
+    let named = json!({"type": "run", "data": {"event": "named", "name": "add-json-flag",
+        "description": "Add a --json flag to export", "style": "workflow"}});
+    let line = json!({"settings": {"right": ["run", "plan-usage"]}});
+    let mut script = Script::idle()
+        .all(0, events)
+        .at(0, status_with(json!({"run": RUN, "line": line})))
+        .at(0, run.event(None, None, named));
+    for agent in &crew[..3] {
+        script = script.at(0, run.card_state(agent, Some("running"), "integrated"));
+    }
+    let harness = Harness::launch(script).size(ROWS, 120).start();
+    let screen = harness.wait_visible(r"  add-json-flag .{6} 3/5  ● Claude 5h .{6} 71%");
     assert!(
-        row.contains("Codex 5h 38% used"),
-        "every chip says used: {row}"
+        row_of(&screen, "▄▄▄▖▄▄ 3/5").is_some(),
+        "a small bar, three fifths full: {:?}",
+        screen.visible
     );
 }
 
 #[test]
 fn status_line_shows_narrator_spend() {
     let script = Script::idle()
-        .at(0, status_with(json!({"narrator": "live"})))
+        .at(
+            0,
+            status_with(json!({"narrator": "live", "line": line_with_spend()})),
+        )
         .at(0, narrator_status(0.06, "$0.50"));
     let harness = Harness::launch(script)
         .ui("narrator = \"live\"")
@@ -298,7 +331,7 @@ fn status_line_shows_narrator_spend() {
     let screen = harness.wait_visible("narrator \\$0\\.06/\\$0\\.50");
     let row = expect_row(&screen, "narrator \\$0\\.06/\\$0\\.50");
     assert!(
-        screen.visible[row].contains("Claude 5h 71% used")
+        screen.visible[row].contains("● Claude 5h ")
             && screen.visible[row].contains("ǁ supervised mode on"),
         "on the mode line"
     );
@@ -336,15 +369,14 @@ fn narrator_lane() {
 fn paused_record_line() {
     let (mut run, _, script) = working(2);
     let script = script
-        .await_command("pause")
+        .await_signal("paused")
         .at(0, mode_pausing(RUN))
         .at(0, run.paused(2))
         .at(0, run.parked("paused"))
         .at(0, mode_parked(RUN, "paused"));
-    let mut harness = Harness::start(script);
-    harness.wait_visible("esc to interrupt");
-    harness.press(Key::Esc);
-    assert_eq!(harness.wait_command("pause")["now"], false);
+    let harness = Harness::start(script);
+    harness.wait_visible(WORKING);
+    harness.signal("paused");
     let screen = harness.wait_visible("(?i)paused");
     let record = expect_row(&screen, "(?i)paused");
     let rule = expect_row(&screen, TOP_RULE);
@@ -391,7 +423,7 @@ fn verbose_twice_returns_to_normal() {
         .await_command("verbosity")
         .all(0, normal);
     let mut harness = Harness::launch(script).ui("verbosity = \"normal\"").start();
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.send("/verbosity full");
     harness.press(Key::Enter);
     let full = harness.wait_visible("Both read at full\\.");
@@ -484,7 +516,7 @@ fn renders_300_events_per_second_at_120_columns() {
         .size(40, 120)
         .ui("[panel]\nagents = true")
         .start();
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     let frames_before = sync_updates(&harness.raw());
     harness.signal("go");
     let started = Instant::now();

@@ -21,13 +21,13 @@ use crate::session::AuthMode;
 #[serde(default)]
 pub struct Config {
     /// Adapter id used when a run doesn't name one.
-    pub default_agent: String,
+    pub main_agent: String,
     /// Per-agent settings, keyed by adapter id.
     pub agents: BTreeMap<String, AgentConfig>,
     /// Per-card spending limits.
     pub budget: BudgetConfig,
     /// Commands that must pass before a card can merge.
-    pub gates: GatesConfig,
+    pub checks: GatesConfig,
     pub merge: MergeConfig,
     pub solo: SoloConfig,
     pub ui: UiConfig,
@@ -40,10 +40,10 @@ impl Default for Config {
             .map(|id| ((*id).to_owned(), AgentConfig::default()))
             .collect();
         Self {
-            default_agent: "claude-code".to_owned(),
+            main_agent: "claude-code".to_owned(),
             agents,
             budget: BudgetConfig::default(),
-            gates: GatesConfig::default(),
+            checks: GatesConfig::default(),
             merge: MergeConfig::default(),
             solo: SoloConfig::default(),
             ui: UiConfig::default(),
@@ -79,7 +79,7 @@ impl AgentConfig {
 pub struct BudgetConfig {
     pub unit: BudgetUnit,
     /// The limit per card, in `unit`.
-    pub per_card: f64,
+    pub per_task: f64,
     /// Share of the limit at which the agent is asked to wrap up.
     pub soft_ratio: f64,
     /// Most minutes the agent may work on a card. 0 means no limit.
@@ -92,7 +92,7 @@ impl Default for BudgetConfig {
     fn default() -> Self {
         Self {
             unit: BudgetUnit::Usd,
-            per_card: 3.0,
+            per_task: 3.0,
             soft_ratio: DEFAULT_SOFT_RATIO,
             max_minutes: 60.0,
             max_tool_calls: 300,
@@ -101,8 +101,8 @@ impl Default for BudgetConfig {
 }
 
 impl BudgetConfig {
-    pub fn per_card_limit(&self) -> BudgetLimit {
-        BudgetLimit::from_unit(self.unit, self.per_card)
+    pub fn per_task_limit(&self) -> BudgetLimit {
+        BudgetLimit::from_unit(self.unit, self.per_task)
     }
 
     /// Zero limits become `None`.
@@ -181,7 +181,7 @@ pub enum ConfigError {
     Read { path: PathBuf, source: io::Error },
     #[error("invalid config in {layer}: {message}")]
     Layer {
-        /// A file path or `--set budget.unit=yen`.
+        /// A file path or `--set limits.per_task_tokens=lots`.
         layer: String,
         message: String,
     },
@@ -275,8 +275,8 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.default_agent.trim().is_empty() {
-            return invalid("default_agent is empty".to_owned());
+        if self.main_agent.trim().is_empty() {
+            return invalid("main_agent is empty".to_owned());
         }
         validate_budget(&self.budget)?;
         if self.solo.restate_first {
@@ -285,20 +285,20 @@ impl Config {
                     .to_owned(),
             );
         }
-        validate_gates(&self.gates)?;
+        validate_gates(&self.checks)?;
         validate_prices(&self.agents)
     }
 
-    /// Unknown keys in `merged`, and a `default_agent` no adapter answers to.
+    /// Unknown keys in `merged`, and a `main_agent` no adapter answers to.
     fn load_warnings(&self, merged: &toml::Table) -> Result<Vec<String>, ConfigError> {
         let mut warnings: Vec<String> = unknown_keys(merged, &self.to_toml_table()?)
             .into_iter()
             .map(|key| format!("unknown config key `{key}` was ignored"))
             .collect();
-        if !KNOWN_AGENT_IDS.contains(&self.default_agent.as_str()) {
+        if !KNOWN_AGENT_IDS.contains(&self.main_agent.as_str()) {
             warnings.push(format!(
-                "default_agent `{}` is not a known adapter ({})",
-                self.default_agent,
+                "main_agent `{}` is not a known adapter ({})",
+                self.main_agent,
                 KNOWN_AGENT_IDS.join(", ")
             ));
         }
@@ -391,21 +391,21 @@ fn invalid(message: String) -> Result<(), ConfigError> {
 }
 
 fn validate_budget(budget: &BudgetConfig) -> Result<(), ConfigError> {
-    if budget.unit != BudgetUnit::None && !(budget.per_card.is_finite() && budget.per_card > 0.0) {
+    if budget.unit != BudgetUnit::None && !(budget.per_task.is_finite() && budget.per_task > 0.0) {
         return invalid(format!(
-            "budget.per_card must be a positive number, got {}; use budget.unit = \"none\" for no limit",
-            budget.per_card
+            "limits.per_task_usd or limits.per_task_tokens must be a positive number, got {}; leave both unset for no limit",
+            budget.per_task
         ));
     }
     if !(budget.soft_ratio > 0.0 && budget.soft_ratio <= 1.0) {
         return invalid(format!(
-            "budget.soft_ratio must be above 0 and at most 1, got {}",
+            "limits.soft_stop must be above 0 and at most 1, got {}",
             budget.soft_ratio
         ));
     }
     if !(budget.max_minutes.is_finite() && budget.max_minutes >= 0.0) {
         return invalid(format!(
-            "budget.max_minutes must be 0 or more, got {}",
+            "limits.per_task_minutes must be 0 or more, got {}",
             budget.max_minutes
         ));
     }
@@ -418,7 +418,7 @@ fn validate_gates(gates: &GatesConfig) -> Result<(), ConfigError> {
             .first()
             .is_none_or(|program| program.trim().is_empty())
         {
-            return invalid(format!("gates.commands[{i}] has no program"));
+            return invalid(format!("checks.commands[{i}] has no program"));
         }
     }
     Ok(())
@@ -590,12 +590,12 @@ mod tests {
     #[test]
     fn defaults() {
         let config = Config::default();
-        assert_eq!(config.default_agent, "claude-code");
+        assert_eq!(config.main_agent, "claude-code");
         assert_eq!(config.agents.len(), 3);
         assert_eq!(config.agent("codex").auth, AuthMode::Subscription);
-        assert_eq!(config.budget.per_card_limit(), BudgetLimit::Usd(3.0));
+        assert_eq!(config.budget.per_task_limit(), BudgetLimit::Usd(3.0));
         assert_eq!(config.budget.soft_ratio, 0.85);
-        assert!(config.gates.commands.is_empty());
+        assert!(config.checks.commands.is_empty());
         assert_eq!(config.merge.mode, MergeMode::Ask);
         assert_eq!(config.ui.verbosity, Verbosity::Normal);
         assert_eq!(config.ui.keys, KeyScheme::Standard);
@@ -650,7 +650,7 @@ max_tool_calls = 0",
     #[test]
     fn later_layers_win_and_tables_merge() {
         let global = r#"
-            default_agent = "codex"
+            main_agent = "codex"
             [agents.codex]
             model = "gpt-5.6-luna"
             effort = "low"
@@ -661,21 +661,21 @@ max_tool_calls = 0",
             [agents.codex]
             effort = "high"
             [budget]
-            per_card = 5
-            [gates]
+            per_task = 5
+            [checks]
             commands = [["cargo", "test"]]
         "#;
         let (_dir, sources) = sources_with(Some(global), Some(project), &[]);
         let loaded = Config::load(&sources).unwrap();
         let config = &loaded.config;
-        assert_eq!(config.default_agent, "codex");
+        assert_eq!(config.main_agent, "codex");
         let codex = config.agent("codex");
         assert_eq!(codex.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(codex.effort.as_deref(), Some("high"));
         assert_eq!(config.ui.keys, KeyScheme::Vim);
-        assert_eq!(config.budget.per_card, 5.0);
+        assert_eq!(config.budget.per_task, 5.0);
         assert_eq!(config.budget.unit, BudgetUnit::Usd);
-        assert_eq!(config.gates.commands, [["cargo", "test"]]);
+        assert_eq!(config.checks.commands, [["cargo", "test"]]);
         assert!(loaded.layers.iter().all(|l| l.applied));
     }
 
@@ -683,7 +683,7 @@ max_tool_calls = 0",
     fn your_own_project_file_wins_over_the_shared_one() {
         let (dir, mut sources) = sources_with(
             Some("[ui]\nkeys = \"vim\""),
-            Some("default_agent = \"codex\"\n[agents.codex]\neffort = \"low\""),
+            Some("main_agent = \"codex\"\n[agents.codex]\neffort = \"low\""),
             &["agents.codex.model=gpt-5.6-luna"],
         );
         let local = dir.path().join("config.local.toml");
@@ -692,7 +692,7 @@ max_tool_calls = 0",
         let loaded = Config::load(&sources).unwrap();
         let codex = loaded.config.agent("codex");
         assert_eq!(
-            loaded.config.default_agent, "codex",
+            loaded.config.main_agent, "codex",
             "the shared file still applies"
         );
         assert_eq!(codex.effort.as_deref(), Some("high"));
@@ -710,27 +710,27 @@ max_tool_calls = 0",
     #[test]
     fn overrides_apply_last_and_parse_types() {
         let (_dir, sources) = sources_with(
-            Some("default_agent = \"codex\""),
+            Some("main_agent = \"codex\""),
             None,
             &[
-                "default_agent=antigravity-cli",
+                "main_agent=antigravity-cli",
                 "budget.unit=tokens",
-                "budget.per_card=200000",
+                "budget.per_task=200000",
                 "ui.plain=true",
                 "agents.claude-code.model=haiku",
-                r#"gates.commands=[["test", "-f", "hello.txt"]]"#,
+                r#"checks.commands=[["test", "-f", "hello.txt"]]"#,
                 "merge.mode = leave",
             ],
         );
         let loaded = Config::load(&sources).unwrap();
         let config = &loaded.config;
-        assert_eq!(config.default_agent, "antigravity-cli");
-        assert_eq!(config.budget.per_card_limit(), BudgetLimit::Tokens(200_000));
+        assert_eq!(config.main_agent, "antigravity-cli");
+        assert_eq!(config.budget.per_task_limit(), BudgetLimit::Tokens(200_000));
         assert!(config.ui.plain);
         assert_eq!(config.agent("claude-code").model.as_deref(), Some("haiku"));
-        assert_eq!(config.gates.commands, [["test", "-f", "hello.txt"]]);
+        assert_eq!(config.checks.commands, [["test", "-f", "hello.txt"]]);
         assert_eq!(config.merge.mode, MergeMode::Leave);
-        assert_eq!(loaded.overrides[0].key, "default_agent");
+        assert_eq!(loaded.overrides[0].key, "main_agent");
         assert_eq!(loaded.overrides[0].value, "antigravity-cli");
         assert_eq!(loaded.overrides.len(), 7);
     }
@@ -758,7 +758,7 @@ max_tool_calls = 0",
 
     #[test]
     fn broken_toml_is_an_error() {
-        let (_dir, sources) = sources_with(Some("default_agent = "), None, &[]);
+        let (_dir, sources) = sources_with(Some("main_agent = "), None, &[]);
         assert!(matches!(
             Config::load(&sources),
             Err(ConfigError::Layer { .. })
@@ -781,38 +781,39 @@ max_tool_calls = 0",
     #[test]
     fn unknown_keys_warn_but_load() {
         let body =
-            "preset = \"peer-crew\"\n[triage]\nsolo_max_files = 3\n[agents.codex]\nflavor = \"x\"";
-        let (_dir, sources) = sources_with(None, Some(body), &["default_agent=gemini"]);
+            "workflow = \"council\"\n[triage]\nsolo_max_files = 3\n[agents.codex]\nflavor = \"x\"";
+        let (_dir, sources) = sources_with(None, Some(body), &["main_agent=gemini"]);
         let loaded = Config::load(&sources).unwrap();
         let warnings = loaded.warnings.join("\n");
-        assert!(warnings.contains("`preset`"), "{warnings}");
+        assert!(warnings.contains("`workflow`"), "{warnings}");
         assert!(warnings.contains("`triage`"), "{warnings}");
         assert!(warnings.contains("`agents.codex.flavor`"), "{warnings}");
-        assert!(warnings.contains("default_agent `gemini`"), "{warnings}");
+        assert!(warnings.contains("main_agent `gemini`"), "{warnings}");
     }
 
     #[test]
     fn validation_rules() {
         let cases = [
-            "default_agent = \"\"",
-            "[budget]\nper_card = 0",
-            "[budget]\nper_card = -1",
+            "main_agent = \"\"",
+            "[budget]\nper_task = 0",
+            "[budget]\nper_task = -1",
             "[budget]\nsoft_ratio = 0",
             "[budget]\nsoft_ratio = 1.5",
-            "[gates]\ncommands = [[]]",
-            "[gates]\ncommands = [[\"\"]]",
+            "[checks]\ncommands = [[]]",
+            "[checks]\ncommands = [[\"\"]]",
             "[agents.codex.price]\ninput_per_mtok = -1.0\noutput_per_mtok = 1.0",
             "[budget]\nmax_minutes = -5",
             "[solo]\nrestate_first = true",
         ];
         for body in cases {
-            assert!(
-                matches!(Config::from_toml_str(body), Err(ConfigError::Invalid(_))),
-                "{body}"
-            );
+            let Err(ConfigError::Invalid(message)) = Config::from_toml_str(body) else {
+                panic!("{body} should be refused");
+            };
+            // The words a user types are the limits keys, whatever this layer calls them.
+            assert!(!message.contains("budget"), "{body}: {message}");
         }
-        let no_budget = Config::from_toml_str("[budget]\nunit = \"none\"\nper_card = 0").unwrap();
-        assert_eq!(no_budget.budget.per_card_limit(), BudgetLimit::None);
+        let no_budget = Config::from_toml_str("[budget]\nunit = \"none\"\nper_task = 0").unwrap();
+        assert_eq!(no_budget.budget.per_task_limit(), BudgetLimit::None);
     }
 
     #[test]
@@ -833,7 +834,7 @@ max_tool_calls = 0",
         assert_eq!(a.resolved_hash(), b.resolved_hash());
         assert_eq!(a.resolved_hash().len(), 64);
         let mut c = Config::default();
-        c.budget.per_card = 4.0;
+        c.budget.per_task = 4.0;
         assert_ne!(a.resolved_hash(), c.resolved_hash());
         let loaded = Config::load(&ConfigSources::default()).unwrap();
         assert_eq!(loaded.hash(), a.resolved_hash());
@@ -842,7 +843,7 @@ max_tool_calls = 0",
     #[test]
     fn toml_round_trip() {
         let mut config = Config::default();
-        config.gates.commands = vec![vec!["cargo".into(), "test".into()]];
+        config.checks.commands = vec![vec!["cargo".into(), "test".into()]];
         config.agents.get_mut("codex").unwrap().model = Some("gpt-5.6-luna".into());
         let text = config.to_toml_string().unwrap();
         assert!(text.contains("[agents.codex]"), "{text}");
@@ -853,7 +854,7 @@ max_tool_calls = 0",
     fn schema_describes_and_accepts_the_defaults() {
         let schema = Config::json_schema();
         let props = schema["properties"].as_object().unwrap();
-        for key in ["default_agent", "agents", "budget", "gates", "merge", "ui"] {
+        for key in ["main_agent", "agents", "budget", "checks", "merge", "ui"] {
             assert!(props.contains_key(key), "missing {key}");
         }
         let validator = jsonschema::validator_for(&schema).unwrap();

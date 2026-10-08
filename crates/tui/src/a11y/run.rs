@@ -39,9 +39,9 @@ pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
                 return Vec::new();
             }
             let (label, outcome) = if gate.passed {
-                ("gate", "passed")
+                ("check", "passed")
             } else {
-                ("gate error", "failed")
+                ("check error", "failed")
             };
             let mut line = format!("{label}: {} {outcome}", one_line(&gate.name));
             if !gate.summary.trim().is_empty() {
@@ -52,8 +52,8 @@ pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
         RunEventKind::Checkpoint(checkpoint) => checkpoint_lines(event, checkpoint, state, full),
         RunEventKind::Note(note) => {
             let label = match note.level {
-                NoteLevel::Info if !normal => return Vec::new(),
-                NoteLevel::Info => "note",
+                NoteLevel::Info | NoteLevel::Aside if !normal => return Vec::new(),
+                NoteLevel::Info | NoteLevel::Aside => "note",
                 NoteLevel::Warn => "warning",
                 NoteLevel::Error => "error",
             };
@@ -104,7 +104,7 @@ fn lifecycle_lines(lifecycle: &RunLifecycle, normal: bool) -> Vec<String> {
             sessions_stopped, ..
         } => format!("run: paused, {sessions_stopped} agents stopped"),
         RunLifecycle::StopRequested { .. } => "run: stopping".to_owned(),
-        RunLifecycle::Parked { reason, .. } => format!("run: parked, {}", word(reason)),
+        RunLifecycle::Parked { reason, .. } => format!("run: waiting, {}", word(reason)),
         RunLifecycle::ApprovalModeChanged { mode, .. } => {
             format!("run: approvals now {}", word(mode))
         }
@@ -117,7 +117,7 @@ fn card_lines(event: &RunEvent, card: &CardEvent, normal: bool, full: bool) -> V
     let id = event
         .card_id
         .as_ref()
-        .map_or_else(|| "card".to_owned(), ToString::to_string);
+        .map_or_else(|| "task".to_owned(), ToString::to_string);
     let line = match card {
         CardEvent::Created(spec) if normal => {
             format!("{}: created, {}", spec.id, one_line(&spec.title))
@@ -192,12 +192,12 @@ fn checkpoint_lines(
             CardList::checkpoint(&event.run_id, &opened, run, offset, &state.names).lines()
         }
         CheckpointEvent::Opened(opened) => vec![format!(
-            "card: {}, the approval rules are deciding",
+            "approval: {}, the approval rules are deciding",
             one_line(&opened.title)
         )],
         CheckpointEvent::Decided(decided) => {
             let mut line = format!(
-                "card: {} settled, {} by {}",
+                "approval: {} settled, {} by {}",
                 decided.id,
                 word(&decided.action),
                 party(&decided.by, &state.names)
@@ -208,11 +208,11 @@ fn checkpoint_lines(
             vec![line]
         }
         CheckpointEvent::Withdrawn { id, reason } => {
-            vec![format!("card: {id} withdrawn, {}", one_line(reason))]
+            vec![format!("approval: {id} withdrawn, {}", one_line(reason))]
         }
         CheckpointEvent::SpotCheckQueued { id } => {
             vec![format!(
-                "card: {id} decided on its own, queued for a spot check"
+                "approval: {id} decided on its own, queued for a spot check"
             )]
         }
         CheckpointEvent::Checked(check)
@@ -277,13 +277,13 @@ mod tests {
     /// What the policy found on a card full auto already settled is kept for review, and the
     /// line for it never says the card waits for you.
     #[test]
-    fn a_check_kept_after_full_auto_settled_the_card_doesnt_say_it_waits() {
+    fn a_check_kept_after_autopilot_settled_the_card_doesnt_say_it_waits() {
         let id = CheckpointId::numbered(1);
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         let opened = CheckpointOpened {
             id: id.clone(),
             kind: CheckpointKind::Question,
-            title: "Question from card-001".into(),
+            title: "Question from task-001".into(),
             card: Some(card.clone()),
             packet: CheckpointPacket::Question(QuestionPacket {
                 from: WorkerRef::new("codex", None),
@@ -292,7 +292,7 @@ mod tests {
                 options: Vec::new(),
             }),
             evidence_sha256: String::new(),
-            mode: ApprovalMode::FullAuto,
+            mode: ApprovalMode::Autopilot,
             decide_with: DecideWith::Model,
             options: Vec::new(),
             free_text: FreeText::Answer,
@@ -306,7 +306,7 @@ mod tests {
                 verdict: None,
                 by: None,
                 approver: None,
-                reasons: vec!["the approver escalated".into()],
+                reasons: vec!["the approver needs you".into()],
                 shadow: false,
             })),
         );
@@ -332,6 +332,6 @@ mod tests {
         });
         let settled = run_lines(&check, &state).join("\n");
         assert!(!settled.contains("it waits for you"), "{settled}");
-        assert!(settled.contains("the approver escalated"), "{settled}");
+        assert!(settled.contains("the approver needs you"), "{settled}");
     }
 }

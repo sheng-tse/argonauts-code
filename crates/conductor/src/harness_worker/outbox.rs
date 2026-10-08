@@ -10,6 +10,8 @@ use argonauts_core::worker::{SessionControl, SessionHandle, WorkerEvent};
 use argonauts_core::{AgentEvent, ErrorCategory};
 use tokio::sync::{mpsc, oneshot};
 
+use super::context_watch::SentTokens;
+
 /// Events the handle buffers before the forwarder waits for the consumer.
 const EVENT_BUFFER: usize = 256;
 const CONTROL_BUFFER: usize = 32;
@@ -22,10 +24,19 @@ enum Out {
 #[derive(Clone)]
 pub struct Outbox {
     tx: mpsc::UnboundedSender<Out>,
+    /// What the session's inputs sent, which each context fill carries as `sent`.
+    sent: SentTokens,
 }
 
 impl Outbox {
-    pub fn send(&self, event: WorkerEvent) {
+    pub fn send(&self, mut event: WorkerEvent) {
+        match &mut event {
+            WorkerEvent::Session(session) => self.sent.count(session),
+            WorkerEvent::Agent(AgentEvent::ContextFill { sent, .. }) if sent.is_none() => {
+                *sent = self.sent.total();
+            }
+            _ => {}
+        }
         // Only fails once the forwarder is gone, and then nobody is listening.
         let _ = self.tx.send(Out::Event(event));
     }
@@ -85,7 +96,11 @@ pub fn open(key: SessionKey) -> (SessionHandle, Outbox, mpsc::Receiver<SessionCo
         control,
         ended,
     };
-    (handle, Outbox { tx }, control_rx)
+    let outbox = Outbox {
+        tx,
+        sent: SentTokens::default(),
+    };
+    (handle, outbox, control_rx)
 }
 
 async fn forward(

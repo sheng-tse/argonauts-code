@@ -54,7 +54,7 @@ pub(super) fn resumed(run: &RunId, resumed: &RunResumed, cx: &mut Cx<'_>) {
     }
     if fresh > 0 {
         sessions.push(format!(
-            "{} fresh with a handoff note",
+            "{} fresh with a fallback note",
             plural(fresh, "session started", "sessions started")
         ));
     }
@@ -67,7 +67,7 @@ pub(super) fn resumed(run: &RunId, resumed: &RunResumed, cx: &mut Cx<'_>) {
         ResumeCause::Answer => Some("After your answer"),
         ResumeCause::VendorBack => Some("An agent it waited for is back"),
         ResumeCause::AskTimeout => {
-            Some("The handoff card waited too long, so the fallback applies")
+            Some("The fallback question waited too long, so the first fallback takes over")
         }
         ResumeCause::Crash => Some("After a crash, from its log"),
     };
@@ -120,19 +120,19 @@ pub(super) fn parked(reason: &ParkReason, clock: &WallClock, cx: &mut Cx<'_>) {
     let back = "It resumes when one is back · /resume tries now".to_owned();
     let (text, detail) = match reason {
         ParkReason::AllVendorsOut { until: at } => (
-            format!("Parked the run · every agent is out{}", until(at)),
+            format!("The run waits · every agent is out{}", until(at)),
             back,
         ),
         ParkReason::WaitingForVendor { vendor, until: at } => (
             format!(
-                "Parked the run · its cards wait for {}{}",
+                "The run waits · its tasks wait for {}{}",
                 cx.state.names.harness(&vendor.0),
                 until(at)
             ),
             back,
         ),
         ParkReason::NoStandIn { detail, until: at } => (
-            format!("Parked the run · {detail}"),
+            format!("The run waits · {detail}"),
             match at {
                 Some(at) => format!("It tries again at {} · /resume tries now", clock.clock(*at)),
                 None => "/resume tries again".to_owned(),
@@ -228,7 +228,7 @@ pub(super) fn run_end(
         finished.push_str(&format!(" · {}", format::spend(&run.spend())));
     }
     if story.retro {
-        finished.push_str(" · retro saved");
+        finished.push_str(" · run review saved");
     }
     emit(cx, notice.with_detail(finished));
     if let Some(answer) = &story.closing {
@@ -323,8 +323,8 @@ fn totals(run: &RunState) -> Option<String> {
             " ({}, {}, +{} -{})",
             plural(
                 usize::try_from(merge.cards).unwrap_or(usize::MAX),
-                "card",
-                "cards"
+                "task",
+                "tasks"
             ),
             plural(
                 usize::try_from(combined.files_changed).unwrap_or(usize::MAX),
@@ -338,7 +338,7 @@ fn totals(run: &RunState) -> Option<String> {
     if run.cards.is_empty() {
         return None;
     }
-    let mut parts = vec![plural(run.cards.len(), "card", "cards")];
+    let mut parts = vec![plural(run.cards.len(), "task", "tasks")];
     let diffs: Vec<_> = run.cards.values().filter_map(|card| card.diff).collect();
     if !diffs.is_empty() {
         let files: u32 = diffs.iter().map(|diff| diff.files_changed).sum();

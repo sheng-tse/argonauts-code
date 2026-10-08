@@ -14,7 +14,7 @@ pub fn check(facts: Option<&EscalationFacts>, rules: &EscalationRules) -> RuleVe
     }
     let Some(facts) = facts else {
         return RuleVerdict::escalate(
-            "the evidence doesn't show the role's handoff mode, which families tried the card, \
+            "the evidence doesn't show the role's fallback mode, which providers tried the task, \
              its extra attempts so far, or whether one more fits the reserve",
         );
     };
@@ -22,18 +22,18 @@ pub fn check(facts: Option<&EscalationFacts>, rules: &EscalationRules) -> RuleVe
     // rejects.
     let mut c = Conditions::default();
     if facts.handoff_mode == HandoffMode::Auto {
-        c.hold("the role's handoff mode is auto");
+        c.hold("the role's fallback mode is auto");
     } else {
-        c.escalate("the role's handoff mode isn't auto, so who takes the card is yours");
+        c.escalate("the role's fallback mode isn't auto, so who takes the task is yours");
     }
     match &facts.next_family {
         Some(next) if facts.families_tried.contains(next) => c.escalate(format!(
-            "the next fallback is of the {next} family, which already tried the card"
+            "the next fallback is of the {next} provider, which already tried the task"
         )),
         Some(next) => c.hold(format!(
-            "the next attempt goes to the {next} family, which hasn't tried the card"
+            "the next attempt goes to the {next} provider, which hasn't tried the task"
         )),
-        None => c.escalate("no fallback from a family that hasn't tried the card is left"),
+        None => c.escalate("no fallback from a provider that hasn't tried the task is left"),
     }
     let (made, most) = (facts.extra_attempts, rules.max_extra_attempts);
     if made < most {
@@ -84,7 +84,7 @@ mod tests {
                 },
             ),
             (
-                "family tried",
+                "provider tried",
                 EscalationFacts {
                     next_family: Some("claude".to_owned()),
                     ..granting()

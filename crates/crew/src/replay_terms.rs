@@ -221,7 +221,7 @@ mod tests {
             reuse: None,
         };
         let created = terms.hide(RunEventKind::Card(CardEvent::Created(Box::new(card(
-            "card-001",
+            "task-001",
             &["tests/hidden/**"],
         )))));
         let RunEventKind::Card(CardEvent::Created(spec)) = created else {
@@ -234,8 +234,8 @@ mod tests {
 
         let graph = TaskGraph {
             cards: vec![
-                card("card-001", &[]),
-                card("card-002", &["tests/readme.sh"]),
+                card("task-001", &[]),
+                card("task-002", &["tests/readme.sh"]),
             ],
             critical_path: Vec::new(),
         };
@@ -253,14 +253,14 @@ mod tests {
         });
         assert_eq!(terms.hide(note.clone()), note);
         let none = ReplayTerms::default();
-        let created = RunEventKind::Card(CardEvent::Created(Box::new(card("card-003", &[]))));
+        let created = RunEventKind::Card(CardEvent::Created(Box::new(card("task-003", &[]))));
         assert_eq!(none.hide(created.clone()), created);
     }
 
     /// Recorded answers fit only a workflow that starts with the same phases before `from`.
     #[test]
     fn answers_fit_only_the_same_phases_before() {
-        let peer = crate::workflow::builtin::load("peer-crew").unwrap();
+        let peer = crate::workflow::builtin::load("council").unwrap();
         let recorded = Recorded {
             run: RunId::new("run-001").unwrap(),
             from: StandardPhase::Do,

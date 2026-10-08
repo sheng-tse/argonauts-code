@@ -122,6 +122,9 @@ pub(super) async fn attach(
         ctx.send(AppEvent::Detached {
             run: old.run.clone(),
         });
+        // The run it leaves goes on, as when you start a second workflow while the first
+        // works, so its row comes now rather than at the next minute's listing.
+        super::runs::refresh_background(ctx);
     }
     let mode = mode_from_summary(&summary);
     ctx.send(AppEvent::Attached {

@@ -1,5 +1,5 @@
-//! A card's budget: the meter stops the session at its limit, the work is committed, and the
-//! budget card asks what to do.
+//! A task's limit: the meter stops the session at it and the work is committed. Then a
+//! fallback takes the task, or the limit approval asks what to do when none can.
 
 mod limits_support;
 
@@ -15,7 +15,9 @@ use limits_support::*;
 fn limits_budget_hit_commits_and_asks() -> anyhow::Result<()> {
     let limits = setup(
         "budget-hit-commits-and-asks",
-        "[budget]\nper_card_usd = 0.05\non_hit = \"ask\"\n",
+        // No other agent is on, so no fallback can take the task and the approval asks.
+        "[limits]\nper_task_usd = 0.05\n\n[agents.codex]\nenabled = false\n\n\
+         [agents.antigravity-cli]\nenabled = false\n\n[agents.opencode]\nenabled = false\n",
     )?;
     let mut pty = limits.start()?;
     let card = limits.wait_for_card(&pty, CheckpointKind::Budget)?;
@@ -38,11 +40,11 @@ fn limits_budget_hit_commits_and_asks() -> anyhow::Result<()> {
         opened_at(&events, CheckpointKind::Budget)
     ));
     assert_eq!(option_keys(&card), ['m', 'h', 't', 'x', 'd']);
-    pty.wait_for("More budget", WAIT)?;
+    pty.wait_for("More limit", WAIT)?;
     limits.shot(&pty, "limits_budget_hit_commits_and_asks")?;
 
     answer(&mut pty, &card, 'm')?;
-    let events = limits.wait_for("the card to finish", CARD_WAIT, completed_by("claude-code"))?;
+    let events = limits.wait_for("the task to finish", CARD_WAIT, completed_by("claude-code"))?;
     let extended = find(&events, |kind| match kind {
         RunEventKind::Budget(BudgetEvent::Extended { by, .. }) => Some(by),
         _ => None,
@@ -55,13 +57,13 @@ fn limits_budget_hit_commits_and_asks() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `on_hit = "handoff"`: the rules hand the card to another agent once, and it carries on
-/// there instead of escalating.
+/// `when_reached = "fallback"`, which it is unless you say otherwise: the rules hand the task
+/// to another agent once, and it carries on there instead of asking.
 #[test]
 fn limits_budget_hit_hands_off_once_by_rule() -> anyhow::Result<()> {
     let limits = setup(
         "budget-hit-commits-and-asks",
-        "[budget]\nper_card_usd = 0.05\non_hit = \"handoff\"\n",
+        "[limits]\nper_task_usd = 0.05\n",
     )?;
     let _pty = limits.start()?;
     let events = limits.wait_for(

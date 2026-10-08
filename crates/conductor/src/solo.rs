@@ -56,16 +56,16 @@ pub fn budget_problem(config: &Config, adapter: &dyn Adapter) -> Option<String> 
     let id = adapter.id();
     let cheapest = adapter.cheapest_model().0;
     let fix = format!(
-        "Pick a model Argonauts has a price for, such as --model {cheapest}, set agents.{id}.price, or use --set budget.unit=tokens."
+        "Pick a model Argonauts has a price for, such as --model {cheapest}, set agents.{id}.price, or use --set limits.per_task_tokens=<n>."
     );
     match agent.model {
         Some(model) => Some(format!(
-            "{name} reports only tokens and Argonauts has no price for {model}, so it can't enforce a dollar budget. {fix}"
+            "{name} reports only tokens and Argonauts has no price for {model}, so it can't enforce a dollar limit. {fix}"
         )),
         // The model named at the start of the session decides.
         None if capabilities.reports_model => None,
         None => Some(format!(
-            "{name} reports only tokens and doesn't say which model it runs, so Argonauts can't enforce a dollar budget. {fix}"
+            "{name} reports only tokens and doesn't say which model it runs, so Argonauts can't enforce a dollar limit. {fix}"
         )),
     }
 }
@@ -149,7 +149,7 @@ impl SoloRun {
         let start = RepoStart::inspect(&git, &self.repo).await?;
 
         let run_id = self.run_id.clone().unwrap_or_else(RunId::generate);
-        let card = Card::solo(task, self.config.budget.per_card_limit());
+        let card = Card::solo(task, self.config.budget.per_task_limit());
         let repo_id = RepoId::from_canonical_path(&start.root);
         self.paths
             .prepare()
@@ -360,7 +360,7 @@ impl Pipeline<'_> {
         let target = self.start.base_branch.clone().unwrap_or_default();
         if target_now != target_before_gates {
             self.block_merge(format!(
-                "{target} moved while the gates ran, from {} to {}. A gate may have changed it, so this card won't be merged.",
+                "{target} moved while the checks ran, from {} to {}. A check may have changed it, so this task won't be merged.",
                 short_or_none(target_before_gates.as_deref()),
                 short_or_none(target_now.as_deref())
             ))?;
@@ -371,7 +371,7 @@ impl Pipeline<'_> {
             self.note(
                 NoteLevel::Warn,
                 &format!(
-                    "{target} moved since the run started and is now at {}. Check it before approving; approving merges the card into it as it is now.",
+                    "{target} moved since the run started and is now at {}. Check it before approving; approving merges the task into it as it is now.",
                     short(now)
                 ),
             )?;
@@ -379,7 +379,7 @@ impl Pipeline<'_> {
         let branch_now = self.branch_tip().await;
         if branch_now.as_deref() != Some(committed.tip.as_str()) {
             self.block_merge(format!(
-                "The card branch moved after the conductor's commit, to {}. A gate may have changed it, so this card won't be merged.",
+                "The task branch moved after the conductor's commit, to {}. A check may have changed it, so this task won't be merged.",
                 short_or_none(branch_now.as_deref())
             ))?;
         }
@@ -650,7 +650,7 @@ impl Pipeline<'_> {
             (None, true) => {
                 self.note(
                     NoteLevel::Warn,
-                    "The agent made its own commits on the card branch. They are kept as they are.",
+                    "The agent made its own commits on the task branch. They are kept as they are.",
                 )?;
                 (PhaseStatus::Skipped, "nothing new to commit".to_owned())
             }
@@ -716,7 +716,7 @@ impl Pipeline<'_> {
             .map(|m| format!("/{m}"))
             .unwrap_or_default();
         format!(
-            "{title}{summary}\n\nArgonauts-Run: {run}\nArgonauts-Card: {card}\nArgonauts-Agent: {agent}{model}",
+            "{title}{summary}\n\nArgonauts-Run: {run}\nArgonauts-Task: {card}\nArgonauts-Agent: {agent}{model}",
             title = self.card.title,
             run = self.run_id,
             card = self.card.id,
@@ -725,9 +725,9 @@ impl Pipeline<'_> {
     }
 
     async fn run_gates(&mut self) -> anyhow::Result<Vec<GateResult>> {
-        let commands = &self.config.gates.commands;
+        let commands = &self.config.checks.commands;
         if commands.is_empty() {
-            let detail = "no gate commands configured".to_owned();
+            let detail = "no check commands configured".to_owned();
             self.phase(Phase::Gates, PhaseStatus::Skipped, Some(detail))?;
             return Ok(Vec::new());
         }
@@ -931,7 +931,7 @@ impl Pipeline<'_> {
         if card.gates.iter().any(|g| !g.passed) {
             self.note(
                 NoteLevel::Warn,
-                "Merging although a gate failed, because you approved.",
+                "Merging although a check failed, because you approved.",
             )?;
         }
         let message = format!("Merge {branch} ({})", short(&committed.tip));
@@ -973,12 +973,12 @@ impl Pipeline<'_> {
             return Ok(Some(reason.clone()));
         }
         if self.branch_tip().await.as_deref() != Some(committed.tip.as_str()) {
-            let reason = "The card branch moved after you reviewed it, so nothing was merged.";
+            let reason = "The task branch moved after you reviewed it, so nothing was merged.";
             return Ok(Some(reason.to_owned()));
         }
         if self.target_tip().await != self.target_at_card {
             return Ok(Some(format!(
-                "{target} moved while the merge card was open, so nothing was merged."
+                "{target} moved while the merge approval was open, so nothing was merged."
             )));
         }
         let current = self.git.current_branch(&self.start.root).await?;
@@ -1101,7 +1101,7 @@ impl Pipeline<'_> {
                 Ok(()) => branch_exists = false,
                 Err(err) => self.note(
                     NoteLevel::Warn,
-                    &format!("Could not delete the empty card branch: {err}"),
+                    &format!("Could not delete the empty task branch: {err}"),
                 )?,
             }
         }

@@ -62,10 +62,10 @@ fn builtin_protocols_run_as_workflow_files() {
     assert_eq!(
         names,
         [
-            "peer-crew",
-            "coordinated-crew",
+            "council",
+            "orchestrator",
             "solo",
-            "solo-reviewed",
+            "maker-checker",
             "best-of-n",
             "draft-and-vote"
         ]
@@ -79,7 +79,7 @@ fn builtin_protocols_run_as_workflow_files() {
             Some(StandardPhase::Decide)
         );
     }
-    let peer = load("peer-crew");
+    let peer = load("council");
     let standards: Vec<StandardPhase> = peer.phases.iter().map(|phase| phase.standard).collect();
     assert_eq!(
         standards,
@@ -126,16 +126,16 @@ fn preset_behaviors() {
     let mut solo = Settings::default();
     assert_eq!(solo_workflow(&solo), "solo");
     solo.solo.review = true;
-    assert_eq!(solo_workflow(&solo), "solo-reviewed");
+    assert_eq!(solo_workflow(&solo), "maker-checker");
     solo.solo.attempts = 3;
     assert_eq!(solo_workflow(&solo), "best-of-n");
     assert!(!holds(&solo, "restate_first", 1));
     solo.solo.restate_first = true;
     assert!(holds(&solo, "restate_first", 1));
 
-    // peer-crew: blind drafts, a critique loop capped by `critique.rounds`, judging only where
+    // council: blind drafts, a critique loop capped by `critique.rounds`, judging only where
     // drafts disagree.
-    let peer = load("peer-crew");
+    let peer = load("council");
     let steps = all_steps(&peer);
     assert!(
         steps
@@ -167,14 +167,14 @@ fn preset_behaviors() {
     assert!(!holds(&ablated, "critique_done", 1));
     assert!(holds(&ablated, "critique_done", 2));
 
-    // coordinated-crew: one coordinator plans, with no blind drafts or map.
-    let coordinated = load("coordinated-crew");
+    // orchestrator: one coordinator plans, with no blind drafts or map.
+    let coordinated = load("orchestrator");
     let drafts: Vec<_> = all_steps(&coordinated)
         .into_iter()
         .filter(|step| step.kind == StepKind::Draft)
         .collect();
     assert_eq!(drafts.len(), 1);
-    assert_eq!(drafts[0].role, Some(RoleName::Coordinator));
+    assert_eq!(drafts[0].role, Some(RoleName::Orchestrator));
     assert!(!kinds(&coordinated).contains(&StepKind::Map));
 
     // draft-and-vote: blind drafts, then a vote, with no critique.
@@ -206,7 +206,7 @@ fn preset_behaviors() {
     };
     let (_, solo) = build("solo");
     assert_eq!((solo.count, solo.different_family_from), (None, None));
-    let (_, reviewed) = build("solo-reviewed");
+    let (_, reviewed) = build("maker-checker");
     assert_eq!(reviewed.different_family_from.as_deref(), Some("author"));
     let (best, attempts) = build("best-of-n");
     assert_eq!(
@@ -292,8 +292,9 @@ fn minimal(schema: &Value, root: &Value) -> Value {
 /// its worktree when it builds.
 fn scripted_worker(name: &str, family: &str) -> FakeWorker {
     FakeWorker::harness(name, family).respond_with(|spec| {
-        if spec.step == Some(StepName::Build) {
-            let _ = std::fs::write(spec.workdir.join(format!("{}.txt", spec.key)), "work\n");
+        let built = (spec.step == Some(StepName::Build)).then(|| format!("{}.txt", spec.key));
+        if let Some(file) = &built {
+            let _ = std::fs::write(spec.workdir.join(file), "work\n");
         }
         let schema = spec.json_schema.clone().unwrap_or(Value::Null);
         let mut answer = minimal(&schema, &schema);
@@ -338,7 +339,12 @@ fn scripted_worker(name: &str, family: &str) -> FakeWorker {
             };
             answer = json!({ "scores": [score(1, 9.0), score(2, 6.0), score(3, 3.0)] });
         }
-        FakeSession::structured(answer)
+        let session = FakeSession::structured(answer);
+        // The change is made with the agent's edit tool, as a CLI reports it.
+        match built {
+            Some(file) => session.with_event(support::wrote(&file)),
+            None => session,
+        }
     })
 }
 
@@ -353,10 +359,10 @@ fn crew_of_three(workflow: &str) -> anyhow::Result<support::Crew> {
     for (name, family) in workers {
         let worker: Arc<FakeWorker> = crew.services.workers.add(scripted_worker(name, family));
         let _ = worker;
-        crew.settings.crew.push(name.parse::<WorkerRef>()?);
+        crew.settings.crew.add(name.parse::<WorkerRef>()?);
     }
-    crew.settings.default_agent = crew.settings.crew[0].clone();
-    crew.settings.workflow = WorkflowRef::new(workflow);
+    crew.settings.main_agent = crew.settings.crew.members()[0].clone();
+    crew.settings.phases = WorkflowRef::new(workflow);
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.workflows.lead_designs = false.into();
     // One build card is plan enough here; contracts first would ask for an interface card and
@@ -492,7 +498,7 @@ phases:
     standard: do
     steps:
       - kind: build
-        role: owner
+        role: worker
         input: plan
       - kind: for_each
         input: plan
@@ -567,7 +573,7 @@ async fn workflow_every_step_kind() -> anyhow::Result<()> {
 /// the plan checkpoint, cards, and the merge, first supervised and then in auto.
 #[tokio::test]
 async fn peer_crew_full_run() -> anyhow::Result<()> {
-    let crew = crew_of_three("peer-crew")?;
+    let crew = crew_of_three("council")?;
     let (exit, events) = drive(&crew, "add per-key rate limiting to the public API").await?;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged));
     // The lead closes the run in its own words, beside what changed.
@@ -579,7 +585,7 @@ async fn peer_crew_full_run() -> anyhow::Result<()> {
         })
         .expect("the run closes with an answer");
     assert_eq!(closing.text, "Rate limiting is in, and the checks pass.");
-    assert_eq!(closing.by, Some(crew.settings.default_agent.clone()));
+    assert_eq!(closing.by, Some(crew.settings.main_agent.clone()));
     assert!(
         closing.files.iter().any(|file| file.path.ends_with(".txt"))
             && closing
@@ -604,7 +610,7 @@ async fn peer_crew_full_run() -> anyhow::Result<()> {
         RunEventKind::Workflow(WorkflowEvent::Started(started)) => Some(started.from.clone()),
         _ => None,
     });
-    assert_eq!(root, Some(Some(WorkflowRef::new("peer-crew"))));
+    assert_eq!(root, Some(Some(WorkflowRef::new("council"))));
     let by_you = events.iter().filter(|event| {
         matches!(
             &event.kind,
@@ -616,7 +622,7 @@ async fn peer_crew_full_run() -> anyhow::Result<()> {
         "supervised: you decide the goal, the plan, and the merge"
     );
 
-    let mut auto = crew_of_three("peer-crew")?;
+    let mut auto = crew_of_three("council")?;
     auto.settings.approvals.goal.mode = ApprovalMode::Auto;
     auto.settings.approvals.plan.mode = ApprovalMode::Auto;
     auto.settings.approvals.merge.mode = ApprovalMode::Auto;
@@ -687,7 +693,7 @@ fn passing_gate() -> GateCommand {
 /// although the run started as a crew run and its plan was never approved.
 #[tokio::test]
 async fn plan_checkpoint_switch_to_solo_finishes() -> anyhow::Result<()> {
-    let crew = crew_of_three("peer-crew")?;
+    let crew = crew_of_three("council")?;
     let solo_at_plan = |card: &CheckpointOpened| {
         (card.kind == CheckpointKind::Plan).then_some(AnswerAction::SwitchToSolo)
     };
@@ -699,7 +705,7 @@ async fn plan_checkpoint_switch_to_solo_finishes() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged));
-    assert_eq!(followed(&events), ["peer-crew", "solo"]);
+    assert_eq!(followed(&events), ["council", "solo"]);
     let cards = created_cards(&events);
     assert_eq!(cards.len(), 1, "{cards:?}");
     assert_eq!(cards[0].kind, CardKind::Solo);
@@ -712,15 +718,15 @@ async fn plan_checkpoint_switch_to_solo_finishes() -> anyhow::Result<()> {
 async fn each_builtin_runs_end_to_end() -> anyhow::Result<()> {
     let request = "add per-key rate limiting to the public API";
     for (name, mode) in [
-        ("peer-crew", RunMode::Crew),
-        ("coordinated-crew", RunMode::Crew),
+        ("council", RunMode::Crew),
+        ("orchestrator", RunMode::Crew),
         ("draft-and-vote", RunMode::Crew),
         ("solo", RunMode::Solo),
-        ("solo-reviewed", RunMode::Solo),
+        ("maker-checker", RunMode::Solo),
         ("best-of-n", RunMode::Solo),
     ] {
         let mut crew = crew_of_three(name)?;
-        crew.settings.gates.run = vec![passing_gate()];
+        crew.settings.checks.run = vec![passing_gate()];
         let (exit, events) = drive_as(&crew, mode, request, &|_| None).await?;
         assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged), "{name}");
         assert_eq!(followed(&events), [name], "{name}");
@@ -730,10 +736,10 @@ async fn each_builtin_runs_end_to_end() -> anyhow::Result<()> {
                 assert_eq!(cards.len(), 1, "{name}");
                 assert!(cards[0].reviewers.is_empty(), "{name}");
             }
-            "solo-reviewed" => {
+            "maker-checker" => {
                 assert_eq!(cards.len(), 1, "{name}");
                 assert_eq!(cards[0].reviewers.len(), 1, "{name}");
-                assert_ne!(cards[0].reviewers[0], crew.settings.default_agent, "{name}");
+                assert_ne!(cards[0].reviewers[0], crew.settings.main_agent, "{name}");
             }
             "best-of-n" => {
                 assert_eq!(cards.len(), 3, "{name}: {cards:?}");

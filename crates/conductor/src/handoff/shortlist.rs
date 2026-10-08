@@ -13,7 +13,7 @@ use argonauts_core::limits::{
 use argonauts_core::names::{RoleName, VendorId, WorkerRef};
 use argonauts_core::registry::{ModelAccess, ModelRegistry};
 use argonauts_core::settings::Settings;
-use argonauts_core::settings::handoff::{AppliedHandoff, FallbackEntry, HandoffStrategy};
+use argonauts_core::settings::handoff::{AppliedHandoff, FallbackEntry, HandoffStrategy, Pick};
 use globset::{Glob, GlobSetBuilder};
 use time::OffsetDateTime;
 
@@ -40,6 +40,8 @@ pub enum Dropped {
     /// Disabled for new cards, such as after a broken CLI update.
     Disabled(String),
     OutOfQuota,
+    /// Its plan window is as full as your `limits.plan_usage` lets it get.
+    AtPlanLimit,
     Retired,
     /// Such as a reviewer of the author's family.
     BreaksRule(String),
@@ -66,13 +68,10 @@ pub fn shortlist(query: &CandidateQuery, sources: &Sources<'_>) -> Shortlist {
     if rules.strategy == HandoffStrategy::Spread {
         spread(&mut candidates, sources);
     }
-    let race_count = match rules.strategy {
-        HandoffStrategy::Race => rules.race_count.max(1),
-        HandoffStrategy::First | HandoffStrategy::Spread => 1,
-    };
     Shortlist {
         strategy: rules.strategy,
-        race_count,
+        race_count: rules.together,
+        pick: rules.pick.unwrap_or(Pick::default_for(query.role)),
         candidates,
     }
 }
@@ -123,6 +122,13 @@ pub fn check(
         return Err(Dropped::OutOfQuota);
     }
     if sources
+        .quota
+        .get(&vendor)
+        .is_some_and(|reading| at_plan_limit(&reading, sources.settings, OffsetDateTime::now_utc()))
+    {
+        return Err(Dropped::AtPlanLimit);
+    }
+    if sources
         .registry
         .get(worker)
         .is_some_and(|entry| entry.retired)
@@ -132,7 +138,7 @@ pub fn check(
     let family = sources.registry.family(worker);
     if query.exclude_families.contains(&family) {
         return Err(Dropped::BreaksRule(format!(
-            "{worker} is of the {family} family, which this card excludes"
+            "{worker} is of the {family} provider, which this task excludes"
         )));
     }
     if query.role == RoleName::Reviewer {
@@ -140,20 +146,20 @@ pub fn check(
             && sources.registry.family(owner) == family
         {
             return Err(Dropped::BreaksRule(format!(
-                "{worker} is of the author's family ({family}), so it can't review"
+                "{worker} is of the author's provider ({family}), so it can't review"
             )));
         }
         if query.card.reviewers.contains(worker) {
             return Err(Dropped::BreaksRule(format!(
-                "{worker} already reviews this card"
+                "{worker} already reviews this task"
             )));
         }
     }
-    if query.role == RoleName::Owner
+    if query.role == RoleName::Worker
         && let Some(path) = hidden_owned_path(sources.settings, worker, &query.card)
     {
         return Err(Dropped::BreaksRule(format!(
-            "{worker} can't see {path}, which this card owns"
+            "{worker} can't see {path}, which this task owns"
         )));
     }
     let rules = applied(sources.settings, query.role, &query.stopped.vendor());
@@ -206,6 +212,15 @@ pub fn out_of_quota(reading: &QuotaReading, now: OffsetDateTime) -> bool {
     reading.status == QuotaStatus::Rejected && reading.resets_at.is_none_or(|at| at > now)
 }
 
+/// Whether the reading's plan window is as full as your `limits.plan_usage` lets it get. It
+/// counts until the window resets, as a refused one does. Never, when you set no limit.
+pub fn at_plan_limit(reading: &QuotaReading, settings: &Settings, now: OffsetDateTime) -> bool {
+    let Some(limit) = settings.limits.budget.plan_usage else {
+        return false;
+    };
+    reading.used.is_some_and(|used| used >= limit) && reading.resets_at.is_none_or(|at| at > now)
+}
+
 /// The list to judge: your pick, else the most specific settings list, else the crew. With
 /// `all_valid`, every other worker the crew and the registry know follows. The stopped worker
 /// itself is never a candidate.
@@ -218,8 +233,8 @@ fn entries(
         sources
             .settings
             .crew
-            .iter()
-            .cloned()
+            .members()
+            .into_iter()
             .map(FallbackEntry::Worker)
     };
     let mut list: Vec<FallbackEntry> = if !query.fallback.is_empty() {
@@ -365,7 +380,9 @@ fn descending(a: Option<f64>, b: Option<f64>) -> Ordering {
 mod tests {
     use std::sync::Arc;
 
-    use argonauts_core::settings::handoff::{FallbackRules, VendorReplacement};
+    use argonauts_core::settings::handoff::{
+        CrewRole, FallbackRules, OrderStrategy, VendorReplacement,
+    };
 
     use argonauts_core::limits::HealthSignal;
 
@@ -391,17 +408,21 @@ mod tests {
         let stopped = "claude-code/opus";
         let vendor = VendorId("claude-code".to_owned());
         let settings = fixture.settings_mut();
-        settings.handoff.fallback = list(&["w-top-fallback"]);
-        settings.handoff.replace.insert(
+        settings.fallback.order = list(&["w-top-fallback"]);
+        settings.fallback.replace.insert(
             vendor.clone(),
             VendorReplacement {
                 with: list(&["w-top-replace"]),
                 ..VendorReplacement::default()
             },
         );
-        let role = settings.roles.entry(RoleName::Owner).or_default();
-        role.handoff.fallback = list(&["w-role-fallback"]);
-        role.handoff.replace.insert(
+        let role = settings
+            .fallback
+            .roles
+            .entry(CrewRole::Workers)
+            .or_default();
+        role.order = list(&["w-role-fallback"]);
+        role.replace.insert(
             vendor.clone(),
             VendorReplacement {
                 with: list(&["w-role-replace"]),
@@ -421,25 +442,25 @@ mod tests {
         type EmptyLevel = fn(&mut Settings, &VendorId);
         let steps: [(&str, EmptyLevel); 4] = [
             ("w-role-fallback", |s, v| {
-                s.roles
-                    .entry(RoleName::Owner)
+                s.fallback
+                    .roles
+                    .entry(CrewRole::Workers)
                     .or_default()
-                    .handoff
                     .replace
                     .remove(v);
             }),
             ("w-top-replace", |s, _| {
-                s.roles
-                    .entry(RoleName::Owner)
+                s.fallback
+                    .roles
+                    .entry(CrewRole::Workers)
                     .or_default()
-                    .handoff
-                    .fallback
+                    .order
                     .clear();
             }),
             ("w-top-fallback", |s, v| {
-                s.handoff.replace.remove(v);
+                s.fallback.replace.remove(v);
             }),
-            ("claude-code", |s, _| s.handoff.fallback.clear()),
+            ("claude-code", |s, _| s.fallback.order.clear()),
         ];
         for (expected, empty_one) in steps {
             empty_one(fixture.settings_mut(), &vendor);
@@ -455,7 +476,7 @@ mod tests {
 
         // Another vendor's replacement list never applies to this stop.
         let settings = fixture.settings_mut();
-        settings.handoff.replace.insert(
+        settings.fallback.replace.insert(
             VendorId("codex".to_owned()),
             VendorReplacement {
                 with: list(&["w-codex-only"]),
@@ -474,7 +495,7 @@ mod tests {
     fn an_agent_you_turned_off_is_never_a_candidate() {
         let mut fixture = Fixture::new();
         let settings = fixture.settings_mut();
-        settings.handoff.fallback = list(&["codex", "opencode", "antigravity-cli"]);
+        settings.fallback.order = list(&["codex", "opencode", "antigravity-cli"]);
         settings
             .agents
             .entry("opencode".to_owned())
@@ -499,7 +520,7 @@ mod tests {
         let mut retired = model("opencode", "old", "glm");
         retired.retired = true;
         fixture.registry.add(retired);
-        fixture.settings_mut().handoff.fallback = list(&[
+        fixture.settings_mut().fallback.order = list(&[
             "codex/gpt-5",
             "antigravity-cli/gemini-3",
             "claude-code/sonnet",
@@ -550,10 +571,61 @@ mod tests {
     }
 
     #[test]
+    fn a_fallback_at_your_plan_limit_is_passed_over() {
+        let mut fixture = Fixture::new();
+        fixture.registry.add(model("codex", "gpt-5", "gpt"));
+        fixture
+            .registry
+            .add(model("antigravity-cli", "gemini-3", "gemini"));
+        fixture.registry.add(model("claude-code", "opus", "claude"));
+        fixture.settings_mut().fallback.order = list(&["codex/gpt-5", "antigravity-cli/gemini-3"]);
+        fixture
+            .quota
+            .observe(quota("codex", QuotaStatus::Allowed, Some(0.85)));
+        let query = fixture.query("claude-code/opus");
+
+        // No limit of yours: a plan is used until its provider says it's out.
+        assert_eq!(
+            picked_with(&fixture.planner(), &query),
+            ["codex/gpt-5", "antigravity-cli/gemini-3"]
+        );
+
+        fixture.settings_mut().limits.budget.plan_usage = Some(0.8);
+        let planner = fixture.planner();
+        assert_eq!(picked_with(&planner, &query), ["antigravity-cli/gemini-3"]);
+        let sources = planner.sources();
+        let codex = candidate(
+            &entry("codex/gpt-5"),
+            &query,
+            &AppliedHandoff::default(),
+            &sources,
+        );
+        assert_eq!(check(&codex, &query, &sources), Err(Dropped::AtPlanLimit));
+    }
+
+    #[test]
+    fn your_plan_limit_counts_until_the_window_resets() {
+        let now = OffsetDateTime::now_utc();
+        let mut settings = Settings::default();
+        let mut reading = quota("codex", QuotaStatus::Allowed, Some(0.8));
+        assert!(!at_plan_limit(&reading, &settings, now), "no limit is set");
+        settings.limits.budget.plan_usage = Some(0.8);
+        assert!(at_plan_limit(&reading, &settings, now));
+        reading.resets_at = Some(now - time::Duration::minutes(1));
+        assert!(!at_plan_limit(&reading, &settings, now), "the window reset");
+        reading.resets_at = Some(now + time::Duration::minutes(1));
+        assert!(at_plan_limit(&reading, &settings, now));
+        reading.used = Some(0.79);
+        assert!(!at_plan_limit(&reading, &settings, now));
+        reading.used = None;
+        assert!(!at_plan_limit(&reading, &settings, now));
+    }
+
+    #[test]
     fn an_owner_must_see_what_the_card_owns() {
         let mut fixture = Fixture::new();
         fixture.registry.add(model("codex", "gpt-5", "gpt"));
-        fixture.settings_mut().handoff.fallback = list(&["codex/gpt-5"]);
+        fixture.settings_mut().fallback.order = list(&["codex/gpt-5"]);
         let mut query = fixture.query("claude-code/opus");
         let exclude = |fixture: &mut Fixture, paths: &[&str]| {
             let codex = fixture.settings_mut().agents.entry("codex".to_owned());
@@ -586,7 +658,7 @@ mod tests {
             .registry
             .add(api_model("openrouter", "kimi", "kimi", 1.0));
         fixture.registry.add(model("openrouter", "glm", "glm"));
-        fixture.settings_mut().handoff.fallback =
+        fixture.settings_mut().fallback.order =
             list(&["codex/gpt-5", "openrouter/kimi", "openrouter/glm"]);
         let query = fixture.query("claude-code/opus");
         let planner = fixture.planner();
@@ -633,13 +705,13 @@ mod tests {
             FallbackEntry::WithRules(FallbackRules {
                 worker: worker(worker_name),
                 max_budget_usd: Some(cap),
-                instructions: Some("Keep to the card's paths.".to_owned()),
+                instructions: Some("Keep to the task's paths.".to_owned()),
                 read_only: false,
                 allow_api_billing: allow,
             })
         };
         // glm-5 costs about $4.40 for the estimate, over its $2 cap; kimi about $0.44.
-        fixture.settings_mut().handoff.fallback = vec![
+        fixture.settings_mut().fallback.order = vec![
             capped("openrouter/glm-5", 2.0, true),
             capped("openrouter/kimi", 2.0, true),
             entry("codex/gpt-5"),
@@ -657,7 +729,7 @@ mod tests {
             &query,
             &applied(
                 &fixture.settings,
-                RoleName::Owner,
+                RoleName::Worker,
                 &VendorId("claude-code".to_owned()),
             ),
             &planner.sources(),
@@ -675,7 +747,7 @@ mod tests {
             .registry
             .add(api_model("openrouter", "kimi", "kimi", 1.0));
         fixture.registry.add(model("codex", "gpt-5", "gpt"));
-        fixture.settings_mut().handoff.fallback = list(&["openrouter/kimi", "codex/gpt-5"]);
+        fixture.settings_mut().fallback.order = list(&["openrouter/kimi", "codex/gpt-5"]);
         let planner = fixture.planner();
         let query = fixture.query("claude-code/opus");
         let shortlist = shortlist(&query, &planner.sources());
@@ -684,7 +756,7 @@ mod tests {
         assert_eq!(auto_check(kimi), Err(Dropped::PaidApi));
         assert!(auto_check(&shortlist.candidates[1]).is_ok());
 
-        fixture.settings_mut().handoff.allow_api_billing = true;
+        fixture.settings_mut().fallback.allow_api_billing = true;
         let planner = fixture.planner();
         let allowed = super::shortlist(&query, &planner.sources());
         assert!(!allowed.candidates[0].needs_confirm);
@@ -703,8 +775,8 @@ mod tests {
             fixture.registry.add(model(vendor, model_id, family));
         }
         let settings = fixture.settings_mut();
-        settings.handoff.strategy = Some(HandoffStrategy::Spread);
-        settings.handoff.fallback = list(&[
+        settings.fallback.strategy = Some(OrderStrategy::Spread);
+        settings.fallback.order = list(&[
             "codex/gpt-5",
             "antigravity-cli/gemini-3",
             "opencode/glm",
@@ -767,15 +839,33 @@ mod tests {
     }
 
     #[test]
-    fn race_returns_race_count() {
+    fn together_says_how_many_take_over_and_pick_how_they_combine() {
         let mut fixture = Fixture::new();
-        let settings = fixture.settings_mut();
-        settings.handoff.strategy = Some(HandoffStrategy::Race);
-        settings.handoff.race_count = Some(3);
         let planner = fixture.planner();
-        let shortlist = shortlist(&fixture.query("claude-code/opus"), &planner.sources());
+        let one = shortlist(&fixture.query("claude-code/opus"), &planner.sources());
+        assert_eq!((one.strategy, one.race_count), (HandoffStrategy::First, 1));
+        assert_eq!(one.pick, Pick::FirstPassing, "what a worker builds");
+
+        let settings = fixture.settings_mut();
+        settings.fallback.together = Some(3);
+        let planner = fixture.planner();
+        let mut query = fixture.query("claude-code/opus");
+        let shortlist = shortlist(&query, &planner.sources());
         assert_eq!(shortlist.strategy, HandoffStrategy::Race);
         assert_eq!(shortlist.race_count, 3);
+        assert_eq!(shortlist.pick, Pick::FirstPassing);
+        // A review's findings are all kept, and a table that says how wins.
+        query.role = RoleName::Reviewer;
+        assert_eq!(
+            super::shortlist(&query, &planner.sources()).pick,
+            Pick::Merge
+        );
+        fixture.settings_mut().fallback.pick = Some(Pick::Judge);
+        let planner = fixture.planner();
+        assert_eq!(
+            super::shortlist(&query, &planner.sources()).pick,
+            Pick::Judge
+        );
         assert_eq!(
             workers(&shortlist),
             ["claude-code", "codex", "antigravity-cli"]
@@ -786,7 +876,7 @@ mod tests {
     fn all_valid_lists_every_valid_worker() {
         let mut fixture = Fixture::new();
         fixture.registry.add(model("opencode", "glm", "glm"));
-        fixture.settings_mut().handoff.fallback = list(&["codex"]);
+        fixture.settings_mut().fallback.order = list(&["codex"]);
         let planner = fixture.planner();
         let mut query = fixture.query("claude-code/opus");
         assert_eq!(picked_with(&planner, &query), ["codex"]);

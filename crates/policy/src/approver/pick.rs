@@ -1,4 +1,4 @@
-//! The approver when `approvals.approver.model` is unset: the cheapest model you can run from
+//! The judge when you named none that may check the work: the cheapest model you can run from
 //! another company than every author of the work it judges. The candidates are the models the
 //! live lists found for each installed agent, else each agent's cheapest model, else the agent
 //! as it's set up.
@@ -33,8 +33,8 @@ impl NoApprover {
     pub fn reason(&self) -> String {
         match self {
             Self::UnknownAuthor(author) => format!(
-                "the company behind {} isn't known, so no approver can be shown to come from \
-                 another company",
+                "the provider behind {} isn't known, so no approver can be shown to come from \
+                 another provider",
                 DisplayNames::default().worker(author)
             ),
             Self::NoneElsewhere { companies } => {
@@ -43,7 +43,7 @@ impl NoApprover {
                     .map(|company| company_name(company))
                     .collect();
                 format!(
-                    "no model you can run comes from another company than {}, so no approver \
+                    "no model you can run comes from another provider than {}, so no approver \
                      can judge this",
                     companies.join(" or ")
                 )
@@ -53,10 +53,10 @@ impl NoApprover {
 
     /// The fuller warning, given once, saying how to give auto an approver. Auto asks you
     /// meanwhile, and full auto lets your rules decide alone, which its own line says.
-    pub fn warning(&self, full_auto: bool) -> String {
+    pub fn warning(&self, autopilot: bool) -> String {
         let fix = "pick an approver in /approvals, or install and log in to an agent from \
-                   another company";
-        if full_auto {
+                   another provider";
+        if autopilot {
             format!("{}. {}", sentence_case(&self.reason()), sentence_case(fix))
         } else {
             format!(
@@ -81,21 +81,21 @@ fn company_name(company: &str) -> String {
 /// independence check. Ties go to the agent listed first.
 pub fn pick(
     authors: &[WorkerRef],
-    different_family: bool,
+    different_provider: bool,
     sources: Sources<'_>,
 ) -> Result<WorkerRef, NoApprover> {
-    pick_besides(authors, different_family, sources, &[])
+    pick_besides(authors, different_provider, sources, &[])
 }
 
 /// Like [`pick`], leaving out every agent of a vendor in `failed`, whose approver sessions
 /// already failed for this checkpoint.
 pub fn pick_besides(
     authors: &[WorkerRef],
-    different_family: bool,
+    different_provider: bool,
     sources: Sources<'_>,
     failed: &[WorkerRef],
 ) -> Result<WorkerRef, NoApprover> {
-    cheapest(authors, different_family, sources, failed, |_| true)
+    cheapest(authors, different_provider, sources, failed, |_| true)
 }
 
 /// Like [`pick_besides`], for an agent that takes over from an approver whose session failed:
@@ -103,18 +103,18 @@ pub fn pick_besides(
 /// needs, since nobody chose it to see them.
 pub fn pick_stand_in(
     authors: &[WorkerRef],
-    different_family: bool,
+    different_provider: bool,
     sources: Sources<'_>,
     failed: &[WorkerRef],
 ) -> Result<WorkerRef, NoApprover> {
-    cheapest(authors, different_family, sources, failed, |worker| {
+    cheapest(authors, different_provider, sources, failed, |worker| {
         sources.workers.isolates(worker)
     })
 }
 
 fn cheapest(
     authors: &[WorkerRef],
-    different_family: bool,
+    different_provider: bool,
     sources: Sources<'_>,
     failed: &[WorkerRef],
     fits: impl Fn(&WorkerRef) -> bool,
@@ -143,7 +143,8 @@ fn cheapest(
             continue;
         }
         if companies.contains(&company_of(&family))
-            || independence::check(&candidate, authors, different_family, sources.workers).is_err()
+            || independence::check(&candidate, authors, different_provider, sources.workers)
+                .is_err()
         {
             continue;
         }
@@ -317,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cheapest_agent_of_another_company_judges() {
+    fn the_cheapest_agent_of_another_provider_judges() {
         let workers = crew();
         // Of haiku, luna, and flash, luna is the cheapest; flash is the cheapest that isn't
         // OpenAI's.
@@ -368,7 +369,7 @@ mod tests {
         let workers = FakeDirectory::new();
         workers.add(FakeWorker::harness("claude-code", "claude"));
         let none = picked(&["claude-code/opus"], &workers, None).unwrap_err();
-        assert!(none.reason().contains("another company than Anthropic"));
+        assert!(none.reason().contains("another provider than Anthropic"));
         assert!(none.warning(false).starts_with("No model"));
         assert!(
             none.warning(false)
@@ -376,11 +377,11 @@ mod tests {
         );
         assert!(!none.warning(false).contains("approvals.approver"));
         // Full auto never asks you, so its warning only says what gives it an approver.
-        let full_auto = none.warning(true);
-        assert!(!full_auto.contains("asks you"), "{full_auto}");
+        let autopilot = none.warning(true);
+        assert!(!autopilot.contains("asks you"), "{autopilot}");
         assert!(
-            full_auto.contains(". Pick an approver in /approvals"),
-            "{full_auto}"
+            autopilot.contains(". Pick an approver in /approvals"),
+            "{autopilot}"
         );
         let unknown = picked(&["mystery"], &workers, None).unwrap_err();
         assert_eq!(unknown, NoApprover::UnknownAuthor(r("mystery")));
@@ -389,7 +390,7 @@ mod tests {
         assert!(
             unknown
                 .warning(false)
-                .starts_with("The company behind Fast on my-cli isn't known"),
+                .starts_with("The provider behind Fast on my-cli isn't known"),
             "{}",
             unknown.warning(false)
         );

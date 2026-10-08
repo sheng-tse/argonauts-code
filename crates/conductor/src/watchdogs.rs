@@ -269,6 +269,7 @@ mod tests {
                 last_message: None,
                 log_uri: None,
                 steps_visible: true,
+                tokens: None,
             },
         }
     }

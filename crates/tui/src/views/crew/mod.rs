@@ -4,6 +4,8 @@
 
 mod draw;
 mod rows;
+
+pub(crate) use rows::activity as doing;
 #[cfg(test)]
 mod tests;
 
@@ -240,7 +242,7 @@ impl CrewView {
         let (run, session) = match &row.target {
             CrewTarget::Agent { run, session } => (run, session),
             CrewTarget::Checkpoint { .. } => {
-                return ViewOutcome::Notice("This card has no agent to stop".into());
+                return ViewOutcome::Notice("This task has no agent to stop".into());
             }
             CrewTarget::Run { .. } => {
                 return ViewOutcome::Notice("/stop stops the run on screen".into());
@@ -318,6 +320,7 @@ impl CrewView {
             let sleeping: Vec<bool> = rows.iter().map(|row| sleeping(state, row)).collect();
             draw::list_lines(
                 &panel.groups(self.tab),
+                &panel.repo,
                 &sleeping,
                 self.list.selected,
                 width,

@@ -1,7 +1,6 @@
 ---
-source: crates/tui/tests/cells.rs
-assertion_line: 80
+source: crates/tui/tests/snap_cells.rs
 expression: text(&lines)
 ---
-※ recap: Export now takes --json, all 4 cards merged, and the tests pass. Ask for another change, or /resume an older
+※ recap: Export now takes --json, all 4 tasks merged, and the tests pass. Ask for another change, or /resume an older
   run. (disable recaps in /config)

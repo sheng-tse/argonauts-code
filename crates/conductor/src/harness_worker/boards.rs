@@ -1,7 +1,7 @@
 //! The quota and health boards, told on a task of their own. A board may lock and sync a file
 //! every supervisor shares, which must hold up neither the session nor the async runtime. What
 //! queues up while a board is busy goes to it in one batch, only the newest quota reading of each
-//! vendor included, and the vendor's health goes out when the batch changed it.
+//! vendor's window included, and the vendor's health goes out when the batch changed it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ pub struct Boards {
 
 enum Job {
     Quota(QuotaReading),
+    Plan(String),
     Health(HealthSignal),
     Settled(oneshot::Sender<()>),
 }
@@ -37,6 +38,11 @@ impl Boards {
     pub fn quota(&self, reading: QuotaReading) {
         // Fails only once the task is gone, and it lives as long as this sender.
         let _ = self.jobs.send(Job::Quota(reading));
+    }
+
+    /// The account's plan, as the CLI named it.
+    pub fn plan(&self, plan: String) {
+        let _ = self.jobs.send(Job::Plan(plan));
     }
 
     pub fn health(&self, signal: HealthSignal) {
@@ -62,19 +68,24 @@ async fn run(ctx: Arc<Context>, out: Outbox, mut queue: mpsc::UnboundedReceiver<
             batch.push(job);
         }
         let mut settled = Vec::new();
-        let mut quota: BTreeMap<String, QuotaReading> = BTreeMap::new();
+        let mut quota: BTreeMap<WindowKey, QuotaReading> = BTreeMap::new();
+        let mut plan = None;
         let mut signals = Vec::new();
         for job in batch {
             match job {
                 Job::Quota(reading) => keep_newest(&mut quota, reading),
+                Job::Plan(named) => plan = Some(named),
                 Job::Health(signal) => signals.push(signal),
                 Job::Settled(done) => settled.push(done),
             }
         }
-        if !quota.is_empty() || !signals.is_empty() {
+        if !quota.is_empty() || plan.is_some() || !signals.is_empty() {
             let task_ctx = ctx.clone();
             let before = known.take();
             let told = tokio::task::spawn_blocking(move || {
+                if let Some(plan) = plan {
+                    task_ctx.quota.observe_plan(&task_ctx.vendor, plan);
+                }
                 tell(&task_ctx, quota.into_values(), signals, before)
             })
             .await;
@@ -85,7 +96,7 @@ async fn run(ctx: Arc<Context>, out: Outbox, mut queue: mpsc::UnboundedReceiver<
                     }
                     known = health;
                 }
-                Err(err) => out.notice(format!("could not update the vendor boards: {err}")),
+                Err(err) => out.notice(format!("could not update the agent boards: {err}")),
             }
         }
         for done in settled {
@@ -94,13 +105,17 @@ async fn run(ctx: Arc<Context>, out: Outbox, mut queue: mpsc::UnboundedReceiver<
     }
 }
 
-/// A later reading replaces an earlier one, as the quota board does itself.
-fn keep_newest(quota: &mut BTreeMap<String, QuotaReading>, reading: QuotaReading) {
+/// A vendor and one of its windows.
+type WindowKey = (String, Option<String>);
+
+/// A later reading of a window replaces an earlier one, as the quota board does itself.
+fn keep_newest(quota: &mut BTreeMap<WindowKey, QuotaReading>, reading: QuotaReading) {
+    let key = (reading.vendor.0.clone(), reading.window.clone());
     let newer = quota
-        .get(&reading.vendor.0)
+        .get(&key)
         .is_none_or(|old| old.observed_at <= reading.observed_at);
     if newer {
-        quota.insert(reading.vendor.0.clone(), reading);
+        quota.insert(key, reading);
     }
 }
 
@@ -146,12 +161,16 @@ mod tests {
     use time::OffsetDateTime;
 
     fn reading(vendor: &str, at: i64) -> QuotaReading {
+        windowed(vendor, None, at)
+    }
+
+    fn windowed(vendor: &str, window: Option<&str>, at: i64) -> QuotaReading {
         QuotaReading {
             vendor: VendorId(vendor.into()),
             status: QuotaStatus::Allowed,
             used: None,
             resets_at: None,
-            window: None,
+            window: window.map(str::to_owned),
             source: QuotaSource::RateLimitEvent,
             observed_at: OffsetDateTime::from_unix_timestamp(at).unwrap(),
             detail: None,
@@ -170,5 +189,18 @@ mod tests {
             .map(|reading| reading.observed_at.unix_timestamp())
             .collect();
         assert_eq!(kept, [3, 5]);
+    }
+
+    #[test]
+    fn each_window_of_a_vendor_keeps_its_own_newest_reading() {
+        let mut quota = BTreeMap::new();
+        for (window, at) in [("five_hour", 1), ("seven_day", 1), ("five_hour", 2)] {
+            keep_newest(&mut quota, windowed("claude-code", Some(window), at));
+        }
+        let kept: Vec<(Option<&str>, i64)> = quota
+            .values()
+            .map(|r| (r.window.as_deref(), r.observed_at.unix_timestamp()))
+            .collect();
+        assert_eq!(kept, [(Some("five_hour"), 2), (Some("seven_day"), 1)]);
     }
 }

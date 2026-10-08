@@ -89,7 +89,7 @@ fn run_id() -> RunId {
 }
 
 fn card_id() -> CardId {
-    CardId::new("card-001").expect("a valid card id")
+    CardId::new("task-001").expect("a valid task id")
 }
 
 fn run_event(kind: RunEventKind) -> AppEvent {
@@ -120,7 +120,7 @@ fn started() -> AppEvent {
             title: "Add a --json flag".into(),
             mode: RunMode::Solo,
             forced: false,
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             estimate: None,
             triage: None,
             chat_turn: None,
@@ -137,6 +137,7 @@ fn started() -> AppEvent {
             version: "0.0.1".into(),
             front_end: None,
             instructions: Vec::new(),
+            required_steps: Vec::new(),
         },
     ))))
 }
@@ -230,9 +231,9 @@ fn replay_prints_summaries_only() {
             run: run_id(),
             title: "Add a --json flag".into(),
             mode: RunMode::Crew,
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             state: RunStatus::Parked,
-            stopped_at: "plan checkpoint, waiting for you".into(),
+            stopped_at: "plan approval, waiting for you".into(),
             updated: datetime!(2026-09-30 10:00 UTC),
             spent: Spend::default(),
             sessions_to_resume: 2,
@@ -288,7 +289,7 @@ fn replay_prints_summaries_only() {
     let printed = harness.printed();
     assert_eq!(
         printed,
-        "● Add a --json flag\n  ⎿  Parked · plan checkpoint, waiting for you · $0.00 spent · 2 sessions to\n     resume\n     ctrl+o shows the whole history\n\n❯ add a --json flag\n\n● I'll run it with the crew.\n\n● So far in this run\n  ⎿  Goal approved · 3 criteria\n     Plan drafted\n\n※ recap: The plan waits for you. (disable recaps in /config)"
+        "● Add a --json flag\n  ⎿  Waiting · plan approval, waiting for you · $0.00 spent · 2 sessions to\n     resume\n     ctrl+o shows the whole history\n\n❯ add a --json flag\n\n● I'll run it with the crew.\n\n● So far in this run\n  ⎿  Goal approved · 3 criteria\n     Plan drafted\n\n※ recap: The plan waits for you. (disable recaps in /config)"
     );
     assert!(!printed.contains("replayed note"));
     assert!(harness.model.history.cells().len() > kept);
@@ -305,7 +306,7 @@ fn a_park_nobody_could_take_a_seat_in_says_so_and_when_it_tries_again() {
     let parked = |until| {
         run_event(RunEventKind::Run(RunLifecycle::Parked {
             reason: ParkReason::NoStandIn {
-                detail: "nobody could take over as the lead".into(),
+                detail: "nobody could take over as the main agent".into(),
                 until,
             },
             waiting_on: Vec::new(),
@@ -316,7 +317,7 @@ fn a_park_nobody_could_take_a_seat_in_says_so_and_when_it_tries_again() {
     harness.send(parked(Some(datetime!(2026-09-30 10:47 UTC))));
     let retrying = harness.printed();
     assert!(
-        retrying.contains("Parked the run · nobody could take over as the lead"),
+        retrying.contains("The run waits · nobody could take over as the main agent"),
         "{retrying}"
     );
     assert!(retrying.contains("It tries again at "), "{retrying}");
@@ -335,7 +336,7 @@ fn running_summary() -> RunSummary {
         run: run_id(),
         title: "Add a --json flag".into(),
         mode: RunMode::Crew,
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         state: RunStatus::Running,
         stopped_at: "working".into(),
         updated: datetime!(2026-09-30 10:00 UTC),
@@ -383,13 +384,13 @@ fn an_empty_gates_run_is_not_a_failed_gate() {
     let mut harness = Harness::new();
     // What the engine records when `gates.run` is empty: skipped, and no command ran.
     harness.send(run_event(RunEventKind::Gate(GateOutcome {
-        name: "gates.run".into(),
+        name: "checks.run".into(),
         kind: GateKind::Command,
         passed: true,
         command: None,
         exit_code: None,
         duration_ms: 0,
-        summary: "No command gates set · /config gates.run".into(),
+        summary: "No command checks set · /config checks.run".into(),
         output_tail: String::new(),
         violations: vec![],
         sandboxed: false,
@@ -398,7 +399,7 @@ fn an_empty_gates_run_is_not_a_failed_gate() {
     harness.send(gated());
     let printed = harness.printed();
     assert!(
-        printed.contains("built-in checks)\n  ⎿  No command gates set · /config gates.run"),
+        printed.contains("built-in checks)\n  ⎿  No command checks set · /config checks.run"),
         "{printed}"
     );
     assert!(!printed.contains("failed"), "{printed}");
@@ -431,9 +432,13 @@ fn a_failed_retro_is_said_once_and_not_called_saved() {
         detail: None,
     })));
     let printed = harness.printed();
-    assert_eq!(printed.matches("The retro failed").count(), 1, "{printed}");
+    assert_eq!(
+        printed.matches("The run review failed").count(),
+        1,
+        "{printed}"
+    );
     assert!(printed.contains("Run finished"), "{printed}");
-    assert!(!printed.contains("retro saved"), "{printed}");
+    assert!(!printed.contains("run review saved"), "{printed}");
 }
 
 fn closing() -> ClosingAnswer {
@@ -526,7 +531,7 @@ fn a_failed_retro_keeps_its_raw_reason_for_ctrl_o() {
     harness.send(note(NoteLevel::Warn, RETRO_FAILED));
     let printed = harness.printed();
     assert!(
-        printed.contains("● The retro failed. The run's result stands. (ctrl+o to expand)"),
+        printed.contains("● The run review failed. The run's result stands. (ctrl+o to expand)"),
         "{printed}"
     );
     assert!(!printed.contains("schema"), "{printed}");
@@ -556,14 +561,14 @@ fn a_notes_detail_waits_for_ctrl_o() {
     harness.send(started());
     let incomplete = Note::with_detail(
         NoteLevel::Warn,
-        "The lead's design came back incomplete, so coordinated-crew runs as written.",
+        "The main agent's design came back incomplete, so orchestrator runs as written.",
         "output didn't match the schema:\n\"based_on\" is a required property",
     );
     harness.send(note(NoteLevel::Warn, &incomplete.text));
     let printed = harness.printed();
     assert!(
         printed.contains(
-            "● The lead's design came back incomplete, so coordinated-crew runs as written."
+            "● The main agent's design came back incomplete, so orchestrator runs as written."
         ),
         "{printed}"
     );
@@ -613,7 +618,11 @@ fn each_runs_failed_retro_is_said() {
         })));
     }
     let printed = harness.printed();
-    assert_eq!(printed.matches("The retro failed").count(), 2, "{printed}");
+    assert_eq!(
+        printed.matches("The run review failed").count(),
+        2,
+        "{printed}"
+    );
     assert!(!printed.contains("ctrl+o"), "{printed}");
 }
 
@@ -679,13 +688,7 @@ fn quiet_shows_milestones_only() {
         quiet.send(event);
     }
     let printed = quiet.printed();
-    for shown in [
-        "● Triage(solo, checked)",
-        "Gates(tests)",
-        "Paused the run",
-        "❯ hi",
-        "Hello.",
-    ] {
+    for shown in ["Checks(tests)", "Paused the run", "❯ hi", "Hello."] {
         assert!(printed.contains(shown), "{shown} missing from:\n{printed}");
     }
     for hidden in ["Worktree ready", "narrator:", "recap:", "Read 1 file"] {
@@ -706,9 +709,10 @@ fn quiet_shows_milestones_only() {
             harness.send(event);
         }
         let printed = harness.printed();
-        for shown in ["Worktree ready", "narrator:", "recap:", call, "Triage"] {
+        for shown in ["Worktree ready", "narrator:", "recap:", call] {
             assert!(printed.contains(shown), "{shown} missing at {level:?}");
         }
+        assert!(!printed.contains("Triage"), "a triage row at {level:?}");
     }
 }
 
@@ -723,12 +727,12 @@ fn welcome_with(agent: &str, preset: &str) -> AppEvent {
     AppEvent::Welcome {
         version: "0.0.1".into(),
         repo: "~/github/argonauts".into(),
-        preset: preset.into(),
+        workflow: preset.into(),
         agents: vec![],
         runs_going: 0,
         runs_need_you: 0,
         example_prompt: None,
-        default_agent: Some(WorkerRef::new(agent, None)),
+        main_agent: Some(WorkerRef::new(agent, None)),
         effort: None,
     }
 }
@@ -736,8 +740,8 @@ fn welcome_with(agent: &str, preset: &str) -> AppEvent {
 #[test]
 fn a_repeated_welcome_prints_one_header() {
     let mut harness = Harness::new();
-    harness.send(welcome_with("claude-code", "peer-crew"));
-    harness.send(welcome_with("claude-code", "peer-crew"));
+    harness.send(welcome_with("claude-code", "council"));
+    harness.send(welcome_with("claude-code", "council"));
     harness.send(note(NoteLevel::Warn, "codex is logged out"));
     let cells = harness.model.history.cells();
     assert!(
@@ -759,12 +763,24 @@ fn headers(harness: &Harness) -> usize {
         .count()
 }
 
+/// An aside, such as the no-git notice at the start, takes Claude Code's `※` where other
+/// notices take the bullet.
+#[test]
+fn an_aside_takes_the_reference_mark() {
+    let mut harness = Harness::new();
+    harness.send(notice(NoteLevel::Aside, "This folder has no git."));
+    harness.send(notice(NoteLevel::Info, "Saved."));
+    let printed = harness.printed();
+    assert!(printed.contains("※ This folder has no git."), "{printed}");
+    assert!(printed.contains("● Saved."), "{printed}");
+}
+
 /// Once the setup saves, the header changes where it stands instead of printing a second one
 /// under the setup's answers. A warning it repeats shows once.
 #[test]
 fn the_header_changes_in_place_when_the_setup_saves() {
     let mut harness = Harness::new();
-    harness.send(welcome_with("claude-code", "peer-crew"));
+    harness.send(welcome_with("claude-code", "council"));
     harness.send(notice(NoteLevel::Warn, "a typo in your settings"));
     harness.printed();
     harness.send(welcome_with("antigravity-cli", "solo"));
@@ -787,7 +803,7 @@ fn the_header_changes_in_place_when_the_setup_saves() {
 #[test]
 fn a_header_after_the_conversation_starts_never_prints_twice() {
     let mut harness = Harness::new();
-    harness.send(welcome_with("claude-code", "peer-crew"));
+    harness.send(welcome_with("claude-code", "council"));
     harness.send(AppEvent::Report {
         title: "Doctor".into(),
         lines: vec!["git 2.50.1".into()],
@@ -810,7 +826,7 @@ fn a_header_after_the_conversation_starts_never_prints_twice() {
 }
 
 #[test]
-fn the_header_waits_for_the_default_agent() {
+fn the_header_waits_for_the_main_agent() {
     use argonauts_core::app::StatusLine;
     use argonauts_core::settings::approvals::ApprovalMode;
     use argonauts_core::settings::ui::NarratorMode;
@@ -819,12 +835,12 @@ fn the_header_waits_for_the_default_agent() {
     harness.send(AppEvent::Welcome {
         version: "0.0.1".into(),
         repo: "~/github/argonauts".into(),
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         agents: vec![],
         runs_going: 0,
         runs_need_you: 0,
         example_prompt: None,
-        default_agent: None,
+        main_agent: None,
         effort: None,
     });
     assert!(harness.model.history.cells().is_empty());
@@ -833,27 +849,29 @@ fn the_header_waits_for_the_default_agent() {
         status: StatusLine {
             title: "argonauts".into(),
             repo: "~/github/argonauts".into(),
-            preset: "peer-crew".into(),
-            all_hands: false,
+            workflow: "council".into(),
+            ultracode: false,
             run: None,
-            default_agent: WorkerRef::new("claude-code", Some("haiku".into())),
+            main_agent: WorkerRef::new("claude-code", Some("haiku".into())),
             quotas: vec![],
+            line: Default::default(),
             spent: None,
             limit: None,
             narrator: NarratorMode::OnDemand,
             approval_mode: ApprovalMode::Supervised,
+            awake: None,
         },
     });
     assert_eq!(harness.model.history.active_cells().count(), 0);
     let printed = harness.printed();
     assert!(
-        printed.contains("Claude Code · Haiku · peer-crew"),
+        printed.contains("Claude Code · Haiku · council"),
         "{printed}"
     );
 }
 
 /// The app's names come first, so the header reads like Claude Code's, with the model an
-/// alias runs: `Claude Code · Opus 5.5 with xhigh effort · peer-crew`.
+/// alias runs: `Claude Code · Opus 5.5 with xhigh effort · council`.
 #[test]
 fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
     use argonauts_core::display_names::DisplayNames;
@@ -875,18 +893,18 @@ fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
     harness.send(AppEvent::Welcome {
         version: "0.0.1".into(),
         repo: "~/github/argonauts".into(),
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         agents: vec![],
         runs_going: 0,
         runs_need_you: 0,
         example_prompt: None,
-        default_agent: Some(WorkerRef::new("claude-code", Some("opus".into()))),
+        main_agent: Some(WorkerRef::new("claude-code", Some("opus".into()))),
         effort: Some("xhigh".into()),
     });
     assert_eq!(harness.model.history.active_cells().count(), 0);
     let printed = harness.printed();
     assert!(
-        printed.contains("Claude Code · Opus 5.5 with xhigh effort · peer-crew"),
+        printed.contains("Claude Code · Opus 5.5 with xhigh effort · council"),
         "{printed}"
     );
 }
@@ -1008,7 +1026,7 @@ fn status_answers_print_as_one_item() {
             "Add a --json flag".into(),
             "G1 export --json writes JSON lines".into(),
         ],
-        plan: Some("Plan 1, 2 cards".into()),
+        plan: Some("Plan 1, 2 tasks".into()),
         cards: vec![CardBrief {
             card: card_id(),
             title: "Parse the flag".into(),
@@ -1017,7 +1035,7 @@ fn status_answers_print_as_one_item() {
             note: "6m 12s · 38k tok".into(),
         }],
         recent: (1..=8).map(|n| format!("event {n}")).collect(),
-        waiting: vec!["plan checkpoint".into()],
+        waiting: vec!["plan approval".into()],
         ..StatusSummary::default()
     };
     harness.send(AppEvent::View {
@@ -1025,7 +1043,7 @@ fn status_answers_print_as_one_item() {
     });
     assert_eq!(
         harness.printed(),
-        "● Status(run-01)\n  ⎿  Goal: Add a --json flag\n     G1 export --json writes JSON lines\n     Plan: Plan 1, 2 cards\n     card-001 Parse the flag · running · GPT 5.6 on Codex · 6m 12s · 38k tok\n     event 4\n     event 5\n     event 6\n     event 7\n     event 8\n     Waiting on you: plan checkpoint"
+        "● Status(run-01)\n  ⎿  Goal: Add a --json flag\n     G1 export --json writes JSON lines\n     Plan: Plan 1, 2 tasks\n     task-001 Parse the flag · running · GPT 5.6 on Codex · 6m 12s · 38k tok\n     event 4\n     event 5\n     event 6\n     event 7\n     event 8\n     Waiting on you: plan approval"
     );
     let empty = super::status_cells(&StatusSummary::default(), &Default::default());
     assert_eq!(empty.len(), 1);
@@ -1196,7 +1214,7 @@ fn a_rotation_prints_a_line() {
     })));
     let printed = harness.printed();
     assert!(
-        printed.contains("card-001 rotated to a fresh Claude Code session"),
+        printed.contains("task-001 rotated to a fresh Claude Code session"),
         "{printed}"
     );
 }
@@ -1229,36 +1247,138 @@ fn a_model_you_pick_is_named_as_its_list_named_it() {
         crate::format::choice_words(&choice("codex/gpt-6-sol", "GPT-6-Sol")),
     );
     harness.send(AppEvent::SettingChanged {
-        key: "default_agent".into(),
+        key: "main_agent".into(),
         value: "\"codex/gpt-6-sol\"".into(),
         scope: argonauts_core::settings::SettingScope::Global,
         previous: Some("\"claude-code/claude-opus-5-5\"".into()),
         reset: false,
     });
+    // What the switch carried hangs under it, with no row between.
+    harness.send(AppEvent::Continued {
+        text: "Carried over: a summary of 14 exchanges, the last 6 in full".into(),
+    });
     assert_eq!(
         harness.printed().trim_end(),
-        "  ⎿  Set model to GPT-6-Sol · everywhere · was Opus 5.5"
+        "  ⎿  Set model to GPT-6-Sol on Codex · everywhere · was Opus 5.5 on Claude Code\n     \
+         Carried over: a summary of 14 exchanges, the last 6 in full"
+    );
+}
+
+/// A CLI's default reads as the model it runs when the line names the CLI anyway.
+#[test]
+fn a_default_left_for_another_cli_is_named_by_its_model() {
+    let mut harness = Harness::new();
+    harness.state.model_words.insert(
+        "claude-code".to_owned(),
+        "Claude Code's default (Opus 5.5)".to_owned(),
+    );
+    harness
+        .state
+        .model_words
+        .insert("codex/gpt-6-sol".to_owned(), "GPT-6-Sol".to_owned());
+    harness.send(AppEvent::SettingChanged {
+        key: "main_agent".into(),
+        value: "\"codex/gpt-6-sol\"".into(),
+        scope: argonauts_core::settings::SettingScope::Global,
+        previous: Some("\"claude-code\"".into()),
+        reset: false,
+    });
+    assert_eq!(
+        harness.printed().trim_end(),
+        "  ⎿  Set model to GPT-6-Sol on Codex · everywhere · was Opus 5.5 on Claude Code"
+    );
+}
+
+/// The summary a main model on another CLI starts from shows folded: its first lines, and the
+/// rest behind Ctrl+O.
+#[test]
+fn a_folded_summary_keeps_the_rest_for_ctrl_o() {
+    let mut harness = Harness::new();
+    harness.send(AppEvent::Folded {
+        title: "Summary for GPT-6.1-Sol · written by Opus 5.5 · 212 words".into(),
+        lines: vec!["Asked: due dates.".into(), "Done: the store.".into()],
+        more: vec!["Open: the overdue tests.".into()],
+    });
+    let printed = harness.printed();
+    assert!(
+        printed.contains(
+            "● Summary for GPT-6.1-Sol · written by Opus 5.5 · 212 words (ctrl+o to expand)\n  ⎿  \
+             Asked: due dates.\n     Done: the store."
+        ),
+        "{printed}"
+    );
+    assert!(!printed.contains("overdue"), "{printed}");
+
+    let mut theme = Theme::dark();
+    theme.glyphs = Glyphs::UNICODE;
+    let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now())).with_expanded(true);
+    let expanded: String = harness
+        .model
+        .history
+        .cells()
+        .iter()
+        .map(|cell| plain_text(&cell.lines(&ctx)))
+        .collect();
+    assert!(expanded.contains("Open: the overdue tests."), "{expanded}");
+}
+
+/// A model, an effort or a workflow set while an answer runs waits for the next request, and
+/// the result line says so.
+#[test]
+fn a_change_made_mid_answer_says_it_applies_at_the_next_request() {
+    use argonauts_core::settings::SettingScope;
+
+    let changed = |key: &str, value: &str| AppEvent::SettingChanged {
+        key: key.into(),
+        value: value.into(),
+        scope: SettingScope::Global,
+        previous: None,
+        reset: false,
+    };
+    let mut harness = Harness::new();
+    harness.send(changed("workflow", "\"council\""));
+    assert_eq!(
+        harness.printed().trim(),
+        "● Set workflow = council · everywhere"
+    );
+
+    harness.model.bottom.working = Some(crate::bottom::WorkingLine::new("Rowing", Instant::now()));
+    harness.send(changed("workflow", "\"solo\""));
+    assert_eq!(
+        harness.printed().trim(),
+        "● Set workflow = solo · everywhere · applies at the next request"
+    );
+    harness.send(changed("roles.main.effort", "\"high\""));
+    assert_eq!(
+        harness.printed().trim(),
+        "⎿  Set effort to high · everywhere · applies at the next request"
+    );
+    harness.send(changed("ui.theme", "\"dark\""));
+    assert_eq!(
+        harness.printed().trim(),
+        "● Set ui.theme = dark · everywhere",
+        "a look applies at once"
     );
 }
 
 /// `/effort`'s All hands toggle reads as a result line, not as its key.
 #[test]
-fn all_hands_saved_reads_as_turned_on_or_off() {
+fn ultracode_saved_reads_as_turned_on_or_off() {
     for (value, scope, line) in [
         (
             "true",
             argonauts_core::settings::SettingScope::ProjectLocal,
-            "  ⎿  Turned All hands on · just you",
+            "  ⎿  Turned Ultracode on · just you",
         ),
         (
             "false",
             argonauts_core::settings::SettingScope::Session,
-            "  ⎿  Turned All hands off · this session",
+            "  ⎿  Turned Ultracode off · this session",
         ),
     ] {
         let mut harness = Harness::new();
         harness.send(AppEvent::SettingChanged {
-            key: "triage.all_hands".into(),
+            key: "ultracode".into(),
             value: value.into(),
             scope,
             previous: None,
@@ -1268,21 +1388,36 @@ fn all_hands_saved_reads_as_turned_on_or_off() {
     }
 }
 
-/// The triage block says where the run starts in words, with no commit hash or setting key.
+/// A run's start prints no Triage row and no plumbing. It says only what you
+/// would otherwise never hear, such as the files it left out.
 #[test]
-fn triage_says_where_the_run_starts_in_words() {
+fn a_run_starts_without_a_triage_row() {
     let mut harness = Harness::new();
     harness.send(started());
     let printed = harness.printed();
-    assert!(printed.contains("● Triage(solo, checked)"), "{printed}");
-    assert!(printed.contains("Starts from main"), "{printed}");
+    for gone in [
+        "Triage",
+        "Starts from",
+        "Goal: your prompt as you wrote it",
+        "8b41d07",
+        "run-01",
+    ] {
+        assert!(!printed.contains(gone), "{gone} in:\n{printed}");
+    }
+
+    let mut harness = Harness::new();
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+        Box::new(RunStarted {
+            uncommitted: vec!["notes.txt".into(), "draft.md".into()],
+            ..started_fields()
+        }),
+    ))));
+    let printed = harness.printed();
     assert!(
-        printed.contains("Goal: your prompt as you wrote it"),
+        printed.contains("2 uncommitted files left out"),
         "{printed}"
     );
-    for plumbing in ["8b41d07", "Recorded commit", "solo.restate_first"] {
-        assert!(!printed.contains(plumbing), "{plumbing} in:\n{printed}");
-    }
+    assert!(!printed.contains("Triage"), "{printed}");
 }
 
 /// `● Resume(<title>)` names the run as people know it.
@@ -1353,8 +1488,8 @@ fn merge_opened(cards: usize, combined: argonauts_core::DiffStat) -> AppEvent {
 
     let rows = (1..=cards)
         .map(|n| MergeRow {
-            card: CardId::new(format!("card-{n:03}")).unwrap(),
-            title: format!("Card {n}"),
+            card: CardId::new(format!("task-{n:03}")).unwrap(),
+            title: format!("Task {n}"),
             kind: CardKind::Build,
             stat: argonauts_core::DiffStat {
                 files_changed: 1,
@@ -1421,7 +1556,7 @@ fn the_finish_line_says_what_the_merge_card_said() {
             path: PathBuf::from("/nonexistent/card.diff"),
         }));
         if let AppEvent::Run { event } = &mut event {
-            event.card_id = Some(CardId::new(format!("card-{n:03}")).unwrap());
+            event.card_id = Some(CardId::new(format!("task-{n:03}")).unwrap());
         }
         fold(&mut harness, event);
     }
@@ -1436,7 +1571,7 @@ fn the_finish_line_says_what_the_merge_card_said() {
         argonauts_core::names::SessionKey::numbered(1),
         "claude-code".parse().unwrap(),
         "claude-code",
-        argonauts_core::names::RoleName::Owner,
+        argonauts_core::names::RoleName::Worker,
         datetime!(2026-09-30 10:00 UTC),
     );
     session.cost_usd = Some(0.26);
@@ -1451,7 +1586,7 @@ fn the_finish_line_says_what_the_merge_card_said() {
     );
     let printed = harness.printed();
     assert!(
-        printed.contains("Merged the run into main (8 cards, 13 files, +78 -1)"),
+        printed.contains("Merged the run into main (8 tasks, 13 files, +78 -1)"),
         "{printed}"
     );
     let run = &harness.state.runs[&run_id()];
@@ -1514,7 +1649,7 @@ fn the_goal_line_counts_the_leads_answers_apart() {
     harness.send(started());
     harness.send(note(
         NoteLevel::Info,
-        "The lead answered 1 of the goal's questions for you. Its answers are assumptions in \
+        "The main agent answered 1 of the goal's questions for you. Its answers are assumptions in \
          the goal, which Ctrl+O and /status show",
     ));
     let assumption = |text: &str, basis: String| Assumption {
@@ -1546,11 +1681,11 @@ fn the_goal_line_counts_the_leads_answers_apart() {
     })));
     let printed = harness.printed();
     assert!(
-        printed.contains("The lead answered 1 of the goal's questions for you"),
+        printed.contains("The main agent answered 1 of the goal's questions for you"),
         "{printed}"
     );
     assert!(
-        printed.contains("1 question answered by the lead · 1 assumption stated"),
+        printed.contains("1 question answered by the main agent · 1 assumption stated"),
         "{printed}"
     );
 }
@@ -1568,7 +1703,7 @@ fn crew_workflow_harness() -> Harness {
     let mut run = crate::state::RunState::new(run_id());
     run.workflows.push(crate::state::WorkflowState {
         id: id.clone(),
-        name: "peer-crew".into(),
+        name: "council".into(),
         from: None,
         description: String::new(),
         phases: vec!["Fix".into(), "Merge".into()],
@@ -1579,7 +1714,7 @@ fn crew_workflow_harness() -> Harness {
         name: "fix-slugify-median".into(),
         description: "Fix slugify's dashes and median's even and empty lists".into(),
         style: RunStyle::Workflow,
-        based_on: Some("peer-crew".into()),
+        based_on: Some("council".into()),
         done_when: Vec::new(),
     });
     harness.state.runs.insert(run_id(), run);
@@ -1601,20 +1736,21 @@ fn crew_workflow_harness() -> Harness {
     harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
         Box::new(WorkflowDeclared {
             id,
-            name: "peer-crew".into(),
+            name: "council".into(),
             description: "Peers draft, judge, and build".into(),
             phases: vec![
-                phase(0, "Fix", "one owner per function"),
+                phase(0, "Fix", "one worker per function"),
                 phase(1, "Merge", "the final check, then the merge"),
             ],
+            required: Vec::new(),
         }),
     ))));
     harness
 }
 
-/// A crew run's workflow prints as Claude Code prints its own: `● Workflow(<name>)` with the
-/// run's description and the phases it declares, and `● Workflow(<name>) · done` before the
-/// run's end.
+/// A crew run's workflow prints `● Workflow(<name>)` with
+/// what it started from and how to open it, its phases on one line, and `● Workflow(<name>)
+/// · done` before the run's end.
 #[test]
 fn a_crew_workflow_prints_its_start_and_its_end() {
     let mut harness = crew_workflow_harness();
@@ -1625,7 +1761,7 @@ fn a_crew_workflow_prints_its_start_and_its_end() {
     let printed = harness.printed();
     assert!(
         printed.contains(
-            "● Workflow(fix-slugify-median)\n  ⎿  Fix slugify's dashes and median's even and empty lists\n     1. Fix    one owner per function\n     2. Merge  the final check, then the merge\n     Started from peer-crew · ctrl+t to watch"
+            "● Workflow(fix-slugify-median) · started from council · ctrl+t to open\n  ⎿  ◐ Fix · Merge"
         ),
         "{printed}"
     );
@@ -1633,13 +1769,12 @@ fn a_crew_workflow_prints_its_start_and_its_end() {
         printed.contains("● Workflow(fix-slugify-median) · done"),
         "{printed}"
     );
-    assert!(!printed.contains("Workflow(peer-crew)"), "{printed}");
+    assert!(!printed.contains("Workflow(council)"), "{printed}");
 }
 
-/// A phase detail too long for one row wraps under the detail column, not under the phase's
-/// number, so the phases still read as two columns.
+/// The phases read on one line however long their details, which the workflow view shows.
 #[test]
-fn a_wrapped_phase_detail_lines_up_under_the_details() {
+fn the_phases_read_on_one_line_however_long_their_details() {
     use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
     use argonauts_core::names::WorkflowId;
     use argonauts_core::workflow::StandardPhase;
@@ -1649,7 +1784,7 @@ fn a_wrapped_phase_detail_lines_up_under_the_details() {
     let mut run = crate::state::RunState::new(run_id());
     run.workflows.push(crate::state::WorkflowState {
         id: id.clone(),
-        name: "peer-crew".into(),
+        name: "council".into(),
         from: None,
         description: String::new(),
         phases: vec!["Fix".into(), "Merge".into()],
@@ -1675,25 +1810,22 @@ fn a_wrapped_phase_detail_lines_up_under_the_details() {
     harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
         Box::new(WorkflowDeclared {
             id,
-            name: "peer-crew".into(),
+            name: "council".into(),
             description: String::new(),
             phases: vec![
                 phase(
                     0,
                     "Fix",
-                    "one owner per function, each with a test that failed before the fix",
+                    "one worker per function, each with a test that failed before the fix",
                 ),
                 phase(1, "Merge", "the final check, then the merge"),
             ],
+            required: Vec::new(),
         }),
     ))));
     let printed = harness.printed_at(60);
-    assert!(
-        printed.contains(
-            "  ⎿  1. Fix    one owner per function, each with a test that\n               failed before the fix\n     2. Merge  the final check, then the merge\n"
-        ),
-        "{printed}"
-    );
+    assert!(printed.ends_with("  ⎿  ◐ Fix · Merge"), "{printed}");
+    assert!(!printed.contains("each with a test"), "{printed}");
 }
 
 /// A run's end reads one way everywhere it shows: a failed run's workflow ends `· failed` above
@@ -1734,11 +1866,11 @@ fn a_workflow_ends_as_its_run_did() {
     }
 }
 
-/// A crew run whose request named who coordinates and who reviews: the Triage item says what
+/// A crew run whose request named who coordinates and who reviews: one quiet item says what
 /// was followed, the workflow the lead declared prints under it as Claude Code prints its own,
 /// and the closing answer comes last, after `Workflow(<name>) · done` and the merge.
 #[test]
-fn a_run_as_you_asked_prints_its_triage_then_its_workflow_then_its_closing_answer() {
+fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer() {
     use argonauts_core::events::run::{
         CheckedInstruction, InstructionOutcome, RunNamed, TriageDecision,
     };
@@ -1761,7 +1893,7 @@ fn a_run_as_you_asked_prints_its_triage_then_its_workflow_then_its_closing_answe
     let mut run = crate::state::RunState::new(run_id());
     run.workflows.push(crate::state::WorkflowState {
         id: id.clone(),
-        name: "coordinated-crew".into(),
+        name: "orchestrator".into(),
         from: None,
         description: String::new(),
         phases: vec!["Build".into(), "Review".into()],
@@ -1772,7 +1904,7 @@ fn a_run_as_you_asked_prints_its_triage_then_its_workflow_then_its_closing_answe
         name: "add-due-dates".into(),
         description: "Add due dates to tasks".into(),
         style: RunStyle::Workflow,
-        based_on: Some("coordinated-crew".into()),
+        based_on: Some("orchestrator".into()),
         done_when: Vec::new(),
     });
     harness.state.runs.insert(run_id(), run);
@@ -1810,12 +1942,13 @@ fn a_run_as_you_asked_prints_its_triage_then_its_workflow_then_its_closing_answe
     harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
         Box::new(WorkflowDeclared {
             id,
-            name: "coordinated-crew".into(),
-            description: "Codex plans, owners build, Claude Code reviews".into(),
+            name: "orchestrator".into(),
+            description: "Codex plans, workers build, Claude Code reviews".into(),
             phases: vec![
-                phase(0, "Build", "one owner per file"),
-                phase(1, "Review", "Claude Code reviews each card"),
+                phase(0, "Build", "one worker per file"),
+                phase(1, "Review", "Claude Code reviews each task"),
             ],
+            required: Vec::new(),
         }),
     ))));
     harness.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
@@ -1831,10 +1964,12 @@ fn a_run_as_you_asked_prints_its_triage_then_its_workflow_then_its_closing_answe
             .find(shown)
             .unwrap_or_else(|| panic!("{shown} missing from:\n{printed}"))
     };
+    assert!(!printed.contains("Triage"), "{printed}");
     let order = [
-        at("● Triage(crew, as you asked)"),
         at("As you asked: Codex coordinates · Claude Code reviews"),
-        at("● Workflow(add-due-dates)\n  ⎿  Add due dates to tasks"),
+        at(
+            "● Workflow(add-due-dates) · started from orchestrator · ctrl+t to open\n  ⎿  ◐ Build · Review",
+        ),
         at("● Workflow(add-due-dates) · done"),
         at("Merged the run"),
         at("● Fixed parse()"),
@@ -1846,7 +1981,7 @@ fn a_run_as_you_asked_prints_its_triage_then_its_workflow_then_its_closing_answe
 /// A run whose request said how to run it, with a long instruction
 /// and one in Chinese, at 80, 100, and 120 columns.
 #[test]
-fn the_triage_item_says_what_was_followed_and_what_was_not() {
+fn a_run_s_start_says_what_was_followed_and_what_was_not() {
     use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
     use argonauts_core::steps::intake::{ChangeEstimate, InstructionKind};
     use unicode_width::UnicodeWidthStr;
@@ -1880,7 +2015,7 @@ fn the_triage_item_says_what_was_followed_and_what_was_not() {
         refused(
             "use grok to build",
             InstructionKind::Build,
-            "Grok Build isn't installed, so the crew's owners build",
+            "Grok Build isn't installed, so the crew's workers build",
         ),
         refused(
             "and while you are at it please merge the whole thing without asking me first",
@@ -1926,11 +2061,8 @@ fn the_triage_item_says_what_was_followed_and_what_was_not() {
         ))));
         let printed = harness.printed_at(width);
         for shown in [
-            "● Triage(crew, as you asked)",
-            "Starts from main",
-            "Estimate: 5 files · feature · tests exist",
             "As you asked: Codex coordinates · Claude Code reviews with Opus 5.5, high effort",
-            "Grok Build isn't installed, so the crew's owners build",
+            "Grok Build isn't installed, so the crew's workers build",
             "\"and while you are at it please merge th…\"",
             "Codex has no model named opus",
         ] {
@@ -1944,18 +2076,16 @@ fn the_triage_item_says_what_was_followed_and_what_was_not() {
             !printed.contains("README"),
             "a dropped instruction shows only in Ctrl+O"
         );
-        // A wide screen still wraps the item at 100 columns.
+        assert!(!printed.contains("Triage"), "{width}: {printed}");
         for line in printed.lines() {
-            assert!(
-                line.width() <= usize::from(width.min(100)),
-                "{width}: {line:?}"
-            );
+            assert!(line.width() <= usize::from(width), "{width}: {line:?}");
         }
     }
 }
 
-/// A solo that works in your checkout has no run, so the estimate's reply gives it the Triage
-/// item, `(solo, in your checkout)`, and the turn that goes ahead shows your message only once.
+/// A solo that works in your checkout has no run and no Triage row. The reply says what your
+/// words asked when there is something to say, and the turn that goes ahead shows your message
+/// only once.
 #[test]
 fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
     use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
@@ -1990,7 +2120,7 @@ fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
                     says: "just do it yourself".into(),
                     kind: InstructionKind::Mode,
                     outcome: InstructionOutcome::Followed {
-                        said: String::new(),
+                        said: "the main agent does it".into(),
                         note: None,
                     },
                 }],
@@ -2012,12 +2142,10 @@ fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
         harness.send(event);
     }
     let printed = harness.printed_at(100);
+    assert!(!printed.contains("Triage"), "{printed}");
+    assert!(!printed.contains("Estimate:"), "{printed}");
     assert!(
-        printed.contains("● Triage(solo, in your checkout, as you asked)"),
-        "{printed}"
-    );
-    assert!(
-        printed.contains("Estimate: 1 file · bugfix · tests exist"),
+        printed.contains("As you asked: the main agent does it"),
         "{printed}"
     );
     assert_eq!(
@@ -2028,7 +2156,7 @@ fn a_direct_solo_says_so_and_goes_ahead_without_repeating_your_message() {
     assert!(printed.contains("Fixed it. All 6 tests pass."), "{printed}");
 }
 
-/// `Triage(solo, checked, as you asked)`: your words chose a solo run checked in a copy.
+/// Your words chose a solo run checked in a copy, and its start says what was followed.
 #[test]
 fn a_solo_the_words_checked_says_so() {
     use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome, TriageDecision};
@@ -2067,10 +2195,7 @@ fn a_solo_the_words_checked_says_so() {
         }),
     ))));
     let printed = harness.printed_at(100);
-    assert!(
-        printed.contains("● Triage(solo, checked, as you asked)"),
-        "{printed}"
-    );
+    assert!(!printed.contains("Triage"), "{printed}");
     assert!(
         printed.contains("As you asked: checked in a copy · Codex reviews"),
         "{printed}"
@@ -2151,12 +2276,296 @@ fn a_joined_message_a_mods_log_and_a_mirrored_workflow_in_the_chat() {
         printed.contains("⎿  pr-tools: 3 reviewers asked"),
         "{printed}"
     );
-    assert!(printed.contains("Workflow(release-check)"), "{printed}");
-    assert!(printed.contains("ctrl+t to watch"), "{printed}");
+    assert!(
+        printed.contains("Workflow(release-check) · Claude Code's own · ctrl+t to open"),
+        "{printed}"
+    );
     assert!(
         !printed.contains("script"),
         "the raw call stays out:\n{printed}"
     );
     let joined = printed.find("❯ also check the changelog").expect(&printed);
     assert!(printed.find("Workflow(").unwrap() < joined, "{printed}");
+}
+
+/// Esc that stops the main agent's turn alone leaves its line when the turn stops, with the
+/// turn still open. What the main agent says once its subagents are done
+/// prints below, and a turn that ends with nothing more doesn't get the line twice.
+#[test]
+fn a_turn_stopped_alone_leaves_the_interrupted_line_once() {
+    const LINE: &str = "⎿  Interrupted · What should Argonauts do instead?";
+    let turn = TurnId::numbered(1);
+    let chat = |event| AppEvent::Chat { event };
+    let said = |event| {
+        chat(ChatEvent::Agent {
+            turn: TurnId::numbered(1),
+            event,
+        })
+    };
+    let writes = |text: &str| {
+        said(AgentEvent::TextDelta {
+            text: text.into(),
+            parent: None,
+        })
+    };
+    let stopped = || {
+        said(AgentEvent::Error {
+            category: argonauts_core::ErrorCategory::Interrupted,
+            message: "interrupted".into(),
+            retryable: false,
+        })
+    };
+    let started = || {
+        chat(ChatEvent::TurnStarted {
+            turn: TurnId::numbered(1),
+            text: "count in the background".into(),
+            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            read_only: true,
+            commit: "8b41d07".into(),
+            uncommitted: vec![],
+            settings_sha256: None,
+            continues: false,
+        })
+    };
+
+    let mut harness = Harness::new();
+    harness.send(started());
+    harness.send(writes("The count runs on its own while I"));
+    harness.send(stopped());
+    let printed = harness.printed();
+    assert!(
+        printed.ends_with(&format!("● The count runs on its own while I\n  {LINE}")),
+        "{printed}"
+    );
+    harness.send(writes("The count reached four hundred."));
+    harness.send(chat(ChatEvent::TurnFinished {
+        turn: turn.clone(),
+        reply: TurnReply::Answer {
+            markdown: "The count reached four hundred.".into(),
+        },
+        spend: Spend::default(),
+        elapsed_ms: 3_000,
+    }));
+    let printed = harness.printed();
+    assert!(
+        printed.contains("● The count reached four hundred."),
+        "{printed}"
+    );
+    assert!(!printed.contains("Interrupted"), "{printed}");
+
+    let mut harness = Harness::new();
+    harness.send(started());
+    harness.send(writes("The count runs on its own while I"));
+    harness.send(stopped());
+    harness.send(chat(ChatEvent::TurnCancelled { turn }));
+    let printed = harness.printed();
+    assert_eq!(printed.matches("Interrupted").count(), 1, "{printed}");
+}
+
+/// A crew run named `switch-reads` whose one step runs another workflow's steps, and whose own
+/// phases say only that: Work, then Merge. Benchmark is a step you require.
+fn handed_over_harness() -> (Harness, argonauts_core::names::WorkflowId) {
+    use argonauts_core::events::run::RunNamed;
+    use argonauts_core::events::workflow::{DeclaredPhase, WorkflowDeclared, WorkflowEvent};
+    use argonauts_core::names::WorkflowId;
+    use argonauts_core::settings::workflows::RunStyle;
+    use argonauts_core::workflow::StandardPhase;
+
+    let mut harness = Harness::new();
+    let id = WorkflowId::numbered(1);
+    let mut run = crate::state::RunState::new(run_id());
+    run.workflows.push(crate::state::WorkflowState {
+        id: id.clone(),
+        name: "script".into(),
+        from: None,
+        description: String::new(),
+        phases: vec!["Work".into(), "Merge".into()],
+        parent: None,
+        steps: Vec::new(),
+    });
+    run.reported.expect_from(&id);
+    run.named = Some(RunNamed {
+        name: "switch-reads".into(),
+        description: "Move reads to the new table".into(),
+        style: RunStyle::Workflow,
+        based_on: None,
+        done_when: Vec::new(),
+    });
+    harness.state.runs.insert(run_id(), run);
+    if let AppEvent::Run { event } = &mut started()
+        && let RunEventKind::Run(RunLifecycle::Started(started)) = &mut event.kind
+    {
+        let mut crew = (**started).clone();
+        crew.mode = RunMode::Crew;
+        harness.send(run_event(RunEventKind::Run(RunLifecycle::Started(
+            Box::new(crew),
+        ))));
+    }
+    let phase = |index: u32, title: &str| DeclaredPhase {
+        index,
+        title: title.into(),
+        detail: String::new(),
+        standard: StandardPhase::Do,
+    };
+    harness.send(run_event(RunEventKind::Workflow(WorkflowEvent::Declared(
+        Box::new(WorkflowDeclared {
+            id: id.clone(),
+            name: "script".into(),
+            description: "The steps of the workflow in use, then the merge approval".into(),
+            phases: vec![phase(0, "Work"), phase(1, "Merge")],
+            required: vec!["benchmark".into()],
+        }),
+    ))));
+    (harness, id)
+}
+
+/// What the workflow the Work step runs reports: its phases in its order, and an agent at work.
+fn report_of(id: &argonauts_core::names::WorkflowId, phases: &[&str]) -> RunEventKind {
+    use argonauts_core::events::session::{
+        SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+    };
+    use argonauts_core::events::workflow::{WorkflowEvent, WorkflowReport};
+    use argonauts_core::workflow::StepRef;
+
+    let agents = phases
+        .first()
+        .map(|_| VendorAgent {
+            index: 1,
+            label: "plan:orchestrator".into(),
+            phase: Some(1),
+            model: None,
+            state: VendorAgentState::Running,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            started_at_ms: None,
+            attempt: 1,
+            prompt: None,
+            result: None,
+        })
+        .into_iter()
+        .collect();
+    RunEventKind::Workflow(WorkflowEvent::Reported(Box::new(WorkflowReport {
+        step: StepRef {
+            workflow: id.clone(),
+            phase: 0,
+            path: vec![0],
+        },
+        workflow: VendorWorkflow {
+            id: "wf-steps".into(),
+            call: None,
+            name: "orchestrator".into(),
+            description: String::new(),
+            phases: phases
+                .iter()
+                .zip(1..)
+                .map(|(title, index)| VendorPhase {
+                    index,
+                    title: (*title).into(),
+                    detail: String::new(),
+                })
+                .collect(),
+            agents,
+            status: SubagentStatus::Running,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            summary: None,
+            started_at_ms: None,
+        },
+        sessions: Vec::new(),
+        size_asked: None,
+    })))
+}
+
+/// The run's start item waits until the workflow its step runs names its phases, then lists
+/// them in their order in place of Work, however many there are and whatever they repeat, with
+/// the step you require marked. It prints once.
+#[test]
+fn a_workflow_a_step_runs_prints_with_the_phases_it_reports() {
+    let (mut harness, id) = handed_over_harness();
+    assert!(
+        !harness.printed().contains("Workflow("),
+        "{}",
+        harness.printed()
+    );
+
+    // Nothing reported yet: still waiting.
+    harness.send(run_event(report_of(&id, &[])));
+    assert!(
+        !harness.printed().contains("Workflow("),
+        "{}",
+        harness.printed()
+    );
+
+    let mut titles: Vec<String> = (1..=10).map(|n| format!("Shelf {n}")).collect();
+    titles.insert(3, "Benchmark".into());
+    titles.push("Shelf 1".into());
+    let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
+    harness.send(run_event(report_of(&id, &titles)));
+    harness.send(run_event(report_of(&id, &titles)));
+    let printed = harness.printed_at(100);
+    assert_eq!(
+        printed.matches("Workflow(switch-reads)").count(),
+        1,
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "● Workflow(switch-reads) · ctrl+t to open\n  ⎿  ◐ Shelf 1 · Shelf 2 · Shelf 3 · ★ Benchmark · "
+        ),
+        "{printed}"
+    );
+    assert!(printed.contains("Shelf 1 · Merge\n"), "{printed}");
+    assert!(printed.contains("★ a step you require"), "{printed}");
+    assert!(!printed.contains("Work "), "{printed}");
+}
+
+/// The size your request asked for, which the orchestrator keeps to, is the first line under
+/// the workflow's row.
+#[test]
+fn the_size_you_asked_for_is_said_under_the_workflows_row() {
+    use argonauts_core::events::workflow::WorkflowEvent;
+
+    let (mut harness, id) = handed_over_harness();
+    let mut reported = report_of(&id, &["Shelf 1"]);
+    if let RunEventKind::Workflow(WorkflowEvent::Reported(report)) = &mut reported {
+        report.size_asked = Some("a small workflow, 5 agents at most".into());
+    }
+    harness.send(run_event(reported));
+    let printed = harness.printed_at(100);
+    assert!(
+        printed.contains(
+            "● Workflow(switch-reads) · ctrl+t to open\n  ⎿  As you asked: a small workflow, 5 agents at most\n     ◐ Shelf 1 · Merge"
+        ),
+        "{printed}"
+    );
+}
+
+/// A workflow of one phase stands in for Work as well. A run that ends before its workflow
+/// reports anything still prints its start, as declared, ahead of its end.
+#[test]
+fn a_workflow_of_one_phase_or_none_reported_still_prints_its_start() {
+    let (mut harness, id) = handed_over_harness();
+    harness.send(run_event(report_of(&id, &["Sort the boxes"])));
+    let printed = harness.printed_at(100);
+    assert!(
+        printed.contains("  ⎿  ◐ Sort the boxes · Merge"),
+        "{printed}"
+    );
+
+    let (mut harness, _) = handed_over_harness();
+    harness.send(run_event(RunEventKind::Run(RunLifecycle::Finished {
+        outcome: RunOutcome::Failed,
+        detail: None,
+    })));
+    let printed = harness.printed_at(100);
+    let start = printed
+        .find("● Workflow(switch-reads) · ctrl+t to open\n")
+        .expect(&printed);
+    let end = printed
+        .find("Workflow(switch-reads) · failed")
+        .expect(&printed);
+    assert!(start < end, "{printed}");
+    assert!(printed.contains("◐ Work · Merge"), "{printed}");
 }

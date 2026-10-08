@@ -119,14 +119,14 @@ pub fn class_for_key(key: &str) -> ChangeClass {
         "prompts.drafting" => ChangeClass::DraftingPrompt,
         "prompts.build" => ChangeClass::BuildPrompt,
         WORKFLOW_KEY => ChangeClass::StepGraph,
-        _ if key_matches("divide.*", key) => ChangeClass::CardSplit,
+        _ if key_matches("divide.*", key) => ChangeClass::TaskSplit,
         _ if key_matches("crew.*", key) => ChangeClass::CrewComposition,
-        _ if key.starts_with("budget.per_card_")
+        _ if key.starts_with("limits.per_task_")
             || FANOUT_PATTERNS
                 .iter()
                 .any(|pattern| key_matches(pattern, key)) =>
         {
-            ChangeClass::CardBudget
+            ChangeClass::TaskBudget
         }
         _ => ChangeClass::Setting,
     }
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn patterns_match_like_the_resolver() {
         assert!(key_matches("limits.*", "limits"));
-        assert!(key_matches("limits.*", "limits.usd_per_day"));
+        assert!(key_matches("limits.*", "limits.spend_per_day"));
         assert!(key_matches("agents.*.auth", "agents.codex.auth"));
         assert!(!key_matches("agents.*.auth", "agents.codex.binary"));
         assert!(!key_matches("drafting.blind", "drafting.deadline_min"));
@@ -166,17 +166,17 @@ mod tests {
 
     #[test]
     fn classes_by_key() {
-        assert_eq!(class_for_key("divide.max_cards"), ChangeClass::CardSplit);
+        assert_eq!(class_for_key("divide.max_tasks"), ChangeClass::TaskSplit);
         assert_eq!(
-            class_for_key("budget.per_card_usd"),
-            ChangeClass::CardBudget
+            class_for_key("limits.per_task_usd"),
+            ChangeClass::TaskBudget
         );
         assert_eq!(
-            class_for_key("roles.owner.native_fanout.max"),
-            ChangeClass::CardBudget
+            class_for_key("roles.worker.native_fanout.max"),
+            ChangeClass::TaskBudget
         );
         assert_eq!(class_for_key("crew"), ChangeClass::CrewComposition);
-        assert_eq!(class_for_key("spikes.enabled"), ChangeClass::Setting);
+        assert_eq!(class_for_key("experiments.enabled"), ChangeClass::Setting);
         assert_eq!(class_name(ChangeClass::ChecklistItem), "checklist_item");
     }
 }

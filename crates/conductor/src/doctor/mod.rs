@@ -18,6 +18,7 @@ pub mod always_on;
 mod command;
 pub mod details;
 pub mod roles;
+pub mod update;
 pub mod versions;
 
 pub use details::{DoctorDetails, doctor_details};
@@ -41,9 +42,9 @@ pub enum AgentStatus {
 impl AgentStatus {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Tested => "tested",
-            Self::Newer => "newer than tested",
-            Self::Untested => "untested",
+            Self::Tested => "checked",
+            Self::Newer => "newer than checked",
+            Self::Untested => "not checked",
             Self::UnknownVersion => "unknown version",
             Self::NotInstalled => "not installed",
         }
@@ -269,10 +270,10 @@ fn first_line(text: &str) -> &str {
 
 impl fmt::Display for DoctorReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let id_width = self
+        let name_width = self
             .agents
             .iter()
-            .map(|a| a.id.len())
+            .map(|a| a.display_name.chars().count())
             .max()
             .unwrap_or(0)
             .max(3);
@@ -280,8 +281,8 @@ impl fmt::Display for DoctorReport {
             let version = agent.version.as_deref().unwrap_or("-");
             write!(
                 f,
-                "{:id_width$}  {:10}  {:15}",
-                agent.id,
+                "{:name_width$}  {:10}  {:18}",
+                agent.display_name,
                 version,
                 agent.status.label()
             )?;
@@ -295,7 +296,7 @@ impl fmt::Display for DoctorReport {
                 }
             }
             if agent.status == AgentStatus::Untested && !agent.tested_versions.is_empty() {
-                write!(f, "  tested with {}", agent.tested_versions.join(", "))?;
+                write!(f, "  checked with {}", agent.tested_versions.join(", "))?;
             }
             if let Some(problem) = &agent.problem {
                 write!(f, "  {problem}")?;
@@ -303,9 +304,9 @@ impl fmt::Display for DoctorReport {
             writeln!(f)?;
         }
         match (&self.git.version, &self.git.problem) {
-            (Some(version), _) => writeln!(f, "{:id_width$}  {version}", "git"),
-            (None, Some(problem)) => writeln!(f, "{:id_width$}  {problem}", "git"),
-            (None, None) => writeln!(f, "{:id_width$}  missing", "git"),
+            (Some(version), _) => writeln!(f, "{:name_width$}  {version}", "git"),
+            (None, Some(problem)) => writeln!(f, "{:name_width$}  {problem}", "git"),
+            (None, None) => writeln!(f, "{:name_width$}  missing", "git"),
         }
     }
 }
@@ -329,6 +330,7 @@ pub(crate) mod tests {
         compaction: Option<fn(Compaction) -> LaunchTweak>,
         login_check: Option<Vec<String>>,
         transport: Transport,
+        update: Option<&'static [&'static str]>,
     }
 
     impl FakeHarness {
@@ -341,6 +343,7 @@ pub(crate) mod tests {
                 compaction: None,
                 login_check: None,
                 transport: Transport::Lines,
+                update: None,
             }
         }
 
@@ -369,6 +372,11 @@ pub(crate) mod tests {
 
         pub(crate) fn with_login_check(mut self, args: &[&str]) -> Self {
             self.login_check = Some(args.iter().map(|a| (*a).to_owned()).collect());
+            self
+        }
+
+        pub(crate) fn with_update(mut self, args: &'static [&'static str]) -> Self {
+            self.update = Some(args);
             self
         }
 
@@ -420,6 +428,9 @@ pub(crate) mod tests {
                     ..LaunchTweak::default()
                 },
             }
+        }
+        fn update_args(&self) -> Option<&'static [&'static str]> {
+            self.update
         }
         fn setup_hints(&self) -> SetupHints {
             SetupHints {
@@ -607,12 +618,12 @@ pub(crate) mod tests {
         let text = report.to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 3);
-        assert!(lines[0].starts_with("fake  -"), "{text}");
+        assert!(lines[0].starts_with("Fake  -"), "{text}");
         assert!(lines[0].contains("not installed"));
         assert!(!lines[0].contains("cheapest"));
         assert!(lines[1].contains("1.1.0"));
         assert!(lines[1].contains("cheapest: tiny (effort low)"));
-        assert!(lines[1].contains("tested with 1.0.0"));
+        assert!(lines[1].contains("checked with 1.0.0"));
         assert!(lines[2].starts_with("git "));
 
         let json = serde_json::to_value(&report).unwrap();

@@ -54,13 +54,36 @@ pub enum Ask {
         #[serde(default)]
         tool_use_id: Option<String>,
     },
-    /// `argonauts_start_run`: you asked the main session for a run.
-    StartRun {
-        request: String,
-        /// Each instruction as the estimate lists them.
+    /// One of the main session's tools, by the name it's registered under, such as
+    /// `argonauts_start_workflow`. The app's own registry decides what a call does.
+    Tool {
+        name: String,
         #[serde(default)]
-        how_to_run: Vec<Value>,
+        arguments: Value,
     },
+    /// `argonauts_ask_reviewers` or `argonauts_ask_judge`: a role of the crew, on its own
+    /// model, reads the change in the session's folder and answers.
+    Role {
+        role: crate::settings::crew::CrewRole,
+        /// The change's name in the asking workflow, such as `review:store`.
+        #[serde(default)]
+        label: String,
+        /// What the change is meant to do, and what to look at.
+        #[serde(default)]
+        what: String,
+    },
+}
+
+/// What `argonauts_set_goal` does with the goal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalAsk {
+    #[default]
+    Set,
+    Show,
+    Pause,
+    Resume,
+    Clear,
 }
 
 /// What the tool call returns.

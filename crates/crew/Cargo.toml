@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 argonauts-core.workspace = true
 argonauts-learning.workspace = true
+argonauts-runner.workspace = true
 futures.workspace = true
 globset.workspace = true
 rand.workspace = true

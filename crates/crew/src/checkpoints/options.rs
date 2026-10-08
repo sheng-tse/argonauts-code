@@ -60,16 +60,16 @@ pub fn standard(kind: CheckpointKind) -> Vec<AnswerOption> {
         CheckpointKind::Merge => vec![
             option('y', "Merge", A::Merge),
             option('p', "Open a pull request", A::PullRequest),
-            option('b', "Request changes on some cards", A::RequestChanges),
+            option('b', "Request changes on some tasks", A::RequestChanges),
             option('k', "Keep the branch", A::KeepBranch),
             option('x', "Abandon the run", A::Abandon),
             option('d', "Show the diff", A::ShowDiff),
         ],
         CheckpointKind::Handoff => handoff_tail(true),
         CheckpointKind::VendorDown => vec![
-            option('a', "One agent for every paused card", A::OneForAll),
-            option('e', "Choose per card", A::PerCard),
-            option('w', "Wait for the vendor", A::Wait),
+            option('a', "One agent for every paused task", A::OneForAll),
+            option('e', "Choose per task", A::PerTask),
+            option('w', "Wait for the agent", A::Wait),
         ],
         CheckpointKind::Escalation => vec![
             option('r', "Retry with a note", A::Retry),
@@ -77,14 +77,14 @@ pub fn standard(kind: CheckpointKind) -> Vec<AnswerOption> {
             option('s', "Split", A::Split),
             option('t', "Take over myself", A::TakeOver),
             option('f', "Defer it", A::Defer),
-            option('x', "Cancel the card", A::Cancel),
+            option('x', "Cancel the task", A::Cancel),
             option('d', "Show the details", A::ShowDiff),
         ],
         CheckpointKind::Budget => vec![
-            option('m', "More budget", A::MoreBudget),
+            option('m', "More limit", A::MoreBudget),
             option('h', "Hand it off", A::HandOff),
             option('t', "Take over myself", A::TakeOver),
-            option('x', "Stop and escalate", A::Stop),
+            option('x', "Stop and ask me", A::Stop),
             option('d', "Show the details", A::ShowDiff),
         ],
         // Declining sends it back, and a note added with Tab carries your reason.
@@ -98,13 +98,13 @@ pub fn standard(kind: CheckpointKind) -> Vec<AnswerOption> {
             option('n', "Keep the goal", A::SendBack),
             option('d', "Show the details", A::ShowDiff),
         ],
-        CheckpointKind::RecipePromotion => vec![
-            option('y', "Promote the recipe", A::Approve),
+        CheckpointKind::WorkflowPromotion => vec![
+            option('y', "Promote the workflow", A::Approve),
             option('n', "Keep it a candidate", A::SendBack),
             option('d', "Show the details", A::ShowDiff),
         ],
         CheckpointKind::TakeOverReturn => vec![
-            option('c', "Let the owner continue", A::LetContinue),
+            option('c', "Let the worker continue", A::LetContinue),
             option('t', "Keep it mine", A::TakeOver),
             option('d', "Show the diff", A::ShowDiff),
         ],
@@ -312,7 +312,7 @@ fn original_returned_options() -> Vec<AnswerOption> {
         option('r', "Upgrade review", A::UpgradeReview),
         option('o', "Hand back", A::HandBack),
         option('u', "Redo", A::Redo),
-        option('y', "Keep the replacement", A::KeepReplacement),
+        option('y', "Keep the fallback", A::KeepReplacement),
         option('t', "Take over myself", A::TakeOver),
         option('d', "Show the diff", A::ShowDiff),
     ]
@@ -358,7 +358,7 @@ mod tests {
             (CheckpointKind::Budget, "mhtxd"),
             (CheckpointKind::ChangeRequest, "ynd"),
             (CheckpointKind::GoalChange, "ynd"),
-            (CheckpointKind::RecipePromotion, "ynd"),
+            (CheckpointKind::WorkflowPromotion, "ynd"),
             (CheckpointKind::TakeOverReturn, "ctd"),
             (CheckpointKind::Question, "a"),
             (CheckpointKind::OriginalReturned, "rouytd"),
@@ -388,7 +388,7 @@ mod tests {
             [
                 "Merge",
                 "Open a pull request",
-                "Request changes on some cards",
+                "Request changes on some tasks",
                 "Keep the branch",
                 "Abandon the run",
                 "Show the diff"
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn handoff_starts_with_the_retry_after_a_logout() {
         let plan: HandoffPlan = serde_json::from_value(serde_json::json!({
-            "card": "card-001", "title": "t", "stopped": "claude-code/opus",
+            "card": "task-001", "title": "t", "stopped": "claude-code/opus",
             "reason": "logged out", "resets_at": null,
             "work": {"files_changed": 0, "insertions": 0, "deletions": 0}, "gates_ran": false,
             "candidates": [], "mode": "ask"
@@ -472,7 +472,7 @@ mod tests {
     fn a_handoff_waits_for_the_reset_only_when_one_is_known() {
         let plan = |resets_at: serde_json::Value| -> HandoffPlan {
             serde_json::from_value(serde_json::json!({
-                "card": "card-001", "title": "t", "stopped": "claude-code/opus",
+                "card": "task-001", "title": "t", "stopped": "claude-code/opus",
                 "reason": "a sign-in error", "resets_at": resets_at,
                 "work": {"files_changed": 0, "insertions": 0, "deletions": 0},
                 "gates_ran": false, "candidates": [], "mode": "ask"

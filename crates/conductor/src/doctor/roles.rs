@@ -45,16 +45,17 @@ pub fn role_checks_in(
 /// The default role when it's this harness, every configured role it may fill, and `owner`
 /// for a crew member, since owners come from the crew unless a role says otherwise.
 fn roles_filled_by(adapter_id: &str, settings: &Settings) -> Vec<RoleName> {
-    let in_crew = settings.crew.is_empty() || settings.crew.iter().any(|w| w.worker == adapter_id);
+    let members = settings.crew.members();
+    let in_crew = members.is_empty() || members.iter().any(|w| w.worker == adapter_id);
     let fills = |role: RoleName| match settings.roles.get(&role) {
         Some(config) if !config.workers.is_empty() => {
             config.workers.iter().any(|w| w.worker == adapter_id)
         }
-        _ if role == RoleName::Default => settings.default_agent.worker == adapter_id,
+        _ if role == RoleName::Main => settings.main_agent.worker == adapter_id,
         _ => in_crew,
     };
     let mut roles: Vec<RoleName> = settings.roles.keys().copied().collect();
-    for always in [RoleName::Default, RoleName::Owner] {
+    for always in [RoleName::Main, RoleName::Worker] {
         if !roles.contains(&always) {
             roles.push(always);
         }
@@ -84,7 +85,7 @@ fn role_check(
     let (compaction_label, compaction_effect, compaction_off) =
         effective_compaction(adapter, compaction, env);
     let warning = match lifetime {
-        SessionLifetime::Card => None,
+        SessionLifetime::Task => None,
         SessionLifetime::Run | SessionLifetime::Project if !compaction_off => None,
         SessionLifetime::Run => Some(format!(
             "{} keeps one session per run (lifetime run), but its compaction is off on {}.",
@@ -162,7 +163,7 @@ fn inherited(adapter_id: &str, env: &dyn Fn(&str) -> Option<String>) -> (String,
             "inherit → auto, agy has no setting for it".to_owned(),
             false,
         ),
-        _ => ("inherit, the harness's own setting".to_owned(), false),
+        _ => ("inherit, the CLI's own setting".to_owned(), false),
     }
 }
 
@@ -234,7 +235,7 @@ mod tests {
         );
         settings.roles.insert(
             RoleName::Reviewer,
-            role(&["claude-code"], SessionLifetime::Card, Compaction::Off),
+            role(&["claude-code"], SessionLifetime::Task, Compaction::Off),
         );
         settings.roles.insert(
             RoleName::Narrator,
@@ -266,8 +267,8 @@ mod tests {
         );
         assert_eq!(narrator.warning, None);
         // claude-code is the default agent and in the default crew.
-        assert!(claude_checks.iter().any(|c| c.role == RoleName::Default));
-        assert!(claude_checks.iter().any(|c| c.role == RoleName::Owner));
+        assert!(claude_checks.iter().any(|c| c.role == RoleName::Main));
+        assert!(claude_checks.iter().any(|c| c.role == RoleName::Worker));
 
         // Your own environment can turn compaction off for a role that inherits.
         let disabled = |name: &str| (name == "DISABLE_AUTO_COMPACT").then(|| "1".to_owned());
@@ -294,14 +295,14 @@ mod tests {
         assert!(!consultant.compaction_off);
         assert_eq!(consultant.warning, None);
         assert!(!codex_checks.iter().any(|c| c.role == RoleName::Reviewer));
-        assert!(!codex_checks.iter().any(|c| c.role == RoleName::Default));
+        assert!(!codex_checks.iter().any(|c| c.role == RoleName::Main));
     }
 
     #[test]
     fn roles_follow_workers_and_the_crew() {
         let agy = FakeHarness::named("antigravity-cli");
         let mut settings = Settings {
-            crew: vec![WorkerRef::new("claude-code", None)],
+            crew: vec![WorkerRef::new("claude-code", None)].into(),
             ..Settings::default()
         };
         assert!(role_checks_in(&agy, &settings, &|_| None).is_empty());
@@ -310,7 +311,7 @@ mod tests {
             RoleName::Drafter,
             role(
                 &["antigravity-cli"],
-                SessionLifetime::Card,
+                SessionLifetime::Task,
                 Compaction::Inherit,
             ),
         );

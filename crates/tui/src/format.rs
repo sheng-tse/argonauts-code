@@ -7,21 +7,14 @@ use argonauts_core::app::ModelChoice;
 use argonauts_core::display_names::DisplayNames;
 use time::{OffsetDateTime, UtcOffset};
 
-/// Token counts: `999`, `3.6k`, `248.2k`, `2.2m`.
-pub fn tokens(count: u64) -> String {
-    if count < 1_000 {
-        return count.to_string();
-    }
-    // 999_950 would round up to "1000k", so it is already a million.
-    let (value, unit) = if count < 999_950 {
-        (count as f64 / 1_000.0, "k")
-    } else {
-        (count as f64 / 1_000_000.0, "m")
-    };
-    let rounded = format!("{value:.1}");
-    let trimmed = rounded.strip_suffix(".0").unwrap_or(&rounded);
-    format!("{trimmed}{unit}")
-}
+mod numbers;
+mod resets;
+
+pub use numbers::{
+    Formats, QuotaWords, TokenUnit, UNKNOWN, duration_slot, multiplier, percent, quota, stale,
+    tokens, tokens_as,
+};
+pub use resets::{ClockStyle, ResetStyle, countdown, reset_time, resets};
 
 /// Elapsed time with spaces: `3s`, `9m 50s`, `2h 53m 6s`.
 pub fn duration(elapsed: Duration) -> String {
@@ -284,19 +277,6 @@ mod tests {
             ..Spend::default()
         };
         assert_eq!(spend(&free), "$0.00");
-    }
-
-    #[test]
-    fn token_counts_read_like_the_reference() {
-        assert_eq!(tokens(0), "0");
-        assert_eq!(tokens(999), "999");
-        assert_eq!(tokens(1_000), "1k");
-        assert_eq!(tokens(3_600), "3.6k");
-        assert_eq!(tokens(12_000), "12k");
-        assert_eq!(tokens(248_200), "248.2k");
-        assert_eq!(tokens(999_949), "999.9k");
-        assert_eq!(tokens(999_950), "1m");
-        assert_eq!(tokens(2_200_000), "2.2m");
     }
 
     #[test]

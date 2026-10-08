@@ -21,6 +21,7 @@ use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::HealthState;
 use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::settings::handoff::{CrewRole, FallbackEntry};
 use argonauts_core::settings::protocol::GateCommand;
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{SessionSpec, WorkerEvent};
@@ -97,7 +98,7 @@ impl Default for Assignment {
     }
 }
 
-/// A crew of three, Codex leading the coordinated-crew workflow with lead designs on and a
+/// A crew of three, Codex leading the orchestrator workflow with lead designs on and a
 /// design at each phase end. Each agent builds its card's file and answers every other step
 /// with the smallest valid answer.
 fn crew(designs: &[(&str, Vec<Design>)]) -> anyhow::Result<Crew> {
@@ -124,7 +125,7 @@ fn crew_logged_out(designs: &[(&str, Vec<Design>)], logged_out: &[&str]) -> anyh
     crew_of(&agents, &Assignment::default())
 }
 
-/// A crew of these agents in this order, the first leading the coordinated-crew workflow, and
+/// A crew of these agents in this order, the first leading the orchestrator workflow, and
 /// the card assigned as `assignment` says.
 fn crew_of(agents: &[(&str, Agent)], assignment: &Assignment) -> anyhow::Result<Crew> {
     let mut crew = Crew::new()?;
@@ -134,14 +135,14 @@ fn crew_of(agents: &[(&str, Agent)], assignment: &Assignment) -> anyhow::Result<
             .with_login(plan.logged_out.then_some(false))
             .respond_with(agent(plan.clone(), assignment.clone()));
         crew.services.workers.add(fake);
-        crew.settings.crew.push(worker.parse()?);
+        crew.settings.crew.add(worker.parse()?);
     }
-    crew.settings.default_agent = crew.settings.crew[0].clone();
-    crew.settings.workflow = WorkflowRef::new("coordinated-crew");
+    crew.settings.main_agent = crew.settings.crew.members()[0].clone();
+    crew.settings.phases = WorkflowRef::new("orchestrator");
     crew.settings.workflows.lead_designs = true.into();
     crew.settings.workflows.adapt_at_phase_ends = true;
     crew.settings.divide.contracts_first = false;
-    crew.settings.gates.run = vec![GateCommand {
+    crew.settings.checks.run = vec![GateCommand {
         name: "check".to_owned(),
         command: vec!["true".to_owned()],
     }];
@@ -200,7 +201,7 @@ fn agent(
                 }
             }
             return FakeSession::structured(support::brief(
-                Some("coordinated-crew"),
+                Some("orchestrator"),
                 json!([]),
                 None,
                 "it fits",
@@ -383,12 +384,20 @@ async fn a_401_on_the_leads_design_is_retried_and_the_run_goes_on() -> anyhow::R
     assert_eq!(again[0].1, 2);
     assert_eq!(designs_after_understand(&crew, CODEX), sessions.len() + 1);
     assert_eq!(designs_after_understand(&crew, CLAUDE), 0);
+    // One line says it goes again, and nothing says anybody took over.
+    let said = notes(&outcome.events);
+    let retries: Vec<_> = said
+        .iter()
+        .filter(|note| note.contains("· trying again"))
+        .collect();
+    assert_eq!(
+        retries,
+        [&"GPT 5.6 Luna on Codex got a sign-in error · trying again"],
+        "{said:?}"
+    );
     assert!(
-        !notes(&outcome.events)
-            .iter()
-            .any(|note| note.contains("takes it over")),
-        "{:?}",
-        notes(&outcome.events)
+        !said.iter().any(|note| note.contains("takes over")),
+        "{said:?}"
     );
     Ok(())
 }
@@ -414,18 +423,20 @@ async fn a_401_twice_hands_the_leads_role_to_another_agent() -> anyhow::Result<(
         1,
         "the next on the crew"
     );
+    // The retry is said, and then who took over, in names and not ids.
     let said = notes(&outcome.events);
+    let retry = said
+        .iter()
+        .position(|note| note.contains("got a sign-in error · trying again"))
+        .context("one line says Codex goes again")?;
     let handed = said
         .iter()
-        .find(|note| note.contains("takes it over"))
-        .context("one line says who took the lead's role")?;
-    assert!(
-        handed.contains("as the lead ended early (a sign-in error)"),
-        "{handed}"
-    );
-    assert!(
-        !handed.contains(CODEX) && !handed.contains(CLAUDE),
-        "names, not ids: {handed}"
+        .position(|note| note.contains("takes over"))
+        .context("one line says who took the main agent's role")?;
+    assert!(retry < handed, "{said:?}");
+    assert_eq!(
+        said[handed],
+        "Still a sign-in error · Haiku on Claude Code takes over as the main agent"
     );
     Ok(())
 }
@@ -441,7 +452,7 @@ async fn when_every_agent_fails_the_run_parks_and_says_why() -> anyhow::Result<(
     // Parked with its own reason, and a time it tries again by itself.
     match &outcome.exit {
         EngineExit::Parked(ParkReason::NoStandIn { detail, until }) => {
-            assert_eq!(detail, "nobody could take over as the lead");
+            assert_eq!(detail, "nobody could take over as the main agent");
             assert!(until.is_some(), "a wake is set");
         }
         other => panic!("{other:?}: {:?}", notes(&outcome.events)),
@@ -449,14 +460,14 @@ async fn when_every_agent_fails_the_run_parks_and_says_why() -> anyhow::Result<(
     assert_eq!(
         finished(&outcome.events),
         None,
-        "a vendor error never ends the run"
+        "an agent error never ends the run"
     );
     // Antigravity's CLI says it's logged out, so it isn't asked again and gets the login line.
     assert_eq!(designs_after_understand(&crew, GEMINI), 1);
     let said = notes(&outcome.events);
     let parked = said
         .iter()
-        .find(|note| note.starts_with("Nobody could take over as the lead"))
+        .find(|note| note.starts_with("Nobody could take over as the main agent"))
         .with_context(|| format!("the park says why: {said:?}"))?;
     assert!(
         parked.contains("says it's logged out: log in again"),
@@ -525,7 +536,7 @@ async fn the_coordinated_runs_passing_401_no_longer_fails_it() -> anyhow::Result
 /// Full auto with the real policy: every approver session fails, so after asking each again
 /// and finding no one else, your rules decide alone and nothing waits for you.
 #[tokio::test]
-async fn in_full_auto_a_failing_approver_never_leaves_a_card_to_you() -> anyhow::Result<()> {
+async fn in_autopilot_a_failing_approver_never_leaves_a_card_to_you() -> anyhow::Result<()> {
     let crew = crew(&[])?;
     for worker in [CLAUDE, GEMINI, CODEX] {
         let fake = crew.services.workers.fake(worker).context("enlisted")?;
@@ -537,7 +548,7 @@ async fn in_full_auto_a_failing_approver_never_leaves_a_card_to_you() -> anyhow:
             answers(spec)
         });
     }
-    let outcome = full_auto(&crew, RunMode::Crew).await?;
+    let outcome = autopilot(&crew, RunMode::Crew).await?;
     let events = outcome.events;
     let said = notes(&events);
     assert_eq!(
@@ -572,21 +583,21 @@ async fn in_full_auto_a_failing_approver_never_leaves_a_card_to_you() -> anyhow:
 
 /// Starts the run in full auto with the real policy, and the conductor's own recovery when
 /// `conductor_recovery`, and drives it until it finishes or parks.
-async fn full_auto_with(
+async fn autopilot_with(
     crew: &Crew,
     mode: RunMode,
     conductor_recovery: bool,
 ) -> anyhow::Result<Outcome> {
     let started = crew.run_started(mode, "Add due dates")?;
-    let full_auto = RunEvent {
+    let autopilot = RunEvent {
         seq: 1,
         kind: RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
-            mode: ApprovalMode::FullAuto,
+            mode: ApprovalMode::Autopilot,
             by: Party::User,
         }),
         ..started.clone()
     };
-    let (mut context, sink, _commands) = crew.context(vec![started, full_auto])?;
+    let (mut context, sink, _commands) = crew.context(vec![started, autopilot])?;
     context.services.policy = real_policy(crew, &context.settings)?;
     if conductor_recovery {
         context.services.limits = conductor_limits(crew, &context.settings);
@@ -599,8 +610,8 @@ async fn full_auto_with(
     })
 }
 
-async fn full_auto(crew: &Crew, mode: RunMode) -> anyhow::Result<Outcome> {
-    full_auto_with(crew, mode, false).await
+async fn autopilot(crew: &Crew, mode: RunMode) -> anyhow::Result<Outcome> {
+    autopilot_with(crew, mode, false).await
 }
 
 /// Whether any checkpoint waited for your answer.
@@ -710,7 +721,7 @@ fn ran(crew: &Crew, worker: &str, step: StepName) -> usize {
 /// full auto, so the reviewer you asked for reviews and the card merges.
 #[tokio::test]
 async fn a_first_round_review_401_is_asked_again() -> anyhow::Result<()> {
-    for in_full_auto in [false, true] {
+    for in_autopilot in [false, true] {
         let gemini = Agent::unauthorized(StepName::Review, 1);
         let agents = [
             (CODEX, Agent::default()),
@@ -718,8 +729,8 @@ async fn a_first_round_review_401_is_asked_again() -> anyhow::Result<()> {
             (GEMINI, gemini),
         ];
         let crew = crew_of(&agents, &Assignment::default())?;
-        let outcome = if in_full_auto {
-            full_auto(&crew, RunMode::Crew).await?
+        let outcome = if in_autopilot {
+            autopilot(&crew, RunMode::Crew).await?
         } else {
             drive(&crew).await?
         };
@@ -727,7 +738,7 @@ async fn a_first_round_review_401_is_asked_again() -> anyhow::Result<()> {
         assert_eq!(
             outcome.exit,
             EngineExit::Finished(RunOutcome::Merged),
-            "full auto {in_full_auto}: {said:?}"
+            "autopilot {in_autopilot}: {said:?}"
         );
         let reviews = sessions_of(&outcome.events, GEMINI, StepName::Review);
         assert_eq!(reviews.len(), 1, "{reviews:?}");
@@ -745,7 +756,7 @@ async fn a_first_round_review_401_is_asked_again() -> anyhow::Result<()> {
 /// ruling goes under the adjudicator that gave it.
 #[tokio::test]
 async fn a_first_adjudication_401_is_asked_again() -> anyhow::Result<()> {
-    for in_full_auto in [false, true] {
+    for in_autopilot in [false, true] {
         let agents = [
             (CODEX, Agent::default()),
             (CLAUDE, Agent::default()),
@@ -763,8 +774,8 @@ async fn a_first_adjudication_401_is_asked_again() -> anyhow::Result<()> {
             reviewers: vec![CLAUDE, GEMINI],
         };
         let crew = crew_of(&agents, &assignment)?;
-        let outcome = if in_full_auto {
-            full_auto(&crew, RunMode::Crew).await?
+        let outcome = if in_autopilot {
+            autopilot(&crew, RunMode::Crew).await?
         } else {
             drive(&crew).await?
         };
@@ -772,7 +783,7 @@ async fn a_first_adjudication_401_is_asked_again() -> anyhow::Result<()> {
         assert_eq!(
             outcome.exit,
             EngineExit::Finished(RunOutcome::Merged),
-            "full auto {in_full_auto}: {said:?}"
+            "autopilot {in_autopilot}: {said:?}"
         );
         let rulings = sessions_of(&outcome.events, QWEN, StepName::Adjudicate);
         assert_eq!(rulings.len(), 1, "{rulings:?}");
@@ -797,7 +808,7 @@ async fn a_first_adjudication_401_is_asked_again() -> anyhow::Result<()> {
 }
 
 /// A reviewer's seat goes only to an agent from another company than the owner that isn't
-/// already reviewing; with none, the review goes on without that seat, and every review is
+/// already reviewing; with none, the review goes on without that reviewer, and every review is
 /// recorded under whoever wrote it.
 #[tokio::test]
 async fn a_reviewers_stand_in_never_doubles_up_or_comes_from_the_owners_company()
@@ -825,7 +836,7 @@ async fn a_reviewers_stand_in_never_doubles_up_or_comes_from_the_owners_company(
     assert_eq!(ran(&crew, CODEX, StepName::Review), 0);
     let dropped: Vec<_> = said
         .iter()
-        .filter(|note| note.contains("The review goes on without that seat"))
+        .filter(|note| note.contains("The review goes on without that reviewer"))
         .collect();
     assert_eq!(dropped.len(), 1, "{said:?}");
     assert!(
@@ -864,14 +875,147 @@ async fn two_failing_reviewers_never_share_a_stand_in() -> anyhow::Result<()> {
     assert_eq!(reviewers(&outcome.events), [QWEN]);
     let dropped = said
         .iter()
-        .filter(|note| note.contains("The review goes on without that seat"))
+        .filter(|note| note.contains("The review goes on without that reviewer"))
         .count();
     assert_eq!(dropped, 1, "{said:?}");
     Ok(())
 }
 
+/// `[fallback.reviewers] together = 2`: a reviewer that's out as its review starts has two
+/// fallbacks review at once in its place, and the transcript says how their reviews count.
+#[tokio::test]
+async fn two_fallbacks_review_at_once_in_the_seat_of_a_reviewer_thats_out() -> anyhow::Result<()> {
+    let agents = [
+        (CODEX, Agent::default()),
+        (CLAUDE, Agent::default()),
+        (GEMINI, Agent::default()),
+        (QWEN, Agent::default()),
+    ];
+    let mut crew = crew_of(&agents, &Assignment::default())?;
+    let reviewers_table = crew
+        .settings
+        .fallback
+        .roles
+        .entry(CrewRole::Reviewers)
+        .or_default();
+    reviewers_table.together = Some(2);
+    let antigravity = argonauts_core::names::VendorId("antigravity-cli".to_owned());
+    crew.services
+        .health
+        .set(&antigravity, HealthState::Down, Some("server errors"));
+    let outcome = drive(&crew).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{said:?}"
+    );
+    assert_eq!(ran(&crew, GEMINI, StepName::Review), 0, "{said:?}");
+    assert_eq!(reviewers(&outcome.events), [CLAUDE, QWEN], "{said:?}");
+    let shared: Vec<_> = said
+        .iter()
+        .filter(|note| note.contains("both review"))
+        .collect();
+    assert_eq!(shared.len(), 1, "{said:?}");
+    assert!(
+        shared[0].starts_with("Haiku on Claude Code and Qwen3 Coder on OpenCode both review")
+            && shared[0].ends_with(
+                "in place of Gemini 3.6 Flash Low on Antigravity CLI · every finding from each \
+                 is kept · /fallback changes this"
+            ),
+        "{said:?}"
+    );
+    Ok(())
+}
+
+/// A reviewer that is also a fallback for the reviewers, as a settings file may well name it,
+/// never takes the seat of one that's out beside its own: it reviews once, and the fallback
+/// that's left takes the seat alone.
+#[tokio::test]
+async fn a_reviewer_listed_as_a_fallback_never_reviews_twice() -> anyhow::Result<()> {
+    let agents = [
+        (CODEX, Agent::default()),
+        (CLAUDE, Agent::default()),
+        (GEMINI, Agent::default()),
+        (QWEN, Agent::default()),
+    ];
+    let assignment = Assignment {
+        owner: CODEX,
+        reviewers: vec![GEMINI, CLAUDE],
+    };
+    let mut crew = crew_of(&agents, &assignment)?;
+    let reviewers_table = crew
+        .settings
+        .fallback
+        .roles
+        .entry(CrewRole::Reviewers)
+        .or_default();
+    reviewers_table.together = Some(2);
+    reviewers_table.order = [CLAUDE, QWEN]
+        .into_iter()
+        .map(|worker| Ok(FallbackEntry::Worker(worker.parse()?)))
+        .collect::<anyhow::Result<_>>()?;
+    // Two reviewers review blind, so whoever takes a seat must keep your plugins out.
+    crew.services.workers.isolating("claude-code");
+    crew.services.workers.isolating("opencode");
+    let antigravity = argonauts_core::names::VendorId("antigravity-cli".to_owned());
+    crew.services
+        .health
+        .set(&antigravity, HealthState::Down, Some("server errors"));
+    let outcome = drive(&crew).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{said:?}"
+    );
+    assert_eq!(ran(&crew, GEMINI, StepName::Review), 0, "{said:?}");
+    assert_eq!(ran(&crew, CLAUDE, StepName::Review), 1, "{said:?}");
+    assert_eq!(ran(&crew, QWEN, StepName::Review), 1, "{said:?}");
+    let mut reviewed = reviewers(&outcome.events);
+    reviewed.sort();
+    assert_eq!(reviewed, [CLAUDE, QWEN], "{said:?}");
+    Ok(())
+}
+
+/// A reviewer that stops midway hands its seat to one fallback as ever, and with `together = 2`
+/// a second joins it, so two reviews stand for the seat.
+#[tokio::test]
+async fn a_second_fallback_joins_the_one_that_took_a_reviewers_seat_midway() -> anyhow::Result<()> {
+    let agents = [
+        (CODEX, Agent::default()),
+        (CLAUDE, Agent::default()),
+        (GEMINI, Agent::unauthorized(StepName::Review, 2)),
+        (QWEN, Agent::default()),
+    ];
+    let mut crew = crew_of(&agents, &Assignment::default())?;
+    let reviewers_table = crew
+        .settings
+        .fallback
+        .roles
+        .entry(CrewRole::Reviewers)
+        .or_default();
+    reviewers_table.together = Some(2);
+    let outcome = drive(&crew).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{said:?}"
+    );
+    assert_eq!(reviewers(&outcome.events), [CLAUDE, QWEN], "{said:?}");
+    assert_eq!(
+        said.iter()
+            .filter(|note| note.contains("both review"))
+            .count(),
+        1,
+        "{said:?}"
+    );
+    Ok(())
+}
+
 /// A blind reviewer's seat never goes to an agent whose CLI can't keep your plugins out, so with
-/// none that can, the review goes on without that seat and says why.
+/// none that can, the review goes on without that reviewer and says why.
 #[tokio::test]
 async fn a_blind_reviewers_stand_in_must_keep_your_plugins_out() -> anyhow::Result<()> {
     let agents = [
@@ -897,7 +1041,7 @@ async fn a_blind_reviewers_stand_in_must_keep_your_plugins_out() -> anyhow::Resu
     assert!(
         said.iter().any(|note| note.contains(
             "no other agent that keeps your plugins out can take the role. The review goes on \
-             without that seat."
+             without that reviewer."
         )),
         "{said:?}"
     );
@@ -966,7 +1110,7 @@ async fn a_401_on_build_goes_again_on_its_own_session() -> anyhow::Result<()> {
         (GEMINI, Agent::default()),
     ];
     let crew = crew_of(&agents, &Assignment::default())?;
-    let outcome = full_auto(&crew, RunMode::Crew).await?;
+    let outcome = autopilot(&crew, RunMode::Crew).await?;
     let said = notes(&outcome.events);
     assert_eq!(
         outcome.exit,
@@ -985,14 +1129,14 @@ async fn a_401_on_build_goes_again_on_its_own_session() -> anyhow::Result<()> {
 /// A 401 on the owner's build twice, with its CLI saying it's logged in: in full auto the card
 /// goes on to the next agent, nothing says to log in, and nothing waits.
 #[tokio::test]
-async fn a_401_on_build_twice_hands_the_card_on_in_full_auto() -> anyhow::Result<()> {
+async fn a_401_on_build_twice_hands_the_card_on_in_autopilot() -> anyhow::Result<()> {
     let agents = [
         (CODEX, Agent::unauthorized(StepName::Build, 2)),
         (CLAUDE, Agent::default()),
         (GEMINI, Agent::default()),
     ];
     let crew = crew_of(&agents, &Assignment::default())?;
-    let outcome = full_auto_with(&crew, RunMode::Crew, true).await?;
+    let outcome = autopilot_with(&crew, RunMode::Crew, true).await?;
     let said = notes(&outcome.events);
     assert_eq!(
         outcome.exit,
@@ -1016,14 +1160,60 @@ async fn a_401_on_build_twice_hands_the_card_on_in_full_auto() -> anyhow::Result
     Ok(())
 }
 
+/// With `[fallback.workers] together = 2`, the worker's failure is said with its retry, and when
+/// it stops again two fallbacks take the task together: the line that says so opens with
+/// what stopped it still, and the one after says who passed first.
+#[tokio::test]
+async fn two_fallbacks_take_a_task_together_after_the_retry_thats_said() -> anyhow::Result<()> {
+    let agents = [
+        (CODEX, Agent::unauthorized(StepName::Build, 2)),
+        (CLAUDE, Agent::default()),
+        (GEMINI, Agent::default()),
+        (QWEN, Agent::default()),
+    ];
+    let mut crew = crew_of(&agents, &Assignment::default())?;
+    let workers_table = crew
+        .settings
+        .fallback
+        .roles
+        .entry(CrewRole::Workers)
+        .or_default();
+    workers_table.together = Some(2);
+    let outcome = autopilot_with(&crew, RunMode::Crew, true).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        outcome.exit,
+        EngineExit::Finished(RunOutcome::Merged),
+        "{said:?}"
+    );
+    let at = |words: &str| said.iter().position(|note| note.contains(words));
+    let retry = at("got a sign-in error · trying again")
+        .with_context(|| format!("no line on the retry: {said:?}"))?;
+    let both = at("both take").with_context(|| format!("no line on who takes it: {said:?}"))?;
+    let passed = at("passed first").with_context(|| format!("no line on who passed: {said:?}"))?;
+    assert!(retry < both && both < passed, "{said:?}");
+    assert!(
+        said[both].starts_with("Still a sign-in error · ")
+            && said[both].ends_with("· the first to pass the checks wins · /fallback changes this"),
+        "{}",
+        said[both]
+    );
+    assert!(
+        said[passed].ends_with("'s attempt stopped"),
+        "{}",
+        said[passed]
+    );
+    Ok(())
+}
+
 /// With nobody to take the card, full auto never asks or parks for good: the card waits for its
 /// agent with a time it tries again, and one line says why, with no login asked of you while
 /// the CLI says it's logged in.
 #[tokio::test]
-async fn nobody_to_take_the_card_waits_and_tries_again_in_full_auto() -> anyhow::Result<()> {
+async fn nobody_to_take_the_card_waits_and_tries_again_in_autopilot() -> anyhow::Result<()> {
     let agents = [(CODEX, Agent::unauthorized(StepName::Build, 2))];
     let crew = crew_of(&agents, &Assignment::default())?;
-    let outcome = full_auto_with(&crew, RunMode::Solo, true).await?;
+    let outcome = autopilot_with(&crew, RunMode::Solo, true).await?;
     let said = notes(&outcome.events);
     match &outcome.exit {
         EngineExit::Parked(ParkReason::WaitingForVendor { vendor, until }) => {
@@ -1145,7 +1335,7 @@ async fn an_agent_whose_vendor_is_down_is_never_started() -> anyhow::Result<()> 
     assert_eq!(
         handovers,
         [
-            &"GPT 5.6 Luna on Codex is out (its vendor is down), so Haiku on Claude Code takes its \
+            &"GPT 5.6 Luna on Codex is out (its agent is down), so Haiku on Claude Code takes its \
            roles meanwhile."
         ],
         "{said:?}"

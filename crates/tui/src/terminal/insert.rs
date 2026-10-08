@@ -144,7 +144,7 @@ pub fn write_line<W: Write>(writer: &mut W, line: &Line<'_>, width: u16) -> io::
             style.bg.unwrap_or(Color::Reset),
             modifier,
         )?;
-        queue!(writer, Print(&text))?;
+        print_with_link(writer, &text)?;
         used += text.width();
     }
 
@@ -155,6 +155,25 @@ pub fn write_line<W: Write>(writer: &mut W, line: &Line<'_>, width: u16) -> io::
         queue!(writer, Clear(ClearType::UntilNewLine))?;
     }
     pen.finish(writer)
+}
+
+/// Prints `text`, with an artifact's whole address in it marked as a link (OSC 8), so a
+/// terminal that knows links opens it on a click. The address is the text itself, so one
+/// that doesn't know them shows the same row.
+fn print_with_link<W: Write>(writer: &mut W, text: &str) -> io::Result<()> {
+    let Some(link) = argonauts_core::artifacts::whole_link_in(text) else {
+        return queue!(writer, Print(text));
+    };
+    let start = text.find(link).unwrap_or(0);
+    let (before, after) = (&text[..start], &text[start + link.len()..]);
+    queue!(
+        writer,
+        Print(before),
+        Print(format!("\x1b]8;;{link}\x1b\\")),
+        Print(link),
+        Print("\x1b]8;;\x1b\\"),
+        Print(after)
+    )
 }
 
 /// Counts only what [`write_line`] prints.

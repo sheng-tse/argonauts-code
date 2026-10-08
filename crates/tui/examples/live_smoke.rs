@@ -116,7 +116,7 @@ impl Host<StdoutWriter> for Smoke {
         match self.played {
             0 => {
                 let mut rows = Vec::new();
-                for (name, task, done) in [("claude-code", "card-002", 2), ("codex", "card-003", 1)]
+                for (name, task, done) in [("claude-code", "task-002", 2), ("codex", "task-003", 1)]
                 {
                     let mut row = AgentRow::new(name, task, AgentState::Working);
                     row.steps = Some((done, 5));
@@ -136,8 +136,8 @@ impl Host<StdoutWriter> for Smoke {
             1 => {
                 let mut card = CardPrompt::new(
                     1,
-                    "Merge card-002 into main?",
-                    "Merge card-002?",
+                    "Merge task-002 into main?",
+                    "Merge task-002?",
                     vec![
                         CardOption::irreversible("Merge"),
                         CardOption::new("Open a pull request"),
@@ -186,13 +186,13 @@ impl Host<StdoutWriter> for Smoke {
                     std::process::Command::new("sh")
                         .args([
                             "-c",
-                            "printf 'editor stand-in has the terminal\\n'; sleep 1",
+                            "printf 'editor fallback has the terminal\\n'; sleep 1",
                         ])
                         .status()
                 });
                 let note = match child {
-                    Ok(Ok(status)) if status.success() => "  ⎿  The editor stand-in finished",
-                    _ => "  ⎿  The editor stand-in didn't run",
+                    Ok(Ok(status)) if status.success() => "  ⎿  The editor fallback finished",
+                    _ => "  ⎿  The editor fallback didn't run",
                 };
                 ui.model_mut().history.push(Said::cell(Look::Dim, note));
             }

@@ -25,7 +25,7 @@ pub const FIXED_CORE_KEYS: &[&str] = &[
 #[serde(default)]
 pub struct EvolutionSettings {
     /// What the loop does on its own: record what worked, also suggest changes, or also test
-    /// them by replay. Evolve with auto recipe promotion is stage 4.
+    /// them by replay. Evolve with auto promotion of learned workflows is stage 4.
     pub stage: EvolutionStage,
     /// Settings that may evolve. Fixed-core and safety keys can't be listed.
     pub evolvable: Vec<String>,
@@ -57,8 +57,8 @@ impl Default for EvolutionSettings {
                 "critique.rounds",
                 "critique.checklist",
                 "prompts.drafting",
-                "divide.max_cards",
-                "budget.per_card_usd",
+                "divide.max_tasks",
+                "limits.per_task_usd",
             ]
             .map(str::to_owned)
             .to_vec(),
@@ -79,12 +79,12 @@ impl Default for EvolutionSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvolutionStage {
-    /// Saves a workflow that worked as a recipe for its task type.
+    /// Saves a workflow that worked as a learned workflow for its task type.
     Record,
     /// Also proposes one change every `propose_every` runs, for you to apply.
     Suggest,
     /// Also tests each proposal by replay within the evolution budget. Promotion then follows
-    /// `approvals.recipe_promotion`.
+    /// `approvals.workflow_promotion`.
     #[default]
     Evolve,
 }
@@ -106,8 +106,8 @@ pub struct ReplaySettings {
     pub holdout_tasks: u32,
     /// Candidates the holdout checks before fresh tasks replace it.
     pub holdout_retire_after: u32,
-    /// Whether replays may spend subscription quota. Off, they run only on API keys and
-    /// endpoints you allowed, so evolution never eats the quota your own work needs.
+    /// Whether replays may spend subscription plan usage. Off, they run only on API keys and
+    /// endpoints you allowed, so evolution never eats the plan usage your own work needs.
     pub use_subscriptions: bool,
 }
 

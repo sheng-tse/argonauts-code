@@ -6,9 +6,10 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
 
+use crate::app::SettingRow;
 use crate::events::RunEvent;
 use crate::events::card::CardState;
 use crate::events::checkpoint::AnswerAction;
@@ -19,7 +20,9 @@ use crate::future::BoxFuture;
 use crate::input::MentionTarget;
 use crate::limits::QuotaReading;
 use crate::names::{CheckpointId, DecisionId, MessageId, SessionKey, TurnId, WorkerRef};
+use crate::required::RequiredStep;
 use crate::settings::approvals::ApprovalMode;
+use crate::settings::budget::BudgetAmount;
 use crate::steps::intake::ChangeEstimate;
 use crate::worker::SteerSupport;
 use crate::{CardId, CommandSpec, DiffStat, RunId, Spend};
@@ -39,12 +42,12 @@ pub struct StartRun {
     pub overrides: Vec<String>,
     /// Include uncommitted changes in the base.
     pub include_uncommitted: bool,
-    pub default_agent: Option<WorkerRef>,
+    pub main_agent: Option<WorkerRef>,
     /// `None` or `Supervised` only; `start` refuses anything more autonomous. Raising it goes
     /// through [`Approvals::set_approval_mode`], which needs the token.
     pub approval_mode: Option<ApprovalMode>,
     /// Set by the MCP server to the client's self-reported name. Such a run gets
-    /// `mcp.run_budget` and counts against `mcp.runs_per_day`.
+    /// `mcp.run_limit` and counts against `mcp.runs_per_day`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub front_end: Option<String>,
     /// What the request said about how to run it: the ones followed and the ones not, each
@@ -55,6 +58,10 @@ pub struct StartRun {
     /// applies only when it tightens what the other layers say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub request_settings: Vec<String>,
+    /// Steps a setup kept for this conversation or this request alone. The run must contain
+    /// them, as it must what `always.toml` and the request's own words require.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_steps: Vec<RequiredStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,7 +79,7 @@ pub struct RunSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub mode: RunMode,
-    pub preset: String,
+    pub workflow: String,
     pub state: RunState,
     /// Such as "plan checkpoint, waiting for you".
     pub stopped_at: String,
@@ -181,6 +188,139 @@ pub struct StatusSummary {
     pub budget: Option<RunBudget>,
     pub quotas: Vec<QuotaReading>,
     pub waiting: Vec<String>,
+}
+
+/// The span the Usage tab adds up over. Quota is always now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsagePeriod {
+    #[default]
+    Today,
+    /// Today and the 6 days before.
+    Week,
+    /// Today and the 29 days before.
+    Month,
+    All,
+}
+
+impl UsagePeriod {
+    /// The first local day the period counts. `None` counts every day.
+    pub fn first_day(self, today: Date) -> Option<Date> {
+        let back = match self {
+            Self::Today => 0,
+            Self::Week => 6,
+            Self::Month => 29,
+            Self::All => return None,
+        };
+        Some(today.saturating_sub(time::Duration::days(back)))
+    }
+}
+
+// A local day as `2026-10-04`.
+time::serde::format_description!(pub day_format, Date, "[year]-[month]-[day]");
+
+/// What the Usage tab shows for a period, from the usage ledger and the quota board, with no
+/// model call.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UsageSummary {
+    pub period: UsagePeriod,
+    /// Everything the period spent. Its tokens are the tokens card: cached input, new input
+    /// (input less cached), and output.
+    pub total: Spend,
+    /// Spend by agent and model, the largest first.
+    pub by_agent: Vec<UsageShare>,
+    /// Spend for each of the last 14 local days, oldest first, today last, whatever the period.
+    pub history: Vec<DaySpend>,
+    /// The period's runs, newest first.
+    pub runs: Vec<RunSummary>,
+    /// Every vendor's windows now, whatever the period.
+    pub quotas: Vec<QuotaReading>,
+    /// Each CLI in the crew, the main one first: its plan, its windows now, and whether it
+    /// can be reached. A window that has reset since it was read is left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plans: Vec<PlanUsage>,
+    /// What this conversation spent, which no run counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<Spend>,
+    /// The spend limit for a day, in dollars, when you set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_limit: Option<f64>,
+    /// The share of a plan window you let the crew use, 0 to 1, when you set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_limit: Option<f64>,
+    /// How far the newest of `runs` got: their tasks and when they began.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub progress: Vec<RunProgress>,
+    /// The limit of a task that has none of its own, when you set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_limit: Option<BudgetAmount>,
+    /// The limits you can set, each with its value in effect and where that came from, in
+    /// the order `/limits` lists them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<SettingRow>,
+    /// What the crew did over the period, per CLI, model and role, for the Stats tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<crate::crew_stats::CrewStats>,
+}
+
+/// How far a run got, for the workflows card. It sits beside [`RunSummary`], which the run
+/// list builds for every run without reading its tasks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunProgress {
+    pub run: RunId,
+    /// Tasks merged into the run, of those it still means to do or did.
+    pub tasks_done: u32,
+    pub tasks: u32,
+    /// When it was asked for. With the summary's `updated` it says how long the run took.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub started: Option<OffsetDateTime>,
+}
+
+/// One CLI's plan usage, as the Usage tab and the plan usage card show it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PlanUsage {
+    /// The CLI's id, such as `claude-code`, which picks its color.
+    pub agent: String,
+    /// Such as `Claude Code`.
+    pub name: String,
+    /// The plan as the CLI names it, such as `Max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// The main agent runs on it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_use: bool,
+    /// It can't be reached now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub down: bool,
+    /// It bills for each token, so there is no plan to track.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pays_per_token: bool,
+    /// Its windows, the shortest first. Each says when it was read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<QuotaReading>,
+    /// Who takes its work while it's out or down, by display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageShare {
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub vendor: String,
+    pub spent: Spend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DaySpend {
+    #[serde(with = "day_format")]
+    pub day: Date,
+    pub spent: Spend,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -344,7 +484,7 @@ pub trait ConductorApi: Send + Sync {
         let _ = (run, card, checkpoint);
         Box::pin(async {
             Err(ApiError::NotNow(
-                "this conductor can't revert a card".to_owned(),
+                "this conductor can't revert a task".to_owned(),
             ))
         })
     }

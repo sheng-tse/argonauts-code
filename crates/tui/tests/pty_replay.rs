@@ -21,7 +21,7 @@ fn reattach_long_run_prints_summaries_only() {
     let (_, _, script) = replayed(40);
     let harness = Harness::start(script);
     harness.wait_visible(&format!("※ recap: {REPLAY_RECAP}"));
-    let screen = harness.wait_visible("esc to interrupt");
+    let screen = harness.wait_visible(WORKING);
     for milestone in REPLAY_MILESTONES {
         assert_eq!(
             count_rows(&screen, &regex::escape(milestone)),
@@ -74,7 +74,7 @@ fn replayed_events_ring_no_bell() {
     harness.wait_visible("❯ 1\\. Yes, keep it");
     assert_eq!(harness.bells(), 0, "history never rings");
     harness.signal("live");
-    harness.wait_until("the bell for the new card", |_| harness.bells() > 0);
+    harness.wait_until("the bell for the new task", |_| harness.bells() > 0);
     assert_eq!(harness.bells(), 1);
 }
 
@@ -83,7 +83,7 @@ fn resume_shows_condensed_replay() {
     let (_, _, script) = replayed(5);
     let harness = Harness::launch(script).size(48, 100).start();
     harness.wait_visible(&format!("※ recap: {REPLAY_RECAP}"));
-    let screen = harness.wait_visible("esc to interrupt");
+    let screen = harness.wait_visible(WORKING);
     assert_order(
         &screen,
         &[
@@ -106,7 +106,7 @@ fn ctrl_o_opens_full_history_after_resume() {
     let (_, _, script) = replayed(2);
     let mut harness = Harness::start(script);
     harness.wait_visible(&format!("※ recap: {REPLAY_RECAP}"));
-    harness.wait_visible("esc to interrupt");
+    harness.wait_visible(WORKING);
     harness.press(Key::Ctrl('o'));
     let history = harness.wait_gone(TOP_RULE);
     let calls = history

@@ -19,7 +19,7 @@ use crate::controller::Ctx;
 
 /// Roles whose steps edit files or run tools, so an endpoint, which only answers, can't fill
 /// them. The default agent works solo.
-const NEEDS_HARNESS: &[RoleName] = &[RoleName::Default, RoleName::Owner, RoleName::Spike];
+const NEEDS_HARNESS: &[RoleName] = &[RoleName::Main, RoleName::Worker, RoleName::Spike];
 
 /// The token counts a typical card spends, for the cost column.
 const CARD_INPUT_TOKENS: u64 = 150_000;
@@ -49,6 +49,7 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
     // Harnesses the registry has no models for yet still run on their CLI's default model.
     let bare: Vec<WorkerRef> = settings
         .crew
+        .members()
         .iter()
         .map(|worker| worker.worker.clone())
         .chain(
@@ -64,7 +65,7 @@ pub(crate) fn choices(ctx: &Ctx, role: Option<RoleName>) -> Vec<ModelChoice> {
         .into_iter()
         .map(|id| WorkerRef::new(id, None))
         .collect();
-    let wanted = role.unwrap_or(RoleName::Default);
+    let wanted = role.unwrap_or(RoleName::Main);
     // Best fit first, then each harness's or endpoint's models together, in the order the
     // registry first names them.
     let mut order: Vec<String> = Vec::new();
@@ -149,10 +150,10 @@ fn entry_note(entry: &ModelEntry) -> Option<String> {
 
 /// Why `worker` can't fill `role`, when it can't.
 pub(crate) fn refusal(ctx: &Ctx, role: Option<RoleName>, worker: &WorkerRef) -> Option<String> {
-    let role = role.unwrap_or(RoleName::Default);
+    let role = role.unwrap_or(RoleName::Main);
     if NEEDS_HARNESS.contains(&role) && is_endpoint(ctx, worker) {
         let what = match role {
-            RoleName::Default => "the default agent".to_owned(),
+            RoleName::Main => "the main agent".to_owned(),
             role => format!("the {} role", role.as_str()),
         };
         return Some(format!(
@@ -163,8 +164,8 @@ pub(crate) fn refusal(ctx: &Ctx, role: Option<RoleName>, worker: &WorkerRef) -> 
         let family = ctx.services.registry.family(worker);
         if owner_families(ctx).contains(&family) {
             return Some(format!(
-                "{worker} is from the {family} family, like the owner, and a reviewer comes from \
-                 another family"
+                "{worker} is from the {family} provider, like the worker, and a reviewer comes from \
+                 another provider"
             ));
         }
     }
@@ -173,10 +174,10 @@ pub(crate) fn refusal(ctx: &Ctx, role: Option<RoleName>, worker: &WorkerRef) -> 
 
 /// The worker that fills `role` now, `None` when the router picks.
 pub(crate) fn current(settings: &Settings, role: Option<RoleName>) -> Option<WorkerRef> {
-    match role.unwrap_or(RoleName::Default) {
-        RoleName::Default => Some(settings.default_agent.clone()),
+    match role.unwrap_or(RoleName::Main) {
+        RoleName::Main => Some(settings.main_agent.clone()),
         RoleName::Narrator => settings.narrator.model.clone(),
-        RoleName::Approver => settings.approvals.approver.model.clone(),
+        RoleName::Approver => settings.approvals.approver_model().cloned(),
         role => settings
             .roles
             .get(&role)
@@ -254,7 +255,7 @@ fn is_endpoint(ctx: &Ctx, worker: &WorkerRef) -> bool {
 fn owner_families(ctx: &Ctx) -> BTreeSet<String> {
     ctx.settings()
         .roles
-        .get(&RoleName::Owner)
+        .get(&RoleName::Worker)
         .map(|owner| {
             owner
                 .workers

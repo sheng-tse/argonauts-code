@@ -26,7 +26,7 @@ use tokio::task::{JoinError, JoinHandle};
 use crate::ancestry::{AgentMarkers, check_self};
 use crate::app_settings::AppSettings;
 use crate::controller::{AppServices, Controller, Ctx, Opening, Outbox, header_agent};
-use crate::env::AppEnv;
+use crate::env::{AppEnv, FolderGit};
 use crate::example_prompt::example_prompt;
 use crate::host::harnesses::RepoModels;
 use crate::host::services::{LiveRegistry, SettingsSource};
@@ -46,6 +46,7 @@ const EXIT_GRACE: Duration = Duration::from_secs(5);
 /// Markers for the one-time start notices, so each shows on one start and not the next.
 const OLD_CONFIG_TOLD: &str = "told-old-config";
 const TRACKED_LOCAL_TOLD: &str = "told-tracked-local-config";
+const NO_GIT_TOLD: &str = "told-no-git";
 
 pub(crate) async fn run(mut options: InteractiveOptions, first: FirstView) -> anyhow::Result<()> {
     let mut first = first;
@@ -66,6 +67,7 @@ async fn run_once(
     first: FirstView,
 ) -> anyhow::Result<Option<PathBuf>> {
     let env = AppEnv::discover(options.repo.as_deref())?;
+    crate::prompts::catalog::use_files_of(&env);
     if env.agent_session {
         bail!(
             "this is an agent's session (ARGONAUTS_SESSION is set), so the app won't open here; \
@@ -90,13 +92,14 @@ async fn run_once(
     let trace = Trace::from_env().context("opening the test trace")?;
     let (out, mut outgoing) = mpsc::unbounded_channel();
     let (internal, internal_rx) = mpsc::unbounded_channel();
-    let ctx = Ctx::new(
+    let mut ctx = Ctx::new(
         env,
         settings,
         services,
         Outbox::new(out, Arc::new(trace)),
         internal,
     );
+    ctx.awake = crate::keep_awake::KeepAwake::system();
     let reopen = ctx.reopen();
 
     let (commands, commands_rx) = mpsc::channel(COMMAND_QUEUE);
@@ -269,16 +272,16 @@ pub(crate) async fn run_counts(conductor: &dyn ConductorApi) -> RunCounts {
 /// waiting on you.
 pub(crate) fn welcome_from(ctx: &Ctx, report: &DoctorReport, runs: RunCounts) -> AppEvent {
     let settings = ctx.settings();
-    let (default_agent, effort) = header_agent(ctx);
+    let (main_agent, effort) = header_agent(ctx);
     AppEvent::Welcome {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         repo: ctx.env.display_repo(),
-        preset: settings.preset.clone(),
+        workflow: settings.workflow.clone(),
         agents: readiness(report, settings),
         runs_going: runs.going,
         runs_need_you: runs.need_you,
         example_prompt: example_prompt(&ctx.env.repo_root),
-        default_agent: Some(default_agent),
+        main_agent: Some(main_agent),
         effort,
     }
 }
@@ -297,13 +300,16 @@ fn readiness(report: &DoctorReport, settings: &Settings) -> Vec<AgentReady> {
 /// The chat's agent, the crew, and every worker a role or a fallback names.
 fn uses(settings: &Settings, id: &str) -> bool {
     let roles = settings.roles.values();
-    let fallbacks = roles
-        .clone()
-        .flat_map(|role| &role.handoff.fallback)
-        .chain(&settings.handoff.fallback)
+    let fallbacks = settings
+        .fallback
+        .roles
+        .values()
+        .flat_map(|role| &role.order)
+        .chain(&settings.fallback.order)
         .map(FallbackEntry::worker);
-    std::iter::once(&settings.default_agent)
-        .chain(&settings.crew)
+    let members = settings.crew.members();
+    std::iter::once(&settings.main_agent)
+        .chain(&members)
         .chain(roles.flat_map(|role| &role.workers))
         .chain(fallbacks)
         .any(|worker| worker.worker == id)
@@ -357,6 +363,9 @@ pub(crate) fn start_notices(ctx: &mut Ctx) -> Vec<(NoteLevel, String)> {
     if let Some(notice) = tracked_local_notice(env) {
         notices.push(notice);
     }
+    if let Some(notice) = no_git_notice(env) {
+        notices.push(notice);
+    }
     notices
 }
 
@@ -381,7 +390,7 @@ fn preset_notices(dir: &Path) -> Vec<(NoteLevel, String)> {
         Ok(upgrades) => upgrades.iter().filter_map(edited_preset_notice).collect(),
         Err(err) => vec![(
             NoteLevel::Warn,
-            format!("Couldn't check your preset files for this version: {err}"),
+            format!("Couldn't check your workflow files for this version: {err}"),
         )],
     }
 }
@@ -394,7 +403,7 @@ fn edited_preset_notice(upgrade: &PresetUpgrade) -> Option<(NoteLevel, String)> 
     let name = &upgrade.name;
     Some((
         NoteLevel::Info,
-        format!("Your {name} preset differs from this version's · /preset diff {name}"),
+        format!("Your {name} workflow differs from this version's · /workflow diff {name}"),
     ))
 }
 
@@ -430,6 +439,22 @@ fn tracked_local_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
     ))
 }
 
+/// Said the first time the app opens in a folder with no git, since it works differently
+/// there: nothing is committed, and a workflow's branches live under Argonauts' home.
+fn no_git_notice(env: &AppEnv) -> Option<(NoteLevel, String)> {
+    if env.git() != FolderGit::Off || !first_time(&env.state_dir, NO_GIT_TOLD) {
+        return None;
+    }
+    Some((
+        NoteLevel::Aside,
+        format!(
+            "This folder has no git. Solo and chat work as they are. Workflows keep their own \
+             history in {}, and your folder stays as it is.",
+            env.display(env.paths.home())
+        ),
+    ))
+}
+
 /// True once per marker in `dir`. A marker that can't be written still counts as told, so a
 /// notice never repeats on every start.
 fn first_time(dir: &Path, marker: &str) -> bool {
@@ -448,8 +473,9 @@ mod tests {
     use argonauts_core::future::BoxFuture;
     use argonauts_core::limits::CostEstimate;
     use argonauts_core::model_catalog::{CATALOG_VERSION, CatalogEntry, ModelCatalog};
-    use argonauts_core::names::{RoleName, WorkerRef};
+    use argonauts_core::names::WorkerRef;
     use argonauts_core::registry::ModelEntry;
+    use argonauts_core::settings::handoff::CrewRole;
     use argonauts_testkit::TempRepo;
 
     use super::*;
@@ -555,23 +581,18 @@ mod tests {
         assert!(!noted(&settings, "opencode"), "nothing names opencode");
         assert!(noted(&settings, "codex"), "codex is in the crew");
 
-        settings.crew.push("opencode".parse().unwrap());
+        settings.crew.add("opencode".parse().unwrap());
         assert!(noted(&settings, "opencode"), "in the crew");
 
         let settings = Settings {
-            default_agent: "opencode/glm-5".parse().unwrap(),
+            main_agent: "opencode/glm-5".parse().unwrap(),
             ..Settings::default()
         };
         assert!(noted(&settings, "opencode"), "the chat's agent");
 
         let mut settings = Settings::default();
-        let mut role = settings
-            .roles
-            .get(&RoleName::Default)
-            .cloned()
-            .unwrap_or_default();
-        role.handoff.fallback = vec![FallbackEntry::Worker("opencode".parse().unwrap())];
-        settings.roles.insert(RoleName::Default, role);
+        let role = settings.fallback.roles.entry(CrewRole::Main).or_default();
+        role.order = vec![FallbackEntry::Worker("opencode".parse().unwrap())];
         assert!(noted(&settings, "opencode"), "a fallback");
     }
 
@@ -581,7 +602,7 @@ mod tests {
             prepare: Some(Box::new(|repo: &TempRepo| {
                 std::fs::write(
                     repo.global_config(),
-                    "default_agent = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.6-luna\"\n\
+                    "main_agent = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.6-luna\"\n\
                      effort = \"low\"\n",
                 )
                 .unwrap();
@@ -596,15 +617,13 @@ mod tests {
             },
         };
         let AppEvent::Welcome {
-            default_agent,
-            effort,
-            ..
+            main_agent, effort, ..
         } = welcome_from(&parts.ctx, &report, RunCounts::default())
         else {
             panic!("a welcome");
         };
         assert_eq!(
-            default_agent.map(|agent| agent.to_string()).as_deref(),
+            main_agent.map(|agent| agent.to_string()).as_deref(),
             Some("codex/gpt-5.6-luna")
         );
         assert_eq!(effort.as_deref(), Some("low"));
@@ -623,27 +642,25 @@ mod tests {
             },
         };
         let AppEvent::Welcome {
-            default_agent,
-            effort,
-            ..
+            main_agent, effort, ..
         } = welcome_from(&parts.ctx, &report, RunCounts::default())
         else {
             panic!("a welcome");
         };
-        let default_agent = default_agent.unwrap();
-        let worker = &parts.ctx.settings().default_agent.worker;
-        assert_eq!(default_agent.worker, *worker);
+        let main_agent = main_agent.unwrap();
+        let worker = &parts.ctx.settings().main_agent.worker;
+        assert_eq!(main_agent.worker, *worker);
         let shipped = argonauts_registry::models::shipped_catalog();
         let harness = WorkerRef::new(worker.clone(), None);
         let runs = shipped.entry(&harness).and_then(|entry| entry.runs.clone());
         assert!(runs.is_some(), "the catalog names what {worker} runs");
-        assert_eq!(default_agent.model, runs);
+        assert_eq!(main_agent.model, runs);
         let starts_at = shipped
-            .entry(&default_agent)
+            .entry(&main_agent)
             .and_then(|entry| entry.default_effort.clone());
         assert!(
             starts_at.is_some(),
-            "the catalog says where {default_agent} starts"
+            "the catalog says where {main_agent} starts"
         );
         assert_eq!(effort, starts_at);
     }
@@ -713,29 +730,27 @@ mod tests {
             },
         };
         let AppEvent::Welcome {
-            default_agent,
-            effort,
-            ..
+            main_agent, effort, ..
         } = welcome_from(&parts.ctx, &report, RunCounts::default())
         else {
             panic!("a welcome");
         };
-        (default_agent.map(|agent| agent.to_string()), effort)
+        (main_agent.map(|agent| agent.to_string()), effort)
     }
 
     #[test]
     fn the_welcome_names_the_model_a_cli_runs_when_none_is_set() {
-        let (agent, effort) = header_of("default_agent = \"codex\"\n");
+        let (agent, effort) = header_of("main_agent = \"codex\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-6.1-sol"));
         assert_eq!(effort.as_deref(), Some("low"));
 
         let (agent, effort) =
-            header_of("default_agent = \"codex\"\n\n[agents.codex]\neffort = \"xhigh\"\n");
+            header_of("main_agent = \"codex\"\n\n[agents.codex]\neffort = \"xhigh\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-6.1-sol"));
         assert_eq!(effort.as_deref(), Some("xhigh"), "the effort you set wins");
 
         let (agent, effort) =
-            header_of("default_agent = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.5\"\n");
+            header_of("main_agent = \"codex\"\n\n[agents.codex]\nmodel = \"gpt-5.5\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-5.5"));
         assert_eq!(
             effort.as_deref(),
@@ -748,20 +763,19 @@ mod tests {
     /// which model it runs and the level that model starts at.
     #[test]
     fn the_welcome_names_the_catalogs_default_when_a_cli_marks_none() {
-        let (agent, effort) = header_of("default_agent = \"claude-code\"\n");
+        let (agent, effort) = header_of("main_agent = \"claude-code\"\n");
         assert_eq!(agent.as_deref(), Some("claude-code/claude-opus-5-5"));
         assert_eq!(effort.as_deref(), Some("xhigh"));
 
-        let (agent, effort) = header_of(
-            "default_agent = \"claude-code\"\n\n[agents.claude-code]\neffort = \"low\"\n",
-        );
+        let (agent, effort) =
+            header_of("main_agent = \"claude-code\"\n\n[agents.claude-code]\neffort = \"low\"\n");
         assert_eq!(agent.as_deref(), Some("claude-code/claude-opus-5-5"));
         assert_eq!(effort.as_deref(), Some("low"), "the effort you set wins");
 
         // A CLI's own mark wins over the catalog, and one the catalog doesn't know stays bare.
-        let (agent, _) = header_of("default_agent = \"codex\"\n");
+        let (agent, _) = header_of("main_agent = \"codex\"\n");
         assert_eq!(agent.as_deref(), Some("codex/gpt-6.1-sol"));
-        let (agent, effort) = header_of("default_agent = \"antigravity-cli\"\n");
+        let (agent, effort) = header_of("main_agent = \"antigravity-cli\"\n");
         assert_eq!(agent.as_deref(), Some("antigravity-cli"));
         assert_eq!(effort, None);
     }
@@ -816,7 +830,7 @@ mod tests {
             prepare: Some(Box::new(|repo: &TempRepo| {
                 repo.write(
                     ".argonauts/config.local.toml",
-                    "[budget]\nrun_usd = 1.0\n\n[gates]\nrun = [\"python3 -m unittest -q\"]\n",
+                    "[limits]\nspend_per_run = 1.0\n\n[checks]\nrun = [\"python3 -m unittest -q\"]\n",
                 )
                 .unwrap();
             })),
@@ -824,7 +838,7 @@ mod tests {
         });
         let notices = start_notices(&mut parts.ctx);
         let texts: Vec<&str> = notices.iter().map(|(_, text)| text.as_str()).collect();
-        for key in ["budget.run_usd", "gates.run"] {
+        for key in ["limits.spend_per_run", "checks.run"] {
             let warning = format!(
                 "{key} in .argonauts/config.local.toml is a safety setting and is ignored until \
                  you trust the file (/setup, or the trust question when it changes)"
@@ -840,7 +854,7 @@ mod tests {
         let old = repo.config_home().join("argonauts").join("config.toml");
         assert!(old_config_notice(&old, &env).is_none());
         std::fs::create_dir_all(old.parent().unwrap()).unwrap();
-        std::fs::write(&old, "default_agent = \"codex\"\n").unwrap();
+        std::fs::write(&old, "main_agent = \"codex\"\n").unwrap();
         let (level, text) = old_config_notice(&old, &env).unwrap();
         assert_eq!(level, NoteLevel::Warn);
         assert!(text.starts_with("Nothing reads "), "{text}");
@@ -866,8 +880,8 @@ mod tests {
     #[test]
     fn an_edited_preset_is_told_only_when_the_registry_says_so() {
         let upgrade = |outcome| PresetUpgrade {
-            name: "peer-crew".to_owned(),
-            path: "/home/presets/peer-crew.toml".into(),
+            name: "council".to_owned(),
+            path: "/home/workflows/council.toml".into(),
             outcome,
         };
         let told = edited_preset_notice(&upgrade(PresetUpgradeOutcome::KeptEdited { tell: true }));
@@ -875,7 +889,7 @@ mod tests {
             told,
             Some((
                 NoteLevel::Info,
-                "Your peer-crew preset differs from this version's · /preset diff peer-crew"
+                "Your council workflow differs from this version's · /workflow diff council"
                     .to_owned()
             ))
         );
@@ -891,6 +905,6 @@ mod tests {
     #[test]
     fn presets_are_checked_only_in_the_global_folder_you_have() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(preset_notices(&dir.path().join("presets")).is_empty());
+        assert!(preset_notices(&dir.path().join("workflows")).is_empty());
     }
 }

@@ -1,6 +1,6 @@
 //! Reading a chat turn's reply. The triage estimate is an answer, a change, or unclear, and one
 //! that fails the schema counts as unclear. `/ask` wants only an answer. A recipe whose `match`
-//! fits the change decides solo or crew under `triage.use_recipes`, unless the request's own
+//! fits the change decides solo or crew under `triage.use_learned`, unless the request's own
 //! words chose, once code checked them.
 
 use argonauts_core::events::run::{RunMode, TriageDecision};

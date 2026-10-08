@@ -6,7 +6,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::registry::LaunchHints;
+use crate::settings::context::ContextAsk;
 use crate::settings::sessions::{Compaction, NativeFanout};
+use crate::settings::workflows::WorkflowSize;
 
 /// Whether a session may change files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -73,6 +75,10 @@ pub struct SessionRequest {
     /// A per-run project name where the harness shares one store (agy `--project`).
     #[serde(default)]
     pub project: Option<String>,
+    /// The context window to ask the CLI for, where it has a setting for it: the largest it
+    /// offers for the model, or less when `sessions.context` lowers it.
+    #[serde(default, skip_serializing_if = "ContextAsk::is_as_it_is")]
+    pub context: ContextAsk,
     /// `None` passes nothing.
     #[serde(default)]
     pub compaction: Option<Compaction>,
@@ -113,6 +119,25 @@ pub struct SessionRequest {
     /// its commands and models, so messages you send later can join it as in its own screen.
     #[serde(default)]
     pub main_session: bool,
+    /// The CLI's own ultracode for the whole session, where it has one (Claude Code's
+    /// `ultracode` setting): a workflow on every real task.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ultracode: bool,
+    /// The prompt goes out marked as typed by you, so a keyword in it, such as `ultracode`,
+    /// works as it does when you type it into the CLI itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub typed_by_you: bool,
+    /// How big a workflow of the CLI's own may be, where it takes a guideline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_size: Option<WorkflowSize>,
+    /// A few lines for the end of the session's instructions, given the way its CLI takes such
+    /// a note (Claude Code `--append-system-prompt`). An adapter with no such way leaves it to
+    /// the caller, which puts the lines in the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_note: Option<String>,
+    /// See [`SessionSpec::autopilot`](crate::worker::SessionSpec::autopilot).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub autopilot: bool,
 }
 
 /// A file the conductor writes before spawning the command.
@@ -272,6 +297,9 @@ mod tests {
         assert!(!req.keep_input_open);
         let full = SessionRequest {
             keep_input_open: true,
+            context: ContextAsk::Largest {
+                known: Some(872_000),
+            },
             compaction: Some(Compaction::Off),
             native_fanout: Some(NativeFanout::Limit { max: 2 }),
             launch: Some(LaunchHints {

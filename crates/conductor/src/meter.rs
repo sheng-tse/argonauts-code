@@ -16,6 +16,7 @@ use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::endpoints::{
     endpoint_settings, host_and_port, local_endpoint_addresses,
 };
+use argonauts_core::settings::sessions::RotateAt;
 use argonauts_core::worker::{SessionLimits, SessionSpec};
 use argonauts_core::{
     AgentEvent, BudgetAction, BudgetDimension, BudgetLimit, BudgetMeter, BudgetStatus,
@@ -155,12 +156,14 @@ pub struct MeterSetup {
     pub pricing: Pricing,
     /// Whether usage is cumulative and whether a resume's totals include earlier turns.
     pub capabilities: Capabilities,
-    /// `budget.enabled`. Off counts and reports but never stops for budget.
-    pub budgets_enabled: bool,
-    /// `sessions.rotate_at` as tokens, already resolved against the window.
-    pub rotate_at: Option<u64>,
+    /// `sessions.rotate_at`, which the meter reads against the window as the stream last
+    /// reported it. `None` never rotates.
+    pub rotate_at: Option<RotateAt>,
     /// The registry's context window, used when the stream reports none.
     pub context_window: Option<u64>,
+    /// `sessions.context` in tokens when it lowers the window: the session is held to it
+    /// whatever window its CLI reports.
+    pub context_cap: Option<u64>,
 }
 
 /// Tokens in the context and the window's size.
@@ -182,8 +185,9 @@ pub struct SessionMeter {
     /// Set when no price is known yet, so the model the stream reports can supply one.
     price_from_model: bool,
     capabilities: Capabilities,
-    rotate_at: Option<u64>,
+    rotate_at: Option<RotateAt>,
     context_window: Option<u64>,
+    context_cap: Option<u64>,
     context: Option<ContextSize>,
     /// What earlier sessions spent on the vendor session this one resumes.
     earlier: Spend,
@@ -202,13 +206,12 @@ impl SessionMeter {
             limits,
             pricing,
             capabilities,
-            budgets_enabled,
             rotate_at,
             context_window,
+            context_cap,
         } = setup;
-        let budget = limits
-            .budget
-            .filter(|budget| budgets_enabled && budget.amount.is_finite());
+        // With no limit the meter still counts and reports, and never stops the session.
+        let budget = limits.budget.filter(|budget| budget.amount.is_finite());
         let (limit, quota_limit, budget_minutes) = match budget {
             Some(BudgetAmount { unit, amount }) => match unit {
                 BudgetUnit::Usd => (BudgetLimit::Usd(amount), None, None),
@@ -251,6 +254,7 @@ impl SessionMeter {
             capabilities,
             rotate_at,
             context_window,
+            context_cap,
             context: None,
             earlier: Spend::default(),
             elapsed: Duration::ZERO,
@@ -266,10 +270,10 @@ impl SessionMeter {
                 let usage = self.priced(self.without_earlier_turns(event));
                 self.inner.observe(&usage);
             }
-            AgentEvent::ContextFill { used, size } => {
+            AgentEvent::ContextFill { used, size, .. } => {
                 self.context = Some(ContextSize {
                     used: *used,
-                    size: size.or(self.context_window),
+                    size: self.held(size.or(self.context_window)),
                 });
             }
             AgentEvent::Quota { reading } => self.quota.observe(reading),
@@ -373,6 +377,24 @@ impl SessionMeter {
         self.context
     }
 
+    /// `window` held to `sessions.context`, when that lowers it.
+    fn held(&self, window: Option<u64>) -> Option<u64> {
+        match (window, self.context_cap) {
+            (Some(window), Some(cap)) => Some(window.min(cap)),
+            (window, cap) => window.or(cap),
+        }
+    }
+
+    /// Where the session starts fresh, in tokens. A share is of the window as the stream
+    /// last reported it, which may be larger than the registry knew.
+    fn rotate_cap(&self) -> Option<u64> {
+        let window = self
+            .context
+            .and_then(|context| context.size)
+            .or(self.held(self.context_window));
+        self.rotate_at.as_ref()?.tokens(window).ok().flatten()
+    }
+
     fn verdict(&mut self) -> MeterVerdict {
         let status = self.status();
         let worst = status.binding.zip(status.fraction_used);
@@ -381,7 +403,7 @@ impl SessionMeter {
         {
             return MeterVerdict::Stop(dimension);
         }
-        if let (Some(cap), Some(context)) = (self.rotate_at, self.context)
+        if let (Some(cap), Some(context)) = (self.rotate_cap(), self.context)
             && !self.rotated
             && context.used >= cap
         {
@@ -612,9 +634,9 @@ mod tests {
             limits,
             pricing: Pricing::ReportedOnly,
             capabilities: Capabilities::default(),
-            budgets_enabled: true,
             rotate_at: None,
             context_window: None,
+            context_cap: None,
         }
     }
 
@@ -930,19 +952,16 @@ mod tests {
     }
 
     #[test]
-    fn budget_off_counts_only() {
-        let mut meter = SessionMeter::new(MeterSetup {
-            budgets_enabled: false,
-            ..setup(SessionLimits {
-                max_tool_calls: Some(2),
-                ..limits(Some((BudgetUnit::Usd, 1.0)))
-            })
-        });
+    fn with_no_limit_the_meter_counts_only() {
+        let mut meter = SessionMeter::new(setup(SessionLimits {
+            max_tool_calls: Some(2),
+            ..limits(None)
+        }));
         assert_eq!(meter.observe(&cost(0.9)), MeterVerdict::Continue);
         assert_eq!(meter.observe(&cost(4.1)), MeterVerdict::Continue);
         assert!((meter.spend().cost_usd - 5.0).abs() < 1e-9);
         assert_eq!(meter.status().limit, BudgetLimit::None);
-        // The tool-call watchdog still applies.
+        // A cap on tool calls that you set still applies.
         assert_eq!(meter.observe(&tool("1", None)), MeterVerdict::Continue);
         assert_eq!(
             meter.observe(&tool("2", None)),
@@ -959,14 +978,17 @@ mod tests {
             (RotateAt::Share(0.9), 180_000),
         ];
         for (form, cap) in forms {
-            let resolved = form.tokens(window).unwrap();
-            assert_eq!(resolved, Some(cap), "{form:?}");
+            assert_eq!(form.tokens(window).unwrap(), Some(cap), "{form:?}");
             let mut meter = SessionMeter::new(MeterSetup {
-                rotate_at: resolved,
+                rotate_at: Some(form.clone()),
                 context_window: window,
                 ..setup(limits(None))
             });
-            let fill = |used| AgentEvent::ContextFill { used, size: None };
+            let fill = |used| AgentEvent::ContextFill {
+                used,
+                size: None,
+                sent: None,
+            };
             assert_eq!(meter.observe(&fill(cap - 1)), MeterVerdict::Continue);
             assert_eq!(
                 meter.context(),
@@ -981,10 +1003,83 @@ mod tests {
             );
             assert_eq!(meter.observe(&fill(cap + 10)), MeterVerdict::Continue);
         }
-        // The default is an absolute cap, whatever the window.
-        let default = argonauts_core::settings::sessions::SessionSettings::default().rotate_at;
-        assert_eq!(default.tokens(None).unwrap(), Some(200_000));
         assert_eq!(RotateAt::Share(0.9).tokens(None).unwrap(), None);
+    }
+
+    /// By default a session starts fresh only near the end of its window, whatever its size,
+    /// and never while the window is unknown.
+    #[test]
+    fn the_default_rotates_near_the_end_of_the_window_the_stream_reports() {
+        let default = argonauts_core::settings::sessions::SessionSettings::default().rotate_at;
+        let fill = |used, size| AgentEvent::ContextFill {
+            used,
+            size,
+            sent: None,
+        };
+        let mut meter = SessionMeter::new(MeterSetup {
+            rotate_at: Some(default.clone()),
+            ..setup(limits(None))
+        });
+        assert_eq!(meter.observe(&fill(450_000, None)), MeterVerdict::Continue);
+        // The CLI says how large its window is, and the share is of that.
+        let window = Some(1_000_000);
+        assert_eq!(
+            meter.observe(&fill(899_999, window)),
+            MeterVerdict::Continue
+        );
+        assert_eq!(
+            meter.observe(&fill(900_000, window)),
+            MeterVerdict::Rotate {
+                used: 900_000,
+                cap: 900_000
+            }
+        );
+
+        // The registry's window stands in until the stream reports one.
+        let mut meter = SessionMeter::new(MeterSetup {
+            rotate_at: Some(default),
+            context_window: Some(872_000),
+            ..setup(limits(None))
+        });
+        assert_eq!(meter.observe(&fill(784_799, None)), MeterVerdict::Continue);
+        assert_eq!(
+            meter.observe(&fill(784_800, None)),
+            MeterVerdict::Rotate {
+                used: 784_800,
+                cap: 784_800
+            }
+        );
+    }
+
+    /// `sessions.context` holds a session below the window its CLI runs with.
+    #[test]
+    fn a_lowered_context_holds_the_session_whatever_window_the_cli_reports() {
+        let mut meter = SessionMeter::new(MeterSetup {
+            rotate_at: Some(RotateAt::Share(0.9)),
+            context_window: Some(200_000),
+            context_cap: Some(200_000),
+            ..setup(limits(None))
+        });
+        let fill = |used| AgentEvent::ContextFill {
+            used,
+            size: Some(1_000_000),
+            sent: None,
+        };
+        assert_eq!(meter.observe(&fill(179_999)), MeterVerdict::Continue);
+        assert_eq!(
+            meter.context(),
+            Some(ContextSize {
+                used: 179_999,
+                size: Some(200_000)
+            })
+        );
+        assert_eq!(
+            meter.observe(&fill(180_000)),
+            MeterVerdict::Rotate {
+                used: 180_000,
+                cap: 180_000
+            }
+        );
     }
 
     #[test]

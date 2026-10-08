@@ -59,7 +59,7 @@ fn report_text(report: &ApprovalsReport) -> String {
 
 pub fn auto_off() -> anyhow::Result<ExitCode> {
     argonauts_app::auto_off()?;
-    println!("Auto is off. Every checkpoint in every run waits for you until you turn it back on.");
+    println!("Auto is off. Every approval in every run waits for you until you turn it back on.");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -77,7 +77,7 @@ mod tests {
             view: ApprovalsView {
                 points: vec![ApprovalRow {
                     kind: CheckpointKind::ChangeRequest,
-                    mode: ApprovalMode::Shadow,
+                    mode: ApprovalMode::AutoPreview,
                     decide_with: DecideWith::default(),
                     matches_in_a_row: 4,
                     misses: 1,
@@ -91,7 +91,7 @@ mod tests {
         };
         let text = report_text(&report);
         assert!(
-            text.starts_with("change request: shadow, decided by "),
+            text.starts_with("change request: auto preview, decided by "),
             "{text}"
         );
         assert!(

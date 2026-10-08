@@ -14,9 +14,9 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
     let mut c = Conditions::default();
     c.flag(
         facts.gates_passed,
-        "every gate passed",
-        "a gate failed or didn't run",
-        "no gate results",
+        "every check passed",
+        "a check failed or didn't run",
+        "no check results",
     );
     c.flag(
         facts.reviews_approved,
@@ -25,10 +25,10 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
         "no review results",
     );
     c.flag(
-        facts.reviewed_by_other_company,
-        "each card's approval came from a reviewer of another company than its owner",
-        "a card's approval came from a reviewer of its owner's own company",
-        "no fact says which company each card's reviewer comes from",
+        facts.reviewed_by_other_provider,
+        "each task's approval came from a reviewer of another provider than its worker",
+        "a task's approval came from a reviewer of its worker's own provider",
+        "no fact says which provider each task's reviewer comes from",
     );
     c.measure_if_known(facts.acceptance_tests_valid, |valid| {
         if valid {
@@ -50,7 +50,7 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
     );
 
     // Comparisons are written so a NaN fails them.
-    let min_coverage = rules.min_changed_line_coverage;
+    let min_coverage = rules.min_test_coverage_of_changed_lines;
     c.measure_if_known(facts.changed_line_coverage, |coverage| {
         if coverage >= min_coverage {
             Ok(format!(
@@ -79,7 +79,7 @@ pub fn check(facts: &EvidenceFacts, rules: &MergeRules) -> RuleVerdict {
         "protected paths touched",
     );
 
-    let max_lines = rules.max_combined_diff_lines;
+    let max_lines = rules.max_changed_lines;
     c.measure(
         facts.combined_diff_lines,
         "no combined diff size",
@@ -117,12 +117,12 @@ pub fn debt_blocks(unreviewed_debt: Option<&[String]>, rules: &MergeRules) -> Op
 fn debt(unreviewed_debt: Option<&[String]>, rules: &MergeRules) -> Result<String, String> {
     match unreviewed_debt {
         Some([]) => {
-            Ok("no card carries quality debt a strong enough model didn't review".to_owned())
+            Ok("no task carries quality debt a strong enough model didn't review".to_owned())
         }
         _ if rules.allow_debt => Ok(
             "allow_debt lets auto merge quality debt no strong enough model reviewed".to_owned(),
         ),
-        None => Err("no fact says whether a card carries quality debt".to_owned()),
+        None => Err("no fact says whether a task carries quality debt".to_owned()),
         Some(cards) => Err(format!(
             "quality debt no strong enough model reviewed, and merging it anyway is yours: {}",
             cards.join(", ")
@@ -139,7 +139,7 @@ mod tests {
         EvidenceFacts {
             gates_passed: Some(true),
             reviews_approved: Some(true),
-            reviewed_by_other_company: Some(true),
+            reviewed_by_other_provider: Some(true),
             acceptance_tests_valid: Some(true),
             changed_line_coverage: Some(0.9),
             tamper_flags: Some(0),
@@ -177,9 +177,9 @@ mod tests {
                 },
             ),
             (
-                "same company",
+                "same provider",
                 EvidenceFacts {
-                    reviewed_by_other_company: Some(false),
+                    reviewed_by_other_provider: Some(false),
                     ..passing()
                 },
             ),
@@ -263,9 +263,9 @@ mod tests {
                 },
             ),
             (
-                "other company",
+                "other provider",
                 EvidenceFacts {
-                    reviewed_by_other_company: None,
+                    reviewed_by_other_provider: None,
                     ..passing()
                 },
             ),
@@ -330,13 +330,13 @@ mod tests {
             ..MergeRules::default()
         };
         let indebted = EvidenceFacts {
-            unreviewed_debt: Some(vec!["card-03".to_owned()]),
+            unreviewed_debt: Some(vec!["task-03".to_owned()]),
             ..passing()
         };
         let strict = check(&indebted, &MergeRules::default());
         assert_eq!(strict.verdict, Verdict::Escalate);
         assert!(
-            strict.reasons[0].contains("card-03"),
+            strict.reasons[0].contains("task-03"),
             "{:?}",
             strict.reasons
         );
@@ -359,13 +359,13 @@ mod tests {
 
     #[test]
     fn debt_blocks_unless_allowed() {
-        let debt = ["card-03".to_owned()];
+        let debt = ["task-03".to_owned()];
         let strict = MergeRules::default();
         let lenient = MergeRules {
             allow_debt: true,
             ..MergeRules::default()
         };
-        assert!(debt_blocks(Some(&debt), &strict).is_some_and(|why| why.contains("card-03")));
+        assert!(debt_blocks(Some(&debt), &strict).is_some_and(|why| why.contains("task-03")));
         assert!(debt_blocks(None, &strict).is_some());
         assert_eq!(debt_blocks(Some(&debt), &lenient), None);
         assert_eq!(debt_blocks(None, &lenient), None);

@@ -4,7 +4,7 @@ expression: shown
 ---
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Effort
-  How long Opus 5.5 thinks before it answers, for the default agent
+  How long Opus 5.5 thinks before it answers, for the main agent
 
     Faster                                Smarter
     ─────────────────────────────────▲───────────    All hands  off

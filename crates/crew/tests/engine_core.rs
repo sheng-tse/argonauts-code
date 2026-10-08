@@ -50,7 +50,7 @@ async fn role_workers_and_effort_reach_sessions() -> anyhow::Result<()> {
     let codex = crew.worker("codex/gpt-x", "gpt");
     let claude_ref: WorkerRef = "claude-code/opus".parse()?;
     let codex_ref: WorkerRef = "codex/gpt-x".parse()?;
-    let everyone = crew.settings.crew.clone();
+    let everyone = crew.settings.crew.members();
     assert_eq!(
         roles::candidates(&crew.settings, RoleName::Reviewer),
         everyone,
@@ -65,7 +65,7 @@ async fn role_workers_and_effort_reach_sessions() -> anyhow::Result<()> {
         },
     );
     crew.settings.roles.insert(
-        RoleName::Owner,
+        RoleName::Worker,
         RoleSettings {
             effort: Some("high".to_owned()),
             ..RoleSettings::default()
@@ -82,12 +82,15 @@ async fn role_workers_and_effort_reach_sessions() -> anyhow::Result<()> {
         roles::candidates(&crew.settings, RoleName::Reviewer),
         vec![claude_ref.clone()]
     );
-    assert_eq!(roles::candidates(&crew.settings, RoleName::Owner), everyone);
+    assert_eq!(
+        roles::candidates(&crew.settings, RoleName::Worker),
+        everyone
+    );
 
     script(&codex, vec![restatement(), restatement()]);
     script(&claude, vec![restatement()]);
     let (host, _) = crew.host(RunMode::Crew)?;
-    host.ask::<Restate>(restate(RoleName::Owner, &codex_ref, 0))
+    host.ask::<Restate>(restate(RoleName::Worker, &codex_ref, 0))
         .await?;
     host.ask::<Restate>(restate(RoleName::Reviewer, &codex_ref, 0))
         .await?;
@@ -98,7 +101,7 @@ async fn role_workers_and_effort_reach_sessions() -> anyhow::Result<()> {
     assert_eq!(
         codex_efforts,
         vec![Some("high".to_owned()), Some("low".to_owned())],
-        "the role's effort first, else the harness's"
+        "the role's effort first, else the CLI's"
     );
     let claude_specs = claude.specs();
     assert_eq!(claude_specs.len(), 1);

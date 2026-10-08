@@ -2,10 +2,12 @@
 //! nothing uses them; newer ones are reached by path.
 
 pub mod adapter;
+pub mod agent_goal;
 pub mod agent_sessions;
 pub mod agents;
 pub mod api;
 pub mod app;
+pub mod artifacts;
 pub mod asking;
 pub mod budget;
 pub mod build_output;
@@ -14,14 +16,17 @@ pub mod clock;
 pub mod config;
 pub mod control;
 pub mod crew_panel;
+pub mod crew_stats;
 pub mod display_names;
 pub mod driver;
 pub mod engine;
 pub mod event;
 pub mod events;
 pub mod future;
+pub mod goal;
 pub mod handoff;
 pub mod hash;
+pub mod hidden_git;
 pub mod ids;
 pub mod input;
 pub mod journal;
@@ -38,19 +43,25 @@ pub mod paths;
 pub mod policy;
 pub mod pricing;
 pub mod prompt;
+pub mod prompt_files;
+pub mod prompt_list;
+pub mod prompt_parts;
 pub mod redact;
 pub mod registry;
+pub mod required;
 pub mod sanitize;
 pub mod screen;
 pub mod session;
 pub mod settings;
 pub mod steps;
 pub mod text;
+pub mod unborn;
 pub mod vendor_commands;
 pub mod vendor_sessions;
 pub mod views;
 pub mod worker;
 pub mod workflow;
+pub mod workflow_page;
 
 pub use adapter::{
     Adapter, Capabilities, KNOWN_AGENT_IDS, LaunchTweak, SetupHints, StopPlan, StopSignal,

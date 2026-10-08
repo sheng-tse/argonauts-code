@@ -219,7 +219,7 @@ fn predictions_pair_with_the_right_outcome() {
     ));
     assert!(
         scores.iter().all(|score| score.worker != worker("agy")),
-        "a fallback's result never scores the owner it replaced"
+        "a fallback's result never scores the worker it replaced"
     );
     assert_eq!(scores.len(), 4);
 }

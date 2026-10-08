@@ -150,12 +150,12 @@ impl Screen {
 }
 
 #[test]
-fn model_opens_on_the_default_agents_clis_with_the_roles_a_level_down() {
+fn model_opens_on_the_main_agents_clis_with_the_roles_a_level_down() {
     let mut screen = Screen::new();
     let asked = screen.answer(settings(
         "model",
         vec![
-            row("default_agent", "\"claude-code\"", "global", &[]),
+            row("main_agent", "\"claude-code\"", "global", &[]),
             row(
                 "roles.reviewer.workers",
                 "[\"codex/gpt-5.6\"]",
@@ -170,7 +170,7 @@ fn model_opens_on_the_default_agents_clis_with_the_roles_a_level_down() {
             view: ViewRequest::Models { role: None }
         }]
     );
-    assert_eq!(screen.title(), "Default agent");
+    assert_eq!(screen.title(), "Main agent");
     screen.answer(models(
         None,
         vec![choice("claude-code", true), choice("codex/gpt-5.6", false)],
@@ -196,7 +196,7 @@ fn model_opens_on_the_default_agents_clis_with_the_roles_a_level_down() {
         }]
     );
     assert!(screen.model.bottom.picker.is_some());
-    assert_eq!(screen.title(), "Default agent");
+    assert_eq!(screen.title(), "Main agent");
 }
 
 #[test]
@@ -205,7 +205,7 @@ fn answers_land_in_the_picker_that_asked() {
     screen.answer(settings(
         "model",
         vec![
-            row("default_agent", "\"claude-code/opus\"", "global", &[]),
+            row("main_agent", "\"claude-code/opus\"", "global", &[]),
             row(
                 "roles.reviewer.workers",
                 "[\"codex/gpt-5.6\"]",
@@ -302,7 +302,7 @@ fn model_pick_sends_argument_form() {
         },
     };
     assert_eq!(pick(None), std::slice::from_ref(&agent));
-    assert_eq!(pick(Some(RoleName::Default)), [agent]);
+    assert_eq!(pick(Some(RoleName::Main)), [agent]);
     assert_eq!(
         pick(Some(RoleName::Reviewer)),
         [UiCommand::Slash {
@@ -393,18 +393,18 @@ fn a_scope_number_saves_the_pick() {
 fn keys_without_values_take_a_typed_line() {
     let mut screen = Screen::new();
     screen.answer(settings(
-        "budget",
+        "limits",
         vec![
-            row("budget.run_usd", "30.0", "built-in", &[]),
+            row("limits.spend_per_run", "30.0", "built-in", &[]),
             row(
-                "budget.at_limit",
+                "limits.at_limit",
                 "\"ask\"",
                 "built-in",
                 &["\"ask\"", "\"stop\""],
             ),
         ],
     ));
-    assert_eq!(screen.labels(), ["run_usd", "at_limit"]);
+    assert_eq!(screen.labels(), ["spend_per_run", "at_limit"]);
     screen.press(KeyCode::Enter);
     let picker = screen.model.bottom.picker.as_ref().unwrap();
     assert_eq!(picker.input.as_deref(), Some("30.0"));
@@ -419,7 +419,7 @@ fn keys_without_values_take_a_typed_line() {
     assert_eq!(
         out.commands,
         [UiCommand::SetSetting {
-            key: "budget.run_usd".into(),
+            key: "limits.spend_per_run".into(),
             value: "45".into(),
             scope: SettingScope::Project
         }]
@@ -430,7 +430,7 @@ fn keys_without_values_take_a_typed_line() {
 fn effort_offers_only_the_models_levels() {
     let rows = vec![
         row(
-            "roles.default.effort",
+            "roles.main.effort",
             "\"high\"",
             "built-in",
             &["\"low\"", "\"high\""],
@@ -439,7 +439,7 @@ fn effort_offers_only_the_models_levels() {
     ];
     let mut screen = Screen::new();
     screen.answer(settings("effort", rows.clone()));
-    assert_eq!(screen.labels(), ["Default agent", "reviewer"]);
+    assert_eq!(screen.labels(), ["Main agent", "reviewer"]);
     screen.press(KeyCode::Enter);
     assert_eq!(screen.labels(), ["low", "high"]);
 
@@ -568,6 +568,68 @@ fn agents_says_which_clis_are_not_installed_and_how_to_add_them() {
     assert_eq!(notes(&screen), expected);
 }
 
+/// Each agent's row leads its note with its state, as the glyph every view draws for that
+/// state: on, off, and not installed. An endpoint has no switch, so it carries none.
+#[test]
+fn agents_mark_each_row_with_its_state() {
+    use crate::widgets::State;
+
+    let enabled = |id: &str, on: &str| {
+        row(
+            &format!("agents.{id}.enabled"),
+            on,
+            "built-in",
+            &["true", "false"],
+        )
+    };
+    let mut screen = Screen::new();
+    screen.answer(ViewData::Settings {
+        rows: vec![
+            enabled("codex", "true"),
+            row("agents.codex.model", "\"gpt-5.6\"", "global", &[]),
+            enabled("agy", "false"),
+            enabled("opencode", "true"),
+            row(
+                "endpoints.local.base_url",
+                "\"http://localhost:8080/v1\"",
+                "global",
+                &[],
+            ),
+        ],
+        command: Some("agents".into()),
+        section: None,
+        not_installed: vec![MissingCli {
+            id: "opencode".into(),
+            install: None,
+        }],
+    });
+    let picker = screen.model.bottom.picker.as_ref().unwrap();
+    let states: Vec<Option<State>> = picker.rows.iter().map(|row| row.state).collect();
+    assert_eq!(
+        states,
+        [
+            Some(State::Done),
+            Some(State::Stopped),
+            Some(State::Failed),
+            None,
+            None
+        ]
+    );
+
+    let mut theme = Theme::dark();
+    theme.glyphs = crate::theme::Glyphs::UNICODE;
+    let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+    let drawn = plain_text(&picker.lines(&ctx));
+    for row in [
+        "codex              ✔ on · gpt-5.6",
+        "agy                ■ off",
+        "opencode           ✗ not installed",
+        "local (endpoint)   http://localhost:8080/v1",
+    ] {
+        assert!(drawn.contains(row), "{row:?} in\n{drawn}");
+    }
+}
+
 #[test]
 fn a_bad_endpoint_line_says_why_and_stays() {
     let mut screen = Screen::new();
@@ -687,7 +749,7 @@ fn a_models_answer_for_a_left_picker_opens_nothing_over_another() {
     ));
     assert!(
         screen.labels().is_empty(),
-        "still waiting for the default agent"
+        "still waiting for the main agent"
     );
     let out = screen.press(KeyCode::Esc);
     assert!(out.commands.is_empty());
@@ -717,11 +779,11 @@ fn a_models_answer_for_a_left_picker_opens_nothing_over_another() {
 }
 
 #[test]
-fn esc_on_the_model_list_keeps_the_default_agent() {
+fn esc_on_the_model_list_keeps_the_main_agent() {
     let mut screen = Screen::new();
     screen.answer(settings(
         "model",
-        vec![row("default_agent", "\"claude-code/haiku\"", "global", &[])],
+        vec![row("main_agent", "\"claude-code/haiku\"", "global", &[])],
     ));
     let out = screen.press(KeyCode::Esc);
     assert!(out.commands.is_empty());

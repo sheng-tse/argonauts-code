@@ -60,7 +60,7 @@ pub fn definitions(options: &FrontEndOptions) -> Vec<Tool> {
         tool(
             START_RUN,
             "Starts a run in this repo from a request, solo (one agent) or crew. The run waits \
-             for its owner's decisions in the Argonauts app. `settings` takes `key=value` \
+             for your decisions in the Argonauts app. `settings` takes `key=value` \
              overrides; safety settings are refused.",
             json!({
                 "type": "object",
@@ -74,7 +74,7 @@ pub fn definitions(options: &FrontEndOptions) -> Vec<Tool> {
                     "mode": {
                         "type": "string",
                         "enum": ["solo", "crew"],
-                        "description": "solo gives the request to one agent; crew plans it and splits it into cards."
+                        "description": "solo gives the request to one agent; crew plans it and splits it into tasks."
                     },
                     "settings": {
                         "type": "array",
@@ -96,7 +96,7 @@ pub fn definitions(options: &FrontEndOptions) -> Vec<Tool> {
         ),
         tool(
             RUN_STATUS,
-            "One run's state, spend, cards, and whether it waits for a decision.",
+            "One run's state, spend, tasks, and whether it waits for a decision.",
             run_only_schema(),
             true,
         ),
@@ -127,7 +127,7 @@ pub fn definitions(options: &FrontEndOptions) -> Vec<Tool> {
         ),
         tool(
             REQUEST_DECISION,
-            "Says what in a run waits for a decision and where its owner answers it. This \
+            "Says what in a run waits for a decision and where you answer it. This \
              server can't answer it.",
             run_only_schema(),
             true,
@@ -406,11 +406,12 @@ async fn start_run(
         continues: None,
         overrides: args.settings,
         include_uncommitted: false,
-        default_agent: None,
+        main_agent: None,
         approval_mode: None,
         front_end: Some(client.to_owned()),
         instructions: Vec::new(),
         request_settings: Vec::new(),
+        required_steps: Vec::new(),
     };
     let handle = match server.api().start(start).await {
         Ok(handle) => handle,
@@ -425,7 +426,7 @@ async fn start_run(
     Ok(CallToolResult::structured(json!({
         "run": handle.run.as_str(),
         "started": true,
-        "time_budget": options.mcp.run_budget.0,
+        "time_budget": options.mcp.run_limit.0,
         "front_end_runs_today": today,
         "front_end_runs_per_day": options.mcp.runs_per_day,
         "next": format!("Watch it with {RUN_EVENTS}. Its decisions wait in the Argonauts app."),

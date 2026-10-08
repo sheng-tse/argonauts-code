@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use argonauts_core::app::{AppEvent, RepoRuns, ViewData, ViewRequest};
-use argonauts_core::events::RunEvent;
+use argonauts_core::events::run::RunLifecycle;
+use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::ids::RepoId;
 use argonauts_core::journal;
 use argonauts_core::layout::run_files;
@@ -107,6 +108,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
             show(ctx, ViewData::AllRepos { repos });
         }
         ViewRequest::Crew => anyhow::bail!("the crew panel isn't one run's view"),
+        ViewRequest::Mods { .. } => anyhow::bail!("the mods aren't a run's"),
         ViewRequest::Config
         | ViewRequest::Settings { .. }
         | ViewRequest::Models { .. }
@@ -114,6 +116,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
             anyhow::bail!("the settings views aren't run views")
         }
         ViewRequest::WorkflowLibrary => anyhow::bail!("the workflow files aren't a run's"),
+        ViewRequest::Usage { .. } => anyhow::bail!("usage isn't one run's view"),
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
         ViewRequest::AgentSessions { .. } => {
             anyhow::bail!("a run's agents' sessions are the chat's to list")
@@ -213,6 +216,61 @@ pub(crate) async fn context(
     runs: &mut RunsState,
     chat: Option<ContextRow>,
 ) -> Handled {
+    let rows = context_rows(ctx, runs, chat).await;
+    show(
+        ctx,
+        ViewData::Context {
+            view: ContextView { rows },
+        },
+    );
+    Ok(Vec::new())
+}
+
+/// `/context print`: the same sessions, once, as lines in the conversation.
+pub(crate) async fn context_report(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    chat: Option<ContextRow>,
+) -> Handled {
+    let rows = context_rows(ctx, runs, chat).await;
+    let mut lines: Vec<String> = rows.iter().map(|row| context_line(ctx, row)).collect();
+    if lines.is_empty() {
+        lines.push("No live sessions".to_owned());
+    }
+    ctx.send(AppEvent::Report {
+        title: "Context".to_owned(),
+        lines,
+    });
+    Ok(Vec::new())
+}
+
+/// `main · chat · Opus 5.5 on Claude Code · 212k of 1M (21%) · 41 tool calls`.
+fn context_line(ctx: &Ctx, row: &ContextRow) -> String {
+    use argonauts_tui::format::tokens;
+    let used = match row.window.or(row.cap).filter(|window| *window > 0) {
+        Some(window) => format!(
+            "{} of {} ({:.0}%)",
+            tokens(row.used),
+            tokens(window),
+            row.used as f64 / window as f64 * 100.0
+        ),
+        None => tokens(row.used),
+    };
+    let calls = match row.tool_calls {
+        1 => "1 tool call".to_owned(),
+        n => format!("{n} tool calls"),
+    };
+    let worker = ctx.names.worker(&row.worker);
+    format!("{} · {worker} · {used} · {calls}", row.label.trim())
+}
+
+/// Every live session's context: the chat's own, the run on screen, then the other runs
+/// that work now.
+async fn context_rows(
+    ctx: &mut Ctx,
+    runs: &mut RunsState,
+    chat: Option<ContextRow>,
+) -> Vec<ContextRow> {
     let rotate_at = ctx.settings().sessions.rotate_at.clone();
     let mut rows: Vec<ContextRow> = chat.into_iter().collect();
     let attached = runs::attached(runs).cloned();
@@ -240,13 +298,7 @@ pub(crate) async fn context(
             format!("Other runs' sessions are left out: {err}"),
         ),
     }
-    show(
-        ctx,
-        ViewData::Context {
-            view: ContextView { rows },
-        },
-    );
-    Ok(Vec::new())
+    rows
 }
 
 /// A run's live sessions, each capped where it rotates. A share of the window gives each
@@ -266,6 +318,7 @@ fn capped_rows(events: &[RunEvent], run: &RunId, rotate_at: &RotateAt) -> Vec<Co
 pub(crate) async fn save_workflow(
     ctx: &mut Ctx,
     runs: &mut RunsState,
+    vendor: &crate::controller::vendor_commands::VendorCommands,
     run: RunId,
     workflow: Option<WorkflowId>,
 ) -> Handled {
@@ -277,6 +330,18 @@ pub(crate) async fn save_workflow(
         );
         return Ok(Vec::new());
     };
+    // Steps the runner ran are a script, which saves as a workflow of yours.
+    let script = crate::controller::workflows::save_script(
+        ctx,
+        vendor,
+        &run,
+        &events,
+        workflow.as_ref(),
+        &name,
+    );
+    if let Some(saved) = script {
+        return saved;
+    }
     let dir = ctx
         .env
         .paths
@@ -304,7 +369,8 @@ pub(crate) async fn save_workflow(
     ctx.notice(
         NoteLevel::Info,
         format!(
-            "Saved the workflow as {saved_name} in {}. It's in the Library of /workflows.",
+            "Saved its phases as {saved_name} in {}. A workflow file that says phases = \
+             \"{saved_name}\" runs them.",
             ctx.env.display(&path)
         ),
     );
@@ -327,6 +393,19 @@ pub(crate) async fn workflow_view(
     Ok(Vec::new())
 }
 
+/// The steps a setup kept for the run, which its start carries.
+fn kept_steps(events: &[RunEvent]) -> Vec<argonauts_core::required::RequiredStep> {
+    events
+        .iter()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Run(RunLifecycle::Started(started)) => {
+                Some(started.required_steps.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// Shows the workflow view, or says why there's none to show.
 fn show_workflow(
     ctx: &Ctx,
@@ -335,12 +414,13 @@ fn show_workflow(
     workflow: Option<&WorkflowId>,
 ) -> Option<String> {
     let events = run_events(ctx, runs, run);
-    let Some(view) = views::workflow_view(&events, run, workflow) else {
+    let Some(mut view) = views::workflow_view(&events, run, workflow) else {
         return Some(match workflow {
             Some(workflow) => format!("This run has no workflow {workflow}."),
             None => NO_WORKFLOW_YET.to_owned(),
         });
     };
+    views::required::mark(&mut view, &ctx.env, &kept_steps(&events));
     show(
         ctx,
         ViewData::Workflow {

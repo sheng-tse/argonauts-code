@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use super::approvals::RoleSandbox;
+pub use super::goal::RoleGoal;
 pub use super::handoff::{BrokenWork, FallbackEntry, FallbackRules, HandoffMode, HandoffSettings};
 use super::sessions::{Compaction, NativeFanout, SessionLifetime};
 use crate::names::WorkerRef;
@@ -13,7 +14,7 @@ use crate::names::WorkerRef;
 pub struct RoleSettings {
     /// Workers that fill the role. Empty lets the router pick from the crew.
     pub workers: Vec<WorkerRef>,
-    /// How many seats, where a role has several (drafters, reviewers per card).
+    /// How many places, where a role has several (drafters, reviewers per task).
     pub count: Option<u32>,
     /// Blind to peers in the same role (reviewers, drafters).
     pub blind: Option<bool>,
@@ -27,14 +28,15 @@ pub struct RoleSettings {
     pub lifetime: Option<SessionLifetime>,
     pub compaction: Option<Compaction>,
     pub native_fanout: Option<NativeFanout>,
-    /// What happens when this role's agent stops. Unset keys come from the top-level
-    /// `[handoff]` through [`HandoffSettings::applied`].
-    pub handoff: HandoffSettings,
     /// The sandbox for this role's agents. Unset keys come from the top-level `[sandbox]`
     /// through [`SandboxSettings::applied`](super::approvals::SandboxSettings::applied).
     #[serde(skip_serializing_if = "RoleSandbox::is_empty")]
     pub sandbox: RoleSandbox,
     pub instructions: Option<String>,
+    /// Whether the role works each of its tasks as a goal, and who keeps it going: `cli`,
+    /// `argonauts`, or `off`. Unset is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal: Option<RoleGoal>,
 }
 
 /// When a conditional role runs.

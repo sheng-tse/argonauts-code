@@ -127,7 +127,7 @@ pub(crate) fn announce(
         send_ui(ctx);
     }
     let mut effects = Vec::new();
-    if ctx.settings().default_agent != before.settings.default_agent {
+    if ctx.settings().main_agent != before.settings.main_agent {
         effects.push(Effect::FreshChat);
     }
     effects.push(Effect::SettingsApplied { keys });
@@ -142,6 +142,34 @@ pub(crate) fn send_ui(ctx: &Ctx) {
         verbosity: ui.verbosity,
         ui: Some(Box::new(ui.clone())),
     });
+}
+
+/// Where a change to `key` is saved: `picked`, when a flag or the scope question chose, or else
+/// the layer its value came from, so the change takes effect and never hides under one that
+/// wins. A value still at its default goes to everywhere.
+pub(crate) fn scope_for_change(ctx: &Ctx, key: &str, picked: Option<SettingScope>) -> SettingScope {
+    picked.unwrap_or_else(|| {
+        let layer = ctx.settings.layer(key);
+        let preset_from = ctx.settings.preset_from(&layer);
+        SettingScope::for_change(&layer, preset_from.as_deref())
+    })
+}
+
+/// Saves `key = value`, its value TOML text, where [`scope_for_change`] puts it, and
+/// announces it.
+pub(crate) fn set_where_it_came_from(
+    ctx: &mut Ctx,
+    key: String,
+    value: String,
+    picked: Option<SettingScope>,
+) -> anyhow::Result<Vec<Effect>> {
+    let scope = scope_for_change(ctx, &key, picked);
+    apply(
+        ctx,
+        &Change::Set(vec![(key, value)]),
+        scope,
+        TrustAfter::Carry,
+    )
 }
 
 /// The file a scope saves into; `None` for the session.
@@ -265,7 +293,141 @@ fn write_and_reload(
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::settings::ui::WidgetName;
+
+    use super::super::tests::Fixture;
     use super::*;
+
+    fn set(key: &str, value: &str) -> Change {
+        Change::Set(vec![(key.to_owned(), value.to_owned())])
+    }
+
+    #[test]
+    fn a_change_is_written_to_the_layer_its_value_came_from() {
+        let mut fixture = Fixture::new(false, |repo| {
+            repo.write(
+                ".argonauts/config.toml",
+                "[ui.above_input]\nmods = [\"plan-usage\"]\n",
+            )
+            .unwrap();
+        });
+        let ctx = &mut fixture.ctx;
+        let project = ctx.env.project_config();
+        let global = ctx.env.global_config();
+        let pinned = "ui.above_input.mods";
+
+        // From the project file, so /context pin edits the project file.
+        let scope = scope_for_change(ctx, pinned, None);
+        assert_eq!(scope, SettingScope::Project);
+        make(
+            ctx,
+            &set(pinned, "[\"plan-usage\", \"context\"]"),
+            scope,
+            TrustAfter::Carry,
+        )
+        .unwrap();
+        assert!(file_sets(&project, pinned));
+        assert!(!file_sets(&global, pinned));
+        assert_eq!(
+            ctx.settings().ui.above_input.mods,
+            [WidgetName::Quota, WidgetName::Context]
+        );
+
+        // Still at its default, so it goes to everywhere.
+        let parts = "ui.views.status.mods";
+        let scope = scope_for_change(ctx, parts, None);
+        assert_eq!(scope, SettingScope::Global);
+        make(ctx, &set(parts, "[\"runs\"]"), scope, TrustAfter::Carry).unwrap();
+        assert!(file_sets(&global, parts));
+        assert_eq!(ctx.settings().ui.views.status.mods, [WidgetName::Runs]);
+        assert_eq!(scope_for_change(ctx, parts, None), SettingScope::Global);
+
+        // Each flag picks its layer, whatever set the value.
+        for picked in [
+            SettingScope::Global,
+            SettingScope::Project,
+            SettingScope::ProjectLocal,
+        ] {
+            assert_eq!(scope_for_change(ctx, pinned, Some(picked)), picked);
+        }
+        let local = ctx.env.project_local_config();
+        let scope = scope_for_change(ctx, pinned, Some(SettingScope::ProjectLocal));
+        make(ctx, &set(pinned, "[]"), scope, TrustAfter::Carry).unwrap();
+        assert!(file_sets(&local, pinned));
+        assert!(ctx.settings().ui.above_input.mods.is_empty());
+        // Now your own file sets it, and the next change follows it there.
+        assert_eq!(
+            scope_for_change(ctx, pinned, None),
+            SettingScope::ProjectLocal
+        );
+
+        // A hide for the session stays in the session.
+        let shown = "ui.above_input.shown";
+        make(
+            ctx,
+            &set(shown, "false"),
+            SettingScope::Session,
+            TrustAfter::Carry,
+        )
+        .unwrap();
+        assert_eq!(scope_for_change(ctx, shown, None), SettingScope::Session);
+        assert!(!file_sets(&global, shown));
+    }
+
+    #[test]
+    fn pinning_edits_the_file_the_band_came_from() {
+        use argonauts_core::input::{ViewAction, WidgetChange, WidgetsAction};
+        use argonauts_core::settings::ui::Place;
+
+        use crate::controller::widgets;
+
+        let mut fixture = Fixture::new(false, |repo| {
+            repo.write(
+                ".argonauts/config.toml",
+                "[ui.above_input]\nmods = [\"plan-usage\"]\n",
+            )
+            .unwrap();
+        });
+        let ctx = &mut fixture.ctx;
+        let project = std::fs::read_to_string(ctx.env.project_config()).unwrap();
+        assert!(project.contains("[\"plan-usage\"]"), "{project}");
+
+        // /context pin, then again to unpin.
+        let pin = ViewAction::Pin { scope: None };
+        widgets::tab(ctx, Place::Context, pin).unwrap();
+        assert_eq!(
+            ctx.settings().ui.above_input.mods,
+            [WidgetName::Quota, WidgetName::Context]
+        );
+        let project = std::fs::read_to_string(ctx.env.project_config()).unwrap();
+        assert!(project.contains("\"context\""), "{project}");
+        assert!(!file_sets(&ctx.env.global_config(), "ui.above_input.mods"));
+        widgets::tab(ctx, Place::Context, pin).unwrap();
+        assert_eq!(ctx.settings().ui.above_input.mods, [WidgetName::Quota]);
+
+        // /pin run-limits --global writes your global file, under the project's list.
+        let show = WidgetsAction::Change {
+            widget: WidgetName::Budget,
+            change: WidgetChange::Show {
+                place: Place::AboveInput,
+            },
+        };
+        widgets::command(ctx, show, Some(SettingScope::Global)).unwrap();
+        let global = std::fs::read_to_string(ctx.env.global_config()).unwrap();
+        assert!(global.contains("\"run-limits\""), "{global}");
+
+        // Folding a widget whose `open` is still its default goes to everywhere.
+        let fold = WidgetsAction::Change {
+            widget: WidgetName::Quota,
+            change: WidgetChange::Fold,
+        };
+        widgets::command(ctx, fold, None).unwrap();
+        assert!(file_sets(
+            &ctx.env.global_config(),
+            "ui.mods.plan-usage.open"
+        ));
+        assert!(!ctx.settings().ui.widget(WidgetName::Quota).open);
+    }
 
     #[test]
     fn a_file_sets_only_the_keys_it_names() {

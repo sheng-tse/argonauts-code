@@ -1,6 +1,6 @@
-//! The goal style's steps: the lead plans each attempt from the last check, and a fresh
-//! read-only agent from another company checks the done-when list. Only the check's answers,
-//! through code, mark a goal met.
+//! A goal's steps: the orchestrator plans each next round from what the last check found
+//! failing, and the judge, a fresh read-only agent from another provider than the work, reads
+//! the result against each line. Only the check's answers, through code, mark a goal met.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,9 @@ pub struct PlanAttemptInput {
     pub last_check: Option<GoalCheck>,
     /// One line per earlier attempt, such as "1. Fix the even case: not yet, G4 unmet".
     pub attempts: Vec<String>,
+    /// Set once, when the same failure came back round after round: plan this one another way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_approach: Option<String>,
 }
 
 /// One attempt, shown as one phase.

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::events::VendorEvent;
+use crate::events::context::ContextDetail;
 use crate::events::session::{InputPart, QueuedMessage, SessionEnd, SessionEvent};
 use crate::future::BoxFuture;
 use crate::names::{RoleName, SessionKey, VendorId, WorkerRef};
@@ -91,6 +92,10 @@ pub struct SessionSpec {
     ///
     /// [`Capabilities::isolates`]: crate::Capabilities::isolates
     pub isolated: bool,
+    /// The session's run is on autopilot, so nobody answers a question it ends its turn with.
+    /// A CLI with a style of its own for working without stopping gets it (Claude Code's
+    /// "Proactive").
+    pub autopilot: bool,
     /// Read by the agent's `argonauts_status` MCP tool, pre-filtered for the role. `None` turns
     /// the tool off.
     pub status_file: Option<PathBuf>,
@@ -100,6 +105,18 @@ pub struct SessionSpec {
     /// Where a direct session's questions go, such as Claude Code's permission prompts. `None`
     /// asks nothing: what the CLI would ask about is refused, or allowed by its flags.
     pub asking: Option<Asking>,
+    /// What the CLI's own workflow does in this session, where it has one.
+    pub cli_workflow: CliWorkflow,
+}
+
+/// A CLI's own workflow in one session. Only Claude Code has one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CliWorkflow {
+    /// Ultracode for the whole session: a workflow on every real task.
+    pub ultracode: bool,
+    /// You typed `ultracode` to ask for a workflow with this message. It goes out marked as
+    /// typed by you, so the CLI's own keyword works.
+    pub typed_keyword: bool,
 }
 
 /// A direct session's questions, and the app's listener that answers them.
@@ -110,8 +127,15 @@ pub struct Asking {
     pub endpoint: String,
     /// Sent with every question, so nothing else on this machine can ask in its name.
     pub token: String,
-    /// The `argonauts_start_run` tool is offered.
-    pub start_run: bool,
+    /// The main session's tools this session is offered, by name, such as
+    /// `argonauts_start_workflow`. The app picks them for each turn.
+    pub tools: Vec<String>,
+    /// What the session is told about those tools: a few lines at the end of its instructions,
+    /// given through its CLI's own way of taking such a note. `None` says nothing.
+    pub standing: Option<String>,
+    /// Crew roles it may ask through Argonauts, each with a tool of its own, such as the
+    /// reviewers from inside Claude Code's own workflow.
+    pub roles: Vec<crate::settings::crew::CrewRole>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -225,6 +249,20 @@ pub enum SessionControl {
     TakeBack { uuid: String },
     /// A request of a screen that joins the session.
     Screen(ScreenRequest),
+    /// Asks the CLI for its context by category now, as /context opening does. A CLI that
+    /// can't say ignores it.
+    AskContext(ContextDetail),
+    /// Something shows this session's context: after each fill, ask for the breakdown, at most
+    /// every 10 seconds. `None` stops asking.
+    WatchContext(Option<ContextDetail>),
+    /// Stops one subagent the session's own CLI runs, by the id its `Subagent` updates carry.
+    /// The session and its other subagents go on. A CLI that can't stop one alone says so in
+    /// a notice.
+    StopSubagent { id: String },
+    /// Esc: stops the running turn alone. What the session's own CLI runs in the background,
+    /// its subagents and workflows, goes on, and the session stays open for them. A CLI that
+    /// can't stop a turn alone is stopped whole, as by `Stop`.
+    StopTurn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -335,6 +373,13 @@ pub trait WorkerDirectory: Send + Sync {
     /// session and says when it couldn't, or `worker` is an endpoint, which loads nothing.
     /// False when that isn't known, so a blind role never goes there.
     fn isolates(&self, worker: &WorkerRef) -> bool {
+        let _ = worker;
+        false
+    }
+    /// The CLI behind `worker` takes Argonauts' tools when Argonauts drives it, so your
+    /// conversation can be that CLI itself and hand work over by calling one. False when that
+    /// isn't known: such a CLI's replies end with a verdict that code reads instead.
+    fn takes_session_tools(&self, worker: &WorkerRef) -> bool {
         let _ = worker;
         false
     }

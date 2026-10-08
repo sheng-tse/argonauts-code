@@ -114,6 +114,19 @@ pub fn session_label(state: &RunState, asking: &Asking<'_>) -> String {
     labels::unique(&label, |candidate| taken(state, asking.key, candidate))
 }
 
+/// A label a session was given outright. It keeps the one it has when it resumes, and takes
+/// `-2` when another session already has the name.
+pub fn given_label(state: &RunState, key: &SessionKey, given: &str) -> String {
+    if let Some(kept) = state
+        .sessions
+        .get(key)
+        .and_then(|own| own.started.label.clone())
+    {
+        return kept;
+    }
+    labels::unique(given, |candidate| taken(state, key, candidate))
+}
+
 /// The pattern for this session: the step's own for the agent the step is about, else what its
 /// role does on a card (a reviewer reviews, an adjudicator settles), else the step's default.
 fn pattern(
@@ -123,15 +136,17 @@ fn pattern(
     // Work a step's own agents do beside it: a card's tests, review, and settling, and the
     // lead's and code's own asks.
     let beside = match (asking.step_name, asking.role) {
-        (Some(StepName::DesignWorkflow), _) => Some("lead:design"),
-        (Some(StepName::PlanAttempt), _) => Some("lead:attempt"),
+        (Some(StepName::DesignWorkflow), _) => Some("main:design"),
+        (Some(StepName::PlanAttempt), _) => Some("main:attempt"),
         (Some(StepName::AcceptanceTests), _) => Some("accept:{item}"),
         (Some(StepName::Predict), _) => Some("predict:{item}"),
         (Some(StepName::ResolveConflict), _) => Some("resolve:{item}"),
         (Some(StepName::HandoffSummary), _) => Some("handoff:{item}"),
+        (Some(StepName::PickAttempt), _) => Some("pick:{item}"),
+        (Some(StepName::WriteInstructions), _) => Some("write:{item}"),
         (_, RoleName::Reviewer) if asking.card.is_some() => Some("review:{item}"),
         (_, RoleName::Adjudicator) if asking.card.is_some() => Some("settle:{item}"),
-        (_, RoleName::Spike) => Some("spike:{item}"),
+        (_, RoleName::Spike) => Some("experiment:{item}"),
         _ => None,
     };
     if let Some(pattern) = beside {

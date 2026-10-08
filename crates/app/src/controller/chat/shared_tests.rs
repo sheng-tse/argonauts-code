@@ -474,11 +474,154 @@ async fn plan_alone_has_every_run_from_the_conversation_plan_first() {
     harness.exit().await;
 }
 
+/// Whether the run's settings carry `condition` as its goal.
+fn carries_goal(start: &argonauts_core::api::StartRun, condition: &str) -> bool {
+    start
+        .overrides
+        .contains(&format!("goal.until=\"{condition}\""))
+}
+
+/// `/goal <condition>` starts nothing: it sets a condition for the work that follows, which
+/// every run from the conversation then carries, whatever the workflow and the CLI. Pause holds
+/// it, resume picks it up, and clear drops it, each reaching the run working toward it.
 #[tokio::test]
-async fn a_goal_starts_a_crew_run_that_pause_and_resume_hold() {
+async fn a_goal_is_a_condition_the_work_that_follows_carries() {
     let mut harness = Harness::start().await;
     slash(&harness, SlashCommand::Goal { text: None }).await;
     notice(&mut harness, "No goal is set").await;
+    slash(
+        &harness,
+        SlashCommand::Goal {
+            text: Some("every test passes and the README names the flag".into()),
+        },
+    )
+    .await;
+    // Stated back with what checks it; no check command is set up here.
+    let set = notice(&mut harness, "Goal set").await;
+    assert_eq!(set, "Goal set · checked by the judge");
+    assert!(
+        harness.conductor.starts().is_empty(),
+        "a goal starts no run"
+    );
+    slash(
+        &harness,
+        SlashCommand::Goal {
+            text: Some("show".into()),
+        },
+    )
+    .await;
+    let shown = notice(&mut harness, "Goal · checked by").await;
+    assert!(shown.contains("every test passes · the judge"), "{shown}");
+    assert!(
+        shown.contains("the README names the flag · the judge"),
+        "{shown}"
+    );
+    assert!(shown.contains("No limit on rounds"), "{shown}");
+
+    slash(
+        &harness,
+        SlashCommand::Crew {
+            task: "fix slugify".into(),
+        },
+    )
+    .await;
+    harness
+        .until(|event| matches!(event, AppEvent::Attached { .. }))
+        .await;
+    let started = harness.conductor.starts();
+    assert_eq!(started[0].request, "fix slugify");
+    assert!(
+        carries_goal(
+            &started[0],
+            "every test passes and the README names the flag"
+        ),
+        "{:?}",
+        started[0].overrides
+    );
+
+    slash(
+        &harness,
+        SlashCommand::Goal {
+            text: Some("pause".into()),
+        },
+    )
+    .await;
+    notice(&mut harness, "Goal paused").await;
+    slash(&harness, SlashCommand::Goal { text: None }).await;
+    notice(&mut harness, "Goal paused: every test passes").await;
+    slash(
+        &harness,
+        SlashCommand::Goal {
+            text: Some("resume".into()),
+        },
+    )
+    .await;
+    notice(&mut harness, "Goal resumed").await;
+    slash(
+        &harness,
+        SlashCommand::Goal {
+            text: Some("clear".into()),
+        },
+    )
+    .await;
+    notice(&mut harness, "Goal cleared").await;
+    slash(&harness, SlashCommand::Goal { text: None }).await;
+    notice(&mut harness, "No goal is set").await;
+    let calls = harness.conductor.calls();
+    for action in [
+        GoalAction::Pause { task: None },
+        GoalAction::Resume { task: None },
+        GoalAction::Clear { land: true },
+    ] {
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, Call::Goal { action: sent, .. } if *sent == action)),
+            "{action:?}: {calls:?}"
+        );
+    }
+    // The run itself is never paused: only its goal is.
+    assert!(
+        !calls.iter().any(|call| matches!(call, Call::Pause { .. })),
+        "{calls:?}"
+    );
+    harness.exit().await;
+}
+
+/// A condition only commands may check, with no command to check it, is refused when it's
+/// typed, and says how to fix it.
+#[tokio::test]
+async fn a_goal_nothing_can_check_is_refused() {
+    let mut harness = Harness::start_with(HarnessOptions {
+        flags: vec!["goal.check=\"command\"".to_owned()],
+        ..HarnessOptions::default()
+    })
+    .await;
+    slash(
+        &harness,
+        SlashCommand::Goal {
+            text: Some("the README names the flag".into()),
+        },
+    )
+    .await;
+    let refused = notice(&mut harness, "That goal can't be set").await;
+    assert!(refused.contains("name one in backticks"), "{refused}");
+    slash(
+        &harness,
+        SlashCommand::Goal {
+            text: Some("`make docs-check` passes".into()),
+        },
+    )
+    .await;
+    let set = notice(&mut harness, "Goal set").await;
+    assert_eq!(set, "Goal set · checked by make docs-check");
+    harness.exit().await;
+}
+
+/// A new conversation starts without the last one's goal.
+#[tokio::test]
+async fn clear_leaves_the_goal_with_its_conversation() {
+    let mut harness = Harness::start().await;
     slash(
         &harness,
         SlashCommand::Goal {
@@ -487,63 +630,19 @@ async fn a_goal_starts_a_crew_run_that_pause_and_resume_hold() {
     )
     .await;
     notice(&mut harness, "Goal set").await;
-    harness
-        .until(|event| matches!(event, AppEvent::Attached { .. }))
-        .await;
-    let started = harness.conductor.starts();
-    assert_eq!(started[0].mode, RunMode::Crew);
-    assert_eq!(started[0].request, "every test passes");
-    // A goal whoever leads: the run's own command wins over workflows.style.
-    assert!(
-        started[0]
-            .overrides
-            .contains(&"workflows.style=\"goal\"".to_owned()),
-        "{:?}",
-        started[0].overrides
-    );
+    slash(&harness, SlashCommand::Clear).await;
+    notice(&mut harness, "Started a new conversation").await;
     slash(&harness, SlashCommand::Goal { text: None }).await;
-    notice(&mut harness, "run-001 works toward it").await;
-    slash(
-        &harness,
-        SlashCommand::Goal {
-            text: Some("pause".into()),
-        },
-    )
-    .await;
-    slash(
-        &harness,
-        SlashCommand::Goal {
-            text: Some("clear".into()),
-        },
-    )
-    .await;
-    notice(&mut harness, "Stopped pursuing the goal").await;
-    let calls = harness.conductor.calls();
-    assert!(
-        calls
-            .iter()
-            .any(|call| matches!(call, Call::Pause { now: false, .. })),
-        "{calls:?}"
-    );
-    assert!(
-        calls.iter().any(|call| matches!(
-            call,
-            Call::Goal {
-                action: GoalAction::Clear { land: true },
-                ..
-            }
-        )),
-        "{calls:?}"
-    );
+    notice(&mut harness, "No goal is set").await;
     harness.exit().await;
 }
 
 #[tokio::test]
-async fn workflow_starts_a_crew_run_that_is_a_workflow_whoever_leads() {
+async fn workflow_starts_a_crew_run() {
     let mut harness = Harness::start().await;
     slash(
         &harness,
-        SlashCommand::Workflow {
+        SlashCommand::WorkflowRun {
             task: Some("fix slugify".into()),
         },
     )
@@ -554,10 +653,12 @@ async fn workflow_starts_a_crew_run_that_is_a_workflow_whoever_leads() {
     let started = harness.conductor.starts();
     assert_eq!(started[0].mode, RunMode::Crew);
     assert_eq!(started[0].request, "fix slugify");
+    // No goal comes with it unless you set one.
     assert!(
-        started[0]
+        !started[0]
             .overrides
-            .contains(&"workflows.style=\"workflow\"".to_owned()),
+            .iter()
+            .any(|set| set.starts_with("goal.")),
         "{:?}",
         started[0].overrides
     );
@@ -565,7 +666,7 @@ async fn workflow_starts_a_crew_run_that_is_a_workflow_whoever_leads() {
 }
 
 #[tokio::test]
-async fn a_review_goes_to_an_agent_from_another_company() {
+async fn a_review_goes_to_an_agent_from_another_provider() {
     let mut harness = Harness::start().await;
     slash(&harness, SlashCommand::Review { target: None }).await;
     notice(&mut harness, "Nothing to review").await;
@@ -588,7 +689,7 @@ async fn a_review_goes_to_an_agent_from_another_company() {
         .map(|part| part.text.as_str())
         .collect();
     assert!(asked.contains("security problems only"), "{asked}");
-    assert!(asked.contains("from another company"), "{asked}");
+    assert!(asked.contains("from another provider"), "{asked}");
     assert!(asked.contains("+fn set_cookie() {}"), "{asked}");
     assert!(
         harness.agent.specs().is_empty(),
@@ -603,15 +704,15 @@ async fn a_review_goes_to_an_agent_from_another_company() {
 }
 
 #[tokio::test]
-async fn with_no_other_company_in_the_crew_the_main_agent_reviews() {
+async fn with_no_other_provider_in_the_crew_the_main_agent_reviews() {
     let mut harness = Harness::start().await;
     harness.repo.write("a.txt", "a\n").unwrap();
     harness.agent.push(said("Looks fine."));
     slash(&harness, SlashCommand::Review { target: None }).await;
-    notice(&mut harness, "No agent from another company").await;
+    notice(&mut harness, "No agent from another provider").await;
     assert_eq!(turn_done(&mut harness).await, "Looks fine.");
     let asked = prompt(&harness, 0);
-    assert!(asked.contains("Look for bugs first") && !asked.contains("another company"));
+    assert!(asked.contains("Look for bugs first") && !asked.contains("another provider"));
     harness.exit().await;
 }
 
@@ -681,11 +782,116 @@ async fn add_dir_asks_where_to_save_one_more_writable_folder() {
     harness.exit().await;
 }
 
+/// `/usage` answers with what its tab draws, and never prints into the chat.
+/// `/usage print` still does.
+/// `/stats` alone opens the tab for the period `mods/stats.toml` sets, and its numbers carry
+/// the crew's stats and how the file asks for them to be shown. A period typed wins.
 #[tokio::test]
-async fn usage_shows_quotas_and_spend_and_takes_the_vendors_periods() {
+async fn stats_opens_for_the_period_its_file_sets() {
+    use argonauts_core::api::UsagePeriod;
+    use argonauts_core::input::ViewAction;
+    use argonauts_core::settings::stats::{StatsGroup, StatsSource};
+
     let mut harness = Harness::start().await;
-    slash(&harness, SlashCommand::Usage { period: None }).await;
-    let lines = report(&mut harness, "Usage, last 24 hours").await;
+    let mods = harness.repo.root().join(".argonauts").join("mods");
+    std::fs::create_dir_all(&mods).unwrap();
+    std::fs::write(
+        mods.join("stats.toml"),
+        "period = \"7d\"\ngroup = \"model\"\n",
+    )
+    .unwrap();
+    // A file of yours that doesn't read is left out alone, and named for the stats page.
+    let yours = harness.env.paths.home().join("mods");
+    std::fs::create_dir_all(&yours).unwrap();
+    std::fs::write(yours.join("stats.toml"), "measure = \"fortnight\"\n").unwrap();
+    for (typed, period) in [(None, UsagePeriod::Week), (Some("all"), UsagePeriod::All)] {
+        let action = ViewAction::Open;
+        let period_typed = typed.map(str::to_owned);
+        slash(
+            &harness,
+            SlashCommand::Stats {
+                period: period_typed,
+                action,
+            },
+        )
+        .await;
+        // Writing the file reloads the mods, which send their own view as well.
+        let event = harness
+            .until(|event| match event {
+                AppEvent::View { data } => matches!(data.as_ref(), ViewData::Usage { .. }),
+                AppEvent::Report { .. } => true,
+                _ => false,
+            })
+            .await;
+        let AppEvent::View { data } = event else {
+            panic!("/stats printed: {event:?}");
+        };
+        let ViewData::Usage { summary } = *data else {
+            panic!("not the usage numbers: {data:?}");
+        };
+        assert_eq!(summary.period, period);
+        let stats = summary.stats.expect("the crew's stats");
+        assert_eq!(stats.settings.group, StatsGroup::Model);
+        // The stats mod's page says the project's file set these.
+        assert_eq!(stats.sources.of("group"), StatsSource::Project);
+        assert_eq!(stats.sources.of("measure"), StatsSource::BuiltIn);
+        let [problem] = stats.problems.as_slice() else {
+            panic!("one file left out: {:?}", stats.problems);
+        };
+        assert!(problem.contains("mods/stats.toml: "), "{problem}");
+        assert!(problem.contains("fortnight"), "{problem}");
+    }
+}
+
+#[tokio::test]
+async fn usage_opens_its_tab_for_the_period_and_print_still_prints() {
+    use argonauts_core::api::UsagePeriod;
+    use argonauts_core::input::ViewAction;
+
+    let mut harness = Harness::start().await;
+    let usage = |period: Option<&str>, action| SlashCommand::Usage {
+        period: period.map(str::to_owned),
+        action,
+    };
+    for (word, period) in [
+        (None, UsagePeriod::Today),
+        (Some("weekly"), UsagePeriod::Week),
+        (Some("monthly"), UsagePeriod::Month),
+        (Some("all"), UsagePeriod::All),
+    ] {
+        slash(&harness, usage(word, ViewAction::Open)).await;
+        let event = harness
+            .until(|event| matches!(event, AppEvent::View { .. } | AppEvent::Report { .. }))
+            .await;
+        let AppEvent::View { data } = event else {
+            panic!("/usage printed: {event:?}");
+        };
+        let ViewData::Usage { summary } = *data else {
+            panic!("not the usage tab: {data:?}");
+        };
+        assert_eq!(summary.period, period);
+        assert_eq!(summary.history.len(), 14);
+        let main = summary.plans.first().expect("the main agent's CLI");
+        assert!(main.in_use, "{main:?}");
+        assert_eq!(main.name, "Claude Code");
+        // The limits come with it, for the Limits tab's list, as `/limits` lists them.
+        let limit = |key: &str| {
+            let row = summary.limits.iter().find(|row| row.key == key);
+            row.unwrap_or_else(|| panic!("{key}: {:?}", summary.limits))
+        };
+        assert!(
+            summary
+                .limits
+                .iter()
+                .all(|row| row.key.starts_with("limits."))
+        );
+        assert!(!limit("limits.when_reached").value.is_empty());
+        let per_task = limit("limits.per_task_usd").value.parse::<f64>().ok();
+        assert_eq!(summary.task_limit.map(|limit| limit.amount), per_task);
+    }
+
+    slash(&harness, usage(None, ViewAction::Print)).await;
+    let lines = report(&mut harness, "Usage, today").await;
     assert!(
         lines.iter().any(|line| line.starts_with("Claude · ")),
         "{lines:?}"
@@ -695,22 +901,51 @@ async fn usage_shows_quotas_and_spend_and_takes_the_vendors_periods() {
             .iter()
             .any(|line| line.starts_with("Runs in this repo · 0 runs · $0.00"))
     );
+    slash(&harness, usage(Some("yearly"), ViewAction::Open)).await;
+    notice(&mut harness, "/usage takes day, week, month, or all").await;
+    harness.exit().await;
+}
+
+/// `print` on the Context and Limits tabs puts what the tab shows into the chat once, and
+/// opens nothing.
+#[tokio::test]
+async fn context_and_limits_print_as_lines_in_the_chat() {
+    use argonauts_core::input::ViewAction;
+
+    let mut harness = Harness::start().await;
     slash(
         &harness,
-        SlashCommand::Usage {
-            period: Some("weekly".into()),
+        SlashCommand::Context {
+            all: false,
+            action: ViewAction::Print,
         },
     )
     .await;
-    report(&mut harness, "Usage, last 7 days").await;
+    let lines = report(&mut harness, "Context").await;
+    assert_eq!(lines, ["No live sessions"], "nothing has run yet");
+
     slash(
         &harness,
-        SlashCommand::Usage {
-            period: Some("monthly".into()),
+        SlashCommand::Budget {
+            key: None,
+            value: None,
+            action: ViewAction::Print,
         },
     )
     .await;
-    notice(&mut harness, "/usage takes day, week, or all").await;
+    let lines = report(&mut harness, "Limits").await;
+    assert!(
+        lines.iter().any(|line| line.starts_with("Claude · ")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"Plan usage · no limit set".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"Spent today · $0.00 · no limit set".to_owned()),
+        "{lines:?}"
+    );
     harness.exit().await;
 }
 

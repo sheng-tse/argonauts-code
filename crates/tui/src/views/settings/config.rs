@@ -57,7 +57,7 @@ impl ConfigView {
     pub fn from_entries(entries: &[ConfigEntry]) -> Self {
         let picked = entries
             .iter()
-            .find(|entry| entry.key == "preset")
+            .find(|entry| entry.key == "workflow")
             .map(|entry| entry.layer.clone())
             .filter(|layer| FILE_LAYERS.contains(&layer.as_str()));
         let rows = entries
@@ -66,7 +66,7 @@ impl ConfigView {
                 key: entry.key.clone(),
                 value: entry.value.clone(),
                 layer: entry.layer.clone(),
-                preset_from: picked.clone().filter(|_| entry.layer == "preset"),
+                preset_from: picked.clone().filter(|_| entry.layer == "workflow"),
                 default_scope: reset_scope(&entry.layer).unwrap_or(SettingScope::Global),
                 safety: entry.safety,
                 allowed: Vec::new(),

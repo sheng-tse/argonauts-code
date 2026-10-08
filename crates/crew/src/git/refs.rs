@@ -5,6 +5,24 @@ use std::path::Path;
 
 use super::{Git, GitError, NOTES_REF, failed};
 
+/// A refused merge or checkout, in git's own words. Its last line is only "Aborting", and its
+/// first error says why.
+fn failed_at_first_error(args: &[&str], out: &std::process::Output) -> GitError {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let why = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
+        .or_else(|| stderr.lines().map(str::trim).rfind(|line| !line.is_empty()))
+        .unwrap_or("")
+        .to_owned();
+    GitError::Failed {
+        args: args.join(" "),
+        status: out.status.to_string(),
+        stderr: why,
+    }
+}
+
 impl Git {
     /// Moves the checked-out branch to `rev` when that is a fast-forward. False when it isn't.
     pub async fn fast_forward(&self, worktree: &Path, rev: &str) -> Result<bool, GitError> {
@@ -19,20 +37,7 @@ impl Git {
         if out.status.success() {
             return Ok(true);
         }
-        // Git's last line is only "Aborting"; its first error says why.
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let why = stderr
-            .lines()
-            .map(str::trim)
-            .find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
-            .or_else(|| stderr.lines().map(str::trim).rfind(|line| !line.is_empty()))
-            .unwrap_or("")
-            .to_owned();
-        Err(GitError::Failed {
-            args: args.join(" "),
-            status: out.status.to_string(),
-            stderr: why,
-        })
+        Err(failed_at_first_error(&args, &out))
     }
 
     pub async fn is_ancestor(
@@ -64,6 +69,171 @@ impl Git {
     pub async fn tree_of(&self, dir: &Path, rev: &str) -> Result<String, GitError> {
         let spec = format!("{rev}^{{tree}}");
         self.run(dir, &["rev-parse", "--verify", &spec]).await
+    }
+
+    /// A commit of `tree` on top of `parent`, made without a worktree or an index. No branch
+    /// points at it until the caller moves one.
+    pub async fn commit_tree(
+        &self,
+        dir: &Path,
+        tree: &str,
+        parent: &str,
+        message: &str,
+    ) -> Result<String, GitError> {
+        let identity = self.identity_env(dir).await;
+        let args = ["commit-tree", tree, "-p", parent, "-m", message];
+        let out = self.output(dir, &args, &identity).await?;
+        if !out.status.success() {
+            return Err(failed(&args, &out));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    }
+
+    /// Writes into the files of `checkout` what changed from `base` to `rev`, and moves
+    /// nothing else: no branch, and not your index, since git works out the change in an
+    /// index of its own at `scratch`. Like a fast-forward it is all or nothing, and refuses
+    /// while a file of yours differs from `base` where the change would write, unless it is
+    /// one of `holding`, which hold what `rev` has there already and are left as they are.
+    pub async fn write_files(
+        &self,
+        checkout: &Path,
+        scratch: &Path,
+        base: &str,
+        rev: &str,
+        holding: &[String],
+    ) -> Result<(), GitError> {
+        let index = scratch.to_string_lossy();
+        let with_index = [("GIT_INDEX_FILE", index.as_ref())];
+        let written = async {
+            self.in_index(checkout, &["read-tree", base], &with_index)
+                .await?;
+            // Files that still match `base` count as untouched only once git has seen them.
+            // It exits 1 for each file of yours that differs, which the merge judges.
+            let refresh = ["update-index", "-q", "--refresh"];
+            self.output(checkout, &refresh, &with_index).await?;
+            self.take_as_they_are(checkout, rev, holding, &with_index)
+                .await?;
+            let merge = ["read-tree", "-m", "-u", base, rev];
+            self.in_index(checkout, &merge, &with_index).await
+        }
+        .await;
+        if let Err(err) = std::fs::remove_file(scratch)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("removing {}: {err}", scratch.display());
+        }
+        written
+    }
+
+    /// Runs `args` on the index `with_index` names, and says what git refused in its words.
+    pub(super) async fn in_index(
+        &self,
+        checkout: &Path,
+        args: &[&str],
+        with_index: &[(&str, &str)],
+    ) -> Result<(), GitError> {
+        let out = self.output(checkout, args, with_index).await?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(failed_at_first_error(args, &out))
+        }
+    }
+
+    /// Your files in `checkout` that no longer hold what `base` has, changed or gone, of those
+    /// the change from `base` to `rev` writes. It's what [`Self::write_files`] refuses over,
+    /// found the way it works: the files are compared with `base` in an index of git's own at
+    /// `scratch`, so it holds in a checkout whose own index never held `base`.
+    pub async fn differing_in_the_way(
+        &self,
+        checkout: &Path,
+        scratch: &Path,
+        base: &str,
+        rev: &str,
+    ) -> Result<Vec<String>, GitError> {
+        let index = scratch.to_string_lossy();
+        let with_index = [("GIT_INDEX_FILE", index.as_ref())];
+        let differing = async {
+            let read = ["read-tree", base];
+            let out = self.output(checkout, &read, &with_index).await?;
+            if !out.status.success() {
+                return Err(failed(&read, &out));
+            }
+            // Exits 1 for each file that differs, which the next step lists.
+            let refresh = ["update-index", "-q", "--refresh"];
+            self.output(checkout, &refresh, &with_index).await?;
+            let list = ["diff-files", "--name-only", "--no-renames", "-z"];
+            let out = self.output(checkout, &list, &with_index).await?;
+            if !out.status.success() {
+                return Err(failed(&list, &out));
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        .await;
+        if let Err(err) = std::fs::remove_file(scratch)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("removing {}: {err}", scratch.display());
+        }
+        let differing = differing?;
+        // Both sides of a move, since the old name is written too: it goes away.
+        let written = [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-ext-diff",
+            "-z",
+            base,
+            rev,
+        ];
+        let written = self.run(checkout, &written).await?;
+        let written: std::collections::BTreeSet<&str> = written.split('\0').collect();
+        Ok(differing
+            .split('\0')
+            .filter(|path| !path.is_empty() && written.contains(path))
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// Whether `checkout` already holds the change from `base` to `rev`: every file it writes
+    /// has `rev`'s bytes, and every file it removes is gone. So a landing as files that was
+    /// cut short after the writing isn't taken for your own edits in its way.
+    pub async fn holds_change(
+        &self,
+        checkout: &Path,
+        scratch: &Path,
+        base: &str,
+        rev: &str,
+    ) -> Result<bool, GitError> {
+        let unwritten = self
+            .differing_in_the_way(checkout, scratch, rev, base)
+            .await?;
+        if !unwritten.is_empty() {
+            return Ok(false);
+        }
+        let removed = [
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-ext-diff",
+            "-z",
+            "--diff-filter=D",
+            base,
+            rev,
+        ];
+        let removed = self.run(checkout, &removed).await?;
+        Ok(removed
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .all(|path| std::fs::symlink_metadata(checkout.join(path)).is_err()))
+    }
+
+    /// The commit the ref `name` points at, such as `refs/argonauts/run-01/base`. `None` when
+    /// there's no such ref.
+    pub async fn ref_commit(&self, dir: &Path, name: &str) -> Result<Option<String>, GitError> {
+        let spec = format!("{name}^{{commit}}");
+        self.optional(dir, &["rev-parse", "--verify", "--quiet", &spec])
+            .await
     }
 
     /// An annotated tag whose message records the handoff. Tagging the same commit again is a
@@ -227,7 +397,7 @@ mod tests {
         let repo = TestRepo::new();
         let git = git();
         let first = repo.git(&["rev-parse", "HEAD"]);
-        let name = "argonauts/run-01/card-001/handoff-1";
+        let name = "argonauts/run-01/task-001/fallback-1";
         assert_eq!(git.tag_target(&repo.root, name).await.unwrap(), None);
 
         git.tag(

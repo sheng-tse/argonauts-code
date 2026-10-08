@@ -30,6 +30,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::views::list::{self, FilterKey};
 use crate::views::settings::flow::Flow;
+use crate::widgets::State;
 
 /// Rows shown at once. The rest scroll, marked with `↓` and `… +N more`.
 pub const VISIBLE_ROWS: usize = 8;
@@ -80,6 +81,9 @@ pub struct PickerRow {
     pub heading: Option<String>,
     /// A dim line drawn under the row, such as the aliases under a CLI's Default model.
     pub under: Option<String>,
+    /// What state the row's thing is in, drawn as that state's glyph in its color before the
+    /// description, whose first word names it: `✔ on`, `✗ not installed`.
+    pub state: Option<State>,
 }
 
 impl PickerRow {
@@ -255,7 +259,7 @@ impl Picker {
             .flow
             .slider
             .as_ref()
-            .is_some_and(|slider| slider.all_hands.is_some());
+            .is_some_and(|slider| slider.ultracode.is_some());
         match key.code {
             KeyCode::Tab if plain && toggles => PickerEvent::Toggled,
             KeyCode::Left => PickerEvent::Left,

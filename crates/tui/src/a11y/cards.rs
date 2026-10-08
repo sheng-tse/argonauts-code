@@ -284,7 +284,7 @@ impl CardList {
         if let (Some(index), Some(first)) = (self.request_changes(), self.checklist.first()) {
             let n = index + 1;
             text.push_str(&format!(
-                " To send back only some cards, name them after {n}, as in {n} {first}: what to change."
+                " To send back only some tasks, name them after {n}, as in {n} {first}: what to change."
             ));
         }
         text
@@ -368,7 +368,7 @@ impl CardList {
                 if !names.is_empty() {
                     text.push_str(&format!(", {}", names.join(", ")));
                 } else if self.request_changes() == Some(*index) {
-                    text.push_str(", every card");
+                    text.push_str(", every task");
                 }
                 if let Some(note) = note {
                     text.push_str(&format!(", {}", spoken(note)));

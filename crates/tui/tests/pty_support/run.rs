@@ -11,6 +11,8 @@ pub const RUN: &str = "run-01";
 /// A compact elapsed time. The run's events carry a fixed timestamp, so on the wall clock it
 /// can read anything from `0s` up.
 pub const ELAPSED: &str = r"(?:\d+h\d+m|(?:\d+m)?\d+s)";
+/// How long an agent has run, as the list under the input says it: `3s`, `29m`, `1h 7m`.
+pub const LISTED_FOR: &str = r"(?:\d+h \d+m|\d+m|\d+s)";
 pub const EVIDENCE: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
 /// One agent of a scripted run.
@@ -51,10 +53,10 @@ impl Agent {
         let index = n.saturating_sub(1);
         Self {
             session: format!("s-{n:03}"),
-            card: format!("card-{:03}", n + 1),
+            card: format!("task-{:03}", n + 1),
             title: TITLES[index % TITLES.len()].to_owned(),
             worker: WORKERS[index % WORKERS.len()].to_owned(),
-            role: "owner".to_owned(),
+            role: "worker".to_owned(),
         }
     }
 
@@ -122,7 +124,7 @@ impl RunScript {
     pub fn started(&mut self, title: &str, mode: &str) -> AppEvent {
         self.run_kind(
             json!({"event": "started", "request": title, "title": title, "mode": mode,
-            "forced": false, "preset": "peer-crew",
+            "forced": false, "workflow": "council",
             "estimate": {"task_type": "cli-feature", "summary": "a flag and a writer",
                          "files_likely": ["src/export.rs"], "file_count": 3,
                          "risk_labels": [], "tests_exist": true, "unknowns": []},
@@ -130,7 +132,7 @@ impl RunScript {
                        "reason": "touches the CLI and the writer"},
             "chat_turn": null, "continues": null, "repo_root": "/repo", "base_branch": "main",
             "base_commit": "8b41d07", "uncommitted": [], "uncommitted_included": false,
-            "settings_sha256": "5e7f", "settings": {"preset": "peer-crew"}, "overrides": [],
+            "settings_sha256": "5e7f", "settings": {"workflow": "council"}, "overrides": [],
             "harness_versions": {}, "version": "0.1.0"}),
         )
     }
@@ -181,7 +183,7 @@ impl RunScript {
             Some(&agent.session),
             json!({"type": "session", "data": {"event": "started", "worker": agent.worker,
                 "vendor": agent.vendor(), "family": "any", "kind": kind, "role": agent.role,
-                "step": "build", "access": "build", "lifetime": "card", "resumed_from": null,
+                "step": "build", "access": "build", "lifetime": "task", "resumed_from": null,
                 "follow_key": follow_key,
                 // The run's workflow started it, so it's one of the run's agents.
                 "workflow_step": {"workflow": "wf-001", "phase": 0, "path": [0]}}}),
@@ -349,7 +351,7 @@ impl RunScript {
             ),
             option(
                 'b',
-                "Request changes on some cards",
+                "Request changes on some tasks",
                 json!({"action": "request_changes"}),
                 false,
             ),
@@ -429,7 +431,7 @@ impl RunScript {
             "commit": "f00d"});
         let options = vec![option(
             'c',
-            "Let the owner continue",
+            "Let the worker continue",
             json!({"action": "let_continue"}),
             true,
         )];
@@ -517,5 +519,5 @@ fn checkpoint_title(kind: &str, run: &str) -> String {
         .into_iter()
         .flat_map(char::to_uppercase)
         .collect();
-    format!("{first}{} checkpoint · {run}", chars.as_str())
+    format!("{first}{} approval · {run}", chars.as_str())
 }

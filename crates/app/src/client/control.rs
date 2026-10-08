@@ -54,7 +54,7 @@ impl Reply {
     pub(crate) fn queued(self) -> Result<MessageId, ApiError> {
         match self {
             Self::Deferred => Err(ApiError::NotNow(
-                "the run is parked; the message is delivered when it resumes".to_owned(),
+                "the run is waiting; the message is delivered when it resumes".to_owned(),
             )),
             Self::Now(reply) => match *reply {
                 ControlReply::Queued { id } => Ok(id),

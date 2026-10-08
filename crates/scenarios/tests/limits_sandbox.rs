@@ -44,7 +44,7 @@ fn limits_sandbox_blocks_write_outside_worktree() -> anyhow::Result<()> {
     ))?;
 
     let mut pty = limits.run(&[])?;
-    limits.wait_for("the card to finish", CARD_WAIT, completed_by("claude-code"))?;
+    limits.wait_for("the task to finish", CARD_WAIT, completed_by("claude-code"))?;
     assert_blocked(&limits.sessions_stderr()?, "write", &["outside.txt"]);
     assert_eq!(
         probe_lines(&limits.sessions_stderr()?, BLOCKED, "write").len(),
@@ -89,7 +89,7 @@ fn limits_readonly_session_cannot_read_state_or_drafts() -> anyhow::Result<()> {
 #[test]
 fn limits_build_session_cannot_read_other_worktrees() -> anyhow::Result<()> {
     let limits = setup("sandbox-other-worktrees", "")?;
-    let other = limits.plant("worktrees/0000-planted/run-0/card-009/secret.txt")?;
+    let other = limits.plant("worktrees/0000-planted/run-0/task-009/secret.txt")?;
     let checks = [try_read(&other)];
     let probe = write_probe(
         &limits.repo.scratch().join("probe-claude"),
@@ -102,8 +102,8 @@ fn limits_build_session_cannot_read_other_worktrees() -> anyhow::Result<()> {
     ))?;
 
     let mut pty = limits.run(&[])?;
-    limits.wait_for("the card to finish", CARD_WAIT, completed_by("claude-code"))?;
-    assert_blocked(&limits.sessions_stderr()?, "read", &["card-009/secret.txt"]);
+    limits.wait_for("the task to finish", CARD_WAIT, completed_by("claude-code"))?;
+    assert_blocked(&limits.sessions_stderr()?, "read", &["task-009/secret.txt"]);
     pty.wait_for_exit(CARD_WAIT)?;
     Ok(())
 }

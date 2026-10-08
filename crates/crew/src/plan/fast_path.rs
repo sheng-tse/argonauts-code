@@ -87,7 +87,7 @@ fn merger(host: &Host, call: &StepCall) -> WorkerRef {
         }
         _ => host
             .read(|state| lead::phase_lead(state, host.settings()))
-            .unwrap_or_else(|| host.settings().default_agent.clone()),
+            .unwrap_or_else(|| host.settings().main_agent.clone()),
     }
 }
 
@@ -139,11 +139,13 @@ async fn ask_merge(
     gaps: Option<&str>,
     slot: u32,
 ) -> EngineResult<crate::engine::host::Answered<PlanDraft>> {
+    let crew = context::card_roles_lines(host)?;
     let input = host.read(|state| DraftInput {
         goal: context::goal_brief(state),
         notes: Vec::new(),
         decisions: context::decision_lines(state),
         status: String::new(),
+        crew,
     });
     let mut ask = Ask::new(
         Some(call.at.clone()),
@@ -234,13 +236,14 @@ async fn synthesize_input(host: &Host, call: &StepCall) -> EngineResult<StepDone
     let worker = workers_for(call, host.settings(), role, Some(1))
         .into_iter()
         .next()
-        .unwrap_or_else(|| host.settings().default_agent.clone());
+        .unwrap_or_else(|| host.settings().main_agent.clone());
     let text = context::step_input(host, call).await?;
     let input = host.read(|state| DraftInput {
         goal: context::goal_brief(state),
         notes: Vec::new(),
         decisions: context::decision_lines(state),
         status: String::new(),
+        crew: Vec::new(),
     });
     let mut ask = Ask::new(Some(call.at.clone()), role, worker, SYNTHESIZE, input);
     ask.access = Access::ReadOnly;

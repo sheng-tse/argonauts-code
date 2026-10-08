@@ -125,7 +125,7 @@ pub(super) async fn consider(
         checks.push(Check {
             name: "budget_known".to_owned(),
             passed: false,
-            detail: "the run recorded no cost in dollars, so there's no budget to replay it at"
+            detail: "the run recorded no cost in dollars, so there's no limit to replay it at"
                 .to_owned(),
         });
     }
@@ -133,8 +133,9 @@ pub(super) async fn consider(
         checks.push(Check {
             name: "test_command".to_owned(),
             passed: false,
-            detail: "the run recorded no full suite, and gates.full_suite and gates.run are empty"
-                .to_owned(),
+            detail:
+                "the run recorded no full suite, and checks.full_suite and checks.run are empty"
+                    .to_owned(),
         });
     }
     if checks.iter().all(|check| check.passed) {
@@ -236,7 +237,7 @@ fn keep_hidden_tests(
 
 /// The run's own full suite, else the one your gates name.
 fn test_command(facts: &MergedRun, settings: &Settings) -> Option<Vec<String>> {
-    let gates = &settings.gates;
+    let gates = &settings.checks;
     facts
         .test_command
         .clone()
@@ -246,7 +247,7 @@ fn test_command(facts: &MergedRun, settings: &Settings) -> Option<Vec<String>> {
 }
 
 fn scoring_setup(settings: &Settings) -> ScoringSetup {
-    let gates = &settings.gates;
+    let gates = &settings.checks;
     ScoringSetup {
         setup: gates
             .setup

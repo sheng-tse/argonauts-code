@@ -67,13 +67,13 @@ async fn integrate_in_dependency_order() -> anyhow::Result<()> {
     crew.services.workers.add(reviewer(REVIEWER));
     // Listed out of order on purpose: the graph decides, not the list.
     let cards = vec![
-        spec("card-003", CardKind::Build, &["card-002"], OWNER_C),
-        spec("card-002", CardKind::Build, &["card-001"], INTERFACE_OWNER),
-        spec("card-001", CardKind::Build, &[], OWNER_B),
+        spec("task-003", CardKind::Build, &["task-002"], OWNER_C),
+        spec("task-002", CardKind::Build, &["task-001"], INTERFACE_OWNER),
+        spec("task-001", CardKind::Build, &[], OWNER_B),
     ];
     let bench = Bench::new(&crew, &cards).await?;
     let done = bench.build().await?;
-    assert_eq!(done.summary.as_deref(), Some("3 cards integrated"));
+    assert_eq!(done.summary.as_deref(), Some("3 tasks merged into the run"));
 
     let events = bench.sink.events();
     let merged: Vec<(String, String)> = events
@@ -86,7 +86,7 @@ async fn integrate_in_dependency_order() -> anyhow::Result<()> {
         })
         .collect();
     let order: Vec<&str> = merged.iter().map(|(card, _)| card.as_str()).collect();
-    assert_eq!(order, ["card-001", "card-002", "card-003"]);
+    assert_eq!(order, ["task-001", "task-002", "task-003"]);
 
     let root = crew.repo.root();
     let integration = branch::integration_branch(&RunId::new("run-01")?);
@@ -97,9 +97,9 @@ async fn integrate_in_dependency_order() -> anyhow::Result<()> {
     assert_eq!(
         subjects,
         [
-            "Merge card-001: Build card-001",
-            "Merge card-002: Build card-002",
-            "Merge card-003: Build card-003",
+            "Merge task-001: Build task-001",
+            "Merge task-002: Build task-002",
+            "Merge task-003: Build task-003",
         ]
     );
     let git = Git::new();
@@ -109,12 +109,12 @@ async fn integrate_in_dependency_order() -> anyhow::Result<()> {
         let card_head = git
             .branch_head(root, &format!("argonauts/run-01/{card}"))
             .await?
-            .context("no card branch")?;
+            .context("no task branch")?;
         assert_eq!(parents[1], card_head, "{card}'s merge brings in its branch");
     }
     // A dependent card starts from the integration branch with its dependency in.
     let bases = worktree_bases(&events);
-    let base_two = &bases[&CardId::new("card-002")?];
+    let base_two = &bases[&CardId::new("task-002")?];
     assert!(
         crew.repo
             .git(&["cat-file", "-e", &format!("{base_two}:src/one.rs")])
@@ -140,19 +140,19 @@ async fn conflict_goes_to_interface_owner() -> anyhow::Result<()> {
             );
     crew.services
         .workers
-        .add(owner(OWNER_B, &[("shared.txt", "from card-002\n")]));
+        .add(owner(OWNER_B, &[("shared.txt", "from task-002\n")]));
     crew.services
         .workers
-        .add(owner(OWNER_C, &[("shared.txt", "from card-003\n")]));
+        .add(owner(OWNER_C, &[("shared.txt", "from task-003\n")]));
     crew.services.workers.add(reviewer(REVIEWER));
     let cards = vec![
-        spec("card-001", CardKind::Interface, &[], INTERFACE_OWNER),
-        spec("card-002", CardKind::Build, &["card-001"], OWNER_B),
-        spec("card-003", CardKind::Build, &["card-001"], OWNER_C),
+        spec("task-001", CardKind::Interface, &[], INTERFACE_OWNER),
+        spec("task-002", CardKind::Build, &["task-001"], OWNER_B),
+        spec("task-003", CardKind::Build, &["task-001"], OWNER_C),
     ];
     let bench = Bench::new(&crew, &cards).await?;
     let done = bench.build().await?;
-    assert_eq!(done.summary.as_deref(), Some("3 cards integrated"));
+    assert_eq!(done.summary.as_deref(), Some("3 tasks merged into the run"));
 
     let events = bench.sink.events();
     let conflict = events
@@ -214,29 +214,29 @@ async fn a_401_on_the_conflict_resolver_goes_again_then_to_another_agent() -> an
                 );
         crew.services
             .workers
-            .add(owner(OWNER_B, &[("shared.txt", "from card-002\n")]));
+            .add(owner(OWNER_B, &[("shared.txt", "from task-002\n")]));
         crew.services
             .workers
-            .add(owner(OWNER_C, &[("shared.txt", "from card-003\n")]));
+            .add(owner(OWNER_C, &[("shared.txt", "from task-003\n")]));
         crew.services.workers.add(reviewer(REVIEWER));
         let cards = vec![
-            spec("card-001", CardKind::Interface, &[], INTERFACE_OWNER),
-            spec("card-002", CardKind::Build, &["card-001"], OWNER_B),
-            spec("card-003", CardKind::Build, &["card-001"], OWNER_C),
+            spec("task-001", CardKind::Interface, &[], INTERFACE_OWNER),
+            spec("task-002", CardKind::Build, &["task-001"], OWNER_B),
+            spec("task-003", CardKind::Build, &["task-001"], OWNER_C),
         ];
         let bench = Bench::new(&crew, &cards).await?;
         bench.host.record(
             None,
             None,
             RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
-                mode: ApprovalMode::FullAuto,
+                mode: ApprovalMode::Autopilot,
                 by: Party::User,
             }),
         )?;
         let done = bench.build().await?;
         assert_eq!(
             done.summary.as_deref(),
-            Some("3 cards integrated"),
+            Some("3 tasks merged into the run"),
             "after {failures} 401s"
         );
         let resolving = |fake: &FakeWorker| {
@@ -267,8 +267,8 @@ async fn only_the_conductor_commits() -> anyhow::Result<()> {
         .add(owner(INTERFACE_OWNER, &[("src/c.rs", "c\n")]));
     crew.services.workers.add(reviewer(REVIEWER));
     let cards = vec![
-        spec("card-001", CardKind::Build, &[], OWNER_B),
-        spec("card-002", CardKind::Build, &[], INTERFACE_OWNER),
+        spec("task-001", CardKind::Build, &[], OWNER_B),
+        spec("task-002", CardKind::Build, &[], INTERFACE_OWNER),
     ];
     let bench = Bench::new(&crew, &cards).await?;
     let base = crew.repo.head()?;
@@ -313,7 +313,7 @@ async fn only_the_conductor_commits() -> anyhow::Result<()> {
                 by_conductor,
                 "a merge without the conductor trailer: {message}"
             );
-            assert!(message.contains("Argonauts-Card: card-00"), "{message}");
+            assert!(message.contains("Argonauts-Task: task-00"), "{message}");
         }
     }
     let conductor_only =
@@ -360,7 +360,7 @@ async fn acceptance_tests_fail_until_their_build_card_is_in() -> anyhow::Result<
          echo \"FAIL $want\"; status=1; fi\ndone\nexit $status\n",
     )?;
     crew.repo.commit_all("Add the test runner")?;
-    crew.settings.gates.run = vec![GateCommand {
+    crew.settings.checks.run = vec![GateCommand {
         name: "tests".into(),
         command: vec!["sh".into(), "run-tests.sh".into()],
     }];
@@ -372,15 +372,15 @@ async fn acceptance_tests_fail_until_their_build_card_is_in() -> anyhow::Result<
         for_card: CardId::new(card).unwrap(),
     };
     let cards = vec![
-        spec("card-001", CardKind::Interface, &[], INTERFACE_OWNER),
-        spec("card-002", tests_for("card-004"), &["card-001"], OWNER_B),
-        spec("card-003", tests_for("card-005"), &["card-001"], OWNER_C),
-        spec("card-004", CardKind::Build, &["card-002"], OWNER_B),
-        spec("card-005", CardKind::Build, &["card-003"], OWNER_C),
+        spec("task-001", CardKind::Interface, &[], INTERFACE_OWNER),
+        spec("task-002", tests_for("task-004"), &["task-001"], OWNER_B),
+        spec("task-003", tests_for("task-005"), &["task-001"], OWNER_C),
+        spec("task-004", CardKind::Build, &["task-002"], OWNER_B),
+        spec("task-005", CardKind::Build, &["task-003"], OWNER_C),
     ];
     let bench = Bench::with_gates(&crew, &cards, Some(Arc::new(Commands))).await?;
     let done = bench.build().await?;
-    assert_eq!(done.summary.as_deref(), Some("5 cards integrated"));
+    assert_eq!(done.summary.as_deref(), Some("5 tasks merged into the run"));
 
     // Every card went through once: no failure sent one back.
     let events = bench.sink.events();
@@ -407,11 +407,11 @@ async fn acceptance_tests_fail_until_their_build_card_is_in() -> anyhow::Result<
     for (card, gate) in &affected {
         assert!(gate.passed, "{card}: {gate:?}");
     }
-    for card in ["card-002", "card-003"] {
+    for card in ["task-002", "task-003"] {
         let (_, gate) = affected
             .iter()
             .find(|(c, _)| c == card)
-            .context("a test card's merge")?;
+            .context("a test task's merge")?;
         assert_eq!(gate.exit_code, Some(1));
         assert!(
             gate.summary.contains("failed as expected"),
@@ -433,6 +433,115 @@ async fn acceptance_tests_fail_until_their_build_card_is_in() -> anyhow::Result<
         assert!(row.gates_passed, "{}", row.card);
     }
     assert_eq!(evidence.facts.gates_passed, Some(true));
+    Ok(())
+}
+
+/// A file a command made, which the worker's report forgot, stays out of the task's commit.
+/// Its checks pass beside the file and fail on the run's branch without it. The worker then
+/// hears which new files its commit left out, lists the one the change needs, and the task
+/// merges with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_hears_what_its_commit_left_out_when_checks_fail_without_it() -> anyhow::Result<()>
+{
+    let mut crew = Crew::new()?;
+    crew.settings.checks.run = vec![GateCommand {
+        name: "tests".into(),
+        command: vec!["sh".into(), "-c".into(), "test -f gen/schema.txt".into()],
+    }];
+    let told = Arc::new(AtomicUsize::new(0));
+    let heard = told.clone();
+    crew.services.workers.add(
+        FakeWorker::harness(OWNER_B, "codex").respond_with(move |spec| {
+            let _ = std::fs::write(spec.workdir.join("main.txt"), "main\n");
+            let _ = std::fs::create_dir_all(spec.workdir.join("gen"));
+            let _ = std::fs::write(spec.workdir.join("gen/schema.txt"), "schema\n");
+            let mut report = report();
+            let left_out = spec
+                .prompt
+                .iter()
+                .find(|part| part.label == "left out of your commit");
+            if left_out.is_some_and(|part| part.text.contains("gen/")) {
+                heard.fetch_add(1, Ordering::SeqCst);
+                report["files_changed"] = json!(["gen/schema.txt"]);
+            }
+            FakeSession::structured(report).with_event(support::wrote("main.txt"))
+        }),
+    );
+    crew.services.workers.add(reviewer(REVIEWER));
+    let cards = vec![spec("task-001", CardKind::Build, &[], OWNER_B)];
+    let bench = Bench::with_gates(&crew, &cards, Some(Arc::new(Commands))).await?;
+    bench.build().await?;
+
+    assert_eq!(
+        told.load(Ordering::SeqCst),
+        1,
+        "told once, then it listed the file"
+    );
+    let merged = bench
+        .sink
+        .events()
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            RunEventKind::Card(CardEvent::Committed(info)) => info.sha.clone(),
+            _ => None,
+        })
+        .context("the task has no commit")?;
+    let files = crew.repo.git(&["ls-tree", "-r", "--name-only", &merged])?;
+    assert!(
+        files.lines().any(|file| file == "gen/schema.txt"),
+        "{files}"
+    );
+    Ok(())
+}
+
+/// A check leaves a file behind on the run's branch, where no merge commit takes it, and a
+/// later task brings a file of its own to that path. The leftover gives way, since nothing
+/// of yours is ever in the run's own worktree, and the task's file is what merges.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_check_left_on_the_runs_branch_gives_way_to_a_tasks_file() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    crew.settings.checks.run = vec![GateCommand {
+        name: "tests".into(),
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "mkdir -p gen && [ -e gen/out.txt ] || echo leftover > gen/out.txt".into(),
+        ],
+    }];
+    crew.services
+        .workers
+        .add(owner(OWNER_B, &[("a.txt", "a\n")]));
+    crew.services
+        .workers
+        .add(owner(OWNER_C, &[("gen/out.txt", "claimed\n")]));
+    crew.services.workers.add(reviewer(REVIEWER));
+    let cards = vec![
+        spec("task-001", CardKind::Build, &[], OWNER_B),
+        spec("task-002", CardKind::Build, &["task-001"], OWNER_C),
+    ];
+    let bench = Bench::with_gates(&crew, &cards, Some(Arc::new(Commands))).await?;
+    let done = bench.build().await?;
+    assert_eq!(done.summary.as_deref(), Some("2 tasks merged into the run"));
+
+    let integration = branch::integration_branch(bench.host.run_id());
+    let first = crew.repo.git(&[
+        "log",
+        "--format=%H",
+        "--diff-filter=A",
+        &integration,
+        "--",
+        "gen",
+    ])?;
+    assert_eq!(
+        first.lines().count(),
+        1,
+        "only the task's commit adds it: {first}"
+    );
+    let merged = crew
+        .repo
+        .git(&["show", &format!("{integration}:gen/out.txt")])?;
+    assert_eq!(merged.trim(), "claimed");
     Ok(())
 }
 
@@ -485,11 +594,11 @@ fn contract_owner(name: &str) -> FakeWorker {
     let family = family.split('-').next().unwrap_or("unknown").to_owned();
     FakeWorker::harness(name, &family).respond_with(|spec| {
         let files: &[(&str, &str)] = match spec.card.as_ref().map(CardId::as_str) {
-            Some("card-001") => &[("src/one.rs", "stub\n"), ("src/two.rs", "stub\n")],
-            Some("card-002") => &[("tests/one.want", "src/one.rs\n")],
-            Some("card-003") => &[("tests/two.want", "src/two.rs\n")],
-            Some("card-004") => &[("src/one.rs", "done\n")],
-            Some("card-005") => &[("src/two.rs", "done\n")],
+            Some("task-001") => &[("src/one.rs", "stub\n"), ("src/two.rs", "stub\n")],
+            Some("task-002") => &[("tests/one.want", "src/one.rs\n")],
+            Some("task-003") => &[("tests/two.want", "src/two.rs\n")],
+            Some("task-004") => &[("src/one.rs", "done\n")],
+            Some("task-005") => &[("src/two.rs", "done\n")],
             _ => &[],
         };
         work(spec, files)
@@ -558,7 +667,7 @@ fn history(crew: &Crew, base: &str, cards: &[CardSpec]) -> anyhow::Result<Vec<Ru
         title: "Build it".into(),
         mode: RunMode::Crew,
         forced: true,
-        preset: "default".into(),
+        workflow: "default".into(),
         estimate: None,
         triage: None,
         chat_turn: None,
@@ -575,6 +684,7 @@ fn history(crew: &Crew, base: &str, cards: &[CardSpec]) -> anyhow::Result<Vec<Ru
         version: "0.0.1".into(),
         front_end: None,
         instructions: Vec::new(),
+        required_steps: Vec::new(),
     };
     let goal = GoalFile {
         run: run.clone(),
@@ -724,7 +834,13 @@ fn work(spec: &SessionSpec, files: &[(&str, &str)]) -> FakeSession {
         }
         let _ = std::fs::write(path, text);
     }
-    FakeSession::structured(report()).with_vendor_session(&format!("v-{}", spec.key))
+    // Each file is written with the agent's edit tool, as a CLI reports it.
+    files
+        .iter()
+        .fold(FakeSession::structured(report()), |session, (path, _)| {
+            session.with_event(support::wrote(path))
+        })
+        .with_vendor_session(&format!("v-{}", spec.key))
 }
 
 fn reviewer(name: &str) -> FakeWorker {
@@ -737,7 +853,7 @@ fn reviewer(name: &str) -> FakeWorker {
 
 fn report() -> Value {
     json!({
-        "status": "done", "summary": "did the card", "files_changed": [],
+        "status": "done", "summary": "did the task", "files_changed": [],
         "tests_run": [], "concerns": [], "questions": [], "change_requests": [],
         "memory_proposals": []
     })

@@ -1,11 +1,16 @@
 //! What you type: plain text, `/commands`, and `@mentions`, routed by the app mode. Text typed
 //! at the prompt never answers a card; see [`typed_text_answers_card`].
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use argonauts_core::api::UsagePeriod;
 use argonauts_core::app::{AppEvent, AppMode, UiCommand, ViewRequest};
 use argonauts_core::events::run::Party;
-use argonauts_core::input::{Handler, MentionTarget, ParsedInput, SlashCommand, parse_input_with};
+use argonauts_core::input::{
+    Handler, MentionTarget, ParsedInput, SlashCommand, ViewAction, parse_input_with,
+};
+use argonauts_core::settings::stats::StatsPeriod;
+use argonauts_core::settings::ui::{UiSettings, ViewOpen};
 use argonauts_core::{KeyScheme, Verbosity};
 
 use crate::UiOptions;
@@ -15,6 +20,7 @@ use crate::cell::{Cell, Tone, UserMessage};
 use crate::commands::{self, command_items};
 use crate::keymap::Keymap;
 use crate::mentions::{self, MentionPicker, Resolved};
+use crate::overview::{OverviewView, Tab};
 use crate::prompt_history::{PromptHistory, unix_now};
 use crate::views::help::HelpView;
 
@@ -33,7 +39,17 @@ pub struct InputRouter {
     /// `/status` ran, so its answer opens the status view rather than printing in the chat as
     /// "where are we?" does. The next thing you send clears it.
     pub status_view: bool,
+    /// `/context all` ran, so the Context tab its answer opens lists every item of every
+    /// category. The next thing you send clears it.
+    pub context_all: bool,
+    /// A command typed while an answer ran, and when, until its answer comes. What it prints
+    /// starts with this as its own row, so it reads as yours and not as part of the answer,
+    /// and a view it opens is a panel under the working line.
+    typed_mid_answer: Option<(String, Instant)>,
 }
+
+/// How long a command typed mid-answer waits for its answer. What comes later isn't its.
+const ANSWER_WAITS: Duration = Duration::from_secs(3);
 
 impl InputRouter {
     /// Reads the prompt history now; a file that can't be read leaves history in memory and
@@ -52,6 +68,8 @@ impl InputRouter {
                 load_error: Some(error.to_string()),
                 prepared: false,
                 status_view: false,
+                context_all: false,
+                typed_mid_answer: None,
             },
         }
     }
@@ -151,18 +169,52 @@ impl InputRouter {
         if let Err(error) = self.history.append(text) {
             notice(cx, error.to_string(), Tone::Error);
         }
+        // The draft held the word `ultracode` and Opt+W didn't ignore it. Read for every
+        // prompt, so one that goes elsewhere never leaves it for the next.
+        let workflow = cx.model.bottom.composer.take_workflow_request();
         let parsed = parse_input_with(text, cx.state.vendor_commands.as_ref());
+        // A mod of yours is a command by its name, when nothing else has that name.
+        let parsed = match (
+            parsed,
+            crate::mods::own_command(text, cx.state.mods.as_ref()),
+        ) {
+            (Err(argonauts_core::input::InputError::UnknownCommand(_)), Some(command)) => {
+                Ok(ParsedInput::Slash { command })
+            }
+            (parsed, _) => parsed,
+        };
+        let parsed = match parsed {
+            Ok(ParsedInput::Slash { command }) => Ok(ParsedInput::Slash {
+                command: as_its_tab_opens(command, cx.settings),
+            }),
+            other => other,
+        };
+        self.typed_mid_answer = (matches!(parsed, Ok(ParsedInput::Slash { .. }))
+            && answer_running(cx))
+        .then(|| (text.trim().to_owned(), cx.now));
+        // Printing or pinning the tab opens no view.
         self.status_view = matches!(
             parsed,
             Ok(ParsedInput::Slash {
-                command: SlashCommand::Status
+                command: SlashCommand::Status {
+                    action: ViewAction::Open
+                }
+            })
+        );
+        self.context_all = matches!(
+            parsed,
+            Ok(ParsedInput::Slash {
+                command: SlashCommand::Context {
+                    all: true,
+                    action: ViewAction::Open
+                }
             })
         );
         match parsed {
             Ok(ParsedInput::Empty) => empty_enter(cx),
-            Ok(ParsedInput::Plain { text }) => plain(text, shown, cx),
+            Ok(ParsedInput::Plain { text }) => plain(text, shown, workflow, cx),
             Ok(ParsedInput::Mention { .. }) if cx.model.bottom.menus.leads_with_file(text) => {
-                plain(text.trim().to_owned(), shown, cx);
+                plain(text.trim().to_owned(), shown, workflow, cx);
             }
             Ok(ParsedInput::Mention {
                 target,
@@ -187,6 +239,54 @@ impl InputRouter {
     }
 }
 
+impl InputRouter {
+    /// Called before `event` prints or opens anything. When it answers a command typed while
+    /// an answer ran, what it prints gets the command as a row of its own first, and a view
+    /// it opens is marked to open as a panel.
+    pub fn answers_mid_answer_command(&mut self, event: &AppEvent, cx: &mut Cx<'_>) {
+        let prints = matches!(
+            event,
+            AppEvent::Report { .. } | AppEvent::Notice { .. } | AppEvent::SettingChanged { .. }
+        );
+        let opens = matches!(event, AppEvent::View { .. });
+        if !prints && !opens {
+            return;
+        }
+        let Some((typed, at)) = self.typed_mid_answer.take() else {
+            return;
+        };
+        if cx.now.saturating_duration_since(at) > ANSWER_WAITS || cx.replaying() {
+            return;
+        }
+        if opens {
+            cx.out.views_as_panel = true;
+        } else {
+            cx.model.history.push(UserMessage::command(typed));
+        }
+    }
+}
+
+/// The period `/usage` names, by the words the CLIs' own commands take. `None` for a word
+/// the controller will refuse, which then says so.
+fn usage_period(word: Option<&str>) -> Option<UsagePeriod> {
+    match word.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("day" | "daily" | "today") => Some(UsagePeriod::Today),
+        Some("week" | "weekly") => Some(UsagePeriod::Week),
+        Some("month" | "monthly") => Some(UsagePeriod::Month),
+        Some("all" | "cumulative" | "total") => Some(UsagePeriod::All),
+        Some(_) => None,
+    }
+}
+
+/// An answer or a run is working, so what's typed now lands beside it.
+fn answer_running(cx: &Cx<'_>) -> bool {
+    cx.model.is_working()
+        || matches!(
+            cx.state.mode,
+            Some(AppMode::Answering { .. } | AppMode::Working { .. } | AppMode::Pausing { .. })
+        )
+}
+
 /// The one place that decides whether text typed at the prompt can answer a focused card.
 /// It never can; notes go through Tab. Flip this to change the rule.
 pub fn typed_text_answers_card() -> bool {
@@ -201,14 +301,16 @@ fn empty_enter(cx: &mut Cx<'_>) {
     ) {
         cx.out.send(UiCommand::Submit {
             text: String::new(),
+            workflow_requested: false,
         });
     }
 }
 
 /// Plain text goes by the app mode, whatever card waits (see [`typed_text_answers_card`]).
 /// With nothing going, it shows as your message at once, grey until its turn starts and prints
-/// it; otherwise it shows grey from state until it's delivered.
-fn plain(text: String, shown: &str, cx: &mut Cx<'_>) {
+/// it; otherwise it shows grey from state until it's delivered. `workflow_requested` says this
+/// one request goes through a workflow, which the engine reads.
+fn plain(text: String, shown: &str, workflow_requested: bool, cx: &mut Cx<'_>) {
     let idle = matches!(cx.state.mode, None | Some(AppMode::Idle)) && !cx.model.is_working();
     if idle {
         let keywords = cx.keywords();
@@ -230,7 +332,10 @@ fn plain(text: String, shown: &str, cx: &mut Cx<'_>) {
             .with_keywords(keywords);
         history.push_active(echo);
     }
-    cx.out.send(UiCommand::Submit { text });
+    cx.out.send(UiCommand::Submit {
+        text,
+        workflow_requested,
+    });
 }
 
 fn mention(target: MentionTarget, message: String, typed: &str, cx: &mut Cx<'_>) {
@@ -275,6 +380,38 @@ fn mention(target: MentionTarget, message: String, typed: &str, cx: &mut Cx<'_>)
     }
 }
 
+/// A tab's command typed alone prints the tab, as its `print` does, where
+/// `ui.views.<tab>.open` says `print`. Any other setting opens the panel.
+fn as_its_tab_opens(command: SlashCommand, ui: &UiSettings) -> SlashCommand {
+    let prints = |tab: ViewOpen| tab == ViewOpen::Print;
+    let (open, print) = (ViewAction::Open, ViewAction::Print);
+    let views = &ui.views;
+    match command {
+        SlashCommand::Status { action } if action == open && prints(views.status.open) => {
+            SlashCommand::Status { action: print }
+        }
+        SlashCommand::Usage { period, action } if action == open && prints(views.usage.open) => {
+            SlashCommand::Usage {
+                period,
+                action: print,
+            }
+        }
+        SlashCommand::Context { all, action } if action == open && prints(views.context.open) => {
+            SlashCommand::Context { all, action: print }
+        }
+        SlashCommand::Budget {
+            key: None,
+            value: None,
+            action,
+        } if action == open && prints(views.budget.open) => SlashCommand::Budget {
+            key: None,
+            value: None,
+            action: print,
+        },
+        other => other,
+    }
+}
+
 fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
     let name = typed
         .trim_start()
@@ -286,7 +423,13 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
     match (handler, command) {
         (Handler::Ui, SlashCommand::Workflows) => super::keys::open_tree(cx),
         (Handler::Ui, SlashCommand::Copy { nth }) => copy_answer(nth, cx),
-        (Handler::Ui, SlashCommand::Help) => open_help(cx),
+        (Handler::Ui, SlashCommand::Help) => {
+            cx.out.views_as_panel = answer_running(cx);
+            open_help(cx);
+        }
+        (Handler::Ui, SlashCommand::Artifacts) => {
+            cx.out.open(crate::views::artifacts::ArtifactsView::new());
+        }
         (Handler::Ui, SlashCommand::Exit) => cx.out.exit = true,
         (Handler::Both, SlashCommand::Verbosity { level: Some(level) }) => {
             set_verbosity(level, cx);
@@ -297,6 +440,79 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
             cx.out.send(UiCommand::Vim { on });
             cx.model.bottom.composer.set_vim(on);
             cx.model.bottom.mode.vim = cx.model.bottom.composer.vim_mode();
+        }
+        // The tab opens at once, here, and the numbers it draws follow from the controller.
+        (
+            _,
+            SlashCommand::Usage {
+                period,
+                action: ViewAction::Open,
+            },
+        ) => {
+            if let Some(shown) = usage_period(period.as_deref()) {
+                let watch = cx.model.bottom.band.watch.clone();
+                cx.out
+                    .open(OverviewView::new(Tab::Usage, watch).with_period(shown));
+            }
+            cx.out.send(UiCommand::Slash {
+                command: SlashCommand::Usage {
+                    period,
+                    action: ViewAction::Open,
+                },
+            });
+        }
+        // `/stats` opens its tab at once. With no period it waits for the one the stats
+        // mod's file sets, which comes with the numbers.
+        (
+            _,
+            SlashCommand::Stats {
+                period,
+                action: ViewAction::Open,
+            },
+        ) => {
+            let watch = cx.model.bottom.band.watch.clone();
+            let view = OverviewView::new(Tab::Stats, watch);
+            let view = match period.as_deref().and_then(StatsPeriod::parse) {
+                Some(given) => view.with_period(given.usage()),
+                None => view.with_stats_period_from_file(),
+            };
+            cx.out.open(view);
+            cx.out.send(UiCommand::Slash {
+                command: SlashCommand::Stats {
+                    period,
+                    action: ViewAction::Open,
+                },
+            });
+        }
+        // `/mods stats`: the stats mod's page is the Stats tab's own.
+        (
+            _,
+            SlashCommand::Widgets {
+                action:
+                    argonauts_core::input::WidgetsAction::Page {
+                        widget: argonauts_core::settings::ui::WidgetName::Stats,
+                    },
+                scope: None,
+            },
+        ) => super::keys::open_stats(cx, true),
+        // `/limits` alone opens its tab, which shows what counts toward the limits above the
+        // limits themselves. A limit to set, or one the tab opens, goes to the controller.
+        (
+            _,
+            SlashCommand::Budget {
+                key: None,
+                value: None,
+                action: ViewAction::Open,
+            },
+        ) => {
+            let watch = cx.model.bottom.band.watch.clone();
+            cx.out.open(OverviewView::new(Tab::Limits, watch));
+            cx.out.send(UiCommand::Slash {
+                command: SlashCommand::Usage {
+                    period: None,
+                    action: ViewAction::Open,
+                },
+            });
         }
         (Handler::Both, SlashCommand::Theme { name: None }) => cx.out.send(UiCommand::Request {
             view: ViewRequest::Settings {
@@ -488,6 +704,16 @@ mod tests {
         UiCommand::Slash { command }
     }
 
+    /// `/artifacts` opens the list on this screen, and nothing goes to the controller.
+    #[test]
+    fn artifacts_opens_the_list_of_published_pages() {
+        let mut screen = Screen::idle();
+        let out = screen.submit("/artifacts");
+        assert!(out.commands.is_empty(), "{:?}", out.commands);
+        assert_eq!(out.views.len(), 1);
+        assert!(format!("{:?}", out.views[0]).starts_with("ArtifactsView"));
+    }
+
     #[test]
     fn the_main_agents_commands_join_the_menu_and_parse() {
         let mut screen = Screen::idle();
@@ -619,7 +845,9 @@ mod tests {
         );
         assert_eq!(
             screen.submit("/status").commands,
-            [slash(SlashCommand::Status)]
+            [slash(SlashCommand::Status {
+                action: ViewAction::Open
+            })]
         );
         assert_eq!(
             screen.submit("/solo fix the export").commands,
@@ -642,7 +870,7 @@ mod tests {
         assert!(screen.submit("@ codex").commands.is_empty());
         assert_eq!(
             screen.notice(),
-            Some("@ needs a target, such as @codex or @card-002")
+            Some("@ needs a target, such as @codex or @task-002")
         );
         assert_eq!(screen.model.bottom.composer.text(), "something else");
         assert!(screen.model.history.cells().is_empty());
@@ -658,7 +886,8 @@ mod tests {
         assert_eq!(
             out.commands,
             [UiCommand::Submit {
-                text: "look at line 1\nline 2\nline 3\nline 4".into()
+                text: "look at line 1\nline 2\nline 3\nline 4".into(),
+                workflow_requested: false,
             }]
         );
         // Grey in the live region until its turn starts, which prints it once.
@@ -673,6 +902,38 @@ mod tests {
         let mut working = Screen::new(fixture::working_state());
         working.submit("keep the old API");
         assert!(working.model.history.cells().is_empty());
+    }
+
+    /// The typed word asks for a workflow for that one request, unless Opt+W
+    /// ignored it. The text goes out as typed either way.
+    #[test]
+    fn the_word_ultracode_marks_the_request_unless_it_was_ignored() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut screen = Screen::idle();
+        let send = |screen: &mut Screen, text: &str, ignore: bool| {
+            let composer = &mut screen.model.bottom.composer;
+            composer.set_text(text);
+            if ignore {
+                composer.toggle_workflow_word();
+            }
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            let crate::bottom::ComposerEvent::Submitted { text, shown } =
+                composer.handle_key(enter)
+            else {
+                panic!("the prompt goes out");
+            };
+            screen.act(UiAction::Submit { text, shown }).commands
+        };
+        let submit = |text: &str, workflow_requested: bool| UiCommand::Submit {
+            text: text.into(),
+            workflow_requested,
+        };
+        let asked = "ultracode fix the flaky export test";
+        assert_eq!(send(&mut screen, asked, false), [submit(asked, true)]);
+        assert_eq!(send(&mut screen, asked, true), [submit(asked, false)]);
+        let plain = "fix the flaky export test";
+        assert_eq!(send(&mut screen, plain, false), [submit(plain, false)]);
     }
 
     #[test]
@@ -694,7 +955,8 @@ mod tests {
         assert_eq!(
             out.commands,
             [UiCommand::Submit {
-                text: "please ultrathink about this".into()
+                text: "please ultrathink about this".into(),
+                workflow_requested: false,
             }]
         );
         let echoes: Vec<_> = screen.model.history.active_cells().collect();
@@ -738,7 +1000,8 @@ mod tests {
         assert_eq!(
             out.commands,
             [UiCommand::Submit {
-                text: "@README.md what is this?".into()
+                text: "@README.md what is this?".into(),
+                workflow_requested: false,
             }]
         );
         assert_eq!(idle.notice(), None);
@@ -750,7 +1013,8 @@ mod tests {
         assert_eq!(
             screen.submit("@src/ keep the API").commands,
             [UiCommand::Submit {
-                text: "@src/ keep the API".into()
+                text: "@src/ keep the API".into(),
+                workflow_requested: false,
             }]
         );
         assert!(matches!(
@@ -810,8 +1074,8 @@ mod tests {
         let mut screen = Screen::new(fixture::working_state());
         let mut card = CardPrompt::new(
             7,
-            "Merge card-002 into main?",
-            "Merge card-002?",
+            "Merge task-002 into main?",
+            "Merge task-002?",
             vec![CardOption::new("Merge")],
         );
         card.focus();
@@ -820,7 +1084,8 @@ mod tests {
         assert_eq!(
             out.commands,
             [UiCommand::Submit {
-                text: "yes, merge it".into()
+                text: "yes, merge it".into(),
+                workflow_requested: false,
             }]
         );
         assert!(screen.model.bottom.card.is_some());
@@ -836,7 +1101,8 @@ mod tests {
         assert_eq!(
             screen.submit("").commands,
             [UiCommand::Submit {
-                text: String::new()
+                text: String::new(),
+                workflow_requested: false,
             }]
         );
     }
@@ -1031,12 +1297,12 @@ mod tests {
         let welcome = |example: Option<&str>| AppEvent::Welcome {
             version: "0.1.0".into(),
             repo: "~/argonauts".into(),
-            preset: "peer-crew".into(),
+            workflow: "council".into(),
             agents: Vec::new(),
             runs_going: 0,
             runs_need_you: 0,
             example_prompt: example.map(str::to_owned),
-            default_agent: None,
+            main_agent: None,
             effort: None,
         };
         screen.event(welcome(Some("fix the flaky export test")));

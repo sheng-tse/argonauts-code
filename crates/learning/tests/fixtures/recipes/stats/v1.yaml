@@ -1,7 +1,0 @@
-recipe: stats
-version: 1
-description: Carries its own scoreboard
-match: { task_types: [docs] }
-pass_rate: 0.9
-stats: { runs: 12, wins: 9 }
-critique: { rounds: 2 }

@@ -3,10 +3,10 @@ source: crates/tui/tests/snap_workflows.rs
 expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
- owner · card-001
+ worker · task-001
 
 
- ╭ owner · card-001 ────────────────────────────────────────────────────────────────────────╮
+ ╭ worker · task-001 ───────────────────────────────────────────────────────────────────────╮
  │ ✔ Completed · Opus on Claude Code · 25m40s                                               │
  │ claude-code/opus · run-01 · 402k tok · $1.31                                             │
  │                                                                                          │
@@ -23,9 +23,9 @@ expression: text
  │ Diff · 4 files · +120 -18 · ↵open                                                        │
  │                                                                                          │
  │ Subagents · 3 · structure not exposed                                                    │
- │   ✓ explorer  done                                                                       │
- │   ✓ planner   done                                                                       │
- │   ✓ tester    done                                                                       │
+ │   ✔ explorer  done                                                                       │
+ │   ✔ planner   done                                                                       │
+ │   ✔ tester    done                                                                       │
  │                                                                                          │
  │ Outcome · 11 lines · ↵expand                                                             │
  │   Report: the terminal and the bottom region are done, with no stubs left.               │

@@ -24,8 +24,9 @@ fn policy_model_approver_fresh_read_only() -> anyhow::Result<()> {
     write_global_config(
         &scenario,
         &solo_config(&format!(
-            "[approvals.merge]\nmode = \"auto\"\ndecide_with = \"model\"\n\n\
-             [approvals.approver]\nmodel = \"codex/gpt-5.6-luna\"\ndifferent_family = true\n\n\
+            "[approvals]\ndecides = \"codex/gpt-5.6-luna\"\n\n\
+             [approvals.merge]\nmode = \"auto\"\ndecide_with = \"model\"\n\n\
+             [approvals.approver]\ndifferent_provider = true\n\n\
              [roles.approver.sandbox]\nmode = \"tool\"\n\n{HELLO_GATE}",
         )),
     )?;

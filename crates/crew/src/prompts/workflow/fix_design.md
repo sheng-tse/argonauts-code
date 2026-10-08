@@ -6,6 +6,6 @@ What the brief needs:
 - `based_on`: the example you started from, by name, or null when you composed from the step kinds.
 - `workflow`: null to run `based_on` as written, else the whole workflow file as YAML text: one to six phases, each with a `title` of one or two words in Title Case and a one-line `detail`, and a `label` on every step.
 - `done_when`: one to eight criteria, each with an `id` (`G1`, `G2`, ...), a `short` name of a few words, one sentence of `text` a check can prove, and its `check`: `"review"` for a reading of the diff, `{ "test": "<test name>" }`, or `{ "command": "<command>" }`.
-- `plan`: empty, or the one card a build from the goal makes, with a one-token `item` and a `task`.
+- `plan`: empty, or the one task a build from the goal makes, with a one-token `item` and a `task`.
 - `questions`: at most three.
 - `first_attempt`: null, unless the run is a goal.

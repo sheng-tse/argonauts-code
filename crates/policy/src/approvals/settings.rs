@@ -6,11 +6,13 @@ use std::sync::Arc;
 
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{
-    Answerer, ApprovalMode, ApprovalSettings, ApproverSettings, AtHardLimit, BudgetRules,
-    CheckpointSettings, DecideWith, EscalationRules, GoalChanges, GoalRules, HardLimitSettings,
-    IsolatedLeak, MergeRules, NoRules, Otherwise, PlanRules, Presence, PromotionRules,
+    Answerer, ApprovalMode, ApprovalRules, ApprovalSettings, ApproverSettings, AtHardLimit,
+    BudgetRules, CheckpointSettings, DecideWith, Decides, EscalationRules, GoalChanges,
+    HardLimitSettings, IsolatedLeak, MergeRules, Otherwise, PlanRules, Presence, PromotionRules,
     SandboxChoice, SandboxSettings, UntrustedRepos, UserHooks,
 };
+use argonauts_core::settings::asking::WhenDeclined;
+use argonauts_core::settings::budget::BudgetSettings;
 
 use crate::SettingsReloader;
 
@@ -46,17 +48,24 @@ pub fn stricter(run_start: &Settings, reloaded: &Settings) -> Settings {
     settings.approvals = approvals(&run_start.approvals, &reloaded.approvals);
     settings.limits = limits(&run_start.limits, &reloaded.limits);
     settings.sandbox = sandbox(&run_start.sandbox, &reloaded.sandbox);
-    settings.budget.run_usd = smaller_cap(run_start.budget.run_usd, reloaded.budget.run_usd);
     settings
 }
 
 fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
     ApprovalSettings {
         // Full auto everywhere only while both say so.
-        full_auto: a.full_auto && b.full_auto,
-        answered_by: answered_by(a.answered_by.as_ref(), b.answered_by.as_ref()),
+        autopilot: a.autopilot && b.autopilot,
+        answers: answered_by(a.answers.as_ref(), b.answers.as_ref()),
+        decides: decides(&a.decides, &b.decides),
         // Topics that come back to you add up, so a reload can't drop one mid-run.
         ask_you_about: union(&a.ask_you_about, &b.ask_you_about),
+        // Ending the part decides less in your place than carrying on does.
+        when_declined: if a.when_declined == WhenDeclined::Stop {
+            a.when_declined
+        } else {
+            b.when_declined
+        },
+        ask_limit: a.ask_limit.min(b.ask_limit),
         goal_changes: goal_changes(a.goal_changes, b.goal_changes),
         spot_check_sample: a.spot_check_sample.max(b.spot_check_sample),
         pause_auto_when_spot_checks_waiting: pause_limit(
@@ -66,22 +75,18 @@ fn approvals(a: &ApprovalSettings, b: &ApprovalSettings) -> ApprovalSettings {
         suggest_auto_after_matches: a
             .suggest_auto_after_matches
             .max(b.suggest_auto_after_matches),
-        goal: checkpoint(&a.goal, &b.goal, |_, _| GoalRules {}),
-        plan: checkpoint(&a.plan, &b.plan, plan_rules),
-        merge: checkpoint(&a.merge, &b.merge, merge_rules),
-        recipe_promotion: checkpoint(
-            &a.recipe_promotion.as_checkpoint(),
-            &b.recipe_promotion.as_checkpoint(),
-            promotion_rules,
+        rules: rules(&a.rules, &b.rules),
+        goal: checkpoint(&a.goal, &b.goal),
+        plan: checkpoint(&a.plan, &b.plan),
+        merge: checkpoint(&a.merge, &b.merge),
+        workflow_promotion: checkpoint(
+            &a.workflow_promotion.as_checkpoint(),
+            &b.workflow_promotion.as_checkpoint(),
         )
         .into(),
-        escalation: checkpoint(&a.escalation, &b.escalation, |a, b| EscalationRules {
-            max_extra_attempts: a.max_extra_attempts.min(b.max_extra_attempts),
-        }),
-        budget: checkpoint(&a.budget, &b.budget, |a, b| BudgetRules {
-            use_reserve: a.use_reserve && b.use_reserve,
-        }),
-        change_request: checkpoint(&a.change_request, &b.change_request, |_, _| NoRules {}),
+        escalation: checkpoint(&a.escalation, &b.escalation),
+        budget: checkpoint(&a.budget, &b.budget),
+        change_request: checkpoint(&a.change_request, &b.change_request),
         approver: approver(&a.approver, &b.approver),
         presence: presence(a.presence, b.presence),
         refuse_ancestor_env: union(&a.refuse_ancestor_env, &b.refuse_ancestor_env),
@@ -105,15 +110,10 @@ fn answered_by(a: Option<&Answerer>, b: Option<&Answerer>) -> Option<Answerer> {
     }
 }
 
-fn checkpoint<R: Default>(
-    a: &CheckpointSettings<R>,
-    b: &CheckpointSettings<R>,
-    rules: impl FnOnce(&R, &R) -> R,
-) -> CheckpointSettings<R> {
+fn checkpoint(a: &CheckpointSettings, b: &CheckpointSettings) -> CheckpointSettings {
     CheckpointSettings {
         mode: less_autonomous(a.mode, b.mode),
         decide_with: decide_with(a.decide_with, b.decide_with),
-        rules: rules(&a.rules, &b.rules),
         otherwise: otherwise(a.otherwise, b.otherwise),
         at_hard_limit: at_hard_limit(a.at_hard_limit, b.at_hard_limit),
     }
@@ -177,6 +177,24 @@ fn presence(a: Presence, b: Presence) -> Presence {
     if rank(a) >= rank(b) { a } else { b }
 }
 
+/// The stricter number of the two, rule by rule.
+fn rules(a: &ApprovalRules, b: &ApprovalRules) -> ApprovalRules {
+    ApprovalRules {
+        plan: plan_rules(&a.plan, &b.plan),
+        merge: merge_rules(&a.merge, &b.merge),
+        workflow_promotion: promotion_rules(&a.workflow_promotion, &b.workflow_promotion),
+        escalation: EscalationRules {
+            max_extra_attempts: u32::min(
+                a.escalation.max_extra_attempts,
+                b.escalation.max_extra_attempts,
+            ),
+        },
+        budget: BudgetRules {
+            use_reserve: a.budget.use_reserve && b.budget.use_reserve,
+        },
+    }
+}
+
 fn plan_rules(a: &PlanRules, b: &PlanRules) -> PlanRules {
     PlanRules {
         max_score_spread: a.max_score_spread.min(b.max_score_spread),
@@ -186,8 +204,10 @@ fn plan_rules(a: &PlanRules, b: &PlanRules) -> PlanRules {
 
 fn merge_rules(a: &MergeRules, b: &MergeRules) -> MergeRules {
     MergeRules {
-        min_changed_line_coverage: a.min_changed_line_coverage.max(b.min_changed_line_coverage),
-        max_combined_diff_lines: a.max_combined_diff_lines.min(b.max_combined_diff_lines),
+        min_test_coverage_of_changed_lines: a
+            .min_test_coverage_of_changed_lines
+            .max(b.min_test_coverage_of_changed_lines),
+        max_changed_lines: a.max_changed_lines.min(b.max_changed_lines),
         allow_debt: a.allow_debt && b.allow_debt,
     }
 }
@@ -199,18 +219,17 @@ fn promotion_rules(a: &PromotionRules, b: &PromotionRules) -> PromotionRules {
     }
 }
 
-/// A new approver model waits for the next run, since the run's evidence and independence
-/// checks were set up for the one it started with. Removing or replacing the model stops the
-/// old one at once, and what it would decide asks you for the rest of the run.
+/// A model you name to judge waits for the next run, since the run's evidence and independence
+/// checks were set up for the one it started with. Removing or replacing it stops the old one
+/// at once, and the judge the policy picks settles the rest of the run.
+fn decides(a: &Decides, b: &Decides) -> Decides {
+    if a == b { a.clone() } else { Decides::Judge }
+}
+
 fn approver(a: &ApproverSettings, b: &ApproverSettings) -> ApproverSettings {
     ApproverSettings {
-        model: if a.model == b.model {
-            a.model.clone()
-        } else {
-            None
-        },
         model_rules: a.model_rules.clone(),
-        different_family: a.different_family || b.different_family,
+        different_provider: a.different_provider || b.different_provider,
         second_model: a.second_model.clone().or_else(|| b.second_model.clone()),
     }
 }
@@ -219,10 +238,15 @@ fn limits(a: &HardLimitSettings, b: &HardLimitSettings) -> HardLimitSettings {
     HardLimitSettings {
         protected_paths: union(&a.protected_paths, &b.protected_paths),
         dependency_allowlist: intersection(&a.dependency_allowlist, &b.dependency_allowlist),
-        usd_per_day: smaller_cap(a.usd_per_day, b.usd_per_day),
+        spend_per_day: smaller_cap(a.spend_per_day, b.spend_per_day),
         auto_merges_per_day: a.auto_merges_per_day.min(b.auto_merges_per_day),
         irreversible_allowlist: intersection(&a.irreversible_allowlist, &b.irreversible_allowlist),
         evolution_usd_per_month: a.evolution_usd_per_month.min(b.evolution_usd_per_month),
+        // Of the run and task limits, only the run's dollars are a cap the policy reads.
+        budget: BudgetSettings {
+            spend_per_run: smaller_cap(a.budget.spend_per_run, b.budget.spend_per_run),
+            ..a.budget.clone()
+        },
     }
 }
 
@@ -244,7 +268,7 @@ fn sandbox(a: &SandboxSettings, b: &SandboxSettings) -> SandboxSettings {
             a.mode
         },
         network: a.network && b.network,
-        agents_see_other_copies: a.agents_see_other_copies && b.agents_see_other_copies,
+        agents_see_other_worktrees: a.agents_see_other_worktrees && b.agents_see_other_worktrees,
         agents_commit: a.agents_commit && b.agents_commit,
         fail_closed: a.fail_closed || b.fail_closed,
         extra_writable: intersection(&a.extra_writable, &b.extra_writable),

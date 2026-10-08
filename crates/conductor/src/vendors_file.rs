@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use argonauts_core::limits::{HealthState, QuotaReading, QuotaStatus, VendorHealth};
+use argonauts_core::limits::{HealthState, QuotaReading, QuotaStatus, QuotaWindows, VendorHealth};
 use argonauts_core::names::VendorId;
 use argonauts_core::{Paths, create_private_dir_all};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,15 @@ pub struct VendorsFile {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct VendorEntry {
+    /// The window that binds soonest. It's what a file from before windows holds alone, and
+    /// what one number per vendor shows.
     pub quota: Option<QuotaReading>,
+    /// The newest reading of each window the vendor reports.
+    #[serde(default, skip_serializing_if = "QuotaWindows::is_empty")]
+    pub windows: QuotaWindows,
+    /// The account's plan, as the CLI names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
     pub health: Option<VendorHealth>,
     /// When the vendor last left `Down`, which wakes runs waiting for it.
     #[serde(default, with = "time::serde::rfc3339::option")]
@@ -81,6 +89,28 @@ impl Owner {
 }
 
 impl VendorEntry {
+    /// Keeps the reading for its window, unless that window has a newer one, and `quota`
+    /// follows the window that binds soonest. Says whether it was kept.
+    pub fn observe_quota(&mut self, reading: QuotaReading) -> bool {
+        if self.windows.is_empty()
+            && let Some(old) = self.quota.take()
+        {
+            self.windows.put(old);
+        }
+        let kept = self.windows.observe(reading);
+        self.quota = self.windows.binding().cloned();
+        kept
+    }
+
+    /// Every window's newest reading. A file from before windows has its one reading.
+    pub fn quota_windows(&self) -> Vec<QuotaReading> {
+        if self.windows.is_empty() {
+            self.quota.iter().cloned().collect()
+        } else {
+            self.windows.readings().to_vec()
+        }
+    }
+
     pub fn state(&self) -> HealthState {
         self.health
             .as_ref()

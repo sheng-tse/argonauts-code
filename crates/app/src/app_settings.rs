@@ -219,10 +219,10 @@ impl AppSettings {
     /// For a value from `layer` when that's the preset, the settings file that picked the
     /// preset, if one did: saving there or later wins over the preset.
     pub(crate) fn preset_from(&self, layer: &str) -> Option<String> {
-        if layer != "preset" {
+        if layer != "workflow" {
             return None;
         }
-        let picked = self.layer("preset");
+        let picked = self.layer("workflow");
         FILE_LAYERS.contains(&picked.as_str()).then_some(picked)
     }
 
@@ -299,5 +299,8 @@ pub(crate) fn sources(
         interactive,
         recipe: None,
         request: Vec::new(),
+        waiting: argonauts_crew::prompts::trust::waiting(&env.repo_root, &env.state_dir)
+            .all()
+            .collect(),
     }
 }

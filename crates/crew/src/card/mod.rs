@@ -24,7 +24,9 @@ pub mod scheduler;
 pub mod takeover;
 pub mod worktree;
 
+mod asked_anyway;
 mod budget;
+pub(crate) mod claims;
 mod contracts;
 mod escalation;
 pub(crate) mod session;
@@ -47,7 +49,7 @@ pub const AUTHOR: &str = "author";
 pub async fn build_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
     match call.step.input.as_deref() {
         Some(SPIKES) => Ok(StepDone::skipped(
-            "spike cards run in the judge step and are never integrated",
+            "experiment tasks run in the judge step and are never merged into the run",
         )),
         Some(GOAL) => build_goal(host, call).await,
         _ => scheduler::run_cards(host, call).await,
@@ -60,10 +62,11 @@ pub fn builds_goal(step: &Step) -> bool {
 }
 
 async fn build_goal(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    // In a goal, each attempt builds its own card on what the earlier ones integrated.
+    // With a goal around the run, each round builds its own task on what the earlier ones
+    // merged.
     let mut spec = {
         let snapshot = host.read(Clone::clone);
-        if pursue::pursuing(&snapshot) {
+        if snapshot.goal.pursuit.is_some() {
             pursue::attempt_card(&snapshot, host)?
         } else {
             solo::card(&snapshot, host)?
@@ -75,8 +78,8 @@ async fn build_goal(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         let owner = spec
             .owner
             .clone()
-            .unwrap_or_else(|| host.settings().default_agent.clone());
-        spec.reviewers = vec![other_family_reviewer(host, &owner)?];
+            .unwrap_or_else(|| host.settings().main_agent.clone());
+        spec.reviewers = vec![other_provider_reviewer(host, &owner)?];
     }
     let attempts = match call.step.count {
         Some(Count::Fixed(count)) => count.max(1),
@@ -91,7 +94,7 @@ async fn build_goal(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
 
 /// The first reviewer candidate (the reviewer role's, else every available worker) from another
 /// family than the owner, with no role conflict.
-fn other_family_reviewer(host: &Host, owner: &WorkerRef) -> EngineResult<WorkerRef> {
+fn other_provider_reviewer(host: &Host, owner: &WorkerRef) -> EngineResult<WorkerRef> {
     let family = |worker: &WorkerRef| roles::family(host, worker);
     let owner_family = family(owner);
     let mut pool = roles::candidates(host.settings(), RoleName::Reviewer);
@@ -104,8 +107,8 @@ fn other_family_reviewer(host: &Host, owner: &WorkerRef) -> EngineResult<WorkerR
         })
         .ok_or_else(|| {
             EngineError::Refused(format!(
-                "this workflow reviews the solo card by another model family than {owner} \
-                 ({owner_family}), and no reviewer from another family is available"
+                "this workflow reviews the solo task by another provider than {owner} \
+                 ({owner_family}), and no reviewer from another provider is available"
             ))
         })
 }
@@ -143,10 +146,10 @@ async fn best_of(
         if solo::escalates_to_crew(&snapshot, host) {
             return Ok(StepDone {
                 flow: Flow::Switch(runner::crew_workflow(host)),
-                ..StepDone::done("no attempt passed its gates, so the crew takes over")
+                ..StepDone::done("no attempt passed its checks, so the crew takes over")
             });
         }
-        let summary = format!("none of {attempts} attempts passed its gates");
+        let summary = format!("none of {attempts} attempts passed its checks");
         contracts::record_phase(
             host,
             RunPhase::Build,
@@ -160,7 +163,7 @@ async fn best_of(
     };
     let state = pipeline::run_card(host, &kept, &call.at).await?;
     let summary = match state {
-        CardState::Integrated => format!("kept {kept} of {attempts} attempts, integrated"),
+        CardState::Integrated => format!("kept {kept} of {attempts} attempts, merged into the run"),
         other => format!("kept {kept} of {attempts} attempts, now {other:?}"),
     };
     contracts::record_phase(
@@ -173,7 +176,7 @@ async fn best_of(
 }
 
 /// Records the card once, as `Waiting`.
-fn create(host: &Host, spec: CardSpec) -> EngineResult<()> {
+pub(crate) fn create(host: &Host, spec: CardSpec) -> EngineResult<()> {
     let id = spec.id.clone();
     if host.read(|state| state.cards.get(&id).is_some()) {
         return Ok(());

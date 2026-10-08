@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use argonauts_core::events::context::ContextDetail;
 use argonauts_core::keywords::Keyword;
 use argonauts_core::screen::ScreenRequest;
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
@@ -20,7 +21,7 @@ use crate::{command, control, instructions, isolation, sessions, tweaks};
 /// The first version is the original recordings, the second the steering and resume ones, the
 /// third a workflow Claude Code runs itself, the permission prompt tool, and a read-only session
 /// resumed with every tool.
-pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285", "2.1.289"];
+pub const TESTED_VERSIONS: &[&str] = &["2.1.284", "2.1.285", "2.1.289", "2.1.293"];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeCodeAdapter;
@@ -133,6 +134,10 @@ impl Adapter for ClaudeCodeAdapter {
         Some(control::screen_line(request))
     }
 
+    fn context_usage_line(&self, detail: ContextDetail) -> Option<String> {
+        Some(control::context_usage_line(detail))
+    }
+
     fn compaction(&self, setting: Compaction) -> LaunchTweak {
         tweaks::compaction(setting)
     }
@@ -188,6 +193,10 @@ impl Adapter for ClaudeCodeAdapter {
             // Checked on 2.1.285: exit 0 logged in, 1 with an empty HOME. No model call.
             login_check: Some(vec!["auth".to_owned(), "status".to_owned()]),
         }
+    }
+
+    fn update_args(&self) -> Option<&'static [&'static str]> {
+        Some(&["update"])
     }
 
     fn builtin_commands(&self) -> &'static [BuiltinCommand] {
@@ -329,7 +338,10 @@ mod tests {
             Some("2.1.285")
         );
         assert_eq!(adapter.parse_version("no version here"), None);
-        assert_eq!(adapter.tested_versions(), ["2.1.284", "2.1.285", "2.1.289"]);
+        assert_eq!(
+            adapter.tested_versions(),
+            ["2.1.284", "2.1.285", "2.1.289", "2.1.293"]
+        );
         assert_eq!(adapter.cheapest_model(), ("haiku", Some("low")));
         assert!(adapter.wrap_up_input("wrap up").is_none());
         assert_eq!(adapter.stop_plan(), StopPlan::default());
@@ -382,6 +394,80 @@ mod tests {
         assert_eq!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS"), Some("1"));
     }
 
+    /// Ultracode is Claude Code's own setting, which leaves the effort alone, and the size
+    /// guideline goes with it. A session that can't run a workflow gets neither.
+    #[test]
+    fn ultracode_and_the_workflow_size_go_through_the_settings() {
+        use argonauts_core::settings::workflows::WorkflowSize;
+        let on = command(&SessionRequest {
+            ultracode: true,
+            workflow_size: Some(WorkflowSize::None),
+            asks: Asks::Never,
+            scratch_dir: Some("/tmp/state/t-002".into()),
+            ..request(SessionRole::Direct)
+        });
+        let settings = settings_file(&on);
+        assert_eq!(settings["ultracode"], json!(true));
+        assert_eq!(settings["workflowSizeGuideline"], json!("unrestricted"));
+        assert!(
+            !on.args.iter().any(|arg| arg.contains("ultracode")),
+            "{:?}",
+            on.args
+        );
+        let read_only = command(&SessionRequest {
+            ultracode: true,
+            workflow_size: Some(WorkflowSize::Small),
+            scratch_dir: Some("/tmp/state/t-003".into()),
+            ..request(SessionRole::ReadOnly)
+        });
+        let settings = settings_file(&read_only);
+        assert!(settings.get("ultracode").is_none());
+        assert!(settings.get("workflowSizeGuideline").is_none());
+    }
+
+    /// A build session that may run its own workflow gets the tool, and no one is there to
+    /// review a workflow before it runs.
+    #[test]
+    fn a_build_session_with_its_own_workflow_runs_one_unasked() {
+        let spec = command(&SessionRequest {
+            native_fanout: Some(NativeFanout::Switch(FanoutSwitch::On)),
+            ultracode: true,
+            scratch_dir: Some("/tmp/state/t-004".into()),
+            ..request(SessionRole::Build)
+        });
+        assert!(
+            value_after(&spec, "--tools")
+                .unwrap()
+                .ends_with(",Workflow")
+        );
+        let settings = settings_file(&spec);
+        assert_eq!(settings["permissions"], json!({"allow": ["Workflow"]}));
+        assert_eq!(settings["ultracode"], json!(true));
+    }
+
+    /// Your message goes out marked as typed by you only when you asked for a workflow with
+    /// it, since the mark is what makes Claude Code's keyword work.
+    #[test]
+    fn a_message_you_typed_the_keyword_in_goes_out_as_yours() {
+        let req = SessionRequest {
+            keep_input_open: true,
+            prompt: "ultracode tidy the date helpers".into(),
+            ..request(SessionRole::Direct)
+        };
+        let plain = command(&req);
+        assert!(!plain.stdin.as_deref().unwrap().contains("origin"));
+        let typed = command(&SessionRequest {
+            typed_by_you: true,
+            ..req
+        });
+        let line: Value = serde_json::from_str(typed.stdin.as_deref().unwrap().trim()).unwrap();
+        assert_eq!(line["origin"], json!({"kind": "human"}));
+        assert_eq!(
+            line["message"]["content"],
+            json!("ultracode tidy the date helpers")
+        );
+    }
+
     /// A direct turn as the worker launches one: the session server for asking, a schema never.
     fn direct(asks: Asks, sandbox_off: bool) -> CommandSpec {
         command(&SessionRequest {
@@ -409,9 +495,15 @@ mod tests {
                 values_after(&spec, "--disallowedTools"),
                 ["SendMessage", "ListAgents"]
             );
+            // No one reviews a workflow before it runs, so the workflow tool asks nothing too.
             assert_eq!(
                 settings_file(&spec)["permissions"],
-                json!({"allow": ["Bash", "WebFetch", "WebSearch", "mcp__argonauts_status"]})
+                json!({
+                    "allow": [
+                        "Bash", "WebFetch", "WebSearch", "mcp__argonauts_status", "Workflow"
+                    ],
+                    "deny": ["Edit(.argonauts/**)", "Write(.argonauts/**)", "NotebookEdit(.argonauts/**)"],
+                })
             );
             assert!(env(&spec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY").is_none());
             assert!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS").is_none());
@@ -421,6 +513,35 @@ mod tests {
             assert!(!has(&spec, "--strict-mcp-config"));
             assert!(!has(&spec, "--setting-sources"));
         }
+    }
+
+    /// The standing lines are added to Claude Code's own prompt, never in place of it.
+    #[test]
+    fn standing_lines_are_appended_to_the_cli_s_own_prompt() {
+        let mut req = request(SessionRole::Direct);
+        assert!(!has(&command(&req), "--append-system-prompt"));
+        req.standing_note = Some("  Hand real work to the crew.\n".to_owned());
+        let spec = command(&req);
+        assert_eq!(
+            value_after(&spec, "--append-system-prompt"),
+            Some("Hand real work to the crew.")
+        );
+        assert!(!has(&spec, "--system-prompt"));
+        req.standing_note = Some("   ".to_owned());
+        assert!(!has(&command(&req), "--append-system-prompt"));
+    }
+
+    /// A run on autopilot answers nobody's questions, so its sessions work in the style Claude
+    /// Code has for that. Every other session keeps the style you set.
+    #[test]
+    fn a_session_on_autopilot_works_in_the_proactive_style() {
+        let mut req = full_request();
+        assert!(settings_file(&command(&req)).get("outputStyle").is_none());
+        req.autopilot = true;
+        let settings = settings_file(&command(&req));
+        assert_eq!(settings["outputStyle"], "Proactive");
+        assert_eq!(settings["sandbox"]["enabled"], true);
+        crate::settings::validate(&settings).unwrap();
     }
 
     /// Supervised, `like_cli`: no permission mode, so yours applies, and every call Claude
@@ -438,7 +559,7 @@ mod tests {
         // No Bash rule: commands ask, as Claude Code without its own sandbox asks.
         assert_eq!(
             settings_file(&spec)["permissions"],
-            json!({"allow": ["mcp__argonauts_status"]})
+            json!({"allow": ["mcp__argonauts_status"], "deny": ["Edit(.argonauts/**)", "Write(.argonauts/**)", "NotebookEdit(.argonauts/**)"]})
         );
         assert_eq!(env(&spec, "MCP_TOOL_TIMEOUT"), Some("86400000"));
         // A flagged rm's card waits too, whatever default mode is yours.
@@ -606,17 +727,17 @@ mod tests {
     #[test]
     fn claude_name_and_attribution_settings() {
         let spec = command(&SessionRequest {
-            scratch_dir: Some("/tmp/state/runs/run-01/card-002-owner".into()),
+            scratch_dir: Some("/tmp/state/runs/run-01/task-002-worker".into()),
             ..request(SessionRole::Build)
         });
         assert_eq!(
             value_after(&spec, "--name"),
-            Some("argonauts card-002-owner")
+            Some("argonauts task-002-worker")
         );
         let path = value_after(&spec, "--settings").unwrap();
         assert_eq!(
             Path::new(path),
-            Path::new("/tmp/state/runs/run-01/card-002-owner").join(SETTINGS_FILE)
+            Path::new("/tmp/state/runs/run-01/task-002-worker").join(SETTINGS_FILE)
         );
         let settings = settings_file(&spec);
         assert_eq!(settings["attribution"], json!({"commit": "", "pr": ""}));
@@ -724,6 +845,8 @@ mod tests {
                 ..request(SessionRole::Build)
             })
         };
+        // A capped session gets subagents and no workflow of its own, whose agents the cap
+        // wouldn't count.
         let capped = with(Some(NativeFanout::Limit { max: 2 }));
         assert!(value_after(&capped, "--tools").unwrap().ends_with(",Agent"));
         assert_eq!(
@@ -734,9 +857,15 @@ mod tests {
             env(&capped, "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"),
             Some("1")
         );
+        // On lets Claude Code fan out as it sees fit, with a workflow of its own too.
         let on = with(Some(NativeFanout::Switch(FanoutSwitch::On)));
-        assert!(value_after(&on, "--tools").unwrap().ends_with(",Agent"));
+        assert!(
+            value_after(&on, "--tools")
+                .unwrap()
+                .ends_with(",Agent,Workflow")
+        );
         assert!(env(&on, "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS").is_none());
+        assert!(env(&on, "CLAUDE_CODE_DISABLE_WORKFLOWS").is_none());
 
         let off = with(Some(NativeFanout::Switch(FanoutSwitch::Off)));
         assert!(!value_after(&off, "--tools").unwrap().contains("Agent"));
@@ -749,6 +878,7 @@ mod tests {
         // Unset keeps the tool set from before fan-out settings, and read-only never gets Agent.
         let unset = with(None);
         assert!(!value_after(&unset, "--tools").unwrap().contains("Agent"));
+        assert!(!value_after(&unset, "--tools").unwrap().contains("Workflow"));
         assert_eq!(
             values_after(&unset, "--disallowedTools"),
             ["SendMessage", "ListAgents"]
@@ -943,6 +1073,21 @@ mod tests {
             .collect();
         assert_eq!(lines[0]["request"]["subtype"], "initialize");
         assert_eq!(lines[1]["message"]["content"], "Fix the bug");
+        // It keeps SendMessage, which is how the main agent passes your message on to one of
+        // its subagents. A session that may start none goes without, as every other does.
+        assert_eq!(
+            values_after(&command(&main), "--disallowedTools"),
+            ["ListAgents"]
+        );
+        assert_eq!(
+            values_after(&command(&full_request()), "--disallowedTools"),
+            ["SendMessage", "ListAgents"]
+        );
+        main.native_fanout = Some(NativeFanout::Switch(FanoutSwitch::Off));
+        assert_eq!(
+            values_after(&command(&main), "--disallowedTools"),
+            ["SendMessage", "ListAgents", "Agent"]
+        );
 
         // A message sent later carries the uuid its progress is reported by.
         let line = adapter.message_line("Also this", "u-1").unwrap();

@@ -50,7 +50,7 @@ impl Harness {
         };
         let terminal = InlineTerminal::new(screen, Size::new(cols, rows), Position::new(0, 0));
         let mut model = ViewModel::new("vt100 test");
-        model.bottom.composer.label = Some("peer-crew".into());
+        model.bottom.composer.label = Some("council".into());
         Self {
             ui: Ui::new(terminal, theme(), model, t0()),
             now: t0(),
@@ -136,7 +136,7 @@ fn history_fills_down_from_the_top_and_the_prompt_keeps_the_bottom() {
 
     let you = h.row_of("❯ hi").expect("your message printed");
     let answer = h.row_of("Hello there.").expect("the answer printed");
-    let rule = h.row_of("peer-crew ─").expect("the composer's top rule");
+    let rule = h.row_of("council ─").expect("the composer's top rule");
     assert_eq!(you, 0, "history starts on the top row:\n{}", dump(&rows));
     assert_eq!(
         answer,
@@ -224,7 +224,7 @@ fn wide_characters_keep_their_columns() {
     );
 
     let first = h.row_of("● 日本語").expect("the answer printed");
-    let rule = h.row_of("peer-crew ─").expect("the composer's top rule");
+    let rule = h.row_of("council ─").expect("the composer's top rule");
     let body: Vec<&String> = rows[first..rule].iter().filter(|r| !r.is_empty()).collect();
     assert!(body.len() > 1, "the answer wraps:\n{}", dump(&rows));
     for row in &body[1..] {
@@ -263,7 +263,7 @@ fn a_full_screen_keeps_order_and_the_live_region() {
     );
     assert_eq!(rows[14], "─".repeat(50), "{}", dump(&rows));
     assert!(rows[13].starts_with('❯'), "{}", dump(&rows));
-    assert!(rows[12].ends_with("peer-crew ─"), "{}", dump(&rows));
+    assert!(rows[12].ends_with("council ─"), "{}", dump(&rows));
     let numbers: Vec<u32> = rows
         .iter()
         .filter_map(|row| row.strip_prefix("❯ message "))
@@ -424,7 +424,7 @@ fn a_shorter_screen_pushes_only_history_and_shows_each_item_once() {
         ),
         ("codex", "GPT-5.6 on Codex", "Wire --json into the CLI"),
     ] {
-        let mut block = ToolCall::agent(name, None, "owner", task);
+        let mut block = ToolCall::agent(name, None, "worker", task);
         for line in 0..12 {
             block.push(ToolItem::text(format!("{harness} step {line}")));
         }
@@ -459,9 +459,9 @@ fn a_shorter_screen_pushes_only_history_and_shows_each_item_once() {
 
     let rows = h.rows();
     for needle in [
-        "Opus 5.5 on Claude Code · owner",
-        "GPT-5.6 on Codex · owner",
-        "peer-crew ─",
+        "Opus 5.5 on Claude Code · worker",
+        "GPT-5.6 on Codex · worker",
+        "council ─",
         "Building",
         "message 11",
     ] {
@@ -496,7 +496,7 @@ fn a_resize_reflows_the_live_region() {
     h.ui.handle_event(Event::Resize(50, 20), h.now);
     h.settle();
     let rows = h.rows();
-    let rule = h.row_of("peer-crew ─").expect("the top rule");
+    let rule = h.row_of("council ─").expect("the top rule");
     assert_eq!(rows[rule].chars().count(), 50, "{}", dump(&rows));
     assert_eq!(rows[rule + 2], "─".repeat(50), "{}", dump(&rows));
     assert_eq!(
@@ -509,7 +509,7 @@ fn a_resize_reflows_the_live_region() {
         dump(&rows)
     );
     assert_eq!(
-        rows.iter().filter(|r| r.contains("peer-crew")).count(),
+        rows.iter().filter(|r| r.contains("council")).count(),
         1,
         "{}",
         dump(&rows)
@@ -525,10 +525,10 @@ fn a_resize_reflows_the_live_region() {
     h.ui.handle_event(Event::Resize(90, 20), h.now);
     h.settle();
     let rows = h.rows();
-    let rule = h.row_of("peer-crew ─").expect("the top rule");
+    let rule = h.row_of("council ─").expect("the top rule");
     assert_eq!(rows[rule].chars().count(), 90, "{}", dump(&rows));
     assert_eq!(
-        rows.iter().filter(|r| r.contains("peer-crew")).count(),
+        rows.iter().filter(|r| r.contains("council")).count(),
         1,
         "{}",
         dump(&rows)
@@ -538,7 +538,7 @@ fn a_resize_reflows_the_live_region() {
 /// Rows drawn as an input rule: the composer's labeled top rule and the plain one under it.
 fn rule_rows(rows: &[String]) -> (usize, usize) {
     let rules: Vec<&String> = rows.iter().filter(|row| row.starts_with('─')).collect();
-    let labeled = rules.iter().filter(|row| row.contains("peer-crew")).count();
+    let labeled = rules.iter().filter(|row| row.contains("council")).count();
     (labeled, rules.len())
 }
 
@@ -603,7 +603,7 @@ fn closing_the_menu_or_a_picker_leaves_one_input_rule() {
     assert_eq!(rule_rows(&rows), (1, 2), "{}", dump(&rows));
     assert!(h.row_of("light-ansi").is_none(), "{}", dump(&rows));
     assert!(h.live_top() > top, "{}", dump(&rows));
-    let rule = h.row_of("peer-crew").unwrap();
+    let rule = h.row_of("council").unwrap();
     assert!(
         rows[h.row_of("/theme").unwrap() + 1..rule]
             .iter()
@@ -669,28 +669,31 @@ fn keys_do_what_the_reference_says() {
     ];
     h.ui.model_mut().bottom.card = Some(CardPrompt::new(
         7,
-        "Merge card-002 into main?",
-        "Merge card-002?",
+        "Merge task-002 into main?",
+        "Merge task-002?",
         options,
     ));
     h.settle();
     assert!(
-        h.rows().iter().any(|row| row == "❯ ↑ to answer the card"),
+        h.rows()
+            .iter()
+            .any(|row| row == "❯ ↑ to answer the question"),
         "{}",
         dump(&h.rows())
     );
     assert!(h.key(KeyCode::Tab).is_empty());
-    assert_eq!(h.key(KeyCode::Esc), vec![UiAction::SetAside { card: 7 }]);
+    assert_eq!(h.key(KeyCode::Esc), vec![UiAction::Dismiss { card: 7 }]);
     h.settle();
     assert!(
-        h.rows()
-            .iter()
-            .any(|row| row == "◆ Merge card-002? · needs you · ↑ to answer"),
-        "{}",
+        !h.rows().iter().any(|row| row.contains("Merge task-002")),
+        "Esc takes it off the screen:\n{}",
         dump(&h.rows())
     );
-    // Discard can't be undone, so its number asks for Enter first, and the number again confirms.
-    h.key(KeyCode::Up);
+    // Opened again, as from the list of what needs you. Discard can't be undone, so its number
+    // asks for Enter first, and the number again confirms.
+    if let Some(card) = h.ui.model_mut().bottom.card.as_mut() {
+        card.focus();
+    }
     h.settle();
     assert!(
         h.rows().iter().any(|row| row.contains("2. Discard")),

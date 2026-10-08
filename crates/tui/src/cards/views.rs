@@ -63,7 +63,7 @@ pub fn checkpoint_view(
             Ok(lines) => Shown::Pager(Pager::text(format!("Diff · {}", merge.branch), lines)),
             Err(error) => Shown::Notice(error),
         },
-        _ => Shown::Notice("No diff for this card yet".to_owned()),
+        _ => Shown::Notice("No diff for this task yet".to_owned()),
     }
 }
 

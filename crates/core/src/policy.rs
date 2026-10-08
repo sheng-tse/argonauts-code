@@ -145,7 +145,7 @@ pub struct EvidenceFacts {
     pub max_score_spread: Option<f64>,
     pub winner_margin: Option<f64>,
     /// Every counted score came from another family than the plan's author.
-    pub judges_other_family: Option<bool>,
+    pub judges_other_provider: Option<bool>,
     /// Every dispute with a proposed experiment was settled by running it.
     pub disputes_settled: Option<bool>,
     /// Plans flagged for text addressed to judges.
@@ -165,7 +165,7 @@ pub struct EvidenceFacts {
     /// Every card's standing approval came from a reviewer of another company than the card's
     /// owner, as [`company_of`](crate::registry::company_of) tells them apart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewed_by_other_company: Option<bool>,
+    pub reviewed_by_other_provider: Option<bool>,
     /// Every acceptance test fails on the stubs and passes on the integration branch.
     pub acceptance_tests_valid: Option<bool>,
     pub untested_criteria: Vec<String>,
@@ -210,7 +210,7 @@ pub struct EscalationFacts {
     pub families_tried: Vec<String>,
     /// The family of the fallback the next attempt would go to. `None` when no fallback is left.
     pub next_family: Option<String>,
-    /// Extra attempts granted so far, against `escalation.rules.max_extra_attempts`.
+    /// Extra attempts granted so far, against `rules.escalation.max_extra_attempts`.
     pub extra_attempts: u32,
     /// One more attempt fits in what's left of the reserve.
     pub fits_reserve: bool,
@@ -227,7 +227,7 @@ pub struct BudgetFacts {
 /// What auto needs to promote a recipe change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromotionFacts {
-    /// As `recipe_promotion.rules.change_classes` names it, such as `checklist_item`.
+    /// As `rules.workflow_promotion.change_classes` names it, such as `checklist_item`.
     pub change_class: String,
     /// The recipe's last promotion or canary. `None` when it never had one.
     #[serde(default, with = "time::serde::rfc3339::option")]

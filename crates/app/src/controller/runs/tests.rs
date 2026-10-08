@@ -318,7 +318,7 @@ async fn the_mode_line_shows_the_settings_mode_with_no_run_attached() {
     assert_eq!(
         line(&supervised),
         ApprovalMode::Supervised,
-        "one checkpoint that waits for you"
+        "one approval that waits for you"
     );
 }
 
@@ -369,32 +369,32 @@ async fn shift_tab_sets_the_mode_now_and_after_the_next_start() {
 /// Full auto is the mode after auto in the Shift+Tab cycle and a setting too: chosen either
 /// way, the mode line says so, and every run started after Shift+Tab is raised to it.
 #[tokio::test]
-async fn full_auto_comes_from_shift_tab_or_the_settings() {
+async fn autopilot_comes_from_shift_tab_or_the_settings() {
     let set = Rig::with(true, |global| {
         let points = [
             "goal",
             "plan",
             "merge",
-            "recipe_promotion",
-            "escalation",
-            "budget",
+            "workflow_promotion",
+            "stuck",
+            "limit",
             "change_request",
         ];
         let file: String = points
             .iter()
-            .map(|point| format!("[approvals.{point}]\nmode = \"full_auto\"\n"))
+            .map(|point| format!("[approvals.{point}]\nmode = \"autopilot\"\n"))
             .collect();
         std::fs::create_dir_all(global.parent().expect("a config dir")).expect("the dir");
         std::fs::write(global, file).expect("the config");
     });
     assert_eq!(
         status_line(&set.ctx, "", status_parts(&set.runs)).approval_mode,
-        ApprovalMode::FullAuto
+        ApprovalMode::Autopilot
     );
 
     let mut rig = Rig::new();
     let first = rig.start("First change").await;
-    run_commands::approval_mode(&mut rig.ctx, &mut rig.runs, ApprovalMode::FullAuto)
+    run_commands::approval_mode(&mut rig.ctx, &mut rig.runs, ApprovalMode::Autopilot)
         .await
         .expect("the mode changes");
     let second = rig.start("Second change").await;
@@ -403,17 +403,17 @@ async fn full_auto_comes_from_shift_tab_or_the_settings() {
         [
             ApprovalCall::Mode {
                 run: first,
-                mode: ApprovalMode::FullAuto
+                mode: ApprovalMode::Autopilot
             },
             ApprovalCall::Mode {
                 run: second,
-                mode: ApprovalMode::FullAuto
+                mode: ApprovalMode::Autopilot
             }
         ]
     );
     assert_eq!(
         status_parts(&rig.runs).approval_mode,
-        Some(ApprovalMode::FullAuto)
+        Some(ApprovalMode::Autopilot)
     );
 }
 
@@ -434,13 +434,13 @@ async fn a_resumed_run_takes_the_mode_shift_tab_chose() {
     rig.conductor.end(&run, false);
     rig.settle().await;
 
-    run_commands::approval_mode(&mut rig.ctx, &mut rig.runs, ApprovalMode::FullAuto)
+    run_commands::approval_mode(&mut rig.ctx, &mut rig.runs, ApprovalMode::Autopilot)
         .await
         .expect("the mode changes");
     assert_eq!(rig.approvals.calls(), [], "the stopped run isn't asked");
     assert_eq!(
         status_parts(&rig.runs).approval_mode,
-        Some(ApprovalMode::FullAuto),
+        Some(ApprovalMode::Autopilot),
         "with the run over, the mode line says what the next one gets"
     );
 
@@ -451,12 +451,12 @@ async fn a_resumed_run_takes_the_mode_shift_tab_chose() {
         rig.approvals.calls(),
         [ApprovalCall::Mode {
             run: run.clone(),
-            mode: ApprovalMode::FullAuto
+            mode: ApprovalMode::Autopilot
         }]
     );
     assert_eq!(
         status_parts(&rig.runs).approval_mode,
-        Some(ApprovalMode::FullAuto)
+        Some(ApprovalMode::Autopilot)
     );
 }
 
@@ -468,7 +468,7 @@ async fn the_mode_line_goes_by_the_run_on_screen() {
     let run = rig.start("Add --json to export").await;
     rig.until(is_mode(AppMode::Working { run: run.clone() }))
         .await;
-    rig.runs.approval_mode = Some(ApprovalMode::FullAuto);
+    rig.runs.approval_mode = Some(ApprovalMode::Autopilot);
     if let Some(attached) = rig.runs.attached.as_mut() {
         attached.approval_mode = None;
     }
@@ -548,7 +548,7 @@ fn summary(run: &str, state: RunState, live: bool) -> RunSummary {
         run: run_id(run),
         title: format!("{run} title"),
         mode: RunMode::Crew,
-        preset: "peer-crew".to_owned(),
+        workflow: "council".to_owned(),
         state,
         stopped_at: String::new(),
         updated: OffsetDateTime::UNIX_EPOCH,
@@ -638,8 +638,8 @@ async fn a_plain_start_gives_earlier_runs_no_panel_rows() {
     assert_eq!(
         notices(&later),
         [
-            "run-007 is merged. /resume run-007 shows it.",
-            "run-005 needs you · /resume run-005"
+            "run-007 title is merged. /resume run-007 shows it.",
+            "run-005 title needs you · /resume run-005"
         ]
     );
 }
@@ -671,8 +671,8 @@ async fn a_run_from_elsewhere_notifies_you_while_you_are_away() {
     assert_eq!(
         notices(&events),
         [
-            "run-007 is merged. /resume run-007 shows it.",
-            "run-012 needs you · /resume run-012"
+            "run-007 title is merged. /resume run-007 shows it.",
+            "run-012 title needs you · /resume run-012"
         ]
     );
     let lines = lines_after(&log, 2, WAIT).await;
@@ -684,6 +684,73 @@ async fn a_run_from_elsewhere_notifies_you_while_you_are_away() {
     ] {
         assert!(lines.iter().any(|line| line.contains(said)), "{lines:?}");
     }
+}
+
+/// A run started in another window after the app opened shows one line here and gets no panel
+/// row, so the mode line doesn't count it. It's said once: the next listing
+/// knows it, and what it does later is said as for any run off screen.
+#[tokio::test]
+async fn a_run_started_in_another_window_shows_one_line_and_gets_no_row() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let log = dir.path().join("chat.log");
+    // Its config turns OS notifications off, so the test raises none on this desktop.
+    let mut rig = Rig::with(true, record_chat_to(&log));
+    rig.conductor
+        .set_runs(vec![summary("run-007", RunState::Running, true)]);
+    open(&mut rig.ctx, &mut rig.runs, FirstView::Chat)
+        .await
+        .expect("the app opens");
+    let first = rig.settle().await;
+    // The run that was going at the start is in the header's count, not a new line.
+    assert!(
+        !notices(&first)
+            .iter()
+            .any(|text| text.contains("another window")),
+        "{first:#?}"
+    );
+    focus(&mut rig.runs, false);
+
+    let mut named = summary("run-012", RunState::Running, true);
+    named.title = "Add due dates to the tasks".to_owned();
+    named.name = Some("add-due-dates".to_owned());
+    rig.conductor.set_runs(vec![
+        summary("run-007", RunState::Running, true),
+        named.clone(),
+        summary("run-013", RunState::Running, true),
+    ]);
+    super::refresh_background(&rig.ctx);
+    let events = rig.settle().await;
+    assert_eq!(panel_rows(&events), None, "{events:#?}");
+    let said = notices(&events);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(
+        said[0],
+        "A run started in another window: add-due-dates · /resume run-012 shows it"
+    );
+    assert!(
+        said[1].starts_with("A run started in another window: ")
+            && said[1].ends_with(" · /resume run-013 shows it"),
+        "{said:?}"
+    );
+
+    // Said once. When it merges, that's its next line.
+    super::refresh_background(&rig.ctx);
+    assert!(notices(&rig.settle().await).is_empty());
+    rig.conductor.set_runs(vec![
+        summary("run-007", RunState::Running, true),
+        RunSummary {
+            state: RunState::Merged,
+            live: false,
+            ..named
+        },
+    ]);
+    super::refresh_background(&rig.ctx);
+    let later = rig.settle().await;
+    assert_eq!(panel_rows(&later), None, "{later:#?}");
+    assert_eq!(
+        notices(&later),
+        ["add-due-dates is merged. /resume run-012 shows it."]
+    );
 }
 
 /// `argonauts -c` carries a conversation on and brings back its own runs as panel rows, leaving
@@ -814,8 +881,8 @@ async fn a_run_off_screen_says_when_it_needs_you_and_when_it_ends() {
     assert_eq!(
         notices(&events),
         [
-            "run-009 needs you · /resume run-009",
-            "run-008 is merged. /resume run-008 shows it."
+            "run-009 title needs you · ↓ to manage",
+            "run-008 title is merged. /resume shows it."
         ]
     );
     assert_eq!(panel_rows(&events), Some(vec!["run-009"]));
@@ -864,7 +931,7 @@ async fn a_question_parked_at_start_waits_while_you_chat() {
     let calls = harness.conductor.calls();
     assert!(
         calls.iter().all(|call| *call == Call::List),
-        "the parked run was touched: {calls:?}"
+        "the waiting run was touched: {calls:?}"
     );
     assert!(harness.approvals.calls().is_empty());
     assert!(
@@ -1122,7 +1189,7 @@ async fn narrator_lines_reach_the_screen_and_its_journal() {
         ts: OffsetDateTime::UNIX_EPOCH,
         run: Some(run.clone()),
         kind: NarratorLineKind::Update,
-        text: "One owner is writing tests.".to_owned(),
+        text: "One worker is writing tests.".to_owned(),
         model: argonauts_core::names::WorkerRef::new("claude-code", None),
         spend: Spend::default(),
     };
@@ -1157,7 +1224,7 @@ async fn narrator_lines_reach_the_screen_and_its_journal() {
 
 fn card(id: &str, state: CardState) -> CardBrief {
     CardBrief {
-        card: CardId::new(id).expect("a card id"),
+        card: CardId::new(id).expect("a task id"),
         title: format!("{id} title"),
         state,
         owner: None,
@@ -1177,10 +1244,10 @@ async fn resume_recap_code_built_from_digest() {
         run: Some(run.clone()),
         goal: vec!["export now takes --json.".to_owned()],
         cards: vec![
-            card("card-001", CardState::Integrated),
-            card("card-002", CardState::Running),
+            card("task-001", CardState::Integrated),
+            card("task-002", CardState::Running),
         ],
-        waiting: vec!["the merge checkpoint".to_owned()],
+        waiting: vec!["the merge approval".to_owned()],
         ..StatusSummary::default()
     };
     rig.conductor.set_status(digest.clone());
@@ -1312,7 +1379,7 @@ async fn resume_replay_condensed_from_events() {
     assert_eq!(turns, &expected, "the last turns, word for word");
     assert_eq!(
         milestones,
-        &["Plan approved · 3 cards", "Parked · waiting for you"]
+        &["Plan approved · 3 tasks", "Waiting · waiting for you"]
     );
 
     // A run this app just started shows its own events and needs no condensed replay.

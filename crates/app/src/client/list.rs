@@ -71,7 +71,7 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
             run,
             title: first_line(&start.request.request),
             mode: start.request.mode,
-            preset: String::new(),
+            workflow: String::new(),
             state: if starting {
                 RunState::Running
             } else {
@@ -96,9 +96,11 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
         .unwrap_or_default();
     let tally = Tally::of(&recent);
     let (title, mode, preset) = match &first.kind {
-        RunEventKind::Run(RunLifecycle::Started(started)) => {
-            (started.title.clone(), started.mode, started.preset.clone())
-        }
+        RunEventKind::Run(RunLifecycle::Started(started)) => (
+            started.title.clone(),
+            started.mode,
+            started.workflow.clone(),
+        ),
         _ => match &start {
             Some(start) => (
                 first_line(&start.request.request),
@@ -125,7 +127,7 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
         run,
         title,
         mode,
-        preset,
+        workflow: preset,
         state,
         stopped_at,
         updated: recent.last().map_or(first.ts, |event| event.ts),
@@ -293,7 +295,7 @@ fn state_of(tally: &Tally, live: bool) -> (RunState, String) {
         _ if live => {
             let waiting = tally.open_needing_you();
             let words = match waiting.first().and_then(|id| tally.kind_of(id)) {
-                Some(kind) => format!("{} checkpoint, waiting for you", kind_words(kind)),
+                Some(kind) => format!("{}, waiting for you", kind_words(kind)),
                 None => match &tally.phase {
                     Some(phase) => format!("working on {phase}"),
                     None => "working".to_owned(),
@@ -351,7 +353,7 @@ fn parked_words(tally: &Tally, reason: &ParkReason, waiting_on: &[CheckpointId])
     }
     match reason {
         ParkReason::Checkpoint => match waiting_on.first().and_then(|id| tally.kind_of(id)) {
-            Some(kind) => format!("{} checkpoint, waiting for you", kind_words(kind)),
+            Some(kind) => format!("{}, waiting for you", kind_words(kind)),
             None => "waiting for you".to_owned(),
         },
         ParkReason::Paused => "paused".to_owned(),
@@ -388,19 +390,19 @@ fn utc_minute(at: OffsetDateTime) -> String {
 
 fn kind_words(kind: CheckpointKind) -> &'static str {
     match kind {
-        CheckpointKind::Goal => "goal",
-        CheckpointKind::Plan => "plan",
-        CheckpointKind::Merge => "merge",
-        CheckpointKind::Handoff => "handoff",
-        CheckpointKind::VendorDown => "agent down",
-        CheckpointKind::Escalation => "escalation",
-        CheckpointKind::Budget => "budget",
-        CheckpointKind::ChangeRequest => "change request",
-        CheckpointKind::GoalChange => "goal change",
-        CheckpointKind::RecipePromotion => "recipe",
-        CheckpointKind::TakeOverReturn => "take-over",
+        CheckpointKind::Goal => "goal approval",
+        CheckpointKind::Plan => "plan approval",
+        CheckpointKind::Merge => "merge approval",
+        CheckpointKind::Handoff => "fallback question",
+        CheckpointKind::VendorDown => "agent down question",
+        CheckpointKind::Escalation => "stuck task question",
+        CheckpointKind::Budget => "limit approval",
+        CheckpointKind::ChangeRequest => "change request approval",
+        CheckpointKind::GoalChange => "goal change approval",
+        CheckpointKind::WorkflowPromotion => "workflow approval",
+        CheckpointKind::TakeOverReturn => "take-over question",
         CheckpointKind::Question => "question",
-        CheckpointKind::OriginalReturned => "original agent back",
+        CheckpointKind::OriginalReturned => "original agent back question",
     }
 }
 
@@ -413,7 +415,7 @@ fn phase_words(phase: RunPhase) -> &'static str {
         RunPhase::Build => "the build",
         RunPhase::FinalCheck => "the final check",
         RunPhase::Merge => "the merge",
-        RunPhase::Retro => "the retro",
+        RunPhase::Retro => "the run review",
     }
 }
 
@@ -481,7 +483,7 @@ mod tests {
                 1,
                 RunEventKind::Run(RunLifecycle::Parked {
                     reason: ParkReason::NoStandIn {
-                        detail: "nobody could take over as the lead".to_owned(),
+                        detail: "nobody could take over as the main agent".to_owned(),
                         until,
                     },
                     waiting_on: Vec::new(),
@@ -494,13 +496,14 @@ mod tests {
             state_of(&tally, false),
             (
                 RunState::Parked,
-                "nobody could take over as the lead · tries again 1970-01-01 00:05 UTC".to_owned()
+                "nobody could take over as the main agent · tries again 1970-01-01 00:05 UTC"
+                    .to_owned()
             )
         );
         let tally = Tally::of(&[parked(None)]);
         assert_eq!(
             state_of(&tally, false).1,
-            "nobody could take over as the lead"
+            "nobody could take over as the main agent"
         );
     }
 

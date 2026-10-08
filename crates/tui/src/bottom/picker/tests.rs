@@ -298,3 +298,53 @@ fn the_slider_takes_the_arrows_enter_and_esc_and_keeps_typing_from_the_composer(
     assert_eq!(press(&mut picker, KeyCode::Char('l')), PickerEvent::Right);
     assert_eq!(press(&mut picker, KeyCode::Char('h')), PickerEvent::Left);
 }
+
+/// A row's state leads its description as the state's glyph, in the state's color, and the
+/// descriptions still start in one column. A narrow list cuts the words, never the mark alone.
+#[test]
+fn a_rows_state_leads_its_description_in_the_states_color() {
+    use crate::theme::Role;
+    use crate::widgets::State;
+
+    let mut picker = Picker::new("Agents", "The agents Argonauts can use");
+    picker.rows = vec![
+        PickerRow {
+            state: Some(State::Done),
+            ..PickerRow::new("codex", "on · gpt-5.6")
+        },
+        PickerRow {
+            state: Some(State::Failed),
+            ..PickerRow::new("opencode", "not installed · npm i -g opencode-ai@latest")
+        },
+        PickerRow::new("Add an endpoint", "by its base URL"),
+    ];
+    let drawn = text(&picker, 80);
+    for row in [
+        "1. codex             ✔ on · gpt-5.6",
+        "2. opencode          ✗ not installed · npm i -g opencode-ai@latest",
+        "3. Add an endpoint   by its base URL",
+    ] {
+        assert!(drawn.contains(row), "{row:?} in\n{drawn}");
+    }
+
+    let mut theme = Theme::dark();
+    theme.glyphs = Glyphs::UNICODE;
+    let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+    let lines = picker.lines(&ctx);
+    let mark = |glyph: &str| {
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.trim() == glyph)
+            .unwrap_or_else(|| panic!("{glyph} is drawn"))
+            .style
+    };
+    assert_eq!(mark("✔").fg, theme.style(Role::StateDone).fg);
+    assert_eq!(mark("✗").fg, theme.style(Role::StateFailed).fg);
+
+    let narrow = text(&picker, 44);
+    assert!(narrow.contains("✗ not installed"), "{narrow}");
+    for line in narrow.lines() {
+        assert!(crate::text::str_width(line) <= 44, "{line:?}");
+    }
+}

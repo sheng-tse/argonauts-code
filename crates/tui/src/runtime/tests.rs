@@ -176,7 +176,7 @@ async fn a_scripted_session_runs_end_to_end() {
 
         // An endpoint has nothing to hand over, and the card resumes.
         let run = RunId::new("run-01").unwrap();
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         script
             .event(AppEvent::TakeOver {
                 ticket: TakeOverTicket {
@@ -285,7 +285,7 @@ async fn fullscreen_keeps_the_alternate_screen_through_views_and_handovers() {
         let dir = tempfile::tempdir().unwrap();
         let spec = CommandSpec::new("sh", dir.path()).args(["-c", "exit 0"]);
         let run = RunId::new("run-01").unwrap();
-        let card = CardId::new("card-001").unwrap();
+        let card = CardId::new("task-001").unwrap();
         script
             .event(AppEvent::TakeOver {
                 ticket: TakeOverTicket {

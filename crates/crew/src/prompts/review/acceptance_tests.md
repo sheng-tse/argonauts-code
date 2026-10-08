@@ -1,4 +1,4 @@
-Write acceptance tests for the card in the input, before it is built. You get the card's task, the goal criteria it serves, the interface files, and the test directory.
+Write acceptance tests for the task in the input, before it is built. You get the task, the goal criteria it serves, the interface files, and the test directory.
 
 - Test the behavior the criteria describe, through the interfaces only.
 - Every test must compile against the interfaces and fail against their stubs.

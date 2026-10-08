@@ -1,0 +1,5 @@
+---
+source: crates/tui/tests/snap_live.rs
+expression: styled(&render(width))
+---
+  [fg=#999999]ǁ supervised[/]          [fg=#e08a66]●[/] [fg=#ffffff b]Claude[/] [fg=#999999]5h[/] [fg=#e08a66]▄▄▄▄▖[/][fg=#505370]▄[/] [fg=#ffffff b]71%[/]  [fg=#6aa6ff]○[/] [fg=#999999]Codex[/] [fg=#999999]5h[/] [fg=#ffc107]▄▄▄▄▄▖[/] [fg=#ffc107]92%[/]  [fg=#36cfe6]○[/] [fg=#999999]agy[/] [fg=#ff6b80]out[/]  [fg=#8b90a8]○[/] [fg=#999999]OpenCode[/]  [fg=#8b90a8]○[/] [fg=#999999]OpenRouter[/] [fg=#ff6b80]down[/]  [fg=#8b90a8]○[/] [fg=#999999]Local[/]

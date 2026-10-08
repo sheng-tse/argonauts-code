@@ -61,7 +61,7 @@ pub fn open_for(data: &ViewData, cx: &mut Cx<'_>) {
             update,
         } => {
             let note = words::freshness(*refreshed, *refreshing, OffsetDateTime::now_utc());
-            let role = role.filter(|role| *role != RoleName::Default);
+            let role = role.filter(|role| *role != RoleName::Main);
             if *update {
                 models_update(choices, role, note.as_deref(), cx);
             } else {
@@ -69,7 +69,7 @@ pub fn open_for(data: &ViewData, cx: &mut Cx<'_>) {
             }
         }
         ViewData::Effort { slider } => {
-            let command = match slider.role.filter(|role| *role != RoleName::Default) {
+            let command = match slider.role.filter(|role| *role != RoleName::Main) {
                 None => "effort".to_owned(),
                 Some(role) => format!("effort {}", role.as_str()),
             };

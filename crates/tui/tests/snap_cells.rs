@@ -84,12 +84,12 @@ fn diff(unified: &str) -> DiffView {
 
 fn header() -> SessionHeader {
     SessionHeader {
-        app: "Argonauts".into(),
+        app: "Argonauts Code".into(),
         version: "0.0.1".into(),
-        default_agent: Some("Claude Code".into()),
+        main_agent: Some("Claude Code".into()),
         model: Some("Opus 5.5".into()),
         effort: Some("xhigh".into()),
-        preset: "peer-crew".into(),
+        workflow: "council".into(),
         folder: "~/github/argonauts".into(),
         agents: vec![
             ready("Claude Code", true, "2.1.284"),
@@ -113,7 +113,7 @@ fn crew_block() -> ToolCall {
     let mut block = ToolCall::agent(
         "Opus 5.5 on Claude Code",
         None,
-        "owner · card-002",
+        "worker · task-002",
         "Add the JSON writer",
     )
     .with_key("builder");
@@ -163,7 +163,7 @@ fn session_header() {
     for word in [
         "Argonauts",
         "v0.0.1",
-        "Claude Code · Opus 5.5 with xhigh effort · peer-crew",
+        "Claude Code · Opus 5.5 with xhigh effort · council",
         "~/github/argonauts",
         // Only the agent CLI that isn't ready gets a note.
         "Antigravity CLI: not signed in",
@@ -366,7 +366,7 @@ fn crew_agent_block() {
 #[test]
 fn a_squeezed_block_keeps_its_header() {
     let lines = crew_block().lines_within(&still(&theme(), 80), 6);
-    assert!(text(&lines).starts_with("● Opus 5.5 on Claude Code · owner · card-002"));
+    assert!(text(&lines).starts_with("● Opus 5.5 on Claude Code · worker · task-002"));
     let lines = crew_block().lines_within(&still(&theme(), 80), 2);
     assert!(lines.len() <= 2);
     assert!(text(&lines).starts_with("● Opus 5.5 on Claude Code"));
@@ -481,7 +481,7 @@ fn to_dos() {
     let call = ToolCall::agent(
         "GPT-5.6 on Codex",
         None,
-        "owner · card-003",
+        "worker · task-003",
         "Wire --json into the CLI",
     )
     .with_item(ToolItem::Todos(vec![
@@ -527,7 +527,7 @@ fn turn_end_recap_and_notices() {
     );
 
     let recap = Recap::new(
-        "Export now takes --json, all 4 cards merged, and the tests pass. Ask for another \
+        "Export now takes --json, all 4 tasks merged, and the tests pass. Ask for another \
          change, or /resume an older run.",
     );
     snapshot_widths("recap", &recap);
@@ -545,18 +545,18 @@ fn turn_end_recap_and_notices() {
         styled(&lines)
     );
 
-    let answered = Notice::new(Tone::Warning, "Merge card-002 into main?")
+    let answered = Notice::new(Tone::Warning, "Merge task-002 into main?")
         .with_glyph("◆")
         .with_detail("Merge · you answered");
     snapshot_widths("notice_answered", &answered);
     assert_eq!(
         text(&lines_of(&answered, 80)),
-        "◆ Merge card-002 into main?\n  ⎿  Merge · you answered"
+        "◆ Merge task-002 into main?\n  ⎿  Merge · you answered"
     );
 
     let warning = Notice::new(
         Tone::Warning,
-        "codex hit its rate limit, so card-003 waits until 11:20 AM",
+        "codex hit its rate limit, so task-003 waits until 11:20 AM",
     )
     .with_detail("claude-code and agy keep going");
     snapshot_widths("notice_warning", &warning);
@@ -575,9 +575,9 @@ fn turn_end_recap_and_notices() {
 fn a_settings_file_to_fix_shows_the_shape_to_write() {
     let notice = Notice::new(
         Tone::Warning,
-        ".argonauts/config.local.toml needs a fix before you can trust it: gates.run can't be a \
-         list of strings; it takes a list of checks, each a [[gates.run]] table with a name and \
-         a command. Write it like this:\n[[gates.run]]\nname = \"python3\"\n\
+        ".argonauts/config.local.toml needs a fix before you can trust it: checks.run can't be a \
+         list of strings; it takes a list of checks, each a [[checks.run]] table with a name and \
+         a command. Write it like this:\n[[checks.run]]\nname = \"python3\"\n\
          command = [\"python3\", \"-m\", \"unittest\", \"-q\"]",
     );
     snapshot_widths("notice_settings_fix", &notice);
@@ -592,7 +592,7 @@ fn a_settings_file_to_fix_shows_the_shape_to_write() {
         [
             "  command = [\"python3\", \"-m\", \"unittest\", \"-q\"]",
             "  name = \"python3\"",
-            "  [[gates.run]]",
+            "  [[checks.run]]",
         ]
     );
 }

@@ -1,12 +1,12 @@
 # The fake Codex runs out of room in its context window. A fresh Codex session gets the
-# handoff note and finishes the card.
+# fallback note and finishes the task.
 
 [version]
 claude = "2.1.284 (Claude Code)"
 codex = "codex-cli 0.158.0"
 agy = "1.2.13"
 
-# A fresh session whose handoff note carries the stopped session's last message finishes it.
+# A fresh session whose fallback note carries the stopped session's last message finishes it.
 [[rule]]
 argv0 = "codex"
 args_contain = ["exec"]

@@ -14,6 +14,7 @@ use crate::crew_panel::CrewPanel;
 use crate::display_names::DisplayNames;
 use crate::events::RunEvent;
 use crate::events::checkpoint::{AnswerAction, AnswerOption, FreeText};
+use crate::events::context::ContextDetail;
 use crate::events::run::{CheckedInstruction, ParkReason, Party, RunMode, TriageDecision};
 use crate::input::{MentionTarget, SlashCommand, WorkflowAction};
 use crate::limits::CostEstimate;
@@ -27,6 +28,7 @@ use crate::policy::{ApprovalsView, NarratorLine, NarratorStatus};
 use crate::registry::ModelAccess;
 use crate::settings::SettingScope;
 use crate::settings::approvals::ApprovalMode;
+use crate::settings::bottom_line::BottomLineSettings;
 use crate::settings::budget::BudgetAmount;
 use crate::settings::ui::{NarratorMode, TakeoverWhere, UiSettings};
 use crate::steps::intake::ChangeEstimate;
@@ -44,6 +46,10 @@ pub enum UiCommand {
     /// Plain text from the prompt. The controller decides what it means.
     Submit {
         text: String,
+        /// The text has the word `ultracode` and you didn't press Opt+W to ignore it, so this
+        /// one request goes through a workflow. The screen sets it and the engine reads it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        workflow_requested: bool,
     },
     /// Parsed with `input::parse_input`.
     Slash {
@@ -71,9 +77,9 @@ pub enum UiCommand {
         #[serde(default, skip_serializing_if = "is_false")]
         remember: bool,
     },
-    /// Esc on a waiting card. A run's card moves to the crew view's "needs you" group and
-    /// nothing is picked. An app choice closes as its [`ChoiceKind`] says. The next Esc, with
-    /// the run's card already set aside, pauses the run.
+    /// Esc on a waiting question or approval. For a run's, it means "carry on without me": the
+    /// engine takes an option in your place, as `approvals.when_declined` says, and nothing
+    /// waits. An app choice closes as its [`ChoiceKind`] says.
     SetAside {
         to: AnswerTarget,
     },
@@ -119,6 +125,18 @@ pub enum UiCommand {
         run: RunId,
         session: SessionKey,
     },
+    /// Stops one subagent your conversation's own session started, by the id its `Subagent`
+    /// updates carry. The session and its other subagents go on.
+    StopSubagent {
+        id: String,
+    },
+    /// Your message for a subagent of your conversation's own session, named as its row is.
+    /// It has no line of its own, so the main agent passes it on, and the chat shows only
+    /// `@name` and your words.
+    MessageSubagent {
+        name: String,
+        text: String,
+    },
     /// Goes back to `card`'s checkpoint `handoff-<checkpoint>` in the run on screen, after a
     /// confirm card. The `/rewind` picker sends it.
     Rewind {
@@ -143,6 +161,11 @@ pub enum UiCommand {
     WorkflowFile {
         name: String,
         action: WorkflowAction,
+    },
+    /// One change made on the page `/workflow edit <name>` opened.
+    WorkflowPage {
+        name: String,
+        change: crate::workflow_page::WorkflowChange,
     },
     /// Takes queued, undelivered messages back into the input box.
     TakeBack {
@@ -201,6 +224,10 @@ pub enum UiCommand {
         key: String,
         scope: SettingScope,
     },
+    /// A mod's page saved, reset, or trusted its file.
+    Mod {
+        change: crate::settings::mods::view::ModChange,
+    },
     /// A `!` command, run as you in the repo folder. Its output shows in the transcript and goes
     /// to the lead with your next message, never by itself.
     Shell {
@@ -218,6 +245,12 @@ pub enum UiCommand {
     PressHeadsUp {
         plugin: String,
         handle: u64,
+    },
+    /// Something on screen started showing the conversation's context by category, such as
+    /// the context widget above the input or the Context tab, or stopped (`None`). Its session
+    /// is then asked after each fill, at most every 10 seconds.
+    WatchContext {
+        detail: Option<ContextDetail>,
     },
     /// Closes the screen. Runs keep going.
     Exit,
@@ -261,6 +294,15 @@ pub enum ViewRequest {
         /// `None`.
         section: Option<String>,
     },
+    /// `/mods`: every mod with its file and numbers. Answered with `Mods`.
+    Mods {
+        /// The mod whose page opens at once.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open: Option<String>,
+        /// Newer numbers for the view already open, which opens nothing.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        refresh: bool,
+    },
     Models {
         /// The default agent when `None`.
         role: Option<RoleName>,
@@ -280,6 +322,11 @@ pub enum ViewRequest {
     },
     /// Every live session's context, cap, tool calls, and spend.
     Context,
+    /// The Usage tab's numbers for a period: plan usage, spend, tokens, history and
+    /// workflows. Answered with `Usage`.
+    Usage {
+        period: crate::api::UsagePeriod,
+    },
     /// The crew view's "All repos" tab: runs in every repo with a live supervisor, read from
     /// `~/.argonauts/registry.json` and each repo's journal ends.
     AllRepos,
@@ -314,7 +361,7 @@ pub enum AppEvent {
         version: String,
         /// With `~` for home.
         repo: String,
-        preset: String,
+        workflow: String,
         agents: Vec<AgentReady>,
         /// Runs going in this repo that don't wait on you.
         runs_going: u32,
@@ -330,7 +377,7 @@ pub enum AppEvent {
         /// model is the one set, else the CLI's own default when the CLI's model list marks
         /// one, else none.
         #[serde(default)]
-        default_agent: Option<WorkerRef>,
+        main_agent: Option<WorkerRef>,
         /// Its effort level: the one set, else the one the CLI starts that model at, when known.
         #[serde(default)]
         effort: Option<String>,
@@ -489,12 +536,28 @@ pub enum AppEvent {
         earlier: Vec<ReplayTurn>,
         /// The last turns word for word, oldest first.
         turns: Vec<ReplayTurn>,
+        /// The pages it published with Claude Code's Artifact tool, oldest first, read off its
+        /// journal, so `/artifacts` and the key that opens the latest have them again.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        artifacts: Vec<crate::artifacts::Artifact>,
     },
     /// What a command found, such as `/doctor`'s checks. It prints at every verbosity, since you
     /// asked for it.
     Report {
         title: String,
         lines: Vec<String>,
+    },
+    /// Text shown folded, such as the summary a main model on another CLI starts from: the
+    /// title, `lines` under it, and `more` after them only when Ctrl+O expands it.
+    Folded {
+        title: String,
+        lines: Vec<String>,
+        more: Vec<String>,
+    },
+    /// One dim line hung under the line before it, with no row between and no `⎿` of its own,
+    /// as what a switch of the main model carried over hangs under `Set model to …`.
+    Continued {
+        text: String,
     },
     Shell {
         event: ShellEvent,
@@ -562,18 +625,37 @@ pub struct StatusLine {
     pub title: String,
     /// With `~` for home.
     pub repo: String,
-    pub preset: String,
-    /// `triage.all_hands`, which the input rule's label shows beside the preset.
+    pub workflow: String,
+    /// `ultracode`, which the input rule's label shows beside the preset.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub all_hands: bool,
+    pub ultracode: bool,
     pub run: Option<RunId>,
-    pub default_agent: WorkerRef,
+    pub main_agent: WorkerRef,
     /// One chip per vendor, in `crew` order.
     pub quotas: Vec<QuotaChip>,
+    /// What the bottom line draws beyond the chips, and how it's set up. Boxed, since every
+    /// event is as large as the status it may carry.
+    #[serde(default, skip_serializing_if = "LineFacts::is_plain")]
+    pub line: Box<LineFacts>,
     pub spent: Option<Spend>,
     pub limit: Option<BudgetAmount>,
     pub narrator: NarratorMode,
     pub approval_mode: ApprovalMode,
+    /// A hold on the computer's sleep that you asked for with `/awake`, which the bottom
+    /// line shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awake: Option<AwakeHold>,
+}
+
+/// How long `/awake` keeps the computer awake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "hold", rename_all = "snake_case")]
+pub enum AwakeHold {
+    UntilQuit,
+    Until {
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -594,6 +676,50 @@ pub struct QuotaChip {
     pub label: String,
     pub reading: Option<QuotaReading>,
     pub health: HealthState,
+    /// Every plan window the CLI reported, one reading each, so the CLI in use can show both.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<QuotaReading>,
+}
+
+/// The bottom line's own facts: its settings, and the numbers of the parts you can add to it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LineFacts {
+    /// `mods/bottom-line.toml`, your file under the repository's.
+    #[serde(default, skip_serializing_if = "BottomLineSettings::is_default")]
+    pub settings: BottomLineSettings,
+    /// The branch checked out in the repository, for the `branch` part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// What each of the last seven days cost in dollars, oldest first and today last, for the
+    /// `spend` part's sparkline. Empty when nothing was spent in them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spend_days: Vec<f64>,
+    /// The artifact this conversation published last, for the `artifact` part, when the
+    /// controller knows of one the screen didn't watch being published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<PublishedArtifact>,
+}
+
+impl LineFacts {
+    /// The line as it ships, with nothing to add to it.
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// A page a session published on claude.ai with Claude Code's Artifact tool, as the bottom
+/// line names it beside the mode: `⧉ weekly-usage-chart · 1 feedback draft`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedArtifact {
+    /// The published file's name without its extension, else the page's title.
+    pub name: String,
+    /// How many more the conversation published before it. Claude Code names one artifact
+    /// and counts several.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub others: u32,
+    /// Comments that wait on the page.
+    #[serde(default)]
+    pub feedback_drafts: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -742,6 +868,18 @@ pub enum ChoiceKind {
     /// A direct turn's agent ran out: one option per agent that may carry it on in your checkout,
     /// `1` to `9`, then Stop here `s`. Esc stops.
     HandOff,
+    /// `/workflow try`: what a workflow would run for a request, in the body. Run it `y` runs
+    /// that one request with it, and Edit it `e` opens its file. Esc closes, and nothing ran.
+    TryWorkflow,
+    /// The main session's proposed setup: where it applies (this request, this conversation,
+    /// this repository, all your repositories) or Not now `n`, and Show what would be written
+    /// `d`. The body is the setup, then after a blank line what each place would write. Esc
+    /// means not now.
+    Setup,
+    /// `/git`: how this folder keeps history, one option per way with the one in use marked,
+    /// then, for making it a repository, whether to go ahead once the body has shown what
+    /// the first commit would hold. Esc cancels, and nothing changes.
+    Git,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -805,6 +943,10 @@ pub enum ViewData {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         not_installed: Vec<MissingCli>,
     },
+    /// `/mods`: every mod, with what its page edits and what its preview draws.
+    Mods {
+        view: Box<crate::settings::mods::ModsView>,
+    },
     Models {
         /// Workers the role's rules allow, best fit first.
         choices: Vec<ModelChoice>,
@@ -840,6 +982,10 @@ pub enum ViewData {
     Context {
         view: ContextView,
     },
+    /// What `/usage` shows, and what the cards pinned above the input draw from.
+    Usage {
+        summary: Box<crate::api::UsageSummary>,
+    },
     AllRepos {
         /// This repo first, then the others by their newest update.
         repos: Vec<RepoRuns>,
@@ -853,10 +999,18 @@ pub enum ViewData {
         #[serde(default)]
         refresh: bool,
     },
-    /// `/records`, `/recipes`, `/skills`, or `/memory`: one picker with the area's tabs, each
+    /// `/workflow edit <name>`: the file's steps in order, each with its keys and the check.
+    WorkflowPage {
+        page: Box<crate::workflow_page::WorkflowPage>,
+    },
+    /// `/records`, `/learned`, `/skills`, or `/memory`: one picker with the area's tabs, each
     /// row's detail and actions, and a Settings tab.
     Learning {
         view: Box<LearningView>,
+    },
+    /// `/prompts`: every role's parts, who writes each, and which you changed.
+    Prompts {
+        view: Box<crate::prompt_list::PromptList>,
     },
     /// `/rewind`: the handoff checkpoints of `card`, or of every card, oldest first. Picking one
     /// sends `UiCommand::Rewind`.

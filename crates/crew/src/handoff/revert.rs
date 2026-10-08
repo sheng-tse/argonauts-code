@@ -36,7 +36,7 @@ async fn revert_card(host: &Host, card: &CardId, checkpoint: u32) -> EngineResul
     }
     if checkpoint == 0 || checkpoint > record.handoffs {
         return Err(EngineError::Refused(format!(
-            "{card} has no checkpoint handoff-{checkpoint}"
+            "{card} has no checkpoint fallback-{checkpoint}"
         )));
     }
     let kept_on = reset_to(host, &record, checkpoint).await?;
@@ -48,7 +48,7 @@ async fn revert_card(host: &Host, card: &CardId, checkpoint: u32) -> EngineResul
             kept_on,
         }),
     )?;
-    let reason = format!("you reverted {card} to handoff-{checkpoint}");
+    let reason = format!("you reverted {card} to fallback-{checkpoint}");
     withdraw_stale(host, card, &reason)?;
     rules::back_in_line(host, card, &reason)
 }

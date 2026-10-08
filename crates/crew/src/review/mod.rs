@@ -10,10 +10,12 @@ use argonauts_core::CardId;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::card::{CardKind, ReviewEvent};
 use argonauts_core::names::{RoleName, WorkerRef};
+use argonauts_core::steps::Step;
 use argonauts_core::steps::judgment::{Review, ReviewInput, ReviewOutput, ReviewVerdict};
 use argonauts_core::worker::{Access, WorkerKind};
 
 use crate::engine::host::{Ask, Host};
+use crate::engine::stand_in::{self, Seat};
 use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, candidates_for, families, seats};
 use crate::prompts::review::REVIEW;
@@ -26,6 +28,7 @@ pub mod adjudicate;
 pub mod diff_cut;
 pub mod endpoint_tests;
 pub mod reviewers;
+mod together;
 
 /// What a card's review came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +52,7 @@ impl Verdict {
             Self::ChangesRequested { comments } => {
                 format!("Changes requested ({} comments)", comments.len())
             }
-            Self::Escalated { reasons } => format!("Escalated: {}", reasons.join("; ")),
+            Self::Escalated { reasons } => format!("Needs you: {}", reasons.join("; ")),
         }
     }
 }
@@ -167,12 +170,12 @@ async fn review_in(
     });
     let Some(record) = record else {
         return Err(EngineError::Refused(format!(
-            "{card} is not a card of this run"
+            "{card} is not a task of this run"
         )));
     };
     if reviewers.is_empty() {
         return Ok(Verdict::Escalated {
-            reasons: vec!["No reviewer from another family than the owner".to_owned()],
+            reasons: vec!["No reviewer from another provider than the worker".to_owned()],
         });
     }
     let workdir = tree
@@ -209,55 +212,120 @@ async fn review_in(
         round,
     };
     let at = host.read(|state| runner::review_at(state, card));
-    let asks = reviewers
-        .iter()
-        .filter(|reviewer| !reviews.iter().any(|(r, _)| r == *reviewer))
-        .map(|reviewer| {
-            let mut ask = Ask::new(
-                at.clone(),
-                RoleName::Reviewer,
-                reviewer.clone(),
-                REVIEW,
-                input.clone(),
-            );
-            ask.card = Some(card.clone());
-            ask.blind = blind;
-            ask.slot = round;
-            ask.independent_of = owner.iter().cloned().collect();
-            if is_endpoint(host, reviewer) {
-                ask.access = Access::NoTools;
-            } else {
-                ask.access = Access::ReadOnly;
-                ask.workdir = workdir.clone();
+    let ask_of = |reviewer: &WorkerRef| {
+        let mut ask = Ask::new(
+            at.clone(),
+            RoleName::Reviewer,
+            reviewer.clone(),
+            REVIEW,
+            input.clone(),
+        );
+        ask.card = Some(card.clone());
+        ask.blind = blind;
+        ask.slot = round;
+        ask.independent_of = owner.iter().cloned().collect();
+        if is_endpoint(host, reviewer) {
+            ask.access = Access::NoTools;
+        } else {
+            ask.access = Access::ReadOnly;
+            ask.workdir = workdir.clone();
+        }
+        ask
+    };
+    // A reviewer's seat, which fallbacks that take it together must fit as one alone would.
+    let seat = Seat {
+        at: at.clone(),
+        role: RoleName::Reviewer,
+        step: Some(Review::NAME),
+        card: Some(card.clone()),
+        independent_of: owner.iter().cloned().collect(),
+        isolated: blind,
+    };
+    // Each reviewer has its own seat before any is asked, so none stands in for another too.
+    for reviewer in reviewers {
+        stand_in::hold(host, &seat, reviewer);
+    }
+    // Who is asked, and in whose seat: each reviewer still to review, or several fallbacks
+    // at once in the seat of one that's out already, and those that join a fallback that
+    // took a seat midway before the step was entered again.
+    let mut asked: Vec<(WorkerRef, WorkerRef)> = Vec::new();
+    for reviewer in reviewers {
+        match reviews.iter().find(|(seat, _, _)| seat == reviewer) {
+            None => {
+                let by = together::from_the_start(host, &seat, reviewer).await;
+                if by.len() < 2 {
+                    asked.push((reviewer.clone(), reviewer.clone()));
+                } else {
+                    together::say_who_reviews(host, card, round, reviewer, &by, &[])?;
+                    asked.extend(by.into_iter().map(|by| (reviewer.clone(), by)));
+                }
             }
-            async move { (reviewer, host.ask::<Review>(ask).await) }
-        });
+            Some((_, first, _)) if first != reviewer => {
+                let more = together::joining(host, &seat, reviewer, first);
+                together::say_who_reviews(host, card, round, reviewer, &more, &[first])?;
+                asked.extend(more.into_iter().map(|by| (reviewer.clone(), by)));
+            }
+            Some(_) => {}
+        }
+    }
     let mut stalls = Vec::new();
-    for (reviewer, answer) in join_all(asks).await {
-        match answer {
-            Ok(answered) => {
-                // Under the name of whoever reviewed, a stand-in included.
-                host.record(
-                    Some(card),
-                    Some(&answered.session),
-                    RunEventKind::Review(ReviewEvent::Reviewed {
-                        reviewer: answered.worker.clone(),
-                        blind,
-                        round,
-                        review: answered.output.clone(),
+    while !asked.is_empty() {
+        let answers = join_all(asked.iter().map(|(reviewer, by)| {
+            // A fallback asked in a seat reviews under its own name, so entered again its
+            // review is found by that name.
+            let given = (by != reviewer)
+                .then(|| together::given(host, card, round, by))
+                .flatten();
+            let ask = ask_of(by);
+            async move {
+                let answer = match given {
+                    Some(review) => Ok((None, review)),
+                    None => host.ask::<Review>(ask).await.map(|answered| {
+                        let review = answered.output.clone();
+                        (Some(answered), review)
                     }),
-                )?;
-                reviews.push((reviewer.clone(), answered.output));
+                };
+                (reviewer, by, answer)
             }
-            Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
-            // Nobody else may take that reviewer's seat, so the review goes on without it.
-            Err(EngineError::Stalled(stall)) => stalls.push(stall),
-            Err(error) => {
-                return Ok(Verdict::Escalated {
-                    reasons: vec![format!("{reviewer}'s review failed: {error}")],
-                });
+        }))
+        .await;
+        let mut joining = Vec::new();
+        for (reviewer, by, answer) in answers {
+            match answer {
+                Ok((None, review)) => reviews.push((reviewer.clone(), by.clone(), review)),
+                Ok((Some(answered), review)) => {
+                    // Under the name of whoever reviewed, a stand-in included.
+                    host.record(
+                        Some(card),
+                        Some(&answered.session),
+                        RunEventKind::Review(ReviewEvent::Reviewed {
+                            reviewer: answered.worker.clone(),
+                            blind,
+                            round,
+                            review: answered.output,
+                        }),
+                    )?;
+                    // A fallback took the reviewer's own seat midway, so the rest of its
+                    // fallbacks join it.
+                    if by == reviewer && answered.worker != *reviewer {
+                        let first = &answered.worker;
+                        let more = together::joining(host, &seat, reviewer, first);
+                        together::say_who_reviews(host, card, round, reviewer, &more, &[first])?;
+                        joining.extend(more.into_iter().map(|by| (reviewer.clone(), by)));
+                    }
+                    reviews.push((reviewer.clone(), answered.worker, review));
+                }
+                Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
+                // Nobody else may take that reviewer's seat, so the review goes on without it.
+                Err(EngineError::Stalled(stall)) => stalls.push(stall),
+                Err(error) => {
+                    return Ok(Verdict::Escalated {
+                        reasons: vec![format!("{by}'s review failed: {error}")],
+                    });
+                }
             }
         }
+        asked = joining;
     }
     if reviews.is_empty()
         && let Some(stall) = stalls.first()
@@ -265,10 +333,10 @@ async fn review_in(
         return Err(EngineError::Stalled(stall.clone()));
     }
     for stall in stalls {
-        let text = format!("{} The review goes on without that seat.", stall.line);
+        let text = format!("{} The review goes on without that reviewer.", stall.line);
         context::warn(host, Some(card), text)?;
     }
-    let outputs: Vec<ReviewOutput> = reviews.into_iter().map(|(_, review)| review).collect();
+    let outputs = together::counted_by_seat(host, reviews);
     if tree.is_some() {
         return Ok(strictest(&outputs));
     }
@@ -279,13 +347,14 @@ async fn review_in(
 }
 
 /// Reviews these reviewers already recorded for this round, so a re-entered review asks only
-/// the rest. A stand-in's review counts for the reviewer whose seat it took.
+/// the rest: whose seat, who reviewed, and the review. A stand-in's review counts for the
+/// reviewer whose seat it took.
 fn reviews_of_round(
     state: &RunState,
     record: &CardRecord,
     round: u32,
     reviewers: &[WorkerRef],
-) -> Vec<(WorkerRef, ReviewOutput)> {
+) -> Vec<(WorkerRef, WorkerRef, ReviewOutput)> {
     record
         .reviews
         .iter()
@@ -301,7 +370,7 @@ fn reviews_of_round(
                 } else {
                     stood_in_for(state, &record.spec.id, reviewer, reviewers)
                 };
-                seat.map(|seat| (seat, review.clone()))
+                seat.map(|seat| (seat, reviewer.clone(), review.clone()))
             }
             _ => None,
         })
@@ -425,7 +494,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         call,
         settings,
         RoleName::Reviewer,
-        Some(settings.review.per_card.max(1)),
+        Some(settings.review.per_task.max(1)),
     );
     let reviewers: Vec<WorkerRef> = candidates_for(call, settings, RoleName::Reviewer)
         .into_iter()
@@ -434,7 +503,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         .collect();
     if reviewers.is_empty() {
         return Ok(StepDone::skipped(
-            "No reviewer from another family is available",
+            "No reviewer from another provider is available",
         ));
     }
     let blind = call.step.blind || settings.review.blind;
@@ -511,7 +580,7 @@ async fn review_input(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         return Err(EngineError::Stalled(stall.clone()));
     }
     for stall in stalls {
-        let text = format!("{} The review goes on without that seat.", stall.line);
+        let text = format!("{} The review goes on without that reviewer.", stall.line);
         context::warn(host, None, text)?;
     }
     let summary = if agree(&outputs) {

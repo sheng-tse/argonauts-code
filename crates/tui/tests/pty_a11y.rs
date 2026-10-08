@@ -25,7 +25,7 @@ fn screen_reader_flat_lines() {
     harness.submit("hi");
     harness.wait_for("(?m)^you: hi$");
     harness.wait_for("(?m)^claude-code(/haiku)?: Hello there\\.");
-    harness.wait_for("(?m)^claude-code(/opus)?, owner, card-002: ");
+    harness.wait_for("(?m)^claude-code(/opus)?, worker, task-002: ");
     harness.wait_for("(?m)^tool: ");
     let text = harness.wait_for("(?m)^\\s*1\\. Merge").text();
     harness.wait_for("(?m)^\\s*2\\. Open a pull request");
@@ -41,13 +41,13 @@ fn screen_reader_flat_lines() {
         !spinner.is_match(&drawn),
         "no spinner is ever drawn:\n{drawn}"
     );
-    harness.wait_until("the bell for the card", |_| harness.bells() > 0);
+    harness.wait_until("the bell for the task", |_| harness.bells() > 0);
 }
 
 /// Screen-reader mode reads All hands with the default agent's effort and flips it when you type
 /// `a`, since a typed line never carries Tab.
 #[test]
-fn screen_reader_flips_all_hands_by_typing_a() {
+fn screen_reader_flips_ultracode_by_typing_a() {
     use argonauts_core::app::{AppEvent, ViewData};
     use argonauts_core::model_picker::EffortSlider;
 
@@ -55,7 +55,7 @@ fn screen_reader_flips_all_hands_by_typing_a() {
         EffortSlider::without_levels(None, "claude-code/haiku".parse().unwrap(), "Haiku 4.5");
     let view = AppEvent::View {
         data: Box::new(ViewData::Effort {
-            slider: slider.with_all_hands(false),
+            slider: slider.with_ultracode(false),
         }),
     };
     let script = Script::idle().await_command("slash").at(0, view);
@@ -64,15 +64,15 @@ fn screen_reader_flips_all_hands_by_typing_a() {
     harness.send("/effort");
     harness.press(Key::Enter);
     harness.wait_for("(?m)^effort for Haiku 4.5: none, it takes no effort setting$");
-    harness.wait_for("(?m)^all hands: off$");
+    harness.wait_for("(?m)^ultracode: off$");
     let text = harness
-        .wait_for("(?m)^all hands: type a to turn it on\\.$")
+        .wait_for("(?m)^ultracode: type a to turn it on\\.$")
         .text();
     assert!(!text.to_lowercase().contains("tab to toggle"), "{text}");
     harness.send("a");
     harness.press(Key::Enter);
     let flipped = harness.wait_command_where("slash", |value| {
-        value["command"]["all_hands"] == json!(true)
+        value["command"]["ultracode"] == json!(true)
     });
     assert_eq!(flipped["command"]["command"], "effort", "{flipped}");
     assert!(flipped["command"]["level"].is_null(), "{flipped}");

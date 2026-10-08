@@ -95,7 +95,11 @@ pub fn parse_codex_models(json: &str) -> Result<Vec<ModelEntry>, String> {
                 .collect();
             entry.name = plain(&model["display_name"]);
             entry.description = plain(&model["description"]);
-            entry.context_window = model["context_window"].as_u64();
+            // The largest window Codex offers for it, which a session asks for. Codex's own
+            // default is `context_window`, smaller for most models.
+            entry.context_window = model["max_context_window"]
+                .as_u64()
+                .or(model["context_window"].as_u64());
             entry.cli_default = default == Some(slug);
             entry.default_effort = model["default_reasoning_level"]
                 .as_str()
@@ -313,10 +317,23 @@ mod tests {
             };
             assert_eq!(*levels, &all[..known], "{model}");
         }
-        assert!(codex.iter().all(|e| e.family == "gpt"
-            && e.context_window == Some(272_000)
-            && e.discovered
-            && e.cost.unit == CostUnit::Quota));
+        assert!(
+            codex
+                .iter()
+                .all(|e| e.family == "gpt" && e.discovered && e.cost.unit == CostUnit::Quota)
+        );
+        // The largest window Codex offers: 872k for all but one, whose default is all it has.
+        let window = |model: &str| {
+            let listed = codex.iter().find(|e| e.id.model.as_deref() == Some(model));
+            listed.and_then(|e| e.context_window)
+        };
+        assert_eq!(window("gpt-5.6-luna"), Some(872_000));
+        assert_eq!(window("gpt-5.5"), Some(272_000));
+        let smaller = codex
+            .iter()
+            .filter(|e| e.context_window != Some(872_000))
+            .count();
+        assert_eq!(smaller, 1, "only gpt-5.5");
 
         let openrouter = parse_openai_models("openrouter", false, OPENROUTER).unwrap();
         assert_eq!(

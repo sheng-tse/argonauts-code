@@ -11,6 +11,7 @@ use argonauts_core::views::{
 
 use crate::format;
 use crate::text::sanitize_line;
+use crate::views::goal_panel;
 
 use super::words::{duration, tokens, word};
 
@@ -36,7 +37,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                 lines.push(format!("agent cli sessions: {}", sessions.len()));
                 lines.extend(numbered(sessions.iter().map(|session| {
                     format!(
-                        "{}: {}, vendor: {}",
+                        "{}: {}, agent: {}",
                         one(&session.reference().to_string()),
                         one(&session.title),
                         format::vendor_label(&one(&session.vendor.0))
@@ -77,7 +78,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                     word(&card.state)
                 );
                 if let Some(owner) = &card.owner {
-                    line.push_str(&format!(", owner: {owner}"));
+                    line.push_str(&format!(", worker: {owner}"));
                 }
                 if !card.note.trim().is_empty() {
                     line.push_str(&format!(", {}", one(&card.note)));
@@ -134,10 +135,11 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             lines.push("settings: change one with /config, the key, and the value.".to_owned());
             lines
         }
+        ViewData::Mods { view } => crate::mods::spoken(view),
         ViewData::Models { choices, .. } => {
             let mut lines = vec![format!("models: {}", choices.len())];
             lines.extend(numbered(choices.iter().map(|choice| {
-                let mut line = format!("{}, family: {}", choice.worker, one(&choice.family));
+                let mut line = format!("{}, provider: {}", choice.worker, one(&choice.family));
                 if choice.current {
                     line.push_str(", current");
                 }
@@ -218,18 +220,34 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                 format::spend(&view.spent)
             )];
             for phase in &view.phases {
+                // A step you require is said so, where the screen marks it with a star.
+                let required = if view.requires(phase) {
+                    ", a step you require"
+                } else {
+                    ""
+                };
                 lines.push(match phase.count {
                     Some(count) => format!(
-                        "phase {}: {}, {} of {} done",
+                        "phase {}{required}: {}, {} of {} done",
                         one(&phase.name),
                         word(&phase.status),
                         count.done,
                         count.total
                     ),
-                    None => format!("phase {}: {}", one(&phase.name), word(&phase.status)),
+                    None => format!(
+                        "phase {}{required}: {}",
+                        one(&phase.name),
+                        word(&phase.status)
+                    ),
                 });
                 lines.extend(phase.rows.iter().map(|row| match row {
-                    WorkflowRow::Agent(agent) => format!("  {}", agent_row(agent, names)),
+                    WorkflowRow::Agent(agent) => {
+                        let goal = view
+                            .goal_of(agent)
+                            .map(|goal| format!(", {}", goal_panel::row_words(goal)))
+                            .unwrap_or_default();
+                        format!("  {}{goal}", agent_row(agent, names))
+                    }
                     WorkflowRow::Workflow(nested) => format!(
                         "  workflow {}: {}, {} of {} agents done",
                         one(&nested.name),
@@ -249,6 +267,9 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
         }
         ViewData::Agent { view } => {
             let mut lines = vec![format!("agent: {}", agent_row(&view.row, names))];
+            if let Some(goal) = view.goal.as_deref() {
+                lines.extend(goal_panel::spoken(goal));
+            }
             lines.extend(view.activity.iter().map(|line| {
                 let outcome = match line.ok {
                     Some(true) => "done",
@@ -270,6 +291,7 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             }
             lines
         }
+        ViewData::Usage { summary } => crate::overview::cards::spoken(summary, names),
         ViewData::Context { view } => view
             .rows
             .iter()
@@ -307,6 +329,20 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
             lines.extend(numbered(workflows.iter().map(workflow_row)));
             lines
         }
+        ViewData::WorkflowPage { page } => workflow_page_lines(page),
+        // A copy's notice says what changed; the list isn't read again.
+        ViewData::Prompts { view } if view.refresh => Vec::new(),
+        ViewData::Prompts { view } => {
+            let mut lines = vec![format!("prompts: {} parts", view.rows.len())];
+            lines.extend(view.table().lines().map(one));
+            lines.extend(view.notes.iter().map(|note| one(note)));
+            lines.push(
+                "to change one: /prompts copy <name>, /prompts role <role>, /prompts writer \
+                 [role] <who>, /prompts reset <name>"
+                    .to_owned(),
+            );
+            lines
+        }
         ViewData::Learning { view } if view.refresh => Vec::new(),
         ViewData::Learning { view } => learning_lines(view),
         ViewData::Effort { slider } => {
@@ -331,9 +367,9 @@ pub fn view_lines(data: &ViewData, names: &DisplayNames) -> Vec<String> {
                 }
             };
             // How to flip it follows, as the view's offer.
-            if let Some(toggle) = slider.all_hands {
+            if let Some(toggle) = slider.ultracode {
                 let state = if toggle.on { "on" } else { "off" };
-                lines.push(format!("all hands: {state}"));
+                lines.push(format!("ultracode: {state}"));
             }
             lines
         }
@@ -390,6 +426,44 @@ fn agent_line(agent: &AgentSession, names: &DisplayNames) -> String {
         ));
     }
     line
+}
+
+/// A workflow file's page as lines: where the file is, each step with its role, who would
+/// take it and how, and the check. A change made here is typed in the file, which is checked
+/// again each time it is saved.
+fn workflow_page_lines(page: &argonauts_core::workflow_page::WorkflowPage) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(said) = &page.said {
+        lines.push(one(said));
+    }
+    if !page.refresh {
+        lines.push(format!("workflow {}: {}", one(&page.name), one(&page.path)));
+    }
+    for group in &page.groups {
+        let parts = [&group.role, &group.who, &group.how];
+        let said: Vec<String> = parts
+            .iter()
+            .filter(|part| !part.is_empty())
+            .map(|part| one(part))
+            .collect();
+        let title = match group.step {
+            Some(step) => format!("{} {}", step + 1, one(&group.title)),
+            None => one(&group.title),
+        };
+        lines.push(format!("  {title}: {}", said.join(", ")));
+    }
+    let mark = if page.check.valid {
+        "valid"
+    } else {
+        "not valid"
+    };
+    lines.push(format!("{mark}: {}", one(&page.check.lines.join("; "))));
+    if !page.refresh {
+        lines.push(
+            "To change it, edit the file. It is checked again each time you save it.".to_owned(),
+        );
+    }
+    lines
 }
 
 /// A Learning picker as lines: each tab's rows as `header: value` pairs with their detail and
@@ -467,6 +541,9 @@ fn workflow_row(row: &WorkflowFile) -> String {
     if !row.description.trim().is_empty() {
         line.push_str(&format!(", {}", one(&row.description)));
     }
+    if let Some(problem) = &row.problem {
+        line.push_str(&format!(", problem: {}", one(problem)));
+    }
     line
 }
 
@@ -474,7 +551,7 @@ fn checkpoint_row(row: &CheckpointRow) -> String {
     let to: Vec<String> = row.to.iter().map(ToString::to_string).collect();
     let commit: String = one(&row.commit).chars().take(7).collect();
     let mut line = format!(
-        "{} handoff-{}, {:04}-{:02}-{:02} {:02}:{:02} UTC, {} to {}, {}, commit {commit}",
+        "{} fallback-{}, {:04}-{:02}-{:02} {:02}:{:02} UTC, {} to {}, {}, commit {commit}",
         row.card,
         row.n,
         row.at.year(),
@@ -503,8 +580,14 @@ fn run_row(run: &RunSummary) -> String {
 }
 
 fn agent_row(row: &AgentRow, names: &DisplayNames) -> String {
+    // A step a role answered through Argonauts says so after who answered.
+    let answered = row
+        .answered
+        .as_deref()
+        .map(|words| format!(", {}", one(words)))
+        .unwrap_or_default();
     format!(
-        "{}: {}, {}, {}, {}",
+        "{}: {}{answered}, {}, {}, {}",
         one(&row.label),
         names.worker(&row.worker),
         word(&row.status),
@@ -544,7 +627,7 @@ mod tests {
     use argonauts_core::vendor_sessions::VendorSession;
     use time::OffsetDateTime;
 
-    use super::view_lines;
+    use super::{agent_row, view_lines};
 
     #[test]
     fn the_resume_list_reads_cli_sessions_by_the_id_resume_takes() {
@@ -570,10 +653,33 @@ mod tests {
             vec![
                 "runs: 0",
                 "agent cli sessions: 1",
-                "  1. codex:019a5770-e3f9: Explain the input loop, vendor: Codex",
+                "  1. codex:019a5770-e3f9: Explain the input loop, agent: Codex",
                 "resume: type /resume and a conversation's, a run's, or a session's id to carry \
                  it on.",
             ]
+        );
+    }
+
+    /// An asked review's row, read aloud: who answered, that Argonauts asked, then the rest.
+    #[test]
+    fn a_step_asked_through_argonauts_reads_so() {
+        let row = argonauts_core::views::AgentRow {
+            session: argonauts_core::names::SessionKey::parse("s-002").unwrap(),
+            label: "review:store".into(),
+            worker: "astra".parse().unwrap(),
+            status: argonauts_core::views::RowStatus::Running,
+            tokens: 41_200,
+            spent: argonauts_core::Spend::default(),
+            elapsed_ms: 58_000,
+            subagents: 0,
+            context: None,
+            standing_in_for: None,
+            answered: Some("asked through Argonauts".into()),
+        };
+        let read = agent_row(&row, &Default::default());
+        assert!(
+            read.starts_with("review:store: astra, asked through Argonauts, "),
+            "{read}"
         );
     }
 }

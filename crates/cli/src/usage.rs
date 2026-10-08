@@ -26,9 +26,9 @@ mod tests {
 
     #[test]
     fn usage_errors_are_recognizable_and_keep_their_message() {
-        let err = usage(anyhow::anyhow!("bad --gate").context("reading flags"));
+        let err = usage(anyhow::anyhow!("bad --check").context("reading flags"));
         assert!(err.is::<UsageError>());
-        assert_eq!(format!("{err:#}"), "reading flags: bad --gate");
+        assert_eq!(format!("{err:#}"), "reading flags: bad --check");
         assert!(!anyhow::anyhow!("other").is::<UsageError>());
     }
 }
