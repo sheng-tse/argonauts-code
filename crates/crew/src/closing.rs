@@ -403,14 +403,14 @@ async fn lead_answer(
     detail: Option<&str>,
     gathered: &ClosingAnswer,
 ) -> EngineResult<Option<(String, WorkerRef)>> {
-    let (request, cards) = host.read(|state| {
+    let (request, cards, asked, needed_you) = host.read(|state| {
         let request = state
             .run
             .started
             .as_ref()
             .map(|started| started.request.clone())
             .unwrap_or_default();
-        (request, digests(state))
+        (request, digests(state), asked(state), needed_you(state))
     });
     if cards.iter().all(|card| card.summary.trim().is_empty()) {
         return Ok(None);
@@ -440,6 +440,8 @@ async fn lead_answer(
                 }
             })
             .collect(),
+        asked,
+        needed_you,
     };
     let worker = host.settings().main_agent.clone();
     let mut ask = Ask::new(
@@ -453,6 +455,43 @@ async fn lead_answer(
     let answered = host.ask::<CloseRun>(ask).await?;
     let text = answered.output.answer.trim().to_owned();
     Ok((!text.is_empty()).then_some((text, answered.worker)))
+}
+
+/// Each reviewer and sign-off that answered, in order, with what it said.
+fn asked(state: &RunState) -> Vec<String> {
+    state
+        .sessions
+        .in_order()
+        .into_iter()
+        .filter(|session| matches!(session.started.role, RoleName::Reviewer | RoleName::Judge))
+        .filter_map(|session| {
+            let answer = session.end.as_ref()?.structured.as_ref()?;
+            let accepted = match answer.get("accept").and_then(serde_json::Value::as_bool) {
+                Some(accepted) => accepted,
+                None => answer.get("verdict")?.as_str()? == "approve",
+            };
+            let said = if accepted { "accepted" } else { "sent it back" };
+            let who = crate::roles::display_name(&session.started.worker);
+            Some(match session.started.label.as_deref() {
+                Some(label) => format!("{label} ({who}): {said}"),
+                None => format!("{who}: {said}"),
+            })
+        })
+        .collect()
+}
+
+/// How many times the run came to you: each checkpoint you decided, and each still waiting.
+fn needed_you(state: &RunState) -> u32 {
+    let count = state
+        .checkpoints
+        .by_id
+        .values()
+        .filter(|record| match &record.decided {
+            Some(decided) => decided.by == argonauts_core::events::run::Party::User,
+            None => record.withdrawn.is_none(),
+        })
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// The merge card's checks and where its diff was written, from the newest one put up.

@@ -104,7 +104,11 @@ fn resume_shows_condensed_replay() {
 #[test]
 fn ctrl_o_opens_full_history_after_resume() {
     let (_, _, script) = replayed(2);
-    let mut harness = Harness::start(script);
+    // The overlay holds a still-working agent's calls through its block, which it has when
+    // agents show as they work; otherwise its own view has them.
+    let mut harness = Harness::launch(script)
+        .ui("agents_in_chat = \"as_they_work\"")
+        .start();
     harness.wait_visible(&format!("※ recap: {REPLAY_RECAP}"));
     harness.wait_visible(WORKING);
     harness.press(Key::Ctrl('o'));

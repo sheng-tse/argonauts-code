@@ -1,6 +1,7 @@
-//! Once every card is in: merge main in if it moved (`MainMoved`, `MainMergedIn`), then the
-//! final check (`gates.full_suite`, else `gates.run`) on the integration worktree. Its result
-//! is kept with the heads it ran on, so the same heads never run the suite twice.
+//! Once every card is in: merge main in if it moved (`MainMoved`, `MainMergedIn`), with the
+//! merge agent resolving what conflicts, then the final check (`gates.full_suite`, else
+//! `gates.run`) on the integration worktree. Its result is kept with the heads it ran on, so
+//! the same heads never run the suite twice.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,8 +16,8 @@ use argonauts_core::worker::Access;
 
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
-use crate::git::GitError;
-use crate::integrate::{conductor, merge_packet, unborn};
+use crate::git::{GitError, StagedMerge};
+use crate::integrate::{conductor, merge_packet, merger, unborn};
 
 /// Used when `gates.timeout` doesn't parse or says `none`.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -53,14 +54,26 @@ pub async fn run(host: &Host) -> EngineResult<FinalCheck> {
     let (_, worktree) = merge_packet::landing_branch(host).await?;
     // Main's merge and the suite see the tree no conductor commit changes underneath.
     let _held = conductor::hold(&worktree).await;
+    let passed_before = passed_on(host, &worktree).await?;
     let check = match bring_in_main(host, &worktree).await? {
         Err(problem) => FinalCheck {
             passed: false,
             gates: Vec::new(),
             problem: Some(problem),
         },
-        Ok(_) => {
-            let gates = run_suite(host, &worktree).await?;
+        Ok(merged) => {
+            let mut gates = run_suite(host, &worktree).await?;
+            let failed: Vec<GateOutcome> =
+                gates.iter().filter(|gate| !gate.passed).cloned().collect();
+            // The suite passed on this branch before main came in, so the merge broke it.
+            if merged
+                && passed_before
+                && !failed.is_empty()
+                && let Some(target) = target(host)
+                && merger::fix_after_main(host, &worktree, &target, &failed).await?
+            {
+                gates = run_suite(host, &worktree).await?;
+            }
             FinalCheck {
                 passed: gates.iter().all(|gate| gate.passed),
                 gates,
@@ -104,6 +117,18 @@ pub async fn reusable(host: &Host) -> EngineResult<Option<FinalCheck>> {
     let (_, worktree) = merge_packet::landing_branch(host).await?;
     let (head, target) = heads(host, &worktree).await?;
     Ok((ran.head == head && ran.target == target).then_some(ran.check))
+}
+
+/// Whether the last final check passed on the branch's head as it is now.
+async fn passed_on(host: &Host, worktree: &Path) -> EngineResult<bool> {
+    let Some(ran) = tokio::fs::read(ran_path(host))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Ran>(&bytes).ok())
+    else {
+        return Ok(false);
+    };
+    Ok(ran.check.passed && ran.head == host.git().resolve(worktree, "HEAD").await?)
 }
 
 async fn heads(host: &Host, worktree: &Path) -> EngineResult<(String, Option<String>)> {
@@ -152,8 +177,9 @@ pub async fn main_commit(host: &Host, target: &str) -> Result<String, GitError> 
     }
 }
 
-/// Merges the target into the integration branch when it moved. `Ok(Err(why))` when it
-/// conflicts; the merge is then aborted and the branch left as it was.
+/// Merges the target into the integration branch when it moved. A conflict goes to the merge
+/// agent, and the final check then runs on its merge. `Ok(Err(why))` when nobody resolved it;
+/// the merge is then aborted and the branch left as it was.
 pub async fn bring_in_main(host: &Host, worktree: &Path) -> EngineResult<Result<bool, String>> {
     let Some(target) = target(host) else {
         return Ok(Ok(false));
@@ -182,14 +208,28 @@ pub async fn bring_in_main(host: &Host, worktree: &Path) -> EngineResult<Result<
     )?;
     let subject = format!("Merge {target} into the integration branch");
     let message = conductor::message(host.run_id(), &subject);
-    match git.merge(worktree, &main, &message).await {
-        Ok(()) => {}
+    // A merge a crash left half done, such as one the merge agent was resolving.
+    git.abort_merge(worktree).await?;
+    let resolved = match git.merge_staged(worktree, &main, true).await {
+        Ok(StagedMerge::Staged | StagedMerge::UpToDate) => Vec::new(),
+        Ok(StagedMerge::Conflict(files)) => {
+            match merger::resolve_main(host, worktree, &target, &main, &files).await? {
+                Ok(()) => files,
+                Err(why) => {
+                    git.abort_merge(worktree).await?;
+                    return Ok(Err(why));
+                }
+            }
+        }
         Err(GitError::Failed { stderr, .. }) => {
             return Ok(Err(format!(
                 "{target} conflicts with the run's work: {stderr}"
             )));
         }
         Err(err) => return Err(err.into()),
+    };
+    if git.merge_in_progress(worktree).await? {
+        git.finish_merge_of(worktree, &resolved, &message).await?;
     }
     let sha = git.resolve(worktree, "HEAD").await?;
     host.record(

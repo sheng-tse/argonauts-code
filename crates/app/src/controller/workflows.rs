@@ -132,14 +132,15 @@ pub(crate) fn new(
         Ok(path) => {
             // What was written and where, then the three ways to use it. The folder's
             // README.md, written with its first workflow, explains each key.
-            ctx.notice(
-                NoteLevel::Info,
-                format!(
-                    "Wrote {name} · {}\n/{name} <request> runs it once · /workflow {name} uses \
-                     it · /workflow try previews it",
-                    ctx.env.shown(&path)
-                ),
-            );
+            ctx.send(AppEvent::Record {
+                title: format!("Wrote {name}"),
+                tail: Some(ctx.env.shown(&path)),
+                lines: Vec::new(),
+                notes: vec![format!(
+                    "/{name} <request> runs it once · /workflow {name} uses it · /workflow try \
+                     previews it"
+                )],
+            });
             Ok(vec![Effect::CommandsChanged])
         }
         Err(err) => {
@@ -168,59 +169,62 @@ pub(crate) fn try_out(
     };
     let request = request.trim();
     let required = argonauts_crew::script::required::for_request(&library(ctx), kept, request);
-    let body: Vec<String> = match &loaded {
+    // The plan rows, then dim notes on what follows them.
+    let (lines, notes): (Vec<String>, Vec<String>) = match &loaded {
         Loaded::Steps(file) => {
             // A step you require shows where it would run, marked with a star.
             let file = required.added_to(file);
             let dry = dry_run(&file, &|role| seats(ctx, role));
-            let mut body = plan(ctx, &file, &dry);
-            body.push(checks_then_merge(ctx));
+            let mut notes = vec![checks_then_merge(ctx)];
             if !required.tasks.is_empty() {
-                body.push(format!(
+                notes.push(format!(
                     "the tasks are the ones you fixed: {}",
                     required.tasks.join(" · ")
                 ));
             }
             if file.adapt {
-                body.push(
+                notes.push(
                     "adapt is on, so the orchestrator writes the steps for each request and \
                      keeps these roles"
                         .to_owned(),
                 );
             }
-            body
+            (plan(ctx, &file, &dry), notes)
         }
         Loaded::Script(script) => {
-            let mut body = vec![script.meta.description.clone()];
-            body.extend(script.meta.phases.iter().enumerate().map(|(index, phase)| {
+            let mut lines = vec![script.meta.description.clone()];
+            lines.extend(script.meta.phases.iter().enumerate().map(|(index, phase)| {
                 format!("{} {}  {}", index + 1, phase.title, phase.detail)
                     .trim_end()
                     .to_owned()
             }));
             let missing = required.missing_from(&script.meta);
-            if missing.is_empty() {
-                body.push(
-                    "✓ the script reads · what its agents are is only known as it runs".to_owned(),
-                );
+            let note = if missing.is_empty() {
+                "✓ the script reads · what its agents are is only known as it runs".to_owned()
             } else {
                 // A run refuses it the same way, so it says so before anything runs.
-                body.push(format!(
+                format!(
                     "✗ it has no phase for a step you require: {}",
                     missing.join(", ")
-                ));
-            }
-            body
+                )
+            };
+            (lines, vec![note])
         }
     };
-    let mut body = body;
-    body.push("Run it now? y/N".to_owned());
+    // The plan stays in the chat whatever the answer; the card under it only asks.
+    ctx.send(AppEvent::Record {
+        title: format!("{name} for \"{request}\""),
+        tail: Some("a preview, nothing runs yet".to_owned()),
+        lines,
+        notes,
+    });
     let id = ctx.next_choice_id();
     ctx.send(AppEvent::Choice {
         choice: choices::app_choice(
             id.clone(),
             ChoiceKind::TryWorkflow,
-            format!("{name} for \"{request}\" · a preview, nothing runs yet"),
-            body,
+            "Run it now?".to_owned(),
+            Vec::new(),
             choices::options(ChoiceKind::TryWorkflow),
         ),
     });
@@ -248,29 +252,42 @@ pub(crate) async fn answer_choice(
     };
     match action {
         AnswerAction::Approve => {
-            close(ctx, id, format!("Running it with {}", tried.workflow));
+            close(ctx, id, tried.closed("running it"));
             run(ctx, chat, &tried.workflow, tried.request).await
         }
         AnswerAction::Choose { value } if value == EDIT_IT => {
-            close(ctx, id, NOTHING_RAN);
+            close(ctx, id, tried.closed(NOTHING_RAN));
             edit(ctx, state, &tried.workflow)
         }
         _ => {
-            close(ctx, id, NOTHING_RAN);
+            close(ctx, id, tried.closed(NOTHING_RAN));
             Ok(Vec::new())
         }
     }
 }
 
-/// Esc on a dry run's card.
+/// A dry run's card set aside, as a new request does.
 pub(crate) fn set_aside(ctx: &Ctx, state: &mut State, id: ChoiceId) -> anyhow::Result<Vec<Effect>> {
-    if state.tried.remove(&id).is_some() {
-        close(ctx, id, NOTHING_RAN);
+    if let Some(tried) = state.tried.remove(&id) {
+        close(ctx, id, tried.closed(NOTHING_RAN));
     }
     Ok(Vec::new())
 }
 
-const NOTHING_RAN: &str = "Nothing ran.";
+const NOTHING_RAN: &str = "nothing ran";
+
+impl Tried {
+    /// What closed the preview, naming it, as `Spec-first preview for 'add a burst limit' ·
+    /// nothing ran`, so the line reads whole wherever it lands.
+    fn closed(&self, outcome: &str) -> String {
+        let mut name = self.workflow.chars();
+        let name: String = name
+            .next()
+            .map(|first| first.to_uppercase().chain(name).collect())
+            .unwrap_or_default();
+        format!("{name} preview for '{}' · {outcome}", self.request)
+    }
+}
 
 fn close(ctx: &Ctx, id: ChoiceId, outcome: impl Into<String>) {
     ctx.send(AppEvent::ChoiceClosed {
@@ -635,7 +652,8 @@ fn plan(ctx: &Ctx, file: &argonauts_runner::WorkflowFile, dry: &DryRun) -> Vec<S
                 .iter()
                 .enumerate()
                 .map(|(at, worker)| {
-                    let name = ctx.names.worker(worker);
+                    // A seat that names no model runs its CLI's, which the plan names.
+                    let name = ctx.names.worker(&ctx.names.running(worker));
                     if at + 1 < count {
                         format!("{name},")
                     } else {
@@ -663,10 +681,13 @@ fn plan(ctx: &Ctx, file: &argonauts_runner::WorkflowFile, dry: &DryRun) -> Vec<S
             .and_then(|step| step.does.as_deref())
             .map(what_it_does)
             .filter(|does| !does.is_empty());
-        let what = does.map_or_else(
+        let mut what = does.map_or_else(
             || dry_row.how.clone(),
             |does| format!("{does} · {}", dry_row.how),
         );
+        if let Some(rounds) = rounds_of_returns(ctx, file, index) {
+            what.push_str(&format!(" · up to {rounds} rounds"));
+        }
         let names = match who[index].as_slice() {
             [] => vec![String::new()],
             names => names.to_vec(),
@@ -687,6 +708,21 @@ fn plan(ctx: &Ctx, file: &argonauts_runner::WorkflowFile, dry: &DryRun) -> Vec<S
         }
     }
     lines
+}
+
+/// A step a later one sends back to, with no rounds of its own set, runs the first time and
+/// then once for each round of changes the reviews may ask for.
+fn rounds_of_returns(
+    ctx: &Ctx,
+    file: &argonauts_runner::WorkflowFile,
+    index: usize,
+) -> Option<u32> {
+    let step = file.steps.get(index)?;
+    let returned_to = file
+        .steps
+        .iter()
+        .any(|other| other.send_back_to.as_deref() == Some(step.name.as_str()));
+    (returned_to && step.max_rounds.is_none()).then(|| 1 + ctx.settings().review.max_change_rounds)
 }
 
 /// A step's ask in a few words: its first sentence, with `the request` and `the task` for
@@ -763,6 +799,18 @@ fn model_alone(ctx: &Ctx, worker: &WorkerRef) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Every built-in workflow, as the first run writes it into your workflows folder, reads
+    /// back as a workflow its run can start: the settings tables it carries, `[goal]` among
+    /// them, are left to the settings.
+    #[test]
+    fn every_built_in_workflow_written_out_reads_back_as_a_workflow() {
+        for preset in argonauts_registry::presets() {
+            let text = argonauts_registry::builtin_preset(&preset.name).expect("a built-in");
+            let read = argonauts_runner::WorkflowFile::parse(&text);
+            assert!(read.is_ok(), "{}: {read:?}", preset.name);
+        }
+    }
+
     use argonauts_core::RunId;
     use argonauts_core::api::{RunState, RunSummary};
     use argonauts_core::app::{AnswerTarget, AppChoice, AppEvent, UiCommand, ViewData};
@@ -784,6 +832,14 @@ mod tests {
         }
     }
 
+    /// Writes a workflow, waiting for the line that says so.
+    async fn wrote(harness: &mut Harness, command: SlashCommand) {
+        harness.send(UiCommand::Slash { command }).await;
+        harness
+            .until(|event| matches!(event, AppEvent::Record { .. }))
+            .await;
+    }
+
     fn new(name: &str, from: Option<&str>) -> SlashCommand {
         SlashCommand::WorkflowNew {
             name: name.to_owned(),
@@ -794,16 +850,27 @@ mod tests {
     #[tokio::test]
     async fn new_writes_a_workflow_that_becomes_a_command_of_its_name() {
         let mut harness = Harness::start().await;
-        let (level, wrote) = said(&mut harness, new("spec-first", None)).await;
-        assert_eq!(level, NoteLevel::Info, "{wrote}");
+        harness
+            .send(UiCommand::Slash {
+                command: new("spec-first", None),
+            })
+            .await;
         // What was written and where, then the three commands, in two lines.
+        let wrote = harness
+            .until(|event| matches!(event, AppEvent::Record { .. }))
+            .await;
         assert_eq!(
-            wrote.lines().collect::<Vec<_>>(),
-            [
-                "Wrote spec-first · .argonauts/workflows/spec-first.toml",
-                "/spec-first <request> runs it once · /workflow spec-first uses it · \
-                 /workflow try previews it",
-            ],
+            wrote,
+            AppEvent::Record {
+                title: "Wrote spec-first".to_owned(),
+                tail: Some(".argonauts/workflows/spec-first.toml".to_owned()),
+                lines: Vec::new(),
+                notes: vec![
+                    "/spec-first <request> runs it once · /workflow spec-first uses it · \
+                     /workflow try previews it"
+                        .to_owned()
+                ],
+            }
         );
         let file = harness
             .repo
@@ -853,19 +920,44 @@ mod tests {
         harness.exit().await;
     }
 
-    async fn tried(harness: &mut Harness, name: &str, request: &str) -> AppChoice {
+    /// The plan the preview leaves in the chat, and the card that asks under it.
+    async fn tried(harness: &mut Harness, name: &str, request: &str) -> (Planned, AppChoice) {
         let command = SlashCommand::WorkflowTry {
             name: name.to_owned(),
             request: request.to_owned(),
         };
         harness.send(UiCommand::Slash { command }).await;
+        let planned = match harness
+            .until(|event| matches!(event, AppEvent::Record { .. }))
+            .await
+        {
+            AppEvent::Record {
+                title,
+                tail,
+                lines,
+                notes,
+            } => Planned {
+                title,
+                tail,
+                lines,
+                notes,
+            },
+            _ => unreachable!("only a record ends the wait"),
+        };
         match harness
             .until(|event| matches!(event, AppEvent::Choice { .. }))
             .await
         {
-            AppEvent::Choice { choice } => choice,
+            AppEvent::Choice { choice } => (planned, choice),
             _ => unreachable!("only a choice ends the wait"),
         }
+    }
+
+    struct Planned {
+        title: String,
+        tail: Option<String>,
+        lines: Vec<String>,
+        notes: Vec<String>,
     }
 
     async fn closed(harness: &mut Harness) -> String {
@@ -881,16 +973,16 @@ mod tests {
     #[tokio::test]
     async fn try_shows_each_step_and_who_would_take_it_and_runs_nothing() {
         let mut harness = Harness::start().await;
-        said(&mut harness, new("spec-first", None)).await;
-        let card = tried(&mut harness, "spec-first", " add due dates ").await;
+        wrote(&mut harness, new("spec-first", None)).await;
+        let (planned, card) = tried(&mut harness, "spec-first", " add due dates ").await;
         assert_eq!(card.kind, ChoiceKind::TryWorkflow);
-        assert_eq!(
-            card.title,
-            "spec-first for \"add due dates\" · a preview, nothing runs yet"
-        );
+        assert_eq!(planned.title, "spec-first for \"add due dates\"");
+        assert_eq!(planned.tail.as_deref(), Some("a preview, nothing runs yet"));
         // The whole plan: each step with its role, who would take it, what it does and how,
-        // then what runs after the steps, then the question.
-        let lines = &card.body;
+        // then what runs after the steps; the card only asks.
+        assert_eq!(card.title, "Run it now?");
+        assert!(card.body.is_empty());
+        let lines = &planned.lines;
         let step = |at: usize, starts: &str, role: &str, ends: &str| {
             let line = &lines[at];
             assert!(
@@ -899,7 +991,7 @@ mod tests {
             );
         };
         step(0, "1 Plan", "orchestrator", "· 1 agent");
-        step(1, "2 Build", "workers", "one per task · at most 3 rounds");
+        step(1, "2 Build", "workers", "one per task · up to 3 rounds");
         step(
             2,
             "3 Review",
@@ -907,10 +999,13 @@ mod tests {
             "one per task · sends back to Build",
         );
         assert!(
-            lines.iter().any(|line| line.ends_with("then merge")),
-            "{lines:#?}"
+            planned
+                .notes
+                .iter()
+                .any(|line| line.ends_with("then merge")),
+            "{:#?}",
+            planned.notes
         );
-        assert_eq!(lines.last().map(String::as_str), Some("Run it now? y/N"));
         let offered: Vec<(char, &str, bool)> = card
             .options
             .iter()
@@ -925,7 +1020,10 @@ mod tests {
                 to: AnswerTarget::Choice { id: card.id },
             })
             .await;
-        assert_eq!(closed(&mut harness).await, "Nothing ran.");
+        assert_eq!(
+            closed(&mut harness).await,
+            "Spec-first preview for 'add due dates' · nothing ran"
+        );
         assert!(harness.conductor.starts().is_empty());
 
         let (level, missing) = said(
@@ -944,14 +1042,15 @@ mod tests {
     #[tokio::test]
     async fn run_it_on_a_dry_run_runs_that_one_request_with_the_workflow() {
         let mut harness = Harness::start().await;
-        said(&mut harness, new("mine", Some("council"))).await;
-        let card = tried(&mut harness, "mine", "add due dates").await;
+        wrote(&mut harness, new("mine", Some("council"))).await;
+        let (planned, card) = tried(&mut harness, "mine", "add due dates").await;
         assert!(
-            card.body
+            planned
+                .notes
                 .iter()
                 .any(|line| line.starts_with("adapt is on, so the orchestrator writes the steps")),
             "{:#?}",
-            card.body
+            planned.notes
         );
         harness
             .send(UiCommand::Answer {
@@ -963,7 +1062,10 @@ mod tests {
                 remember: false,
             })
             .await;
-        assert_eq!(closed(&mut harness).await, "Running it with mine");
+        assert_eq!(
+            closed(&mut harness).await,
+            "Mine preview for 'add due dates' · running it"
+        );
         harness
             .until(|event| matches!(event, AppEvent::Attached { .. }))
             .await;
@@ -977,7 +1079,7 @@ mod tests {
     #[tokio::test]
     async fn a_workflows_own_command_runs_one_request_with_it() {
         let mut harness = Harness::start().await;
-        said(&mut harness, new("mine", Some("council"))).await;
+        wrote(&mut harness, new("mine", Some("council"))).await;
         harness
             .send(UiCommand::Slash {
                 command: SlashCommand::WorkflowRequest {
@@ -1031,8 +1133,8 @@ mod tests {
     #[tokio::test]
     async fn two_workflows_run_at_once_each_with_its_own_row() {
         let mut harness = Harness::start().await;
-        said(&mut harness, new("mine", Some("council"))).await;
-        said(&mut harness, new("other", Some("maker-checker"))).await;
+        wrote(&mut harness, new("mine", Some("council"))).await;
+        wrote(&mut harness, new("other", Some("maker-checker"))).await;
         harness.send(ask("mine", "add due dates")).await;
         harness
             .until(|event| matches!(event, AppEvent::Attached { .. }))
@@ -1108,7 +1210,7 @@ mod tests {
     #[tokio::test]
     async fn edit_opens_the_page_with_each_step_and_who_would_take_it() {
         let mut harness = Harness::start().await;
-        said(&mut harness, new("spec-first", None)).await;
+        wrote(&mut harness, new("spec-first", None)).await;
         harness.send(edit("spec-first")).await;
         let page = page(&mut harness).await;
         assert_eq!(page.path, ".argonauts/workflows/spec-first.toml");
@@ -1168,7 +1270,7 @@ mod tests {
     #[tokio::test]
     async fn a_change_on_the_page_is_checked_and_saved_with_the_comments_kept() {
         let mut harness = Harness::start().await;
-        said(&mut harness, new("spec-first", None)).await;
+        wrote(&mut harness, new("spec-first", None)).await;
         let file = harness
             .repo
             .root()

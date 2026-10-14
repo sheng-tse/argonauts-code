@@ -4,7 +4,7 @@ expression: "screen(&mut view, width, height, &state)"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
  argonauts-ui-kit
- Build a standalone Rust UI kit prototype that matches Cl… 8/12 steps · 2h44m · ↓ 1.4M tokens
+ Build a standalone Rust UI kit prototype that matches…    8/12 steps · 2h44m · ↓ 1.4M tokens
 
  ╭ Build · 7 steps ───────────┬ build:a-terminal-bottom ────────────────────────────────────╮
  │ ❯✔ build:a-terminal-bottom │ ✔ Completed · Opus on Claude Code · 6m02s                   │

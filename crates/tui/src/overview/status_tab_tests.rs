@@ -110,6 +110,7 @@ fn picture() -> StatusTabView {
             tools: ["start a workflow", "set a goal", "setup", "records"]
                 .map(str::to_owned)
                 .to_vec(),
+            tools_off: false,
             mcp_servers: Some(vec!["github".to_owned(), "linear".to_owned()]),
             keys: vec![
                 entry("main_agent", "\"claude-code\"", "global"),
@@ -178,23 +179,23 @@ fn status_draws_every_part_of_the_picture() {
         " Conversation    chat-014 · started 7:12pm",
         " Folder          ~/workspace/rate-limiter-app · no git, workflows keep a hidden history",
         " Main session    Opus 5.5 on Claude Code · xhigh effort · 212k of 1M context",
-        " Workflow        solo · ultracode off · workflow size medium",
-        " Mode            supervised",
+        " Workflow        Solo · ultracode off · workflow size medium",
+        " Mode            Supervised",
     ] {
         assert!(rows.iter().any(|row| row == fact), "{fact}: {rows:#?}");
     }
     assert!(row(&rows, "◆ your CLIs").ends_with("who you're logged in as on each │"));
     assert!(
         row(&rows, "● Claude Code").contains(
-            "● Claude Code     2.1.295     you@example.com · Max · newer than checked, works"
+            "● Claude Code      2.1.295   you@example.com · Max · newer than checked, works"
         ),
         "{rows:#?}"
     );
     assert!(
         row(&rows, "○ Codex")
-            .contains("○ Codex           0.160.0     you@example.com · Plus · checked")
+            .contains("○ Codex            0.160.0   you@example.com · Plus · checked")
     );
-    assert!(row(&rows, "○ OpenCode").contains("—           not installed · /update can't add it"));
+    assert!(row(&rows, "○ OpenCode").contains("—         not installed · /update can't add it"));
     assert!(
         row(&rows, "◆ settings in effect")
             .ends_with("enter shows each key and where it came from │")
@@ -217,12 +218,12 @@ fn status_draws_every_part_of_the_picture() {
     assert!(at("◆ settings in effect") < at("◆ runs"));
     assert_eq!(
         rows.last().unwrap(),
-        " tab · ←→ tabs · ↓ into the cards · enter open · esc back"
+        " tab · ←→ tabs · ↓ into the cards · esc closes"
     );
 }
 
 #[test]
-fn enter_on_the_settings_lists_each_key_with_where_it_came_from_and_esc_closes_it() {
+fn enter_on_the_settings_lists_each_key_with_where_it_came_from_and_enter_closes_it() {
     let state = state();
     let mut status = tab(picture());
     key(&mut status, &state, KeyCode::Down);
@@ -239,12 +240,20 @@ fn enter_on_the_settings_lists_each_key_with_where_it_came_from_and_esc_closes_i
         "{opened:#?}"
     );
     assert!(row(&opened, "│ effort").contains("xhigh · .argonauts/config.local.toml"));
+    assert!(
+        opened
+            .last()
+            .unwrap()
+            .contains("enter closes the keys · tab tabs"),
+        "{opened:#?}"
+    );
     assert!(matches!(
-        key(&mut status, &state, KeyCode::Esc),
+        key(&mut status, &state, KeyCode::Enter),
         ViewOutcome::Consumed
     ));
     let closed = rows(&mut status, &state, 110);
     assert!(!closed.iter().any(|row| row.contains("main_agent")));
+    // Esc has one meaning: it closes the panel.
     assert!(matches!(
         key(&mut status, &state, KeyCode::Esc),
         ViewOutcome::Close
@@ -318,8 +327,12 @@ fn a_cli_is_signed_in_signed_out_or_not_known() {
     let rows = rows(&mut tab, &state, 140);
     let out = row(&rows, "not signed in · /login signs in");
     assert!(!out.contains("signed in as"), "{out}");
-    let unknown = row(&rows, "account not known");
-    assert!(!unknown.contains("signed in"), "{unknown}");
+    // Signed in, but nothing it says names the address.
+    let unnamed = row(&rows, "signed in, address not shown");
+    assert!(
+        unnamed.contains("signed in, address not shown · "),
+        "{unnamed}"
+    );
     assert!(
         !rows.iter().any(|row| row.contains("signed in as it says")),
         "{rows:#?}"
@@ -337,4 +350,94 @@ fn a_screen_reader_hears_the_same_facts() {
     ] {
         assert!(lines.iter().any(|line| line == text), "{text}: {lines:#?}");
     }
+}
+
+/// End goes to the last card and Home to the first, as g and G do with vim keys on.
+#[test]
+fn home_and_end_go_to_the_first_and_last_card() {
+    let state = state();
+    let mut status = tab(picture());
+    key(&mut status, &state, KeyCode::Down);
+    let on_settings = |status: &mut OverviewView| {
+        rows(status, &state, 110)
+            .last()
+            .unwrap()
+            .contains("enter each key")
+    };
+    key(&mut status, &state, KeyCode::End);
+    assert!(!on_settings(&mut status));
+    key(&mut status, &state, KeyCode::Up);
+    assert!(
+        on_settings(&mut status),
+        "End went to the last card, the runs"
+    );
+    key(&mut status, &state, KeyCode::Home);
+    assert!(!on_settings(&mut status));
+    key(&mut status, &state, KeyCode::Down);
+    assert!(
+        on_settings(&mut status),
+        "Home went to the first card, your CLIs"
+    );
+}
+
+/// The CLIs card at the picture's width, in its colours: every CLI's address and plan, Codex's
+/// and Antigravity CLI's included, and the one not installed.
+#[test]
+fn the_clis_card_matches_its_picture() {
+    use crate::overview::golden::{Picture, Region, assert_matches, theme};
+    use crate::widgets::{Frame, Kit};
+
+    let shot = Picture::load("status_after");
+    let mut view = picture();
+    view.clis = vec![
+        cli(
+            "claude-code",
+            "Claude Code",
+            Some("2.1.295"),
+            "Max",
+            "checked",
+        ),
+        CliStatus {
+            account: Some("you@school.example".to_owned()),
+            ..cli("codex", "Codex", Some("0.160.0"), "Plus", "checked")
+        },
+        cli(
+            "antigravity-cli",
+            "Antigravity CLI",
+            Some("1.3.2"),
+            "Google AI Pro",
+            "newer than checked, works",
+        ),
+        cli("opencode", "OpenCode", None, "", "not installed"),
+    ];
+    let theme = theme();
+    let kit = Kit::new(&theme);
+    let names = sample::names();
+    let cards = super::StatusTabCards {
+        view: &view,
+        names: &names,
+        clock: crate::format::WallClock::pinned(datetime!(2026-10-08 20:00 UTC)),
+        mode: None,
+    };
+    let drawn = cards.clis(&kit, Frame::view(120));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, drawn.lines.len() as u16));
+    for (y, line) in drawn.lines.iter().enumerate() {
+        buf.set_line(0, y as u16, line, 120);
+    }
+    assert_matches(&shot, &buf, &Region::whole(&shot, (1, 0)), &theme);
+}
+
+/// Tools you turned off say so, and by which key.
+#[test]
+fn tools_turned_off_say_by_which_key() {
+    let mut view = picture();
+    view.settings.tools.clear();
+    view.settings.tools_off = true;
+    let state = state();
+    let mut tab = tab(view);
+    let rows = rows(&mut tab, &state, 140);
+    assert!(
+        row(&rows, "tools for the main session").contains("off · main_session.tools = false"),
+        "{rows:#?}"
+    );
 }

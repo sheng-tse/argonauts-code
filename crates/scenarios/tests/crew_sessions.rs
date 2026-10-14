@@ -28,6 +28,8 @@ const SOLO_CONFIG: &str = r#"main_agent = "claude-code"
 
 [ui]
 theme = "dark"
+# These scenarios wait for an agent's words while it works, which its live block shows.
+agents_in_chat = "as_they_work"
 "#;
 
 fn solo_scenario(file: &str) -> anyhow::Result<Scenario> {

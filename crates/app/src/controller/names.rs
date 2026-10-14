@@ -24,6 +24,15 @@ impl NamesSent {
         }
     }
 
+    /// The worker with the model it runs when it names none: your setting for its CLI, else
+    /// the CLI's own default.
+    pub(crate) fn running(&self, worker: &WorkerRef) -> WorkerRef {
+        match &self.0 {
+            Some(names) => names.running(worker),
+            None => worker.clone(),
+        }
+    }
+
     /// `Claude Code`.
     pub(crate) fn harness(&self, id: &str) -> String {
         match &self.0 {

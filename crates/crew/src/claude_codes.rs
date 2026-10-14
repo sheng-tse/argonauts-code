@@ -8,12 +8,16 @@
 //! Claude Code's workflow, so what it reported is checked against them and what it lacked is
 //! said.
 
+use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use argonauts_core::CardId;
 use argonauts_core::asking::{Ask, AskLine, AskReply};
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{CardBudget, CardKind, CardSpec, CardState, ReviewEvent};
+use argonauts_core::events::card::{
+    CardBudget, CardKind, CardSpec, CardState, GateOutcome, ReviewEvent,
+};
 use argonauts_core::events::session::InputPartKind;
 use argonauts_core::events::workflow::{RunNote, WorkflowEvent};
 use argonauts_core::labels;
@@ -33,10 +37,10 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::card::machine::Trigger;
 use crate::card::pipeline::{self, Until};
 use crate::card::support::part;
-use crate::card::{self, worktree};
+use crate::card::{self, gates, worktree};
 use crate::engine::host::{Host, SessionPlan, StandIns};
 use crate::error::{EngineError, EngineResult};
-use crate::roles::display_name;
+use crate::roles::{display_name, family};
 use crate::ultra::OwnCrew;
 use crate::workflow::{StepAt, StepCall, StepDone};
 
@@ -67,6 +71,8 @@ struct Reviewed {
     role: CrewRole,
     change: String,
     accepted: bool,
+    /// The seats' answers, as the asking agent read them.
+    said: String,
 }
 
 /// One task's asks while its session works.
@@ -74,13 +80,27 @@ struct Asks<'a> {
     host: &'a Host,
     at: &'a StepAt,
     card: &'a CardId,
+    /// The task's name, which its labels carry.
+    name: &'a str,
     crew: &'a OwnCrew,
     request: &'a str,
     token: String,
     reviewed: Mutex<Vec<Reviewed>>,
+    /// How many times each label was asked, for its rounds.
+    rounds: Mutex<BTreeMap<String, u32>>,
+}
+
+/// What the reviewers made of the final change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Verdict {
+    accepted: bool,
+    /// What they said of it when they didn't accept it.
+    reasons: Vec<String>,
 }
 
 /// Runs the request as Claude Code's own workflow, then merges what the reviewers accepted.
+/// A final change they don't accept goes back to the session with their reasons, for as many
+/// rounds of fixes as `review.max_change_rounds` allows, before it comes to you.
 pub async fn run(
     host: &Host,
     call: &StepCall,
@@ -88,18 +108,23 @@ pub async fn run(
     crew: &OwnCrew,
 ) -> EngineResult<StepDone> {
     let at = &call.at;
+    let crew = &asked(host, crew);
     let name = labels::id_slug(request, 4);
     let card =
         CardId::new(format!("task-{name}")).map_err(|err| EngineError::Refused(err.to_string()))?;
+    // What its labels carry: "build:add-due-dates", "review:add-due-dates".
+    let item = labels::slug(&name, 3);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let asks = Asks {
         host,
         at,
         card: &card,
+        name: &item,
         crew,
         request,
         token: format!("{:032x}", rand::random::<u128>()),
         reviewed: Mutex::default(),
+        rounds: Mutex::default(),
     };
     note(host, call, format!("{name} · {}", engine_line(crew)))?;
     let required =
@@ -124,12 +149,9 @@ pub async fn run(
         subagent_model: crew.workers.model.clone(),
     };
     host.shared().work_as_claude_codes_own(&card, own);
-    let built = tokio::select! {
-        built = pipeline::drive(host, &card, at, Until::GatesPassed) => built,
-        () = serve(&listener, &asks) => unreachable!("serving asks never ends by itself"),
-    };
+    let reviewed = review_rounds(host, &card, at, &listener, &asks).await;
     host.shared().done_as_claude_codes_own(&card);
-    let state = built?;
+    let (state, verdict, rounds) = reviewed?;
     if state != CardState::InReview {
         let state = format!("{state:?}").to_lowercase();
         let said = argonauts_core::text::state_words(&state);
@@ -142,25 +164,94 @@ pub async fn run(
         note_left(host, call, lacked.join(" "))?;
     }
     let lacked: String = lacked.iter().map(|line| format!(" · {line}")).collect();
-    let accepted = gone_through(&asks).await?;
-    let (trigger, why) = if accepted {
+    let (trigger, why) = if verdict.accepted {
         (
             Trigger::Approved,
-            "the crew's reviewers accepted the final change",
+            "the crew's reviewers accepted the final change".to_owned(),
         )
     } else {
         (
             Trigger::ChangesRequestedAgain,
-            "the crew's reviewers didn't accept the final change",
+            not_accepted(rounds, &verdict),
         )
     };
-    pipeline::transition(host, &card, trigger, why)?;
+    pipeline::transition(host, &card, trigger, &why)?;
     let merged = pipeline::run_card(host, &card, at).await? == CardState::Integrated;
     Ok(StepDone::done(if merged {
         format!("{name} ran as Claude Code's own workflow · merged into the run{lacked}")
     } else {
         format!("{name} ran as Claude Code's own workflow · {why}{lacked}")
     }))
+}
+
+/// Drives the task as far as its checks, then has the reviewers read its final change; one
+/// they don't accept goes back for a round of fixes while rounds are left. Returns where the
+/// task stopped, the last verdict, and how many rounds of fixes it had.
+async fn review_rounds(
+    host: &Host,
+    card: &CardId,
+    at: &StepAt,
+    listener: &TcpListener,
+    asks: &Asks<'_>,
+) -> EngineResult<(CardState, Verdict, u32)> {
+    let most = host.settings().review.max_change_rounds;
+    let mut state = serving(
+        listener,
+        asks,
+        pipeline::drive(host, card, at, Until::GatesPassed),
+    )
+    .await?;
+    let mut rounds = 0;
+    loop {
+        if state != CardState::InReview {
+            return Ok((state, Verdict::default(), rounds));
+        }
+        let verdict = serving(listener, asks, gone_through(asks)).await?;
+        if verdict.accepted || rounds >= most {
+            return Ok((state, verdict, rounds));
+        }
+        rounds += 1;
+        let note = fixes_asked(rounds, &verdict.reasons);
+        state = serving(listener, asks, pipeline::revise(host, card, at, &note)).await?;
+    }
+}
+
+/// Answers the session's asks while `work` runs.
+async fn serving<T>(
+    listener: &TcpListener,
+    asks: &Asks<'_>,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    tokio::select! {
+        done = work => done,
+        never = serve(listener, asks) => match never {},
+    }
+}
+
+/// What the session reads when its final change goes back: the reviewers' own reasons.
+fn fixes_asked(round: u32, reasons: &[String]) -> String {
+    format!(
+        "Round {round} of fixes: the crew's reviewers didn't accept the final change.\n\n{}\n\n\
+         Fix what they found, ask them again about the change, and when that is done report \
+         again with argonauts_report.",
+        reasons.join("\n\n")
+    )
+}
+
+/// Why the change comes to you, in the reviewers' words.
+fn not_accepted(rounds: u32, verdict: &Verdict) -> String {
+    let after = match rounds {
+        0 => String::new(),
+        1 => " after a round of fixes".to_owned(),
+        n => format!(" after {n} rounds of fixes"),
+    };
+    let first = verdict
+        .reasons
+        .first()
+        .and_then(|said| said.lines().next())
+        .map(|line| format!(": {line}"))
+        .unwrap_or_default();
+    format!("the crew's reviewers didn't accept the final change{after}{first}")
 }
 
 /// What the workflow Claude Code reported lacked of what you required, in plain lines: its
@@ -217,10 +308,50 @@ pub fn engine_line(crew: &OwnCrew) -> String {
     if crew.workers.model.is_some() {
         line.push_str(&format!(" · workers on {}", display_name(&crew.workers)));
     }
-    if let Some(reviewer) = crew.reviewers.first() {
-        line.push_str(&format!(" · reviews by {}", display_name(reviewer)));
+    if !crew.reviewers.is_empty() {
+        line.push_str(&format!(" · reviews by {}", names(&crew.reviewers)));
     }
     line
+}
+
+fn names(seats: &[WorkerRef]) -> String {
+    seats
+        .iter()
+        .map(display_name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The crew with only the seats its asks go to: `review.per_task` reviewers and one judge,
+/// chosen as the runner chooses a task's.
+fn asked(host: &Host, crew: &OwnCrew) -> OwnCrew {
+    let available = host.services().workers.available();
+    let theirs = family(host, &crew.workers);
+    let the_authors = |seat: &WorkerRef| family(host, seat) == theirs;
+    let per_task = host.settings().review.per_task as usize;
+    OwnCrew {
+        reviewers: asked_seats(&crew.reviewers, &available, &the_authors, per_task),
+        judge: asked_seats(&crew.judge, &available, &the_authors, 1),
+        ..crew.clone()
+    }
+}
+
+/// `wanted` of the seats: the agents that can work now, those of another provider than the
+/// work's author first, and the list's own order among the rest.
+fn asked_seats(
+    seats: &[WorkerRef],
+    available: &[WorkerRef],
+    the_authors: &dyn Fn(&WorkerRef) -> bool,
+    wanted: usize,
+) -> Vec<WorkerRef> {
+    let mut seats = seats.to_vec();
+    if seats.iter().any(|seat| available.contains(seat)) {
+        seats.retain(|seat| available.contains(seat));
+    }
+    // Stable, so the list's order still decides among each kind.
+    seats.sort_by_key(|seat| the_authors(seat));
+    seats.truncate(wanted.max(1));
+    seats
 }
 
 fn note(host: &Host, call: &StepCall, text: String) -> EngineResult<()> {
@@ -267,7 +398,7 @@ fn task(
     });
     CardSpec {
         id: card.clone(),
-        title: format!("build:{name}"),
+        title: format!("build:{}", labels::slug(name, 3)),
         task: instructions(request, crew, required),
         kind: CardKind::Build,
         owned_paths: Vec::new(),
@@ -280,7 +411,7 @@ fn task(
         reviewers: Vec::new(),
         budget: CardBudget::default(),
         predictions: None,
-        item: Some(name.to_owned()),
+        item: Some(labels::slug(name, 3)),
     }
 }
 
@@ -288,13 +419,6 @@ fn task(
 /// with the steps you require and the tasks you fixed, and send each review and the sign-off
 /// to the crew's roles through the tools.
 fn instructions(request: &str, crew: &OwnCrew, required: &Required) -> String {
-    let names = |seats: &[WorkerRef]| {
-        seats
-            .iter()
-            .map(display_name)
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     let mut text = format!(
         "{request}\n\nRun this as a workflow of your own with the Workflow tool: plan its \
          phases and let its agents do the work."
@@ -326,11 +450,17 @@ fn instructions(request: &str, crew: &OwnCrew, required: &Required) -> String {
         "\nAn agent that doesn't see one of those tools loads it with ToolSearch, such as \
          select:mcp__argonauts_status__argonauts_ask_reviewers.",
     );
+    text.push_str(REPORT_WHEN_DONE);
     text
 }
 
+/// The workflow runs in the background past the session's first turn, so its report waits.
+const REPORT_WHEN_DONE: &str = "\n\nYour workflow runs in the background. When it has ended, and \
+not before, call mcp__argonauts_status__argonauts_report once with your report of the whole task. \
+A report sent while the workflow still runs isn't taken.";
+
 /// Answers asks until the task's session is over, several at once.
-async fn serve(listener: &TcpListener, asks: &Asks<'_>) {
+async fn serve(listener: &TcpListener, asks: &Asks<'_>) -> Infallible {
     let mut answering = FuturesUnordered::new();
     loop {
         tokio::select! {
@@ -352,7 +482,7 @@ async fn answer(stream: TcpStream, asks: &Asks<'_>) {
     }
     let reply = match serde_json::from_str::<AskLine>(line.trim()) {
         Ok(asked) if asked.token == asks.token => match asked.ask {
-            Ask::Role { role, label, what } => match asks.ask(role, &label, &what).await {
+            Ask::Role { role, what, .. } => match asks.ask(role, &what).await {
                 Ok(text) => AskReply::text(text),
                 Err(err) => AskReply {
                     text: format!("Argonauts couldn't ask them: {err}"),
@@ -375,9 +505,10 @@ async fn answer(stream: TcpStream, asks: &Asks<'_>) {
 }
 
 impl Asks<'_> {
-    /// The role's seats each read the change as it is now, and their answers come back as
-    /// one text. Each answer is recorded as a review of the task, under the reviewer's name.
-    async fn ask(&self, role: CrewRole, label: &str, what: &str) -> EngineResult<String> {
+    /// The checks run on the change as it is now, then the role's seats each read it with
+    /// their results, and their answers come back as one text. Each answer is recorded as a
+    /// review of the task, under the reviewer's name.
+    async fn ask(&self, role: CrewRole, what: &str) -> EngineResult<String> {
         let host = self.host;
         let seats = match role {
             CrewRole::Judge if !self.crew.judge.is_empty() => &self.crew.judge,
@@ -388,54 +519,83 @@ impl Asks<'_> {
                 )));
             }
         };
-        let tree = worktree::ensure(host, self.card).await?;
-        let git = worktree::tree_git(host, &tree.path).await?;
-        let index = index_file(host, self.card, "index")?;
-        let change = git.working_diff(&tree.path, &tree.base, &index).await?;
+        let change = change_of(host, self.card).await?;
         if change.trim().is_empty() {
             return Ok("There is no change in the folder yet, so nothing was reviewed.".to_owned());
         }
-        let wanted = (host.settings().review.per_task.max(1) as usize).min(seats.len().max(1));
-        let label = if label.trim().is_empty() {
-            format!("{}:{}", role_word(role), self.card)
-        } else {
-            label.trim().to_owned()
+        let tree = worktree::ensure(host, self.card).await?;
+        let checks = checks_now(host, self.card).await?;
+        let (label, round) = self.round_of(role);
+        let asked = Asked {
+            role,
+            label: &label,
+            round,
+            what,
+            change: &change,
+            checks: checks.as_deref(),
         };
         let mut answers = Vec::new();
         let mut accepted = true;
-        for seat in seats.iter().take(wanted) {
-            let (yes, said) = self
-                .one(role, seat, &label, what, &tree.path, &change)
-                .await?;
+        for seat in seats {
+            let (yes, said) = self.one(seat, &asked, &tree.path).await?;
             accepted &= yes;
             answers.push(said);
         }
+        let said = answers.join("\n\n");
         lock(&self.reviewed).push(Reviewed {
             role,
             change: sha256_hex(change.as_bytes()),
             accepted,
+            said: said.clone(),
         });
-        Ok(answers.join("\n\n"))
+        Ok(said)
+    }
+
+    /// The ask's label, from the role and the task's name whatever the session called it, and
+    /// which round of it this is: "review:add-due-dates", then "review:add-due-dates · round 2".
+    /// So every ask about the task, the session's own and the last one Argonauts makes, folds
+    /// into one row per role.
+    fn round_of(&self, role: CrewRole) -> (String, u32) {
+        let label = format!("{}:{}", role_word(role), self.name);
+        let mut rounds = lock(&self.rounds);
+        let round = rounds.entry(label.clone()).or_default();
+        *round += 1;
+        let shown = match *round {
+            1 => label,
+            n => format!("{label} · round {n}"),
+        };
+        (shown, *round)
     }
 
     async fn one(
         &self,
-        role: CrewRole,
         seat: &WorkerRef,
-        label: &str,
-        what: &str,
+        asked: &Asked<'_>,
         workdir: &std::path::Path,
-        change: &str,
     ) -> EngineResult<(bool, String)> {
         let host = self.host;
+        let role = asked.role;
         let mut parts = vec![
             part(InputPartKind::Prompt, role_word(role), asked_of(role), None),
             part(InputPartKind::Goal, "the request", self.request, None),
         ];
-        if !what.trim().is_empty() {
-            parts.push(part(InputPartKind::Message, "what it does", what, None));
+        if !asked.what.trim().is_empty() {
+            parts.push(part(
+                InputPartKind::Message,
+                "what it does",
+                asked.what,
+                None,
+            ));
         }
-        parts.push(part(InputPartKind::Evidence, "the change", change, None));
+        if let Some(checks) = asked.checks {
+            parts.push(part(InputPartKind::GateOutput, "the checks", checks, None));
+        }
+        parts.push(part(
+            InputPartKind::Evidence,
+            "the change",
+            asked.change,
+            None,
+        ));
         let plan = SessionPlan {
             at: Some(self.at.clone()),
             role: role.fine_role(),
@@ -448,8 +608,9 @@ impl Asks<'_> {
             json_schema: Some(verdict_schema()),
             resume: None,
             slot: 0,
-            label: Some(label.to_owned()),
+            label: Some(asked.label.to_owned()),
             reviews: false,
+            fresh: false,
         };
         let ran = host
             .run_session_in_turn(plan, None, StandIns::Allowed, &|_| Ok(()))
@@ -460,12 +621,63 @@ impl Asks<'_> {
         let event = ReviewEvent::Reviewed {
             reviewer: ran.worker.clone(),
             blind: false,
-            round: 1,
+            round: asked.round,
             review: review.clone(),
         };
         host.record(Some(self.card), Some(&ran.key), RunEventKind::Review(event))?;
         Ok((accepted, said(&ran.worker, &review)))
     }
+}
+
+/// One ask as each of its seats reads it.
+struct Asked<'a> {
+    role: CrewRole,
+    label: &'a str,
+    round: u32,
+    what: &'a str,
+    change: &'a str,
+    checks: Option<&'a str>,
+}
+
+/// The task's change as its reviewers read it: what its commit will hold, as a diff, empty
+/// when nothing changed yet.
+async fn change_of(host: &Host, card: &CardId) -> EngineResult<String> {
+    Ok(crate::change::of_task(host, card).await?.diff)
+}
+
+/// Runs each check on a clean copy of the task's change as it is now, committed or not, so a
+/// review reads what they found rather than guessing, and nothing they write reaches the
+/// folder the agents work in. `None` when no check is set.
+async fn checks_now(host: &Host, card: &CardId) -> EngineResult<Option<String>> {
+    let commands = &host.settings().checks.run;
+    if commands.is_empty() {
+        return Ok(None);
+    }
+    let (copy, label) = gates::clean_copy_of_change(host, card).await?;
+    if let Some(output) = gates::setup(host, card, &copy, &label).await? {
+        return Ok(Some(format!("checks.setup failed: {output}")));
+    }
+    let mut lines = Vec::new();
+    for command in commands {
+        let request = gates::request(host, card, command, &copy, false)?;
+        let mut outcome = host.services().gates.run(request).await;
+        outcome
+            .command
+            .get_or_insert_with(|| command.command.clone());
+        lines.push(checked(&outcome));
+    }
+    Ok(Some(lines.join("\n\n")))
+}
+
+/// "tests (python3 -m unittest -q) passed: Ran 8 tests · OK", as the runner words a check for
+/// its reviewers, with the output's end when it failed.
+fn checked(outcome: &GateOutcome) -> String {
+    let mut line = gates::result_line(outcome);
+    let tail = outcome.output_tail.trim();
+    if !outcome.passed && !tail.is_empty() {
+        line.push_str(&format!("\n{tail}"));
+    }
+    line
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -475,42 +687,38 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Once the session is over: when the final change went through the reviewers (and the judge,
 /// when it has seats of its own) and they accepted it, it may merge. When it didn't, Argonauts
 /// asks them now, so nothing merges unreviewed.
-async fn gone_through(asks: &Asks<'_>) -> EngineResult<bool> {
-    let host = asks.host;
-    let tree = worktree::ensure(host, asks.card).await?;
-    let git = worktree::tree_git(host, &tree.path).await?;
-    let index = index_file(host, asks.card, "final-index")?;
-    let last = git.working_diff(&tree.path, &tree.base, &index).await?;
-    let last = sha256_hex(last.as_bytes());
+async fn gone_through(asks: &Asks<'_>) -> EngineResult<Verdict> {
+    let last = sha256_hex(change_of(asks.host, asks.card).await?.as_bytes());
     let mut roles = vec![CrewRole::Reviewers];
     if !asks.crew.judge.is_empty() {
         roles.push(CrewRole::Judge);
     }
-    let mut accepted = true;
+    let mut verdict = Verdict {
+        accepted: true,
+        reasons: Vec::new(),
+    };
     for role in roles {
-        let read_last = lock(&asks.reviewed)
+        let read_last = |reviewed: &Reviewed| reviewed.role == role && reviewed.change == last;
+        let mut reviewed = lock(&asks.reviewed)
             .iter()
             .rev()
-            .find(|reviewed| reviewed.role == role && reviewed.change == last)
+            .find(|r| read_last(r))
             .cloned();
-        match read_last {
-            Some(reviewed) => accepted &= reviewed.accepted,
-            None => {
-                asks.ask(role, "", "The final change, before it merges.")
-                    .await?;
-                let reviewed = lock(&asks.reviewed).last().cloned();
-                accepted &= reviewed.is_some_and(|reviewed| reviewed.accepted);
+        if reviewed.is_none() {
+            asks.ask(role, "The final change, before it merges.")
+                .await?;
+            reviewed = lock(&asks.reviewed).last().cloned();
+        }
+        match reviewed {
+            Some(reviewed) if reviewed.accepted => {}
+            Some(reviewed) => {
+                verdict.accepted = false;
+                verdict.reasons.push(reviewed.said);
             }
+            None => verdict.accepted = false,
         }
     }
-    Ok(accepted)
-}
-
-/// A throwaway git index beside the run's workflow, for reading a worktree's whole change.
-fn index_file(host: &Host, card: &CardId, name: &str) -> EngineResult<std::path::PathBuf> {
-    let dir = host.repo().run_dir.join("workflow");
-    argonauts_core::paths::create_private_dir_all(&dir)?;
-    Ok(dir.join(format!("{card}.{name}")))
+    Ok(verdict)
 }
 
 fn role_word(role: CrewRole) -> &'static str {
@@ -629,6 +837,7 @@ mod tests {
         assert!(text.contains("Workflow tool"));
         assert!(text.contains("argonauts_ask_reviewers"));
         assert!(!text.contains("argonauts_ask_judge"));
+        assert!(text.ends_with("A report sent while the workflow still runs isn't taken."));
         let judged = instructions(
             "add due dates",
             &crew(&["claude-code/opus-5-5"]),
@@ -662,6 +871,74 @@ mod tests {
         );
         // Before the tools, which every agent must read.
         assert!(text.find("Benchmark") < text.find("argonauts_ask_reviewers"));
+    }
+
+    /// As the runner seats a task's reviewers: another provider than the author first, the
+    /// list's order among the rest, only agents that can work when any can.
+    #[test]
+    fn asked_seats_put_other_providers_first() {
+        let seats: Vec<WorkerRef> = ["claude-code/haiku-4-5", "codex", "antigravity-cli"]
+            .iter()
+            .map(|seat| seat.parse().unwrap())
+            .collect();
+        let claude = |seat: &WorkerRef| seat.worker == "claude-code";
+        let picked = asked_seats(&seats, &[], &claude, 1);
+        assert_eq!(picked, [seats[1].clone()]);
+        let picked = asked_seats(&seats, &[], &claude, 3);
+        assert_eq!(
+            picked,
+            [seats[1].clone(), seats[2].clone(), seats[0].clone()]
+        );
+        let picked = asked_seats(&seats, &[seats[0].clone(), seats[2].clone()], &claude, 1);
+        assert_eq!(picked, [seats[2].clone()]);
+        assert!(asked_seats(&[], &[], &claude, 1).is_empty());
+    }
+
+    #[test]
+    fn a_change_that_comes_to_you_says_why_in_the_reviewers_words() {
+        let verdict = Verdict {
+            accepted: false,
+            reasons: vec!["Codex asks for changes: Past dates pass\n- a past date".into()],
+        };
+        assert_eq!(
+            not_accepted(2, &verdict),
+            "the crew's reviewers didn't accept the final change after 2 rounds of fixes: \
+             Codex asks for changes: Past dates pass"
+        );
+        assert_eq!(
+            not_accepted(0, &Verdict::default()),
+            "the crew's reviewers didn't accept the final change"
+        );
+    }
+
+    #[test]
+    fn a_check_reads_as_the_runner_words_it() {
+        let outcome = |passed: bool, summary: &str| GateOutcome {
+            name: "tests".into(),
+            kind: argonauts_core::events::card::GateKind::Command,
+            passed,
+            command: Some(vec!["python3".to_owned(), "-m".into(), "unittest".into()]),
+            exit_code: Some(i32::from(!passed)),
+            duration_ms: 3,
+            summary: summary.into(),
+            output_tail: "FAIL: test_past_due".into(),
+            violations: Vec::new(),
+            sandboxed: true,
+            skipped: false,
+        };
+        assert_eq!(
+            checked(&outcome(true, "Ran 8 tests · OK")),
+            "tests (python3 -m unittest) passed: Ran 8 tests · OK"
+        );
+        assert_eq!(
+            checked(&outcome(false, "1 failed")),
+            "tests (python3 -m unittest) failed: 1 failed\nFAIL: test_past_due"
+        );
+        assert_eq!(
+            checked(&outcome(true, "passed")),
+            "tests (python3 -m unittest) passed",
+            "a summary that only says passed isn't said twice"
+        );
     }
 
     #[test]

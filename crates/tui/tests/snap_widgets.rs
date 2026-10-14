@@ -428,7 +428,7 @@ fn quota_windows_pair_as_claude_codes_usage_draws_them() {
         rows(&drawn),
         [
             "Current session                                  Current week",
-            "██████████████████████████░░░░░░░░░░ 71% used    ██████████████░░░░░░░░░░░░░░░░░░░░░░ 38% used",
+            "█████████████████████████░░░░░░░░░░ 71% used     █████████████░░░░░░░░░░░░░░░░░░░░░░ 38% used",
             "Resets 4:40pm                                    Resets Tue 10pm",
         ]
     );
@@ -439,7 +439,7 @@ fn quota_windows_pair_as_claude_codes_usage_draws_them() {
     let drawn = bodies::windows(&kit, &codex, 94);
     assert_eq!(
         rows(&drawn)[1],
-        "█████████████████████████████████░░░ 92% used    ███████████████░░░░░░░░░░░░░░░░░░░░░ 41% used"
+        "████████████████████████████████░░░ 92% used     ██████████████░░░░░░░░░░░░░░░░░░░░░ 41% used"
     );
     // Narrower, they stack, and every meter still has text rows around it.
     for width in [40, 60, 73, 94] {
@@ -479,8 +479,8 @@ fn stacked_quota_rows_are_line_meters() {
     assert_eq!(
         rows(&drawn),
         [
-            "Claude 5h  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸─────────────── 71% used  Resets 4:40pm",
-            "Codex 5h   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━──── 92% used  Resets 2:15pm",
+            "Claude 5h  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━─────────────── 71% used   Resets 4:40pm",
+            "Codex 5h   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━──── 92% used   Resets 2:15pm",
             "agy day    ✗ out until Tue 3:45pm · its tasks moved to Codex",
         ]
     );

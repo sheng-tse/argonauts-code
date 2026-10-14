@@ -101,6 +101,34 @@ pub struct Behaviors {
     pub day: Vec<Behavior>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub week: Vec<Behavior>,
+    /// The rest of the CLI's report on the last day and the last week, where it gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub day_report: Option<UsageReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week_report: Option<UsageReport>,
+}
+
+/// What a CLI's own usage report counts over a span besides the behaviors: the requests and
+/// sessions, and the share of the usage each agent, skill, plugin and MCP server took.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageReport {
+    pub requests: u64,
+    pub sessions: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<UsageShare>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<UsageShare>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<UsageShare>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<UsageShare>,
+}
+
+/// One named part of the usage and its share, 0 to 1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageShare {
+    pub name: String,
+    pub share: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

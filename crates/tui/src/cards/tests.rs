@@ -505,8 +505,8 @@ fn a_dry_runs_card_shows_its_whole_plan_and_answers_only_to_its_keys() {
     assert_eq!(card.esc_hint, "y runs it · n closes it");
     assert!(card.focused && card.esc_answers && card.keys_only);
 
-    // A y/N question: Enter and Esc take the default, no, whichever row is lit, and only y
-    // runs it.
+    // A y/N question answers to its letters alone: Enter and Esc do nothing, whichever row
+    // is lit.
     for key in [
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyCode::Esc,
@@ -515,10 +515,41 @@ fn a_dry_runs_card_shows_its_whole_plan_and_answers_only_to_its_keys() {
         card.selected = 0;
         let answered = card.handle_key(crossterm::event::KeyEvent::from(key));
         assert!(
-            matches!(answered, CardEvent::Answered { index: 1, .. }),
+            matches!(answered, CardEvent::Moved),
             "{key:?}: {answered:?}"
         );
     }
+    for (key, index) in [('y', 0), ('n', 1)] {
+        let mut card = choice_card(1, &tried);
+        let answered = card.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char(key),
+        ));
+        assert!(
+            matches!(answered, CardEvent::Answered { index: i, .. } if i == index),
+            "{key}: {answered:?}"
+        );
+    }
+
+    // It asks on one line, the default's letter a bold capital.
+    let mut asked = preview();
+    asked.title = "Run it now?".into();
+    asked.options[1].recommended = true;
+    let card = choice_card(1, &asked);
+    let theme = crate::theme::Theme::dark();
+    let lines = card.lines(&crate::render::RenderCtx::new(
+        60,
+        &theme,
+        crate::render::Clock::still(std::time::Instant::now()),
+    ));
+    assert_eq!(crate::text::plain_text(&lines), "  Run it now? y / N");
+    let n = lines[0].spans.last().unwrap();
+    assert!(
+        n.style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD)
+    );
+    let y = &lines[0].spans[3];
+    assert_eq!(y.style, theme.style(crate::theme::Role::Dim));
 
     // Any other card keeps to a few rows.
     let mut long = choice(ChoiceKind::ConfirmConnect, Vec::new());
@@ -1353,7 +1384,7 @@ fn a_plan_shows_the_workflow_it_follows() {
     let history = screen.history().join("\n");
     let item = &history[history.find("The plan").expect("the plan's item")..];
     for shown in [
-        "Workflow  review-panel · Two reviewers from other providers",
+        "Workflow  Review-panel · Two reviewers from other providers",
         "reviewers 2 · target diff",
         "    review → adjudicate (if needed)\n    … +2 lines (ctrl+o to expand)",
     ] {
@@ -1440,7 +1471,7 @@ fn a_plan_of_a_scripts_steps_shows_each_phase_with_its_line() {
     screen.event(opened_event(opened));
     let history = screen.history().join("\n");
     for shown in [
-        "Workflow  add-due-dates · Add due dates to tasks · started from council",
+        "Workflow  Add-due-dates · Add due dates to tasks · started from Council",
         "plan → build → sign off",
     ] {
         assert!(history.contains(shown), "{shown} missing from:\n{history}");
@@ -2223,12 +2254,9 @@ fn a_preview_runs_only_on_its_own_key() {
             })
             .collect::<Vec<_>>()
     };
-    // No is the default, so Enter and Esc say no; only y runs it.
+    // Enter and Esc answer nothing; only y runs it.
     for key in [KeyCode::Enter, KeyCode::Esc] {
-        assert_eq!(
-            answers(&[key]),
-            [AnswerAction::Choose { value: "no".into() }]
-        );
+        assert_eq!(answers(&[key]), []);
     }
     assert_eq!(answers(&[KeyCode::Char('y')]), [AnswerAction::Approve]);
     assert_eq!(

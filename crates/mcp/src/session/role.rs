@@ -35,8 +35,7 @@ pub(super) fn tools(asking: &AskTool) -> Vec<Tool> {
                     "properties": {
                         "label": {
                             "type": "string",
-                            "description": "The change's name in your workflow, such as \
-                                            review:store."
+                            "description": label_hint(*role)
                         },
                         "what": {
                             "type": "string",
@@ -49,6 +48,14 @@ pub(super) fn tools(asking: &AskTool) -> Vec<Tool> {
             )
         })
         .collect()
+}
+
+/// What the label is, with an example in the role's own word.
+fn label_hint(role: CrewRole) -> &'static str {
+    match role {
+        CrewRole::Judge => "The change's name in your workflow, such as sign-off:store.",
+        _ => "The change's name in your workflow, such as review:store.",
+    }
 }
 
 fn description(role: CrewRole) -> String {
@@ -143,5 +150,22 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    #[test]
+    fn each_tool_names_its_label_in_its_own_role_word() {
+        let asking = AskTool {
+            endpoint: "127.0.0.1:1".into(),
+            token: "secret".into(),
+            approve: false,
+            tools: Vec::new(),
+            roles: vec![CrewRole::Reviewers, CrewRole::Judge],
+        };
+        let hints: Vec<String> = tools(&asking)
+            .iter()
+            .map(|tool| tool.input_schema["properties"]["label"]["description"].to_string())
+            .collect();
+        assert!(hints[0].contains("review:store"), "{}", hints[0]);
+        assert!(hints[1].contains("sign-off:store"), "{}", hints[1]);
     }
 }

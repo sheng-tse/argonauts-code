@@ -610,9 +610,15 @@ async fn in_solo_the_main_session_starts_a_run_only_when_you_asked_for_one() {
             ),
         )
         .await;
-        assert_eq!(
-            unasked.text,
-            "The user didn't ask for a workflow, so do it yourself."
+        assert!(
+            unasked.text.starts_with("No workflow started."),
+            "{}",
+            unasked.text
+        );
+        assert!(
+            unasked.text.contains("What came of each instruction"),
+            "{}",
+            unasked.text
         );
     }
     assert!(harness.conductor.starts().is_empty());
@@ -715,6 +721,94 @@ async fn in_solo_the_main_session_starts_a_run_only_when_you_asked_for_one() {
     let unknown = ask(&spec, main_tool("argonauts_nothing", json!({}))).await;
     assert!(unknown.is_error, "{unknown:?}");
     assert_eq!(harness.conductor.starts().len(), 1);
+    harness.exit().await;
+}
+
+/// "Use a workflow for this, with Codex as the reviewer" in solo starts the orchestrator's
+/// workflow with Codex reviewing and the main agent planning and building, even when the
+/// call puts the role in `who` and the CLI in `value`; the session hears what started and with
+/// whom.
+#[tokio::test]
+async fn in_solo_a_workflow_with_codex_as_the_reviewer_starts_with_codex_reviewing() {
+    let mut harness = Harness::start_with(solo_preset("")).await;
+    harness.directory.taking_tools("claude-code");
+    harness.directory.add(FakeWorker::harness("codex", "gpt"));
+    harness
+        .agent
+        .push(FakeSession::completed(ANSWER).with_delay(Duration::from_secs(3)));
+    let typed = "Use a workflow for this, with Codex as the reviewer, and choose everything else \
+                 yourself. Fix the money rounding in invoice/money.py.";
+    harness.submit(typed).await;
+    let spec = first_spec(&harness).await;
+    let asking = spec.clone();
+    let asked = tokio::spawn(async move {
+        let tool = main_tool(
+            START_WORKFLOW,
+            json!({
+                "request": "Fix the money rounding in invoice/money.py",
+                "how_to_run": [
+                    {"says": "Use a workflow for this", "kind": "mode"},
+                    {"says": "with Codex as the reviewer", "kind": "review",
+                     "who": "reviewer", "value": "Codex"},
+                ],
+            }),
+        );
+        ask(&asking, tool).await
+    });
+    let run = super::main_session_tests::followed_run(&harness).await;
+    let started = super::main_session_tests::agent_started(&run, 1);
+    harness.conductor.push(&run, started).await;
+    let asked = asked.await.unwrap();
+    assert!(
+        asked
+            .text
+            .contains("Starting a workflow: Orchestrator, with **")
+            && asked.text.contains("Codex** reviewing as you asked; **")
+            && asked.text.contains("Claude Code** plans and builds."),
+        "{asked:?}"
+    );
+    let start = harness.conductor.starts().remove(0);
+    assert_eq!(start.mode, RunMode::Crew);
+    let settings = &start.request_settings;
+    for wanted in [
+        "workflow=\"orchestrator\"",
+        "crew.orchestrator=\"main\"",
+        "roles.reviewer.workers=[\"codex\"]",
+    ] {
+        assert!(
+            settings.iter().any(|setting| setting == wanted),
+            "{wanted}: {settings:?}"
+        );
+    }
+    // The main agent builds, over the builders the check infers for a named reviewer.
+    let builders = settings
+        .iter()
+        .rev()
+        .find(|setting| setting.starts_with("roles.worker.workers="));
+    assert_eq!(
+        builders.map(String::as_str),
+        Some("roles.worker.workers=[\"claude-code\"]"),
+        "{settings:?}"
+    );
+    // The crew shown is the one that runs: the main session builds, Codex reviews.
+    let crew = harness
+        .until(|event| {
+            matches!(event, AppEvent::Notice { text, .. } if text.starts_with("Crew for this request"))
+        })
+        .await;
+    let AppEvent::Notice { text, .. } = crew else {
+        unreachable!()
+    };
+    let workers = text.lines().find(|line| line.starts_with("workers"));
+    assert!(
+        workers.is_some_and(|line| line.ends_with("your main session")),
+        "{text}"
+    );
+    let reviewers = text.lines().find(|line| line.starts_with("reviewers"));
+    assert!(
+        reviewers.is_some_and(|line| line.contains("Codex") && line.ends_with("as you asked")),
+        "{text}"
+    );
     harness.exit().await;
 }
 

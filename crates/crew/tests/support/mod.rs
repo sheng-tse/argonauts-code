@@ -109,7 +109,7 @@ impl Crew {
         self.enlist(fake)
     }
 
-    fn enlist(&mut self, fake: FakeWorker) -> Arc<FakeWorker> {
+    pub fn enlist(&mut self, fake: FakeWorker) -> Arc<FakeWorker> {
         let fake = self.services.workers.add(fake);
         let reference = fake.worker_ref().clone();
         if self.settings.crew.is_empty() {
@@ -194,6 +194,18 @@ impl Crew {
     }
 
     /// The `RunStarted` the supervisor writes before the engine runs.
+    /// The repo's head, or the head of the history Argonauts keeps for a folder with no git.
+    pub fn base_commit(&self) -> anyhow::Result<String> {
+        let state_dir = self.repo_context()?.state_dir().to_path_buf();
+        match argonauts_core::hidden_git::of(self.repo.root(), &state_dir) {
+            Some(hidden) => {
+                let git_dir = format!("--git-dir={}", hidden.display());
+                self.repo.git(&[&git_dir, "rev-parse", "HEAD"])
+            }
+            None => self.repo.head(),
+        }
+    }
+
     pub fn run_started(&self, mode: RunMode, request: &str) -> anyhow::Result<RunEvent> {
         let (context, _, _) = self.context(Vec::new())?;
         let started = RunStarted {
@@ -208,7 +220,7 @@ impl Crew {
             continues: None,
             repo_root: self.repo.root().to_path_buf(),
             base_branch: Some("main".to_owned()),
-            base_commit: self.repo.head()?,
+            base_commit: self.base_commit()?,
             uncommitted: Vec::new(),
             uncommitted_included: false,
             settings_sha256: context.settings_sha256.clone(),
@@ -332,7 +344,7 @@ pub fn wrote(file: &str) -> WorkerEvent {
 }
 
 /// The smallest valid answer for the step's schema, or a plain end when it has none.
-fn smallest_answer(spec: &SessionSpec) -> FakeSession {
+pub fn smallest_answer(spec: &SessionSpec) -> FakeSession {
     match &spec.json_schema {
         Some(schema) => FakeSession::structured(fill(schema)),
         None => FakeSession::completed("done"),

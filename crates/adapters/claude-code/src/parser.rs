@@ -34,6 +34,9 @@ pub struct ClaudeStreamParser {
     workflows: WorkflowTracker,
     background: BackgroundTracker,
     open_tools: HashMap<String, OpenTool>,
+    /// Calls the model is still writing, by id, with the subagent writing them. Each becomes
+    /// an open tool when its whole call arrives, or is dropped when its message ends first.
+    pending_tools: HashMap<String, Option<String>>,
     streaming_message_id: Option<String>,
     last_text: Option<String>,
     results_seen: usize,
@@ -45,6 +48,9 @@ pub struct ClaudeStreamParser {
     message_started: bool,
     /// Whether this turn's failure was already reported, so the result doesn't repeat it.
     error_reported: bool,
+    /// The kind of the failure this turn already reported, such as a server error, which the
+    /// turn's result takes when its own words say nothing more.
+    turn_error: Option<ErrorCategory>,
     /// The category of the last result's error, for telling a crash from a clean failure.
     result_error: Option<ErrorCategory>,
     /// Retry categories already reported as errors. Claude Code sends one event per attempt.
@@ -291,13 +297,20 @@ impl ClaudeStreamParser {
 
     fn on_stream_event(&mut self, line: &Value) -> Option<Vec<AgentEvent>> {
         let event = line.get("event")?;
-        let main = string_at(line, "parent_tool_use_id").is_none();
+        let parent = string_at(line, "parent_tool_use_id");
+        let main = parent.is_none();
         match str_at(event, "type")? {
             "message_start" => {
                 self.turn_open = true;
                 let message = event.get("message")?;
                 self.streaming_message_id = string_at(message, "id");
-                Some(self.observe_usage(str_at(message, "id"), message.get("usage"), main))
+                let mut events = self.drop_pending(parent.as_deref());
+                events.extend(self.observe_usage(
+                    str_at(message, "id"),
+                    message.get("usage"),
+                    main,
+                ));
+                Some(events)
             }
             "message_delta" => {
                 let id = self.streaming_message_id.clone();
@@ -306,11 +319,66 @@ impl ClaudeStreamParser {
             "content_block_delta" => Self::on_content_delta(line, event.get("delta")?),
             "message_stop" => {
                 self.streaming_message_id = None;
-                Some(Vec::new())
+                Some(self.drop_pending(parent.as_deref()))
             }
-            "content_block_start" | "content_block_stop" | "ping" => Some(Vec::new()),
+            "content_block_start" => Some(
+                event
+                    .get("content_block")
+                    .and_then(|block| self.pending_tool(block, parent))
+                    .into_iter()
+                    .collect(),
+            ),
+            "content_block_stop" | "ping" => Some(Vec::new()),
             _ => None,
         }
+    }
+
+    /// The model began writing a call, which gets its row now. Claude Code sends the whole
+    /// call later, as it runs it.
+    fn pending_tool(&mut self, block: &Value, parent: Option<String>) -> Option<AgentEvent> {
+        if !matches!(
+            str_at(block, "type")?,
+            "tool_use" | "server_tool_use" | "mcp_tool_use"
+        ) {
+            return None;
+        }
+        let id = string_at(block, "id")?;
+        let name = string_at(block, "name")?;
+        if self.open_tools.contains_key(&id) {
+            return None;
+        }
+        self.pending_tools.insert(id.clone(), parent.clone());
+        Some(AgentEvent::ToolPending { id, name, parent })
+    }
+
+    /// The calls of `parent`'s message that never arrived whole: the message ended, or another
+    /// replaced it, as a retried request does. `None` is the main agent.
+    fn drop_pending(&mut self, parent: Option<&str>) -> Vec<AgentEvent> {
+        let mut gone: Vec<String> = self
+            .pending_tools
+            .iter()
+            .filter(|(_, writer)| writer.as_deref() == parent)
+            .map(|(id, _)| id.clone())
+            .collect();
+        gone.sort();
+        gone.into_iter()
+            .map(|id| {
+                self.pending_tools.remove(&id);
+                AgentEvent::ToolDropped {
+                    id,
+                    parent: parent.map(str::to_owned),
+                }
+            })
+            .collect()
+    }
+
+    /// The turn ended, so no call still being written will arrive.
+    fn drop_all_pending(&mut self) -> Vec<AgentEvent> {
+        let mut gone: Vec<(String, Option<String>)> = self.pending_tools.drain().collect();
+        gone.sort();
+        gone.into_iter()
+            .map(|(id, parent)| AgentEvent::ToolDropped { id, parent })
+            .collect()
     }
 
     fn on_content_delta(line: &Value, delta: &Value) -> Option<Vec<AgentEvent>> {
@@ -432,7 +500,8 @@ impl ClaudeStreamParser {
         self.message_started = false;
         self.results_seen += 1;
         self.turn_open = false;
-        let mut events: Vec<AgentEvent> = self.usage.result_totals(line).into_iter().collect();
+        let mut events = self.drop_all_pending();
+        events.extend(self.usage.result_totals(line));
         events.extend(self.context.observe_result(line));
         let subtype = str_at(line, "subtype").unwrap_or("success");
         let mut is_error = bool_at(line, "is_error") || subtype != "success";
@@ -447,7 +516,10 @@ impl ClaudeStreamParser {
         }
         if is_error {
             let message = result_error_message(line, subtype, text.as_deref());
-            let category = errors::from_result(line, &message);
+            let category = match errors::from_result(line, &message) {
+                ErrorCategory::Unknown => self.turn_error.unwrap_or(ErrorCategory::Unknown),
+                category => category,
+            };
             self.result_error = Some(category);
             if !self.error_reported {
                 events.push(self.error(category, message));
@@ -473,6 +545,7 @@ impl ClaudeStreamParser {
         });
         // The next turn reports its own failure.
         self.error_reported = false;
+        self.turn_error = None;
         events
     }
 
@@ -492,6 +565,7 @@ impl ClaudeStreamParser {
         let id = string_at(block, "id").unwrap_or_default();
         let name = string_at(block, "name").unwrap_or_default();
         let input = block.get("input").cloned().unwrap_or(Value::Null);
+        self.pending_tools.remove(&id);
         let spawned = self
             .subagents
             .tool_started(&id, &name, &input, parent.as_deref());
@@ -600,6 +674,7 @@ impl ClaudeStreamParser {
 
     fn error(&mut self, category: ErrorCategory, message: String) -> AgentEvent {
         self.error_reported = true;
+        self.turn_error = Some(category);
         AgentEvent::Error {
             category,
             message,
@@ -668,9 +743,11 @@ impl StreamParser for ClaudeStreamParser {
         if std::mem::replace(&mut self.finished, true) {
             return Vec::new();
         }
-        let mut events = self
-            .workflows
-            .close("its session ended before the workflow did");
+        let mut events = self.drop_all_pending();
+        events.extend(
+            self.workflows
+                .close("its session ended before the workflow did"),
+        );
         if self.results_seen > 0 && !self.turn_open {
             events.extend(self.crash_after_error_result(exit_code));
             return events;
@@ -1858,6 +1935,35 @@ mod tests {
             json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "m2"}}}),
         );
         assert_eq!(types(&parser.finish(Some(130))), ["error", "result"]);
+    }
+
+    /// A turn that failed on an error Claude Code named, such as a proxy that refused the
+    /// tunnel, ends on that error even when its result says nothing more: the exit after it
+    /// is no crash.
+    #[test]
+    fn a_non_zero_exit_after_a_named_api_error_is_that_error() {
+        let words = "API Error: Couldn't connect through your proxy (ERR_PROXY_TUNNEL)";
+        let mut parser = ClaudeStreamParser::new();
+        let said = parse(
+            &mut parser,
+            json!({"type": "assistant", "error": "server_error", "message": {"id": "m1",
+                   "content": [{"type": "text", "text": words}]}}),
+        );
+        assert!(
+            said.iter().any(|event| matches!(
+                event,
+                AgentEvent::Error {
+                    category: ErrorCategory::Server,
+                    ..
+                }
+            )),
+            "{said:?}"
+        );
+        parse(
+            &mut parser,
+            json!({"type": "result", "subtype": "success", "is_error": true, "result": words}),
+        );
+        assert!(parser.finish(Some(1)).is_empty());
     }
 
     #[test]

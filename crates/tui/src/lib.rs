@@ -36,6 +36,8 @@ pub mod state;
 pub mod views;
 
 mod options;
+#[cfg(test)]
+mod picture_dump;
 
 pub use a11y::run_screen_reader;
 pub use app::{Flow, Host, Ui, UiAction, run};

@@ -8,6 +8,9 @@ use ratatui::text::Span;
 use crate::theme::Role;
 use crate::widgets::Kit;
 
+/// The blank cells between two tabs or two choices on a row.
+pub const TAB_GAP: &str = "  ";
+
 /// Which row of a tab the keys are on, top to bottom.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Level {
@@ -43,7 +46,7 @@ pub fn row(kit: &Kit<'_>, items: &[&str], at: usize, focused: bool) -> Vec<Span<
     let mut spans = Vec::new();
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::raw(" "));
+            spans.push(Span::raw(TAB_GAP));
         }
         spans.push(if index == at {
             chosen_sub_tab(kit, item, focused)
@@ -67,9 +70,16 @@ pub fn chosen_sub_tab(kit: &Kit<'_>, name: &str, focused: bool) -> Span<'static>
 }
 
 fn filled(kit: &Kit<'_>, name: &str, focused: bool, fill: Role) -> Span<'static> {
+    let bold = ratatui::style::Modifier::BOLD;
     match (kit.has_color(), focused) {
-        (true, true) => Span::styled(format!(" {name} "), kit.cell(Role::BadgeText, fill)),
-        (true, false) => Span::styled(format!(" {name} "), kit.cell(Role::Bright, Role::UserBand)),
+        (true, true) => Span::styled(
+            format!(" {name} "),
+            kit.cell(Role::BadgeText, fill).add_modifier(bold),
+        ),
+        (true, false) => Span::styled(
+            format!(" {name} "),
+            kit.fill(Role::UserBand).add_modifier(bold),
+        ),
         (false, true) => kit.strong(format!("[{name}]")),
         (false, false) => kit.strong(format!(" {name} ")),
     }
@@ -96,7 +106,7 @@ mod tests {
         let kit = Kit::new(&theme);
         let focused = row(&kit, &["By CLI", "By model", "By role"], 1, true);
         let text: String = focused.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(text, " By CLI   By model   By role ");
+        assert_eq!(text, " By CLI    By model    By role ");
         assert_eq!(focused[2].style.bg, theme.color(Role::AgentOrange));
         let resting = row(&kit, &["By CLI", "By model", "By role"], 1, false);
         assert_eq!(resting[2].style.bg, theme.color(Role::UserBand));
@@ -123,8 +133,8 @@ mod tests {
                 .map(|span| span.content.as_ref())
                 .collect()
         };
-        assert_eq!(text(true), "[All time]  Last 30 days ");
-        assert_eq!(text(false), " All time   Last 30 days ");
+        assert_eq!(text(true), "[All time]   Last 30 days ");
+        assert_eq!(text(false), " All time    Last 30 days ");
     }
 
     #[test]

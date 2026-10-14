@@ -154,8 +154,14 @@ pub enum StepError {
 fn ended_early(end: &SessionEnd) -> String {
     let why = match &end.reason {
         EndReason::Completed => return "the session ended without an answer".to_owned(),
-        EndReason::VendorError { message, .. }
-        | EndReason::Auth { message }
+        // A CLI's error reads as the one plain cause every other line gives for it.
+        EndReason::VendorError { .. } => {
+            if let Some(line) = end.reason.plain_line("its CLI") {
+                return line;
+            }
+            "it gave an error".to_owned()
+        }
+        EndReason::Auth { message }
         | EndReason::Billing { message }
         | EndReason::StartFailed { message }
         | EndReason::Crashed { message } => first_line(message),
@@ -535,6 +541,14 @@ mod tests {
         assert_eq!(
             ended(EndReason::ContextFull),
             "the session ended early: context full"
+        );
+        // A CLI's error gives the one plain cause every other line gives.
+        assert_eq!(
+            ended(EndReason::VendorError {
+                category: crate::ErrorCategory::InvalidRequest,
+                message: "Invalid schema for response_format: 'summary' is not in required".into(),
+            }),
+            "its CLI refused the answer format Argonauts asked for"
         );
         let mismatch = StepError::SchemaMismatch {
             raw: None,

@@ -235,7 +235,8 @@ pub(crate) fn retry_on_other_provider(
     Ok(Some(to))
 }
 
-/// The first valid candidate from another model family than the owner's and the reviewers'.
+/// The first valid candidate from another model family than the owner's and the reviewers',
+/// leaving out any the run knows is out, such as a CLI that crashed twice in a row.
 pub(crate) fn other_provider(host: &Host, record: &CardRecord) -> Option<WorkerRef> {
     let owner = owner_of(host, record);
     let mut exclude = vec![roles::family(host, &owner)];
@@ -256,10 +257,15 @@ pub(crate) fn other_provider(host: &Host, record: &CardRecord) -> Option<WorkerR
         .candidates
         .into_iter()
         .map(|candidate| candidate.worker)
-        .find(|worker| *worker != owner && !exclude.contains(&roles::family(host, worker)))
+        .find(|worker| {
+            *worker != owner
+                && !exclude.contains(&roles::family(host, worker))
+                && !stand_in::known_out(host, worker)
+        })
 }
 
-/// Another worker for a budget handoff, of any family but the reviewers'.
+/// Another worker for a budget handoff, of any family but the reviewers', and none the run
+/// knows is out.
 pub(crate) fn any_other(host: &Host, record: &CardRecord) -> Option<WorkerRef> {
     let owner = owner_of(host, record);
     let reviewers: Vec<String> = record
@@ -282,7 +288,11 @@ pub(crate) fn any_other(host: &Host, record: &CardRecord) -> Option<WorkerRef> {
         .candidates
         .into_iter()
         .map(|candidate| candidate.worker)
-        .find(|worker| *worker != owner && !reviewers.contains(&roles::family(host, worker)))
+        .find(|worker| {
+            *worker != owner
+                && !reviewers.contains(&roles::family(host, worker))
+                && !stand_in::known_out(host, worker)
+        })
 }
 
 /// One line per attempt so far, oldest first, for `StopContext` and the escalation card.

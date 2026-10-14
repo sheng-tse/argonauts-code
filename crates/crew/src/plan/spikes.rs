@@ -329,6 +329,7 @@ async fn spike(
         slot: 0,
         label: None,
         reviews: false,
+        fresh: false,
     };
     // A vendor error has the spike go again, or to another agent; when nobody can run it, the
     // dispute stays open, as without a report.

@@ -1,6 +1,6 @@
-//! A workflow the conversation's own CLI runs in a chat turn, mirrored as a run's are:
-//! a panel row, and the workflow view with whatever phases and agents it reports. The
-//! views name the conversation by [`conversation_run`], so a row and a refresh find it.
+//! A workflow the conversation's own CLI runs in a chat turn, mirrored as a run's are: a panel
+//! row, and the workflow view with whatever phases and agents it reports. The views name the
+//! conversation by [`conversation_run`], so a row and a refresh find it.
 
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::events::session::VendorWorkflow;

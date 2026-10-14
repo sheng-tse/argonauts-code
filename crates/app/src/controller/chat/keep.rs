@@ -29,7 +29,18 @@ pub(super) fn owns(chat: &ChatState, id: &ChoiceId) -> bool {
 /// Asks where to keep what the request said to keep doing, when it said so of anything that
 /// was followed.
 pub(super) fn offer(ctx: &mut Ctx, chat: &mut ChatState, applied: &Applied) {
-    let crew = crew_lines::understood(ctx.settings(), applied);
+    offer_in_run(ctx, chat, applied, None);
+}
+
+/// [`offer`] for a run that adds seats of its own around your words: `run` is its whole
+/// request layer, so the crew shown is the one that runs.
+pub(super) fn offer_in_run(
+    ctx: &mut Ctx,
+    chat: &mut ChatState,
+    applied: &Applied,
+    run: Option<&[String]>,
+) {
+    let crew = crew_lines::understood(ctx.settings(), applied, run);
     if let Some(lines) = &crew {
         ctx.notice(NoteLevel::Info, crew_lines::text(lines));
     }

@@ -11,25 +11,25 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::api::day_format;
-use argonauts_core::crew_stats::{CrewRole, CrewStats, Fallback, ModelDay, TaskRecord, WorkRow};
-use argonauts_core::events::card::{CardEvent, CardKind, CardState, ReviewEvent};
+use argonauts_core::crew_stats::{
+    CrewRole, CrewStats, Fallback, ModelDay, ReviewTally, TaskRecord, WorkRow,
+};
+use argonauts_core::events::card::{CardEvent, CardKind, CardState, GateKind, ReviewEvent};
 use argonauts_core::events::checkpoint::CheckpointEvent;
 use argonauts_core::events::goal::GoalEvent;
 use argonauts_core::events::run::{Party, RunLifecycle};
 use argonauts_core::events::vendor::{HandoffEvent, VendorEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::limits::QuotaStatus;
-use argonauts_core::names::{VendorId, WorkerRef};
+use argonauts_core::names::{SessionKey, VendorId, WorkerRef};
 use argonauts_core::steps::judgment::ReviewVerdict;
-use argonauts_core::{CardId, RunId, Spend, create_private_dir_all};
+use argonauts_core::{AgentEvent, CardId, RunId, Spend, create_private_dir_all};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
 
 use crate::usage_ledger::{LedgerLine, local_day};
-use crate::views::sessions::{RunFacts, add_spend};
+use crate::views::sessions::{RunFacts, SessionFacts, add_spend};
 
-/// The days the Stats tab charts, whatever its period.
-const CHART_DAYS: i64 = 7;
 /// The triage rule that sends a request to a workflow because ultracode is on.
 const ULTRACODE_RULE: &str = "ultracode";
 
@@ -89,6 +89,18 @@ pub(crate) enum Work {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         judge: bool,
         sent_back: bool,
+        /// Why it sent the work back, in the words Stats shows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// The check commands it was given with their results.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        checks: Vec<String>,
+        /// One of those checks had failed. `None` when it was given none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checks_failed: Option<bool>,
+        /// It ran commands of its own.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ran_own: bool,
     },
     Run {
         /// The orchestrator that planned it, when one did.
@@ -261,6 +273,10 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     let mut stopped: BTreeMap<CardId, (String, Option<String>)> = BTreeMap::new();
     // Each CLI's plan window that has run out, by its last reading.
     let mut out_of: BTreeMap<VendorId, String> = BTreeMap::new();
+    // Each task's check commands as they last ran, and whether each passed.
+    let mut checks: BTreeMap<CardId, BTreeMap<String, bool>> = BTreeMap::new();
+    // The model each session's CLI said it runs, which the line is filed under.
+    let mut reported: BTreeMap<&SessionKey, &str> = BTreeMap::new();
     let line = |day: Date, what: Work| WorkLine {
         day,
         repo: repo.display().to_string(),
@@ -280,6 +296,21 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
             }) => {
                 merged.extend(card.cloned());
             }
+            RunEventKind::Gate(gate) if gate.kind == GateKind::Command && !gate.skipped => {
+                if let (Some(card), Some(command)) = (card, &gate.command) {
+                    checks
+                        .entry(card.clone())
+                        .or_default()
+                        .insert(command.join(" "), gate.passed);
+                }
+            }
+            RunEventKind::Agent(AgentEvent::Init {
+                model: Some(model), ..
+            }) => {
+                if let Some(session) = &event.session {
+                    reported.insert(session, model);
+                }
+            }
             RunEventKind::Review(ReviewEvent::Reviewed {
                 reviewer,
                 round,
@@ -290,11 +321,22 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                 if back && let Some(card) = card {
                     sent_back.entry(card.clone()).or_default().insert(*round);
                 }
+                let given = card.and_then(|card| checks.get(card));
+                let failed = given.map(|given| given.values().any(|passed| !passed));
+                let test_named = review.comments.iter().any(|comment| {
+                    comment.text.to_lowercase().contains("test") || comment.path.contains("test")
+                });
                 let what = Work::Review {
                     by: reviewer.clone(),
                     task: card.cloned(),
                     judge: false,
                     sent_back: back,
+                    reason: back.then(|| sent_back_for(review.verdict, failed, test_named)),
+                    checks: given
+                        .map(|given| given.keys().cloned().collect())
+                        .unwrap_or_default(),
+                    checks_failed: failed,
+                    ran_own: false,
                 };
                 lines.push(line(local_day(event.ts), what));
             }
@@ -302,11 +344,20 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
                 adjudicator,
                 ruling,
             }) => {
+                let back = ruling.verdict != ReviewVerdict::Approve;
+                let given = card.and_then(|card| checks.get(card));
+                let failed = given.map(|given| given.values().any(|passed| !passed));
                 let what = Work::Review {
                     by: adjudicator.clone(),
                     task: card.cloned(),
                     judge: true,
-                    sent_back: ruling.verdict != ReviewVerdict::Approve,
+                    sent_back: back,
+                    reason: back.then(|| sent_back_for(ruling.verdict, failed, false)),
+                    checks: given
+                        .map(|given| given.keys().cloned().collect())
+                        .unwrap_or_default(),
+                    checks_failed: failed,
+                    ran_own: false,
                 };
                 lines.push(line(local_day(event.ts), what));
             }
@@ -327,17 +378,42 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         }
     }
 
-    // A review names the reviewer as its step asked; its session knows the model it ran.
-    let ran: BTreeMap<&WorkerRef, &WorkerRef> = facts
+    // A line is filed under the model the session's CLI said it ran, which an alias in the
+    // settings, such as `haiku`, may not name the way the catalog does.
+    let ran_on = |session: &SessionFacts| -> WorkerRef {
+        match reported.get(&session.key) {
+            Some(model) => WorkerRef::new(session.worker.worker.clone(), Some((*model).to_owned())),
+            None => session.worker.clone(),
+        }
+    };
+    // A review names the reviewer as its step asked; its session knows the model it ran, and
+    // whether it ran commands of its own.
+    let ran: BTreeMap<&WorkerRef, WorkerRef> = facts
         .sessions
         .iter()
-        .map(|session| (&session.started.worker, &session.worker))
+        .map(|session| (&session.started.worker, ran_on(session)))
+        .collect();
+    let own_commands: BTreeSet<(&CardId, &WorkerRef)> = facts
+        .sessions
+        .iter()
+        .filter(|session| {
+            let role = CrewRole::of(session.started.role.as_str());
+            matches!(role, CrewRole::Reviewer | CrewRole::Judge)
+                && session.tools.iter().any(|tool| is_shell(&tool.name))
+        })
+        .filter_map(|session| Some((session.card.as_ref()?, &session.started.worker)))
         .collect();
     for review in &mut lines {
-        if let Work::Review { by, .. } = &mut review.what
-            && let Some(worker) = ran.get(&*by)
+        if let Work::Review {
+            by, task, ran_own, ..
+        } = &mut review.what
         {
-            *by = (*worker).clone();
+            *ran_own = task
+                .as_ref()
+                .is_some_and(|task| own_commands.contains(&(task, &*by)));
+            if let Some(worker) = ran.get(&*by) {
+                *by = worker.clone();
+            }
         }
     }
 
@@ -346,14 +422,15 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     for session in &facts.sessions {
         let role = session.started.role.as_str();
         let crew_role = CrewRole::of(role);
+        let worker = ran_on(session);
         if crew_role == CrewRole::Orchestrator && orchestrator.is_none() {
-            orchestrator = Some(session.worker.clone());
+            orchestrator = Some(worker.clone());
         }
         let kind = session.card.as_ref().and_then(|card| kinds.get(card));
         if crew_role == CrewRole::Worker
             && let Some(card) = &session.card
         {
-            builders.insert(card.clone(), session.worker.clone());
+            builders.insert(card.clone(), worker.clone());
         }
         let ended_at = session.ended.as_ref().map(|end| {
             session.started_at + Duration::milliseconds(end.duration_ms.min(i64::MAX as u64) as i64)
@@ -368,7 +445,7 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
         };
         let what = Work::Session {
             role: role.to_owned(),
-            by: session.worker.clone(),
+            by: worker,
             task: session.card.clone(),
             kind: kind.map(|kind| (*kind).to_owned()),
             spent: session.spent(),
@@ -431,36 +508,43 @@ fn lines_of(repo: &Path, run: &RunId, events: &[RunEvent], ended: Date) -> Vec<W
     lines
 }
 
+/// Why a review sent the work back, in the words Stats shows: a check it was given had
+/// failed, it found the work wrong, or it asked for a test; anything else is changes asked for.
+fn sent_back_for(verdict: ReviewVerdict, checks_failed: Option<bool>, test_named: bool) -> String {
+    let why = if checks_failed == Some(true) {
+        "a check failed"
+    } else if verdict == ReviewVerdict::Reject {
+        "didn't do the task"
+    } else if test_named {
+        "a test missing"
+    } else {
+        "changes asked for"
+    };
+    why.to_owned()
+}
+
+/// A tool that runs commands in a shell, whichever CLI calls it.
+fn is_shell(tool: &str) -> bool {
+    let tool = tool.to_ascii_lowercase();
+    ["bash", "shell", "exec", "command"]
+        .iter()
+        .any(|word| tool.contains(word))
+}
+
 /// Stats for the days from `first` on, or every day: the work ledger's lines with the usage
 /// ledger's chat turns, whose answers the main role gave. A run the work ledger missed still
-/// counts its tokens, as work no role is known for. The chart's seven days are counted
-/// whatever the period, so `usage` holds them too.
-pub(crate) fn stats(
-    ledger: &WorkLedger,
-    first: Option<Date>,
-    today: Date,
-    usage: &[LedgerLine],
-) -> CrewStats {
-    let chart_from = today.saturating_sub(Duration::days(CHART_DAYS - 1));
-    let earliest = first.map(|first| first.min(chart_from));
-    let lines = ledger.read_since(earliest);
+/// counts its tokens, as work no role is known for. Each day of the period keeps what each
+/// model did and used in each role, for the charts.
+pub(crate) fn stats(ledger: &WorkLedger, first: Option<Date>, usage: &[LedgerLine]) -> CrewStats {
+    let lines = ledger.read_since(first);
     let in_period = |day: Date| first.is_none_or(|first| day >= first);
     let recorded: BTreeSet<&RunId> = lines.iter().map(|line| &line.run).collect();
 
     let mut stats = CrewStats::default();
     let mut rows: BTreeMap<RowKey, WorkRow> = BTreeMap::new();
-    let mut days: BTreeMap<(Date, String, Option<String>), Spend> = BTreeMap::new();
-    let mut chart = |day: Date, by: &WorkerRef, spent: &Spend| {
-        if day >= chart_from && spent.total_tokens() > 0 {
-            let key = (day, by.worker.clone(), by.model.clone());
-            add_spend(days.entry(key).or_default(), spent);
-        }
-    };
+    let mut days: BTreeMap<DayKey, (Spend, u32)> = BTreeMap::new();
 
     for line in &lines {
-        if let Work::Session { by, spent, .. } = &line.what {
-            chart(line.day, by, spent);
-        }
         if !in_period(line.day) {
             continue;
         }
@@ -477,6 +561,10 @@ pub(crate) fn stats(
                 ..
             } => {
                 let crew_role = CrewRole::of(role);
+                add_spend(
+                    &mut day_of(&mut days, line.day, by, Some(crew_role)).0,
+                    spent,
+                );
                 let kind = kind.clone().filter(|_| crew_role == CrewRole::Worker);
                 let row = row_of(&mut rows, by, crew_role, kind);
                 add_spend(&mut row.spent, spent);
@@ -500,6 +588,7 @@ pub(crate) fn stats(
                 reviewed,
                 ..
             } => {
+                day_of(&mut days, line.day, by, Some(CrewRole::Worker)).1 += 1;
                 row_of(&mut rows, by, CrewRole::Worker, kind.clone()).done += 1;
                 stats.tasks.push(TaskRecord {
                     agent: by.worker.clone(),
@@ -514,6 +603,10 @@ pub(crate) fn stats(
                 by,
                 judge,
                 sent_back,
+                reason,
+                checks,
+                checks_failed,
+                ran_own,
                 ..
             } => {
                 let role = if *judge {
@@ -521,14 +614,30 @@ pub(crate) fn stats(
                 } else {
                     CrewRole::Reviewer
                 };
+                day_of(&mut days, line.day, by, Some(role)).1 += 1;
                 let row = row_of(&mut rows, by, role, None);
                 row.done += 1;
                 row.sent_back += u32::from(*sent_back);
+                let mut tally = ReviewTally {
+                    checks: checks.clone(),
+                    ran_own: u32::from(*ran_own),
+                    ..ReviewTally::default()
+                };
+                match checks_failed {
+                    Some(true) => tally.failed = 1,
+                    Some(false) => tally.passed = 1,
+                    None => {}
+                }
+                if let Some(why) = reason.as_ref().filter(|_| *sent_back) {
+                    tally.reasons.insert(why.clone(), 1);
+                }
+                row.review.add(&tally);
             }
             Work::Run { by, took, .. } => {
                 stats.workflows += 1;
                 stats.took_secs += took;
                 if let Some(by) = by {
+                    day_of(&mut days, line.day, by, Some(CrewRole::Orchestrator)).1 += 1;
                     row_of(&mut rows, by, CrewRole::Orchestrator, None).done += 1;
                 }
             }
@@ -537,19 +646,18 @@ pub(crate) fn stats(
 
     for line in usage {
         let unrecorded = line.run.as_ref().is_some_and(|run| !recorded.contains(run));
-        if line.run.is_some() && !unrecorded {
+        if line.run.is_some() && !unrecorded || !in_period(line.day) {
             continue;
         }
         let by = WorkerRef::new(line.agent.clone(), line.model.clone());
-        chart(line.day, &by, &line.spent());
-        if !in_period(line.day) {
-            continue;
-        }
         let role = if unrecorded {
             CrewRole::Worker
         } else {
             CrewRole::Main
         };
+        let day = day_of(&mut days, line.day, &by, (!unrecorded).then_some(role));
+        add_spend(&mut day.0, &line.spent());
+        day.1 += u32::from(!unrecorded);
         let row = row_of(&mut rows, &by, role, None);
         add_spend(&mut row.spent, &line.spent());
         row.done += u32::from(!unrecorded);
@@ -558,15 +666,54 @@ pub(crate) fn stats(
     stats.work = rows.into_values().collect();
     stats.days = days
         .into_iter()
-        .map(|((day, agent, model), spent)| ModelDay {
+        .filter(|(_, (spent, done))| spent.total_tokens() > 0 || *done > 0)
+        .map(|((day, agent, model, role), (spent, done))| ModelDay {
             day,
             agent,
             model,
+            role,
             tokens: spent.total_tokens(),
             cost_usd: spent.cost_usd,
+            done,
         })
         .collect();
     stats
+}
+
+/// Files each record that names no model under the model its CLI runs when none is named,
+/// so a turn recorded without one counts as that model's rather than as the CLI's.
+pub(crate) fn name_unnamed_models(stats: &mut CrewStats, defaults: &BTreeMap<String, String>) {
+    let named = |agent: &str, model: &mut Option<String>| {
+        if model.is_none() {
+            model.clone_from(&defaults.get(agent).cloned());
+        }
+    };
+    for row in &mut stats.work {
+        named(&row.agent, &mut row.model);
+    }
+    for task in &mut stats.tasks {
+        named(&task.agent, &mut task.model);
+    }
+    for day in &mut stats.days {
+        named(&day.agent, &mut day.model);
+    }
+    for fallback in &mut stats.fallbacks {
+        named(&fallback.agent, &mut fallback.model);
+        named(&fallback.from_agent, &mut fallback.from_model);
+    }
+}
+
+type DayKey = (Date, String, Option<String>, Option<CrewRole>);
+
+/// The tokens and the pieces of work of one model in one role on one day.
+fn day_of<'a>(
+    days: &'a mut BTreeMap<DayKey, (Spend, u32)>,
+    day: Date,
+    by: &WorkerRef,
+    role: Option<CrewRole>,
+) -> &'a mut (Spend, u32) {
+    let key = (day, by.worker.clone(), by.model.clone(), role);
+    days.entry(key).or_default()
 }
 
 type RowKey = (String, Option<String>, CrewRole, Option<String>);
@@ -587,6 +734,7 @@ fn row_of<'a>(
         done: 0,
         sent_back: 0,
         took_secs: 0,
+        review: ReviewTally::default(),
     })
 }
 

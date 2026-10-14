@@ -15,6 +15,18 @@ pub fn sentence_case(text: &str) -> String {
     }
 }
 
+/// A workflow, mode or role as the screen names it, its first letter a capital: `Council`,
+/// `Maker-checker`, `Best-of-n`, `Supervised`, `Judge`. What you type and what files hold keep
+/// the spelling they have; only what's drawn changes.
+pub fn shown_name(name: &str) -> String {
+    let name = name.trim();
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// Starts `text` in lowercase, for a reason that follows "since" or "because" mid-sentence,
 /// unless its first word is code or a name in capitals, such as `README` or `API`.
 pub fn clause_case(text: &str) -> String {

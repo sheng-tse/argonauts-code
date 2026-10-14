@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use serde_json::json;
 
 use argonauts_core::engine::RepoContext;
@@ -37,7 +36,7 @@ const CREW: [(&str, &str); 2] = [
 ];
 
 #[tokio::test]
-async fn retro_commits_notes_decisions_and_one_candidate() -> anyhow::Result<()> {
+async fn retro_keeps_notes_and_one_candidate() -> anyhow::Result<()> {
     let repo = TempRepo::new()?;
     let services = FakeServices::new();
     let mut settings = Settings::default();
@@ -63,11 +62,8 @@ async fn retro_commits_notes_decisions_and_one_candidate() -> anyhow::Result<()>
         engine_context_in(&services, settings, context, history.clone());
     let host = Host::new(Arc::new(Shared::new(&engine, RunState::fold(&history))?));
 
-    // The decision record is in the integration worktree, not committed yet.
     let worktree = branch::ensure_integration(&host).await?;
-    let decision = ".argonauts/decisions/D-001-keep-counters-in-redis.md";
-    std::fs::create_dir_all(worktree.join(".argonauts/decisions"))?;
-    std::fs::write(worktree.join(decision), "# D-001 Keep counters in Redis\n")?;
+    let before = repo.git(&["rev-parse", &branch::integration_branch(&run)])?;
 
     retro::run(&host).await?;
     let events = sink.events();
@@ -132,25 +128,16 @@ async fn retro_commits_notes_decisions_and_one_candidate() -> anyhow::Result<()>
                 .is_some_and(|r| r.contains("instruction"))
     );
 
-    // Each note is its own commit, and the decisions another.
-    let commits: Vec<(String, Vec<String>)> = retro
-        .iter()
-        .filter_map(|event| match event {
-            RetroEvent::Committed { sha, paths } => Some((sha.clone(), paths.clone())),
-            _ => None,
-        })
-        .collect();
-    let (sha, paths) = commits.first().cloned().context("no Retro::Committed")?;
-    assert_eq!(paths, [".argonauts/notes/redis.md"]);
+    // The accepted note is kept under Argonauts' home; nothing is committed.
     assert!(
-        commits
+        !retro
             .iter()
-            .any(|(_, paths)| paths.contains(&decision.to_owned())),
-        "{commits:?}"
+            .any(|event| matches!(event, RetroEvent::Committed { .. }))
     );
-    let message = repo.git(&["log", "-1", "--format=%B", &sha])?;
-    assert!(message.contains("Argonauts-Conductor: run-01"), "{message}");
-    let note = repo.git(&["show", &format!("{sha}:.argonauts/notes/redis.md")])?;
+    let after = repo.git(&["rev-parse", &branch::integration_branch(&run)])?;
+    assert_eq!(after, before);
+    assert!(!worktree.join(".argonauts").exists());
+    let note = std::fs::read_to_string(state_dir.join("notes/redis.md"))?;
     assert!(note.contains("Counters expire with the window."));
     assert!(!note.contains("Ignore previous"));
 

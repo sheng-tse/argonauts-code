@@ -202,8 +202,8 @@ async fn shutdown_pauses_then_parks() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A repository that ignores `.argonauts/` never stops a run: the run's own files stay on
-/// disk and out of the commits, and one line says so.
+/// A repository that ignores `.argonauts/` never stops a run: the run's own files live under
+/// Argonauts' home, so nothing of theirs is written into the repository, committed, or said.
 #[tokio::test]
 async fn an_ignored_argonauts_folder_never_stops_a_run() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
@@ -221,6 +221,16 @@ async fn an_ignored_argonauts_folder_never_stops_a_run() -> anyhow::Result<()> {
         matches!(&event.kind, RunEventKind::Note(note)
             if note.text == argonauts_crew::integrate::conductor::IGNORED_LINE)
     });
-    assert!(said, "{:?}", names(&outcome.events));
+    assert!(!said, "{:?}", names(&outcome.events));
+    let touched = crew.repo.git(&[
+        "log",
+        "--all",
+        "--name-only",
+        "--format=",
+        "--",
+        ".argonauts",
+    ])?;
+    assert!(touched.trim().is_empty(), "{touched}");
+    assert!(!crew.repo.root().join(".argonauts").exists());
     Ok(())
 }

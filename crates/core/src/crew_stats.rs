@@ -3,6 +3,8 @@
 //! sums the screen regroups itself, so the by-model and by-role views and a model opened one
 //! level deeper need no request of their own.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use time::Date;
 
@@ -89,7 +91,7 @@ pub struct CrewStats {
     /// Each task the period's runs ended, with who built it and how review took it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskRecord>,
-    /// Tokens each model used on each of the last seven local days, whatever the period.
+    /// What each model did and used on each local day of the period, by role.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub days: Vec<ModelDay>,
     /// Each time a model took over another's task.
@@ -137,6 +139,49 @@ pub struct WorkRow {
     /// The time its sessions took, together.
     #[serde(default)]
     pub took_secs: u64,
+    /// For a reviewer or judge: what its reviews were given and sent work back for.
+    #[serde(default, skip_serializing_if = "ReviewTally::is_empty")]
+    pub review: ReviewTally,
+}
+
+/// What a reviewer's or a judge's reviews were given, and why they sent work back.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ReviewTally {
+    /// Reviews that sent work back, by why: `a test missing`, `a check failed`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reasons: BTreeMap<String, u32>,
+    /// The check commands the reviews were given with their results, such as `pytest`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<String>,
+    /// Reviews whose checks all passed, and reviews given a check that failed.
+    #[serde(default)]
+    pub passed: u32,
+    #[serde(default)]
+    pub failed: u32,
+    /// Reviews that ran commands of their own beside the checks.
+    #[serde(default)]
+    pub ran_own: u32,
+}
+
+impl ReviewTally {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Adds `more` in: counts summed, checks named once.
+    pub fn add(&mut self, more: &ReviewTally) {
+        for (why, n) in &more.reasons {
+            *self.reasons.entry(why.clone()).or_default() += n;
+        }
+        for check in &more.checks {
+            if !self.checks.contains(check) {
+                self.checks.push(check.clone());
+            }
+        }
+        self.passed += more.passed;
+        self.failed += more.failed;
+        self.ran_own += more.ran_own;
+    }
 }
 
 /// One task, by the model whose work it ended with.
@@ -157,7 +202,7 @@ pub struct TaskRecord {
     pub reviewed: bool,
 }
 
-/// One model's tokens on one local day.
+/// One model's work in one role on one local day.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelDay {
     #[serde(with = "day_format")]
@@ -165,9 +210,15 @@ pub struct ModelDay {
     pub agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// `None` for tokens no role is known for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<CrewRole>,
     pub tokens: u64,
     #[serde(default)]
     pub cost_usd: f64,
+    /// Pieces of work it finished that day, as [`CrewRole::unit`] names them.
+    #[serde(default)]
+    pub done: u32,
 }
 
 /// A model that took over a task, from whom, and why, such as "usage limit, resets 3:45pm".

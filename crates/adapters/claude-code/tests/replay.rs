@@ -279,6 +279,7 @@ fn write_creates_a_file_and_returns_a_structured_report() {
             "context_fill",
             "text_delta",
             "message",
+            "tool_pending",
             "tool_started",
             "tool_finished",
             "file_changed",
@@ -290,6 +291,7 @@ fn write_creates_a_file_and_returns_a_structured_report() {
             "message",
             "usage",
             "context_fill",
+            "tool_pending",
             "tool_started",
             "tool_finished",
             "usage",
@@ -916,13 +918,21 @@ fn truncated_stream_still_ends_with_a_result() {
         parser.parse_stdout_line(line);
     }
     let end = parser.finish(Some(143));
-    assert!(matches!(
-        end.as_slice(),
-        [
-            AgentEvent::Error { .. },
-            AgentEvent::Result { is_error: true, .. }
-        ]
-    ));
+    // The call the model was writing when the stream stopped goes first.
+    assert!(
+        matches!(
+            end.as_slice(),
+            [
+                AgentEvent::ToolDropped { .. },
+                AgentEvent::Error { .. },
+                AgentEvent::Result { is_error: true, .. }
+            ] | [
+                AgentEvent::Error { .. },
+                AgentEvent::Result { is_error: true, .. }
+            ]
+        ),
+        "{end:#?}"
+    );
 }
 
 fn workflows(events: &[AgentEvent]) -> Vec<&VendorWorkflow> {

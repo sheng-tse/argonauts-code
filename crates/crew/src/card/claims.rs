@@ -3,7 +3,9 @@
 //! types tells them apart. What does is who made the file: an agent's edit tool wrote it, or
 //! the agent's report lists it. Those are its claims, and a commit takes only the new files
 //! they cover. Changes to files git already tracks are always the task's work, and so are
-//! the new files `commit.always_keep` names.
+//! the new files `commit.always_keep` names. A CLI's own workflow is the exception: its
+//! agents run in the background and no edit of theirs reaches the stream, so every new file
+//! but build and cache output is claimed for it.
 
 use std::path::Path;
 
@@ -20,9 +22,10 @@ pub(crate) fn of_card(host: &Host, card: &CardId, worktree: &Path) -> Option<Cla
     if host.settings().commit.unclaimed == Unclaimed::Keep {
         return None;
     }
-    let (written, reported) = host.read(|state| {
+    let (written, reported, ran_a_workflow) = host.read(|state| {
         let mut written = Vec::new();
         let mut reported = Vec::new();
+        let mut ran_a_workflow = false;
         for session in state.sessions.by_key.values() {
             if session.card.as_ref() != Some(card) {
                 continue;
@@ -31,10 +34,14 @@ pub(crate) fn of_card(host: &Host, card: &CardId, worktree: &Path) -> Option<Cla
             if let Some(report) = session.end.as_ref().and_then(report_of) {
                 reported.extend(report.files_changed);
             }
+            ran_a_workflow |= session.workflow.is_some();
         }
-        (written, reported)
+        (written, reported, ran_a_workflow)
     });
     let mut claims = Claims::default().always_keeping(&host.settings().commit.always_keep);
+    if ran_a_workflow || host.shared().claude_codes_own(card).is_some() {
+        claims = claims.every_new_file();
+    }
     for path in written.iter().chain(&reported) {
         claims.add(worktree, path);
     }

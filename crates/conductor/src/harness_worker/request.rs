@@ -33,6 +33,7 @@ use super::capabilities::{
     ANTIGRAVITY, CLAUDE_CODE, steer_support, takes_a_standing_note, takes_session_tools,
 };
 use super::launch::prompt_text;
+use super::report_tool;
 use crate::gates::env::looks_secret;
 use crate::meter;
 use crate::reaper::LAUNCH_MARKER;
@@ -73,13 +74,26 @@ pub fn session_request(
 ) -> Result<SessionRequest, WorkerError> {
     let agent = settings.agents.get(&spec.worker.worker);
     let id = adapter.id();
+    let by_tool = id == CLAUDE_CODE && report_tool::reports_by_tool(spec);
     let mcp_config = if id == CLAUDE_CODE {
         let io_error = |err: io::Error| WorkerError::Io(format!("the status tool's config: {err}"));
         let argonauts = std::env::current_exe().map_err(io_error)?;
+        let (schema, report) = (
+            report_tool::schema_file(spec),
+            report_tool::report_file(spec),
+        );
+        if by_tool {
+            report_tool::prepare(spec).map_err(io_error)?;
+        }
+        let report = by_tool.then_some(ReportFiles {
+            schema: &schema,
+            report: &report,
+        });
         Some(
             write_session_mcp_config(
                 &spec.session_dir,
                 spec.status_file.as_deref(),
+                report,
                 spec.asking.as_ref(),
                 &argonauts,
             )
@@ -139,7 +153,11 @@ pub fn session_request(
         role: session_role(spec.access),
         auth: agent.map(|agent| agent.auth).unwrap_or_default(),
         // Codex refuses any other shape, and every CLI takes this one.
-        json_schema: spec.json_schema.as_ref().map(answer_format::strict),
+        json_schema: spec
+            .json_schema
+            .as_ref()
+            .filter(|_| !by_tool)
+            .map(answer_format::strict),
         resume_session: spec.resume.clone(),
         // Claude Code's cap ignores what earlier runs of a resumed session spent, so it gets only
         // what's left.
@@ -292,7 +310,7 @@ pub fn write_mcp_config(
     status_file: &Path,
     argonauts: &Path,
 ) -> io::Result<PathBuf> {
-    write_session_mcp_config(session_dir, Some(status_file), None, argonauts)
+    write_session_mcp_config(session_dir, Some(status_file), None, None, argonauts)
 }
 
 /// Like [`write_mcp_config`], with no servers at all when there is no status file, so a strict
@@ -300,11 +318,12 @@ pub fn write_mcp_config(
 pub fn write_session_mcp_config(
     session_dir: &Path,
     status_file: Option<&Path>,
+    report: Option<ReportFiles<'_>>,
     asking: Option<&Asking>,
     argonauts: &Path,
 ) -> io::Result<PathBuf> {
     let mut servers = Map::new();
-    if let Some(server) = session_server(argonauts, status_file, None, asking) {
+    if let Some(server) = session_server(argonauts, status_file, report, asking) {
         let mut entry = json!({
             "type": "stdio",
             "command": server.command,
@@ -812,6 +831,30 @@ mod tests {
         assert!(Path::new(server["command"].as_str().unwrap()).is_absolute());
     }
 
+    /// Its own workflow runs on after the turn, so the report comes through the tool when the
+    /// workflow is done, and the CLI isn't made to answer in the format at every turn's end.
+    #[test]
+    fn a_session_in_its_own_workflow_reports_through_the_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = TestAdapter::new("true")
+            .with_id(CLAUDE_CODE)
+            .with_input_lines();
+        let mut spec = spec_in(dir.path(), dir.path(), "hi");
+        spec.session_dir = dir.path().join("session");
+        spec.json_schema = Some(json!({"type": "object", "properties": {}}));
+        assert!(request_for(&adapter, &spec).json_schema.is_some());
+        spec.cli_workflow.ultracode = true;
+        let request = request_for(&adapter, &spec);
+        assert!(request.json_schema.is_none());
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(request.mcp_config.unwrap()).unwrap())
+                .unwrap();
+        let args = written["mcpServers"][STATUS_SERVER]["args"].to_string();
+        assert!(args.contains("--report-schema"), "{args}");
+        assert!(args.contains("--report-file"), "{args}");
+        assert!(spec.session_dir.join(session_files::SCHEMA).exists());
+    }
+
     #[test]
     fn an_acp_session_on_a_card_gets_the_cards_home_folder() {
         let dir = tempfile::tempdir().unwrap();
@@ -1051,3 +1094,7 @@ mod tests {
 #[cfg(test)]
 #[path = "request_pictures_tests.rs"]
 mod pictures_tests;
+
+#[cfg(test)]
+#[path = "request_own_workflow_tests.rs"]
+mod own_workflow_tests;

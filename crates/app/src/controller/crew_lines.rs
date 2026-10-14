@@ -32,7 +32,16 @@ pub(crate) struct CrewLine {
 /// The crew a request runs with when your followed words changed who fills a role; `None`
 /// when they didn't, so nothing is shown. Settings a request gets any other way, such as
 /// ultracode's, aren't your words, so they show nothing.
-pub(crate) fn understood(settings: &Settings, applied: &Applied) -> Option<Vec<CrewLine>> {
+///
+/// `run` is the run's whole request layer as `key=value`, in the order it applies, when the run
+/// adds seats of its own around your words, as the orchestrator's workflow a crew from solo
+/// takes does. The lines then show the seats the run really has: a seat your words set counts
+/// as asked only while the run keeps it, and one the run gave your main session says so.
+pub(crate) fn understood(
+    settings: &Settings,
+    applied: &Applied,
+    run: Option<&[String]>,
+) -> Option<Vec<CrewLine>> {
     let followed = |kind: InstructionKind| {
         applied
             .instructions
@@ -42,12 +51,25 @@ pub(crate) fn understood(settings: &Settings, applied: &Applied) -> Option<Vec<C
     if !SEAT_KINDS.into_iter().any(followed) {
         return None;
     }
-    let asked = with_request(settings, &request_settings(applied))?;
+    let words = with_request(settings, &request_settings(applied))?;
+    let asked = match run {
+        Some(pairs) => with_request(settings, pairs)?,
+        None => words.clone(),
+    };
     let seats = |settings: &Settings, role: CrewRole| candidates(settings, role.fine_role());
-    let changed = |role: CrewRole| seats(settings, role) != seats(&asked, role);
-    if !SHOWN.into_iter().any(changed) {
+    let by_words = |role: CrewRole| {
+        seats(settings, role) != seats(&asked, role) && seats(&words, role) == seats(&asked, role)
+    };
+    if !SHOWN.into_iter().any(by_words) {
         return None;
     }
+    // The orchestrator is your main session whenever it runs there; any other role only when
+    // the run, not your settings, put it there.
+    let main = [settings.main_agent.clone()];
+    let given_to_main = |role: CrewRole| {
+        seats(&asked, role) == main
+            && (role == CrewRole::Orchestrator || seats(settings, role) != main)
+    };
     // "All the other agents" plainly means the workers; any other role it reaches without a
     // word of its own is shown with those words, since that is the part you might not expect.
     let others = applied
@@ -58,7 +80,7 @@ pub(crate) fn understood(settings: &Settings, applied: &Applied) -> Option<Vec<C
         .into_iter()
         .map(|role| {
             let follows = follows(&asked, role);
-            let set_by_words = changed(role) && follows.is_none();
+            let set_by_words = by_words(role) && follows.is_none();
             let from = if set_by_words {
                 match others.filter(|_| reached_by_others(role, &followed)) {
                     Some(others) => format!("as you asked: \"{}\"", phrase(&others.says)),
@@ -66,9 +88,7 @@ pub(crate) fn understood(settings: &Settings, applied: &Applied) -> Option<Vec<C
                 }
             } else if let Some(followed) = follows {
                 format!("follows the {}", followed.as_str())
-            } else if role == CrewRole::Orchestrator
-                && seats(&asked, role) == [asked.main_agent.clone()]
-            {
+            } else if given_to_main(role) {
                 "your main session".to_owned()
             } else {
                 "your settings".to_owned()

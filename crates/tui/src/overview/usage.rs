@@ -4,7 +4,9 @@
 //! 10:40pm`, `Fri 12:15am` for early tomorrow, `Tue Oct 13, 10:00pm` later on.
 
 use argonauts_core::api::{PlanUsage, UsageSummary};
-use argonauts_core::plan_usage::{Behavior, ExtraUsage, LiveUsage, LiveWindow};
+use argonauts_core::plan_usage::{
+    Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow, UsageShare,
+};
 use ratatui::text::Span;
 use time::{Date, Duration, OffsetDateTime, Time};
 
@@ -13,7 +15,7 @@ use crate::format;
 use crate::text::{sanitize, str_width, truncate_spans, wrap_spans};
 use crate::theme::Role;
 use crate::widgets::bars;
-use crate::widgets::{Drawn, Frame, Kit, Level, ljust, rjust, side_by_side, spread};
+use crate::widgets::{Drawn, Frame, Kit, Level, ljust, side_by_side, spread};
 
 #[cfg(test)]
 #[path = "usage_tests.rs"]
@@ -52,6 +54,18 @@ pub(super) struct UsageTab<'a> {
     pub talked: Option<(std::time::Duration, std::time::Duration)>,
     /// Lines the conversation's edits added and removed.
     pub changed: (usize, usize),
+    /// The stop with the keys, when the cards have them: see [`UsageTab::stop`].
+    pub focus: Option<usize>,
+}
+
+/// What ↑↓ stop on, top to bottom, on the tab that lists every CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Stop {
+    Conversation,
+    /// A CLI's card, by its place in the plans.
+    Card(usize),
+    /// What made up most of the usage, where a CLI says.
+    MostUsage,
 }
 
 impl UsageTab<'_> {
@@ -91,13 +105,42 @@ impl UsageTab<'_> {
         format!("read live {clock} · r reads again")
     }
 
+    /// How many stops ↑↓ have on the tab that lists every CLI.
+    pub fn stops(&self) -> usize {
+        1 + self.usage.plans.len() + usize::from(self.behaviors().is_some())
+    }
+
+    /// The stop at `at`, the last one past the end.
+    pub fn stop(&self, at: usize) -> Stop {
+        let plans = self.usage.plans.len();
+        match at.min(self.stops() - 1) {
+            0 => Stop::Conversation,
+            at if at <= plans => Stop::Card(at - 1),
+            _ => Stop::MostUsage,
+        }
+    }
+
+    /// The block that holds the stop at `at`, as [`UsageTab::blocks`] stacks them at `width`.
+    pub fn block_of(&self, at: usize, width: usize) -> usize {
+        if self.picked().is_some() {
+            return at;
+        }
+        let plans = &self.usage.plans;
+        let rows = plans.len().div_ceil(self.across(width));
+        let empty = usize::from(plans.is_empty());
+        match self.stop(at) {
+            Stop::Conversation => 0,
+            Stop::Card(plan) => 1 + plan / self.across(width),
+            Stop::MostUsage => 1 + empty + rows,
+        }
+    }
+
     /// The tab's blocks, top to bottom.
     pub fn blocks(&self, kit: &Kit<'_>, width: usize) -> Vec<Drawn> {
         if let Some(plan) = self.picked() {
             return self.page(kit, plan, width);
         }
-        let mut blocks = Vec::new();
-        blocks.extend(self.conversation(kit, width));
+        let mut blocks = vec![self.conversation(kit, width)];
         if self.usage.plans.is_empty() {
             blocks.push(line(vec![
                 kit.dim(" No CLI in the crew reports a plan yet"),
@@ -110,8 +153,10 @@ impl UsageTab<'_> {
 
     /// `This conversation · $0.42 · 52m 30s, 4m 12s of it working · +182 −21 lines · 612k
     /// tokens`.
-    fn conversation(&self, kit: &Kit<'_>, width: usize) -> Option<Drawn> {
-        let spent = self.usage.conversation.as_ref()?;
+    /// It shows from the start, before the first answer has spent anything.
+    fn conversation(&self, kit: &Kit<'_>, width: usize) -> Drawn {
+        let nothing = argonauts_core::Spend::default();
+        let spent = self.usage.conversation.as_ref().unwrap_or(&nothing);
         let mut parts = vec![format::spend(spent)];
         if let Some((long, worked)) = self.talked {
             parts.push(format!(
@@ -128,30 +173,55 @@ impl UsageTab<'_> {
         if tokens > 0 {
             parts.push(format!("{} tokens", format::tokens(tokens)));
         }
+        let mut title = kit.strong("This conversation");
+        if self.stop_focused(Stop::Conversation) {
+            title.style = super::view::filled_title(kit, title.style);
+        }
         let spans = vec![
             Span::raw(" "),
-            kit.strong("This conversation"),
+            title,
             kit.dim(format!(" · {}", parts.join(" · "))),
         ];
-        Some(line(truncate_spans(&spans, width)))
+        line(truncate_spans(&spans, width))
+    }
+
+    fn stop_focused(&self, stop: Stop) -> bool {
+        self.focus.is_some_and(|at| self.stop(at) == stop)
+    }
+
+    /// The CLI's word on what made up most of its usage, from the first that says.
+    fn behaviors(&self) -> Option<&argonauts_core::plan_usage::Behaviors> {
+        self.usage
+            .plans
+            .iter()
+            .filter_map(|plan| plan.live.as_ref()?.behaviors.as_ref())
+            .find(|behaviors| !behaviors.day.is_empty() || !behaviors.week.is_empty())
+    }
+
+    /// Cards side by side at `width`.
+    fn across(&self, width: usize) -> usize {
+        if width >= SIDE_BY_SIDE_FROM {
+            CARDS_ACROSS.min(self.usage.plans.len()).max(1)
+        } else {
+            1
+        }
     }
 
     /// `Most of your usage · last 24h · 95% long context · …`, from the CLI that says.
     fn most_usage(&self, kit: &Kit<'_>, width: usize) -> Option<Drawn> {
-        let behaviors = self
-            .usage
-            .plans
-            .iter()
-            .filter_map(|plan| plan.live.as_ref()?.behaviors.as_ref())
-            .find(|behaviors| !behaviors.day.is_empty() || !behaviors.week.is_empty())?;
+        let behaviors = self.behaviors()?;
         let (span, list) = if behaviors.day.is_empty() {
             ("last 7d", &behaviors.week)
         } else {
             ("last 24h", &behaviors.day)
         };
+        let mut title = kit.strong("Most of your usage");
+        if self.stop_focused(Stop::MostUsage) {
+            title.style = super::view::filled_title(kit, title.style);
+        }
         let mut spans = vec![
             Span::raw(" "),
-            kit.strong("Most of your usage"),
+            title,
             kit.dim(format!(" · {span} · ")),
             Span::raw(behavior_list(list)),
             kit.dim(" · enter for more"),
@@ -166,11 +236,7 @@ impl UsageTab<'_> {
     /// Cards in a row are drawn as tall as the tallest, as boxes in a grid are.
     fn cards(&self, kit: &Kit<'_>, width: usize) -> Vec<Drawn> {
         let plans = &self.usage.plans;
-        let across = if width >= SIDE_BY_SIDE_FROM {
-            CARDS_ACROSS.min(plans.len()).max(1)
-        } else {
-            1
-        };
+        let across = self.across(width);
         let room = width.saturating_sub(1);
         let card_width = (room.saturating_sub(CARD_GAP * (across - 1))) / across;
         let inner = Frame::view(card_width + 2).inner();
@@ -210,10 +276,12 @@ impl UsageTab<'_> {
     /// and under it when it resets.
     fn card_body(&self, kit: &Kit<'_>, plan: &PlanUsage, inner: usize, label: usize) -> Drawn {
         let mut body = Drawn::new();
-        let mut name = vec![
-            kit.span("● ", cli_role(&plan.agent)),
-            kit.strong(plan.name.clone()),
-        ];
+        let mut title = kit.strong(plan.name.clone());
+        let at = self.usage.plans.iter().position(|p| std::ptr::eq(p, plan));
+        if at.is_some_and(|at| self.stop_focused(Stop::Card(at))) {
+            title.style = super::view::filled_title(kit, title.style);
+        }
+        let mut name = vec![kit.span("● ", cli_role(&plan.agent)), title];
         name = truncate_spans(&name, inner);
         let notes = notes(plan);
         let right = if notes.is_empty() {
@@ -255,14 +323,8 @@ impl UsageTab<'_> {
             }
             None => {}
         }
-        // A card's reset lines start together, under the bars where they fit.
-        let indent = rows
-            .iter()
-            .filter(|(_, under)| !under.is_empty())
-            .map(|(_, under)| inner.saturating_sub(str_width(under)))
-            .min()
-            .unwrap_or(0)
-            .min(label + 1);
+        // Every card's reset lines start under its bars, in the same column on every card.
+        let indent = label + 1;
         for (row, under) in rows {
             body.push(Vec::new());
             body.push(row);
@@ -386,10 +448,12 @@ impl UsageTab<'_> {
             fill,
             None,
         ));
+        // The share starts one cell after the bar, and the blanks after it keep the row's width.
+        let share = percent(shown);
         row.push(Span::raw(" "));
-        row.push(Span::styled(
-            rjust(&percent(shown), PERCENT),
-            kit.bold(level.strong_role()),
+        row.push(Span::styled(share.clone(), kit.bold(level.strong_role())));
+        row.push(Span::raw(
+            " ".repeat(PERCENT.saturating_sub(str_width(&share))),
         ));
         row
     }
@@ -463,27 +527,92 @@ impl UsageTab<'_> {
             }
             blocks.push(section);
         }
-        if let Some(behaviors) = &live.behaviors
-            && (!behaviors.day.is_empty() || !behaviors.week.is_empty())
-        {
-            let mut section = Drawn::new();
-            section.push(vec![
-                Span::raw(" "),
-                kit.strong("What's contributing to your limits usage?"),
-            ]);
-            for (span, list) in [("Last 24h", &behaviors.day), ("Last 7d", &behaviors.week)] {
-                if !list.is_empty() {
-                    let words = format!(" {span}: {}", behavior_list(list));
-                    section.push(truncate_spans(&[Span::raw(words)], width));
-                }
-            }
-            section.push(vec![
-                Span::raw(" "),
-                kit.dim("Approximate, from the sessions on this machine. The parts overlap."),
-            ]);
-            blocks.push(section);
+        if let Some(behaviors) = &live.behaviors {
+            blocks.extend(self.contributing(kit, behaviors, width));
         }
         blocks
+    }
+
+    /// `What's contributing to your limits usage?`, as Claude Code's `/usage` reports it: for
+    /// the last day and the last week, the requests and sessions, each behavior that took a
+    /// tenth or more of the usage, and the skills, subagents, plugins and MCP servers that
+    /// took the most.
+    fn contributing(&self, kit: &Kit<'_>, behaviors: &Behaviors, width: usize) -> Option<Drawn> {
+        let spans = [
+            ("Last 24h", &behaviors.day, behaviors.day_report.as_ref()),
+            ("Last 7d", &behaviors.week, behaviors.week_report.as_ref()),
+        ];
+        let mut parts: Vec<Vec<String>> = Vec::new();
+        for (span, list, report) in spans {
+            let shown: Vec<&Behavior> = list
+                .iter()
+                .filter(|behavior| behavior.share >= BEHAVIOR_SHOWN)
+                .collect();
+            let tops: Vec<String> = report
+                .map(|report| {
+                    [
+                        top("Top skills", &report.skills, "/"),
+                        top("Top subagents", &report.agents, ""),
+                        top("Top plugins", &report.plugins, ""),
+                        top("Top MCP servers", &report.mcp_servers, ""),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+                })
+                .unwrap_or_default();
+            if shown.is_empty() && tops.is_empty() {
+                continue;
+            }
+            let mut head = span.to_owned();
+            if let Some(report) = report {
+                head.push_str(&format!(
+                    " · {} · {}",
+                    count(report.requests, "request"),
+                    count(report.sessions, "session")
+                ));
+            }
+            let mut lines = vec![head];
+            lines.extend(
+                shown.iter().map(|behavior| {
+                    format!("  {}", behavior_sentence(&behavior.key, behavior.share))
+                }),
+            );
+            lines.extend(tops.into_iter().map(|top| format!("  {top}")));
+            parts.push(lines);
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        let mut section = Drawn::new();
+        section.push(vec![
+            Span::raw(" "),
+            kit.strong("What's contributing to your limits usage?"),
+        ]);
+        let note = "Approximate, based on local sessions on this machine — does not include other \
+                    devices or claude.ai. Behaviors are independent characteristics, not a \
+                    breakdown.";
+        for row in wrap_spans(
+            &[kit.dim(note)],
+            width,
+            &[Span::raw(" ")],
+            &[Span::raw(" ")],
+        ) {
+            section.push(row.spans);
+        }
+        for lines in parts {
+            section.push(Vec::new());
+            for (at, line) in lines.into_iter().enumerate() {
+                let line = format!(" {line}");
+                let span = if at == 0 {
+                    kit.strong(line)
+                } else {
+                    Span::raw(line)
+                };
+                section.push(truncate_spans(&[span], width));
+            }
+        }
+        Some(section)
     }
 
     fn page_window(
@@ -551,22 +680,26 @@ fn percent(share: Option<f64>) -> String {
     }
 }
 
-/// The line under a window at `indent`, or split at its ` · ` where even the card's whole
-/// width is too narrow, so neither the time left nor the clock is cut.
+/// The words under a window, from `indent`, the column its bar starts in. Where they don't
+/// fit on one line they break at their ` · `, each line starting in the same column, so the
+/// time left and the clock are never cut.
 fn push_under(body: &mut Drawn, kit: &Kit<'_>, words: &str, inner: usize, indent: usize) {
     if words.is_empty() {
         return;
     }
-    if indent + str_width(words) <= inner {
-        body.push(vec![
-            Span::raw(" ".repeat(indent)),
-            kit.dim(words.to_owned()),
-        ]);
-        return;
+    let room = inner.saturating_sub(indent);
+    let mut lines: Vec<String> = Vec::new();
+    for part in words.split(" · ") {
+        match lines.last_mut() {
+            Some(last) if str_width(last) + 3 + str_width(part) <= room => {
+                last.push_str(" · ");
+                last.push_str(part);
+            }
+            _ => lines.push(part.to_owned()),
+        }
     }
-    for part in words.splitn(2, " · ") {
-        let indent = indent.min(inner.saturating_sub(str_width(part)));
-        let row = vec![Span::raw(" ".repeat(indent)), kit.dim(part.to_owned())];
+    for text in lines {
+        let row = vec![Span::raw(" ".repeat(indent)), kit.dim(text)];
         body.push(truncate_spans(&row, inner));
     }
 }
@@ -599,15 +732,70 @@ fn behavior_list(list: &[Behavior]) -> String {
         .join(" · ")
 }
 
-/// Claude Code's names for what made up the usage, in a few words.
+/// Claude Code's names for what made up the usage, in a few words. Its `cron` counts the
+/// sessions active for 8 hours or more.
 fn behavior_words(key: &str) -> String {
     match key {
         "long_context" => "long context".to_owned(),
         "subagent_heavy" => "subagent-heavy".to_owned(),
         "high_parallel" => "4+ sessions at once".to_owned(),
         "cache_miss" => "cache misses".to_owned(),
-        "cron" => "scheduled".to_owned(),
+        "cron" => "long sessions".to_owned(),
         other => other.replace('_', " "),
+    }
+}
+
+/// A behavior that took this share of the usage or more is named, as Claude Code's report
+/// names it.
+const BEHAVIOR_SHOWN: f64 = 0.1;
+/// The most items of a kind the report names before it counts the rest.
+const TOP_NAMED: usize = 8;
+
+/// What a behavior's share means, in Claude Code's own sentence.
+fn behavior_sentence(key: &str, share: f64) -> String {
+    let percent = (share * 100.0).round();
+    match key {
+        "cache_miss" => format!("{percent}% of your usage hit a >100k-token cache miss"),
+        "long_context" => format!("{percent}% of your usage was at >150k context"),
+        "subagent_heavy" => format!("{percent}% of your usage came from subagent-heavy sessions"),
+        "high_parallel" => {
+            format!("{percent}% of your usage was while 4+ sessions ran in parallel")
+        }
+        "cron" => format!("{percent}% of your usage came from sessions active for 8+ hours"),
+        other => format!("{percent}% of your usage was {}", behavior_words(other)),
+    }
+}
+
+/// `Top skills: /review 40%, /test 12%, +2 more`, or nothing when there are none.
+fn top(title: &str, items: &[UsageShare], prefix: &str) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = items
+        .iter()
+        .take(TOP_NAMED)
+        .map(|item| {
+            format!(
+                "{prefix}{} {:.0}%",
+                sanitize(&item.name),
+                item.share * 100.0
+            )
+        })
+        .collect();
+    let more = items.len().saturating_sub(TOP_NAMED);
+    let rest = if more > 0 {
+        format!(", +{more} more")
+    } else {
+        String::new()
+    };
+    Some(format!("{title}: {}{rest}", named.join(", ")))
+}
+
+/// `312 requests`, `1 session`.
+fn count(n: u64, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        n => format!("{n} {noun}s"),
     }
 }
 

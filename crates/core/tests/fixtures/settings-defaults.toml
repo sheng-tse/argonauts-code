@@ -23,6 +23,7 @@ judge = [
     "antigravity-cli",
 ]
 worker_workflows = false
+merger = []
 
 [agents.antigravity-cli]
 enabled = true
@@ -485,6 +486,7 @@ ambiguous_width = 1
 newer_cli_notice = true
 mod_output = "show"
 heads_up = "when_enabled"
+agents_in_chat = "when_done"
 
 [ui.keymap]
 
@@ -740,3 +742,6 @@ enabled = false
 
 [overview]
 year_colors = "cli"
+
+[periods]
+week_starts = "sunday"

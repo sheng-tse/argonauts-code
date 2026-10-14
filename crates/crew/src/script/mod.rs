@@ -118,7 +118,7 @@ pub async fn script_step(host: &Host, call: &StepCall) -> EngineResult<StepDone>
     // The engine follows the crew: with the orchestrator and the workers on Claude Code, a
     // workflow the orchestrator shapes is Claude Code's own, and the runner stays out.
     if let Loaded::Steps(file) = &loaded
-        && file.adapt
+        && ultra::plans_and_delegates(file)
         && let Some(crew) =
             ultra::claude_codes_own(host.settings(), &host.services().workers.available())
     {

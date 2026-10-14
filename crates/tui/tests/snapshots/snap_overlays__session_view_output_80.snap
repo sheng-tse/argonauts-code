@@ -1,13 +1,14 @@
 ---
 source: crates/tui/tests/snap_overlays.rs
+assertion_line: 767
 expression: "screen(&mut view, width, height, &state)"
 ---
 ◐ GPT 5.6 on Codex · worker · task-002 (…   Output  Input  Raw   2m00s · ↓ 12.4k
 
+     test export::json ... ok
+
 ● Update(src/export.rs)
-  ⎿  Added 1 line, removed 1 line
-        -self.write_csv(out)
-        +match self.format {
+  ⎿  Updating…
 
 ● Update(src/export.rs)
   ⎿  Added 2 lines, removed 1 line
@@ -25,4 +26,4 @@ expression: "screen(&mut view, width, height, &state)"
 
 ⎿ Queued use serde_json
   arrives after the current tool call
-↑↓ scroll · tab input · m message it · r raw · d diff · esc back     10-30 of 30
+↑↓ scroll · tab input · m message it · r raw · d diff · esc back      6-26 of 26

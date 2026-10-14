@@ -90,6 +90,9 @@ pub struct CardProgress {
     pub take_over_end: Option<(DiffStat, Option<String>)>,
     /// Events folded for this card, so a waiting card is looked at again whenever it changes.
     pub changes: u64,
+    /// Why the card moved to its current state, as the move said.
+    #[serde(default)]
+    pub why: String,
 }
 
 /// Progress of a card nothing has happened to yet.
@@ -110,6 +113,7 @@ static NO_PROGRESS: CardProgress = CardProgress {
     vendor_waits: 0,
     take_over_end: None,
     changes: 0,
+    why: String::new(),
 };
 
 impl CardRecord {
@@ -165,8 +169,9 @@ impl Cards {
         progress.changes += 1;
         match event {
             CardEvent::Created(_) => {}
-            CardEvent::State { from, to, .. } => {
+            CardEvent::State { from, to, reason } => {
                 record.state = *to;
+                reason.clone_into(&mut progress.why);
                 progress.deferred_for_budget =
                     *to == CardState::Deferred && *from == Some(CardState::Ready);
                 if *from == Some(CardState::Integrating) && *to == CardState::Running {

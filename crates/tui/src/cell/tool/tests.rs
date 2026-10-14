@@ -123,8 +123,14 @@ fn the_bullet_carries_the_state() {
         )
     };
     let dim = theme.style(Role::Dim);
+    let working = theme.style(Role::Accent);
+    // While the model writes the call, a steady dim bullet.
+    let writing = ToolCall::writing(ToolKind::Shell, "Bash");
+    assert_eq!(bullet(&writing, &still), ("●".into(), dim));
+    assert_eq!(bullet(&writing, &at(&theme, 700)), ("●".into(), dim));
+    assert_eq!(writing.lines(&still).len(), 1, "its name alone");
     let running = ToolCall::call(ToolKind::Shell, "Bash", "ls");
-    assert_eq!(bullet(&running, &still), ("●".into(), dim));
+    assert_eq!(bullet(&running, &still), ("●".into(), working));
     fn at(theme: &Theme, ms: u64) -> RenderCtx<'_> {
         let start = Instant::now();
         RenderCtx::new(
@@ -133,11 +139,11 @@ fn the_bullet_carries_the_state() {
             Clock::new(start, start + Duration::from_millis(ms)),
         )
     }
-    assert_eq!(bullet(&running, &at(&theme, 700)), (" ".into(), dim));
-    assert_eq!(bullet(&running, &at(&theme, 1300)), ("●".into(), dim));
+    assert_eq!(bullet(&running, &at(&theme, 700)), (" ".into(), working));
+    assert_eq!(bullet(&running, &at(&theme, 1300)), ("●".into(), working));
     let mut calm = theme.clone();
     calm.reduced_motion = true;
-    assert_eq!(bullet(&running, &at(&calm, 700)), ("●".into(), dim));
+    assert_eq!(bullet(&running, &at(&calm, 700)), ("●".into(), working));
     assert!(running.is_animating());
     let failed = running.clone().with_state(ToolState::Failed);
     assert_eq!(
@@ -766,9 +772,9 @@ fn phases_mark_the_steps_you_require() {
     let under_way = lines[1]
         .spans
         .iter()
-        .find(|span| span.content == "Plan")
+        .find(|span| span.content.trim() == "Plan")
         .unwrap();
-    assert_eq!(under_way.style.fg, theme.style(Role::Card).fg);
+    assert_eq!(under_way.style.fg, theme.style(Role::Text).fg);
 
     let mut plain = theme.clone();
     plain.glyphs = Glyphs::ASCII;
@@ -829,4 +835,26 @@ fn phases_are_listed_however_many_there_are() {
         text(&none.lines(&ctx(&theme, 80))),
         "● Workflow(switch-reads)"
     );
+}
+
+/// A run agent's shell call waits in the fold line while it's written; a test run then takes
+/// a row of its own and leaves the reads folded.
+#[test]
+fn a_call_taken_from_its_fold_line_leaves_the_others_folded() {
+    let mut agent = ToolCall::call(ToolKind::Agent, "Task", "build");
+    agent.push_call(ToolCall::call(ToolKind::Read, "Read", "a.rs").with_key("r1"));
+    agent.push_call(ToolCall::call(ToolKind::Shell, "Bash", "").with_key("b1"));
+    let taken = agent.take_from_fold("b1").expect("it sat in the fold line");
+    agent.push_alone(taken);
+    match agent.body.as_slice() {
+        [ToolItem::Group(group), ToolItem::Call(call)] => {
+            assert_eq!(group.calls.len(), 1);
+            assert_eq!(call.key.as_deref(), Some("b1"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(agent.take_from_fold("b1").is_none());
+    let read = agent.take_from_fold("r1").expect("the read");
+    assert_eq!(read.key.as_deref(), Some("r1"));
+    assert_eq!(agent.body.len(), 1, "an emptied fold line goes");
 }

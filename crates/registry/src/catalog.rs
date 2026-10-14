@@ -550,6 +550,22 @@ const OWN_WORDS: &[(&str, &str)] = &[
         "watchdogs.wall_clock_min",
         "Minutes a task may run. A soft stop comes first. Unset, there is no limit",
     ),
+    (
+        "overview.prices.*.input",
+        "Your list price for the model's new input, dollars per million tokens",
+    ),
+    (
+        "overview.prices.*.output",
+        "Your list price for the model's output, dollars per million tokens",
+    ),
+    (
+        "overview.prices.*.cache_read",
+        "Your list price for input read from the cache. Unset, the input price",
+    ),
+    (
+        "overview.prices.*.cache_write",
+        "Your list price for input written to the cache. Unset, the input price",
+    ),
 ];
 
 /// The keys the settings commands name come first, in picker order, then every other key. Map
@@ -732,6 +748,12 @@ fn named() -> Vec<SettingMeta> {
             "crew.worker_workflows",
             "Crew agents may start their CLI's own workflows and background agents",
             BOOL,
+        ),
+        meta(
+            "crew.merger",
+            "Who merges, in order: conflicts, a main that moved, the checks after and the \
+             landed message; the orchestrator's model when empty",
+            &[],
         ),
         meta("agents.*.enabled", "Whether this CLI may work at all", BOOL),
         words(
@@ -1047,6 +1069,24 @@ fn named() -> Vec<SettingMeta> {
             "ui.verbosity",
             "How much the transcript shows",
             &["full", "normal", "quiet"],
+        ),
+        words(
+            "ui.agents_in_chat",
+            "When an agent at work shows in the chat: once it finishes, or as it works",
+            &["when_done", "as_they_work"],
+        ),
+        words(
+            "periods.week_starts",
+            "The day a week starts on in Stats, Usage and Limits",
+            &[
+                "sunday",
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+            ],
         ),
         meta(
             "ui.keymap.*",
@@ -1534,6 +1574,7 @@ mod tests {
             | "crew.workers"
             | "crew.reviewers"
             | "crew.judge"
+            | "crew.merger"
             | "fallback.*.order"
             | "fallback.order"
             | "fallback.replace.*.with"

@@ -1,5 +1,5 @@
-//! Decision records: `Plan::Decided` and `.argonauts/decisions/D-NNN-<slug>.md` in the
-//! integration branch, committed by the conductor.
+//! Decision records: `Plan::Decided` and `decisions/D-NNN-<slug>.md` in the repo's state
+//! directory under `~/.argonauts`, never in your repository.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -8,15 +8,18 @@ use argonauts_core::events::RunEventKind;
 use argonauts_core::events::plan::{DesignDecision, PlanEvent};
 use argonauts_core::names::DecisionId;
 
+use argonauts_core::layout::repo_state;
+use argonauts_core::paths::{create_private_dir_all, write_private_file};
+
+use crate::divide::repo_state_dir;
 use crate::engine::host::Host;
 use crate::error::EngineResult;
-use crate::integrate::{branch, conductor};
 use crate::plan::drafts;
 use crate::state::ids::IdKind;
 use crate::state::plan::SealedDraft;
 
-/// Where decision records live, relative to the repository root.
-pub const DIR: &str = ".argonauts/decisions";
+/// Where decision records live, relative to the repo's state directory.
+pub const DIR: &str = repo_state::DECISIONS;
 
 /// Longest slug, so file names stay readable.
 const SLUG_MAX: usize = 60;
@@ -37,19 +40,16 @@ pub async fn record(host: &Host, decision: DesignDecision) -> EngineResult<Decis
     }
     let id = DecisionId::numbered(host.allocate(IdKind::Decision)?);
     let relative = format!("{DIR}/{}", file_name(&id, &decision.title));
-    let worktree = branch::ensure_integration(host).await?;
-    let file = worktree.join(&relative);
+    let file = repo_state_dir(host).join(&relative);
     if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent)?;
+        create_private_dir_all(parent)?;
     }
     let decision = DesignDecision {
         id: id.clone(),
         path: Some(PathBuf::from(&relative)),
         ..decision
     };
-    std::fs::write(&file, markdown(&decision))?;
-    let subject = format!("Record decision {id}: {}", decision.title);
-    conductor::commit(host, &worktree, &[relative.as_str()], &subject).await?;
+    write_private_file(&file, markdown(&decision).as_bytes())?;
     host.record(None, None, RunEventKind::Plan(PlanEvent::Decided(decision)))?;
     Ok(id)
 }

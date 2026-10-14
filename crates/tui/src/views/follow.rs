@@ -285,6 +285,7 @@ mod tests {
                     notes: Vec::new(),
                     required: Vec::new(),
                     goals: Vec::new(),
+                    owner: None,
                 }),
             }),
         }

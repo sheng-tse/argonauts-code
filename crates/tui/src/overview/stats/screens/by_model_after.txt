@@ -1,0 +1,27 @@
+ Overview    Status    Usage    Context    Limits    Stats                                     Today  Week  Month  All
+Every day so far, one row per model, whichever CLI runs it                              By CLI    By model    By role 
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ model                on          as                   did           in review       tokens         spend   each    │
+│   ■ Opus 5.5         Claude Code orchestrator, worker 312 tasks     ▪▪▪▪▪▪▪▪▪▪ 94%  ━━━━━━━━ 41.2M ~$84    4m 40s  │
+│ ❯ ■ GPT 5.6          Codex       worker, reviewer     268 tasks     ▪▪▪▪▪▪▪▪▪▪ 90%  ━━━━━━━━ 23.4M $31     3m 20s  │
+│   ■ Sonnet 5.5       Claude Code worker               141 tasks     ▪▪▪▪▪▪▪▪▪▪ 91%  ━━━━━━━━ 15.6M ~$19    3m 10s  │
+│   ■ Gemini 3.6 Pro   agy         reviewer             612 reviews   sent back 41    ━━━━━━━━ 8.3M  ~$6.10  44s     │
+│   ■ GPT 5.6 Luna     Codex       worker               93 tasks      ▪▪▪▪▪▪▪▪▪▪ 86%  ━━━━━━━━ 7.1M  $5.90   2m 15s  │
+│   ■ Gemini 3.6 Flash agy         judge                177 sign-offs sent back 9     ━━━━━━━━ 2.4M  ~$0.90  30s     │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ■ GPT 5.6 on Codex · opened with enter                                268 tasks · 118 reviews · 23.4M tokens · $31 │
+│                                                                                                                    │
+│ by role                                                its tokens · 23.4M                                          │
+│ worker    268 tasks   ▪▪▪▪▪▪▪▪▪▪ 90% first pass        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━     │
+│ reviewer  118 reviews sent back 9 · 52s each           ■ from cache 15.9M   ■ new input 6.6M   ■ output 0.9M       │
+│                                                                                                                    │
+│ by kind of work, as a worker                           ▃▄▁▄▅▁▃▄▆▇  tokens a week · busiest Sep 28                  │
+│ build     ━━━━━━━━━━━━━━  152 · ▪▪▪▪▪▪▪▪               fallbacks took over 6 tasks from Opus 5.5                   │
+│ tests     ━━━━━━━━━━━━━━   78 · ▪▪▪▪▪▪▪▪                         when Claude's 5-hour window ran out               │
+│ docs      ━━━━━━━━━━━━━━   38 · ▪▪▪▪▪▪▪▪               Codex's plan  5h ━━━━━━  1%   week ━━━━━━ 11%               │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+↑↓ model · enter opens or closes it · tab By CLI, By model, By role · u tokens, tasks or spend · s sort · esc closes

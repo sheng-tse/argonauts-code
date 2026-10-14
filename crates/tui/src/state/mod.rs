@@ -332,6 +332,7 @@ impl AppState {
             | AppEvent::CondensedReplay { .. }
             | AppEvent::Report { .. }
             | AppEvent::Folded { .. }
+            | AppEvent::Record { .. }
             | AppEvent::Continued { .. }
             | AppEvent::Hint { .. }
             | AppEvent::Exit => {}

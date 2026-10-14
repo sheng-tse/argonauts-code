@@ -69,6 +69,7 @@ fn the_shipped_catalog_reads_like_claude_codes_picker() {
             ("Opus 5.5", "For complex work and everyday tasks"),
             ("Fable 5.1", "For your toughest challenges"),
             ("Sonnet 5.5", "Most efficient for simpler tasks"),
+            ("Haiku 5.5", "Fastest for quick answers"),
             ("Haiku 4.5", "Fastest for quick answers"),
             ("Sonnet 5", "Efficient for routine tasks"),
             ("Opus 5", "Best for everyday, complex tasks"),
@@ -86,15 +87,26 @@ fn the_shipped_catalog_reads_like_claude_codes_picker() {
     let opus = catalog.entry(&id("claude-code/opus")).unwrap();
     assert_eq!(opus.default_effort.as_deref(), Some("xhigh"));
     for entry in &models[1..] {
-        let expected =
-            (entry.id.model.as_deref() != Some("claude-haiku-4-5-20251001")).then_some("high");
+        let expected = match entry.id.model.as_deref() {
+            Some("claude-haiku-4-5-20251001") => None,
+            Some("claude-haiku-5-5") => Some("medium"),
+            _ => Some("high"),
+        };
         assert_eq!(entry.default_effort.as_deref(), expected, "{}", entry.id);
     }
+    // `haiku` runs Haiku 5.5, which takes every level; Haiku 4.5 takes none.
     let haiku = catalog.entry(&id("claude-code/haiku")).unwrap();
+    assert_eq!(haiku.id.model.as_deref(), Some("claude-haiku-5-5"));
     assert_eq!(
-        haiku.efforts.as_deref(),
+        haiku.efforts.as_deref().map(<[String]>::len),
+        Some(5),
+        "Haiku 5.5 takes low to max"
+    );
+    let older = catalog.entry(&id("claude-code/claude-haiku-4-5")).unwrap();
+    assert_eq!(
+        older.efforts.as_deref(),
         Some(&[][..]),
-        "Haiku takes no effort"
+        "Haiku 4.5 takes no effort"
     );
     for alias in ["opus", "sonnet", "fable", "haiku"] {
         assert!(
@@ -463,5 +475,41 @@ async fn the_registry_fetches_the_catalog_once_a_day_and_keeps_it_in_the_cache()
             .iter()
             .any(|why| why.starts_with("Argonauts' model catalog: GET")),
         "{skipped:?}"
+    );
+}
+
+/// Every model the shipped catalog lists has a list price in it, and a newer catalog's price
+/// replaces the older one's.
+#[test]
+fn every_shipped_model_has_a_list_price() {
+    let catalog = shipped_catalog();
+    for entry in &catalog.models {
+        let Some(model) = entry.id.model.as_deref() else {
+            continue;
+        };
+        assert!(
+            catalog
+                .prices
+                .iter()
+                .any(|price| model.starts_with(price.model.as_str())),
+            "{model} has no price"
+        );
+    }
+    let newer = parse_catalog(
+        "version = 1\n[[price]]\nmodel = \"claude-opus-5-5\"\ninput = 3.0\noutput = 15.0\n",
+    )
+    .unwrap();
+    let mut merged = catalog.clone();
+    merged.merge(newer);
+    let opus: Vec<_> = merged
+        .prices
+        .iter()
+        .filter(|price| price.model == "claude-opus-5-5")
+        .collect();
+    assert_eq!(opus.len(), 1);
+    assert_eq!(opus[0].input.0, 3.0);
+    assert!(
+        parse_catalog("[[price]]\nmodel = \"x\"\ninput = -1.0\noutput = 1.0\n").is_err(),
+        "a negative price is refused"
     );
 }

@@ -219,6 +219,7 @@ impl Live {
             // calls a tool.
             AgentEvent::Init { .. }
             | AgentEvent::TextDelta { parent: None, .. }
+            | AgentEvent::ToolPending { parent: None, .. }
             | AgentEvent::ToolStarted { parent: None, .. } => self.idle = false,
             _ => {}
         }
@@ -349,11 +350,13 @@ impl Live {
 }
 
 /// Events the screen draws for the moment and the journal leaves out: a heads-up, a message's
-/// progress, and what a mod shows only while it's there.
+/// progress, a call still being written, and what a mod shows only while it's there.
 pub(super) fn is_passing(event: &AgentEvent) -> bool {
     use argonauts_core::ModOutputKind;
     match event {
         AgentEvent::TextDelta { .. }
+        | AgentEvent::ToolPending { .. }
+        | AgentEvent::ToolDropped { .. }
         | AgentEvent::ScreenChanged { .. }
         | AgentEvent::MessageState { .. }
         | AgentEvent::CommandsChanged { .. }

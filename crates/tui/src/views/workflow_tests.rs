@@ -94,6 +94,7 @@ pub(super) fn workflow(name: &str, phases: Vec<PhaseRow>) -> WorkflowData {
         notes: Vec::new(),
         required: Vec::new(),
         goals: Vec::new(),
+        owner: None,
     }
 }
 
@@ -947,6 +948,7 @@ fn tried(session: &str, worker: &str) -> argonauts_core::views::StepTry {
             message: r#"{"error":{"message":"Invalid schema for response_format 'output': 'required' is required"}}"#
                 .into(),
         }),
+        round: None,
     }
 }
 

@@ -571,9 +571,14 @@ async fn in_solo_the_session_s_own_judgment_starts_nothing() {
     let setup = setup_of(&spec).expect("the setup in use");
     assert!(setup.contains("solo is in use"), "{setup}");
     let refused = call(&spec, START_WORKFLOW, json!({ "request": WORK })).await;
-    assert_eq!(
-        refused.text,
-        "The user didn't ask for a workflow, so do it yourself."
+    assert!(
+        refused.text.starts_with("No workflow started.")
+            && refused.text.contains("passed no instruction")
+            && refused
+                .text
+                .ends_with("If they don't, do the work yourself."),
+        "{}",
+        refused.text
     );
     assert!(harness.conductor.starts().is_empty());
     harness.exit().await;

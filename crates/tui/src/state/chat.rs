@@ -126,7 +126,8 @@ impl ChatState {
             ChatEvent::TurnFinished { .. }
             | ChatEvent::TurnFailed { .. }
             | ChatEvent::TurnCancelled { .. }
-            | ChatEvent::HandedOff { .. } => {}
+            | ChatEvent::HandedOff { .. }
+            | ChatEvent::AnswerRetried { .. } => {}
         }
     }
 

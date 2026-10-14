@@ -19,6 +19,7 @@ pub mod limits_template;
 pub mod main_session;
 pub mod mods;
 pub mod overview;
+pub mod periods;
 pub mod prompts;
 pub mod protocol;
 pub mod roles;
@@ -144,6 +145,7 @@ pub struct Settings {
     pub main_session: main_session::MainSessionSettings,
     pub telemetry: telemetry::TelemetrySettings,
     pub overview: overview::OverviewSettings,
+    pub periods: periods::PeriodSettings,
 }
 
 impl Default for Settings {
@@ -211,6 +213,7 @@ impl Default for Settings {
             main_session: main_session::MainSessionSettings::default(),
             telemetry: telemetry::TelemetrySettings::default(),
             overview: overview::OverviewSettings::default(),
+            periods: periods::PeriodSettings::default(),
         }
     }
 }

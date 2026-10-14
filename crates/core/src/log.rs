@@ -266,6 +266,11 @@ pub enum NoteLevel {
 /// which the main view keeps for Ctrl+O, so a raw schema error never shows there.
 pub const RETRO_FAILED: &str = "The run review failed. The run's result stands.";
 
+/// Why a takeover skips the retry, after ` · ` at the end of its note, such as `Claude Code
+/// takes over as reviewer · no second try, this error repeats every time`. The main view
+/// draws these words dim and the ones before them plain.
+pub const NO_SECOND_TRY: &str = "no second try, this error repeats every time";
+
 /// One line in plain words. Lines after the first are its detail, such as a validator's
 /// errors, which the main view keeps for Ctrl+O.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

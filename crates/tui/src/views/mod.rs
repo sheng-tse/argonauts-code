@@ -24,6 +24,7 @@ pub mod list;
 pub mod pager;
 pub mod panes;
 pub mod prompts;
+pub mod raw_log;
 mod raw_rows;
 pub mod resume;
 pub mod rewind;
@@ -35,6 +36,9 @@ mod structured;
 mod vim_tests;
 pub mod waiting;
 pub mod workflow;
+mod workflow_own;
+#[cfg(test)]
+mod workflow_own_tests;
 pub mod workflow_page;
 #[cfg(test)]
 mod workflow_row_tests;

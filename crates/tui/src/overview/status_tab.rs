@@ -5,11 +5,12 @@
 use argonauts_core::api::RunSummary;
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::status_tab::{CliStatus, StatusTabView};
+use argonauts_core::text::shown_name;
 use ratatui::text::Span;
 
 use super::cards::cli_role;
 use crate::format::{self, WallClock};
-use crate::text::{spans_width, truncate_spans};
+use crate::text::{spans_width, str_width, truncate_spans};
 use crate::theme::Role;
 use crate::widgets::{Drawn, Frame, Header, Kit, spread};
 
@@ -20,8 +21,8 @@ pub const NO_RUNS: &str =
 /// The labels' column of the facts at the top.
 const FACT_LABELS: usize = 16;
 /// The columns of the CLIs card: the name, then the version.
-const CLI_NAMES: usize = 18;
-const CLI_VERSIONS: usize = 12;
+const CLI_NAMES: usize = 19;
+const CLI_VERSIONS: usize = 10;
 /// The settings card's first column.
 const SETTING_NAMES: usize = 32;
 /// The runs card lists this many, the newest first.
@@ -95,7 +96,7 @@ impl StatusTabCards<'_> {
         rows.push((
             "Workflow",
             vec![
-                kit.span(view.workflow.name.clone(), Role::Text),
+                kit.span(shown_name(&view.workflow.name), Role::Text),
                 kit.dim(format!(
                     " · ultracode {ultracode} · workflow size {}",
                     view.workflow.size
@@ -103,7 +104,7 @@ impl StatusTabCards<'_> {
             ],
         ));
         let mode = self.mode.unwrap_or(&view.mode);
-        rows.push(("Mode", vec![kit.span(mode.to_owned(), Role::Text)]));
+        rows.push(("Mode", vec![kit.span(shown_name(mode), Role::Text)]));
         let mut drawn = Drawn::new();
         for (label, value) in rows {
             let mut row = vec![Span::raw(" "), kit.dim(padded(label, FACT_LABELS))];
@@ -178,7 +179,9 @@ impl StatusTabCards<'_> {
             "mods".to_owned(),
             format!("{} built in{yours}", settings.mods_built_in),
         );
-        let tools = if settings.tools.is_empty() {
+        let tools = if settings.tools_off {
+            "off · main_session.tools = false".to_owned()
+        } else if settings.tools.is_empty() {
             "none, since its CLI takes no tools from Argonauts".to_owned()
         } else {
             settings.tools.join(" · ")
@@ -260,45 +263,41 @@ fn heading(kit: &Kit<'_>, title: &str, about: &str, width: usize) -> Vec<Span<'s
     spread(left, right, width)
 }
 
+/// `● Claude Code      2.1.295   you@example.com · Max · checked`: the dot in the CLI's
+/// colour, its name in bold, its version, who it's signed in as, then its plan and how its
+/// version stands, dim.
 fn cli_row(kit: &Kit<'_>, cli: &CliStatus) -> Vec<Span<'static>> {
     let dot = if cli.main { "●" } else { "○" };
-    if !cli.installed {
-        return vec![
-            kit.dim(format!("{dot} ")),
-            kit.dim(padded(&cli.name, CLI_NAMES - 2)),
-            kit.dim(padded("—", CLI_VERSIONS)),
-            kit.dim("not installed · /update can't add it"),
-        ];
-    }
-    let name = padded(&cli.name, CLI_NAMES - 2);
-    let mut row = vec![
-        kit.span(format!("{dot} "), cli_role(&cli.id)),
-        if cli.main {
-            kit.strong(name)
-        } else {
-            kit.span(name, Role::Text)
-        },
-        kit.span(
-            padded(cli.version.as_deref().unwrap_or("?"), CLI_VERSIONS),
-            Role::Text,
-        ),
+    let name_room = CLI_NAMES - 2;
+    let name = vec![
+        kit.strong(cli.name.clone()),
+        Span::raw(" ".repeat(name_room.saturating_sub(str_width(&cli.name)).max(1))),
     ];
+    if !cli.installed {
+        let mut row = vec![kit.dim(format!("{dot} "))];
+        row.extend(name);
+        row.push(Span::raw(padded("—", CLI_VERSIONS)));
+        row.push(kit.dim("not installed"));
+        row.push(kit.dim(" · /update can't add it"));
+        return row;
+    }
+    let mut row = vec![kit.span(format!("{dot} "), cli_role(&cli.id))];
+    row.extend(name);
+    row.push(kit.span(
+        padded(cli.version.as_deref().unwrap_or("?"), CLI_VERSIONS),
+        Role::Text,
+    ));
     let mut tail: Vec<String> = Vec::new();
     match &cli.account {
         Some(account) => row.push(kit.span(account.clone(), Role::Text)),
         None if cli.signed_out => {
             row.push(kit.span("not signed in · /login signs in", Role::Warning));
         }
-        None => tail.push("account not known".to_owned()),
+        None => row.push(kit.dim(argonauts_core::status_tab::UNNAMED_ACCOUNT)),
     }
     tail.extend(cli.plan.clone());
     tail.push(cli.note.clone());
-    let lead = if cli.account.is_some() || cli.signed_out {
-        " · "
-    } else {
-        ""
-    };
-    row.push(kit.dim(format!("{lead}{}", tail.join(" · "))));
+    row.push(kit.dim(format!(" · {}", tail.join(" · "))));
     row
 }
 

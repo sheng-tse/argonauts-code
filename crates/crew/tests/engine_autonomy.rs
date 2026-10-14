@@ -1907,6 +1907,7 @@ async fn autopilot_goes_on_past_waiting_spot_checks() -> anyhow::Result<()> {
 
 /// With no model of another company to run, full auto goes ahead on your rules alone, keeps the
 /// lead's answers as assumptions, and says so in plain words with where to pick an approver.
+/// Its one task is deferred with no fallback left, so no task passed and nothing merges.
 #[tokio::test]
 async fn autopilot_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result<()> {
     let mut crew = Crew::new()?;
@@ -1915,15 +1916,22 @@ async fn autopilot_with_no_approver_goes_ahead_on_your_rules() -> anyhow::Result
     enlist(&mut crew, "claude-code/sonnet", "claude");
     let outcome = run_in(&crew, Some(ApprovalMode::Autopilot)).await?;
     let events = &outcome.events;
-    assert!(
-        merged(&outcome.exit),
-        "{:?}: open {:?}, notes {:#?}",
+    assert_eq!(
         outcome.exit,
+        EngineExit::Finished(argonauts_core::events::run::RunOutcome::Failed),
+        "open {:?}, notes {:#?}",
         open_kinds(events),
         notes(events)
     );
+    assert!(!open_kinds(events).contains(&CheckpointKind::Merge));
+    assert!(!landed(events));
     assert!(decided(events).contains(&(CheckpointKind::Goal, Party::Rules)));
     let said = notes(events);
+    assert!(
+        said.iter()
+            .any(|note| note.starts_with("Nothing was merged, since no task passed: task-001")),
+        "{said:#?}"
+    );
     assert!(
         said.contains(
             &"\"Run this workflow?\": No model you can run comes from another provider than \
@@ -2135,6 +2143,76 @@ async fn a_question_you_leave_goes_back_to_its_agent() -> anyhow::Result<()> {
     assert_eq!(
         argonauts_crew::checkpoints::autopilot::endings(&state),
         [line]
+    );
+    Ok(())
+}
+
+/// A run that parks to wait for your answer ends the wait that would pass it on; when its step
+/// goes on, the card still blocked on the question takes the answer you gave meanwhile.
+#[tokio::test]
+async fn an_answer_given_while_the_run_was_parked_reaches_its_task() -> anyhow::Result<()> {
+    use argonauts_core::api::CheckpointAnswer;
+    use argonauts_core::events::card::CardState;
+    use argonauts_core::events::checkpoint::AnswerAction;
+
+    let crew = three_company_crew()?;
+    let started = crew.run_started(RunMode::Crew, "add a --verbose flag")?;
+    let asking = Asking::new(&crew, vec![started])?;
+    let ask = with_git_env(
+        crew.git_env(),
+        argonauts_crew::blackboard::on_report(&asking.host, &asking.card, &asking.report),
+    );
+    let opened = async {
+        loop {
+            let open = asking
+                .sink
+                .events()
+                .into_iter()
+                .find_map(|event| match event.kind {
+                    RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+                        if opened.kind == CheckpointKind::Question =>
+                    {
+                        Some((opened.id, opened.evidence_sha256))
+                    }
+                    _ => None,
+                });
+            if let Some(id) = open {
+                break id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    // The park cancels the step that waits, so the wait never sees the answer.
+    let (id, evidence_sha256) = tokio::select! {
+        id = opened => id,
+        _ = ask => panic!("the question waits for you"),
+    };
+    let state_of = || {
+        let state = argonauts_crew::state::RunState::fold(&asking.sink.events());
+        state.cards.get(&asking.card).map(|record| record.state)
+    };
+    assert_eq!(state_of(), Some(CardState::Blocked));
+    argonauts_crew::checkpoints::answer(
+        &asking.host,
+        CheckpointAnswer {
+            id,
+            action: AnswerAction::Answer,
+            text: Some("Use --verbose and -v both.".to_owned()),
+            evidence_sha256,
+            cards: Vec::new(),
+        },
+    )
+    .expect("the question is answered");
+    assert!(argonauts_crew::blackboard::questions::answered_meanwhile(
+        &asking.host,
+        &asking.card
+    )?);
+    let answer = posted_answer(&asking.sink.events());
+    assert_eq!(answer.text, "Use --verbose and -v both.");
+    assert_eq!(state_of(), Some(CardState::Running), "the task goes on");
+    assert!(
+        !argonauts_crew::blackboard::questions::answered_meanwhile(&asking.host, &asking.card)?,
+        "passed on once"
     );
     Ok(())
 }

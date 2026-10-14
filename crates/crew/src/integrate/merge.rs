@@ -1,5 +1,6 @@
 //! The `merge` step: main merged in if it moved, the final check, the merge checkpoint with the
-//! debt rule, and landing by your answer.
+//! debt rule, and landing by your answer. Only tasks that passed merge: when none did, the
+//! merge never opens, and the run ends saying what stopped each task.
 
 use futures::future::join_all;
 
@@ -24,6 +25,7 @@ use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
 use crate::handoff::merge_return::{self, Rerun};
 use crate::handoff::{merge_rule, rules, upgrade};
+use crate::integrate::commit_message;
 use crate::integrate::final_check::{self, FinalCheck};
 use crate::integrate::land::{self, Landing};
 use crate::integrate::merge_packet::{self, MergeEvidence};
@@ -39,6 +41,9 @@ pub async fn merge_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
     }
     // Cards the checkpoint sent back before a restart get back in first.
     run_all(host, call, &in_flight(host)).await?;
+    if let Some(why) = host.read(nothing_passed) {
+        return nothing_to_merge(host, why);
+    }
     // Why the checkpoint opens again. It goes into the evidence, so a new one opens.
     let mut notices: Vec<String> = Vec::new();
     let mut seen: Vec<CheckpointId> = Vec::new();
@@ -143,6 +148,70 @@ pub async fn merge_step(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
     }
 }
 
+/// Why the run has nothing to merge: no task passed. `None` once one did.
+fn nothing_passed(state: &crate::state::RunState) -> Option<String> {
+    let records: Vec<_> = state.cards.by_id.values().collect();
+    if records
+        .iter()
+        .any(|record| merge_packet::in_the_merge(record))
+    {
+        return None;
+    }
+    if records.is_empty() {
+        return Some("Nothing was merged: the run made no task.".to_owned());
+    }
+    let stopped: Vec<String> = records
+        .iter()
+        .map(|record| {
+            let card = &record.spec.id;
+            let ended = ended_as(record.state);
+            let why = state.cards.progress(card).why.trim();
+            if why.is_empty() {
+                format!("{card} {ended}")
+            } else {
+                format!("{card} {ended} ({why})")
+            }
+        })
+        .collect();
+    Some(format!(
+        "Nothing was merged, since no task passed: {}.",
+        stopped.join("; ")
+    ))
+}
+
+/// How a task that never merged stands, as the closing line says it.
+fn ended_as(state: CardState) -> &'static str {
+    match state {
+        CardState::Blocked => "is blocked on a question",
+        CardState::NeedsDecision => "waits for a decision",
+        CardState::Failed => "failed",
+        CardState::Escalated => "ran out of attempts",
+        CardState::Deferred => "was deferred",
+        CardState::Cancelled => "was cancelled",
+        CardState::TakenOver => "was taken over",
+        CardState::Integrated => "is a spike, which never merges",
+        _ => "never finished",
+    }
+}
+
+/// Ends the run without opening the merge, saying why. Nothing lands, so nothing of
+/// Argonauts' own is ever called merged.
+fn nothing_to_merge(host: &Host, why: String) -> EngineResult<StepDone> {
+    host.record(
+        None,
+        None,
+        RunEventKind::Note(Note {
+            level: NoteLevel::Warn,
+            text: why.clone(),
+        }),
+    )?;
+    Ok(StepDone {
+        end: StepEnd::Done,
+        summary: Some(why),
+        flow: Flow::Finish(RunOutcome::Failed),
+    })
+}
+
 /// You chose to merge later: the run pauses at the merge, waiting to merge, and resuming it
 /// acts on the same approval and tries again.
 async fn merge_later(host: &Host) -> EngineResult<StepDone> {
@@ -217,17 +286,38 @@ async fn ask(
     blocked: &[(CardId, QualityDebt)],
     notices: &[String],
 ) -> EngineResult<Result<(CheckpointDecided, EvidenceSubject), String>> {
-    let evidence = merge_packet::build(host, check).await?;
+    let mut evidence = merge_packet::build(host, check).await?;
+    // The merge agent writes the change's message while the question is open, and what that
+    // costs is no new evidence: asked again after a pause, the question keeps the spend it
+    // was first asked with, so an answer given to it still holds.
+    if let Some(spent) = host.read(asked_with) {
+        evidence.packet.spent = spent;
+        evidence.facts.spent = spent;
+    }
     let Some(approved) = evidence.subject().cloned() else {
         return Err(EngineError::Refused(
             "the merge has nothing to approve".to_owned(),
         ));
     };
     let request = request(host, call, title(host).await?, evidence, blocked, notices);
-    let decided = checkpoints::open(host, request)?
-        .decided_or_withdrawn(host)
-        .await?;
-    Ok(decided.map(|decided| (decided, approved)))
+    let opened = checkpoints::open(host, request)?;
+    // The merge agent writes the change's message while you decide, so it's ready to land
+    // with; an answer given sooner waits for it.
+    let (written, decided) = tokio::join!(
+        commit_message::write(host),
+        opened.decided_or_withdrawn(host)
+    );
+    written?;
+    Ok(decided?.map(|decided| (decided, approved)))
+}
+
+/// What the run had spent when the merge question still open was asked.
+fn asked_with(state: &crate::state::RunState) -> Option<argonauts_core::Spend> {
+    let open = state.checkpoints.open_for(CheckpointKind::Merge, None)?;
+    match &open.opened.packet {
+        CheckpointPacket::Merge(packet) => Some(packet.spent),
+        _ => None,
+    }
 }
 
 /// The question the card asks, such as "Merge this run into main?". The screen shows it, so

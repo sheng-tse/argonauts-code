@@ -74,9 +74,31 @@ fn capitalized(label: &str) -> String {
 
 /// The parts of one delivery, in the order they were sent, each without runs of blank lines.
 /// The goal's summary restates the request an earlier part already gave, so it shows once.
+/// Every rule the agent was given reads under one `Rules` heading, where the last of them was
+/// sent, so a rule never repeats its heading as its first words.
 pub(super) fn parts_of(input: &SessionInput) -> Vec<AskedPart> {
     let mut parts: Vec<AskedPart> = Vec::new();
-    for part in &input.parts {
+    let mut rules: Vec<String> = Vec::new();
+    // A rule your own file or your request gave keeps its own heading.
+    let is_rule = |part: &InputPart| {
+        part.kind == InputPartKind::Rules && matches!(asked(part).origin, Origin::Other(_))
+    };
+    let last_rule = input.parts.iter().rposition(is_rule);
+    for (at, part) in input.parts.iter().enumerate() {
+        if is_rule(part) {
+            let text = without_blank_runs(&part.text);
+            if !text.is_empty() {
+                rules.push(text);
+            }
+            if Some(at) == last_rule && !rules.is_empty() {
+                parts.push(AskedPart {
+                    origin: Origin::Named("Rules".to_owned()),
+                    from: None,
+                    text: std::mem::take(&mut rules).join("\n\n"),
+                });
+            }
+            continue;
+        }
         let mut asked = asked(part);
         if part.kind == InputPartKind::Goal {
             asked.text = without_said_summary(&asked.text, &parts);
@@ -434,6 +456,45 @@ mod tests {
             prompt_via: PromptVia::Stdin,
             sandbox: Some("worktree".into()),
         }
+    }
+
+    /// Every rule reads under one heading, and none repeats its heading as its first words.
+    #[test]
+    fn the_rules_read_under_one_heading() {
+        let input = SessionInput {
+            launch: launch(),
+            parts: vec![
+                part(InputPartKind::Prompt, "frame", None, "You are a worker."),
+                part(
+                    InputPartKind::Rules,
+                    "decide, don't ask",
+                    None,
+                    "Decide, don't ask. Nobody reads a question at the end of your turn.",
+                ),
+                part(
+                    InputPartKind::Card,
+                    "task-001",
+                    None,
+                    "task-001 · add due dates",
+                ),
+                part(
+                    InputPartKind::Rules,
+                    "rules",
+                    None,
+                    "Never change .github/**.",
+                ),
+                part(InputPartKind::Status, "status", None, "Status of run-01"),
+            ],
+            queued: Vec::new(),
+        };
+        let headings: Vec<String> = parts_of(&input).iter().map(AskedPart::heading).collect();
+        assert_eq!(headings, ["Frame · built in", "Task", "Rules", "Status"]);
+        let rules = &parts_of(&input)[2].text;
+        assert_eq!(
+            rules,
+            "Decide, don't ask. Nobody reads a question at the end of your turn.\n\n\
+             Never change .github/**."
+        );
     }
 
     /// The four parts an agent reads once each is labelled with where it came from.

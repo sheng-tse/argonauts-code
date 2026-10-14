@@ -2,16 +2,16 @@
 source: crates/tui/tests/snap_workflow_page.rs
 expression: "screen(&mut view, width, height)"
 ---
-Workflows › spec-first
+Workflows › Spec-first
 Write the spec first, then build to it.                         .argonauts/workflows/spec-first.toml
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │   step        role          who would take it        how                                         │
 │   Workflow                                           the steps run exactly as written · no goal  │
-│ ❯ 1 Spec      orchestrator  Opus 5.5 on Claude Code  1 agent                                     │
-│   2 Build     workers       GPT 5.6 on Codex         one per task · until its acceptance tests … │
-│   3 Review    reviewers     Gemini 3.6 Pro, GPT 5.6  2 per task · sends back to Build            │
-│   4 Sign off  judge         GPT 5.6 on Codex         the model this step names                   │
+│ ❯ 1 Spec      Orchestrator  Opus 5.5 on Claude Code  1 agent                                     │
+│   2 Build     Workers       GPT 5.6 on Codex         one per task · until its acceptance tests … │
+│   3 Review    Reviewers     Gemini 3.6 Pro, GPT 5.6  2 per task · sends back to Build            │
+│   4 Sign off  Judge         GPT 5.6 on Codex         the model this step names                   │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │

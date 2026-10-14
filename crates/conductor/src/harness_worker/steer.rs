@@ -42,6 +42,20 @@ impl Pending {
         }
     }
 
+    /// Asks a session that reports through the tool for the report it ended without.
+    pub fn report_asked() -> Self {
+        Self {
+            part: part(
+                InputPartKind::Message,
+                "report asked",
+                super::report_tool::ASK_FOR_IT,
+                None,
+            ),
+            message: None,
+            limit: None,
+        }
+    }
+
     pub fn note(call: String, times: u32) -> Self {
         Self {
             part: part(InputPartKind::Message, "repeat note", REPEAT_NOTE, None),

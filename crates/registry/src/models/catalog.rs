@@ -102,6 +102,16 @@ fn check_catalog(catalog: &ModelCatalog) -> Result<(), String> {
     for note in &catalog.efforts {
         check_note(note).map_err(|e| format!("[[effort]] {}: {e}", note.level))?;
     }
+    for price in &catalog.prices {
+        check_text("a price's model", &price.model, MAX_NAME_CHARS)
+            .map_err(|e| format!("[[price]]: {e}"))?;
+        if !price.list_price().is_valid() {
+            return Err(format!(
+                "[[price]] {}: prices are dollars per million tokens, 0 or more",
+                price.model
+            ));
+        }
+    }
     Ok(())
 }
 

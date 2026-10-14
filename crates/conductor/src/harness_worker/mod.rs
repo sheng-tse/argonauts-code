@@ -17,6 +17,7 @@ mod lines;
 mod observe;
 mod outbox;
 pub mod refuse;
+mod report_tool;
 pub mod request;
 pub mod session;
 mod steer;

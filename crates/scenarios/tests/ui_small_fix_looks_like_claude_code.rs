@@ -16,7 +16,7 @@ const MODE_LINE: &str = r"(?m)^  ǁ supervised mode on";
 const TURN_END: &str = r"(?m)^✻ \w+ for \d";
 
 /// A global config means no guided setup; the scenario is about the run, not the first start.
-/// The default agent names its model, as rows like `Haiku 4.5 on Claude Code · owner` show
+/// The default agent names its model, as rows like `Haiku 5.5 on Claude Code · owner` show
 /// it, and since merging is automatic by default, this run's merge is set to wait for you.
 /// The request ends with the verdict, which a CLI that takes no tools keeps.
 fn skip_setup(scenario: &Scenario) -> anyhow::Result<()> {
@@ -65,7 +65,7 @@ fn ui_small_fix_looks_like_claude_code() -> anyhow::Result<()> {
     pty.send(FIX)?;
     pty.press(Key::Enter)?;
     // The agent's row marks the start. There is no Triage row.
-    let working = pty.wait_for(r"(?m)^[●⏺] build:\S+ · Haiku 4\.5 on Claude Code", WAIT)?;
+    let working = pty.wait_for(r"(?m)^[●⏺] build:\S+ · Haiku 5\.5 on Claude Code", WAIT)?;
     assert!(!working.text().contains("Triage("), "{}", working.text());
     scenario.shot(&pty, "small-fix-working")?;
 

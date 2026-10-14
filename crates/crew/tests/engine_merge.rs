@@ -38,7 +38,9 @@ use argonauts_core::settings::budget::{BudgetAmount, BudgetUnit};
 use argonauts_core::settings::delivery::{DeliveryCommits, DeliveryWrite, UnbornLanding};
 use argonauts_core::settings::handoff::{MergeRule, UnknownTier};
 use argonauts_core::settings::protocol::GateCommand;
+use argonauts_core::steps::StepName;
 use argonauts_core::steps::card::{CardReport, MemoryProposal, ReportStatus};
+use argonauts_core::worker::Access;
 use argonauts_core::workflow::{StandardPhase, Step, StepKind, StepRef, Workflow};
 use argonauts_core::{CardId, RepoId, RunId, unborn};
 use argonauts_crew::checkpoints;
@@ -59,6 +61,9 @@ const CODEX: &str = "codex/gpt-5.6";
 const GEMINI: &str = "agy/gemini-3";
 /// The card's ring reviewer, of another family than its planned owner.
 const AGY: &str = "agy/gemini-3.6";
+/// The merge agent. Each test that wants its answers adds it, so the other agents' answers
+/// go to the sessions they were written for.
+const MERGER: &str = "opencode/merger";
 
 fn worker(name: &str) -> WorkerRef {
     name.parse().expect("a valid worker")
@@ -395,6 +400,7 @@ fn suite_settings() -> Settings {
         name: "suite".to_owned(),
         command: vec!["true".to_owned()],
     }];
+    settings.crew.merger = vec![worker(MERGER)];
     settings
 }
 
@@ -689,6 +695,244 @@ async fn main_moved_merged_in_and_rechecked() -> anyhow::Result<()> {
             .iter()
             .all(|request| request.workdir == bench.integration)
     );
+    Ok(())
+}
+
+/// A merge agent that resolves the conflict in `store.rs` with `resolution`, or reports
+/// `status` without touching it, and writes the message the change lands with.
+fn merging(status: &'static str, resolution: Option<&'static str>) -> FakeWorker {
+    FakeWorker::harness(MERGER, "opencode").respond_with(move |spec| {
+        if spec.step != Some(StepName::ResolveConflict) {
+            return FakeSession::structured(json!({
+                "subject": "Add a store",
+                "body": "Keeps what the app saves.",
+            }));
+        }
+        if let Some(text) = resolution {
+            let _ = std::fs::write(spec.workdir.join("store.rs"), text);
+        }
+        FakeSession::structured(json!({
+            "status": status, "summary": "merged main", "files_changed": ["store.rs"],
+            "tests_run": [], "concerns": ["main renamed what the task builds on"],
+            "questions": [], "change_requests": [], "memory_proposals": []
+        }))
+    })
+}
+
+/// Your branch moved and changed the file the run wrote too: the merge agent resolves the
+/// conflict on the run's branch, the suite runs on its merge, and the run lands with both.
+#[tokio::test]
+async fn a_main_that_conflicts_goes_to_the_merge_agent() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.repo.write("store.rs", "fn main_store() {}\n")?;
+    bench.repo.commit_all("a store on main")?;
+    let both = "fn store() {}\nfn main_store() {}\n";
+    let merger = bench.services.workers.add(merging("done", Some(both)));
+
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+
+    let specs: Vec<_> = merger
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.step == Some(StepName::ResolveConflict))
+        .collect();
+    assert_eq!(specs.len(), 1, "one resolution");
+    assert_eq!(specs[0].card, None);
+    assert_eq!(specs[0].access, Access::Build);
+    assert_eq!(specs[0].workdir, bench.integration);
+    assert_eq!(
+        std::fs::read_to_string(bench.repo.root().join("store.rs"))?,
+        both
+    );
+    let events = bench.integration_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, IntegrationEvent::MainMergedIn { .. })),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, IntegrationEvent::FinalCheck { passed: true })),
+        "the suite ran on the merge agent's merge"
+    );
+    Ok(())
+}
+
+/// The merge agent writes the message the change lands with while the approval waits, and
+/// the run's trailer follows it.
+#[tokio::test]
+async fn the_merge_agent_writes_the_landed_message() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let merger = bench.services.workers.add(merging("done", None));
+
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    bench.landed_on("HEAD")?;
+    let message = bench.repo.git(&["log", "-1", "--format=%B", "HEAD"])?;
+    assert_eq!(
+        message.trim_end(),
+        format!("Add a store\n\nKeeps what the app saves.\n\nArgonauts-Run: {TEST_RUN}")
+    );
+    let specs = merger.specs();
+    assert_eq!(specs.len(), 1, "one message, written once");
+    assert_eq!(specs[0].access, Access::ReadOnly);
+    assert_eq!(specs[0].card, None);
+    assert_eq!(specs[0].workdir, bench.integration);
+    // It's the Merge step's agent, so the run's view shows it there, on its own model.
+    let started = bench
+        .host
+        .read(|state| state.sessions.get(&specs[0].key).cloned())
+        .context("the merge agent's session")?
+        .started;
+    assert_eq!(started.workflow_step, Some(step_ref()));
+    assert_eq!(started.worker, worker(MERGER));
+    assert_eq!(started.label.as_deref(), Some("merge:main"));
+    Ok(())
+}
+
+/// The suite passed, then your branch moved and its new commits broke it: the merge agent
+/// fixes what the merge broke on the run's branch, and the suite runs again. The run's own
+/// change grew with the fix, so you approve again before it lands.
+#[tokio::test]
+async fn the_merge_agent_fixes_what_a_moved_main_broke() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let merger =
+        bench.services.workers.add(
+            FakeWorker::harness(MERGER, "opencode").respond_with(|spec| {
+                if spec.access != Access::Build {
+                    return FakeSession::structured(
+                        json!({ "subject": "Add a store", "body": "" }),
+                    );
+                }
+                let _ = std::fs::write(spec.workdir.join("fixed.txt"), "fixed\n");
+                FakeSession::structured(json!({
+                    "status": "done", "summary": "fixed the store for the new main",
+                    "files_changed": ["fixed.txt"], "tests_run": [], "concerns": [],
+                    "questions": [], "change_requests": [], "memory_proposals": []
+                }))
+            }),
+        );
+
+    let done = bench
+        .run(async {
+            let first = bench.next_merge_card(&[]).await?;
+            bench.move_main("while-waiting.txt")?;
+            bench
+                .services
+                .gates
+                .fail_next("the store breaks with the new main");
+            bench.answer(&first, AnswerAction::Merge)?;
+            let again = bench
+                .next_merge_card(std::slice::from_ref(&first.id))
+                .await?;
+            bench.answer(&again, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+
+    let fixes: Vec<_> = merger
+        .specs()
+        .into_iter()
+        .filter(|spec| spec.access == Access::Build)
+        .collect();
+    assert_eq!(fixes.len(), 1, "one fix");
+    assert_eq!(fixes[0].workdir, bench.integration);
+    for file in ["store.rs", "while-waiting.txt", "fixed.txt"] {
+        assert!(bench.repo.root().join(file).exists(), "{file}");
+    }
+    assert_eq!(
+        bench.services.gates.requests().len(),
+        3,
+        "the suite, then after main came in, then after the fix"
+    );
+    let checks: Vec<bool> = bench
+        .integration_events()
+        .iter()
+        .filter_map(|event| match event {
+            IntegrationEvent::FinalCheck { passed } => Some(*passed),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(checks, [true, true]);
+    Ok(())
+}
+
+/// A merge agent that can't answer leaves the message plain code writes.
+#[tokio::test]
+async fn without_the_merge_agents_message_code_writes_it() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    bench.services.workers.add(
+        FakeWorker::harness(MERGER, "opencode")
+            .respond_with(|_| FakeSession::structured(json!({ "subject": " " }))),
+    );
+
+    let done = bench
+        .run(async {
+            let opened = bench.next_merge_card(&[]).await?;
+            bench.answer(&opened, AnswerAction::Merge)
+        })
+        .await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
+    let message = bench.repo.git(&["log", "-1", "--format=%B", "HEAD"])?;
+    assert!(
+        message
+            .trim_end()
+            .ends_with(&format!("Argonauts-Run: {TEST_RUN}")),
+        "{message}"
+    );
+    assert!(!message.starts_with(' '), "{message}");
+    Ok(())
+}
+
+/// When the merge agent says the two sides can't both hold, the merge is undone and the
+/// approval says why, in the merge agent's words.
+#[tokio::test]
+async fn a_main_the_merge_agent_cannot_reconcile_is_left_to_you() -> anyhow::Result<()> {
+    let bench = Bench::new(None).await?;
+    let before = bench.integration_head()?;
+    bench.repo.write("store.rs", "fn main_store() {}\n")?;
+    bench.repo.commit_all("a store on main")?;
+    bench.services.workers.add(merging("needs_decision", None));
+
+    let call = step_call()?;
+    let step = merge::merge_step(&bench.host, &call);
+    let watching = async {
+        let opened = bench.next_merge_card(&[]).await?;
+        let evidence = checkpoints::evidence_of(&bench.host, &opened)?;
+        ensure!(
+            evidence.agent_outputs.iter().any(|line| line.contains(
+                "main moved and conflicts with the run's work in store.rs, and the two can't \
+                 both hold: main renamed what the task builds on"
+            )),
+            "{:?}",
+            evidence.agent_outputs
+        );
+        anyhow::Ok(())
+    };
+    tokio::select! {
+        watched = watching => watched?,
+        ended = step => bail!("the merge step ended first: {ended:?}"),
+    }
+    assert_eq!(bench.integration_head()?, before, "the merge was undone");
+    let merging = git_in(
+        &bench.repo,
+        &bench.integration,
+        &["rev-parse", "--quiet", "--verify", "MERGE_HEAD"],
+    );
+    assert!(merging.is_err(), "no merge is left open");
     Ok(())
 }
 
@@ -1161,6 +1405,15 @@ async fn files_that_already_hold_the_runs_work_are_taken_as_they_are() -> anyhow
     assert!(!waited, "waited on files that hold the run's work");
     assert_eq!(bench.repo.git(&["status", "--porcelain"])?, "");
     assert!(!bench.host.repo().run_dir.join("landing-aside").exists());
+    assert!(
+        bench.notes().contains(
+            &"2 files of yours already held what the run brings, so they stayed as you left \
+              them: README.md, store.rs"
+                .to_owned()
+        ),
+        "{:?}",
+        bench.notes()
+    );
     Ok(())
 }
 
@@ -1845,6 +2098,14 @@ async fn files_in_the_way_wait_to_merge_and_move_aside() -> anyhow::Result<()> {
             };
             assert_eq!(packet.in_the_way, ["store.rs"]);
             assert_eq!(packet.rows.len(), 1, "the merge's evidence, shown again");
+            let evidence = checkpoints::evidence_of(&bench.host, &asked)?;
+            assert_eq!(
+                evidence.agent_outputs,
+                [
+                    "1 file of yours is in the way of main: store.rs (not committed, where the \
+                  run adds a file). Nothing of yours was changed."
+                ]
+            );
             ensure!(
                 !bench.landed(),
                 "nothing merged while the files were in the way"
@@ -2335,10 +2596,49 @@ async fn debt_under_merge_rule_none_is_not_unreviewed() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// An owner's note is committed before the merge checkpoint opens, so your approval covers it
-/// and it lands with the run. The retro after the landing has nothing left to land.
+/// Only tasks that passed merge. When none did, the merge never opens, nothing lands, and the
+/// run ends saying what stopped each task.
 #[tokio::test]
-async fn retro_notes_land_as_part_of_the_merge() -> anyhow::Result<()> {
+async fn with_no_task_passed_the_merge_never_opens() -> anyhow::Result<()> {
+    let card = CardId::numbered(1);
+    let bench = Bench::with(vec![spec(&card)], None, suite_settings()).await?;
+    let before = bench.repo.head()?;
+    bench.host.record(
+        Some(&card),
+        None,
+        RunEventKind::Card(CardEvent::State {
+            from: Some(CardState::Integrated),
+            to: CardState::Blocked,
+            reason: "waiting on your answer about the key prefix".to_owned(),
+        }),
+    )?;
+
+    let done = bench.run(async { Ok(()) }).await?;
+    assert_eq!(done.flow, Flow::Finish(RunOutcome::Failed));
+    let why = done.summary.unwrap_or_default();
+    assert_eq!(
+        why,
+        "Nothing was merged, since no task passed: task-001 is blocked on a question \
+         (waiting on your answer about the key prefix)."
+    );
+    let events = bench.sink.events();
+    assert!(!events.iter().any(|event| matches!(
+        &event.kind,
+        RunEventKind::Checkpoint(CheckpointEvent::Opened(opened))
+            if opened.kind == CheckpointKind::Merge
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        RunEventKind::Note(note) if note.text == why
+    )));
+    assert_eq!(bench.repo.head()?, before, "nothing landed");
+    Ok(())
+}
+
+/// An owner's note is kept under Argonauts' home before the merge checkpoint opens. It is
+/// never part of what lands, and the retro after the landing commits nothing.
+#[tokio::test]
+async fn retro_notes_stay_out_of_the_merge() -> anyhow::Result<()> {
     let mut settings = suite_settings();
     settings.evolution.propose_every = 0;
     let bench = Bench::with(vec![spec(&CardId::numbered(1))], None, settings).await?;
@@ -2369,50 +2669,26 @@ async fn retro_notes_land_as_part_of_the_merge() -> anyhow::Result<()> {
             let opened = bench.next_merge_card(&[]).await?;
             let evidence = checkpoints::evidence_of(&bench.host, &opened)?;
             ensure!(
-                evidence.facts.conductor_paths.contains(&note.to_owned()),
+                evidence.facts.conductor_paths.is_empty(),
                 "{:?}",
                 evidence.facts.conductor_paths
             );
             ensure!(!evidence.facts.agent_paths.contains(&note.to_owned()));
-            let shown = evidence.facts.subject.context("no subject")?;
-            ensure!(
-                git_in(
-                    &bench.repo,
-                    &bench.integration,
-                    &["show", &format!("{}:{note}", shown.head_commit)]
-                )?
-                .contains("keeps keys for an hour")
-            );
             bench.answer(&opened, AnswerAction::Merge)
         })
         .await?;
     assert_eq!(done.flow, Flow::Finish(RunOutcome::Merged));
     let landed = bench.repo.head()?;
-    assert!(
-        bench
-            .repo
-            .git(&["show", &format!("{landed}:{note}")])?
-            .contains("keeps keys for an hour")
-    );
+    let tracked = bench.repo.git(&["ls-tree", "-r", "--name-only", &landed])?;
+    assert!(!tracked.contains(".argonauts/"), "{tracked}");
+    let kept = argonauts_crew::divide::repo_state_dir(&bench.host).join("notes/store.md");
+    assert!(std::fs::read_to_string(kept)?.contains("keeps keys for an hour"));
 
     retro::run(&bench.host).await?;
     let events = bench.sink.events();
-    let commits = events
-        .iter()
-        .filter(|event| {
-            matches!(
-                event.kind,
-                RunEventKind::Retro(RetroEvent::Committed { .. })
-            )
-        })
-        .count();
-    assert_eq!(
-        commits, 1,
-        "the notes were committed once, before the merge"
-    );
     assert!(!events.iter().any(|event| matches!(
-        &event.kind,
-        RunEventKind::Note(note) if note.text.contains("run review's notes")
+        event.kind,
+        RunEventKind::Retro(RetroEvent::Committed { .. })
     )));
     assert_eq!(bench.repo.head()?, landed, "nothing merged after the merge");
     Ok(())

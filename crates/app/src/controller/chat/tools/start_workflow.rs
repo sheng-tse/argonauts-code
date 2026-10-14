@@ -8,10 +8,12 @@
 //! through the same checks as an estimate's do, against your message as you typed it, so a word
 //! the session picked out can't start anything.
 
-use argonauts_core::events::run::{RunMode, TriageDecision};
+use argonauts_core::events::run::{InstructionOutcome, RunMode, TriageDecision};
+use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::{ForcedMode, SoloStyle};
 use argonauts_core::steps::intake::{Instruction, InstructionKind};
+use argonauts_core::text::sentence_case;
 use serde_json::Value;
 
 use super::{Call, MainTool};
@@ -92,6 +94,15 @@ fn call(ctx: &mut Ctx, chat: &mut ChatState, call: Call) -> Vec<Effect> {
         solo: (mode == RunMode::Solo).then_some(SoloStyle::Checked),
     });
     applied.apply_to(&mut start);
+    // Solo has no crew workflow of its own, so the crew your words ask for runs the
+    // orchestrator's, led by the main agent, which also builds unless your words named who
+    // does. The seats your words named come after, and win.
+    let orchestrated = in_use.is_none() && !same_model && mode == RunMode::Crew;
+    if orchestrated {
+        let (before, after) = orchestrator_crew(ctx.settings(), &applied);
+        start.request_settings.splice(0..0, before);
+        start.request_settings.extend(after);
+    }
     // A setup you kept for this request alone holds for the workflow it starts, and so do the
     // steps you kept for it or for the whole conversation.
     start
@@ -108,8 +119,9 @@ fn call(ctx: &mut Ctx, chat: &mut ChatState, call: Call) -> Vec<Effect> {
     if plan_first {
         start = planned(start);
     }
-    keep::offer(ctx, chat, &applied);
-    let (what, began) = match in_use {
+    // The crew shown is the one the run has, the seats it adds around your words included.
+    keep::offer_in_run(ctx, chat, &applied, Some(&start.request_settings));
+    let (what, began) = match &in_use {
         Some(workflow) => (
             format!("The {workflow} workflow"),
             format!("The {workflow} workflow started on this."),
@@ -126,6 +138,17 @@ fn call(ctx: &mut Ctx, chat: &mut ChatState, call: Call) -> Vec<Effect> {
             ),
         ),
     };
+    let main = &ctx.settings().main_agent;
+    let crew = match &in_use {
+        Some(workflow) => Crew::asked(workflow, &applied),
+        None if mode == RunMode::Crew => Crew::orchestrated(main, &applied),
+        None => Crew::checked(main, &applied),
+    };
+    let line = crew.line(|worker| ctx.names.worker(&ctx.names.running(worker)));
+    let began = format!(
+        "{began} Your whole reply to the user is this one line, word for word, with nothing \
+         before or after it: {line}"
+    );
     // The answer waits until the run is under way or has failed, so it tells the truth.
     run_news::hold(chat, call.reply, what, began);
     vec![handover::start(start)]
@@ -149,14 +172,14 @@ fn leaves(
     workflow_in_use: bool,
     settings: &Settings,
     applied: &Applied,
-) -> Result<RunMode, &'static str> {
+) -> Result<RunMode, String> {
     if !workflow_in_use {
-        return asked_for(applied).ok_or("The user didn't ask for a workflow, so do it yourself.");
+        return asked_for(applied).ok_or_else(|| why_not(applied));
     }
     let asked = applied.asked;
     // "Just do it yourself" keeps one request with the session, whatever is in use.
     if asked.mode == Some(RunMode::Solo) && asked.solo != Some(SoloStyle::Checked) {
-        return Err("The user asked you to do this one yourself, so do it here.");
+        return Err("The user asked you to do this one yourself, so do it here.".to_owned());
     }
     Ok(match (asked.mode, settings.triage.force) {
         (Some(mode), _) => mode,
@@ -193,6 +216,195 @@ fn asked_for(applied: &Applied) -> Option<RunMode> {
             )
     });
     (asked.solo == Some(SoloStyle::Checked) || roles).then_some(RunMode::Solo)
+}
+
+/// The request settings that give a crew run from solo the orchestrator's workflow: those that
+/// go before your words', and those after. The main agent leads, and builds unless your words
+/// named who does, over the builders the check infers for reviewers you named.
+fn orchestrator_crew(settings: &Settings, applied: &Applied) -> (Vec<String>, Vec<String>) {
+    let mut before = vec!["workflow=\"orchestrator\"".to_owned()];
+    if applied.lead.is_none() && applied.workers(RoleName::Orchestrator).is_empty() {
+        before.push("crew.orchestrator=\"main\"".to_owned());
+    }
+    let mut after = Vec::new();
+    if builders_asked(applied).is_empty() {
+        let main = toml::Value::String(settings.main_agent.to_string());
+        after.push(format!(
+            "roles.{}.workers=[{main}]",
+            RoleName::Worker.as_str()
+        ));
+    }
+    (before, after)
+}
+
+/// Who does what in the workflow a call started, as the session tells you.
+#[derive(Debug, Clone, PartialEq)]
+struct Crew {
+    /// As the line names it: "Orchestrator", "Council".
+    workflow: String,
+    /// The reviewers your words named.
+    reviewers: Vec<WorkerRef>,
+    /// Who plans, when your words or this call decided it.
+    plans: Option<WorkerRef>,
+    /// Who builds, likewise.
+    builds: Vec<WorkerRef>,
+}
+
+impl Crew {
+    /// The workflow in use, with only the seats your words named.
+    fn asked(workflow: &str, applied: &Applied) -> Self {
+        Self {
+            workflow: sentence_case(workflow),
+            reviewers: reviewers_asked(applied),
+            plans: applied.lead.clone(),
+            builds: builders_asked(applied),
+        }
+    }
+
+    /// The orchestrator's workflow a crew run from solo takes: the main agent plans and builds
+    /// unless your words named others.
+    fn orchestrated(main: &WorkerRef, applied: &Applied) -> Self {
+        let plans = applied
+            .lead
+            .clone()
+            .or_else(|| applied.workers(RoleName::Orchestrator).into_iter().next())
+            .unwrap_or_else(|| main.clone());
+        let mut builds = builders_asked(applied);
+        if builds.is_empty() {
+            builds.push(main.clone());
+        }
+        Self {
+            workflow: "Orchestrator".to_owned(),
+            reviewers: reviewers_asked(applied),
+            plans: Some(plans),
+            builds,
+        }
+    }
+
+    /// One worker in a checked copy, as a review asked for in solo starts.
+    fn checked(main: &WorkerRef, applied: &Applied) -> Self {
+        Self {
+            workflow: "Solo, in a checked copy".to_owned(),
+            reviewers: reviewers_asked(applied),
+            plans: None,
+            builds: vec![applied.solo_lead.clone().unwrap_or_else(|| main.clone())],
+        }
+    }
+
+    /// "Starting a workflow: Orchestrator, with **GPT 5.6 Luna on Codex** reviewing as you
+    /// asked; **Haiku 5.5 on Claude Code** plans and builds."
+    fn line(&self, name: impl Fn(&WorkerRef) -> String) -> String {
+        let names = |workers: &[WorkerRef]| {
+            let named: Vec<String> = workers
+                .iter()
+                .map(|worker| format!("**{}**", name(worker)))
+                .collect();
+            named.join(" and ")
+        };
+        let mut line = format!("Starting a workflow: {}", self.workflow);
+        if !self.reviewers.is_empty() {
+            line.push_str(&format!(
+                ", with {} reviewing as you asked",
+                names(&self.reviewers)
+            ));
+        }
+        let build = if self.builds.len() == 1 {
+            "builds"
+        } else {
+            "build"
+        };
+        let doing = match (&self.plans, self.builds.as_slice()) {
+            (Some(plans), [builds]) if plans == builds => Some(format!(
+                "{} plans and builds",
+                names(std::slice::from_ref(plans))
+            )),
+            (Some(plans), []) => Some(format!("{} plans", names(std::slice::from_ref(plans)))),
+            (Some(plans), builds) => Some(format!(
+                "{} plans and {} {build}",
+                names(std::slice::from_ref(plans)),
+                names(builds)
+            )),
+            (None, []) => None,
+            (None, builds) => Some(format!("{} {build}", names(builds))),
+        };
+        if let Some(doing) = doing {
+            line.push_str("; ");
+            line.push_str(&doing);
+        }
+        line.push('.');
+        line
+    }
+}
+
+/// The reviewers your words named, when an instruction to review was followed.
+fn reviewers_asked(applied: &Applied) -> Vec<WorkerRef> {
+    asked(applied, InstructionKind::Review, RoleName::Reviewer)
+}
+
+/// The builders your words named, never those the check inferred.
+fn builders_asked(applied: &Applied) -> Vec<WorkerRef> {
+    asked(applied, InstructionKind::Build, RoleName::Worker)
+}
+
+/// Who fills `role`, when an instruction of `kind` was followed.
+fn asked(applied: &Applied, kind: InstructionKind, role: RoleName) -> Vec<WorkerRef> {
+    let followed = applied
+        .instructions
+        .iter()
+        .any(|instruction| instruction.kind == kind && instruction.followed());
+    if followed {
+        applied.workers(role)
+    } else {
+        Vec::new()
+    }
+}
+
+/// Why no workflow started in solo, instruction by instruction, so the session can correct its
+/// call when your words did ask for one, and otherwise knows to do the work itself.
+fn why_not(applied: &Applied) -> String {
+    let mut text = String::from(
+        "No workflow started. In solo one starts only when the user's own words ask for the \
+         crew or a workflow, a checked copy, or other agents in roles.",
+    );
+    if applied.instructions.is_empty() {
+        text.push_str(
+            " The call passed no instruction in `how_to_run`, so nothing asked for one. If the \
+             user did, call again with their words for it: `says` copied exactly, such as \
+             {\"says\": \"use a workflow\", \"kind\": \"mode\", \"value\": \"crew\"}.",
+        );
+    } else {
+        text.push_str(" What came of each instruction:");
+        for instruction in &applied.instructions {
+            let kind = serde_json::to_value(instruction.kind)
+                .ok()
+                .and_then(|kind| kind.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let outcome = match &instruction.outcome {
+                InstructionOutcome::Followed { said, .. } if said.is_empty() => {
+                    "followed, but it asks for nothing this turn can't do".to_owned()
+                }
+                InstructionOutcome::Followed { said, .. } => {
+                    format!("followed ({said}), but it asks for nothing this turn can't do")
+                }
+                InstructionOutcome::NotFollowed { why } => format!("not followed: {why}"),
+                InstructionOutcome::Dropped => {
+                    "dropped: these words aren't in the user's message; copy them exactly"
+                        .to_owned()
+                }
+            };
+            text.push_str(&format!(
+                "\n- \"{}\" ({kind}): {outcome}.",
+                instruction.says
+            ));
+        }
+        text.push_str(
+            "\nIf the user's words do ask for a workflow, correct the call and make it again: \
+             `who` takes the CLI or model the user named, such as \"codex\", never a role such \
+             as \"reviewer\".",
+        );
+    }
+    text.push_str(" If they don't, do the work yourself.");
+    text
 }
 
 #[cfg(test)]
@@ -281,6 +493,153 @@ mod tests {
         assert!(asked("What does parse_due do?", &[]).is_err());
     }
 
+    /// "Use a workflow" asks for the crew as "use the crew" does, and the agent named for a
+    /// role counts whether the call put it in `who`, in `value` with the role in `who`, or only
+    /// in the words.
+    #[test]
+    fn a_workflow_with_codex_as_the_reviewer_starts_the_crew_with_codex_reviewing() {
+        use InstructionKind::{Mode, Review};
+        let settings = solo();
+        let message = "Use a workflow for this, with Codex as the reviewer, and choose \
+                       everything else yourself. Fix the money rounding.";
+        let workflow = said(Mode, "Use a workflow for this", "", "");
+        for (who, value) in [("codex", ""), ("reviewer", "Codex"), ("the reviewer", "")] {
+            let review = said(Review, "with Codex as the reviewer", who, value);
+            let applied = checked(&settings, message, &[workflow.clone(), review]);
+            assert_eq!(
+                leaves(false, &settings, &applied),
+                Ok(RunMode::Crew),
+                "{who}"
+            );
+            assert!(
+                applied.settings.contains(&(
+                    "roles.reviewer.workers".to_owned(),
+                    "[\"codex\"]".to_owned()
+                )),
+                "{who}: {:?}",
+                applied.settings
+            );
+        }
+        // The model may copy the whole sentence into `says`: "choose everything else
+        // yourself" hands the rest over to the crew, and never asks for solo.
+        let whole = "Use a workflow for this, with Codex as the reviewer, and choose everything \
+                     else yourself";
+        for value in ["crew", ""] {
+            let workflow = said(Mode, whole, "", value);
+            let review = said(Review, "with Codex as the reviewer", "codex", "");
+            for list in [vec![workflow.clone(), review], vec![workflow]] {
+                let applied = checked(&settings, message, &list);
+                assert_eq!(
+                    leaves(false, &settings, &applied),
+                    Ok(RunMode::Crew),
+                    "value {value:?}, {} instructions",
+                    list.len()
+                );
+                assert_eq!(applied.asked.mode, Some(RunMode::Crew));
+            }
+        }
+        // "Do it yourself" still asks for solo.
+        let yourself = said(Mode, "just do it yourself", "", "solo");
+        let applied = checked(&settings, "Just do it yourself.", &[yourself]);
+        assert_eq!(applied.asked.mode, Some(RunMode::Solo));
+        // "Don't use a workflow" keeps it solo, and "the solo workflow" says solo.
+        let solo_words = said(Mode, "don't use a workflow", "", "solo");
+        let applied = checked(
+            &settings,
+            "Fix it, but don't use a workflow.",
+            &[solo_words],
+        );
+        assert_eq!(applied.asked.mode, Some(RunMode::Solo));
+        let named = said(Mode, "the solo workflow", "", "");
+        let applied = checked(&settings, "Run it on the solo workflow.", &[named]);
+        assert_eq!(applied.asked.mode, Some(RunMode::Solo));
+    }
+
+    /// A refusal says why for each instruction, so the session can correct its call.
+    #[test]
+    fn a_refusal_names_each_instruction_and_why() {
+        use InstructionKind::{Effort, Review};
+        let settings = solo();
+        let message = "Fix it on max effort, with the reviewer checking it.";
+        let list = [
+            said(Effort, "on max effort", "", "max"),
+            said(Review, "with the reviewer checking it", "reviewer", ""),
+            said(Review, "have codex review it", "codex", ""),
+        ];
+        let refused = leaves(false, &settings, &checked(&settings, message, &list)).unwrap_err();
+        assert!(refused.starts_with("No workflow started."), "{refused}");
+        assert!(
+            refused.contains("\"on max effort\" (effort): followed"),
+            "{refused}"
+        );
+        assert!(
+            refused.contains(
+                "\"with the reviewer checking it\" (review): not followed: reviewer is a role, \
+                 and the words name no agent for it."
+            ),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("\"have codex review it\" (review): dropped"),
+            "{refused}"
+        );
+        assert!(refused.contains("never a role"), "{refused}");
+        let nothing = leaves(false, &settings, &checked(&settings, message, &[])).unwrap_err();
+        assert!(nothing.contains("passed no instruction"), "{nothing}");
+    }
+
+    /// The session says what started and with whom, and a crew from solo runs the
+    /// orchestrator's workflow with the main agent planning and building.
+    #[test]
+    fn the_session_says_what_started_and_with_whom() {
+        use InstructionKind::{Build, Mode, Review};
+        let settings = solo();
+        let message = "Use a workflow for this, with Codex as the reviewer. Fix the rounding.";
+        let list = [
+            said(Mode, "Use a workflow for this", "", "crew"),
+            said(Review, "with Codex as the reviewer", "codex", ""),
+        ];
+        let applied = checked(&settings, message, &list);
+        let main = &settings.main_agent;
+        let name = |worker: &WorkerRef| match worker.worker.as_str() {
+            "codex" => "GPT 5.6 Luna on Codex".to_owned(),
+            _ => "Haiku 5.5 on Claude Code".to_owned(),
+        };
+        assert_eq!(
+            Crew::orchestrated(main, &applied).line(name),
+            "Starting a workflow: Orchestrator, with **GPT 5.6 Luna on Codex** reviewing as you \
+             asked; **Haiku 5.5 on Claude Code** plans and builds."
+        );
+        let main_list = toml::Value::String(main.to_string());
+        assert_eq!(
+            orchestrator_crew(&settings, &applied),
+            (
+                vec![
+                    "workflow=\"orchestrator\"".to_owned(),
+                    "crew.orchestrator=\"main\"".to_owned(),
+                ],
+                vec![format!("roles.worker.workers=[{main_list}]")],
+            )
+        );
+        // Builders you named build, and the workflow in use keeps its own seats.
+        let message = "Use the crew, have codex build it.";
+        let list = [
+            said(Mode, "Use the crew", "", "crew"),
+            said(Build, "have codex build it", "codex", ""),
+        ];
+        let applied = checked(&settings, message, &list);
+        assert_eq!(
+            Crew::orchestrated(main, &applied).line(name),
+            "Starting a workflow: Orchestrator; **Haiku 5.5 on Claude Code** plans and \
+             **GPT 5.6 Luna on Codex** builds."
+        );
+        assert!(orchestrator_crew(&settings, &applied).1.is_empty());
+        assert_eq!(
+            Crew::asked("council", &Applied::default()).line(name),
+            "Starting a workflow: Council."
+        );
+    }
+
     #[test]
     fn the_request_is_your_words_first_then_the_session_s_account() {
         assert_eq!(handed_over(" yes, do that ", ""), "yes, do that");
@@ -319,7 +678,7 @@ mod tests {
         let own = said(Mode, "just do it yourself", "", "solo");
         assert_eq!(
             asked(&council, "Just do it yourself: add due dates.", &[own]),
-            Err("The user asked you to do this one yourself, so do it here.")
+            Err("The user asked you to do this one yourself, so do it here.".to_owned())
         );
         // Maker-checker is one worker in a checked copy, and "use the crew" still wins.
         let mut maker_checker = one_worker("maker-checker");

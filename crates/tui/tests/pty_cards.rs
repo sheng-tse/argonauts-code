@@ -118,7 +118,7 @@ fn own_answer_option_opens_line_in_card() {
         screen.visible_text()
     );
     assert!(
-        !screen.visible_text().contains("council · Haiku ─"),
+        !screen.visible_text().contains("Council · Haiku ─"),
         "the input is hidden while the question has the keys:\n{}",
         screen.visible_text()
     );

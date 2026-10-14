@@ -1,0 +1,31 @@
+ Overview    Status    Usage    Context    Limits    Stats 
+
+ Overview    Models 
+
+    Oct      Dec     Feb      Apr      Jun     Aug  Sep
+    ·█··█·█·████·█·███·████·████████████████·███████·██·
+Mon ███████·████████████████·██████████████·█·████·█████
+    ·██·██·█·██████████████████████████████·██████████··
+Wed ··██··█·████████████·█████████████·█·███████████████
+    ██·█·██··█·████████████████████··███████·█████·█████
+Fri ·█·█·██████████████·████████████████████████████··██
+    █·█████·█·█·█··██████···██████████·█·█·██·█·█·█████ 
+
+    Less ░ ▒ ▓ █ More    ● Claude Code  ● Codex  ● agy    each day in the colour of the CLI that ran most
+
+All time · Last 7 days · Last 30 days
+
+Favorite model: Opus 5.5        Total tokens: 118.4b        
+Favorite CLI: Claude Code       API value: ~$9,640          
+Sessions: 1,086                 Longest session: 57d 3h     
+Active days: 318/365            Longest streak: 64 days     
+Most active day: Aug 28         Current streak: 18 days     
+Top folder: argonauts-code      Peak hour: 21:00-22:00      
+Claude Code 73.5b · Codex 33.1b · agy 11.8b
+Input 1.2b · Output 0.4b · Cache read 110.0b · Cache write 6.8b
+
+Your input and output are ~920x the tokens in A Game of Thrones
+97% of your input came from cache; 64% of your tokens ran in subagents
+Stats from the last 365 days · imported: Claude Code since Oct 2025, Codex since Feb, agy since Jun
+
+  ↑ tabs · tab Overview or Models · r to cycle dates · ctrl+s to copy · esc closes

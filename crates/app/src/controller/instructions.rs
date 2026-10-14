@@ -33,6 +33,35 @@ use words::{
     turns_network_off, unknown, words,
 };
 
+/// Verbs that hand work to a workflow or the crew when one follows them, as in "use a workflow".
+const HANDING_ON: [&str; 6] = ["use", "run", "start", "launch", "hand", "give"];
+
+/// Whether `message` plainly asks for a workflow or the crew: a clause where one of
+/// [`HANDING_ON`] comes just before the word, with no negation before it, and nothing in the
+/// message asking for solo. "Explain how the workflow works" asks for nothing.
+pub(crate) fn plainly_asks_for_a_workflow(message: &str) -> bool {
+    if crew_stance(message) != Stance::For {
+        return false;
+    }
+    message
+        .split([',', ';', ':', '.', '!', '?', '(', ')', '\n'])
+        .any(|clause| {
+            let words = tokens(clause);
+            words.iter().enumerate().any(|(at, word)| {
+                let cue =
+                    WORKFLOW_CUES.contains(&word.as_str()) || CREW_CUES.contains(&word.as_str());
+                let before = &words[at.saturating_sub(3)..at];
+                let handed = before
+                    .iter()
+                    .any(|word| HANDING_ON.contains(&word.as_str()));
+                let negated = before
+                    .iter()
+                    .any(|word| ["dont", "not", "no", "never", "without"].contains(&word.as_str()));
+                cue && handed && !negated
+            })
+        })
+}
+
 /// Whether `says` stands in `message` word for word, two words at least, the way an
 /// instruction's words are checked against your message.
 pub(crate) fn said_in(message: &str, says: &str) -> bool {
@@ -94,6 +123,24 @@ impl Applied {
         if self.supervised {
             request.approval_mode = Some(ApprovalMode::Supervised);
         }
+    }
+
+    /// The workers your words gave `role`, as the request layer holds them.
+    pub(crate) fn workers(&self, role: RoleName) -> Vec<WorkerRef> {
+        let key = format!("roles.{}.workers", role.as_str());
+        let Some((_, list)) = self.settings.iter().rev().find(|(known, _)| *known == key) else {
+            return Vec::new();
+        };
+        let Ok(mut table) = format!("value = {list}").parse::<toml::Table>() else {
+            return Vec::new();
+        };
+        let Some(toml::Value::Array(items)) = table.remove("value") else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| item.as_str()?.parse().ok())
+            .collect()
     }
 
     /// What a direct turn of `main` takes from your words: its model and effort, a lower
@@ -160,11 +207,12 @@ pub(crate) fn might_say_how(message: &str, roster: &Roster) -> bool {
 
 /// Words that may say how to run a request. A role's verb alone, such as "the build runs",
 /// says nothing of who fills it: the agent's name does.
-const HOW_CUES: [&str; 31] = [
+const HOW_CUES: [&str; 32] = [
     // "keep going until its tests pass" sets a goal.
     "until",
     "crew",
     "team",
+    "workflow",
     "agents",
     "agy",
     "gemini",
@@ -349,6 +397,13 @@ impl Checker<'_> {
                 | Kind::Check
                 | Kind::Others
         );
+        let named;
+        let instruction = if gives_a_role {
+            named = self.agent_in_who(instruction)?;
+            &named
+        } else {
+            instruction
+        };
         if gives_a_role && turned_around(&instruction.says, &names_in(&instruction.who)) {
             return Err(SAYS_OTHERWISE.to_owned());
         }
@@ -679,7 +734,7 @@ impl Checker<'_> {
     /// named agent CLI leads.
     fn crew(&self, instruction: &Instruction) -> Result<Effect, String> {
         if instruction.who.trim().is_empty() || is_generic(&instruction.who) {
-            if stance(&instruction.says, &CREW_CUES, &SOLO_CUES) != Stance::For {
+            if crew_stance(&instruction.says) != Stance::For {
                 return Err(SAYS_OTHERWISE.to_owned());
             }
             return Ok(Effect {
@@ -1055,6 +1110,40 @@ impl Checker<'_> {
         })
     }
 
+    /// The instruction with the agent it gives a role to in `who`. A model may put the role
+    /// there instead, as `who: "reviewer"` for "with Codex as the reviewer", with the agent in
+    /// `value` or only in the words; the agent counts all the same.
+    fn agent_in_who(&self, instruction: &Instruction) -> Result<Instruction, String> {
+        let mut named = instruction.clone();
+        let here = |text: &str| {
+            names_in(text)
+                .into_iter()
+                .any(|name| self.roster.find(name).is_some())
+        };
+        if here(&instruction.who) || !names_a_role(&instruction.who) {
+            return Ok(named);
+        }
+        if here(&instruction.value) {
+            named.who = std::mem::take(&mut named.value);
+            return Ok(named);
+        }
+        let agents: Vec<String> = tokens(&instruction.says)
+            .into_iter()
+            .filter(|word| matches!(self.roster.find(word), Some((_, None))))
+            .collect();
+        let role = instruction.who.trim();
+        match agents.is_empty() {
+            false => named.who = agents.join(", "),
+            true if role.is_empty() => {}
+            true => {
+                return Err(format!(
+                    "{role} is a role, and the words name no agent for it"
+                ));
+            }
+        }
+        Ok(named)
+    }
+
     /// Whether `agent` can work now, and if not, why and what happens instead.
     fn ready(&self, agent: &Agent, fallback: &str) -> Result<(), String> {
         let (harness, endpoint) = match agent.state {
@@ -1265,6 +1354,109 @@ const CREW_CUES: [&str; 9] = [
     "multiple agents",
 ];
 
+/// Words for a role rather than for who fills it, as in "the reviewer".
+const ROLE_WORDS: [&str; 26] = [
+    "the",
+    "a",
+    "an",
+    "as",
+    "reviewer",
+    "reviewers",
+    "review",
+    "judge",
+    "judges",
+    "lead",
+    "leader",
+    "orchestrator",
+    "coordinator",
+    "builder",
+    "builders",
+    "worker",
+    "workers",
+    "planner",
+    "planners",
+    "checker",
+    "checkers",
+    "drafter",
+    "drafters",
+    "owner",
+    "owners",
+    "maker",
+];
+
+/// Whether `who` holds a role, or nothing, where an agent belongs.
+fn names_a_role(who: &str) -> bool {
+    tokens(who)
+        .iter()
+        .all(|word| ROLE_WORDS.contains(&word.as_str()))
+}
+
+/// "Use a workflow" asks for the crew as "use the crew" does, and "don't use a workflow" keeps
+/// the work solo. They count only in a clause whose words say neither, so "the solo workflow"
+/// stays solo.
+const WORKFLOW_CUES: [&str; 2] = ["workflow", "workflows"];
+
+/// Verbs after which "yourself" hands a choice over rather than asking for solo work, as in
+/// "choose everything else yourself".
+const CHOOSING: [&str; 5] = ["choose", "decide", "pick", "select", "figure"];
+
+/// How `says` stands on the crew, clause by clause.
+fn crew_stance(says: &str) -> Stance {
+    let (crew, solo) = leanings(says);
+    side(crew, solo)
+}
+
+/// How `says` stands on solo, where "don't use a workflow" is for it.
+fn solo_stance(says: &str) -> Stance {
+    let (crew, solo) = leanings(says);
+    side(solo, crew)
+}
+
+fn side(toward: bool, away: bool) -> Stance {
+    match (toward, away) {
+        (true, false) => Stance::For,
+        (_, true) => Stance::Against,
+        (false, false) => Stance::Silent,
+    }
+}
+
+/// Whether any clause of `says` leans to the crew, and whether any leans to solo. Each clause
+/// stands on its own: in "use a workflow, with Codex as the reviewer, and choose everything
+/// else yourself" the first asks for the crew, and the last leaves the rest to it.
+fn leanings(says: &str) -> (bool, bool) {
+    let (mut crew, mut solo) = (false, false);
+    for clause in says.split([',', ';', ':', '.', '!', '?', '(', ')', '\n']) {
+        let clause = without_handed_over_choices(clause);
+        let leaning = match stance(&clause, &CREW_CUES, &SOLO_CUES) {
+            Stance::Silent => stance(&clause, &WORKFLOW_CUES, &[]),
+            said => said,
+        };
+        match leaning {
+            Stance::For => crew = true,
+            Stance::Against => solo = true,
+            Stance::Silent => {}
+        }
+    }
+    (crew, solo)
+}
+
+/// The clause's words without a "yourself" that follows a verb of choosing, so "choose the
+/// rest yourself" says nothing about solo while "do it yourself" still does.
+fn without_handed_over_choices(clause: &str) -> String {
+    let words = tokens(clause);
+    let mut kept: Vec<&str> = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        let handed_over = word == "yourself"
+            && words[..at]
+                .iter()
+                .any(|before| CHOOSING.contains(&before.as_str()));
+        if !handed_over {
+            kept.push(word);
+        }
+    }
+    kept.join(" ")
+}
+
 const COPY_CUES: [&str; 9] = [
     "copy",
     "checked",
@@ -1294,8 +1486,8 @@ const CHECKOUT_CUES: [&str; 10] = [
 /// alone.
 fn mode(instruction: &Instruction) -> Result<Effect, String> {
     let says = &instruction.says;
-    let solo = || stance(says, &SOLO_CUES, &CREW_CUES);
-    let crew = || stance(says, &CREW_CUES, &SOLO_CUES);
+    let solo = || solo_stance(says);
+    let crew = || crew_stance(says);
     let mode = match key(&instruction.value).as_str() {
         "solo" if solo() == Stance::For => RunMode::Solo,
         "crew" if crew() == Stance::For => RunMode::Crew,
@@ -1509,3 +1701,29 @@ fn has_key(settings: &Settings, pointer: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod asked_for_a_workflow_tests {
+    use super::plainly_asks_for_a_workflow;
+
+    #[test]
+    fn only_words_that_hand_the_work_on_ask_for_a_workflow() {
+        for asked in [
+            "Use a workflow for this, with Codex as the reviewer, and choose everything else \
+             yourself. Fix the money rounding.",
+            "Fix the export bug, and use the crew.",
+            "Start a workflow to add due dates",
+        ] {
+            assert!(plainly_asks_for_a_workflow(asked), "{asked}");
+        }
+        for not_asked in [
+            "Explain how the workflow works.",
+            "Fix it, but don't use a workflow.",
+            "Fix the money rounding by yourself.",
+            "Use a workflow and do it yourself.",
+            "What does the crew do?",
+        ] {
+            assert!(!plainly_asks_for_a_workflow(not_asked), "{not_asked}");
+        }
+    }
+}

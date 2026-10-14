@@ -59,6 +59,8 @@ pub(super) struct RunStory {
     pub workflow: Option<String>,
     /// Its start item, while it waits for the workflow a step runs to report its phases.
     pub workflow_start: Option<workflows::Start>,
+    /// The reviewers the request named, said beside the workflow's phases.
+    pub reviewers_asked: Option<String>,
     /// Printed at the run's end, after the merge line.
     pub closing: Option<ClosingAnswer>,
 }
@@ -84,7 +86,11 @@ impl Milestones {
                 RunLifecycle::Started(started) => {
                     story.started = Some(event.ts);
                     story.crew = started.mode == RunMode::Crew;
-                    steps::run_started(started, cx);
+                    story.reviewers_asked = story
+                        .crew
+                        .then(|| workflows::reviewers_asked(started, &cx.state.names))
+                        .flatten();
+                    steps::run_started(started, story.reviewers_asked.is_some(), cx);
                 }
                 RunLifecycle::Resumed(resumed) => lifecycle::resumed(&event.run_id, resumed, cx),
                 RunLifecycle::PauseRequested { now, .. } => story.pause_now = *now,

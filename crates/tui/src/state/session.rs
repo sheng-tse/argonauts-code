@@ -111,12 +111,20 @@ pub struct Retrying {
 pub struct ToolRecord {
     pub id: String,
     pub name: String,
+    /// `Null` while the model is still writing the call.
     pub input: serde_json::Value,
     /// A subagent's id when the call is inside one.
     pub parent: Option<String>,
     /// `None` while it runs.
     pub ok: Option<bool>,
     pub output: Option<String>,
+}
+
+impl ToolRecord {
+    /// The model is still writing this call, so only its name is known.
+    pub fn is_pending(&self) -> bool {
+        self.input.is_null() && self.ok.is_none()
+    }
 }
 
 /// What a session does, as the live block, the started tree and the panel name it:
@@ -293,6 +301,23 @@ impl SessionState {
             }
             AgentEvent::TextDelta { .. } | AgentEvent::Message { .. } => {}
             AgentEvent::Reasoning { .. } => self.doing = Doing::Thinking,
+            AgentEvent::ToolPending { id, name, parent } => {
+                self.finish_streaming();
+                if !self.tools.iter().any(|tool| tool.id == *id) {
+                    self.tools.push(ToolRecord {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: serde_json::Value::Null,
+                        parent: parent.clone(),
+                        ok: None,
+                        output: None,
+                    });
+                }
+            }
+            AgentEvent::ToolDropped { id, .. } => {
+                self.tools
+                    .retain(|tool| !(tool.id == *id && tool.is_pending()));
+            }
             AgentEvent::ToolStarted {
                 id,
                 name,
@@ -301,8 +326,16 @@ impl SessionState {
             } => {
                 self.finish_streaming();
                 // A call shows once by its id, however many copies of it the stream carries.
+                // One the model was still writing is filled in where it stands.
                 let known = !id.is_empty() && self.tools.iter().any(|tool| tool.id == *id);
-                if !known {
+                if let Some(written) = self
+                    .tools
+                    .iter_mut()
+                    .find(|tool| tool.id == *id && tool.is_pending())
+                {
+                    written.name.clone_from(name);
+                    written.input = input.clone();
+                } else if !known {
                     self.tools.push(ToolRecord {
                         id: id.clone(),
                         name: name.clone(),
@@ -473,4 +506,56 @@ fn context_cap(window: Option<u64>) -> u64 {
         .flatten()
         .unwrap_or(FALLBACK);
     window.map_or(cap, |window| cap.min(window))
+}
+
+#[cfg(test)]
+mod writing_tests {
+    use super::*;
+
+    fn session() -> SessionState {
+        SessionState::new(
+            SessionKey::numbered(1),
+            WorkerRef::new("claude-code", Some("haiku".into())),
+            "claude-code",
+            RoleName::Worker,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+    }
+
+    /// An agent inside a run lists a call as its model starts writing it, fills it in where
+    /// it stands, and forgets one that never arrived.
+    #[test]
+    fn a_call_being_written_is_listed_filled_in_or_forgotten() {
+        let mut session = session();
+        let at = OffsetDateTime::UNIX_EPOCH;
+        let pending = |id: &str, name: &str| AgentEvent::ToolPending {
+            id: id.into(),
+            name: name.into(),
+            parent: None,
+        };
+        session.apply_agent(&pending("e1", "Edit"), at);
+        session.apply_agent(&pending("w1", "Write"), at);
+        assert!(session.tools.iter().all(ToolRecord::is_pending));
+        session.apply_agent(
+            &AgentEvent::ToolStarted {
+                id: "e1".into(),
+                name: "Edit".into(),
+                input: serde_json::json!({"file_path": "a.py"}),
+                parent: None,
+            },
+            at,
+        );
+        session.apply_agent(
+            &AgentEvent::ToolDropped {
+                id: "w1".into(),
+                parent: None,
+            },
+            at,
+        );
+        assert_eq!(session.tools.len(), 1);
+        let edit = &session.tools[0];
+        assert_eq!(edit.id, "e1");
+        assert!(!edit.is_pending());
+        assert_eq!(edit.input["file_path"], "a.py");
+    }
 }

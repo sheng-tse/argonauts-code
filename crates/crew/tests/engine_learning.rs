@@ -493,7 +493,7 @@ async fn flagged_note_waits_for_you() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn each_note_is_its_own_commit() -> anyhow::Result<()> {
+async fn notes_are_kept_outside_the_repository() -> anyhow::Result<()> {
     let proposed = vec![
         (
             "redis".to_owned(),
@@ -512,28 +512,20 @@ async fn each_note_is_its_own_commit() -> anyhow::Result<()> {
     crew.settings.delivery.commits = DeliveryCommits::AsRun;
     let (exit, _) = crew_run(&crew).await?;
     assert_eq!(exit, EngineExit::Finished(RunOutcome::Merged));
+    // Notes are Argonauts' own: none reaches your branch.
     let log = crew
         .repo
-        .git(&["log", "--format=%H %s", "main", "--", ".argonauts/notes"])?;
-    let commits: Vec<(&str, &str)> = log
-        .lines()
-        .filter_map(|line| line.split_once(' '))
+        .git(&["log", "--format=%H %s", "main", "--", ".argonauts"])?;
+    assert!(log.trim().is_empty(), "{log}");
+    let kept = crew.repo_context()?.state_dir().join("notes");
+    let mut topics: Vec<String> = std::fs::read_dir(&kept)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(commits.len(), 2, "{commits:?}");
-    let mut topics = Vec::new();
-    for (sha, subject) in &commits {
-        let topic = subject.strip_prefix("Note from task-001: ");
-        topics.push(found(topic, "a subject naming the task")?.to_owned());
-        let files = crew.repo.git(&["show", "--name-only", "--format=", sha])?;
-        let files: Vec<&str> = files.lines().filter(|line| !line.is_empty()).collect();
-        assert_eq!(files.len(), 1, "one fact per commit: {files:?}");
-        let message = crew.repo.git(&["log", "-1", "--format=%B", sha])?;
-        assert!(message.contains("Argonauts-Conductor: run-01"), "{message}");
-    }
     topics.sort();
-    assert_eq!(topics, ["redis", "testing"]);
+    assert_eq!(topics, ["redis.md", "testing.md"]);
     // Each note names its card, its worker, and its run.
-    let text = std::fs::read_to_string(crew.repo.root().join(".argonauts/notes/redis.md"))?;
+    let text = std::fs::read_to_string(kept.join("redis.md"))?;
     let sourced = notes::parse(&text);
     assert_eq!(sourced.len(), 1, "{text}");
     assert_eq!(sourced[0].1.card.as_str(), "task-001");
@@ -589,10 +581,12 @@ async fn judges_never_get_notes_of_the_judged() -> anyhow::Result<()> {
         );
     }
     // Any reviewer or judge prompt that carries notes leaves the judged agent's out.
-    let base = crew.repo_context()?.base_worktree;
-    let quoted = notes::quoted(&base, Some(&owner.worker));
+    let repo = crew.repo_context()?;
+    let (base, state_dir) = (repo.base_worktree.clone(), repo.state_dir().to_path_buf());
+    let quoted = notes::quoted(&base, &state_dir, Some(&owner.worker));
     assert!(!quoted.is_empty() && !quoted.contains(theirs), "{quoted}");
-    let parts = argonauts_crew::card::prompt::note_parts_for(&base, Some(&owner.worker));
+    let parts =
+        argonauts_crew::card::prompt::note_parts_for(&base, &state_dir, Some(&owner.worker));
     assert!(!parts.is_empty());
     assert!(parts.iter().all(|part| !part.text.contains(theirs)));
     Ok(())

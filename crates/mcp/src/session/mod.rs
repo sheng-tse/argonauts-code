@@ -7,6 +7,7 @@
 pub mod ask;
 pub mod goal;
 pub mod guide;
+mod leaked;
 pub mod lookup;
 pub mod main_tools;
 pub mod report;

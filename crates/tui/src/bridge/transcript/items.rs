@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::app::{AppEvent, StatusLine};
 use argonauts_core::display_names::DisplayNames;
+use argonauts_core::log::NO_SECOND_TRY;
 use argonauts_core::names::WorkerRef;
 use argonauts_core::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::SettingScope;
@@ -169,7 +170,15 @@ impl Items {
             }
             NoteLevel::Error => Tone::Error,
         };
-        let mut notice = Notice::new(tone, text);
+        // A takeover that skips the retry: who steps in, plain, and why there's no retry, dim.
+        let takeover = text
+            .strip_suffix(NO_SECOND_TRY)
+            .and_then(|head| head.strip_suffix(" · "))
+            .filter(|_| level == NoteLevel::Warn);
+        let mut notice = match takeover {
+            Some(head) => Notice::plain_with_after(tone, head, NO_SECOND_TRY),
+            None => Notice::new(tone, text),
+        };
         if level == NoteLevel::Aside {
             notice = notice.with_glyph(ASIDE);
         }

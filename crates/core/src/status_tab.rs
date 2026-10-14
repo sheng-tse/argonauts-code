@@ -71,6 +71,9 @@ pub struct WorkflowSetup {
     pub size: String,
 }
 
+/// Said of a CLI that is signed in when nothing it says names the address.
+pub const UNNAMED_ACCOUNT: &str = "signed in, address not shown";
+
 /// One agent CLI as Doctor last found it, with who it is signed in as. The account is drawn
 /// on your own screen only and is never sent anywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -113,6 +116,9 @@ pub struct SettingsInEffect {
     /// What the main session can call to act outside itself, in words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    /// You turned the main session's tools off, with `main_session.tools = false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tools_off: bool,
     /// The MCP servers the main session's CLI brought from its own settings, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<Vec<String>>,

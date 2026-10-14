@@ -6,11 +6,16 @@
 pub mod agents;
 mod band;
 pub mod bottom_line;
+mod ended;
 pub mod failure;
 pub mod input;
 pub mod keys;
 pub mod mods;
 pub mod panel;
+pub mod refusal;
+mod reviewed;
+#[cfg(test)]
+mod reviewed_golden;
 pub mod settings;
 pub mod status;
 pub mod tools;

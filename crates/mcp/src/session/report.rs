@@ -12,6 +12,7 @@ use jsonschema::Validator;
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 
+use super::leaked;
 use crate::ReportTool;
 
 /// Invalid calls answered with their errors. Later invalid calls are refused, but a valid
@@ -62,28 +63,18 @@ impl ReportState {
         self.invalid.load(Ordering::SeqCst)
     }
 
-    /// Checks one report and writes it when valid. The error lists what failed, for the model.
+    /// Checks one report and writes it when valid, or when it is once mended: its leaked
+    /// parameters made fields again and any field the schema forbids dropped. The error lists
+    /// what failed, for the model.
     pub fn submit(&self, report: &Value) -> Result<(), String> {
-        let problems = match &self.validator {
-            Ok(validator) => validator
-                .iter_errors(report)
-                .take(MAX_ERRORS)
-                .map(|err| {
-                    let place = err.instance_path().to_string();
-                    let place = if place.is_empty() {
-                        "/".to_owned()
-                    } else {
-                        place
-                    };
-                    let what: String = err.masked().to_string().chars().take(ERROR_MAX).collect();
-                    format!("- at {place}: {what}")
-                })
-                .collect::<Vec<_>>(),
-            Err(err) => vec![format!("- {err}")],
-        };
+        let problems = self.problems(report);
         if problems.is_empty() {
-            let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
-            return write_report(&self.tool.report_file, report);
+            return self.write(report);
+        }
+        if let Some(mended) = leaked::mended(report, &self.tool.schema)
+            && self.problems(&mended).is_empty()
+        {
+            return self.write(&mended);
         }
         let earlier = self.invalid.fetch_add(1, Ordering::SeqCst);
         if earlier >= MAX_INVALID {
@@ -100,6 +91,32 @@ impl ReportState {
             problems.join("\n"),
             if left == 1 { "try" } else { "tries" },
         ))
+    }
+
+    fn write(&self, report: &Value) -> Result<(), String> {
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        write_report(&self.tool.report_file, report)
+    }
+
+    /// What in `report` fails the step's schema, one line each.
+    fn problems(&self, report: &Value) -> Vec<String> {
+        match &self.validator {
+            Ok(validator) => validator
+                .iter_errors(report)
+                .take(MAX_ERRORS)
+                .map(|err| {
+                    let place = err.instance_path().to_string();
+                    let place = if place.is_empty() {
+                        "/".to_owned()
+                    } else {
+                        place
+                    };
+                    let what: String = err.masked().to_string().chars().take(ERROR_MAX).collect();
+                    format!("- at {place}: {what}")
+                })
+                .collect::<Vec<_>>(),
+            Err(err) => vec![format!("- {err}")],
+        }
     }
 }
 
@@ -156,6 +173,23 @@ mod tests {
             .expect("second");
         // The shorter report must not keep the tail of the longer one.
         assert_eq!(read(&report_file), json!({ "status": "blocked" }));
+    }
+
+    /// A call whose later parameters leaked into its first string is saved as the fields it
+    /// meant, without spending a try.
+    #[test]
+    fn a_report_whose_parameters_leaked_into_a_string_is_saved_mended() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let report_file = dir.path().join("report.json");
+        let state = ReportState::new(ReportTool {
+            schema: schema(),
+            report_file: report_file.clone(),
+        });
+        state
+            .submit(&json!({ "status": "done</status>\n<tests>4</tests>" }))
+            .expect("mended");
+        assert_eq!(read(&report_file), json!({ "status": "done", "tests": 4 }));
+        assert_eq!(state.invalid_calls(), 0);
     }
 
     #[test]

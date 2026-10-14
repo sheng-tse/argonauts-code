@@ -171,6 +171,10 @@ pub enum HealthState {
     Testing,
 }
 
+/// Why a vendor reads healthy again after its test task succeeded: the one way back from an
+/// outage that a check stands behind, where errors that stopped coming back say less.
+pub const TEST_TASK_SUCCEEDED: &str = "the test task succeeded";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VendorHealth {
     pub vendor: VendorId,

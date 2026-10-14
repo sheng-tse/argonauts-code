@@ -1,13 +1,15 @@
-//! How the Overview writes its numbers and picks its colours: big token counts, dollars with
-//! thousands, each CLI's word, and each CLI's ramp from faint to full for the year of days.
+//! How the Overview writes its numbers and picks its colours: big token counts, amounts that
+//! share one unit, dollars with thousands, dates, each CLI's word and colour, and each model's
+//! shade of its CLI's colour.
 
 use argonauts_core::display_names::DisplayNames;
 use argonauts_core::overview::OverviewData;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
+use time::{Date, Month};
 
 use crate::overview::cards::cli_role;
 use crate::overview::stats::draw;
-use crate::theme::{Brightness, ColorLevel, Role, Theme, nearest_ansi256};
+use crate::theme::{Role, Theme};
 use crate::widgets::Kit;
 
 /// `812`, `12.3k`, `4.5M`, `118.4b`, `3b`: one decimal, dropped when it's nought.
@@ -28,6 +30,45 @@ pub fn amount(count: u64) -> String {
         _ => (count as f64 / 1e9, "b"),
     };
     format!("{value:.1}{unit}")
+}
+
+/// The unit a group of amounts is written in: the one its largest reads best in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Unit {
+    size: f64,
+    letter: &'static str,
+}
+
+impl Unit {
+    /// The unit for amounts up to `largest`.
+    pub fn for_largest(largest: u64) -> Unit {
+        let (size, letter) = match largest {
+            0..1_000 => (1.0, ""),
+            1_000..999_950 => (1e3, "k"),
+            999_950..999_950_000 => (1e6, "M"),
+            _ => (1e9, "b"),
+        };
+        Unit { size, letter }
+    }
+
+    /// `110.0b`, `0.4b`, and a sliver to two places, `0.05b`, so it never reads as nought.
+    pub fn write(self, count: u64) -> String {
+        if self.letter.is_empty() {
+            return count.to_string();
+        }
+        if count == 0 {
+            return format!("0{}", self.letter);
+        }
+        let value = count as f64 / self.size;
+        let written = if value >= 0.095 {
+            format!("{value:.1}")
+        } else if value >= 0.005 {
+            format!("{value:.2}")
+        } else {
+            "<0.01".to_owned()
+        };
+        format!("{written}{}", self.letter)
+    }
 }
 
 /// `~$9,640`, `~$60`, `~$4.20`: whole dollars from ten, with thousands marked. The value is
@@ -64,6 +105,76 @@ pub fn share(part: u64, whole: u64) -> String {
     format!("{percent:.0}%")
 }
 
+/// The share of `part` in `whole` to a tenth of a percent, as Claude Code's Models tab writes
+/// it: `46.0%`.
+pub fn share_tenths(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0.0%".to_owned();
+    }
+    format!("{:.1}%", part as f64 / whole as f64 * 100.0)
+}
+
+/// `57d 3h`, `2h 5m`, `14m`, `40s`: the two largest parts of a span.
+pub fn duration(secs: u64) -> String {
+    let (days, hours, minutes) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60);
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// `18 days`, `1 day`.
+pub fn days(n: u32) -> String {
+    match n {
+        1 => "1 day".to_owned(),
+        n => format!("{n} days"),
+    }
+}
+
+pub fn month_word(month: Month) -> &'static str {
+    match month {
+        Month::January => "Jan",
+        Month::February => "Feb",
+        Month::March => "Mar",
+        Month::April => "Apr",
+        Month::May => "May",
+        Month::June => "Jun",
+        Month::July => "Jul",
+        Month::August => "Aug",
+        Month::September => "Sep",
+        Month::October => "Oct",
+        Month::November => "Nov",
+        Month::December => "Dec",
+    }
+}
+
+/// `Aug 28`.
+pub fn short_date(day: Date) -> String {
+    format!("{} {}", month_word(day.month()), day.day())
+}
+
+/// `Oct 2025` for another year than `today`'s, else `Feb`.
+pub fn since_word(day: Date, today: Date) -> String {
+    if day.year() == today.year() {
+        month_word(day.month()).to_owned()
+    } else {
+        format!("{} {}", month_word(day.month()), day.year())
+    }
+}
+
+/// A folder by its last part.
+pub fn folder_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
+}
+
 /// How a CLI is named on the Overview: Antigravity CLI is `agy`, as its command is.
 pub fn cli_word(names: &DisplayNames, agent: &str) -> String {
     match agent {
@@ -79,64 +190,17 @@ pub fn model_word(names: &DisplayNames, agent: &str, model: Option<&str>) -> Str
         .unwrap_or_else(|| format!("{} default", cli_word(names, agent)))
 }
 
-/// The colour a model draws in: its CLI's, in the shade of its place among that CLI's
-/// models, and faint once a CLI has more models than shades.
-pub fn model_style(kit: &Kit<'_>, data: &OverviewData, agent: &str, model: Option<&str>) -> Style {
-    let nth = data
-        .models
-        .iter()
-        .filter(|row| row.agent == agent)
-        .position(|row| row.model.as_deref() == model)
-        .unwrap_or(0);
-    if nth >= 4 {
-        return kit.fg(Role::Faint);
-    }
-    draw::shade(kit, cli_role(agent), nth)
-}
-
-/// How far each step of a ramp is from the screen's paper toward the full colour: the first
-/// step is a quarter of the way, the last the colour itself.
-const RAMP: [f64; 4] = [0.3, 0.5, 0.75, 1.0];
-
-/// The `level` step, 1 to 4, of `style`'s colour, fainter for less. Without true or 256
-/// colours there are no steps, and the glyph tells them apart instead.
-pub fn ramp(kit: &Kit<'_>, style: Style, level: usize) -> Style {
-    let theme = kit.theme;
-    let Some(Color::Rgb(r, g, b)) = style.fg.or_else(|| theme.color(Role::Accent)) else {
-        return style;
-    };
-    if matches!(theme.level, ColorLevel::Ansi16 | ColorLevel::None) {
-        return style;
-    }
-    let paper = paper(theme);
-    let mix = RAMP[level.clamp(1, 4) - 1];
-    let toward = |full: u8, paper: u8| {
-        (f64::from(paper) + (f64::from(full) - f64::from(paper)) * mix).round() as u8
-    };
-    let mixed = (toward(r, paper.0), toward(g, paper.1), toward(b, paper.2));
-    let color = match theme.level {
-        ColorLevel::TrueColor => Color::Rgb(mixed.0, mixed.1, mixed.2),
-        _ => Color::Indexed(nearest_ansi256(mixed)),
-    };
-    Style::new().fg(color)
-}
-
-/// The colour a day with nothing draws in: just off the paper.
-pub fn empty_day(kit: &Kit<'_>) -> Style {
-    kit.fg(Role::BarTrack)
-}
-
-/// The screen's background, near enough for mixing.
-fn paper(theme: &Theme) -> (u8, u8, u8) {
-    match theme.brightness {
-        Brightness::Dark => (0x1f, 0x22, 0x33),
-        Brightness::Light => (0xff, 0xff, 0xff),
+/// The colour a CLI keeps everywhere: its own for the three it knows, else its agent colour.
+fn cli_colour(agent: &str) -> Role {
+    match Role::for_cli(agent) {
+        Role::CatOther => cli_role(agent),
+        role => role,
     }
 }
 
 /// Each CLI's colour as text, from the theme even where the palette has none.
 pub fn cli_style(kit: &Kit<'_>, agent: &str) -> Style {
-    let role = cli_role(agent);
+    let role = cli_colour(agent);
     let own = kit.fg(role);
     if own.fg.is_some() {
         return own;
@@ -145,6 +209,21 @@ pub fn cli_style(kit: &Kit<'_>, agent: &str) -> Style {
         Some(color) if kit.has_color() => Style::new().fg(color),
         _ => own,
     }
+}
+
+/// The colour a model draws in: its CLI's for the CLI's first model, then lighter shades of
+/// it in the order the period ranks them.
+pub fn model_style(kit: &Kit<'_>, data: &OverviewData, agent: &str, model: Option<&str>) -> Style {
+    let nth = data
+        .models
+        .iter()
+        .filter(|row| row.agent == agent)
+        .position(|row| row.model.as_deref() == model)
+        .unwrap_or(0);
+    if nth == 0 {
+        return cli_style(kit, agent);
+    }
+    draw::shade(kit, cli_colour(agent), nth)
 }
 
 #[cfg(test)]
@@ -165,15 +244,27 @@ mod tests {
         assert_eq!(thousands(1_086), "1,086");
         assert_eq!(share(1, 1_000), "<1%");
         assert_eq!(share(62, 100), "62%");
+        assert_eq!(share_tenths(46, 100), "46.0%");
     }
 
     #[test]
-    fn a_ramp_runs_from_faint_to_the_full_colour() {
-        let theme = Theme::dark().with_level(ColorLevel::TrueColor);
-        let kit = Kit::new(&theme);
-        let full = cli_style(&kit, "claude-code");
-        assert_eq!(ramp(&kit, full, 4), full);
-        assert_ne!(ramp(&kit, full, 1), full);
-        assert_ne!(ramp(&kit, full, 1), ramp(&kit, full, 2));
+    fn a_group_of_amounts_shares_the_unit_of_its_largest() {
+        let unit = Unit::for_largest(110_000_000_000);
+        assert_eq!(unit.write(110_000_000_000), "110.0b");
+        assert_eq!(unit.write(400_000_000), "0.4b");
+        assert_eq!(unit.write(50_000_000), "0.05b");
+        assert_eq!(unit.write(1_000_000), "<0.01b");
+        assert_eq!(unit.write(0), "0b");
+        let small = Unit::for_largest(900);
+        assert_eq!(small.write(12), "12");
+        assert_eq!(Unit::for_largest(340_000_000).write(1_200_000), "1.2M");
+    }
+
+    #[test]
+    fn spans_read_as_their_two_largest_parts() {
+        assert_eq!(duration(57 * 86_400 + 3 * 3600 + 59), "57d 3h");
+        assert_eq!(duration(2 * 3600 + 5 * 60), "2h 5m");
+        assert_eq!(duration(14 * 60), "14m");
+        assert_eq!(duration(40), "40s");
     }
 }

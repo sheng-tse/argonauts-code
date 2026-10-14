@@ -231,7 +231,7 @@ pub struct ChoiceOption {
     pub basis: Option<String>,
 }
 
-/// The goal file, `.argonauts/goal/<run>.md`, frozen once approved.
+/// The goal file, `goals/<run>.md` in the repo's state directory, frozen once approved.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GoalFile {
     pub run: RunId,

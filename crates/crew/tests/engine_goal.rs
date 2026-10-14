@@ -217,16 +217,22 @@ fn parked(outcome: &Outcome) -> bool {
     matches!(outcome.exit, EngineExit::Parked(_))
 }
 
-/// The goal file as the conductor committed it on the integration branch.
+/// The goal file as Argonauts keeps it under its home. The run's branch never holds it.
 fn committed_goal(crew: &Crew, events: &[RunEvent], file: &GoalFile) -> anyhow::Result<String> {
     let run = &events[0].run_id;
-    crew.repo.git(&[
-        "show",
-        &format!(
-            "argonauts/{run}/integration:{}",
-            file.path.to_string_lossy()
-        ),
-    ])
+    let on_branch = crew.repo.git(&[
+        "ls-tree",
+        "-r",
+        "--name-only",
+        &format!("argonauts/{run}/integration"),
+    ])?;
+    let name = format!("{run}.md");
+    anyhow::ensure!(
+        !on_branch.lines().any(|path| path.ends_with(&name)),
+        "{on_branch}"
+    );
+    let state_dir = crew.repo_context()?.state_dir().to_path_buf();
+    Ok(std::fs::read_to_string(state_dir.join(&file.path))?)
 }
 
 #[tokio::test]

@@ -80,8 +80,9 @@ impl<W: Write> Ui<W> {
         actions
     }
 
-    /// A card that asks takes the keys the moment it shows, from wherever they were.
-    /// Every view closes as it takes them, since a view on top would keep them. A view
+    /// A card that asks takes the keys the moment it shows, from wherever they were, so an
+    /// approval never waits unseen. Every view closes as it takes them, since a view on top
+    /// would keep them. A view
     /// the card opens itself, such as its diff, stays, but never a docked one, which draws
     /// where the card does. A draft goes aside while the card holds the keys and comes back
     /// once it's answered or handed on.

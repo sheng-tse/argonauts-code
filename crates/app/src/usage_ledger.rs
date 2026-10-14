@@ -14,6 +14,7 @@ use argonauts_core::api::{
 use argonauts_core::events::RunEvent;
 use argonauts_core::limits::QuotaReading;
 use argonauts_core::names::WorkerRef;
+use argonauts_core::settings::periods::WeekStart;
 use argonauts_core::{Paths, RunId, Spend, create_private_dir_all};
 use argonauts_tui::format::WallClock;
 use serde::{Deserialize, Serialize};
@@ -233,13 +234,13 @@ pub(crate) fn by_day(lines: &[LedgerLine]) -> BTreeMap<Date, Spend> {
 /// the quota windows, which are always now, and the 14 days of history are not.
 pub(crate) fn summary(
     ledger: &UsageLedger,
-    period: UsagePeriod,
+    (period, week_starts): (UsagePeriod, WeekStart),
     today: Date,
     runs: &[RunSummary],
     quotas: Vec<QuotaReading>,
 ) -> UsageSummary {
     let first_history = today.saturating_sub(Duration::days(HISTORY_DAYS - 1));
-    let first = period.first_day(today);
+    let first = period.first_day(today, week_starts.weekday());
     let earliest = first.map(|first| first.min(first_history));
     let lines = ledger.read_since(earliest);
     let counted: Vec<&LedgerLine> = lines
@@ -283,15 +284,19 @@ pub(crate) fn summary(
         .collect();
     runs.sort_by_key(|run| std::cmp::Reverse(run.updated));
 
-    let stats = work_ledger::stats(&WorkLedger::beside(&ledger.dir), first, today, &lines);
+    let work = WorkLedger::beside(&ledger.dir);
+    let stats = work_ledger::stats(&work, first, &lines);
+    let argonauts = crate::overview::through_argonauts(&work.read_since(first));
     UsageSummary {
         period,
+        week_starts,
         total,
         by_agent,
         history,
         runs,
         quotas,
         stats: Some(stats),
+        argonauts,
         ..UsageSummary::default()
     }
 }
@@ -464,7 +469,11 @@ mod tests {
             detail: None,
             wrap_up: false,
         };
-        let sum = |period| summary(&ledger, period, today, &runs, vec![quota.clone()]);
+        // Weeks start on Monday here, so this week reaches back past the month's start.
+        let sum = |period| {
+            let period = (period, WeekStart::Monday);
+            summary(&ledger, period, today, &runs, vec![quota.clone()])
+        };
 
         let day = sum(UsagePeriod::Today);
         assert!((day.total.cost_usd - 1.50).abs() < 1e-9);
@@ -490,6 +499,14 @@ mod tests {
 
         let all = sum(UsagePeriod::All);
         assert!((all.total.cost_usd - 7.50).abs() < 1e-9);
+
+        // A month from its 1st, and a week from Sunday when that's the day weeks start on.
+        let month = sum(UsagePeriod::Month);
+        assert!((month.total.cost_usd - 3.50).abs() < 1e-9);
+        let from_sunday = (UsagePeriod::Week, WeekStart::Sunday);
+        let week = summary(&ledger, from_sunday, today, &runs, Vec::new());
+        assert!((week.total.cost_usd - 1.50).abs() < 1e-9);
+        assert_eq!(runs_of(&week), ["run-02"]);
 
         // History is 14 days whatever the period, today last.
         for summary in [&day, &week, &all] {

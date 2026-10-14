@@ -29,14 +29,14 @@ use time::OffsetDateTime;
 use super::UsageWatch;
 use super::cards::{UsageCard, UsageCards, period_words};
 use super::context::ContextCards;
-use super::home::{self, HomeKey, HomeTab};
+use super::home::{HomeKey, HomeTab};
 use super::limits::{LimitsCards, tasks_of};
 use super::stats::{self, StatsKey, StatsState};
 use super::status::{Picks, RunShape, StatusCard, StatusCards};
 use super::status_tab::StatusTabCards;
 pub use super::subtabs::Level;
-use super::subtabs::{chosen, chosen_sub_tab};
-use super::usage::UsageTab;
+use super::subtabs::{TAB_GAP, chosen, chosen_sub_tab};
+use super::usage::{Stop, UsageTab};
 use crate::bottom::PinnedRun;
 use crate::bridge::transcript::NOTHING_RUNNING;
 use crate::format;
@@ -51,6 +51,8 @@ use crate::widgets::{Drawn, Form, Frame, Kit, side_by_side, spread, stack_cards}
 const HEAD_ROWS: u16 = 4;
 /// Rows under the cards: a blank row and the keys.
 const FOOT_ROWS: u16 = 2;
+/// The key line's way out, while nothing runs behind the panel.
+const CLOSES: &str = "esc closes";
 /// From this width the tokens and history cards share a row.
 const SIDE_BY_SIDE_FROM: usize = 100;
 /// The tabs redraw this often, so ages and elapsed times move.
@@ -147,7 +149,7 @@ impl Tab {
         use UsageCard::*;
         match self {
             Tab::Usage => &[(PlanUsage, Form::Full)],
-            Tab::Limits => &[(Spend, Form::Full), (PlanUsage, Form::Compact)],
+            Tab::Limits => &[(Spend, Form::Full), (PlanUsage, Form::Full)],
             Tab::Overview | Tab::Status | Tab::Context | Tab::Stats => &[],
         }
     }
@@ -305,6 +307,16 @@ impl OverviewView {
         self.home.level = level;
     }
 
+    /// Rows above the cards. Status has no row under its tabs: its cards say what it is.
+    fn head_rows(&self) -> u16 {
+        match self.tab {
+            Tab::Status => HEAD_ROWS - 1,
+            // A blank row between the tabs and the sub-tabs, as Claude Code's /stats has.
+            Tab::Overview => HEAD_ROWS + 1,
+            _ => HEAD_ROWS,
+        }
+    }
+
     /// The open tab's own tabs and the one chosen, when it has them.
     fn sub_tabs(&self, ctx: &ViewCtx<'_>) -> Option<(Vec<String>, usize)> {
         match self.tab {
@@ -320,7 +332,7 @@ impl OverviewView {
                 Some((names, chosen))
             }
             Tab::Usage => self.plan_usage_tab(ctx).map(|tab| tab.sub_tabs()),
-            Tab::Overview => Some(self.home.periods()),
+            Tab::Overview => Some(self.home.sub_tabs()),
             _ => None,
         }
     }
@@ -334,20 +346,22 @@ impl OverviewView {
         match self.tab {
             Tab::Usage => {
                 self.cli = at;
+                self.focus = 0;
                 self.scroll = 0;
                 ViewOutcome::Consumed
             }
             Tab::Stats => {
+                // From the cards the keys stay on the cards, on the new grouping's first row.
+                let level = self.level();
                 let key = self.stats.step_group(by);
+                self.stats.level = level;
                 self.stats_outcome(Some(key))
             }
-            Tab::Overview => match self.home.step_period(by) {
-                HomeKey::Ask(request) => {
-                    self.scroll = 0;
-                    ViewOutcome::Request(request)
-                }
-                _ => ViewOutcome::Consumed,
-            },
+            Tab::Overview => {
+                self.home.step_sub_tab(by);
+                self.scroll = 0;
+                ViewOutcome::Consumed
+            }
             _ => ViewOutcome::Consumed,
         }
     }
@@ -375,6 +389,31 @@ impl OverviewView {
             _ => Level::Tabs,
         };
         self.set_level(level);
+        ViewOutcome::Consumed
+    }
+
+    /// Tab and Shift+Tab go along the row with the keys: the tabs on the tabs row, and on a
+    /// tab with sub-tabs the sub-tabs, from their row and from the cards under it.
+    fn step_along(&mut self, by: isize, ctx: &ViewCtx<'_>) -> ViewOutcome {
+        if self.level() == Level::Tabs || self.sub_tabs(ctx).is_none() {
+            return self.open(self.tab.step(by));
+        }
+        self.step_sub_tab(by, ctx)
+    }
+
+    /// Enter on the sub-tabs: into the cards on the first row, which Stats opens in place.
+    fn enter_first_row(&mut self, ctx: &ViewCtx<'_>) -> ViewOutcome {
+        self.set_level(Level::Cards);
+        self.focus = 0;
+        self.follow = Some(Follow::Focus);
+        match self.tab {
+            Tab::Stats => {
+                self.stats.picked = 0;
+                self.stats_key(KeyEvent::from(KeyCode::Enter), ctx);
+            }
+            Tab::Overview => self.home.picked = 0,
+            _ => {}
+        }
         ViewOutcome::Consumed
     }
 
@@ -420,8 +459,14 @@ impl OverviewView {
             Tab::Context => self.context_blocks(kit, ctx, width),
             Tab::Stats => self.stats_blocks(kit, ctx, width),
             Tab::Usage => self.plan_usage_blocks(kit, ctx, width),
+            // Inside the panel's one-column inset, as every other tab's cards are.
             Tab::Overview => {
-                let (blocks, focus) = self.home.blocks(kit, &ctx.state.names, width);
+                let (mut blocks, focus) =
+                    self.home
+                        .blocks(kit, &ctx.state.names, width.saturating_sub(1));
+                for block in &mut blocks {
+                    block.indent(1);
+                }
                 self.focus_block.set(focus);
                 blocks
             }
@@ -484,8 +529,11 @@ impl OverviewView {
         match self.tab {
             Tab::Status => (self.setup_parts() + self.status_cards(ctx).len()).max(1),
             Tab::Context => 1,
-            // A stop per block: the stacked cards, and the lines above and below them.
-            Tab::Usage => self.drawn.get().0.max(1),
+            // A stop per card and per line above and below them, or per block of a CLI's page.
+            Tab::Usage => match self.plan_usage_tab(ctx) {
+                Some(tab) if self.cli == 0 => tab.stops(),
+                _ => self.drawn.get().0.max(1),
+            },
             _ => self.tab.cards().len().max(1),
         }
     }
@@ -682,12 +730,16 @@ impl OverviewView {
 
     /// The Usage tab: a card per CLI, or the picked CLI's page.
     fn plan_usage_blocks(&self, kit: &Kit<'_>, ctx: &ViewCtx<'_>, width: usize) -> Vec<Drawn> {
-        let blocks = match self.plan_usage_tab(ctx) {
-            Some(tab) => tab.blocks(kit, width),
-            None => vec![note(kit, "Reading usage…")],
+        let Some(tab) = self.plan_usage_tab(ctx) else {
+            self.focus_block.set(0);
+            return vec![note(kit, "Reading usage…")];
         };
+        // The cards leave the last column blank, as every other tab's do.
+        let width = width.saturating_sub(1);
+        let blocks = tab.blocks(kit, width);
+        let block = tab.block_of(self.focus, width);
         self.focus_block
-            .set(self.focus.min(blocks.len().saturating_sub(1)));
+            .set(block.min(blocks.len().saturating_sub(1)));
         blocks
     }
 
@@ -704,6 +756,7 @@ impl OverviewView {
                 .started
                 .map(|started| ((now - started).unsigned_abs(), talk.worked)),
             changed: (talk.added, talk.removed),
+            focus: (self.level() == Level::Cards && self.cli == 0).then_some(self.focus),
         })
     }
 
@@ -851,29 +904,22 @@ impl OverviewView {
 
     /// `Overview  Status  [Usage]  Context  Limits  Stats`, and on a usage tab the periods at
     /// the right, as Claude Code's Settings dialog lays its tabs out.
-    fn tabs(&self, kit: &Kit<'_>, ctx: &ViewCtx<'_>, width: usize) -> Vec<Span<'static>> {
+    fn tabs(&self, kit: &Kit<'_>, width: usize) -> Vec<Span<'static>> {
+        // Every tab but the open one in plain text, all alike, so none looks picked.
         let mut left = vec![Span::raw(" ")];
-        for tab in Tab::ALL {
-            let open = tab == self.tab;
-            left.push(if open {
-                chosen(kit, tab.title(), self.level() == Level::Tabs)
-            } else if tab == Tab::Overview {
-                Span::styled(format!(" {} ", tab.title()), kit.bold(Role::Card))
-            } else {
-                kit.strong(format!(" {} ", tab.title()))
-            });
-            left.push(Span::raw(" "));
-        }
-        let mut right = Vec::new();
-        if self.tab == Tab::Usage {
-            if let Some(tab) = self.plan_usage_tab(ctx) {
-                right = vec![kit.dim(tab.read_words()), Span::raw(" ")];
+        for (at, tab) in Tab::ALL.into_iter().enumerate() {
+            if at > 0 {
+                left.push(Span::raw(TAB_GAP));
             }
-        } else if self.tab == Tab::Overview {
-            right.push(kit.dim(format!("{} ", home::NOTE)));
-            let room = width.saturating_sub(spans_width(&left) + 1);
-            right = truncate_spans(&right, room);
-        } else if self.tab.shows_usage() {
+            left.push(if tab == self.tab {
+                chosen(kit, tab.title(), self.level() == Level::Tabs)
+            } else {
+                Span::raw(format!(" {} ", tab.title()))
+            });
+        }
+        left.push(Span::raw(" "));
+        let mut right = Vec::new();
+        if self.tab.shows_usage() && self.tab != Tab::Overview {
             let periods = if self.tab == Tab::Stats {
                 stats::PERIODS
             } else {
@@ -909,7 +955,7 @@ impl OverviewView {
         let mut spans = Vec::new();
         for (index, name) in names.into_iter().enumerate() {
             if index > 0 {
-                spans.push(Span::raw(" "));
+                spans.push(Span::raw(TAB_GAP));
             }
             spans.push(if index == at {
                 chosen_sub_tab(kit, &name, self.level() == Level::SubTabs)
@@ -927,13 +973,22 @@ impl OverviewView {
         {
             return page.about(kit, width);
         }
-        if self.tab == Tab::Usage && self.plan_usage_tab(ctx).is_some() {
+        if self.tab == Tab::Usage
+            && let Some(tab) = self.plan_usage_tab(ctx)
+        {
             let mut row = vec![Span::raw(" ")];
             row.extend(self.sub_tab_spans(kit, ctx));
-            return truncate_spans(&row, width);
+            // When the plans were read, at the right where the periods were before.
+            let read = vec![kit.dim(tab.read_words()), Span::raw(" ")];
+            if spans_width(&row) + spans_width(&read) + 2 > width {
+                return truncate_spans(&row, width);
+            }
+            return spread(row, read, width);
         }
         if self.tab == Tab::Overview {
-            return self.home.about(kit, &ctx.state.names, width);
+            let mut row = vec![Span::raw(" ")];
+            row.extend(self.home.about(kit, &ctx.state.names, width - 1));
+            return row;
         }
         if self.tab == Tab::Stats {
             let left = vec![kit.dim(format!(" {}", self.stats.description(self.period)))];
@@ -994,52 +1049,70 @@ impl OverviewView {
             ctx.state.mode,
             Some(AppMode::Answering { .. } | AppMode::Working { .. } | AppMode::Pausing { .. })
         );
-        let mut close = if running { PANEL_HINT } else { "esc back" };
-        let rows = match self.level() {
+        let close = if running { PANEL_HINT } else { CLOSES };
+        let along = self.tab_words(ctx);
+        let has_sub_tabs = self.sub_tabs(ctx).is_some();
+        let rows: Vec<String> = match self.level() {
             Level::Tabs => vec![
-                "tab · ←→ tabs",
-                if self.sub_tabs(ctx).is_some() {
-                    "↓ to the sub-tabs"
+                along.clone(),
+                if has_sub_tabs {
+                    "↓ sub-tabs, then cards".to_owned()
                 } else {
-                    "↓ into the cards"
+                    "↓ into the cards".to_owned()
                 },
             ],
-            Level::SubTabs => vec!["←→ choose", "↓ into the cards", "↑ tabs"],
-            Level::Cards => vec!["←→ tabs"],
+            Level::SubTabs => vec![
+                along.clone(),
+                "↓ into the cards".to_owned(),
+                "↑ tabs".to_owned(),
+            ],
+            Level::Cards => vec![],
         };
+        let owned = |keys: Vec<&str>| keys.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let mut close = close;
         let mut keys = if self.tab == Tab::Stats && self.stats.page_open() {
-            // Esc goes back to the tab, which the panel's own hint wouldn't say.
             close = "esc back";
             self.stats
                 .page
                 .as_ref()
-                .map(|page| page.keys())
+                .map(|page| owned(page.keys()))
                 .unwrap_or_default()
-        } else if self.tab == Tab::Overview && self.level() != Level::SubTabs {
-            self.home.keys()
+        } else if self.tab == Tab::Overview {
+            owned(self.home.keys())
         } else if self.tab == Tab::Stats && self.level() != Level::SubTabs {
-            let mut keys = self.stats.keys();
+            let mut keys = owned(self.stats.keys());
             if scrolls && keys[0] == "←→ tab" {
-                keys.insert(0, "↑↓ move");
+                keys.insert(0, "↑↓ move".to_owned());
             }
-            keys
+            with_tab_words(keys, &along, self.level())
         } else {
             rows
         };
         if self.tab == Tab::Usage {
-            let keys = match self.level() {
-                Level::Tabs => vec!["tab · ←→ tabs", "↓ CLIs", "enter details"],
-                Level::SubTabs => vec!["←→ CLIs", "↑ tabs", "r reads again"],
-                Level::Cards => vec!["←→ tabs", "↑ CLIs", "r reads again"],
+            let mut keys = match self.level() {
+                Level::Tabs => vec![along, "↓ CLIs".to_owned()],
+                Level::SubTabs => vec![along, "↓ into the cards".to_owned(), "↑ tabs".to_owned()],
+                Level::Cards if self.cli > 0 => vec![
+                    "↑↓ move".to_owned(),
+                    "enter closes the page".to_owned(),
+                    along,
+                ],
+                Level::Cards => vec![
+                    "↑↓ card".to_owned(),
+                    "enter opens its page".to_owned(),
+                    along,
+                ],
             };
-            let mut keys = keys;
+            keys.push("1-4 period".to_owned());
+            keys.push("r reads again".to_owned());
             if more {
-                keys.insert(0, "↓ more");
+                keys.insert(0, "↓ more".to_owned());
             }
             return fit_keys(keys, close, width);
         }
         // In the cards ↑ and ↓ move a card or a row at a time, and the tab scrolls with them.
         let in_cards = self.level() == Level::Cards;
+        let words = |list: &[&str]| list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
         match self.tab {
             Tab::Stats | Tab::Overview => {}
             Tab::Status => {
@@ -1049,60 +1122,78 @@ impl OverviewView {
                     .as_ref()
                     .is_some_and(|view| !view.runs.is_empty());
                 let on_run = self.status_focus(ctx) == Some(WidgetName::Run);
-                match (in_cards, self.setup_focus()) {
-                    (false, Some(_)) => keys.push("enter open"),
+                let list: &[&str] = match (in_cards, self.setup_focus()) {
+                    (false, _) => &[],
                     (true, Some(SetupPart::Settings)) if self.keys_open => {
-                        keys.push("esc closes the keys")
+                        &["↑↓ card", "enter closes the keys"]
                     }
-                    (true, Some(SetupPart::Settings)) => keys.push("enter each key"),
-                    (true, Some(SetupPart::Runs)) if has_runs => keys.push("enter workflow"),
-                    (true, Some(_)) => keys.push("↑↓ card"),
-                    (true, None) if on_run && tasks > 0 => keys.extend(["↑↓ task", "enter agent"]),
-                    (_, None) => keys.push("enter workflow"),
+                    (true, Some(SetupPart::Settings)) => &["↑↓ card", "enter each key"],
+                    (true, Some(SetupPart::Runs)) if has_runs => &["↑↓ card", "enter workflow"],
+                    (true, Some(_)) => &["↑↓ card"],
+                    (true, None) if on_run && tasks > 0 => &["↑↓ task", "enter agent"],
+                    (_, None) => &["enter workflow"],
+                };
+                keys.extend(words(list));
+                if in_cards {
+                    keys.push(along);
                 }
                 if self.setup_focus().is_none() {
-                    keys.extend([
+                    keys.extend(words(&[
                         "p pin above the input",
                         "s ask the narrator",
                         "u used or left",
-                    ]);
+                    ]));
                 }
             }
             Tab::Context => {
                 if in_cards {
-                    keys.extend(["↑↓ session", "enter agent view"]);
+                    keys.extend(words(&["↑↓ session", "enter agent view"]));
+                    keys.push(along);
                 }
-                keys.push(if self.all {
-                    "a the largest items"
-                } else {
-                    "a every item"
-                });
+                keys.push(
+                    if self.all {
+                        "a the largest items"
+                    } else {
+                        "a every item"
+                    }
+                    .to_owned(),
+                );
             }
             _ => {
-                if self.tab == Tab::Usage {
-                    keys.push("d w m a period");
+                if in_cards {
+                    keys.push(if self.tab == Tab::Limits {
+                        "↑↓ limit".to_owned()
+                    } else {
+                        "↑↓ card".to_owned()
+                    });
+                    if self.tab == Tab::Limits {
+                        keys.push("enter change".to_owned());
+                    }
+                    keys.push(along);
                 }
-                if self.tab == Tab::Limits && in_cards {
-                    keys.extend(["↑↓ limit", "enter change"]);
-                } else if in_cards {
-                    keys.push("↑↓ card");
-                }
-                keys.extend(["p pin above the input", "u used or left", ", settings"]);
+                keys.extend(words(&[
+                    "1-4 period",
+                    "p pin above the input",
+                    "u used or left",
+                    ", settings",
+                ]));
             }
         }
         if more {
-            keys.insert(0, "↓ more");
+            keys.insert(0, "↓ more".to_owned());
         }
-        loop {
-            let line = keys
-                .iter()
-                .copied()
-                .chain([close])
-                .collect::<Vec<_>>()
-                .join(" · ");
-            if crate::text::str_width(&line) < width || keys.pop().is_none() {
-                return line;
-            }
+        fit_keys(keys, close, width)
+    }
+
+    /// What Tab does on the row with the keys: `tab · ←→ tabs` on the tabs, and from the
+    /// sub-tabs down the sub-tabs it goes along, such as `tab By CLI, By model, By role`.
+    fn tab_words(&self, ctx: &ViewCtx<'_>) -> String {
+        let sub_tabs = self.sub_tabs(ctx).map(|(names, _)| names);
+        match (self.level(), sub_tabs) {
+            (Level::Tabs, _) => "tab · ←→ tabs".to_owned(),
+            (Level::SubTabs, Some(names)) => format!("tab · ←→ {}", along_words(self.tab, &names)),
+            (Level::Cards, Some(names)) => format!("tab {}", along_words(self.tab, &names)),
+            (_, None) => "tab tabs".to_owned(),
         }
     }
 
@@ -1121,39 +1212,53 @@ impl OverviewView {
             Tab::Context => ViewOutcome::Request(ViewRequest::Context),
             Tab::Usage => ViewOutcome::Request(ViewRequest::ReadPlanUsage),
             Tab::Overview => ViewOutcome::Request(self.home.request(None)),
+            // Stats opens on the period the stats mod's file sets, whichever the tab before
+            // it showed.
+            Tab::Stats => {
+                self.stats_period_from_file = true;
+                ViewOutcome::Consumed
+            }
             _ => ViewOutcome::Consumed,
         }
     }
 
-    /// The Usage tab's own keys: Enter for the details of the CLI that says the most, and `r`
-    /// to read again. The panel's rows take ↑↓ and the CLIs' sub-tabs ←→. `None` leaves the
-    /// key to the panel.
+    /// The Usage tab's own keys: `r` reads again, and in the cards Enter opens the CLI whose
+    /// card has the keys, or the one that says what made up most of the usage, on its own page;
+    /// Enter on the page closes it, back to its card. `None` leaves the key to the panel.
     fn plan_usage_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> Option<ViewOutcome> {
-        let plans = ctx
-            .state
-            .usage
-            .as_ref()
-            .map_or(0, |usage| usage.plans.len());
         match key.code {
             KeyCode::Char('r') => return Some(ViewOutcome::Request(ViewRequest::ReadPlanUsage)),
-            KeyCode::Enter if self.cli == 0 && plans > 0 => {
-                let usage = ctx.state.usage.as_ref()?;
-                let says_most = usage
-                    .plans
-                    .iter()
-                    .position(|plan| {
-                        plan.live
-                            .as_ref()
-                            .is_some_and(|live| live.behaviors.is_some())
-                    })
-                    .or_else(|| usage.plans.iter().position(|plan| plan.in_use))
-                    .unwrap_or(0);
-                self.cli = says_most + 1;
-                self.set_level(Level::SubTabs);
+            KeyCode::Enter if self.level() == Level::Cards => {
+                let tab = self.plan_usage_tab(ctx)?;
+                if self.cli > 0 {
+                    // The CLI's card is the stop after the conversation's, in the same order.
+                    self.focus = self.cli;
+                    self.cli = 0;
+                } else {
+                    let usage = tab.usage;
+                    let says_most = || {
+                        usage
+                            .plans
+                            .iter()
+                            .position(|plan| {
+                                plan.live
+                                    .as_ref()
+                                    .is_some_and(|live| live.behaviors.is_some())
+                            })
+                            .unwrap_or(0)
+                    };
+                    match tab.stop(self.focus) {
+                        Stop::Conversation => return Some(ViewOutcome::Consumed),
+                        Stop::Card(plan) => self.cli = plan + 1,
+                        Stop::MostUsage => self.cli = says_most() + 1,
+                    }
+                    self.focus = 0;
+                }
             }
             _ => return None,
         }
         self.scroll = 0;
+        self.follow = Some(Follow::Focus);
         Some(ViewOutcome::Consumed)
     }
 
@@ -1178,17 +1283,18 @@ impl View for OverviewView {
         let body = stack_cards(blocks).height();
         let wanted = u16::try_from(body)
             .unwrap_or(u16::MAX)
-            .saturating_add(HEAD_ROWS + FOOT_ROWS);
+            .saturating_add(self.head_rows() + FOOT_ROWS);
         // The working line and a few rows of the conversation stay above it.
         Some(
             wanted
                 .min(screen.height.saturating_sub(6))
-                .max(HEAD_ROWS + FOOT_ROWS + 1),
+                .max(self.head_rows() + FOOT_ROWS + 1),
         )
     }
 
     fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
-        if area.height < HEAD_ROWS || area.width == 0 {
+        let head = self.head_rows();
+        if area.height < head || area.width == 0 {
             return;
         }
         self.settle_stats(ctx);
@@ -1202,14 +1308,17 @@ impl View for OverviewView {
         buf.set_line(
             area.x,
             area.y + 1,
-            &Line::from(self.tabs(&kit, ctx, width)),
+            &Line::from(self.tabs(&kit, width)),
             area.width,
         );
-        let about = Line::from(self.about(&kit, ctx, width));
-        buf.set_line(area.x, area.y + 2, &about, area.width);
+        if head >= HEAD_ROWS {
+            let about = Line::from(self.about(&kit, ctx, width));
+            let at = area.y + head - 2;
+            buf.set_line(area.x, at, &about, area.width);
+        }
         self.keep_fresh(ctx);
         let blocks = self.blocks(&kit, ctx, width);
-        let room = usize::from(area.height.saturating_sub(HEAD_ROWS + FOOT_ROWS));
+        let room = usize::from(area.height.saturating_sub(head + FOOT_ROWS));
         let count = blocks.len();
         let whole = stack_cards(blocks.clone()).height();
         self.scroll = self.scroll.min(count.saturating_sub(1));
@@ -1228,12 +1337,18 @@ impl View for OverviewView {
         let (body, shown) = Self::fitted(blocks, self.scroll, room);
         self.drawn.set((count, shown));
         for (row, line) in body.lines.iter().take(room).enumerate() {
-            buf.set_line(area.x, area.y + HEAD_ROWS + row as u16, line, area.width);
+            buf.set_line(area.x, area.y + head + row as u16, line, area.width);
         }
         // More is below: the arrows or a page down reach it.
         let more = self.scroll + shown < count;
         let keys = self.keys(ctx, whole > room, more, width);
-        let keys = Line::from(truncate_spans(&[kit.dim(format!(" {keys}"))], width));
+        // The Overview's key line sits under its rows, two cells in, as Claude Code's does.
+        let inset = if self.tab == Tab::Overview {
+            "   "
+        } else {
+            " "
+        };
+        let keys = Line::from(truncate_spans(&[kit.dim(format!("{inset}{keys}"))], width));
         buf.set_line(area.x, area.bottom() - 1, &keys, area.width);
     }
 
@@ -1248,34 +1363,18 @@ impl View for OverviewView {
         {
             return ViewOutcome::Ignored;
         }
+        // The stats mod's settings page is a dialog of its own, where Esc leaves the page.
         if self.tab == Tab::Stats && self.stats.page_open() {
             return self.stats_page_key(key, ctx);
         }
         let key = panel_key(key, list::vim(ctx.state));
-        if self.tab == Tab::Stats && key.code == KeyCode::Esc && self.stats.close_opened() {
-            return ViewOutcome::Consumed;
-        }
-        if self.tab == Tab::Status && key.code == KeyCode::Esc && self.keys_open {
-            self.keys_open = false;
-            return ViewOutcome::Consumed;
-        }
-        if self.tab == Tab::Usage
-            && let Some(outcome) = self.plan_usage_key(key, ctx)
-        {
-            return outcome;
-        }
-        // The import's question takes ↑↓ and Enter while it shows; the tabs keep the rest.
-        let moves_tabs = matches!(
-            key.code,
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc
-        );
-        if self.tab == Tab::Overview && self.home.asking() && !moves_tabs {
-            return self.home_key(key, ctx);
+        // Esc closes the panel at once, from any row, an opened row or a CLI's page included.
+        if key.code == KeyCode::Esc {
+            return ViewOutcome::Close;
         }
         match key.code {
-            KeyCode::Tab => return self.open(self.tab.step(1)),
-            KeyCode::BackTab => return self.open(self.tab.step(-1)),
-            KeyCode::Esc => return ViewOutcome::Close,
+            KeyCode::Tab => return self.step_along(1, ctx),
+            KeyCode::BackTab => return self.step_along(-1, ctx),
             // A page at a time: the first block the last frame didn't show comes to the top.
             KeyCode::PageDown => {
                 let (count, shown) = self.drawn.get();
@@ -1289,16 +1388,37 @@ impl View for OverviewView {
             }
             _ => {}
         }
+        // Usage and Limits take a period from any row, as Stats does.
+        if matches!(self.tab, Tab::Usage | Tab::Limits)
+            && let Some(period) = period_key(key.code)
+        {
+            self.period = period;
+            self.scroll = 0;
+            return ViewOutcome::Request(ViewRequest::Usage { period });
+        }
+        if self.tab == Tab::Usage
+            && let Some(outcome) = self.plan_usage_key(key, ctx)
+        {
+            return outcome;
+        }
+        // The import's question takes ↑↓ and Enter while it shows; the tabs keep ←→.
+        let moves_tabs = matches!(key.code, KeyCode::Left | KeyCode::Right);
+        if self.tab == Tab::Overview && self.home.asking() && !moves_tabs {
+            return self.home_key(key, ctx);
+        }
         match (self.level(), key.code) {
+            (Level::Tabs, KeyCode::Right) => return self.open(self.tab.step(1)),
+            (Level::Tabs, KeyCode::Left) => return self.open(self.tab.step(-1)),
             (Level::SubTabs, KeyCode::Right) => return self.step_sub_tab(1, ctx),
             (Level::SubTabs, KeyCode::Left) => return self.step_sub_tab(-1, ctx),
-            (_, KeyCode::Right) => return self.open(self.tab.step(1)),
-            (_, KeyCode::Left) => return self.open(self.tab.step(-1)),
-            (Level::Tabs | Level::SubTabs, KeyCode::Down | KeyCode::Enter) => {
-                return self.go_down(ctx);
+            // In the cards ←→ do nothing, except where the Overview's own rows take them.
+            (Level::Cards, KeyCode::Left | KeyCode::Right) if self.tab != Tab::Overview => {
+                return ViewOutcome::Consumed;
             }
+            (Level::Tabs | Level::SubTabs, KeyCode::Down) => return self.go_down(ctx),
+            (Level::SubTabs, KeyCode::Enter) => return self.enter_first_row(ctx),
             (Level::SubTabs, KeyCode::Up) => return self.go_up(ctx),
-            (Level::Tabs, KeyCode::Up | KeyCode::Home | KeyCode::End) => {
+            (Level::Tabs, KeyCode::Up | KeyCode::Enter | KeyCode::Home | KeyCode::End) => {
                 return ViewOutcome::Consumed;
             }
             (Level::Cards, KeyCode::Up) if self.on_first(ctx) => return self.go_up(ctx),
@@ -1419,12 +1539,23 @@ impl OverviewView {
                 self.task += 1;
                 ViewOutcome::Consumed
             }
-            KeyCode::Home if on_run => {
+            // On the run's card the first and last task, and from there the first and last card.
+            KeyCode::Home if on_run && self.task > 0 => {
                 self.task = 0;
                 ViewOutcome::Consumed
             }
-            KeyCode::End if on_run => {
+            KeyCode::End if on_run && self.task + 1 < tasks => {
                 self.task = tasks - 1;
+                ViewOutcome::Consumed
+            }
+            KeyCode::Home => {
+                self.focus = 0;
+                self.follow = Some(Follow::Focus);
+                ViewOutcome::Consumed
+            }
+            KeyCode::End => {
+                self.focus = self.card_count(ctx) - 1;
+                self.follow = Some(Follow::Focus);
                 ViewOutcome::Consumed
             }
             KeyCode::Up => self.step_focus(true, ctx),
@@ -1703,6 +1834,17 @@ const STATS_GROUPS: [(StatsGroup, &str); 3] = [
     (StatsGroup::Role, "By role"),
 ];
 
+/// 1 to 4 pick Today, Week, Month and All from any row of a tab with periods.
+fn period_key(code: KeyCode) -> Option<UsagePeriod> {
+    match code {
+        KeyCode::Char('1') => Some(UsagePeriod::Today),
+        KeyCode::Char('2') => Some(UsagePeriod::Week),
+        KeyCode::Char('3') => Some(UsagePeriod::Month),
+        KeyCode::Char('4') => Some(UsagePeriod::All),
+        _ => None,
+    }
+}
+
 /// The key as the panel reads it. With vim keys on, h and l move along a row as ← and →, j and
 /// k between rows, g and G go to the first and the last, and q closes.
 fn panel_key(key: KeyEvent, vim: bool) -> KeyEvent {
@@ -1737,6 +1879,15 @@ fn pin(widget: WidgetName) -> ViewOutcome {
     })
 }
 
+/// A title with the keys: filled in the accent, as the tabs are, or reversed without colour.
+pub(super) fn filled_title(kit: &Kit<'_>, style: ratatui::style::Style) -> ratatui::style::Style {
+    if kit.has_color() {
+        kit.cell(Role::BadgeText, Role::Card)
+    } else {
+        style.add_modifier(ratatui::style::Modifier::REVERSED)
+    }
+}
+
 /// The card with the keys shows it by its title, filled in the accent, as the tabs do.
 fn fill_title(kit: &Kit<'_>, card: &mut Drawn) {
     let mark = kit.glyphs.widget;
@@ -1748,11 +1899,7 @@ fn fill_title(kit: &Kit<'_>, card: &mut Drawn) {
             .iter_mut()
             .find(|span| !span.content.trim().is_empty())
         {
-            title.style = if kit.has_color() {
-                kit.cell(Role::BadgeText, Role::Card)
-            } else {
-                title.style.add_modifier(ratatui::style::Modifier::REVERSED)
-            };
+            title.style = filled_title(kit, title.style);
         }
         return;
     }
@@ -1787,11 +1934,11 @@ fn halves(width: usize) -> (Frame, Frame, usize) {
 mod tests;
 
 /// The keys in `width` cells, the way out always whole, the others giving way from the last.
-fn fit_keys(mut keys: Vec<&str>, close: &str, width: usize) -> String {
+fn fit_keys(mut keys: Vec<String>, close: &str, width: usize) -> String {
     loop {
         let line = keys
             .iter()
-            .copied()
+            .map(String::as_str)
             .chain([close])
             .collect::<Vec<_>>()
             .join(" · ");
@@ -1799,4 +1946,27 @@ fn fit_keys(mut keys: Vec<&str>, close: &str, width: usize) -> String {
             return line;
         }
     }
+}
+
+/// The sub-tabs Tab goes along, named: `Overview or Models`, `By CLI, By model, By role`, or
+/// on Usage, where a name each would crowd the line, `CLIs`.
+fn along_words(tab: Tab, names: &[String]) -> String {
+    match names {
+        _ if tab == Tab::Usage => "CLIs".to_owned(),
+        [first, second] => format!("{first} or {second}"),
+        names => names.join(", "),
+    }
+}
+
+/// A tab's own keys with what Tab does put in after the keys that move, unless they say it.
+fn with_tab_words(mut keys: Vec<String>, along: &str, level: Level) -> Vec<String> {
+    if level != Level::Cards || keys.iter().any(|key| key.starts_with("tab")) {
+        return keys;
+    }
+    let after = keys
+        .iter()
+        .take_while(|key| key.starts_with('↑') || key.starts_with('↓') || key.starts_with("enter"))
+        .count();
+    keys.insert(after, along.to_owned());
+    keys
 }

@@ -474,6 +474,11 @@ fn env_vars(
     if role != SessionRole::Direct {
         vars.push(("CLAUDE_CODE_DISABLE_AUTO_MEMORY".to_owned(), "1".to_owned()));
     }
+    // Your claude.ai connectors, some of which change or delete things, are yours: a crew
+    // agent works with the tools its role gives it.
+    if role != SessionRole::Direct {
+        vars.push(("ENABLE_CLAUDEAI_MCP_SERVERS".to_owned(), "false".to_owned()));
+    }
     if role == SessionRole::Build {
         vars.push(("CLAUDE_CODE_ENABLE_TODO_TOOLS".to_owned(), "1".to_owned()));
     }

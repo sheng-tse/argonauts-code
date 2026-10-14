@@ -153,6 +153,19 @@ async fn ask_you(host: &Host, card: &CardId, id: &MessageId) -> EngineResult<()>
     let from = card_label(host, card);
     let request = question_checkpoint(card, &from, &question.text, asker);
     let decided = checkpoints::open_and_wait(host, request).await?;
+    pass_on(host, card, &question, &decided, blocked)
+}
+
+/// Your answer to a question, posted to the board, the card waiting on it moved on, and the
+/// answer delivered for its next turn.
+fn pass_on(
+    host: &Host,
+    card: &CardId,
+    question: &BlackboardMessage,
+    decided: &argonauts_core::events::checkpoint::CheckpointDecided,
+    blocked: bool,
+) -> EngineResult<()> {
+    let id = &question.id;
     let text = decided
         .text
         .clone()
@@ -161,8 +174,8 @@ async fn ask_you(host: &Host, card: &CardId, id: &MessageId) -> EngineResult<()>
     let reply = host.read(|state| Post {
         kind: BlackboardKind::Answer,
         from: decided.by.clone(),
-        to: reply_to(state, &question),
-        refs: records::record_refs(&question, &text),
+        to: reply_to(state, question),
+        refs: records::record_refs(question, &text),
         text,
         in_reply_to: Some(id.clone()),
         from_card: None,
@@ -179,6 +192,34 @@ async fn ask_you(host: &Host, card: &CardId, id: &MessageId) -> EngineResult<()>
     }
     delivery::to_running(host, &answer)?;
     Ok(())
+}
+
+/// A card still blocked on a question you've answered. A run that parks to wait for you ends
+/// the wait that would have passed the answer on, and the answer comes in as it resumes, so
+/// the card takes it here, when its step goes on. Whether there was one.
+pub fn answered_meanwhile(host: &Host, card: &CardId) -> EngineResult<bool> {
+    let found = host.read(|state| {
+        if state.cards.get(card)?.state != CardState::Blocked {
+            return None;
+        }
+        let record = state
+            .checkpoints
+            .last_decided(CheckpointKind::Question, Some(card))?;
+        let CheckpointPacket::Question(packet) = &record.opened.packet else {
+            return None;
+        };
+        let question = state.blackboard.messages.iter().rev().find(|message| {
+            message.kind == BlackboardKind::Question
+                && message.text == packet.text
+                && state.blackboard.settled(&message.id).is_none()
+        })?;
+        Some((question.clone(), record.decided.clone()?))
+    });
+    let Some((question, decided)) = found else {
+        return Ok(false);
+    };
+    pass_on(host, card, &question, &decided, true)?;
+    Ok(true)
 }
 
 /// Full auto: the model `approvals.answers` picked answers a question meant for you, unless

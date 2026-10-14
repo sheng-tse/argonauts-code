@@ -89,9 +89,10 @@ mod tests {
             ModelAccess::ApiKey,
             cost(CostUnit::Usd),
         );
+        // `haiku` runs Haiku 5.5: $0.10 in and $0.50 out per million.
         assert_eq!(
             estimate(Some(&api_key), &haiku, 1_000_000, 1_000_000),
-            CostEstimate::Usd(6.0)
+            CostEstimate::Usd(0.6)
         );
         let unpriced = entry(
             "openrouter/new-model",

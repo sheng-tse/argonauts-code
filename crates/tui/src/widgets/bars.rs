@@ -285,6 +285,94 @@ pub fn line_meter(
     merge(out)
 }
 
+/// A thin bar of `━`: the share in `fill`, the rest of the track faint, and at least one
+/// cell of fill for any share above nothing. Without colour it is the line meter.
+pub fn thin_bar(kit: &Kit<'_>, ratio: f64, cells: usize, fill: Role) -> Vec<Span<'static>> {
+    if !kit.has_color() {
+        return line_meter(kit, ratio, cells, fill, None);
+    }
+    let ratio = ratio.clamp(0.0, 1.0);
+    let mut filled = round(ratio * cells as f64).min(cells);
+    if ratio > 0.0 && filled == 0 && cells > 0 {
+        filled = 1;
+    }
+    let line = kit.glyphs.line_fill;
+    merge(vec![
+        Span::styled(line.repeat(filled), kit.fg(fill)),
+        Span::styled(line.repeat(cells - filled), kit.fg(Role::Faint)),
+    ])
+}
+
+/// The characters bars, meters and squares are drawn with.
+pub const BAR_CELLS: &[char] = &[
+    '━', '╸', '┃', '█', '▉', '▊', '▋', '▌', '▍', '▎', '▏', '▐', '▀', '▄', '▁', '▂', '▃', '▅', '▆',
+    '▇', '░', '▒', '▓', '▖', '▗', '▘', '▝', '▙', '▛', '▜', '▟', '▚', '▞', '▪', '■', '⛀', '⛁', '⛶',
+];
+
+fn is_bar(ch: char) -> bool {
+    BAR_CELLS.contains(&ch)
+}
+
+/// Puts `next` after `row`, with one blank cell between when the row ends in a bar and `next`
+/// starts with anything but a blank, so no number or name ever touches a bar.
+pub fn then(row: &mut Vec<Span<'static>>, next: Vec<Span<'static>>) {
+    let ends_in_bar = row
+        .iter()
+        .rev()
+        .find_map(|span| span.content.chars().next_back())
+        .is_some_and(is_bar);
+    let starts_blank = next
+        .iter()
+        .find_map(|span| span.content.chars().next())
+        .is_none_or(char::is_whitespace);
+    if ends_in_bar && !starts_blank {
+        row.push(Span::raw(" "));
+    }
+    row.extend(next);
+}
+
+/// `row` cut to `width` without cutting into a bar or squares: words that don't fit are cut
+/// with `…` or left out, and a bar that doesn't fit whole goes with all that follows it.
+pub fn fit_keeping_bars(row: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    if crate::text::spans_width(&row) <= width {
+        return row;
+    }
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for span in row {
+        let cells = crate::text::str_width(&span.content);
+        if used + cells <= width {
+            used += cells;
+            kept.push(span);
+            continue;
+        }
+        if !span.content.chars().any(is_bar) && width > used + 1 {
+            kept.extend(crate::text::truncate_spans(&[span], width - used));
+        }
+        break;
+    }
+    // A bar left last keeps no blank after it.
+    while kept
+        .last()
+        .is_some_and(|span: &Span<'static>| span.content.trim().is_empty())
+    {
+        kept.pop();
+    }
+    kept
+}
+
+/// Where a bar touches a character that is neither a blank nor part of a bar, on either side,
+/// by its column: what [`then`] keeps from happening.
+pub fn touching_bar(line: &str) -> Option<usize> {
+    let cells: Vec<char> = line.chars().collect();
+    cells.windows(2).position(|pair| {
+        let [a, b] = [pair[0], pair[1]];
+        // The year of days marks a day with no work `·`, a square of the map like the others.
+        let text = |ch: char| !ch.is_whitespace() && !is_bar(ch) && ch != '·';
+        (is_bar(a) && text(b)) || (text(a) && is_bar(b))
+    })
+}
+
 /// A stacked bar drawn as a line meter: each cell `━` in its part's color, free as `─`.
 pub fn stacked_line(kit: &Kit<'_>, stack: &Stack, cells: usize) -> Vec<Span<'static>> {
     let glyphs = kit.glyphs;

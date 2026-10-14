@@ -72,7 +72,15 @@ pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<Wor
         if run.finished.is_none() {
             row.goals_running = state.goals.running(&run.id);
         }
-        std::iter::once(row).chain(vendor_rows(run, wall, now))
+        let own = the_runs_own(run);
+        if let Some(workflow) = own {
+            count_its_steps(&mut row, workflow);
+        }
+        let own_key = own.map(|workflow| vendor_key(&run.id, workflow));
+        let nested = vendor_rows(run, wall, now)
+            .into_iter()
+            .filter(move |nested| own_key.as_ref() != Some(&nested.key));
+        std::iter::once(row).chain(nested)
     });
     // A workflow the conversation's own CLI runs gets a row as a run's does.
     let conversation = conversation_run();
@@ -122,6 +130,49 @@ fn number_alike(rows: &mut [WorkflowRow]) {
 /// views give it.
 pub(crate) fn vendor_key(run: &RunId, workflow: &VendorWorkflow) -> String {
     format!("{run}#{}", vendor_workflow_id(&workflow.id))
+}
+
+/// The CLI workflow a run is: the one that the sessions of its only task are running, as when
+/// Claude Code's own workflow runs the crew's. It gets no row of its own, and the run's row
+/// counts its steps.
+fn the_runs_own(run: &RunState) -> Option<&VendorWorkflow> {
+    let mut cards = run
+        .sessions_in_order()
+        .filter_map(|session| session.card.as_ref());
+    let task = cards.next()?;
+    if cards.any(|card| card != task) {
+        return None;
+    }
+    run.sessions_in_order()
+        .filter(|session| session.card.as_ref() == Some(task))
+        .flat_map(|session| session.workflows.iter())
+        .filter(|workflow| !workflow.ended())
+        .last()
+}
+
+/// The run's row counting the steps of the workflow it is, with the phase going on.
+fn count_its_steps(row: &mut WorkflowRow, workflow: &VendorWorkflow) {
+    let done = workflow
+        .agents
+        .iter()
+        .filter(|agent| agent.state == VendorAgentState::Done)
+        .count();
+    row.agents_done = u32::try_from(done).unwrap_or(u32::MAX);
+    row.agents_total = u32::try_from(workflow.agents.len()).unwrap_or(u32::MAX);
+    if let Some(phase) = running_phase(workflow) {
+        row.phase = Some(phase);
+    }
+}
+
+fn running_phase(workflow: &VendorWorkflow) -> Option<String> {
+    workflow
+        .agents
+        .iter()
+        .rev()
+        .find(|agent| agent.state == VendorAgentState::Running)
+        .and_then(|agent| agent.phase)
+        .and_then(|index| workflow.phases.iter().find(|p| p.index == index))
+        .map(|phase| phase.title.clone())
 }
 
 /// A row for each workflow an agent's own CLI is running, as Claude Code's panel lists its own.
@@ -174,7 +225,7 @@ fn vendor_row(
 }
 
 /// The run's own name, `fix-slugify-median`, or before it has one, its workflow and title,
-/// `council · add --json to export`.
+/// `Council · add --json to export`.
 fn run_name(run: &RunState) -> String {
     if let Some(named) = run
         .named
@@ -188,10 +239,11 @@ fn run_name(run: &RunState) -> String {
 }
 
 fn row_name(workflow: Option<&str>, title: &str, run: &RunId) -> String {
+    use argonauts_core::text::shown_name;
     let title = title.trim();
     match (workflow, title.is_empty()) {
-        (Some(workflow), false) => format!("{workflow} · {title}"),
-        (Some(workflow), true) => workflow.to_owned(),
+        (Some(workflow), false) => format!("{} · {title}", shown_name(workflow)),
+        (Some(workflow), true) => shown_name(workflow),
         (None, false) => title.to_owned(),
         (None, true) => run.to_string(),
     }
@@ -528,6 +580,72 @@ mod tests {
         }
     }
 
+    /// A run whose only task's session runs Claude Code's own workflow is that workflow: one
+    /// row counting its steps, with nothing nested under the session.
+    #[test]
+    fn a_run_that_is_its_clis_workflow_is_one_row() {
+        use argonauts_core::events::session::{VendorAgent, VendorPhase};
+        use argonauts_core::names::{RoleName, SessionKey};
+        let wall = OffsetDateTime::now_utc();
+        let mut run = run_state("run-own", wall);
+        let mut host = SessionState::new(
+            SessionKey::numbered(1),
+            "claude-code/haiku".parse().unwrap(),
+            "claude-code",
+            RoleName::Worker,
+            wall,
+        );
+        host.card = Some(argonauts_core::CardId::new("task-add-due-dates").unwrap());
+        let agent = |index: u32, phase: u32, state| VendorAgent {
+            index,
+            label: format!("step:{index}"),
+            phase: Some(phase),
+            model: None,
+            state,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            started_at_ms: None,
+            attempt: 1,
+            prompt: None,
+            result: None,
+        };
+        host.workflows.push(VendorWorkflow {
+            id: "wf_1".into(),
+            call: None,
+            name: "add-due-dates".into(),
+            description: String::new(),
+            phases: ["Build", "Review", "Final"]
+                .iter()
+                .zip(1..)
+                .map(|(title, index)| VendorPhase {
+                    index,
+                    title: (*title).to_owned(),
+                    detail: String::new(),
+                })
+                .collect(),
+            agents: vec![
+                agent(1, 1, VendorAgentState::Done),
+                agent(2, 2, VendorAgentState::Done),
+                agent(3, 3, VendorAgentState::Running),
+            ],
+            status: SubagentStatus::Running,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            summary: None,
+            started_at_ms: None,
+        });
+        run.session_order.push(host.key.clone());
+        run.sessions.insert(host.key.clone(), host);
+        let mut state = AppState::default();
+        state.runs.insert(run.id.clone(), run);
+        let rows = run_rows(&state, wall, Instant::now());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!((rows[0].agents_done, rows[0].agents_total), (2, 3));
+        assert_eq!(rows[0].phase.as_deref(), Some("Final"));
+    }
+
     /// The main agent's own subagents list under `main`, as Claude Code lists them: each by
     /// its name and what it's doing, with a clock that starts when the screen first saw it and
     /// stops when it ends.
@@ -711,12 +829,12 @@ mod tests {
         run.workflows.push(alignment("goal", true));
         assert_eq!(
             run_row(&run, None, wall, now).name,
-            "council · add --json to export"
+            "Council · add --json to export"
         );
         run.workflows.push(alignment("council", false));
         assert_eq!(
             run_row(&run, None, wall, now).name,
-            "council · add --json to export"
+            "Council · add --json to export"
         );
 
         // The sessions' own reports count when the budget's count lags.
@@ -791,7 +909,7 @@ mod tests {
         let keys: Vec<&str> = rows.iter().map(|row| row.key.as_str()).collect();
         assert_eq!(keys, ["run-001", "run-002", "run-003"]);
         assert_eq!(rows[0].state, WorkflowRowState::NeedsYou);
-        assert_eq!(rows[0].name, "solo · hi");
+        assert_eq!(rows[0].name, "Solo · hi");
         assert!(!rows[0].timed, "its time isn't known here");
         assert_eq!(rows[1].state, WorkflowRowState::Paused);
         assert!(rows[2].timed);

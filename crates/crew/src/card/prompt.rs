@@ -59,7 +59,7 @@ pub fn owner_parts(host: &Host, card: &CardId) -> EngineResult<Vec<InputPart>> {
         .worktree
         .clone()
         .unwrap_or_else(|| host.repo().base_worktree.clone());
-    parts.extend(note_parts(&tree));
+    parts.extend(note_parts(&tree, &crate::divide::repo_state_dir(host)));
     if !decisions.is_empty() {
         let ids = decisions
             .iter()
@@ -330,12 +330,12 @@ fn rules_text(spec: &CardSpec, settings: &Settings, tree: &Path, loaded: &[Strin
     text
 }
 
-/// Each `.argonauts/notes/*.md` in the worktree, in name order.
-/// One part per topic file. The crew's sourced notes go as a quoted block of reference data;
+/// The crew's notes in the repo's state directory, then each `.argonauts/notes/*.md` in the
+/// worktree, in name order. One part per topic file. The crew's sourced notes go as a quoted block of reference data;
 /// a file with none, such as one you wrote, goes as it is. With `judged`, a reviewer's or a
 /// judge's parts leave out every note that agent wrote.
-pub fn note_parts_for(tree: &Path, judged: Option<&WorkerRef>) -> Vec<InputPart> {
-    crate::retro::notes::read_files(tree)
+pub fn note_parts_for(tree: &Path, state_dir: &Path, judged: Option<&WorkerRef>) -> Vec<InputPart> {
+    crate::retro::notes::read_all(tree, state_dir)
         .into_iter()
         .filter_map(|file| {
             let text = if file.notes.is_empty() {
@@ -362,8 +362,8 @@ pub fn note_parts_for(tree: &Path, judged: Option<&WorkerRef>) -> Vec<InputPart>
         .collect()
 }
 
-fn note_parts(tree: &Path) -> Vec<InputPart> {
-    note_parts_for(tree, None)
+fn note_parts(tree: &Path, state_dir: &Path) -> Vec<InputPart> {
+    note_parts_for(tree, state_dir, None)
 }
 
 fn list(text: &mut String, title: &str, items: &[String]) {
@@ -447,10 +447,14 @@ mod tests {
         std::fs::write(notes.join("b.md"), "second").unwrap();
         std::fs::write(notes.join("a.md"), "first").unwrap();
         std::fs::write(notes.join("skip.txt"), "no").unwrap();
-        let parts = note_parts(dir.path());
+        let state = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(state.path().join("notes")).unwrap();
+        std::fs::write(state.path().join("notes/kept.md"), "the crew's").unwrap();
+        let parts = note_parts(dir.path(), state.path());
         let texts: Vec<&str> = parts.iter().map(|p| p.text.as_str()).collect();
-        assert_eq!(texts, ["first", "second"]);
-        assert_eq!(parts[0].source.as_deref(), Some(".argonauts/notes/a.md"));
+        assert_eq!(texts, ["the crew's", "first", "second"]);
+        assert_eq!(parts[0].source.as_deref(), Some("notes/kept.md"));
+        assert_eq!(parts[1].source.as_deref(), Some(".argonauts/notes/a.md"));
         assert_eq!(parts[0].kind, InputPartKind::Notes);
     }
 

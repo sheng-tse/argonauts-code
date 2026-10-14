@@ -25,11 +25,16 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> anyhow::Result<Vec<Effect>> {
     let prompt_files = super::prompt_templates::doctor_lines(ctx);
     let mods = crate::mods::doctor_lines(&ctx.env);
     let settings_lines = settings_lines(&ctx.settings.resolved().warnings);
+    let paths = ctx.env.paths.clone();
+    let unnamed = super::status_tab::unnamed_accounts(ctx);
     tokio::spawn(async move {
         let mut lines = doctor_lines(&adapters, &settings, &versions).await;
+        lines.extend(unnamed);
         lines.extend(settings_lines);
         lines.extend(prompt_files);
         lines.extend(mods);
+        let import = tokio::task::spawn_blocking(move || crate::overview::doctor_lines(&paths));
+        lines.extend(import.await.unwrap_or_default());
         out.send(AppEvent::Report {
             title: "Doctor".to_owned(),
             lines,

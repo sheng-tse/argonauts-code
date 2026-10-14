@@ -121,8 +121,17 @@ fn ui_a_request_that_says_who_coordinates_and_who_reviews() -> anyhow::Result<()
         let screen = pty.wait_for(r"Not followed:", WAIT)?;
         scenario.shot(&pty, &format!("request-roles-{cols}"))?;
         let text = flat(&screen);
+        // The crew note names the reviewers you asked for, so the line leaves them out.
         assert!(
-            text.contains("As you asked: Codex coordinates · Antigravity CLI reviews"),
+            text.contains("As you asked: Codex coordinates")
+                && !text.contains("As you asked: Codex coordinates · Antigravity CLI reviews"),
+            "{}",
+            screen.text()
+        );
+        assert!(
+            screen.text().lines().any(|line| line.contains("reviewers")
+                && line.contains("Antigravity CLI")
+                && line.contains("as you asked")),
             "{}",
             screen.text()
         );

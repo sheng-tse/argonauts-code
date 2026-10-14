@@ -136,6 +136,7 @@ fn crew(workflow: &str) -> anyhow::Result<(Crew, Arc<FakeWorker>)> {
         reviewers: vec![REVIEWER.parse()?],
         judge: vec![REVIEWER.parse()?],
         worker_workflows: false,
+        merger: Vec::new(),
     };
     crew.settings.workflow = workflow.to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;
@@ -509,6 +510,86 @@ return { built, accepted: Boolean(verdict && verdict.accept) }
     Ok(())
 }
 
+/// A script that keeps sending a task back gets as many rounds of fixes as
+/// `review.max_change_rounds` allows, and then the task comes to you with the reviewers' words.
+#[tokio::test]
+async fn a_script_sends_a_task_back_only_as_often_as_the_settings_allow() -> anyhow::Result<()> {
+    let (mut crew, _worker) = crew("maker-checker")?;
+    crew.settings.review.max_change_rounds = 2;
+    let script = r#"export const meta = {
+  name: 'due-dates',
+  description: 'Add due dates',
+  phases: [{ title: 'Build', detail: 'one worker' }, { title: 'Check' }],
+}
+let findings = []
+for (let round = 0; round < 5; round++) {
+  const asked = findings.length ? 'Fix: ' + findings.join('; ') : 'Add due dates: ' + args.request
+  const built = await agent(asked, {
+    role: 'workers', label: 'build:due-dates', phase: 'Build', task: 'due-dates',
+  })
+  if (!built) break
+  const verdict = await agent('Review the change.', {
+    role: 'reviewers', label: 'check:due-dates', phase: 'Check', task: 'due-dates',
+    schema: {
+      type: 'object',
+      properties: { accept: { type: 'boolean' }, findings: { type: 'array', items: { type: 'string' } } },
+      required: ['accept'],
+    },
+  })
+  if (!verdict || verdict.accept) break
+  findings = Array.isArray(verdict.findings) ? verdict.findings : []
+}
+return { done: true }
+"#;
+    let orchestrator = crew.services.workers.add(
+        FakeWorker::harness("claude-code/fable", "claude")
+            .respond_with(move |_| FakeSession::structured(json!({"script": script}))),
+    );
+    crew.settings.crew.orchestrator = Orchestrator::Models(vec!["claude-code/fable".parse()?]);
+    let strict = "antigravity-cli/strict";
+    crew.services
+        .workers
+        .add(FakeWorker::harness(strict, "gemini").respond_with(|spec| {
+            if spec.json_schema.is_none() {
+                return FakeSession::completed("Not done.");
+            }
+            FakeSession::structured(
+                json!({"accept": false, "findings": ["a due date in the past is accepted"]}),
+            )
+        }));
+    crew.settings.crew.reviewers = vec![strict.parse()?];
+    let _env = crew.repo.env_guard();
+    let outcomes = crew.run_to_end(RunMode::Crew, REQUEST, 3).await?;
+    let events = all_events(&outcomes);
+
+    let told = orchestrator
+        .specs()
+        .iter()
+        .any(|spec| prompt(spec).contains("Send a task back to its worker at most 2 times"));
+    assert!(told, "the script's writer knows the limit");
+    let escalated = events
+        .iter()
+        .position(|event| {
+            matches!(&event.kind, RunEventKind::Card(CardEvent::State { to, .. })
+                if *to == CardState::Escalated)
+        })
+        .expect("the task came to you");
+    let builds = started(&events[..escalated])
+        .iter()
+        .filter(|(_, role, _)| *role == RoleName::Worker)
+        .count();
+    assert_eq!(builds, 3, "the first build and two rounds of fixes");
+    let RunEventKind::Card(CardEvent::State { reason, .. }) = &events[escalated].kind else {
+        unreachable!("found as a card's state");
+    };
+    assert!(reason.contains("after 2 rounds of fixes"), "{reason}");
+    assert!(
+        reason.contains("a due date in the past is accepted"),
+        "{reason}"
+    );
+    Ok(())
+}
+
 /// The judge who signs off the whole run reads what the checks said about every task, as
 /// each task's reviewer does, though the sign-off names no task.
 #[tokio::test]
@@ -620,6 +701,7 @@ send_back_to   = "Build"
         reviewers: vec![REVIEWER.parse()?],
         judge: vec![REVIEWER.parse()?],
         worker_workflows: false,
+        merger: Vec::new(),
     };
     crew.settings.workflow = "cross".to_owned();
     crew.settings.workflows.adapt_with = AdaptWith::Script;

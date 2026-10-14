@@ -318,3 +318,20 @@ fn columns_stand_two_rows_high() {
     let rows: Vec<String> = rows.iter().map(|r| text(r)).collect();
     assert_eq!(rows, ["    █", "▄ █ █"]);
 }
+
+#[test]
+fn a_blank_always_parts_a_bar_from_what_follows() {
+    let theme = crate::theme::Theme::dark();
+    let kit = Kit::new(&theme);
+    let mut row = thin_bar(&kit, 1.0, 4, Role::CliClaude);
+    then(&mut row, vec![Span::raw("100%")]);
+    let text: String = row.iter().map(|span| span.content.as_ref()).collect();
+    assert_eq!(text, "━━━━ 100%");
+    let mut spaced = thin_bar(&kit, 0.5, 4, Role::CliClaude);
+    then(&mut spaced, vec![Span::raw("  50%")]);
+    let text: String = spaced.iter().map(|span| span.content.as_ref()).collect();
+    assert_eq!(text, "━━━━  50%", "a field that starts blank gets no more");
+    assert_eq!(touching_bar("model:Fable━━━━  0%"), Some(10));
+    assert_eq!(touching_bar("━━━━100%"), Some(3));
+    assert_eq!(touching_bar("week ━━━━ 36%  ▪▪▪ 4"), None);
+}

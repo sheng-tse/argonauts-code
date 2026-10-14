@@ -104,6 +104,13 @@ pub mod repo_state {
     /// The history Argonauts keeps of a folder that has no git of its own: a git repository
     /// whose work tree is your folder, so your folder never gets a `.git`.
     pub const HIDDEN_GIT: &str = "history.git";
+    /// Each run's approved goal, `<run>.md`. Argonauts' own files stay here, never in your
+    /// repository, so nothing of theirs is ever committed or merged.
+    pub const GOALS: &str = "goals";
+    /// The crew's notes, one Markdown file per topic, read by later runs.
+    pub const NOTES: &str = "notes";
+    /// The plans' decision records, `D-003-<slug>.md`.
+    pub const DECISIONS: &str = "decisions";
 }
 
 /// Reviewable project files in the repo's `.argonauts/`.
@@ -143,11 +150,7 @@ pub fn chat_journal(state_dir: &Path, chat: &ChatId) -> PathBuf {
         .join(format!("{}.jsonl", chat.as_str()))
 }
 
-/// `tree_root` is the run's integration worktree or a solo card's worktree, never your main
-/// checkout.
-pub fn goal_file(tree_root: &Path, run: &RunId) -> PathBuf {
-    tree_root
-        .join(".argonauts")
-        .join(project_files::GOAL)
-        .join(format!("{}.md", run.as_str()))
+/// The goal file's path inside the repo's state directory, `goals/<run>.md`.
+pub fn goal_file(run: &RunId) -> PathBuf {
+    Path::new(repo_state::GOALS).join(format!("{}.md", run.as_str()))
 }

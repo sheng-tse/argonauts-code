@@ -343,7 +343,9 @@ fn asker<'a>(sessions: &[&'a SessionState], open: &OpenCheckpoint) -> Option<&'a
 /// What a session is doing in one line: its running tool call, the text streaming now, or
 /// its latest message.
 pub(crate) fn activity(session: &SessionState) -> String {
-    if let Some(tool) = session.tools.iter().rev().find(|tool| tool.ok.is_none()) {
+    let running =
+        |tool: &&crate::state::ToolRecord| tool.ok.is_none() && !tools::is_tool_lookup(&tool.name);
+    if let Some(tool) = session.tools.iter().rev().find(running) {
         let call = tools::start_call(&session.vendor, &tool.name, &tool.input);
         return clean(&call.title.plain());
     }
@@ -562,5 +564,29 @@ mod tests {
             with_artifact(Some("test-report"), said(), page_mark(&state)),
             "artifact test-report · Wrote the test report."
         );
+    }
+
+    /// An agent at work in the list under the input says what it is doing as soon as its
+    /// model starts writing a call, by the call's name alone.
+    #[test]
+    fn a_call_being_written_is_what_the_agent_is_doing() {
+        let mut session = SessionState::new(
+            SessionKey::numbered(1),
+            "claude-code".parse().unwrap(),
+            "claude-code",
+            RoleName::Worker,
+            OffsetDateTime::UNIX_EPOCH,
+        );
+        session.tools.push(crate::state::ToolRecord {
+            id: "e1".to_owned(),
+            name: "Edit".to_owned(),
+            input: serde_json::Value::Null,
+            parent: None,
+            ok: None,
+            output: None,
+        });
+        assert_eq!(activity(&session), "Update");
+        session.tools[0].input = json!({"file_path": "src/app.rs"});
+        assert_eq!(activity(&session), "Update(src/app.rs)");
     }
 }

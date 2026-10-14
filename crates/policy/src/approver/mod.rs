@@ -279,8 +279,8 @@ impl StepApprover {
     }
 
     /// Asks `first`, and when its session fails, asks it once more; when that fails too, the
-    /// next approver from another company than the authors stands in, the same way,
-    /// leaving out each in `failed`, to which it adds its own. A stand-in's CLI must keep
+    /// next approver from another company than the authors stands in, the same way, leaving
+    /// out each in `failed`, to which it adds its own. A stand-in's CLI must keep
     /// your plugins out of the approver's isolated session, and a CLI that loaded them anyway
     /// is never asked again. `Err` says why none could answer, naming the last one asked, so no
     /// model checked the work.
@@ -841,7 +841,7 @@ mod tests {
         let setup = Setup::new();
         let pricey = setup.add(
             FakeWorker::harness("claude-code", "claude")
-                .with_cheapest_model("haiku")
+                .with_cheapest_model("claude-haiku-4-5")
                 .respond_with(|_| FakeSession::structured(answer("approve"))),
         );
         let cheap = setup.add(
@@ -871,7 +871,7 @@ mod tests {
         let approves = || FakeSession::structured(answer("approve"));
         let named = setup.add(
             FakeWorker::harness("claude-code", "claude")
-                .with_cheapest_model("haiku")
+                .with_cheapest_model("claude-haiku-4-5")
                 .respond_with(move |_| approves()),
         );
         let cheapest = setup.add(

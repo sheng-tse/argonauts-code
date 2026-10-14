@@ -40,6 +40,19 @@ pub enum AgentEvent {
     Reasoning {
         text: String,
     },
+    /// The model began writing a tool call: its name is known and its input is still coming.
+    /// `ToolStarted` with the same id follows once the call is whole, or `ToolDropped` when it
+    /// never lands. Only CLIs that stream the call as it's written send it.
+    ToolPending {
+        id: String,
+        name: String,
+        parent: Option<String>,
+    },
+    /// A call announced by `ToolPending` that the model never finished.
+    ToolDropped {
+        id: String,
+        parent: Option<String>,
+    },
     ToolStarted {
         /// Matched by `ToolFinished`.
         id: String,
@@ -227,6 +240,8 @@ impl AgentEvent {
             Self::TextDelta { .. } => "text_delta",
             Self::Message { .. } => "message",
             Self::Reasoning { .. } => "reasoning",
+            Self::ToolPending { .. } => "tool_pending",
+            Self::ToolDropped { .. } => "tool_dropped",
             Self::ToolStarted { .. } => "tool_started",
             Self::ToolFinished { .. } => "tool_finished",
             Self::FilePatch { .. } => "file_patch",
@@ -432,6 +447,15 @@ mod tests {
                 parent: Some("t1".into()),
             },
             AgentEvent::Reasoning { text: "hmm".into() },
+            AgentEvent::ToolPending {
+                id: "t1".into(),
+                name: "Bash".into(),
+                parent: None,
+            },
+            AgentEvent::ToolDropped {
+                id: "t0".into(),
+                parent: Some("t9".into()),
+            },
             AgentEvent::ToolStarted {
                 id: "t1".into(),
                 name: "Bash".into(),

@@ -142,6 +142,11 @@ struct Handoff {
     note: Option<InputPart>,
 }
 
+/// What a turn hears when the user's own words plainly ask for a workflow.
+const ASKED_FOR_A_WORKFLOW: &str = "The user's own words ask for a workflow: call \
+    argonauts_start_workflow with their request and the instructions in it, such as who \
+    reviews, rather than doing the work yourself.";
+
 /// One try at a turn: record it, then start its session. A fallback's try records the turn
 /// again under the same id, naming the new worker; a direct turn's handoff records who took it
 /// over instead, since the turn goes on.
@@ -269,6 +274,14 @@ fn attempt(
             ultra::standing_line(ctx.settings())
                 .filter(|_| step.offers_tool(super::tools::start_workflow::NAME))
                 .map(|line| turn::part(InputPartKind::Notes, "ultracode", line.to_owned())),
+        );
+        // Words that plainly ask for a workflow are told to the session in so many words, so
+        // a turn that could do the work itself hands it on as asked.
+        notes.extend(
+            crate::controller::instructions::plainly_asks_for_a_workflow(&text)
+                .then_some(ASKED_FOR_A_WORKFLOW)
+                .filter(|_| step.offers_tool(super::tools::start_workflow::NAME))
+                .map(|line| turn::part(InputPartKind::Notes, "your words", line.to_owned())),
         );
         // A goal you set is told to a turn in your checkout as well.
         notes.extend(goal::brief(ctx, chat, &step, &worker, &text));
@@ -533,6 +546,15 @@ fn live_event(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId, event: &AgentEve
         None => {}
     }
     true
+}
+
+/// The turn's answer didn't fit its format and its agent is asked again, so the screen sets
+/// aside what it said so far.
+pub(super) fn on_retried(ctx: &mut Ctx, chat: &mut ChatState, id: &TurnId) {
+    if chat.turn.as_ref().is_some_and(|turn| &turn.id == id) {
+        let turn = id.clone();
+        emit(ctx, chat, ChatEvent::AnswerRetried { turn });
+    }
 }
 
 pub(super) fn on_done(

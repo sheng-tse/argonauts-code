@@ -4,7 +4,7 @@ expression: text
 ---
 ──────────────────────────────────────────────────────────────────────────
  maker-checker
- One small change, reviewed by another … 0/2 steps · 1m30s · ↓ 41k tokens
+ One small change, reviewed by another…  0/2 steps · 1m30s · ↓ 41k tokens
 
  ╭ Phases ───────┬ Build · 2 steps ─────────────────────────────────────╮
  │ ❯ 1 Build 0/2 │  ◐ build:task-017-rewrite-the-en… Qwen3 Coder… 1m01s │

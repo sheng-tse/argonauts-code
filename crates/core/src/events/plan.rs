@@ -71,7 +71,7 @@ pub enum PlanEvent {
     },
     /// The deterministic aggregate.
     Judged(JudgingResult),
-    /// A decision record, also written to `.argonauts/decisions/`.
+    /// A decision record, also written to `decisions/` in the repo's state directory.
     Decided(DesignDecision),
     /// The coordinator's plan was accepted or rejected by code (`orchestrator`).
     Coordinated {

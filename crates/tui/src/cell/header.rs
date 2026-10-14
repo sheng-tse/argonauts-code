@@ -61,7 +61,8 @@ impl HistoryCell for SessionHeader {
         if !version.is_empty() {
             title.push(Span::styled(format!(" {version}"), dim));
         }
-        let setup: Vec<String> = [self.agent_line(), Some(self.workflow.clone())]
+        let workflow = argonauts_core::text::shown_name(&self.workflow);
+        let setup: Vec<String> = [self.agent_line(), Some(workflow)]
             .into_iter()
             .flatten()
             .map(|part| sanitize_line(&part).trim().to_owned())
@@ -248,7 +249,7 @@ mod tests {
         assert_eq!(
             plain_text(&lines),
             "\n    ▟▙     Argonauts Code v0.0.1\n   \
-             ▟██▙    Claude Code · Opus 5.5 with xhigh effort · council\n \
+             ▟██▙    Claude Code · Opus 5.5 with xhigh effort · Council\n \
              ▝▀▀▀▀▀▀▘  ~/github/argonauts\n\
              \n  \
              Codex: logged out · run codex login\n  \
@@ -320,7 +321,7 @@ mod tests {
         let lines = header.lines(&ctx);
         assert_eq!(
             plain_text(&lines[..4]),
-            "\n  Argonauts Code v0.0.1\n  Claude Code · council\n  ~/github/argonauts"
+            "\n  Argonauts Code v0.0.1\n  Claude Code · Council\n  ~/github/argonauts"
         );
     }
 
@@ -337,11 +338,44 @@ mod tests {
         };
         let mut header = header();
         header.model = None;
-        assert_eq!(second(&header), "Claude Code with xhigh effort · council");
+        assert_eq!(second(&header), "Claude Code with xhigh effort · Council");
         header.effort = Some("  ".into());
-        assert_eq!(second(&header), "Claude Code · council");
+        assert_eq!(second(&header), "Claude Code · Council");
         header.main_agent = None;
         header.effort = Some("high".into());
-        assert_eq!(second(&header), "council");
+        assert_eq!(second(&header), "Council");
+    }
+
+    /// The header's two lines as the picture of names on screen draws them, from the text
+    /// column on: the workflow is named with a capital, as `Solo`.
+    #[test]
+    fn the_header_names_the_workflow_as_its_picture_does() {
+        use crate::overview::golden::{Picture, Region, assert_matches, theme};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let shot = Picture::load("names_after");
+        let theme = theme();
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let header = SessionHeader {
+            model: Some("Haiku 4.5".to_owned()),
+            effort: None,
+            workflow: "solo".to_owned(),
+            agents: Vec::new(),
+            runs_going: 0,
+            ..header()
+        };
+        let lines = header.lines(&ctx);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, lines.len() as u16));
+        for (y, line) in lines.iter().enumerate() {
+            buf.set_line(0, y as u16, line, 80);
+        }
+        // The picture starts its rows where the header's text column starts.
+        let text = Region {
+            rows: 2..4,
+            columns: 0..30,
+            at: (TEXT_COL as u16, 1),
+        };
+        assert_matches(&shot, &buf, &text, &theme);
     }
 }

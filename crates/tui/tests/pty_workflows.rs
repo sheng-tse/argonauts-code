@@ -333,7 +333,7 @@ fn resize_leaves_no_stale_rows() {
                 .is_some_and(|rule| width(&screen.visible[rule]) == usize::from(cols))
         });
         assert_eq!(
-            count_rows(&screen, " council · Haiku ─$"),
+            count_rows(&screen, " Council · Haiku ─$"),
             1,
             "at {cols}:\n{}",
             screen.text()

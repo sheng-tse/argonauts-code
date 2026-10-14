@@ -10,6 +10,7 @@ mod live;
 mod overlay;
 mod run;
 mod selection;
+mod sticky;
 mod views;
 
 #[cfg(test)]
@@ -699,10 +700,12 @@ impl<W: Write> Ui<W> {
         let rows = self.model.history.drain_printable(&ctx);
         let header = self.model.history.take_header_rows();
         let redrawn = self.model.history.take_header_redrawn();
+        let prompts = self.model.history.take_prompt_rows();
         if rows.is_empty() && redrawn.is_none() {
             return false;
         }
         if let Some(scrollback) = self.scrollback.as_mut() {
+            scrollback.mark_prompts(prompts);
             scrollback.push(rows, header);
             if let Some(lines) = redrawn {
                 scrollback.replace_header(lines);

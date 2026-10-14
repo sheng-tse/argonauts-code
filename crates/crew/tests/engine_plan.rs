@@ -920,17 +920,18 @@ async fn plan_decision_records() -> anyhow::Result<()> {
     assert_eq!(decision.choice, "Redis");
     assert_eq!(decision.alternatives, ["memory"]);
     let path = decision.path.clone().expect("a file");
-    assert_eq!(
-        path.to_string_lossy(),
-        ".argonauts/decisions/D-001-counters.md"
-    );
-    let branch = "argonauts/run-01/integration";
-    let committed = bench
-        .repo
-        .git(&["show", &format!("{branch}:{}", path.display())])?;
-    assert!(committed.starts_with("# D-001: counters"));
-    let message = bench.repo.git(&["log", "-1", "--format=%B", branch])?;
-    assert!(message.contains("Argonauts-Conductor: run-01"), "{message}");
+    assert_eq!(path.to_string_lossy(), "decisions/D-001-counters.md");
+    let kept = argonauts_crew::divide::repo_state_dir(&bench.host).join(&path);
+    assert!(std::fs::read_to_string(kept)?.starts_with("# D-001: counters"));
+    let touched = bench.repo.git(&[
+        "log",
+        "--all",
+        "--name-only",
+        "--format=",
+        "--",
+        ".argonauts/decisions",
+    ])?;
+    assert!(touched.trim().is_empty(), "{touched}");
 
     let finished = bench.sink.events().into_iter().any(|e| {
         matches!(

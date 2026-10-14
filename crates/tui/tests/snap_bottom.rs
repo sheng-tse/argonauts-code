@@ -140,10 +140,10 @@ fn idle_prompt() {
         style_of(&view.lines, "──").and_then(|s| s.fg),
         fg(Role::Rule)
     );
-    // The label is in the rule's grey. Purple is kept for the ultracode tag.
+    // The label is in the dim grey, over the rule's. Purple is kept for the ultracode tag.
     assert_eq!(
         style_of(&view.lines, "council").and_then(|s| s.fg),
-        fg(Role::Rule)
+        fg(Role::Dim)
     );
     assert_eq!(
         style_of(&view.lines, "ǁ supervised mode on").and_then(|s| s.fg),

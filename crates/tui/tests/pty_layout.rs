@@ -275,7 +275,7 @@ fn a_saved_setup_changes_the_header_in_place() {
     let header = expect_row(&screen, HEADER);
     assert_eq!(header, 1, "{}", screen.visible_text());
     assert!(
-        screen.visible[header + 1].ends_with("· solo"),
+        screen.visible[header + 1].ends_with("· Solo"),
         "{}",
         screen.visible_text()
     );

@@ -636,6 +636,29 @@ async fn an_agy_model_named_for_a_level_runs_at_it_only() {
     assert_eq!(effort.as_deref(), Some("high"));
 }
 
+/// `haiku` runs Haiku 5.5, which takes an effort, so the header names it and keeps the level
+/// your settings give Claude Code.
+#[tokio::test]
+async fn haiku_is_haiku_5_5_and_the_header_keeps_its_effort() {
+    let mut fixture = Fixture::new(false, |repo| {
+        let config = "main_agent = \"claude-code\"\n\n[agents.claude-code]\nmodel = \"haiku\"\n\
+                      effort = \"low\"\n";
+        std::fs::write(repo.global_config(), config).unwrap();
+    });
+    refresh_models(&fixture.ctx, &mut fixture.state);
+    let (header, effort) = crate::controller::header_agent(&fixture.ctx);
+    assert_eq!(header.to_string(), "claude-code/haiku");
+    assert_eq!(effort.as_deref(), Some("low"));
+    let names = argonauts_core::display_names::DisplayNames {
+        catalog: fixture.ctx.services.registry.catalog(),
+        ..Default::default()
+    };
+    assert_eq!(
+        names.model("claude-code", Some("haiku")).as_deref(),
+        Some("Haiku 5.5")
+    );
+}
+
 /// The default agent's chat session, as a turn builds it, with `/fast` on or off.
 fn chat_session(fixture: &Fixture, fast: bool) -> argonauts_core::worker::SessionSpec {
     use crate::controller::turn::{Launch, TurnStep, session_spec};
@@ -732,20 +755,24 @@ async fn fast_on_an_agy_model_fixed_at_one_level_runs_its_lowest_sibling() {
     assert_eq!(spec.effort.as_deref(), Some("low"));
 }
 
-/// Haiku takes no effort setting, but the default agent's `/effort` still opens with nothing to
-/// slide, since All hands lives there. A role on Haiku lists the roles' efforts as before.
+/// Haiku 4.5 takes no effort setting, but the default agent's `/effort` still opens with
+/// nothing to slide, since All hands lives there. A role on Haiku 4.5 lists the roles' efforts
+/// as before.
 #[test]
 fn effort_on_a_main_agent_without_levels_still_offers_ultracode() {
     let fixture = Fixture::new(false, |repo| {
-        let config = "main_agent = \"claude-code/haiku\"\n\
+        let config = "main_agent = \"claude-code/claude-haiku-4-5\"\n\
                       ultracode = true\n\
-                      [roles.reviewer]\nworkers = [\"claude-code/haiku\"]\n";
+                      [roles.reviewer]\nworkers = [\"claude-code/claude-haiku-4-5\"]\n";
         std::fs::write(repo.global_config(), config).unwrap();
     });
     let slider = effort_slider(&fixture);
     assert!(slider.stops.is_empty(), "{slider:?}");
     assert_eq!((slider.level(), slider.role), (None, None));
-    assert_eq!(slider.worker, "claude-code/haiku".parse().unwrap());
+    assert_eq!(
+        slider.worker,
+        "claude-code/claude-haiku-4-5".parse().unwrap()
+    );
     assert!(slider.model.starts_with("Haiku"), "{}", slider.model);
     assert_eq!(
         slider.ultracode,
@@ -759,6 +786,6 @@ fn effort_on_a_main_agent_without_levels_still_offers_ultracode() {
     };
     match pickers::picker(&fixture.ctx, &command).as_slice() {
         [ViewData::Settings { command, .. }] => assert_eq!(command.as_deref(), Some("effort")),
-        other => panic!("a role on Haiku lists the roles' efforts, not {other:?}"),
+        other => panic!("a role on Haiku 4.5 lists the roles' efforts, not {other:?}"),
     }
 }

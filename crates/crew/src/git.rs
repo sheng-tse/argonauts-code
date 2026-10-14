@@ -104,6 +104,17 @@ pub struct Committed {
     pub left_out: Vec<LeftOut>,
 }
 
+/// What a commit would hold, read without making it: see [`Git::change_since`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Change {
+    /// Every path the change adds, edits or removes.
+    pub files: Vec<String>,
+    /// The diff, each changed function shown whole.
+    pub diff: String,
+    /// The new files it leaves out, which stay in the worktree.
+    pub left_out: Vec<LeftOut>,
+}
+
 /// An untracked file a commit left out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeftOut {
@@ -134,12 +145,23 @@ pub struct Claims {
     files: BTreeSet<String>,
     folders: Vec<String>,
     always: FilePatterns,
+    /// Set when the agents' edits can't be seen: every new file is claimed but the build and
+    /// cache output this list names.
+    unseen: Option<BuildOutput>,
 }
 
 impl Claims {
     /// Claims every new file `patterns` name, such as `commit.always_keep`.
     pub fn always_keeping(mut self, patterns: &[String]) -> Self {
         self.always = FilePatterns::new(patterns);
+        self
+    }
+
+    /// Claims every new file but what the built-in list names as build or cache output. For
+    /// agents whose edit tools never reach the stream, such as the ones a CLI's own workflow
+    /// starts in the background.
+    pub fn every_new_file(mut self) -> Self {
+        self.unseen = Some(BuildOutput::with(&[]));
         self
     }
 
@@ -192,6 +214,10 @@ impl Claims {
         self.files.contains(path)
             || self.folders.iter().any(|folder| path.starts_with(folder))
             || self.always.contains(path)
+            || self
+                .unseen
+                .as_ref()
+                .is_some_and(|output| !output.contains(path))
     }
 
     /// Whether anything claimed sits in `folder`, which ends in `/`.
@@ -529,13 +555,24 @@ impl Git {
         claims: Option<&Claims>,
     ) -> Result<Vec<LeftOut>, GitError> {
         let mut left_out = self
-            .untracked_build_output(worktree, untracked.to_vec())
+            .untracked_build_output(worktree, untracked.to_vec(), &self.build_output)
             .await?;
         let too_big = self.too_big(worktree, untracked, &left_out).await?;
         left_out.extend(too_big);
         let Some(claims) = claims else {
             return Ok(left_out);
         };
+        if let Some(output) = &claims.unseen {
+            let named: BTreeSet<&str> = left_out.iter().map(|left| left.path.as_str()).collect();
+            let rest = untracked
+                .iter()
+                .filter(|path| !named.contains(path.as_str()))
+                .cloned()
+                .collect();
+            let cache = self.untracked_build_output(worktree, rest, output).await?;
+            left_out.extend(cache);
+            return Ok(left_out);
+        }
         left_out.extend(self.claimed_but_ignored(worktree, claims).await?);
         let unclaimed: Vec<String> = {
             let named: BTreeSet<&str> = left_out.iter().map(|left| left.path.as_str()).collect();
@@ -691,11 +728,12 @@ impl Git {
         &self,
         dir: &Path,
         untracked: Vec<String>,
+        output: &BuildOutput,
     ) -> Result<Vec<LeftOut>, GitError> {
         let mut tracked_folders: HashMap<String, bool> = HashMap::new();
         let mut left_out = Vec::new();
         for path in untracked {
-            for found in self.build_output.matches(&path) {
+            for found in output.matches(&path) {
                 if found.folder {
                     let tracked = match tracked_folders.get(&found.path) {
                         Some(tracked) => *tracked,
@@ -841,37 +879,100 @@ impl Git {
             .await
     }
 
-    /// The whole change in a worktree since `from`, files not yet added included, as a
-    /// reviewer reads it while the session that makes it still works. A throwaway index at
-    /// `index` leaves the worktree's own index alone.
-    pub async fn working_diff(
+    /// Git whose commands use the index at `index` instead of the worktree's own, so what they
+    /// stage leaves the worktree and its index as they were.
+    pub fn with_index(&self, index: &Path) -> Self {
+        let mut git = self.clone();
+        let index = index.to_string_lossy().into_owned();
+        git.env.push(("GIT_INDEX_FILE".to_owned(), index));
+        git
+    }
+
+    /// What a commit in `worktree` would hold now, against `from`, read through a throwaway
+    /// index at `index`: the same sorting [`Git::commit_claimed`] does, after the same
+    /// [`Git::unstage_left_out`] of what the agent's own `commits` swept in. So what reviewers
+    /// read before the commit is exactly what the commit then holds.
+    pub async fn change_since(
         &self,
-        dir: &Path,
+        worktree: &Path,
         from: &str,
         index: &Path,
-    ) -> Result<String, GitError> {
-        let index = index.to_string_lossy();
-        let env = [("GIT_INDEX_FILE", index.as_ref())];
-        for args in [&["read-tree", "HEAD"][..], &["add", "-A"][..]] {
-            let out = self.output(dir, args, &env).await?;
+        commits: &[String],
+        claims: Option<&Claims>,
+    ) -> Result<Change, GitError> {
+        let _ = std::fs::remove_file(index);
+        let scratch = self.with_index(index);
+        let staged = async {
+            scratch.run(worktree, &["read-tree", "HEAD"]).await?;
+            scratch.unstage_left_out(worktree, commits, claims).await?;
+            let left_out = scratch.stage_all(worktree, claims).await?;
+            let names = [
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--no-renames",
+                from,
+            ];
+            let files = scratch.run(worktree, &names).await?;
+            let args = [
+                "diff",
+                "--cached",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--function-context",
+                from,
+            ];
+            let out = scratch.output(worktree, &args, &[]).await?;
             if !out.status.success() {
-                return Err(failed(args, &out));
+                return Err(failed(&args, &out));
             }
+            Ok(Change {
+                files: files
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+                diff: String::from_utf8_lossy(&out.stdout).into_owned(),
+                left_out,
+            })
         }
-        let args = [
-            "diff",
-            "--cached",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--function-context",
-            from,
-        ];
-        let out = self.output(dir, &args, &env).await?;
-        if !out.status.success() {
-            return Err(failed(&args, &out));
+        .await;
+        let _ = std::fs::remove_file(index);
+        staged
+    }
+
+    /// A commit of what [`Git::change_since`] reads, on top of `HEAD` and on no branch, so the
+    /// change as it stands can be checked out somewhere clean.
+    pub async fn commit_of_change(
+        &self,
+        worktree: &Path,
+        index: &Path,
+        commits: &[String],
+        claims: Option<&Claims>,
+    ) -> Result<String, GitError> {
+        let _ = std::fs::remove_file(index);
+        let scratch = self.with_index(index);
+        let made = async {
+            scratch.run(worktree, &["read-tree", "HEAD"]).await?;
+            scratch.unstage_left_out(worktree, commits, claims).await?;
+            scratch.stage_all(worktree, claims).await?;
+            let tree = scratch.run(worktree, &["write-tree"]).await?;
+            let args = [
+                "commit-tree",
+                tree.trim(),
+                "-p",
+                "HEAD",
+                "-m",
+                "The change as it stands",
+            ];
+            let commit = scratch.run(worktree, &args).await?;
+            Ok(commit.trim().to_owned())
         }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        .await;
+        let _ = std::fs::remove_file(index);
+        made
     }
 
     /// `paths` follows the two revisions: `--` and pathspecs, or nothing for every file.
@@ -1122,6 +1223,15 @@ impl Git {
         self.run(repo, &args).await.map(drop)
     }
 
+    /// Puts the worktree at `dir` back to exactly `rev`, detached: each tracked file as `rev`
+    /// holds it and every untracked file gone. What git ignores stays, such as dependencies a
+    /// setup command installed.
+    pub async fn restore_clean(&self, dir: &Path, rev: &str) -> Result<(), GitError> {
+        let checkout = ["checkout", "--quiet", "--detach", "--force", rev];
+        self.run(dir, &checkout).await?;
+        self.run(dir, &["clean", "-ffdq"]).await.map(drop)
+    }
+
     /// A detached worktree at `rev`, such as the run's read-only base worktree.
     pub async fn add_detached_worktree(
         &self,
@@ -1360,6 +1470,44 @@ impl Git {
             return Err(failed(&commit, &out));
         }
         Ok((self.resolve(worktree, "HEAD").await?, left_out))
+    }
+
+    /// Puts every tracked file back as HEAD holds it, staged or not. Untracked files stay.
+    pub async fn discard_tracked_changes(&self, dir: &Path) -> Result<(), GitError> {
+        self.run(dir, &["reset", "--quiet", "--hard", "HEAD"])
+            .await
+            .map(drop)
+    }
+
+    /// Commits the merge in progress with the tracked files as they are now and `resolved`
+    /// added, the files a conflict left. Anything else untracked stays out, such as what an
+    /// earlier check left in the tree.
+    pub async fn finish_merge_of(
+        &self,
+        worktree: &Path,
+        resolved: &[String],
+        message: &str,
+    ) -> Result<String, GitError> {
+        self.run(worktree, &["add", "--update"]).await?;
+        for chunk in resolved.chunks(PATHS_PER_CALL) {
+            let mut args = vec!["--literal-pathspecs", "add", "--all", "--"];
+            args.extend(chunk.iter().map(String::as_str));
+            self.run(worktree, &args).await?;
+        }
+        let identity = self.identity_env(worktree).await;
+        let commit = [
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "--cleanup=whitespace",
+            "-m",
+            message,
+        ];
+        let out = self.output(worktree, &commit, &identity).await?;
+        if !out.status.success() {
+            return Err(failed(&commit, &out));
+        }
+        self.resolve(worktree, "HEAD").await
     }
 
     /// Undoes a merge in progress. Does nothing when there is none, and fails when the abort
@@ -2327,6 +2475,63 @@ mod tests {
         let kept = git.commit_work(&repo.root, "all of it").await.unwrap();
         assert_eq!(kept.sha, None);
         assert_eq!(kept.left_out.len(), 1);
+    }
+
+    /// What reviewers read before the commit is what the commit then holds: the agent's
+    /// files and edits, never the bytecode beside them, and reading it touches nothing.
+    #[tokio::test]
+    async fn the_change_read_before_the_commit_is_the_commit() {
+        let repo = TestRepo::new();
+        let git = listing();
+        repo.write("money.py", "def total(): return 1\n");
+        git.commit_all(&repo.root, "start").await.unwrap();
+        let base = git.head_commit(&repo.root).await.unwrap().unwrap();
+
+        repo.write("money.py", "def total(): return 2\n");
+        repo.write("rounding.py", "def round_half(): ...\n");
+        repo.write("stray.txt", "a command made this");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "the agent's own"]);
+        let own = git.head_commit(&repo.root).await.unwrap().unwrap();
+        repo.write("tests/test_money.py", "def test_total(): ...\n");
+        repo.write("__pycache__/money.cpython-312.pyc", "bytecode");
+        repo.write("tests/__pycache__/test_money.cpython-312.pyc", "bytecode");
+
+        let mut claims = Claims::default();
+        for path in ["rounding.py", "tests/test_money.py"] {
+            claims.add(&repo.root, path);
+        }
+        let index = repo.root.join(".git").join("scratch-index");
+        let read = git
+            .change_since(
+                &repo.root,
+                &base,
+                &index,
+                std::slice::from_ref(&own),
+                Some(&claims),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read.files,
+            ["money.py", "rounding.py", "tests/test_money.py"]
+        );
+        assert!(!read.diff.contains("pyc"), "{}", read.diff);
+        assert!(!read.diff.contains("stray"), "{}", read.diff);
+        assert!(!index.exists());
+        assert_eq!(repo.git(&["diff", "--cached", "--name-only"]), "");
+
+        git.unstage_left_out(&repo.root, std::slice::from_ref(&own), Some(&claims))
+            .await
+            .unwrap();
+        let sha = git
+            .commit_claimed(&repo.root, "the session's", Some(&claims))
+            .await
+            .unwrap()
+            .sha
+            .unwrap();
+        let committed = git.review_diff(&repo.root, &base, &sha).await.unwrap();
+        assert_eq!(read.diff, committed);
     }
 
     /// An agent ran `git add -A` and committed: its work, what a command generated, and the

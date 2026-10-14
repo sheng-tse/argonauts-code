@@ -337,6 +337,7 @@ mod tests {
             reviewers: vec![worker("astra")],
             judge: Vec::new(),
             worker_workflows: false,
+            merger: Vec::new(),
         };
         assert_eq!(roles(&settings), [CrewRole::Reviewers]);
         settings.crew.judge = vec![worker("codex")];

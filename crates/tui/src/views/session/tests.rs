@@ -5,7 +5,10 @@
 use std::time::Instant;
 
 use argonauts_core::RunId;
-use argonauts_core::app::{UiCommand, ViewRequest};
+use std::path::PathBuf;
+
+use argonauts_core::api::RawView;
+use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
 use argonauts_core::names::SessionKey;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -120,29 +123,110 @@ fn tab_goes_through_the_tabs_and_the_raw_log_is_the_last() {
     assert_eq!(view.tab, Tab::Input);
     assert!(footer(&screen(&mut view, &state, 100)).contains("tab next tab"));
 
-    // Past the last of its own tabs is the raw log, and the view is back on Output under it.
+    // The last tab is the raw log, read as it stands each time it opens.
     let raw = press(&mut view, &state, KeyCode::Tab);
     assert!(
         matches!(&raw, ViewOutcome::Request(ViewRequest::Raw { session, .. }) if *session == first()),
         "{raw:?}"
     );
+    assert_eq!(view.tab, Tab::Raw);
+    // From there the tabs go round.
+    press(&mut view, &state, KeyCode::Tab);
     assert_eq!(view.tab, Tab::Output);
 
     // Shift+Tab goes the other way round.
     let raw = press(&mut view, &state, KeyCode::BackTab);
     assert!(matches!(raw, ViewOutcome::Request(ViewRequest::Raw { .. })));
-    assert_eq!(view.tab, Tab::Input);
+    assert_eq!(view.tab, Tab::Raw);
     press(&mut view, &state, KeyCode::BackTab);
-    assert_eq!(view.tab, Tab::Output);
+    assert_eq!(view.tab, Tab::Input);
 }
 
 #[test]
-fn r_opens_the_raw_log_from_any_tab_and_stays_where_it_was() {
+fn r_opens_the_raw_tab_from_any_tab() {
     let (state, _, mut view) = opened();
     press(&mut view, &state, KeyCode::Tab);
     let raw = press(&mut view, &state, KeyCode::Char('r'));
     assert!(matches!(raw, ViewOutcome::Request(ViewRequest::Raw { .. })));
-    assert_eq!(view.tab, Tab::Input);
+    assert_eq!(view.tab, Tab::Raw);
+    // On the Raw tab, r reads it again.
+    let again = press(&mut view, &state, KeyCode::Char('r'));
+    assert!(matches!(
+        again,
+        ViewOutcome::Request(ViewRequest::Raw { .. })
+    ));
+}
+
+fn raw_of(session: SessionKey, lines: usize) -> ViewData {
+    ViewData::Raw {
+        raw: RawView {
+            session,
+            lines: (0..lines)
+                .map(|n| format!(r#"{{"type":"assistant","n":{n}}}"#))
+                .collect(),
+            truncated: false,
+            path: PathBuf::from("raw.jsonl"),
+            vendor_transcript: None,
+        },
+    }
+}
+
+#[test]
+fn the_raw_log_draws_inside_the_view_under_its_header_and_tabs() {
+    let (state, _, mut view) = opened();
+    press(&mut view, &state, KeyCode::Char('r'));
+    let text = screen(&mut view, &state, 100);
+    assert!(text.contains("Reading the raw log…"), "{text}");
+    // Another agent's log is not this tab's.
+    assert!(!view.accept(&raw_of(SessionKey::numbered(2), 3)));
+    assert!(view.accept(&raw_of(first(), 40)));
+
+    let text = screen(&mut view, &state, 100);
+    let header = text.lines().next().unwrap();
+    assert!(header.contains(" Output  Input  Raw "), "{text}");
+    assert!(
+        text.contains(r#"assistant  {"type":"assistant","n":0}"#),
+        "{text}"
+    );
+    let footer = footer(&text);
+    assert!(footer.contains("enter unfolds"), "{footer}");
+    assert!(footer.contains("tab output"), "{footer}");
+    assert!(footer.contains("1-21 of 40"), "{footer}");
+
+    // The keys move through the log by event, and Enter unfolds the one under the cursor.
+    press(&mut view, &state, KeyCode::End);
+    let text = screen(&mut view, &state, 100);
+    assert!(text.contains(r#""n":39"#), "{text}");
+    press(&mut view, &state, KeyCode::Enter);
+    let text = screen(&mut view, &state, 100);
+    assert!(text.contains(r#"  "n": 39"#), "{text}");
+
+    // A search takes every key, Esc included, until it is done.
+    press(&mut view, &state, KeyCode::Char('/'));
+    for c in "\"n\":3}".chars() {
+        press(&mut view, &state, KeyCode::Char(c));
+    }
+    press(&mut view, &state, KeyCode::Enter);
+    assert!(screen(&mut view, &state, 100).contains(r#"{"type":"assistant","n":3}"#));
+    press(&mut view, &state, KeyCode::Char('/'));
+    assert!(matches!(
+        press(&mut view, &state, KeyCode::Esc),
+        ViewOutcome::Consumed
+    ));
+    assert!(matches!(
+        press(&mut view, &state, KeyCode::Esc),
+        ViewOutcome::Close
+    ));
+
+    // Read again, the log keeps its cursor and what was open.
+    press(&mut view, &state, KeyCode::Char('r'));
+    assert!(view.accept(&raw_of(first(), 41)));
+    let text = screen(&mut view, &state, 100);
+    assert!(text.contains(r#"{"type":"assistant","n":3}"#), "{text}");
+    press(&mut view, &state, KeyCode::End);
+    let text = screen(&mut view, &state, 100);
+    assert!(text.contains(r#"  "n": 39"#), "{text}");
+    assert!(text.contains(r#""n":40}"#), "{text}");
 }
 
 #[test]
@@ -197,6 +281,53 @@ fn a_result_written_at_the_end_of_a_message_reads_as_words_too() {
     assert!(!footer(&text).contains("expand"), "{text}");
 }
 
+/// An edit reads as its patch alone, as Claude Code shows it, and a Codex edit, whose call
+/// carries no patch, takes the change Argonauts saw, so it shows once.
+#[test]
+fn an_edit_shows_once_with_its_patch_and_nothing_after_it() {
+    let (mut state, run, mut view) = opened();
+    let session = agent(&mut state, &run);
+    session.vendor = "claude-code".to_owned();
+    let mut edit = reported(
+        "Edit",
+        json!({"file_path": "src/due.rs", "old_string": "a", "new_string": "b"}),
+    );
+    edit.id = "t1".to_owned();
+    edit.output = Some("The file src/due.rs has been updated successfully.".to_owned());
+    session.tools = vec![edit];
+    session.patches = vec![(
+        "t1".to_owned(),
+        "src/due.rs".to_owned(),
+        "@@ -1,1 +1,1 @@\n-a\n+b".to_owned(),
+    )];
+    let text = screen(&mut view, &state, 100);
+    assert!(text.contains("Update(src/due.rs)"), "{text}");
+    assert!(!text.contains("updated successfully"), "{text}");
+
+    let (mut state, run, mut view) = opened();
+    let session = agent(&mut state, &run);
+    session.vendor = "codex".to_owned();
+    let mut change = reported(
+        "file_change",
+        json!({"changes": [{"path": "/w/src/due.rs", "kind": "update"}]}),
+    );
+    change.id = "c1".to_owned();
+    session.tools = vec![change];
+    session.diffs = vec![argonauts_core::events::session::FileDiff {
+        path: "src/due.rs".to_owned(),
+        added: 1,
+        removed: 1,
+        hunk: "@@ -1,1 +1,1 @@\n-a\n+b".to_owned(),
+        truncated: false,
+    }];
+    let text = screen(&mut view, &state, 100);
+    assert_eq!(text.matches("src/due.rs").count(), 1, "{text}");
+    assert!(
+        text.contains("+b"),
+        "the diff hangs under the call:\n{text}"
+    );
+}
+
 #[test]
 fn an_agents_own_talk_with_argonauts_is_left_out_but_its_work_is_not() {
     let (mut state, run, mut view) = opened();
@@ -208,6 +339,44 @@ fn an_agents_own_talk_with_argonauts_is_left_out_but_its_work_is_not() {
     assert!(text.contains("Bash(cargo test overdue)"), "{text}");
     assert!(!text.contains("status"), "{text}");
     assert!(!text.contains("Result"), "{text}");
+}
+
+/// As Claude Code draws an agent's work: a read says how many lines it read, never the
+/// file, and a command's output folds to its first lines until → opens it.
+#[test]
+fn the_output_tab_reads_like_claude_codes() {
+    let (mut state, run, mut view) = opened();
+    let file: String = (1..=23)
+        .map(|n| format!("line {n} of the file\n"))
+        .collect();
+    let printed: String = (1..=30).map(|n| format!("test {n} ok\n")).collect();
+    let mut read = reported("Read", json!({"file_path": "src/due.py"}));
+    read.output = Some(file);
+    let mut ran = reported("Bash", json!({"command": "python3 -m unittest"}));
+    ran.output = Some(printed);
+    agent(&mut state, &run).tools = vec![read, ran];
+    let text = screen_of(&mut view, &state, 100, 40);
+    assert!(text.contains("Read 23 lines"), "{text}");
+    assert!(!text.contains("line 1 of the file"), "{text}");
+    assert!(text.contains("test 1 ok"), "{text}");
+    assert!(!text.contains("test 30 ok"), "{text}");
+    assert!(text.contains("+"), "{text}");
+    press(&mut view, &state, KeyCode::Right);
+    let text = screen_of(&mut view, &state, 100, 60);
+    assert!(text.contains("test 30 ok"), "{text}");
+}
+
+/// A report Claude Code couldn't read is no report: its raw text isn't drawn.
+#[test]
+fn an_unreadable_report_is_left_out() {
+    let (mut state, run, mut view) = opened();
+    agent(&mut state, &run).tools = vec![reported(
+        "StructuredOutput",
+        json!({"UnparsedToolInput": "{\"status\": \"blocked\", \"summary\": \"still runn"}),
+    )];
+    let text = screen(&mut view, &state, 100);
+    assert!(!text.contains("UnparsedToolInput"), "{text}");
+    assert!(!text.contains("still runn"), "{text}");
 }
 
 #[test]
@@ -328,9 +497,11 @@ fn an_agent_on_a_goal_has_a_goal_tab_with_the_four_parts_at_full_size() {
         "{text}"
     );
 
-    // Past Goal is the raw log, and the tabs go round to Output.
+    // Past Goal is the raw log, and then the tabs go round to Output.
     let raw = press(&mut view, &state, KeyCode::Tab);
     assert!(matches!(raw, ViewOutcome::Request(ViewRequest::Raw { .. })));
+    assert_eq!(view.tab, Tab::Raw);
+    press(&mut view, &state, KeyCode::Tab);
     assert_eq!(view.tab, Tab::Output);
 }
 
@@ -675,4 +846,56 @@ fn a_file_its_call_drew_is_not_drawn_again_from_the_change_seen_after() {
     assert!(!text.contains("new a"), "{text}");
     assert!(text.contains("Update(src/b.rs)"), "{text}");
     assert!(text.contains("new b"), "{text}");
+}
+
+/// A call its model is still writing shows in the Output tab as the chat shows it, by its
+/// name alone and with a steady dim bullet; filled in, it reads as any call, and one that
+/// never lands is gone.
+#[test]
+fn a_call_being_written_shows_by_its_name_and_goes_if_it_never_lands() {
+    let (mut state, run, mut view) = opened();
+    let pending = |id: &str, name: &str| ToolRecord {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        input: serde_json::Value::Null,
+        parent: None,
+        ok: None,
+        output: None,
+    };
+    agent(&mut state, &run).tools = vec![pending("e1", "Edit"), pending("w1", "Write")];
+    let text = screen_of(&mut view, &state, 100, 30);
+    let alone = |name: &str| {
+        text.lines()
+            .any(|line| line.trim_end() == format!("● {name}"))
+    };
+    assert!(alone("Update") && alone("Write"), "{text}");
+
+    let theme = theme();
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    let ctx = ViewCtx {
+        theme: &theme,
+        state: &state,
+        now: Instant::now(),
+    };
+    view.render(area, &mut buf, &ctx);
+    let row = (0..30)
+        .find(|y| {
+            let line: String = (0..100).map(|x| buf[(x, *y)].symbol()).collect();
+            line.contains("● Update")
+        })
+        .expect("the call's row");
+    let bullet = (0..100)
+        .find(|x| buf[(*x, row)].symbol() == "●")
+        .expect("its bullet");
+    let dim = theme.style(crate::theme::Role::Dim).fg;
+    assert_eq!(Some(buf[(bullet, row)].fg), dim, "a steady dim bullet");
+
+    let tools = &mut agent(&mut state, &run).tools;
+    tools[0].input = json!({"file_path": "src/app.rs", "old_string": "a", "new_string": "b"});
+    tools.retain(|tool| tool.id != "w1");
+    let text = screen_of(&mut view, &state, 100, 30);
+    assert!(text.contains("● Update(src/app.rs)"), "{text}");
+    assert_eq!(text.matches("● Update").count(), 1, "{text}");
+    assert!(!text.contains("Write"), "{text}");
 }

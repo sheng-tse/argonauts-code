@@ -481,11 +481,8 @@ impl CardPrompt {
             return event;
         }
         match key.code {
-            // A y/N question: Enter and Esc take the default, no, and only y says yes.
-            KeyCode::Enter | KeyCode::Esc if self.keys_only => match self.option_for_letter('n') {
-                Some(index) => self.pick(index, true),
-                None => CardEvent::Moved,
-            },
+            // A y/N question answers to its letters alone: Enter and Esc do nothing.
+            KeyCode::Enter | KeyCode::Esc if self.keys_only => CardEvent::Moved,
             KeyCode::Up => {
                 self.move_to(self.selected.saturating_sub(1));
                 CardEvent::Moved

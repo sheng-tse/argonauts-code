@@ -119,7 +119,7 @@ pub fn how(file: &WorkflowFile, index: usize) -> String {
         notes.insert(0, "a step you require".to_owned());
     }
     if let Some(rounds) = step.max_rounds {
-        notes.push(format!("at most {rounds} rounds"));
+        notes.push(format!("up to {rounds} rounds"));
     }
     let said = step.for_each == Some(ForEach::Task) || step.count.is_some();
     if said || notes.is_empty() {

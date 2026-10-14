@@ -1,13 +1,15 @@
 //! What the import keeps, beside the usage ledger in `~/.argonauts/usage/imported/`:
 //! `records.jsonl`, one line for each session's answers in one hour with one model (when, which
 //! CLI, model and folder, and the token counts), and `state.json`, the answer to the question
-//! and how far into each session file the import has read. Nothing of what was said is kept.
+//! and how far into each session file the import has read, with `answers.bin`, the answers
+//! already counted. Nothing of what was said is kept. When the way the import reads changes,
+//! it reads everything again into `imported.next/`, which then takes this folder's place.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -36,6 +38,10 @@ pub(crate) struct Record {
     /// A subagent gave these answers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub subagent: bool,
+    /// A whole day's share from Claude Code's own totals, for a day whose transcripts are gone:
+    /// `at` is that day's noon in UTC, and the hour and folder aren't known.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_day: bool,
 }
 
 /// What the import remembers between runs.
@@ -44,15 +50,36 @@ pub(crate) struct ImportState {
     /// Your answer to the question: `None` until you give one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import: Option<bool>,
+    /// The way of reading the records were made with; an older one means they're read again.
+    #[serde(default)]
+    pub version: u32,
     /// The last session number given out.
     #[serde(default)]
     pub sessions: u32,
     /// Each session file read so far, by its path.
     #[serde(default)]
     pub files: BTreeMap<String, FileRead>,
-    /// Compressed session files left out because nothing here could open them.
+    /// Compressed session files left out of the last pass because nothing here could open
+    /// them.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped: u32,
+    /// Lines that looked like they held counts but couldn't be read.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unreadable: u32,
+    /// Why Claude Code's own totals couldn't be read, when they couldn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_cache_problem: Option<String>,
+    /// How much of the records and of the answers counted this state accounts for. What a pass
+    /// cut short wrote after it is taken back before the next pass reads again from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<Kept>,
+}
+
+/// The lengths in bytes of the records file and the answers file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Kept {
+    pub records: u64,
+    pub answers: u64,
 }
 
 /// How far into one session file the import has read.
@@ -64,9 +91,10 @@ pub(crate) struct FileRead {
     /// The CLI's own running total so far, where it keeps one, so only what's new counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub totals: Option<[u64; 4]>,
-    /// The last answer counted, so one written over several lines counts once.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_answer: Option<String>,
+    /// The file's last few answers with what's counted of each, so a line of one of them
+    /// that a later pass reads adds only what grew.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<(String, [u64; 4])>,
     /// The folder and model the file named last, for answers that don't repeat them.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub folder: String,
@@ -75,6 +103,12 @@ pub(crate) struct FileRead {
     /// The session is a subagent's, as its start said.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub subagent: bool,
+    /// The session was forked from another, so its running total starts from the other's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forked: bool,
+    /// For a compressed file, its size when it was read, so it's read again only if it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packed: Option<u64>,
 }
 
 /// The records file as last read: its path, length and time, and what it held.
@@ -91,15 +125,60 @@ pub(crate) struct Store {
 
 impl Store {
     pub fn new(paths: &Paths) -> Self {
-        Self {
-            dir: paths.usage_dir().join("imported"),
+        Self::at(&paths.usage_dir().join("imported"))
+    }
+
+    pub fn at(dir: &Path) -> Self {
+        let store = Self {
+            dir: dir.to_owned(),
+        };
+        store.recover();
+        store
+    }
+
+    /// The folder a fresh import is read into before it takes this one's place.
+    pub fn next(&self) -> Store {
+        Store {
+            dir: self.dir.with_extension("next"),
         }
     }
 
-    #[cfg(test)]
-    pub fn at(dir: &std::path::Path) -> Self {
-        Self {
-            dir: dir.to_owned(),
+    /// Removes everything kept here.
+    pub fn clear(&self) -> io::Result<()> {
+        match fs::remove_dir_all(&self.dir) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            done => done,
+        }
+    }
+
+    /// Puts `next` in this one's place: this folder is moved aside, `next` moved in, and the
+    /// old one removed, so whatever stops it leaves one whole folder or the other.
+    pub fn replace_with(&self, next: &Store) -> io::Result<()> {
+        let old = self.dir.with_extension("old");
+        Store { dir: old.clone() }.clear()?;
+        if self.dir.exists() {
+            fs::rename(&self.dir, &old)?;
+        }
+        if let Err(err) = fs::rename(&next.dir, &self.dir) {
+            // Opening the store meanwhile finishes a move it finds half done.
+            if !self.dir.exists() {
+                return Err(err);
+            }
+        }
+        Store { dir: old }.clear()
+    }
+
+    /// Finishes a replacement stopped between its two moves.
+    fn recover(&self) {
+        let next = self.next();
+        if !self.dir.exists() && next.dir.exists() && self.dir.with_extension("old").exists() {
+            let _ = fs::rename(&next.dir, &self.dir);
+        }
+        if self.dir.exists() {
+            let _ = Store {
+                dir: self.dir.with_extension("old"),
+            }
+            .clear();
         }
     }
 
@@ -109,6 +188,11 @@ impl Store {
 
     fn state_file(&self) -> PathBuf {
         self.dir.join("state.json")
+    }
+
+    /// Where the answers already counted are kept.
+    pub fn answers_file(&self) -> PathBuf {
+        self.dir.join("answers.bin")
     }
 
     pub fn state(&self) -> ImportState {
@@ -133,6 +217,32 @@ impl Store {
         fs::rename(partial, self.state_file())
     }
 
+    /// How long the records file and the answers file are now.
+    pub fn kept(&self) -> Kept {
+        let len = |path: PathBuf| fs::metadata(path).map_or(0, |meta| meta.len());
+        Kept {
+            records: len(self.records_file()),
+            answers: len(self.answers_file()),
+        }
+    }
+
+    /// Takes back what was appended to the records and the answers after `kept`, as a pass cut
+    /// short between its writes leaves it, so they match the state again.
+    pub fn take_back_to(&self, kept: Kept) -> io::Result<()> {
+        for (path, len) in [
+            (self.records_file(), kept.records),
+            (self.answers_file(), kept.answers),
+        ] {
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            if meta.len() > len {
+                OpenOptions::new().write(true).open(&path)?.set_len(len)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn append(&self, records: &[Record]) -> io::Result<()> {
         if records.is_empty() {
             return Ok(());
@@ -149,6 +259,26 @@ impl Store {
             .mode(0o600)
             .open(self.records_file())?
             .write_all(text.as_bytes())
+    }
+
+    /// Keeps only the records `keep` accepts. Written whole to a file beside the records, then
+    /// moved over them.
+    pub fn retain(&self, keep: &dyn Fn(&Record) -> bool) -> io::Result<()> {
+        let mut text = String::new();
+        for record in self.records().iter().filter(|record| keep(record)) {
+            text.push_str(&serde_json::to_string(record).map_err(io::Error::other)?);
+            text.push('\n');
+        }
+        create_private_dir_all(&self.dir)?;
+        let partial = self.dir.join("records.jsonl.partial");
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&partial)?
+            .write_all(text.as_bytes())?;
+        fs::rename(partial, self.records_file())
     }
 
     /// Every record. The file is read again only when it changed since the last time.
@@ -205,6 +335,7 @@ mod tests {
             cache_write: 0,
             session: 1,
             subagent: false,
+            whole_day: false,
         };
         store.append(std::slice::from_ref(&record)).unwrap();
         assert_eq!(*store.records(), vec![record.clone()]);

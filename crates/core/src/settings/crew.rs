@@ -33,6 +33,11 @@ pub struct CrewSettings {
     /// inside one agent can't be watched or merged.
     #[serde(default)]
     pub worker_workflows: bool,
+    /// Merges the tasks that passed: conflicts between them, a main branch that moved
+    /// meanwhile, the checks after merging, and the commit message. Empty follows the
+    /// orchestrator. Which files make up a change, and whether a task passed, stay with code.
+    #[serde(default)]
+    pub merger: Vec<WorkerRef>,
 }
 
 /// A `[crew]` table as written, where a role left out is told apart from one set.
@@ -51,6 +56,9 @@ struct WrittenCrew {
     judge: Option<Vec<WorkerRef>>,
     /// The crew's agents may start workflows and background agents of their CLI's own.
     worker_workflows: bool,
+    #[serde(deserialize_with = "some_one_or_many")]
+    #[schemars(with = "Vec<WorkerRef>")]
+    merger: Option<Vec<WorkerRef>>,
 }
 
 impl From<WrittenCrew> for CrewSettings {
@@ -67,6 +75,7 @@ impl From<WrittenCrew> for CrewSettings {
             reviewers: written.reviewers.unwrap_or(everyone.reviewers),
             judge: follows(written.judge, reviewers_set, everyone.judge),
             worker_workflows: written.worker_workflows,
+            merger: written.merger.unwrap_or_default(),
         }
     }
 }
@@ -92,6 +101,7 @@ impl CrewSettings {
             reviewers: everyone.clone(),
             judge: everyone,
             worker_workflows: false,
+            merger: Vec::new(),
         }
     }
 
@@ -468,6 +478,7 @@ mod tests {
             reviewers: vec![worker("antigravity-cli"), worker("codex")],
             judge: vec![worker("antigravity-cli")],
             worker_workflows: false,
+            merger: Vec::new(),
         };
         assert_eq!(
             crew.members(),

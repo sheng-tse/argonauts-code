@@ -4,7 +4,7 @@
 //! ```toml
 //! name    = "stats"
 //! places  = ["stats-tab", "above"]   # the tab, and the card above the input
-//! period  = "today"                 # today · 7d · 30d · all
+//! period  = "all"                   # today · week · month · all
 //! group   = "cli"                   # cli · model · role
 //! measure = "tokens"                # what the bars measure: tokens · tasks · spend
 //! columns = ["work", "review", "tokens", "plan"]   # also: spend, pace, lines, fallbacks
@@ -42,7 +42,7 @@ impl Default for StatsSettings {
         Self {
             name: "stats".to_owned(),
             places: vec!["stats-tab".to_owned(), "above".to_owned()],
-            period: StatsPeriod::Today,
+            period: StatsPeriod::All,
             group: StatsGroup::Cli,
             measure: StatsMeasure::Tokens,
             columns: vec![
@@ -56,15 +56,16 @@ impl Default for StatsSettings {
     }
 }
 
+/// The period Stats opens on. A file may still name a week `7d` and a month `30d`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum StatsPeriod {
-    #[default]
     #[serde(rename = "today")]
     Today,
-    #[serde(rename = "7d")]
+    #[serde(rename = "week", alias = "7d")]
     Week,
-    #[serde(rename = "30d")]
+    #[serde(rename = "month", alias = "30d")]
     Month,
+    #[default]
     #[serde(rename = "all")]
     All,
 }
@@ -319,7 +320,7 @@ fn is_about(key: &str) -> bool {
     matches!(key, "name" | "places")
 }
 
-/// `value` as it's written in the file: `"7d"`, `["work", "review"]`, `true`.
+/// `value` as it's written in the file: `"week"`, `["work", "review"]`, `true`.
 fn toml_text<T: Serialize>(value: &T) -> String {
     toml::Value::try_from(value)
         .map(|value| value.to_string())
@@ -337,12 +338,15 @@ mod tests {
     }
 
     #[test]
-    fn no_file_reads_as_the_picture_draws_it() {
+    fn no_file_opens_on_every_day_so_far() {
         let home = tempfile::tempdir().unwrap();
         let (settings, problems) = StatsSettings::read(home.path(), None);
         assert_eq!(settings, StatsSettings::default());
         assert!(problems.is_empty());
-        assert_eq!(settings.period.usage(), UsagePeriod::Today);
+        assert_eq!(settings.period.usage(), UsagePeriod::All);
+        // A file from before still reads its week and month.
+        let old: StatsSettings = toml::from_str("period = \"7d\"").unwrap();
+        assert_eq!(old.period, StatsPeriod::Week);
     }
 
     #[test]
@@ -417,7 +421,7 @@ mod tests {
         assert_eq!(
             changed.changes_from(&from),
             vec![
-                ("period".to_owned(), "\"7d\"".to_owned()),
+                ("period".to_owned(), "\"week\"".to_owned()),
                 ("columns".to_owned(), "[\"tokens\", \"work\"]".to_owned()),
                 ("total".to_owned(), "false".to_owned()),
             ]

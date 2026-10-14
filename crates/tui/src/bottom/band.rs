@@ -462,7 +462,7 @@ impl Band {
             .map(|(_, key)| key.as_str())
     }
 
-    /// ` ▸ 2 mods hidden · Codex 5h 92% · ~$1.86 today · ctrl+x ctrl+a to show`
+    /// ` ▸ 2 mods hidden · Codex 5-hour 92% · ~$1.86 today · ctrl+x ctrl+a to show`
     fn hidden_line(
         &self,
         kit: &Kit<'_>,

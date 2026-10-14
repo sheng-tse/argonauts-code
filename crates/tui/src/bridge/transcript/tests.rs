@@ -652,6 +652,26 @@ fn warning_notice_shows_once() {
     assert_eq!(printed.matches("Saved.").count(), 2, "{printed}");
 }
 
+#[test]
+fn a_takeover_without_a_retry_names_who_steps_in_plainly_and_why_dimly() {
+    let mut harness = Harness::new();
+    let line = format!(
+        "Claude Code takes over as reviewer · {}",
+        argonauts_core::log::NO_SECOND_TRY
+    );
+    harness.send(note(NoteLevel::Warn, &line));
+    let Some(Cell::Notice(notice)) = harness.model.history.cells().last() else {
+        panic!("the takeover is a notice");
+    };
+    assert_eq!(notice.text, "Claude Code takes over as reviewer");
+    assert_eq!(
+        notice.decided.as_deref(),
+        Some(argonauts_core::log::NO_SECOND_TRY)
+    );
+    assert!(notice.plain_words);
+    assert!(harness.printed_at(120).contains(&line));
+}
+
 fn chatter() -> Vec<AppEvent> {
     let mut events = vec![
         started(),
@@ -793,7 +813,7 @@ fn the_header_changes_in_place_when_the_setup_saves() {
         .take_header_redrawn()
         .expect("the header, redrawn");
     let redrawn = plain_text(&redrawn);
-    assert!(redrawn.contains("Antigravity CLI · solo"), "{redrawn}");
+    assert!(redrawn.contains("Antigravity CLI · Solo"), "{redrawn}");
     assert!(!redrawn.contains("Claude Code"), "{redrawn}");
     assert_eq!(headers(&harness), 1, "the transcript keeps one header");
 }
@@ -811,10 +831,10 @@ fn a_header_after_the_conversation_starts_never_prints_twice() {
     harness.printed();
     harness.send(welcome_with("codex", "solo"));
     let printed = harness.printed();
-    assert!(!printed.contains("Codex · solo"), "{printed}");
+    assert!(!printed.contains("Codex · Solo"), "{printed}");
     let redrawn = harness.model.history.take_header_redrawn();
     assert!(
-        redrawn.is_some_and(|lines| plain_text(&lines).contains("Codex · solo")),
+        redrawn.is_some_and(|lines| plain_text(&lines).contains("Codex · Solo")),
         "the header on screen changes"
     );
     assert_eq!(headers(&harness), 1);
@@ -865,13 +885,13 @@ fn the_header_waits_for_the_main_agent() {
     assert_eq!(harness.model.history.active_cells().count(), 0);
     let printed = harness.printed();
     assert!(
-        printed.contains("Claude Code · Haiku · council"),
+        printed.contains("Claude Code · Haiku · Council"),
         "{printed}"
     );
 }
 
 /// The app's names come first, so the header reads like Claude Code's, with the model an
-/// alias runs: `Claude Code · Opus 5.5 with xhigh effort · council`.
+/// alias runs: `Claude Code · Opus 5.5 with xhigh effort · Council`.
 #[test]
 fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
     use argonauts_core::display_names::DisplayNames;
@@ -904,7 +924,7 @@ fn a_welcome_naming_the_agent_and_effort_prints_the_header_at_once() {
     assert_eq!(harness.model.history.active_cells().count(), 0);
     let printed = harness.printed();
     assert!(
-        printed.contains("Claude Code · Opus 5.5 with xhigh effort · council"),
+        printed.contains("Claude Code · Opus 5.5 with xhigh effort · Council"),
         "{printed}"
     );
 }
@@ -1857,7 +1877,12 @@ fn a_workflow_ends_as_its_run_did() {
         })));
         let printed = harness.printed();
         let item = format!("● Workflow(fix-slugify-median) · {word}");
-        assert!(printed.contains(&item), "{printed}");
+        // A failed run is one block, "The run failed", with no row for its workflow.
+        assert_eq!(
+            printed.contains(&item),
+            outcome != RunOutcome::Failed,
+            "{printed}"
+        );
         assert!(printed.contains(end), "{printed}");
         assert_eq!(WorkflowRowState::ended(outcome).word(), word);
         if outcome == RunOutcome::Failed {
@@ -2634,9 +2659,12 @@ fn a_workflow_of_one_phase_or_none_reported_still_prints_its_start() {
     let start = printed
         .find("● Workflow(switch-reads) · ctrl+t to open\n")
         .expect(&printed);
-    let end = printed
-        .find("Workflow(switch-reads) · failed")
-        .expect(&printed);
+    // A failed run is one block: no second row for its workflow.
+    assert!(
+        !printed.contains("Workflow(switch-reads) · failed"),
+        "{printed}"
+    );
+    let end = printed.find("The run failed").expect(&printed);
     assert!(start < end, "{printed}");
     assert!(printed.contains("◐ Work · Merge"), "{printed}");
 }
@@ -2789,4 +2817,68 @@ fn a_run_off_screen_prints_its_ending_while_the_one_on_screen_replays() {
     assert!(printed.contains("Merged the run"), "{printed}");
     assert!(printed.contains("The json flag is in."), "{printed}");
     assert!(!printed.contains("An old warning"), "{printed}");
+}
+
+/// An answer that missed its format is asked for again, and the one it ends with prints once:
+/// what hadn't printed yet goes, and what had printed isn't printed again.
+#[test]
+fn an_answer_asked_for_again_prints_once() {
+    let turn = TurnId::numbered(1);
+    let chat = |event| AppEvent::Chat { event };
+    let writes = |text: &str| {
+        chat(ChatEvent::Agent {
+            turn: TurnId::numbered(1),
+            event: AgentEvent::TextDelta {
+                text: text.into(),
+                parent: None,
+            },
+        })
+    };
+    let started = || {
+        chat(ChatEvent::TurnStarted {
+            turn: TurnId::numbered(1),
+            text: "what does the limit do".into(),
+            worker: WorkerRef::new("claude-code", Some("haiku".into())),
+            read_only: true,
+            commit: "8b41d07".into(),
+            uncommitted: vec![],
+            settings_sha256: None,
+            continues: false,
+        })
+    };
+    let finished = || {
+        chat(ChatEvent::TurnFinished {
+            turn: TurnId::numbered(1),
+            reply: TurnReply::Answer {
+                markdown: "It caps each client at 10 requests a second.".into(),
+            },
+            spend: Spend::default(),
+            elapsed_ms: 2_000,
+        })
+    };
+    const ANSWER: &str = "It caps each client at 10 requests a second.";
+
+    // Nothing printed yet, so the first try goes and the reply prints once.
+    let mut harness = Harness::new();
+    harness.send(started());
+    harness.send(writes("It caps each client at ten"));
+    harness.send(chat(ChatEvent::AnswerRetried { turn: turn.clone() }));
+    harness.send(writes(ANSWER));
+    harness.send(finished());
+    let printed = harness.printed();
+    assert_eq!(printed.matches(ANSWER).count(), 1, "{printed}");
+    assert!(!printed.contains("at ten"), "{printed}");
+
+    // Its rows printed already, so they stay and the same answer isn't printed again.
+    let mut harness = Harness::new();
+    harness.send(started());
+    harness.send(writes(&format!("{ANSWER}\n\n")));
+    let mut printed = harness.printed();
+    assert!(printed.contains(ANSWER), "{printed}");
+    harness.send(chat(ChatEvent::AnswerRetried { turn }));
+    harness.send(writes(ANSWER));
+    harness.send(finished());
+    printed.push_str(&harness.printed());
+    assert_eq!(printed.matches(ANSWER).count(), 1, "{printed}");
+    assert!(printed.contains("✻ Sailed for 2s"), "{printed}");
 }

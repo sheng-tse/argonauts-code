@@ -52,8 +52,9 @@ fn pinned_mods_stack_in_order_each_with_its_fold_toggle() {
     assert!(plan < spend, "{rows:#?}");
     assert!(rows[plan - 1].ends_with("╮ [-]"), "{rows:#?}");
     assert!(rows[spend - 1].ends_with("╮ [-]"), "{rows:#?}");
-    assert!(rows.iter().any(|row| row.contains("Claude Code Max")));
-    assert!(rows.iter().any(|row| row.contains("on Claude Code")));
+    assert!(rows.iter().any(|row| row.contains("Claude Code      Max")));
+    // A row per plan window leaves the spend card its bar, not its legend.
+    assert!(rows[spend + 1].contains("████"), "{rows:#?}");
     assert!(rows.len() <= 14, "{rows:#?}");
 }
 
@@ -79,7 +80,7 @@ fn a_folded_mod_is_one_line_with_its_number() {
     let line = rows.last().unwrap();
     assert!(line.starts_with(" ▸ ◆ spend  ~$1.86 today"), "{rows:#?}");
     assert!(line.ends_with("[+]"), "{rows:#?}");
-    assert!(rows.iter().any(|row| row.contains("Claude Code Max")));
+    assert!(rows.iter().any(|row| row.contains("Claude Code      Max")));
 }
 
 #[test]
@@ -92,7 +93,7 @@ fn short_of_rows_the_last_mod_steps_down_first_then_the_band_hides() {
     assert!(
         stepped
             .iter()
-            .any(|row| row.contains("Antigravity CLI Pro"))
+            .any(|row| row.contains("Antigravity CLI  Pro"))
     );
     assert!(!stepped.iter().any(|row| row.contains("on Claude Code")));
 
@@ -103,7 +104,7 @@ fn short_of_rows_the_last_mod_steps_down_first_then_the_band_hides() {
     let hidden = rows_in(&band, 110, 1, false);
     assert_eq!(
         hidden,
-        [" ▸ 2 mods hidden · Codex 5h 92% · ~$1.86 today · ctrl+x ctrl+a to show"]
+        [" ▸ 2 mods hidden · Codex 5-hour 92% · ~$1.86 today · ctrl+x ctrl+a to show"]
     );
     assert!(rows_in(&band, 110, 0, false).is_empty());
 }
@@ -114,7 +115,7 @@ fn ctrl_x_ctrl_a_hides_the_band_to_one_line_that_keeps_each_number() {
     band.toggle_hidden();
     assert_eq!(
         rows(&band),
-        [" ▸ 2 mods hidden · Codex 5h 92% · ~$1.86 today · ctrl+x ctrl+a to show"]
+        [" ▸ 2 mods hidden · Codex 5-hour 92% · ~$1.86 today · ctrl+x ctrl+a to show"]
     );
     assert!(!band.focus(), "a hidden band takes no keys");
     band.toggle_hidden();

@@ -5,7 +5,7 @@ use argonauts_core::names::RoleName;
 use argonauts_core::prompt_files::Template;
 use argonauts_core::prompt_parts::CrewRole;
 
-use super::{board, card, divide, frame, goal, handoff, plan, review, workflow, writer};
+use super::{board, card, divide, frame, goal, handoff, merge, plan, review, workflow, writer};
 
 const fn entry(
     id: &'static str,
@@ -175,6 +175,24 @@ pub const ALL: &[Template] = &[
         CrewRole::Workers,
         "fix a merge conflict",
         card::RESOLVE_CONFLICT,
+    ),
+    entry(
+        "merge/main-moved",
+        CrewRole::Workers,
+        "merge a branch that moved",
+        merge::MAIN_MOVED,
+    ),
+    entry(
+        "merge/after-main",
+        CrewRole::Workers,
+        "fix what a merge broke",
+        merge::AFTER_MAIN,
+    ),
+    entry(
+        "merge/commit-message",
+        CrewRole::Workers,
+        "write the commit message",
+        merge::COMMIT_MESSAGE,
     ),
     entry(
         "plan/experiment-report",

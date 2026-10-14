@@ -1,0 +1,9 @@
+● Update(invoice/money.py)
+  ⎿  Added 10 lines, removed 5 lines
+      4  def parse(text):
+      5 -     """'12.50' or '$12.50' to 1250 cents."""
+      5 +     """'12.50', '12.5', '$12.50' or '-3.25' to cents."""
+      …
+
+● Bash(python3 -m unittest -q)
+  ⎿  Ran 8 tests in 0.002s · OK

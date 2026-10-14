@@ -1,15 +1,25 @@
-//! The Overview tab (`[overview]`): how its year of days is coloured.
+//! The Overview tab (`[overview]`): how its year of days is coloured, and your own list prices
+//! for its API values.
+
+use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+use crate::pricing::ListPrice;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct OverviewSettings {
     /// Each day of the year in the colour of `cli` (the CLI that ran most that day, the
     /// default), `model` (the model that ran most, in its shade of its CLI's colour), or `one`
     /// colour for every day. Darker is always less.
     pub year_colors: YearColors,
+    /// Your own list prices by model id, in dollars per million tokens, such as
+    /// `[overview.prices."claude-opus-5-5"]` with `input`, `output`, `cache_read` and
+    /// `cache_write`. They win over the public model list's and the built-in table's.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub prices: BTreeMap<String, ListPrice>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

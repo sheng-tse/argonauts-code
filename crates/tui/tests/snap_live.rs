@@ -753,7 +753,7 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     let mut model = synced(&state, &ui, NOW);
     let bottom = &model.bottom;
     assert_eq!(model.title, "Fix the export race");
-    assert_eq!(bottom.composer.label.as_deref(), Some("council · Opus"));
+    assert_eq!(bottom.composer.label.as_deref(), Some("Council · Opus"));
     assert_eq!(bottom.queued, vec!["check the retry path", "and the docs"]);
     assert_eq!(
         bottom.queued_where,
@@ -787,7 +787,7 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     sync(&mut model, &state, &ui, NOW + 3.0);
     assert_eq!(
         model.bottom.composer.label.as_deref(),
-        Some("council · Opus")
+        Some("Council · Opus")
     );
     assert!(model.bottom.working.is_none());
     assert_eq!(model.bottom.exit_note, None);

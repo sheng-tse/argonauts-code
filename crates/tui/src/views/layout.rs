@@ -28,6 +28,25 @@ pub fn cut(text: &str, width: usize) -> String {
 }
 
 /// Cuts a path in the middle, keeping its first part and its end: `/…/ui-kit/src/composer.rs`.
+/// Like [`cut`], ending at the last whole word that fits, so a cut never splits one. A first
+/// word too long to fit is cut where it must be.
+pub fn cut_at_word(text: &str, width: usize) -> String {
+    let cut = cut(text, width);
+    let Some(kept) = cut.strip_suffix('…') else {
+        return cut;
+    };
+    let next = text[kept.len()..].chars().next();
+    if next.is_some_and(char::is_whitespace) {
+        return format!("{}…", kept.trim_end());
+    }
+    match kept.rfind(char::is_whitespace) {
+        Some(space) if !kept[..space].trim().is_empty() => {
+            format!("{}…", kept[..space].trim_end())
+        }
+        _ => cut,
+    }
+}
+
 pub fn cut_middle(path: &str, width: usize) -> String {
     if str_width(path) <= width {
         return path.to_owned();
@@ -70,6 +89,17 @@ pub fn left(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_ends_at_a_whole_word() {
+        assert_eq!(
+            cut_at_word("Add due dates to the tasks CLI", 16),
+            "Add due dates…"
+        );
+        assert_eq!(cut_at_word("Add due dates", 13), "Add due dates");
+        assert_eq!(cut_at_word("Supercalifragilistic", 8), "Superca…");
+        assert_eq!(cut_at_word("Add due", 6), "Add…");
+    }
 
     #[test]
     fn cut_counts_display_cells() {

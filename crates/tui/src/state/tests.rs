@@ -1903,6 +1903,9 @@ fn a_vendor_workflow_leaves_the_panel_when_its_session_ends() {
     let mut log = Log::new();
     let mut state = fold(&crew(&mut log));
     state.apply(&log.agent(1, vendor_workflow(27)));
+    // A second task, so the workflow is one agent's part of the run and not the run itself.
+    state.apply(&log.card(2, CardEvent::Created(Box::new(spec(2, "Exporter")))));
+    state.apply(&log.session(2, Some(2), session_started(worker("codex", "gpt-5.6"), 2)));
     let wall = T0 + Duration::seconds(90);
     let now = std::time::Instant::now();
     let rows = crate::bridge::panel::run_rows(&state, wall, now);

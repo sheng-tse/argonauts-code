@@ -136,11 +136,11 @@ pub fn note_with_detail(
     Ok(())
 }
 
-/// Writes the draft in the integration worktree as a conductor commit and records
-/// `Goal::Drafted`, unless this exact draft is already recorded.
+/// Writes the draft and records `Goal::Drafted`, unless this exact draft is already recorded.
+/// The run's branch is made here too, so the work that follows starts from it.
 pub async fn write_draft(host: &Host, goal: GoalFile) -> EngineResult<GoalFile> {
-    let tree = branch::ensure_integration(host).await?;
-    let goal = file::write(host, &tree, goal).await?;
+    branch::ensure_integration(host).await?;
+    let goal = file::write(host, goal).await?;
     let recorded = host.read(|state| {
         state
             .goal

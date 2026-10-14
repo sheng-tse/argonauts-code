@@ -13,7 +13,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
 
 use super::Level;
-use super::cli::{millions, took};
+use super::cli::{millions, millions_short, took};
 use super::pinned::StatsCard;
 use crate::overview::{OverviewView, Tab, UsageWatch, sample};
 use crate::stability;
@@ -99,16 +99,13 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     let mut tab = stats_tab();
     let rows = rows(&mut tab, &state, 120);
     assert!(rows[1].contains("[Stats]"), "{rows:#?}");
-    assert!(
-        rows[1].ends_with("Today  7 days  30 days  All"),
-        "{rows:#?}"
-    );
+    assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
     assert!(
         rows[2].starts_with(" What the crew did: every CLI together, then each one by itself"),
         "{rows:#?}"
     );
     assert!(
-        rows[2].ends_with("By CLI   By model   By role"),
+        rows[2].ends_with("By CLI    By model    By role"),
         "{rows:#?}"
     );
 
@@ -133,16 +130,16 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     ] {
         assert!(has(&rows, text), "{text}: {rows:#?}");
     }
-    // The days, today last.
+    // The days of this week, from Sunday.
     assert!(
-        rows.iter().any(|row| row.contains("T  W  T  F  S  S  M")),
+        rows.iter().any(|row| row.contains("S  M  T  W  T  F  S")),
         "{rows:#?}"
     );
 
-    // A card per CLI, side by side, the main one first, each model a bar.
+    // A card per CLI, side by side, the main one first and filled, each model a bar.
     let cards = at(&rows, "● Claude Code");
-    assert!(rows[cards].contains("● Codex"), "{rows:#?}");
-    assert!(rows[cards].contains("● Antigravity CLI"), "{rows:#?}");
+    assert!(rows[cards].contains("○ Codex"), "{rows:#?}");
+    assert!(rows[cards].contains("○ Antigravity CLI"), "{rows:#?}");
     assert!(rows[cards].contains("2.9M tok"), "{rows:#?}");
     for (text, beside) in [
         ("35 tasks", "Max · ~$7.90"),
@@ -161,12 +158,19 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
             "{text} beside {beside}: {rows:#?}"
         );
     }
-    assert!(has(&rows, "5 of 63 sent back"), "{rows:#?}");
+    // The same two rows on every card: its tasks and its reviews, none when it did none.
+    let tasks = at(&rows, "│ tasks    ");
+    assert!(rows[tasks].contains("94% first pass"), "{rows:#?}");
+    assert!(rows[tasks].contains("tasks    none"), "{rows:#?}");
+    let reviews = at(&rows, "│ reviews  ");
+    assert!(rows[reviews].contains("reviews  none"), "{rows:#?}");
+    assert!(rows[reviews].contains("86% accepted"), "{rows:#?}");
+    assert!(rows[reviews].contains("92% accepted"), "{rows:#?}");
     assert!(has(&rows, "40s a review"), "{rows:#?}");
     // Each CLI's plan windows, and one that's spent says so.
     let plans = at(&rows, "5h ");
     assert!(rows[plans].contains("71%"), "{rows:#?}");
-    assert!(rows[plans].contains("7d "), "{rows:#?}");
+    assert!(rows[plans].contains("week "), "{rows:#?}");
     assert!(rows[plans].contains(" out "), "{rows:#?}");
     assert!(!rows[plans].contains('…'), "the windows fit: {rows:#?}");
 
@@ -175,8 +179,8 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     assert!(cards < who && together < cards, "{rows:#?}");
     for text in [
         "Opus 5.5 14 workflows",
-        "Opus 5.5 24   ▌ Sonnet 5.5 11   ▌ GPT 5.6 21   ▌ GPT 5.6 Luna 7   of 63 tasks",
-        "Gemini 3.6 Pro 49   ▌ GPT 5.6 14   of 63 reviews",
+        "Opus 5.5 24   ■ Sonnet 5.5 11   ■ GPT 5.6 21   ■ GPT 5.6 Luna 7   of 63 tasks",
+        "Gemini 3.6 Pro 49   ■ GPT 5.6 14   of 63 reviews",
         "Gemini 3.6 Flash 14 sign-offs",
     ] {
         assert!(has(&rows, text), "{text}: {rows:#?}");
@@ -184,7 +188,7 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     let keys = rows.iter().rev().find(|row| !row.is_empty()).unwrap();
     assert_eq!(
         keys.trim(),
-        "←→ tab · t 7 3 a period · m by model · r by role · u tasks, tokens or spend · enter open · p pin · esc back"
+        "tab · ←→ tabs · ↓ sub-tabs, then cards · 1-4 period · u tokens, tasks or spend · enter open · p pin · esc closes"
     );
 }
 
@@ -198,25 +202,25 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
     ));
     let rows = rows(&mut tab, &state, 120);
     assert!(
-        rows[2].starts_with(" The same seven days, one row per model, whichever CLI runs it"),
+        rows[2].starts_with(" This week, one row per model, whichever CLI runs it"),
         "{rows:#?}"
     );
     assert!(
-        rows[2].ends_with("By CLI   By model   By role"),
+        rows[2].ends_with("By CLI    By model    By role"),
         "{rows:#?}"
     );
-    let head = at(&rows, "│   model");
+    let head = at(&rows, "│ model");
     for title in ["on", "as", "did", "in review", "tokens", "spend", "each"] {
         assert!(rows[head].contains(title), "{title}: {rows:#?}");
     }
     // Sorted by tokens, whichever CLI runs the model.
     let order = [
-        at(&rows, "Opus 5.5          Claude Code"),
-        at(&rows, "GPT 5.6           Codex"),
-        at(&rows, "Sonnet 5.5"),
-        at(&rows, "Gemini 3.6 Pro    agy"),
-        at(&rows, "GPT 5.6 Luna"),
-        at(&rows, "Gemini 3.6 Flash  agy"),
+        at(&rows, "■ Opus 5.5"),
+        at(&rows, "■ GPT 5.6   "),
+        at(&rows, "■ Sonnet 5.5"),
+        at(&rows, "■ Gemini 3.6 Pro"),
+        at(&rows, "■ GPT 5.6 Luna"),
+        at(&rows, "■ Gemini 3.6 Flash"),
     ];
     assert!(order.is_sorted(), "{order:?}: {rows:#?}");
     let opus = &rows[order[0]];
@@ -236,20 +240,29 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
         "the first row is picked: {rows:#?}"
     );
 
-    // Opus opened says its roles whole, the orchestrator's too.
-    into_the_cards(&mut tab, &state);
-    key(&mut tab, &state, KeyCode::Enter);
-    let rows = self::rows(&mut tab, &state, 120);
+    // The picked row stands opened under the table: Opus says its roles whole, the
+    // orchestrator's too.
+    let opened = at(&rows, "Opus 5.5 on Claude Code · opened with enter");
     assert!(
-        rows.iter()
+        rows[opened..]
+            .iter()
             .any(|row| row.contains("orchestrator ") && !row.contains("orchestrat…")),
         "{rows:#?}"
     );
+    // Enter closes it, and again opens it.
+    into_the_cards(&mut tab, &state);
     key(&mut tab, &state, KeyCode::Enter);
+    assert!(!has(
+        &self::rows(&mut tab, &state, 120),
+        "opened with enter"
+    ));
+    key(&mut tab, &state, KeyCode::Enter);
+    assert!(has(&self::rows(&mut tab, &state, 120), "opened with enter"));
 
+    // ↓ moves the opened row with the keys.
     key(&mut tab, &state, KeyCode::Down);
-    key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
+    assert!(!has(&rows, "Opus 5.5 on Claude Code · opened"), "{rows:#?}");
     let opened = at(&rows, "GPT 5.6 on Codex · opened with enter");
     assert!(
         rows[opened].contains("21 tasks · 14 reviews · 1.2M tokens · $2.30"),
@@ -261,11 +274,11 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
         "sent back 2 · 52s each",
         "by kind of work, as a worker",
         "its tokens · 1.2M",
-        "from cache 0.82M",
+        "from cache 0.8M",
         "tokens a day",
-        "fallbacks took over 2 tasks from Opus 5.5 when",
-        "window ran out",
-        "Codex's plan 5h",
+        "fallbacks took over 2 tasks from Opus 5.5",
+        "when Claude's 5-hour window ran out",
+        "Codex's plan  5h",
     ] {
         assert!(has(&rows, text), "{text}: {rows:#?}");
     }
@@ -278,22 +291,16 @@ fn m_lists_every_model_across_the_clis_and_enter_opens_one_a_level_deeper() {
     assert!(
         has(
             &rows,
-            "↑↓ model · enter open or close · c by CLI · r by role · u tasks, tokens or spend · s sort · esc back"
+            "↑↓ model · enter opens or closes it · tab By CLI, By model, By role · u tokens, tasks or spend · s sort"
         ),
         "{rows:#?}"
     );
 
-    // Esc closes what Enter opened, then the panel.
+    // Esc closes the panel at once, with a row open too.
     assert!(matches!(
         key(&mut tab, &state, KeyCode::Esc),
-        ViewOutcome::Consumed
+        ViewOutcome::Close
     ));
-    assert!(!has(
-        &self::rows(&mut tab, &state, 120),
-        "opened with enter"
-    ));
-    let second = key(&mut tab, &state, KeyCode::Esc);
-    assert!(!matches!(second, ViewOutcome::Consumed), "{second:?}");
 }
 
 #[test]
@@ -306,7 +313,7 @@ fn enter_on_a_clis_card_opens_it_and_enter_again_closes_it() {
     let rows = rows(&mut tab, &state, 120);
     let opened = at(&rows, "● Codex · opened with enter");
     assert!(
-        rows[opened].contains("28 tasks · 14 reviews · 1.55M tokens · $2.75"),
+        rows[opened].contains("28 tasks · 14 reviews · 1.6M tokens · $2.75"),
         "{rows:#?}"
     );
     assert!(opened < at(&rows, "◆ who did what"), "{rows:#?}");
@@ -324,7 +331,7 @@ fn r_lists_the_roles_with_every_model_that_filled_each() {
     key(&mut tab, &state, KeyCode::Char('r'));
     let rows = rows(&mut tab, &state, 120);
     assert!(
-        rows[2].starts_with(" The same seven days, one row per role, every model in it"),
+        rows[2].starts_with(" This week, one row per role, every model that filled it"),
         "{rows:#?}"
     );
     let order = [
@@ -335,20 +342,22 @@ fn r_lists_the_roles_with_every_model_that_filled_each() {
     ];
     assert!(order.is_sorted(), "{order:?}: {rows:#?}");
     let workers = &rows[order[1]];
-    for text in [
-        "Opus 5.5",
-        "Sonnet 5.5",
-        "GPT 5.6",
-        "GPT 5.6 Luna",
-        "63 tasks",
-        "92%",
-    ] {
+    for text in ["63 tasks", "92%"] {
         assert!(workers.contains(text), "{text}: {workers}");
+    }
+    // Under the role's bar, each model that filled it and what it did.
+    let legend = &rows[order[1] + 1];
+    for text in [
+        "Opus 5.5 24",
+        "Sonnet 5.5 11",
+        "GPT 5.6 21",
+        "GPT 5.6 Luna 7",
+    ] {
+        assert!(legend.contains(text), "{text}: {legend}");
     }
     assert!(rows[order[2]].contains("63 reviews"), "{rows:#?}");
     into_the_cards(&mut tab, &state);
     key(&mut tab, &state, KeyCode::Down);
-    key(&mut tab, &state, KeyCode::Enter);
     let rows = self::rows(&mut tab, &state, 120);
     assert!(has(&rows, "workers · opened with enter"), "{rows:#?}");
 }
@@ -378,7 +387,7 @@ fn u_turns_the_bars_to_tasks_then_spend_then_tokens() {
 fn the_period_keys_ask_for_its_numbers_and_p_pins_the_card() {
     let state = state(sample::usage_with_stats());
     let mut tab = stats_tab();
-    let today = key(&mut tab, &state, KeyCode::Char('t'));
+    let today = key(&mut tab, &state, KeyCode::Char('1'));
     assert!(
         matches!(
             today,
@@ -470,7 +479,7 @@ fn a_failed_plan_read_says_it_failed() {
     // Narrow, so the cards stack and each line sits under its own CLI.
     let mut tab = stats_tab();
     let rows = rows(&mut tab, &state(usage), 60);
-    let (claude, codex) = (at(&rows, "● Claude Code"), at(&rows, "● Codex"));
+    let (claude, codex) = (at(&rows, "● Claude Code"), at(&rows, "○ Codex"));
     let failed = at(&rows, "failed to load usage data");
     assert!(claude < codex && codex < failed, "{rows:#?}");
     assert!(
@@ -536,6 +545,114 @@ fn an_unreviewed_unmerged_task_changes_no_count_of_how_tasks_fared() {
 }
 
 #[test]
+fn a_task_sent_back_and_never_merged_still_counts_in_how_tasks_fared() {
+    let mut usage = sample::usage_with_stats();
+    let stats = usage.stats.as_mut().expect("the sample has stats");
+    stats.tasks.push(argonauts_core::crew_stats::TaskRecord {
+        agent: "codex".to_owned(),
+        model: Some("gpt-5.6-luna".to_owned()),
+        kind: Some("build".to_owned()),
+        sent_back: 1,
+        merged: false,
+        reviewed: true,
+    });
+    let mut tab = stats_tab();
+    let rows = rows(&mut tab, &state(usage), 120);
+    assert!(has(&rows, "how the 64 tasks fared in review"), "{rows:#?}");
+    assert!(has(&rows, "sent back once 5"), "{rows:#?}");
+    assert!(has(&rows, "63 tasks merged"), "{rows:#?}");
+}
+
+#[test]
+fn the_main_sessions_turns_are_not_the_crews_work() {
+    let mut usage = sample::usage_with_stats();
+    let stats = usage.stats.as_mut().expect("the sample has stats");
+    stats.work.push(argonauts_core::crew_stats::WorkRow {
+        agent: "claude-code".to_owned(),
+        model: Some("claude-haiku-4-5".to_owned()),
+        role: argonauts_core::crew_stats::CrewRole::Main,
+        kind: None,
+        spent: argonauts_core::Spend {
+            input_tokens: 900_000,
+            ..Default::default()
+        },
+        done: 3,
+        sent_back: 0,
+        took_secs: 0,
+        review: Default::default(),
+    });
+    let state = state(usage);
+    let mut tab = stats_tab();
+    key(&mut tab, &state, KeyCode::Char('m'));
+    let rows = rows(&mut tab, &state, 120);
+    assert!(!has(&rows, "Haiku 4.5"), "{rows:#?}");
+    assert!(!has(&rows, "main"), "{rows:#?}");
+    let mut tab = stats_tab();
+    key(&mut tab, &state, KeyCode::Char('r'));
+    let rows = self::rows(&mut tab, &state, 120);
+    assert!(!has(&rows, "main"), "{rows:#?}");
+}
+
+#[test]
+fn the_chart_beside_all_together_follows_the_period() {
+    let chart = |period: UsagePeriod| -> Vec<String> {
+        let mut usage = sample::usage_with_stats();
+        usage.period = period;
+        let mut tab = stats_tab().with_period(period);
+        rows(&mut tab, &state(usage), 120)
+    };
+    // A month's days a cell each, under them the dates its weeks start on.
+    let rows = chart(UsagePeriod::Month);
+    assert!(has(&rows, "1      8      15     22     29"), "{rows:#?}");
+    assert!(has(&rows, "◆ all together  this month"), "{rows:#?}");
+    // Today by itself, under its letter.
+    let rows = chart(UsagePeriod::Today);
+    assert!(has(&rows, "◆ all together  today"), "{rows:#?}");
+    assert!(
+        rows.iter()
+            .any(|row| row.ends_with("│ M ") || row.contains("│ M                ")),
+        "{rows:#?}"
+    );
+    // This week from Sunday, the days after today empty.
+    let rows = chart(UsagePeriod::Week);
+    assert!(has(&rows, "this week, Sunday to Saturday"), "{rows:#?}");
+    assert!(has(&rows, "S  M  T  W  T  F  S"), "{rows:#?}");
+}
+
+#[test]
+fn stats_opens_on_every_day_so_far_whichever_period_the_tab_before_showed() {
+    let mut usage = sample::usage_with_stats();
+    usage.period = UsagePeriod::All;
+    let state = state(usage);
+    let mut tab = OverviewView::new(Tab::Limits, UsageWatch::default())
+        .at(sample::now())
+        .with_period(UsagePeriod::Today);
+    key(&mut tab, &state, KeyCode::Right);
+    assert_eq!(tab.tab(), Tab::Stats);
+    let rows = rows(&mut tab, &state, 120);
+    assert!(has(&rows, "◆ all together  every day so far"), "{rows:#?}");
+}
+
+#[test]
+fn one_to_four_pick_the_period_from_any_row() {
+    let state = state(sample::usage_with_stats());
+    let mut tab = stats_tab();
+    into_the_cards(&mut tab, &state);
+    for (code, period) in [
+        ('1', UsagePeriod::Today),
+        ('2', UsagePeriod::Week),
+        ('3', UsagePeriod::Month),
+        ('4', UsagePeriod::All),
+    ] {
+        let asked = key(&mut tab, &state, KeyCode::Char(code));
+        assert!(
+            matches!(asked, ViewOutcome::Request(ViewRequest::Usage { period: p }) if p == period),
+            "{code}: {asked:?}"
+        );
+    }
+}
+
+#[test]
 fn the_pinned_card_is_one_row_per_cli_under_the_totals() {
     let usage = sample::usage_with_stats();
     let rows = card_rows(&usage, 120);
@@ -577,7 +694,14 @@ fn the_tab_writes_numbers_on_one_scale() {
     assert_eq!(millions(1_550_000), "1.55M");
     assert_eq!(millions(800_000), "0.8M");
     assert_eq!(millions(50_000), "0.05M");
-    assert_eq!(millions(4_200), "4.2k");
+    assert_eq!(millions(4_200), "<0.01M", "one unit beside the others");
+    assert_eq!(millions(0), "0.0M");
+    assert_eq!(millions(99_902_900_000), "99.9b");
+    assert_eq!(millions(49_951_970_000), "50.0b");
+    assert_eq!(millions_short(27_470_000), "27.5M");
+    assert_eq!(millions_short(2_060_000), "2.1M");
+    assert_eq!(millions_short(40_000), "<0.1M");
+    assert_eq!(millions_short(1_200_000_000), "1.2b");
     assert_eq!(took(185), "3m 05s");
     assert_eq!(took(41), "41s");
     assert_eq!(took(12 * 3600 + 40 * 60), "12h 40m");
@@ -629,7 +753,7 @@ fn comma_opens_the_stats_mods_page_over_the_tab_with_its_card_as_the_preview() {
     assert!(has(&rows, "◆ stats this week"), "{rows:#?}");
     assert!(!has(&rows, "◆ all together"), "{rows:#?}");
     let period = &rows[at(&rows, "❯ Period")];
-    assert!(period.contains("today  7 days  30 days  all"), "{period}");
+    assert!(period.contains("today  week  month  all"), "{period}");
     assert!(period.ends_with("built-in"), "{period}");
     assert!(has(&rows, "What shows first"), "{rows:#?}");
     assert!(has(&rows, "The card above the input"), "{rows:#?}");
@@ -656,15 +780,15 @@ fn comma_opens_the_stats_mods_page_over_the_tab_with_its_card_as_the_preview() {
     // A file that sets another period has its preview ask for that period's numbers.
     let state = self::state(sample::usage_with_stats());
     let mut tab = stats_tab();
-    let today = key(&mut tab, &state, KeyCode::Char(','));
+    let all = key(&mut tab, &state, KeyCode::Char(','));
     assert!(
         matches!(
-            today,
+            all,
             ViewOutcome::Request(ViewRequest::Usage {
-                period: UsagePeriod::Today
+                period: UsagePeriod::All
             })
         ),
-        "{today:?}"
+        "{all:?}"
     );
     let rows = self::rows(&mut tab, &state, 120);
     assert!(
@@ -743,7 +867,7 @@ fn the_tab_behind_the_page_takes_its_period_grouping_and_measure() {
     let state = state(weekly_file());
     let mut tab = stats_tab();
     key(&mut tab, &state, KeyCode::Char(','));
-    // The file says seven days, so → asks for thirty.
+    // The file says a week, so → asks for the month.
     let month = key(&mut tab, &state, KeyCode::Right);
     assert!(
         matches!(
@@ -913,11 +1037,11 @@ fn down_goes_from_the_tabs_to_the_sub_tabs_where_the_arrows_regroup_at_once() {
     let rows = self::rows(&mut tab, &state, 120);
     assert_eq!(tab.tab(), Tab::Stats, "→ on the sub-tabs stays on Stats");
     assert!(
-        rows[2].ends_with(" By CLI  [By model]  By role"),
+        rows[2].ends_with(" By CLI   [By model]   By role"),
         "{rows:#?}"
     );
     assert!(
-        has(&rows, "│   model"),
+        has(&rows, "│ model "),
         "the cards changed at once: {rows:#?}"
     );
     // Left of the first sub-tab is the last.
@@ -925,7 +1049,7 @@ fn down_goes_from_the_tabs_to_the_sub_tabs_where_the_arrows_regroup_at_once() {
     key(&mut tab, &state, KeyCode::Left);
     let rows = self::rows(&mut tab, &state, 120);
     assert!(
-        rows[2].ends_with(" By CLI   By model  [By role]"),
+        rows[2].ends_with(" By CLI    By model   [By role]"),
         "{rows:#?}"
     );
     // Into the rows, and ↑ on the first goes back to the sub-tabs, then the tabs.

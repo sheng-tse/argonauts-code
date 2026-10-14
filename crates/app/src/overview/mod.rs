@@ -16,12 +16,16 @@ use std::sync::Arc;
 
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::overview::OverviewPeriod;
+use argonauts_core::pricing::{ListPrice, PriceList};
+use argonauts_core::settings::endpoints::endpoint_settings;
 use argonauts_core::{NoteLevel, Paths};
 use argonauts_tui::format::WallClock;
 use time::OffsetDateTime;
 
 pub(crate) use self::build::Sources;
+pub(crate) use self::build::through_argonauts;
 use self::import::Locations;
+pub(crate) use self::import::doctor_lines;
 pub(crate) use self::records::Store;
 use crate::controller::{Ctx, Effect};
 use crate::usage_ledger::{UsageLedger, local_day};
@@ -58,6 +62,7 @@ pub(crate) async fn view(
         .map(|id| (id, ctx.names.harness(id)))
         .collect();
     let colors = ctx.settings().overview.year_colors;
+    let prices = price_list(ctx);
     let data = tokio::task::spawn_blocking(move || {
         let now = OffsetDateTime::now_utc();
         let records = match state.import {
@@ -70,10 +75,13 @@ pub(crate) async fn view(
             lines: &lines,
             work: &work,
             clock: WallClock::default(),
+            prices: &prices,
         };
-        build::overview(&sources, period, local_day(now), status, colors, &|id| {
+        let mut data = build::overview(&sources, period, local_day(now), status, colors, &|id| {
             names.get(id).cloned().unwrap_or_else(|| id.to_owned())
-        })
+        });
+        data.found = import::found_line(data.found.take(), &state);
+        data
     })
     .await?;
     ctx.send(AppEvent::View {
@@ -82,6 +90,27 @@ pub(crate) async fn view(
         }),
     });
     Ok(Vec::new())
+}
+
+/// Your prices, then the public model list's, with every model run on this computer free.
+fn price_list(ctx: &Ctx) -> PriceList {
+    let settings = ctx.settings();
+    let yours = settings.overview.prices.clone();
+    let public: Vec<(String, ListPrice)> = ctx
+        .services
+        .registry
+        .catalog()
+        .prices
+        .iter()
+        .map(|price| (price.model.clone(), price.list_price()))
+        .collect();
+    let local: Vec<String> = ["ollama", "lmstudio"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(settings.endpoints.keys().cloned())
+        .filter(|id| endpoint_settings(settings, id).is_some_and(|endpoint| endpoint.local))
+        .collect();
+    PriceList::new(yours, public, local)
 }
 
 /// Keeps your answer, once.

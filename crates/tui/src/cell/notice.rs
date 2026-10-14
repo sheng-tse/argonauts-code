@@ -18,12 +18,15 @@ pub struct Notice {
     /// Uses the theme's card glyph, `◆`, for a card's record.
     pub card: bool,
     pub text: String,
-    /// Who decided and when, like `merged by you, 10:58`.
+    /// Dim words after the text: who decided and when, like `merged by you, 10:58`, or why.
     pub decided: Option<String>,
     /// Dim lines under `⎿`.
     pub detail: Vec<String>,
     /// Dim lines under `⎿` that only Ctrl+O shows, such as the raw error behind a plain line.
     pub more: Vec<String>,
+    /// The words take the text color and only the bullet the tone, as for a warning that says
+    /// who steps in.
+    pub plain_words: bool,
 }
 
 impl Notice {
@@ -36,6 +39,17 @@ impl Notice {
             decided: None,
             detail: Vec::new(),
             more: Vec::new(),
+            plain_words: false,
+        }
+    }
+
+    /// `● Claude Code takes over as reviewer · no second try, this error repeats every time`:
+    /// the bullet in the tone, the words plain, and `after` dim.
+    pub fn plain_with_after(tone: Tone, text: impl Into<String>, after: impl Into<String>) -> Self {
+        Self {
+            decided: Some(after.into()),
+            plain_words: true,
+            ..Self::new(tone, text)
         }
     }
 
@@ -87,7 +101,9 @@ impl HistoryCell for Notice {
         ];
         let rest = [Span::raw(" ".repeat(hang))];
         let text_style = match self.tone {
-            Tone::Dim | Tone::Warning | Tone::Error => theme.style(self.tone.role()),
+            Tone::Dim | Tone::Warning | Tone::Error if !self.plain_words => {
+                theme.style(self.tone.role())
+            }
             _ => theme.style(Role::Text),
         };
         let mut spans = Vec::new();
@@ -365,6 +381,30 @@ mod tests {
             marks::decoration(theme.style(Role::Success))
         );
         assert_eq!(lines[0].spans[3].style, theme.style(Role::Dim));
+    }
+
+    #[test]
+    fn a_takeover_colors_its_bullet_alone_and_dims_why() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let lines = Notice::plain_with_after(
+            Tone::Warning,
+            "Claude Code takes over as reviewer",
+            "no second try, this error repeats every time",
+        )
+        .lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "● Claude Code takes over as reviewer · no second try, this error repeats every time"
+        );
+        let spans = &lines[0].spans;
+        assert_eq!(
+            spans[0].style,
+            marks::decoration(theme.style(Role::Warning))
+        );
+        assert_eq!(spans[2].style, theme.style(Role::Text));
+        assert_eq!(spans[3].style, theme.style(Role::Dim));
     }
 
     #[test]

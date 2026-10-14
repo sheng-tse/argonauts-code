@@ -11,6 +11,7 @@ use argonauts_core::settings::delivery::DeliveryCommits;
 
 use crate::engine::host::Host;
 use crate::git::{Git, GitError};
+use crate::integrate::commit_message;
 use crate::labels::card_label;
 
 /// On the commits Argonauts makes for your branch, so a later reader can find the run.
@@ -41,14 +42,21 @@ pub async fn commit(host: &Host, dir: &Path, main: &str, head: &str) -> Result<S
     }
 }
 
-/// The first commit of a branch that has none, for the approved `head`: one commit with no
-/// parent that holds `head`'s files, your own as the run found them among them. It's one
-/// commit whatever `delivery.commits` says, since the run's history starts at a snapshot of
-/// your files that was never a commit of yours.
-pub async fn first_commit(host: &Host, dir: &Path, head: &str) -> Result<String, GitError> {
+/// The first commit of a branch that has none, for the approved `head`, which grew from
+/// `main`, the snapshot of your files the run started from: one commit with no parent that
+/// holds `head`'s files, your own as the run found them among them. It's one commit whatever
+/// `delivery.commits` says, since the run's history starts at a snapshot of your files that
+/// was never a commit of yours.
+pub async fn first_commit(
+    host: &Host,
+    dir: &Path,
+    main: &str,
+    head: &str,
+) -> Result<String, GitError> {
     let git = host.git();
     let tree = git.tree_of(dir, head).await?;
-    git.root_commit(dir, &tree, &message(host)).await
+    let message = landing_message(host, dir, main, head).await?;
+    git.root_commit(dir, &tree, &message).await
 }
 
 /// Whether `message` is of a commit made to land `run`.
@@ -60,7 +68,29 @@ pub fn names_run(message: &str, run: &RunId) -> bool {
 async fn squash(host: &Host, dir: &Path, main: &str, head: &str) -> Result<String, GitError> {
     let git = host.git();
     let tree = git.tree_of(dir, head).await?;
-    git.commit_tree(dir, &tree, main, &message(host)).await
+    let message = landing_message(host, dir, main, head).await?;
+    git.commit_tree(dir, &tree, main, &message).await
+}
+
+/// The merge agent's message for the change from `main` to `head`, else the one plain code
+/// writes, each ending with the run it came from.
+async fn landing_message(
+    host: &Host,
+    dir: &Path,
+    main: &str,
+    head: &str,
+) -> Result<String, GitError> {
+    Ok(
+        match commit_message::for_change(host, dir, main, head).await? {
+            Some(written) => with_trailer(written, host.run_id()),
+            None => message(host),
+        },
+    )
+}
+
+fn with_trailer(mut text: String, run: &RunId) -> String {
+    text.push_str(&format!("\n\n{RUN_TRAILER}: {run}"));
+    text
 }
 
 /// The run's title, then each task, then the run.
@@ -93,8 +123,7 @@ fn message_of(run: &RunId, title: Option<&str>, tasks: &[(String, String)]) -> S
             text.push_str(&format!("\n- {label}: {title}"));
         }
     }
-    text.push_str(&format!("\n\n{RUN_TRAILER}: {run}"));
-    text
+    with_trailer(text, run)
 }
 
 /// One commit for each step the run's branch took from `main` to `head`: a task's merge, or

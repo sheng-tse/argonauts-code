@@ -7,9 +7,9 @@ A repo file wins over yours in ~/.argonauts/workflows, which wins …  3 workflo
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │   Workflow      Notes            Description                                 │
-│   solo                           How the solo workflow runs                  │
-│ ❯ orchestrator  in use · edited  How the orchestrator workflow runs          │
-│   release                        How the release workflow runs               │
+│   Solo                           How the solo workflow runs                  │
+│ ❯ Orchestrator  in use · edited  How the orchestrator workflow runs          │
+│   Release                        How the release workflow runs               │
 │                                                                              │
 │                                                                              │
 │                                                                              │

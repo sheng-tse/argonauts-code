@@ -1,0 +1,33 @@
+ Overview    Status    Usage    Context    Limits    Stats                                     Today  Week  Month  All
+Every day so far, one row per role, every model that filled it                          By CLI    By model    By role 
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ role            filled by                     did            in review        tokens         spend    each         │
+│                                                                                                                    │
+│   orchestrator  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━  41 workflows                    ━━━━━━━━ 4.9M  ~$11     1m 50s       │
+│                 ■ Opus 5.5 41                                                                                      │
+│                                                                                                                    │
+│   workers       ━━━━━━━━━━━━━━━━━━━━━━━━━━━━  814 tasks      ▪▪▪▪▪▪▪▪▪▪ 91%   ━━━━━━━━ 79.6M ~$128    3m 40s       │
+│                 ■ Opus 5.5 312  ■ Sonnet 5.5 141  ■ GPT 5.6 268  ■ GPT 5.6 Luna 93                                 │
+│                                                                                                                    │
+│ ❯ reviewers     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━  730 reviews    sent back 50     ━━━━━━━━ 11.9M ~$9.40   46s          │
+│                 ■ Gemini 3.6 Pro 612  ■ GPT 5.6 118                                                                │
+│                                                                                                                    │
+│   judge         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━  177 sign-offs  sent back 9      ━━━━━━━━ 2.4M  ~$0.90   30s          │
+│                 ■ Gemini 3.6 Flash 177                                                                             │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ reviewers · opened with enter                                            730 reviews · 50 sent back · 11.9M tokens │
+│                                                                                                                    │
+│ each reviewer                                          checks they were given · node --test, pytest                │
+│ ■ Gemini 3.6 Pro    612 reviews  sent back 41          passed 688   failed 42   ran their own 19                   │
+│ ■ GPT 5.6           118 reviews  sent back 9                                                                       │
+│                                                        their tokens · 11.9M                                        │
+│ what they sent back for                                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━     │
+│ a test missing        ━━━━━━━━━━━━━━━━  23             ■ from cache 8.8M   ■ new input 2.7M   ■ output 0.4M        │
+│ a check failed        ━━━━━━━━━━━━━━━━  15                                                                         │
+│ didn't do the task    ━━━━━━━━━━━━━━━━  12             ▂▃▁▃▄▁▂▃▄▅  reviews a week · busiest Oct 5                  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+↑↓ role · enter opens or closes it · tab By CLI, By model, By role · u tokens, tasks or spend · s sort · esc closes

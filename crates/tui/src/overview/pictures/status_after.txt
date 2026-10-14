@@ -1,0 +1,7 @@
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ your CLIs                                                                        who you're logged in as on each │
+│ ● Claude Code      2.1.295   you@example.com · Max · checked                                                       │
+│ ○ Codex            0.160.0   you@school.example · Plus · checked                                                   │
+│ ○ Antigravity CLI  1.3.2     you@example.com · Google AI Pro · newer than checked, works                           │
+│ ○ OpenCode         —         not installed · /update can't add it                                                  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

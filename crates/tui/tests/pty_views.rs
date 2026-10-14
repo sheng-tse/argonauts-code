@@ -146,9 +146,10 @@ fn session_view_output_and_input() {
         "tool calls:\n{}",
         output.visible_text()
     );
+    // A read says how many lines it read, as Claude Code's does, and never shows the file.
     assert!(
-        row_of(&output, "fn write").is_some(),
-        "with results:\n{}",
+        row_of(&output, "fn write").is_none(),
+        "without the file:\n{}",
         output.visible_text()
     );
     // Tab goes to what the agent was asked, each part under its own heading, and the launch
@@ -220,8 +221,9 @@ fn session_view_steer_raw_diff() {
         raw["view"],
         json!({"view": "raw", "run": RUN, "session": "s-001"})
     );
+    // The raw log is the view's Raw tab, and the view's keys still work there.
     harness.wait_visible("raw agent line");
-    harness.press(Key::Esc);
+    harness.wait_visible(" Output  Input  Raw ");
     harness.press(Key::Char('d'));
     let diff = harness.wait_command("request");
     assert_eq!(diff["view"]["view"], "diff");

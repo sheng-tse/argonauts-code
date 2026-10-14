@@ -26,6 +26,7 @@ use crate::card::support::{newest_owner_session, owner_of, record_of, state_of};
 use crate::card::{self, machine::Trigger, worktree};
 use crate::engine::host::{Host, Ran};
 use crate::error::{EngineError, EngineResult};
+use crate::review::{Verdict, with_findings};
 use crate::roles;
 use crate::workflow::StepAt;
 
@@ -56,6 +57,9 @@ struct Entry {
     /// stopped before such a call's answer was saved asks it again, and its work is done.
     #[serde(default)]
     finished: Vec<u32>,
+    /// How often a writer took the task back after its review didn't accept it.
+    #[serde(default)]
+    sent_back: u32,
 }
 
 impl Book {
@@ -102,6 +106,7 @@ impl Book {
             accepted: None,
             dropped: false,
             finished: Vec::new(),
+            sent_back: 0,
         };
         entries.push(entry.clone());
         self.keep_on_disk(&entries)?;
@@ -120,6 +125,9 @@ impl Book {
         let mut entries = lock(&self.entries);
         for entry in entries.iter_mut() {
             if entry.card == *card {
+                if entry.accepted == Some(false) {
+                    entry.sent_back += 1;
+                }
                 entry.accepted = None;
                 entry.finished.push(call);
             }
@@ -180,6 +188,17 @@ pub(super) async fn work(
         host.shared().let_run_its_own_workflow(card);
     }
     let already = entry.finished.contains(&call.index);
+    let rounds = host.settings().review.max_change_rounds;
+    if !already && entry.accepted == Some(false) && entry.sent_back >= rounds {
+        let mut end = AgentEnd::answered(Value::Null);
+        end.result = Err(format!(
+            "{} was sent back {} already, as many rounds of fixes as review.max_change_rounds \
+             allows, so it comes to the user with the reviewers' findings",
+            call.label,
+            times(entry.sent_back)
+        ));
+        return Ok(end);
+    }
     let state = if host.read(|state| state.cards.get(card).is_none()) {
         // The brief is the call's words, under the name of whoever wrote them.
         crate::prompts::instructions::brief_written_by(host, card, bridge.author(call))?;
@@ -388,16 +407,8 @@ fn gate_lines(gates: &[GateOutcome]) -> Vec<String> {
         }
     }
     newest
-        .iter()
-        .map(|gate| {
-            let result = if gate.passed { "passed" } else { "failed" };
-            let ran = gate
-                .command
-                .as_ref()
-                .map(|command| format!(" ({})", command.join(" ")))
-                .unwrap_or_default();
-            format!("{}{ran} {result}: {}", gate.name, gate.summary.trim())
-        })
+        .into_iter()
+        .map(crate::card::gates::result_line)
         .collect()
 }
 
@@ -506,8 +517,15 @@ pub(super) async fn finish(bridge: &Bridge<'_>, at: &StepAt) -> EngineResult<usi
         }
         if state_of(host, card)? == CardState::InReview {
             if entry.accepted == Some(false) {
-                let why = "the workflow's review never accepted it";
-                pipeline::transition(host, card, Trigger::ChangesRequestedAgain, why)?;
+                let what = match entry.sent_back {
+                    0 => "the workflow's reviewers didn't accept it".to_owned(),
+                    n => format!(
+                        "the workflow's reviewers didn't accept it after {}",
+                        rounds_of_fixes(n)
+                    ),
+                };
+                let why = with_findings(what, &newest_findings(host, card));
+                pipeline::transition(host, card, Trigger::ChangesRequestedAgain, &why)?;
             } else {
                 let why = "the workflow's own steps accepted it";
                 pipeline::transition(host, card, Trigger::Approved, why)?;
@@ -518,6 +536,49 @@ pub(super) async fn finish(bridge: &Bridge<'_>, at: &StepAt) -> EngineResult<usi
         }
     }
     Ok(merged)
+}
+
+/// What the task's newest round of reviews asked for, in the reviewers' words: their findings,
+/// or the summary of one who gave none.
+fn newest_findings(host: &Host, card: &CardId) -> Verdict {
+    let reviews = record_of(host, card)
+        .map(|record| record.reviews)
+        .unwrap_or_default();
+    let reviewed = || {
+        reviews.iter().filter_map(|event| match event {
+            ReviewEvent::Reviewed { round, review, .. } => Some((*round, review)),
+            _ => None,
+        })
+    };
+    let newest = reviewed().map(|(round, _)| round).max();
+    let comments = reviewed()
+        .filter(|(round, review)| {
+            Some(*round) == newest && review.verdict != ReviewVerdict::Approve
+        })
+        .flat_map(|(_, review)| {
+            if review.comments.is_empty() {
+                vec![review.summary.clone()]
+            } else {
+                review.comments.iter().map(|c| c.text.clone()).collect()
+            }
+        })
+        .collect();
+    Verdict::ChangesRequested { comments }
+}
+
+fn times(n: u32) -> String {
+    match n {
+        1 => "once".to_owned(),
+        2 => "twice".to_owned(),
+        n => format!("{n} times"),
+    }
+}
+
+fn rounds_of_fixes(n: u32) -> String {
+    match n {
+        1 => "1 round of fixes".to_owned(),
+        n => format!("{n} rounds of fixes"),
+    }
 }
 
 #[cfg(test)]

@@ -6,5 +6,4 @@ expression: text(lines)
   ⎿  Ran 1 shell command (ctrl+o to expand)
      Task(look around)
         Running · Reading the store's tests
-     Messages arrive whole · thread steps aren't streamed
      The store needs a connection pool first.

@@ -166,6 +166,9 @@ pub struct SessionPlan {
     /// It reads a change to judge it, so it may run the checks as a reviewer does, whatever
     /// its role.
     pub reviews: bool,
+    /// Starts a session of its own, never carrying one on: the merge agent's work is no
+    /// part of the session a role keeps for the project.
+    pub fresh: bool,
 }
 
 /// A started session. Steer or stop it with [`Host::control`]; its events are recorded as
@@ -340,6 +343,8 @@ struct Launch {
     status_part: bool,
     /// As [`SessionPlan::reviews`].
     reviews: bool,
+    /// As [`SessionPlan::fresh`].
+    fresh: bool,
 }
 
 struct Launched {
@@ -648,6 +653,7 @@ impl Host {
             json_schema: Some(output_schema::<S>()),
             resume: ask.resume.clone(),
             blind: ask.blind,
+            fresh: false,
             label: ask.label,
             status_part: true,
             reviews: false,
@@ -1075,6 +1081,7 @@ impl Host {
             label: None,
             status_part: false,
             reviews: plan.reviews,
+            fresh: plan.fresh,
         })?;
         let card = live.card.clone();
         let (sender, ended) = oneshot::channel();
@@ -1400,6 +1407,7 @@ impl Host {
             label,
             status_part,
             reviews,
+            fresh,
         } = launch;
         let worker = self.shared.services.workers.get(&identity.worker)?;
         let settings = self.shared.settings.clone();
@@ -1444,7 +1452,7 @@ impl Host {
                                 identity.role,
                                 &identity.worker,
                                 identity.card.as_ref(),
-                                blind,
+                                blind || fresh,
                             )
                         })?;
                         match reuse {
@@ -1555,7 +1563,14 @@ impl Host {
             prompts::assemble::head(self, &agent_of(&identity), parts)
         };
         let built = self
-            .prompt(&key, &viewer, status_part, continuing, parts)
+            .prompt(
+                &key,
+                &viewer,
+                status_part,
+                continuing,
+                parts,
+                json_schema.as_ref(),
+            )
             .and_then(|(prompt, deliveries)| {
                 let spec = spec::build(
                     &settings,
@@ -1651,6 +1666,7 @@ impl Host {
         status_part: bool,
         continuing: bool,
         task: Vec<InputPart>,
+        answer: Option<&Value>,
     ) -> EngineResult<(Vec<InputPart>, StartDeliveries)> {
         let mut parts = if continuing {
             vec![part(InputPartKind::Message, "resumed", CONTINUE)]
@@ -1666,15 +1682,22 @@ impl Host {
             .take_while(|part| part.kind.instructs())
             .count();
         if !continuing && after_instructions > 0 && self.ask_limit().is_some() {
-            let text = crate::prompts::files::text(self, crate::prompts::board::DECIDE_FIRST);
-            let text = text.trim_end();
+            let template = crate::prompts::files::text(self, crate::prompts::board::DECIDE_FIRST);
+            let text = crate::prompts::board::decide_first(template, answer);
             parts.insert(
                 after_instructions,
-                part(InputPartKind::Rules, "decide, don't ask", text),
+                part(InputPartKind::Rules, "decide, don't ask", &text),
             );
         }
+        // The request reads once: a goal that restates what an earlier part said starts
+        // after it, and the status leaves out a goal the prompt already gave.
+        once_each(&mut parts);
         if status_part {
-            let text = self.status_text(viewer);
+            let mut summary = lock(&self.shared.status).summary(viewer);
+            if said_already(&parts, summary.goal.first().map(String::as_str)) {
+                summary.goal.clear();
+            }
+            let text = crate::status::render(&summary);
             parts.push(part(InputPartKind::Status, "status", &text));
         }
         // A resumed session gets what was sent while it was stopped, such as guidance given to
@@ -1841,6 +1864,42 @@ fn replay<S: Step>(record: &SessionRecord) -> EngineResult<Answered<S::Output>> 
     }
 }
 
+/// A goal part whose first line an earlier part already holds starts after that line, and
+/// goes when nothing is left of it.
+fn once_each(parts: &mut Vec<InputPart>) {
+    for at in 0..parts.len() {
+        if parts[at].kind != InputPartKind::Goal {
+            continue;
+        }
+        let Some(first) = parts[at]
+            .text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if !said_already(&parts[..at], Some(&first)) {
+            continue;
+        }
+        let text = &parts[at].text;
+        let start = text.find(&first).map_or(0, |found| found + first.len());
+        let rest = text[start..].trim_start_matches(['\n', '\r']).to_owned();
+        parts[at].approx_tokens = u32::try_from(rest.len() / 4).unwrap_or(u32::MAX);
+        parts[at].text = rest;
+    }
+    parts.retain(|part| part.kind != InputPartKind::Goal || !part.text.trim().is_empty());
+}
+
+/// Whether one of `parts` already says `line`, as a request given in the instructions is.
+fn said_already(parts: &[InputPart], line: Option<&str>) -> bool {
+    let Some(line) = line.map(str::trim).filter(|line| !line.is_empty()) else {
+        return false;
+    };
+    parts.iter().any(|part| part.text.contains(line))
+}
+
 fn part(kind: InputPartKind, label: &str, text: &str) -> InputPart {
     InputPart {
         kind,
@@ -1880,5 +1939,47 @@ fn limit_words(limit: Option<&BudgetAmount>) -> String {
         BudgetUnit::Tokens => format!("its {} token limit", limit.amount.round()),
         BudgetUnit::Quota => format!("its {:.0}% plan usage limit", limit.amount * 100.0),
         BudgetUnit::Minutes => format!("its {} minute limit", limit.amount.round()),
+    }
+}
+
+#[cfg(test)]
+mod request_once_tests {
+    use super::*;
+
+    #[test]
+    fn a_goal_the_instructions_gave_reads_once() {
+        let mut parts = vec![
+            part(
+                InputPartKind::Instructions,
+                "From the orchestrator",
+                "Make the limiter per key\n\nKeep the interface.",
+            ),
+            part(
+                InputPartKind::Goal,
+                "goal",
+                "Make the limiter per key\n\n- each key its own bucket",
+            ),
+        ];
+        once_each(&mut parts);
+        assert_eq!(parts[1].text, "- each key its own bucket");
+        assert!(said_already(&parts, Some("Make the limiter per key")));
+
+        let mut alone = vec![part(
+            InputPartKind::Goal,
+            "goal",
+            "Make the limiter per key",
+        )];
+        once_each(&mut alone);
+        assert_eq!(alone.len(), 1, "nothing said it before");
+        let mut twice = vec![
+            part(
+                InputPartKind::Instructions,
+                "Instructions",
+                "Make the limiter per key",
+            ),
+            part(InputPartKind::Goal, "goal", "Make the limiter per key\n"),
+        ];
+        once_each(&mut twice);
+        assert_eq!(twice.len(), 1, "an empty goal goes");
     }
 }

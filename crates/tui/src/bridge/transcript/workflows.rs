@@ -10,8 +10,12 @@
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::display_names::DisplayNames;
+use argonauts_core::events::run::{RunOutcome, RunStarted};
 use argonauts_core::events::workflow::{WorkflowDeclared, WorkflowReport};
+use argonauts_core::names::WorkerRef;
+use argonauts_core::steps::intake::InstructionKind;
+use argonauts_core::text::sentence_case;
 
 use crate::bottom::WorkflowRowState;
 use crate::cell::{PhaseLine, ToolCall, ToolItem, ToolKind, ToolState};
@@ -60,13 +64,14 @@ pub(super) fn declared(
         .and_then(|run| run.workflow.as_deref())
         .map(str::trim)
         .filter(|in_use| !in_use.is_empty() && *in_use != name)
-        .map(|in_use| sanitize_line(in_use).into_owned());
+        .map(|in_use| sentence_case(&sanitize_line(in_use)));
     let start = Start {
         name: name.clone(),
         description,
         declared: declared.clone(),
         in_use,
         based_on,
+        reviewers_asked: story.reviewers_asked.clone(),
     };
     let waits = state.is_some_and(|run| run.reported.expected_from(&declared.id));
     story.workflow = Some(name);
@@ -102,6 +107,8 @@ pub(super) struct Start {
     in_use: Option<String>,
     /// The learned workflow it started from.
     based_on: Option<String>,
+    /// The reviewers your words named, by name, said beside the phases.
+    reviewers_asked: Option<String>,
 }
 
 impl Start {
@@ -132,13 +139,39 @@ impl Start {
             )));
         }
         let phases = phase_lines(&self.declared, report);
+        let beside = self
+            .reviewers_asked
+            .as_ref()
+            .map(|names| format!("reviewers: {names} (you asked)"));
         if !phases.is_empty() {
-            call.push(ToolItem::Phases(phases));
+            call.push(match beside {
+                Some(beside) => ToolItem::PhasesBeside { phases, beside },
+                None => ToolItem::Phases(phases),
+            });
         } else if !self.description.is_empty() {
             call.push(ToolItem::text(sanitize_line(&self.description)));
         }
         call
     }
+}
+
+/// The reviewers a run's request named, as "GPT 5.6 Luna on Codex", when it asked for them:
+/// an instruction to review was followed, and the run's settings hold who reviews.
+pub(super) fn reviewers_asked(started: &RunStarted, names: &DisplayNames) -> Option<String> {
+    let asked = started
+        .instructions
+        .iter()
+        .any(|instruction| instruction.kind == InstructionKind::Review && instruction.followed());
+    if !asked {
+        return None;
+    }
+    let reviewers: Vec<String> = started.settings["roles"]["reviewer"]["workers"]
+        .as_array()?
+        .iter()
+        .filter_map(|worker| worker.as_str()?.parse::<WorkerRef>().ok())
+        .map(|worker| names.worker(&names.running(&worker)))
+        .collect();
+    (!reviewers.is_empty()).then(|| reviewers.join(", "))
 }
 
 /// The phases as the workflow declares them, in its order, each saying whether it is a step
@@ -188,7 +221,8 @@ pub(super) fn phase_added(title: &str, why: &str, story: &RunStory, cx: &mut Cx<
 
 /// `● Workflow(<name>) · done`, with its agents, time, tokens, and spend, as Claude Code's
 /// tool call returns, before the run's own end. It ends as the run's panel row does, so a
-/// failed run's workflow reads `· failed` above "The run failed", never `· done`.
+/// stopped run's workflow reads `· stopped`, never `· done`. A failed run is one block, "The
+/// run failed", so its workflow adds no row of its own.
 pub(super) fn done(
     run: &RunId,
     story: &mut RunStory,
@@ -203,6 +237,9 @@ pub(super) fn done(
     let Some(name) = &story.workflow else {
         return;
     };
+    if outcome == RunOutcome::Failed {
+        return;
+    }
     let mut parts = Vec::new();
     if let Some(state) = cx.state.runs.get(run) {
         parts.push(plural(state.sessions.len(), "agent", "agents"));

@@ -544,7 +544,15 @@ pub(crate) fn launch(ctx: &Ctx, launch: Launch<'_>) -> anyhow::Result<Launched> 
     if spec.cli_workflow.ultracode || spec.cli_workflow.typed_keyword {
         crate::telemetry::used(&ctx.env.paths, crate::telemetry::Use::Ultracode);
     }
-    let mut request = StepRequest::new(launch.handle, spec);
+    let asked_again = ctx.internal.clone();
+    let retried = launch.turn.clone();
+    let worker = super::attempts::Attempts::wrap(launch.handle, move || {
+        let update = TurnUpdate::Retried {
+            turn: retried.clone(),
+        };
+        let _ = asked_again.send(Internal::Chat(update));
+    });
+    let mut request = StepRequest::new(worker, spec);
     let cancel = CancellationToken::new();
     request.cancel = cancel.clone();
     let (control, steering) = mpsc::channel(16);

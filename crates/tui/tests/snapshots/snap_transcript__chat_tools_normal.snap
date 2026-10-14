@@ -4,7 +4,12 @@ expression: text(&lines)
 ---
 ❯ why does the export test fail?
 
-  Read 1 file, ran 1 shell command · 1 failed (ctrl+o to expand)
+  Read 1 file (ctrl+o to expand)
+
+● Bash(cargo test export)
+  ⎿  Error: Exit code 101
+     test export_header ... FAILED
+     assertion failed: header == "id,name"
 
 ● Update(tests/export.rs)
   ⎿  Added 1 line, removed 1 line

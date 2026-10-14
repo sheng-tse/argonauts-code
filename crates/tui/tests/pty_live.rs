@@ -27,7 +27,10 @@ fn live_block_updates_in_place() {
         ),
         run.usage(agent, 24_300),
     ];
-    let harness = Harness::start(script.await_signal("more").all(0, more));
+    // The block that updates in place is the one an agent at work has when asked for.
+    let harness = Harness::launch(script.await_signal("more").all(0, more))
+        .ui("agents_in_chat = \"as_they_work\"")
+        .start();
     let header = format!("^{BULLET} Opus on Claude Code · worker · task-002");
     let before = harness.wait_visible("src/export.rs");
     assert_eq!(count_rows(&before, &header), 1, "{}", before.text());
@@ -104,7 +107,7 @@ fn live_region_keeps_its_order() {
         .at(0, run.queued(&crew[1], "m-001", "keep the CSV path"));
     // Wide enough for the narrator's spend to fit on the mode line beside its hints.
     let mut harness = Harness::launch(script)
-        .ui("narrator = \"live\"\n[panel]\nagents = true")
+        .ui("narrator = \"live\"\nagents_in_chat = \"as_they_work\"\n[panel]\nagents = true")
         .size(ROWS, 200)
         .start();
     harness.wait_visible("※ narrator:");
@@ -254,8 +257,8 @@ fn status_line_changed_agent_quota_spend() {
         status + 1 + blank_rows_at_bottom(&screen),
         screen.visible.len()
     );
-    let rule = expect_row(&screen, "^─+ council · Opus ─$");
-    assert!(screen.visible[rule].ends_with(" council · Opus ─"));
+    let rule = expect_row(&screen, "^─+ Council · Opus ─$");
+    assert!(screen.visible[rule].ends_with(" Council · Opus ─"));
 }
 
 #[test]
@@ -422,7 +425,9 @@ fn verbose_twice_returns_to_normal() {
         .all(0, full)
         .await_command("verbosity")
         .all(0, normal);
-    let mut harness = Harness::launch(script).ui("verbosity = \"normal\"").start();
+    let mut harness = Harness::launch(script)
+        .ui("verbosity = \"normal\"\nagents_in_chat = \"as_they_work\"")
+        .start();
     harness.wait_visible(WORKING);
     harness.send("/verbosity full");
     harness.press(Key::Enter);

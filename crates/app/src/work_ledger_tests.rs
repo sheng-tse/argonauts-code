@@ -229,9 +229,8 @@ fn stats_sum_each_cli_model_and_role_with_the_chat_turns() {
         },
         at,
     );
-    let today = local_day(at);
     let lines = usage.read_since(None);
-    let stats = stats(&WorkLedger::beside(&paths.usage_dir()), None, today, &lines);
+    let stats = stats(&WorkLedger::beside(&paths.usage_dir()), None, &lines);
 
     assert_eq!(stats.workflows, 1);
     assert!(stats.took_secs >= 31);
@@ -275,15 +274,137 @@ fn stats_sum_each_cli_model_and_role_with_the_chat_turns() {
 }
 
 #[test]
-fn a_period_counts_its_own_days_and_the_chart_keeps_seven() {
+fn a_period_counts_only_its_own_days() {
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::new(home.path());
     let ledger = WorkLedger::beside(&paths.usage_dir());
     let at = datetime!(2026-09-30 12:00 UTC);
     ledger.run_ended(Path::new("/repo"), &run_id(), &a_run(), at);
-    let today = local_day(at) + Duration::days(3);
-    let stats = stats(&ledger, Some(today), today, &[]);
+    let later = local_day(at) + Duration::days(3);
+    let stats = stats(&ledger, Some(later), &[]);
     assert_eq!(stats.workflows, 0);
     assert!(stats.work.is_empty());
-    assert!(stats.days.iter().map(|day| day.tokens).sum::<u64>() > 0);
+    assert!(stats.days.is_empty());
+
+    let every_day = stats_of(&ledger);
+    let day = local_day(at);
+    let reviews: u32 = every_day
+        .days
+        .iter()
+        .filter(|part| part.role == Some(CrewRole::Reviewer))
+        .map(|part| part.done)
+        .sum();
+    assert_eq!(reviews, 2, "each day keeps what each role did");
+    assert!(every_day.days.iter().all(|part| part.day <= day));
+}
+
+fn stats_of(ledger: &WorkLedger) -> CrewStats {
+    stats(ledger, None, &[])
+}
+
+/// The model's name as the CLI reported it at its start, as `init` carries it.
+fn init(seq: u64, session: &SessionKey, model: &str) -> RunEvent {
+    RunEvent {
+        session: Some(session.clone()),
+        ..event(
+            seq,
+            RunEventKind::Agent(AgentEvent::Init {
+                session_id: None,
+                model: Some(model.to_owned()),
+                tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
+            }),
+        )
+    }
+}
+
+#[test]
+fn work_is_filed_under_the_model_the_cli_said_it_ran() {
+    let home = tempfile::tempdir().unwrap();
+    let ledger = WorkLedger::beside(&Paths::new(home.path()).usage_dir());
+    let mut events = a_run();
+    // The first task's worker said at its start that it runs Haiku 5.5.
+    events.push(init(40, &SessionKey::numbered(2), "claude-haiku-5-5"));
+    let at = datetime!(2026-09-30 12:00 UTC);
+    ledger.run_ended(Path::new("/repo"), &run_id(), &events, at);
+    let stats = stats_of(&ledger);
+    let haiku = Some("claude-haiku-5-5");
+    let worker = stats
+        .work
+        .iter()
+        .find(|row| row.role == CrewRole::Worker && row.model.as_deref() == haiku)
+        .unwrap();
+    assert_eq!(worker.spent.total_tokens(), 4400);
+    let task = stats
+        .tasks
+        .iter()
+        .find(|task| task.model.as_deref() == haiku);
+    assert_eq!(task.map(|task| task.sent_back), Some(1));
+}
+
+#[test]
+fn a_review_says_why_it_sent_work_back_and_which_checks_it_was_given() {
+    let home = tempfile::tempdir().unwrap();
+    let ledger = WorkLedger::beside(&Paths::new(home.path()).usage_dir());
+    let mut events = a_run();
+    let one = card_spec(1);
+    let gate = |seq: u64, passed: bool| RunEvent {
+        card_id: Some(one.id.clone()),
+        ..event(
+            seq,
+            RunEventKind::Gate(argonauts_core::events::card::GateOutcome {
+                name: "tests".into(),
+                kind: GateKind::Command,
+                passed,
+                command: Some(vec!["cargo".into(), "test".into()]),
+                exit_code: Some(i32::from(!passed)),
+                duration_ms: 10,
+                summary: String::new(),
+                output_tail: String::new(),
+                violations: Vec::new(),
+                sandboxed: true,
+                skipped: false,
+            }),
+        )
+    };
+    // The checks failed before the first review and passed before the second.
+    events.insert(7, gate(7, false));
+    events.insert(10, gate(8, true));
+    let at = datetime!(2026-09-30 12:00 UTC);
+    ledger.run_ended(Path::new("/repo"), &run_id(), &events, at);
+    let stats = stats_of(&ledger);
+    let reviewer = stats
+        .work
+        .iter()
+        .find(|row| row.role == CrewRole::Reviewer)
+        .unwrap();
+    assert_eq!(reviewer.review.checks, ["cargo test"]);
+    assert_eq!((reviewer.review.passed, reviewer.review.failed), (1, 1));
+    assert_eq!(
+        reviewer.review.reasons,
+        [("a check failed".to_owned(), 1)].into()
+    );
+}
+
+#[test]
+fn records_that_name_no_model_are_filed_under_the_clis_default() {
+    let mut stats = CrewStats {
+        work: vec![WorkRow {
+            agent: "claude-code".into(),
+            model: None,
+            role: CrewRole::Worker,
+            kind: None,
+            spent: Spend::default(),
+            done: 1,
+            sent_back: 0,
+            took_secs: 0,
+            review: ReviewTally::default(),
+        }],
+        ..CrewStats::default()
+    };
+    let defaults = [("claude-code".to_owned(), "claude-haiku-5-5".to_owned())].into();
+    name_unnamed_models(&mut stats, &defaults);
+    assert_eq!(stats.work[0].model.as_deref(), Some("claude-haiku-5-5"));
 }

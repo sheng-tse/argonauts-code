@@ -4,7 +4,7 @@ expression: "&text"
 ---
 ──────────────────────────────────────────────────────────────────────────────────────────────
  council
- Fix the race in the export test and add a regression te… 6/11 steps · 46m00s · ↓ 783k tokens
+ Fix the race in the export test and add a regression…    6/11 steps · 46m00s · ↓ 783k tokens
 
  ╭ Understand · 2 steps ──────────┬ restater ───────────────────────────────────────────────╮
  │ ❯✔ restater  Opus on Claude C… │ ✔ Completed · Opus on Claude Code · 58s                 │

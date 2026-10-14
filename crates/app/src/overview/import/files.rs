@@ -2,14 +2,17 @@
 //! that can carry counts, so the rest of a long transcript is never held.
 
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// The lines a pass kept, and how many bytes of the file it went through.
+/// The lines a pass kept, how many bytes of the file it went through, and how many lines it
+/// couldn't read.
 pub(super) struct Text {
     pub lines: Vec<String>,
     pub consumed: u64,
+    /// Lines that looked like they held counts but weren't text.
+    pub unreadable: u32,
 }
 
 /// Markers a line must hold to be worth parsing: Claude Code's answers carry their usage, and
@@ -26,13 +29,13 @@ pub(super) fn is_compressed(path: &Path) -> bool {
 }
 
 /// The whole lines of `path` after byte `from`, the ones with a marker kept. A compressed file
-/// is opened with `zstd` and read whole; without it, `None`.
+/// is opened with `zstd`, and `from` counts bytes of what it holds once opened, so a file read
+/// in part before it was compressed carries on where it was; without `zstd`, `None`.
 pub(super) fn read_from(path: &Path, from: u64, zstd: Option<&Path>) -> io::Result<Option<Text>> {
     if is_compressed(path) {
         let Some(zstd) = zstd else {
             return Ok(None);
         };
-        let len = std::fs::metadata(path)?.len();
         let mut child = Command::new(zstd)
             .args(["-dc", "--"])
             .arg(path)
@@ -44,20 +47,32 @@ pub(super) fn read_from(path: &Path, from: u64, zstd: Option<&Path>) -> io::Resu
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("no output"))?;
-        let mut text = kept_lines(BufReader::new(stdout))?;
-        child.wait()?;
-        text.consumed = len;
+        let mut reader = BufReader::new(stdout);
+        let skipped = io::copy(&mut (&mut reader).take(from), &mut io::sink())?;
+        let text = kept_lines(reader);
+        let status = child.wait()?;
+        let mut text = text?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "zstd couldn't open {}",
+                path.display()
+            )));
+        }
+        text.consumed += skipped;
         return Ok(Some(text));
     }
     let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(from))?;
-    kept_lines(BufReader::new(file)).map(Some)
+    let mut text = kept_lines(BufReader::new(file))?;
+    text.consumed += from;
+    Ok(Some(text))
 }
 
 fn kept_lines(mut reader: impl BufRead) -> io::Result<Text> {
     let mut text = Text {
         lines: Vec::new(),
         consumed: 0,
+        unreadable: 0,
     };
     let mut line = Vec::new();
     loop {
@@ -68,11 +83,21 @@ fn kept_lines(mut reader: impl BufRead) -> io::Result<Text> {
             break;
         }
         text.consumed += read as u64;
-        let Ok(words) = std::str::from_utf8(&line) else {
-            continue;
-        };
-        if MARKERS.iter().any(|marker| words.contains(marker)) {
-            text.lines.push(words.trim_end().to_owned());
+        match std::str::from_utf8(&line) {
+            Ok(words) => {
+                if MARKERS.iter().any(|marker| words.contains(marker)) {
+                    text.lines.push(words.trim_end().to_owned());
+                }
+            }
+            Err(_) => {
+                let marked = MARKERS.iter().any(|marker| {
+                    line.windows(marker.len())
+                        .any(|window| window == marker.as_bytes())
+                });
+                if marked {
+                    text.unreadable += 1;
+                }
+            }
         }
     }
     Ok(text)

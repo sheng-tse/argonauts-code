@@ -1830,7 +1830,7 @@ fn the_mods_above_the_input_take_the_keys_with_ctrl_x_tab() {
     ui.frame(t0 + Duration::from_millis(200)).unwrap();
     let rows = screen(&ui);
     assert!(
-        at(&rows, "2 mods hidden · Codex 5h 92%").is_some(),
+        at(&rows, "2 mods hidden · Codex 5-hour 92%").is_some(),
         "{rows:#?}"
     );
     assert!(at(&rows, "◆ plan usage").is_none(), "{rows:#?}");

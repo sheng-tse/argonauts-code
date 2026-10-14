@@ -208,6 +208,7 @@ fn ui_kit() -> WorkflowData {
         notes: Vec::new(),
         required: Vec::new(),
         goals: Vec::new(),
+        owner: None,
     }
 }
 
@@ -282,6 +283,7 @@ fn demo_tests() -> WorkflowData {
         notes: Vec::new(),
         required: Vec::new(),
         goals: Vec::new(),
+        owner: None,
     }
 }
 
@@ -611,6 +613,7 @@ fn long_model_names_stay_visible_at_80_columns() {
         notes: Vec::new(),
         required: Vec::new(),
         goals: Vec::new(),
+        owner: None,
     };
     for (name, label) in [
         ("long_model_80", "worker · task-001"),
@@ -1019,6 +1022,7 @@ fn crew_run() -> WorkflowData {
         notes: Vec::new(),
         required: Vec::new(),
         goals: Vec::new(),
+        owner: None,
     }
 }
 
@@ -1788,7 +1792,7 @@ fn library_view() {
     }
     // It opens on the workflow in use.
     let text = screen(&mut view, 100, 32, &state);
-    assert!(text.contains("❯ orchestrator"), "{text}");
+    assert!(text.contains("❯ Orchestrator"), "{text}");
     let outcome = press(&mut view, KeyCode::Char('c'), &state);
     assert!(
         matches!(
@@ -1809,13 +1813,13 @@ fn library_alone_with_no_run() {
     for (width, height) in SIZES {
         let text = screen(&mut view, width, height, &state);
         assert!(text.contains("Workflow library"), "{text}");
-        assert!(text.contains("release"), "{text}");
+        assert!(text.contains("Release"), "{text}");
     }
     press(&mut view, KeyCode::Up, &state);
     press(&mut view, KeyCode::Char('d'), &state);
     let text = screen(&mut view, 100, 32, &state);
     assert!(
-        text.contains("solo is the built-in, so there's nothing to compare"),
+        text.contains("Solo is the built-in, so there's nothing to compare"),
         "{text}"
     );
 }

@@ -2,10 +2,15 @@
 //! and pinned above the input, with the run's status and the sessions' context on tabs of
 //! their own.
 
+#[cfg(test)]
+mod bar_gap_tests;
 pub mod cards;
 mod context;
+#[cfg(test)]
+pub(crate) mod golden;
 mod home;
 mod limits;
+mod plan_windows;
 #[cfg(test)]
 pub(crate) mod sample;
 pub mod stats;

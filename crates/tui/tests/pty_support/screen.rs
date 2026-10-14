@@ -6,7 +6,7 @@ use unicode_width::UnicodeWidthStr;
 
 /// Patterns for the parts every screen has.
 pub const BULLET: &str = "[●⏺]";
-pub const TOP_RULE: &str = "^─+ council · Haiku ─$";
+pub const TOP_RULE: &str = "^─+ Council · Haiku ─$";
 pub const INPUT_ROW: &str = "^❯";
 /// The mode line, with each CLI's plan usage against its right edge. The mode's hints are the
 /// first things the chips take the room of, so at 100 columns they may be gone.

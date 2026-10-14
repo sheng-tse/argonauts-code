@@ -1,11 +1,8 @@
 //! The retro, after the run's workflow ends: Brier scores for predictions, one outcome record
-//! per card and one run line in the outcome log, the memory checks, notes committed one per
-//! commit and decisions by the conductor and landed when the run merged, at most one process
-//! change from `Retro`, and then the evolution loop's turn. Each part checks the log first, so a
-//! retro re-entered after a crash repeats nothing.
-//!
-//! The notes and decisions known before the merge checkpoint are committed before it opens, so
-//! your approval covers them and they land with the run. Only what came later lands after it.
+//! per card and one run line in the outcome log, the memory checks, accepted notes kept in the
+//! repo's state directory, at most one process change from `Retro`, and then the evolution
+//! loop's turn. Each part checks the log first, so a retro re-entered after a crash repeats
+//! nothing. Notes, like goals and decisions, are Argonauts' own and never enter your repository.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -25,22 +22,19 @@ use argonauts_learning::evolution::{self, Action, Evolution, Stage};
 use argonauts_learning::memory::{self, Source};
 use argonauts_learning::{LearningError, RunRecord, Store};
 
-use crate::divide::{self, dependencies};
+use crate::divide;
 use crate::engine::host::{Ask, Host};
 use crate::error::{EngineError, EngineResult};
-use crate::integrate::{branch, conductor, merge_packet};
+use crate::integrate::{conductor, merge_packet};
 use crate::{prompts, roles};
 
 pub mod brier;
 pub mod facts;
-pub mod landing;
 pub mod memory_scan;
 pub mod notes;
 pub mod outcomes;
 pub mod recipe;
 pub mod reversals;
-
-const DECISIONS_DIR: &str = ".argonauts/decisions";
 
 /// Runs the retro once the run's result is settled. A failed retro is recorded as its own
 /// failure and leaves that result alone; only an interruption unwinds, so it runs again.
@@ -131,7 +125,7 @@ pub async fn run(host: &Host) -> EngineResult<()> {
     }
 
     scan_proposals(host)?;
-    commit_notes(host).await?;
+    keep_notes(host)?;
 
     if process_change_due(host, settings)? && !host.read(|state| state.retro.has_candidate()) {
         propose(host, &facts, settings).await?;
@@ -161,14 +155,14 @@ pub async fn run(host: &Host) -> EngineResult<()> {
     phase(host, PhaseStatus::Finished, Some(&summary))
 }
 
-/// Before the merge checkpoint opens: the memory proposals so far are scanned, and the accepted
-/// notes and the run's decisions are committed on the branch that lands. A failure here leaves
-/// them to the retro after the merge, so it never holds the merge up.
+/// Before the merge checkpoint opens: the memory proposals so far are scanned and the accepted
+/// notes kept, and with `outcomes.share` the finished runs' logs go on the branch that lands. A
+/// failure here leaves them to the retro after the merge, so it never holds the merge up.
 pub async fn notes_before_merge(host: &Host) -> EngineResult<()> {
     let committed = async {
         scan_proposals(host)?;
+        keep_notes(host)?;
         let (_, worktree) = merge_packet::landing_branch(host).await?;
-        commit_notes_in(host, &worktree).await?;
         share_outcomes(host, &worktree).await
     };
     match committed.await {
@@ -360,103 +354,35 @@ fn proposals(state: &crate::state::RunState) -> Vec<Proposed> {
     found
 }
 
-/// Accepted notes go to the integration branch beside the decisions, in one conductor commit.
-/// When the run already landed, that commit lands too, or the next run would never read them.
-async fn commit_notes(host: &Host) -> EngineResult<()> {
-    if !has_notes(host) {
-        return Ok(());
-    }
-    let git = host.git();
-    let worktree = branch::ensure_integration(host).await?;
-    let landed = host.read(|state| state.integration.landed.clone());
-    let mut kept = None;
-    if let Some(landed) = &landed {
-        kept = landing::catch_up(git, &worktree, landed).await?.err();
-    }
-    commit_notes_in(host, &worktree).await?;
-    // A retro re-entered after a crash may have committed already, so this looks at git.
-    let Some(landed) = landed else {
-        return Ok(());
-    };
-    // A run that only wrote your files left your branch where it was, and the notes stay
-    // with the run's commits, on its branch.
-    if !landed.fast_forward {
-        return Ok(());
-    }
-    let outcome = match kept {
-        Some(why) => landing::NotesLanding::Kept(why),
-        None => landing::land(git, &host.repo().root, &worktree, &landed).await?,
-    };
-    let note = match outcome {
-        landing::NotesLanding::Nothing => return Ok(()),
-        landing::NotesLanding::Landed(sha) => Note {
-            level: NoteLevel::Info,
-            text: format!(
-                "The run review's notes merged into {} at {sha}.",
-                landed.target
-            ),
-        },
-        landing::NotesLanding::Kept(why) => Note {
-            level: NoteLevel::Warn,
-            text: format!(
-                "The run review's notes stay on {}, since {why}. Merge that branch to keep them for \
-                 later runs.",
-                branch::integration_branch(host.run_id())
-            ),
-        },
-    };
-    host.record(None, None, RunEventKind::Note(note))?;
-    Ok(())
-}
-
-/// Accepted notes, or decisions the plan made.
-fn has_notes(host: &Host) -> bool {
-    host.read(|state| !state.retro.accepted().is_empty() || !state.plan.decisions.is_empty())
-}
-
-/// Commits each accepted note on its own, naming its card and run, so `git revert` removes
-/// exactly one fact; then the run's decisions together.
-async fn commit_notes_in(host: &Host, worktree: &Path) -> EngineResult<()> {
-    if !has_notes(host) {
-        return Ok(());
-    }
+/// Keeps each accepted note in the repo's state directory, naming its card and run. Notes are
+/// Argonauts' own, so they never go into your repository, and later runs read them from there.
+fn keep_notes(host: &Host) -> EngineResult<()> {
     let accepted = host.read(|state| state.retro.accepted());
+    let state_dir = divide::repo_state_dir(host);
     for (from, note) in accepted {
         let card = host.read(|state| card_of(state, &from, &note));
         let source = Source {
             run: host.run_id().clone(),
-            card: card.clone(),
+            card,
             worker: from,
             date: host.now(),
             evidence: Vec::new(),
         };
-        let Some(path) = notes::write_note(worktree, &note, &source)? else {
-            continue;
-        };
-        let subject = format!("Note from {card}: {}", note.topic.trim());
-        let sha = conductor::commit(host, worktree, &[path.as_str()], &subject).await?;
-        host.record(
-            None,
-            None,
-            RunEventKind::Retro(RetroEvent::Committed {
-                sha,
-                paths: vec![path],
-            }),
-        )?;
+        notes::keep_note(&state_dir, &note, &source)?;
     }
-    let status = host.git().status_of(worktree, &[DECISIONS_DIR]).await?;
-    let paths = dependencies::porcelain_paths(&status);
-    if paths.is_empty() {
-        return Ok(());
-    }
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    let sha = conductor::commit(host, worktree, &refs, "Run review: decisions").await?;
-    host.record(
-        None,
-        None,
-        RunEventKind::Retro(RetroEvent::Committed { sha, paths }),
-    )?;
     Ok(())
+}
+
+/// The escalations the run opened, decided or not.
+fn escalations_of(state: &crate::state::RunState) -> usize {
+    state
+        .checkpoints
+        .by_id
+        .values()
+        .filter(|record| {
+            record.opened.kind == argonauts_core::events::checkpoint::CheckpointKind::Escalation
+        })
+        .count()
 }
 
 /// The card whose owner proposed `note`.
@@ -473,7 +399,7 @@ fn run_record(
     facts: &[facts::CardFacts],
     recipe: Option<&recipe::RunRecipe>,
 ) -> RunRecord {
-    let (task_type, outcome, final_check, workflow, spent) = host.read(|state| {
+    let (task_type, outcome, final_check, workflow, spent, escalated) = host.read(|state| {
         let started = state.run.started.as_ref();
         let task_type = started
             .and_then(|started| started.estimate.as_ref())
@@ -503,12 +429,16 @@ fn run_record(
             state.integration.final_check,
             workflow,
             spent,
+            escalations_of(state),
         )
     });
-    let escalations = facts
-        .iter()
-        .filter(|fact| fact.state == CardState::Escalated)
-        .count();
+    // Every time a task came to you, though a retry took it on afterwards.
+    let escalations = escalated.max(
+        facts
+            .iter()
+            .filter(|fact| fact.state == CardState::Escalated)
+            .count(),
+    );
     RunRecord {
         run: host.run_id().clone(),
         at: host.now(),

@@ -234,7 +234,7 @@ fn idle_screen_keeps_its_layout() {
         usize::from(COLS),
         "the top rule spans the width"
     );
-    assert!(rows[0].ends_with(" council · Haiku ─"), "{rows:?}");
+    assert!(rows[0].ends_with(" Council · Haiku ─"), "{rows:?}");
     assert!(rows[1].starts_with("❯"), "{rows:?}");
     assert!(
         is_rule(&rows[2]) && width(&rows[2]) == usize::from(COLS),
@@ -267,8 +267,6 @@ fn busy_screen_keeps_its_layout() {
     assert_order(
         &screen,
         &[
-            &format!("^{BULLET} Opus on Claude Code · worker · task-002 \\(Add the JSON writer\\)"),
-            "^  ⎿  ",
             WORKING_LINE,
             TOP_RULE,
             INPUT_ROW,
@@ -282,7 +280,7 @@ fn busy_screen_keeps_its_layout() {
             // under it, each by its name, what it's doing, and how long and how many tokens.
             // This recording is from before agents had labels, so each goes by its task.
             "^  ● main$",
-            "^  ○ council · Add a --json flag to export +0/3 steps · ",
+            "^  ○ Council · Add a --json flag to export +0/3 steps · ",
             &format!(
                 "^    ○ task-002 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
             ),
@@ -293,6 +291,15 @@ fn busy_screen_keeps_its_layout() {
                 "^    ○ task-004 +Update\\(src/export\\.rs\\) +{LISTED_FOR} · ↓ [\\d.]+k tokens$"
             ),
         ],
+    );
+    // Agents at work show in the list under the input; the chat gets each once it finishes.
+    assert!(
+        !screen
+            .visible
+            .iter()
+            .any(|row| row.starts_with(&format!("{BULLET} Opus on Claude Code · worker"))),
+        "{}",
+        screen.visible_text()
     );
     let working = expect_row(&screen, WORKING_LINE);
     assert!(

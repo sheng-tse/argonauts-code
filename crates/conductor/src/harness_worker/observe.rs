@@ -425,6 +425,12 @@ impl Observer {
                 if text.is_some() {
                     facts.result_text = text.clone();
                 }
+                if structured.is_none()
+                    && super::report_tool::reports_by_tool(&self.ctx.spec)
+                    && let Some(report) = super::report_tool::read(&self.ctx.spec)
+                {
+                    facts.structured = Some(report);
+                }
                 if let Some(answer) = structured {
                     facts.structured = Some(match &self.ctx.spec.json_schema {
                         Some(format) => answer_format::as_written(format, answer.clone()),

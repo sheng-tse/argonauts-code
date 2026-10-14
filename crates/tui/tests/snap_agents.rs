@@ -17,7 +17,7 @@ use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
 use argonauts_core::names::{RoleName, SessionKey, VendorId, WorkerRef};
 use argonauts_core::settings::sessions::SessionLifetime;
-use argonauts_core::settings::ui::UiSettings;
+use argonauts_core::settings::ui::{AgentsInChat, UiSettings};
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::{Access, WorkerKind};
 use argonauts_core::{
@@ -65,8 +65,10 @@ impl Crew {
         let run = RunId::at(START, 1);
         let mut state = AppState::default();
         state.runs.insert(run.clone(), RunState::new(run.clone()));
+        // Most of these draw the live block, which agents have when they show as they work.
         let settings = UiSettings {
             verbosity,
+            agents_in_chat: AgentsInChat::AsTheyWork,
             ..UiSettings::default()
         };
         Self {
@@ -180,6 +182,38 @@ impl Crew {
         self.send(
             session,
             card,
+            RunEventKind::Session(SessionEvent::Started(Box::new(started))),
+        );
+    }
+
+    /// A reviewer asked through Argonauts' tool: tied to no task and no step of its own.
+    fn start_asked(&mut self, session: &str, worker: &str) {
+        let worker: WorkerRef = worker.parse().expect("a worker");
+        let key = SessionKey::parse(session).expect("a key");
+        let ts = START + time::Duration::seconds_f64(self.now);
+        let mut state = session_state(&key, &worker, None, ts);
+        state.role = RoleName::Reviewer;
+        let run = self.run_state();
+        run.sessions.insert(key.clone(), state);
+        run.session_order.push(key);
+        let started = SessionStarted {
+            vendor: VendorId(worker.worker.clone()),
+            worker,
+            family: "test".to_owned(),
+            kind: WorkerKind::Harness,
+            role: RoleName::Reviewer,
+            step: None,
+            access: Access::ReadOnly,
+            lifetime: SessionLifetime::Task,
+            resumed_from: None,
+            follow_key: None,
+            workflow_step: None,
+            label: Some("review:due-dates".to_owned()),
+            asked: None,
+        };
+        self.send(
+            session,
+            None,
             RunEventKind::Session(SessionEvent::Started(Box::new(started))),
         );
     }
@@ -653,7 +687,7 @@ fn a_block_that_doesnt_fit_keeps_its_header_todo_and_text() {
 }
 
 #[test]
-fn codex_block_says_messages_arrive_whole() {
+fn codex_block_draws_its_thread_without_a_note() {
     let mut crew = Crew::new(Verbosity::Full);
     crew.card(2, "Redis store", Some(CardState::Running));
     crew.start("s-002", "codex/gpt-5.6", Some(2));
@@ -694,16 +728,13 @@ fn codex_block_says_messages_arrive_whole() {
     crew.at(220.0);
     for width in WIDTHS {
         snapshot(
-            "codex_block_says_messages_arrive_whole",
+            "codex_block_draws_its_thread_without_a_note",
             &crew.live(width),
             width,
         );
     }
     let live = text(&crew.live(100));
-    assert!(
-        live.contains("Messages arrive whole · thread steps aren't streamed"),
-        "{live}"
-    );
+    assert!(!live.contains("Messages arrive whole"), "{live}");
     assert!(
         live.contains("Running · Reading the store's tests"),
         "{live}"
@@ -837,7 +868,10 @@ fn a_report_written_out_and_called_shows_once() {
 
 /// One session's scrollback: reads and a shell command, an edit, a message, and its end.
 fn one_session(verbosity: Verbosity) -> Crew {
-    let mut crew = Crew::new(verbosity);
+    one_session_with(Crew::new(verbosity))
+}
+
+fn one_session_with(mut crew: Crew) -> Crew {
     crew.card(3, "Middleware", Some(CardState::InReview));
     crew.start("s-001", "claude-code/opus", Some(3));
     crew.at(12.0)
@@ -1462,4 +1496,258 @@ fn argonauts_own_calls_stay_in_the_overlay() {
         assert!(detail.contains("Sent the report"), "{level:?}: {detail}");
         assert_eq!(detail.matches("Report(done)").count(), 1, "{detail}");
     }
+}
+
+/// A reviewer that Claude Code's own workflow asks through Argonauts answers inside the
+/// workflow's row and view: it gets no block of its own and prints nothing in the chat.
+#[test]
+fn a_reviewer_asked_inside_a_cli_workflow_prints_nothing_of_its_own() {
+    use argonauts_core::events::session::{VendorPhase, VendorWorkflow};
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.start("s-001", "claude-code/haiku", Some(1));
+    let key = SessionKey::parse("s-001").expect("a key");
+    if let Some(host) = crew.run_state().sessions.get_mut(&key) {
+        host.workflows.push(VendorWorkflow {
+            id: "wf_1".into(),
+            call: None,
+            name: "add-due-dates".into(),
+            description: String::new(),
+            phases: vec![VendorPhase {
+                index: 1,
+                title: "Review".into(),
+                detail: String::new(),
+            }],
+            agents: Vec::new(),
+            status: SubagentStatus::Running,
+            tokens: 0,
+            tool_calls: 0,
+            duration_ms: 0,
+            summary: None,
+            started_at_ms: None,
+        });
+    }
+    crew.at(5.0);
+    crew.start_asked("s-002", "codex/gpt-5.6-luna");
+    crew.message("s-002", "The draft answer: past dates pass.");
+    crew.end("s-002", EndReason::Completed, 15, 36_400);
+    let printed = text(&crew.printed(100));
+    let live = text(&crew.live(100));
+    assert!(!printed.contains("past dates pass"), "{printed}");
+    assert!(!printed.contains("GPT 5.6 Luna"), "{printed}");
+    assert!(!live.contains("GPT 5.6 Luna"), "{live}");
+}
+
+/// The call that starts Claude Code's own workflow returns at once, but its row stays live
+/// until the workflow ends, then prints once with its final phases.
+#[test]
+fn a_workflow_row_stays_live_until_its_workflow_ends() {
+    use argonauts_core::events::session::{VendorPhase, VendorWorkflow};
+    let workflow = |status| VendorWorkflow {
+        id: "wf_1".into(),
+        call: Some("toolu_w".into()),
+        name: "add-due-dates".into(),
+        description: String::new(),
+        phases: ["Build", "Review"]
+            .iter()
+            .zip(1..)
+            .map(|(title, index)| VendorPhase {
+                index,
+                title: (*title).to_owned(),
+                detail: String::new(),
+            })
+            .collect(),
+        agents: Vec::new(),
+        status,
+        tokens: 0,
+        tool_calls: 0,
+        duration_ms: 0,
+        summary: None,
+        started_at_ms: None,
+    };
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.start("s-001", "claude-code/haiku", Some(1));
+    crew.tool(
+        "s-001",
+        "toolu_w",
+        "Workflow",
+        json!({"name": "add-due-dates", "script": "..."}),
+    )
+    .done(
+        "s-001",
+        "toolu_w",
+        true,
+        Some("Workflow launched in background"),
+    )
+    .agent(
+        "s-001",
+        AgentEvent::Workflow {
+            workflow: Box::new(workflow(SubagentStatus::Running)),
+        },
+    );
+    crew.message("s-001", "The workflow is running.");
+    let printed = text(&crew.printed(100));
+    assert!(!printed.contains("Workflow(add-due-dates)"), "{printed}");
+    let live = text(&crew.live(100));
+    assert!(live.contains("Workflow(add-due-dates)"), "{live}");
+    crew.agent(
+        "s-001",
+        AgentEvent::Workflow {
+            workflow: Box::new(workflow(SubagentStatus::Done)),
+        },
+    );
+    crew.end("s-001", EndReason::Completed, 96, 264_000);
+    let printed = text(&crew.printed(100));
+    assert_eq!(
+        printed.matches("Workflow(add-due-dates)").count(),
+        1,
+        "{printed}"
+    );
+}
+
+/// By default an agent at work stays out of the chat, which the list under the input covers,
+/// and lands there once, when it finishes, as it would have printed going along.
+#[test]
+fn an_agent_at_work_lands_in_the_chat_once_when_it_finishes() {
+    for level in [Verbosity::Full, Verbosity::Normal] {
+        let mut crew = Crew::new(level);
+        crew.settings.agents_in_chat = AgentsInChat::WhenDone;
+        crew.card(3, "Middleware", Some(CardState::InReview));
+        crew.start("s-001", "claude-code/opus", Some(3));
+        crew.at(12.0)
+            .tool("s-001", "t1", "Read", json!({"file_path": "src/app.rs"}))
+            .done("s-001", "t1", true, Some("fn main() {}\n"));
+        for n in 0..8 {
+            let id = format!("b{n}");
+            crew.tool(
+                "s-001",
+                &id,
+                "Bash",
+                json!({"command": format!("cargo test {n}")}),
+            )
+            .done("s-001", &id, true, Some("ok"));
+        }
+        crew.message("s-001", "Halfway there.");
+        assert!(crew.live(100).is_empty(), "no live block in the chat");
+        assert!(
+            crew.printed(100).is_empty(),
+            "nothing printed while it works"
+        );
+        crew.at(580.0)
+            .end("s-001", EndReason::Completed, 580, 61_000);
+        let printed = text(&crew.printed(100));
+        assert!(printed.contains("Halfway there."), "{printed}");
+        assert!(printed.contains("⎿  Done · 9 tool uses · "), "{printed}");
+        assert_eq!(
+            printed
+                .matches("● Opus on Claude Code · worker · task-003")
+                .count(),
+            2,
+            "its calls once, then its closing line:\n{printed}"
+        );
+    }
+}
+
+/// Landing once, it reads as it does printed going along.
+#[test]
+fn landing_once_reads_as_printing_along_did() {
+    for level in [Verbosity::Full, Verbosity::Normal, Verbosity::Quiet] {
+        let mut when_done = Crew::new(level);
+        when_done.settings.agents_in_chat = AgentsInChat::WhenDone;
+        let when_done = one_session_with(when_done);
+        let along = one_session(level);
+        assert_eq!(
+            text(&when_done.printed(100)),
+            text(&along.printed(100)),
+            "{level:?}"
+        );
+    }
+}
+
+/// A call shows in its agent's block as the model starts writing it, by its name alone, fills
+/// in where it stands, and goes when the model never finishes it.
+#[test]
+fn a_call_shows_in_the_block_as_its_model_starts_writing_it() {
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.start("s-001", "claude-code/opus", Some(3));
+    let pending = |id: &str, name: &str| AgentEvent::ToolPending {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        parent: None,
+    };
+    crew.at(10.0).agent("s-001", pending("t1", "Edit"));
+    let live = text(&crew.live(100));
+    assert!(live.contains("Update"), "{live}");
+    assert!(!live.contains("Update("), "{live}");
+    crew.tool(
+        "s-001",
+        "t1",
+        "Edit",
+        json!({"file_path": format!("{WORKTREE}/src/app.rs"), "old_string": "a", "new_string": "b"}),
+    );
+    let live = text(&crew.live(100));
+    assert_eq!(live.matches("Update").count(), 1, "{live}");
+    assert!(live.contains("Update(src/app.rs)"), "{live}");
+    crew.agent("s-001", pending("t2", "Write"));
+    assert!(text(&crew.live(100)).contains("Write"));
+    crew.agent(
+        "s-001",
+        AgentEvent::ToolDropped {
+            id: "t2".to_owned(),
+            parent: None,
+        },
+    );
+    let live = text(&crew.live(100));
+    assert!(!live.contains("Write"), "{live}");
+    // A lookup of held-back tools stays out of the block, as Claude Code leaves it out.
+    crew.agent("s-001", pending("t3", "ToolSearch"));
+    crew.tool("s-001", "t3", "ToolSearch", json!({"query": "select:Read"}));
+    crew.done("s-001", "t3", true, Some("<functions></functions>"));
+    let live = text(&crew.live(100));
+    assert!(!live.contains("ToolSearch"), "{live}");
+}
+
+/// An agent at work stays out of the chat while its calls are written, filled in or dropped,
+/// and lands once with only the calls that ran.
+#[test]
+fn an_agent_at_work_lands_without_a_call_it_never_finished() {
+    let pending = |id: &str, name: &str| AgentEvent::ToolPending {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        parent: None,
+    };
+    let mut crew = Crew::new(Verbosity::Full);
+    crew.settings.agents_in_chat = AgentsInChat::WhenDone;
+    crew.card(3, "Middleware", Some(CardState::Running));
+    crew.start("s-001", "claude-code/opus", Some(3));
+    crew.at(10.0).agent("s-001", pending("t1", "Edit"));
+    crew.agent("s-001", pending("t2", "Write"));
+    crew.tool(
+        "s-001",
+        "t1",
+        "Edit",
+        json!({"file_path": format!("{WORKTREE}/src/app.rs"), "old_string": "a", "new_string": "b"}),
+    );
+    crew.done("s-001", "t1", true, Some("The file has been updated."));
+    crew.agent(
+        "s-001",
+        AgentEvent::ToolDropped {
+            id: "t2".to_owned(),
+            parent: None,
+        },
+    );
+    assert!(crew.live(100).is_empty(), "no live block in the chat");
+    assert!(
+        crew.printed(100).is_empty(),
+        "nothing printed while it works"
+    );
+
+    crew.at(60.0).end("s-001", EndReason::Completed, 60, 12_000);
+    let printed = text(&crew.printed(100));
+    assert_eq!(
+        printed.matches("Update(src/app.rs)").count(),
+        1,
+        "{printed}"
+    );
+    assert!(!printed.contains("Write"), "{printed}");
 }

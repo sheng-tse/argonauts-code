@@ -64,10 +64,16 @@ pub(super) fn render(
         keywords::letters(text, &composer.drawn_keywords(), theme, Some(&ctx.clock))
     };
     let mut lines = Vec::with_capacity(rows.len().min(MAX_INPUT_ROWS) + 2);
+    // The label reads in the dim grey, a step brighter than the rule it sits on.
+    let label_style = if shell {
+        rule_style
+    } else {
+        marks::decoration(theme.style(Role::Dim))
+    };
     lines.push(top_rule(
         composer.label.as_deref(),
         composer.ultracode,
-        rule_style,
+        (rule_style, label_style),
         ctx,
     ));
     for (index, row) in rows.iter().enumerate().skip(scroll).take(MAX_INPUT_ROWS) {
@@ -122,15 +128,16 @@ pub(super) fn render(
 pub const ULTRACODE_TAG: &str = "ultracode";
 
 /// The rule above the input. Its label is the main model's name, with the workflow's first
-/// when it isn't solo, in the rule's own grey. Purple is kept for the `ultracode` tag, at the
-/// far right, two spaces after the name as Claude Code joins the tags in this slot. On a row
-/// too narrow for both, the name goes first.
+/// when it isn't solo, in grey. Purple is kept for the `ultracode` tag, at the far right, two
+/// spaces after the name as Claude Code joins the tags in this slot. On a row too narrow for
+/// both, the name goes first. `styles` are the rule's and the label's.
 fn top_rule(
     label: Option<&str>,
     ultracode: bool,
-    dim: Style,
+    styles: (Style, Style),
     ctx: &RenderCtx<'_>,
 ) -> Line<'static> {
+    let (dim, label_style) = styles;
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
     let rule = theme.glyphs.rule;
@@ -140,7 +147,7 @@ fn top_rule(
     let tag = ultracode.then(|| Span::styled(ULTRACODE_TAG, theme.style(Role::Ultracode)));
     // At least one rule cell on each side, with a space around the words.
     let fits = |words: usize| words + 4 <= width;
-    let name = |label: String| Span::styled(label, dim);
+    let name = |label: String| Span::styled(label, label_style);
     let words = match (label, tag) {
         (Some(label), Some(tag)) if fits(str_width(&label) + 2 + ULTRACODE_TAG.len()) => {
             vec![name(label), Span::raw("  "), tag]

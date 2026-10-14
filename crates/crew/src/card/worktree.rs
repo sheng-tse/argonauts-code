@@ -316,9 +316,9 @@ fn tell_left_out(host: &Host, card: &CardId, left_out: &[LeftOut]) -> EngineResu
     Ok(())
 }
 
-/// What to tell `card`'s worker when checks fail on the run's branch: the new files in its
-/// worktree that its commit left out. The checks passed beside them and failed without them,
-/// so one of them may be what's missing. `None` when nothing was left out.
+/// What to tell `card`'s worker when checks fail: the new files in its worktree that its
+/// commit left out. The checks ran on the commit without them, so one of them may be what's
+/// missing. `None` when nothing was left out.
 pub(crate) async fn left_out_part(host: &Host, card: &CardId) -> EngineResult<Option<InputPart>> {
     let tree = ensure(host, card).await?;
     let Some(claims) = claims::of_card(host, card, &tree.path) else {

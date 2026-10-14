@@ -29,6 +29,17 @@ pub struct OwnCrew {
     pub judge: Vec<WorkerRef>,
 }
 
+/// Whether Claude Code's own workflow can stand for this one: a workflow the orchestrator
+/// shapes that opens with the orchestrator planning and handing out the work, as Claude Code's
+/// does. One with no single planner, or one that runs as written, keeps its own steps.
+pub fn plans_and_delegates(file: &argonauts_runner::WorkflowFile) -> bool {
+    file.adapt
+        && file
+            .steps
+            .first()
+            .is_some_and(|step| step.role == CrewRole::Orchestrator)
+}
+
 /// Claude Code's own workflow runs the crew's when the orchestrator and every worker are on
 /// Claude Code, whatever their models; otherwise Argonauts' runner does.
 /// `available` are the agents that can work now, which go first.
@@ -110,6 +121,23 @@ mod tests {
         assert!(claude_codes_own(&codex, &[]).is_none());
         // The default crew spreads its workers across three CLIs.
         assert!(claude_codes_own(&Settings::default(), &[]).is_none());
+    }
+
+    /// Claude Code's own workflow plans and delegates, which is what the orchestrator's does;
+    /// a council, a maker and its checker, and several tries with a pick run their own steps.
+    #[test]
+    fn only_a_workflow_that_plans_and_delegates_becomes_claude_codes_own() {
+        let planned: Vec<&str> = argonauts_runner::BUILT_IN
+            .iter()
+            .filter(|(_, text)| {
+                let file = argonauts_runner::WorkflowFile::parse(text)
+                    .unwrap()
+                    .unwrap();
+                plans_and_delegates(&file)
+            })
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(planned, ["orchestrator"]);
     }
 
     #[test]

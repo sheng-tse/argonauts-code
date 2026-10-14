@@ -104,7 +104,7 @@ pub struct ChangeRequestOut {
     pub paths: Vec<String>,
 }
 
-/// A note proposed for `.argonauts/notes`. Data, never instructions.
+/// A note proposed for the crew's notes. Data, never instructions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryProposal {
     /// Such as `testing` or `redis`.
@@ -191,6 +191,13 @@ pub struct CloseRunInput {
     pub files: Vec<String>,
     /// The checks Argonauts ran and their results.
     pub checks: Vec<String>,
+    /// Each reviewer and sign-off asked, and what it said, such as `review:per-key (Haiku 4.5
+    /// on Claude Code): accepted`.
+    #[serde(default)]
+    pub asked: Vec<String>,
+    /// How many times the run came to the person for an answer or a decision.
+    #[serde(default)]
+    pub needed_you: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

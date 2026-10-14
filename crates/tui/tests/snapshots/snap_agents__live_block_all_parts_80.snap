@@ -3,13 +3,15 @@ source: crates/tui/tests/snap_agents.rs
 expression: text(lines)
 ---
 ● Opus on Claude Code · worker · task-003 · 4m12s · ↓ 18.1k · retrying in 12s
-  ⎿  Update(src/app.rs)
-        Added 2 lines, removed 1 line
-                let area = frame.area();
-           -    draw_header(frame);
-           +    draw_header(frame, &state);
-           +    draw_prompt(frame, &state);
-     Ran 1 shell command, searched for 1 pattern · 1 failed (ctrl+o to expand)
+  ⎿  Bash(cargo test export)
+        Error: Exit code 101
+        test export::case_1 ... ok
+        test export::case_2 ... ok
+        test export::case_3 ... ok
+        test export::case_4 ... ok
+        test export::case_5 ... ok
+        … +10 lines (ctrl+o to expand)
+     Searched for 1 pattern (ctrl+o to expand)
      Write(hello.txt)
         Wrote 1 line to hello.txt
          1 +hi

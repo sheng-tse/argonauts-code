@@ -1,16 +1,18 @@
-//! The goal file (`layout::goal_file`), written in the run's integration worktree and committed
-//! by the conductor, so it never counts as a card's change.
+//! The goal file (`layout::goal_file`), kept in the repo's state directory under
+//! `~/.argonauts`. It is Argonauts' own, so it never goes into your repository: nothing commits
+//! it, no check or reviewer sees it as part of a change, and a merge never carries it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use argonauts_core::RunId;
 use argonauts_core::events::goal::{Criterion, GoalFile, GoalSource};
 use argonauts_core::hash::sha256_hex;
 use argonauts_core::layout;
+use argonauts_core::paths::{create_private_dir_all, write_private_file};
 
+use crate::divide::repo_state_dir;
 use crate::engine::host::Host;
 use crate::error::EngineResult;
-use crate::integrate::conductor;
 
 use super::materiality::one_line;
 
@@ -57,37 +59,24 @@ pub fn sha256(goal: &GoalFile) -> String {
     sha256_hex(render(goal).as_bytes())
 }
 
-/// `.argonauts/goal/<run>.md`, relative to whichever worktree holds it.
+/// `goals/<run>.md`, from the repo's state directory.
 pub fn relative_path(run: &RunId) -> PathBuf {
-    layout::goal_file(Path::new(""), run)
+    layout::goal_file(run)
 }
 
-/// Writes and commits the goal file as a conductor commit; returns the file with its path and
-/// SHA-256 filled in. Writing the same goal again commits nothing, so a re-entered step is safe.
-pub async fn write(host: &Host, tree_root: &Path, goal: GoalFile) -> EngineResult<GoalFile> {
+/// Writes the goal file; returns the goal with its path and SHA-256 filled in. Writing the
+/// same goal again changes nothing, so a re-entered step is safe.
+pub async fn write(host: &Host, goal: GoalFile) -> EngineResult<GoalFile> {
     let goal = hashed(goal);
     let text = render(&goal);
-    let absolute = layout::goal_file(tree_root, &goal.run);
-    let relative = goal.path.to_string_lossy().replace('\\', "/");
-    // During build this is the integration worktree, where a card's merge may be staged.
-    let _held = conductor::hold(tree_root).await;
-
-    let on_disk = tokio::fs::read(&absolute).await.ok();
-    if on_disk.as_deref() == Some(text.as_bytes())
-        && host
-            .git()
-            .status_of(tree_root, &[relative.as_str()])
-            .await?
-            .is_empty()
-    {
+    let absolute = repo_state_dir(host).join(&goal.path);
+    if tokio::fs::read(&absolute).await.ok().as_deref() == Some(text.as_bytes()) {
         return Ok(goal);
     }
     if let Some(parent) = absolute.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        create_private_dir_all(parent)?;
     }
-    tokio::fs::write(&absolute, text.as_bytes()).await?;
-    let subject = format!("Record the goal for {}, version {}", goal.run, goal.version);
-    conductor::commit_held(host, tree_root, &[relative.as_str()], &subject).await?;
+    write_private_file(&absolute, text.as_bytes())?;
     Ok(goal)
 }
 
@@ -255,7 +244,7 @@ mod tests {
     #[test]
     fn the_hash_follows_the_content() {
         let first = hashed(goal());
-        assert_eq!(first.path, PathBuf::from(".argonauts/goal/run-01.md"));
+        assert_eq!(first.path, PathBuf::from("goals/run-01.md"));
         assert_eq!(first.sha256.len(), 64);
         assert_eq!(hashed(goal()).sha256, first.sha256);
         let mut other = goal();

@@ -168,15 +168,15 @@ fn help_and_pagers_scroll() {
     assert!(!is_ignored(&vim.press(&mut pager, 'j')));
     vim.press(&mut pager, 'G');
     vim.draw(&mut pager);
-    let bottom = pager.offset;
+    let bottom = pager.top();
     assert!(bottom > 50, "{bottom}");
     // One up from the last event is still in view, so nothing scrolls.
     vim.press(&mut pager, 'k');
     vim.draw(&mut pager);
-    assert_eq!(pager.offset, bottom);
+    assert_eq!(pager.top(), bottom);
     vim.press(&mut pager, 'g');
     vim.draw(&mut pager);
-    assert_eq!(pager.offset, 0);
+    assert_eq!(pager.top(), 0);
     assert!(matches!(vim.press(&mut pager, 'h'), ViewOutcome::Close));
 
     let mut help = HelpView::new(Keymap::default());

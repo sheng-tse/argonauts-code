@@ -20,6 +20,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 
 use super::selection::{Point, Selecting};
+use super::sticky;
 use super::{Ui, UiAction, compose_docked, compose_live};
 use crate::render::{Clock, RenderCtx};
 use crate::state::AppState;
@@ -59,6 +60,14 @@ pub struct Scrollback {
     held: Option<usize>,
     /// The row the last frame's view began at.
     start: usize,
+    /// Where each of your prompts starts in `printed`, with its words.
+    prompts: Vec<(usize, String)>,
+    /// Where each row of `printed` starts in `wrapped`.
+    wrapped_at: Vec<usize>,
+    /// Where the prompt the last frame kept at the top starts in `wrapped`.
+    sticky: Option<usize>,
+    /// The row of `wrapped` the next frame starts at, asked for by a jump to a prompt.
+    jump_to: Option<usize>,
 }
 
 impl Scrollback {
@@ -75,6 +84,17 @@ impl Scrollback {
         self.printed.extend(rows);
     }
 
+    /// Where the rows the next [`push`](Self::push) brings hold your prompts, with their
+    /// words, as the history's drain found them.
+    pub fn mark_prompts(&mut self, prompts: Vec<(Range<usize>, String)>) {
+        let at = self.printed.len();
+        self.prompts.extend(
+            prompts
+                .into_iter()
+                .filter_map(|(rows, text)| Some((at + rows.start, sticky::words(&text)?))),
+        );
+    }
+
     /// The header printed last now reads as `lines`.
     pub fn replace_header(&mut self, lines: Vec<Line<'static>>) {
         let Some(range) = self.header.clone() else {
@@ -82,10 +102,36 @@ impl Scrollback {
         };
         let start = range.start;
         let count = lines.len();
+        let (end, grown) = (range.end, count as isize - range.len() as isize);
         self.printed.splice(range, lines);
         self.header = Some(start..start + count);
+        for (row, _) in self.prompts.iter_mut().filter(|(row, _)| *row >= end) {
+            *row = row.saturating_add_signed(grown);
+        }
         self.wrapped.clear();
         self.wrapped_from = 0;
+    }
+
+    /// Ctrl+↑, or a click on the prompt kept at the top: the next frame starts where that
+    /// prompt does. False when no prompt is kept there.
+    pub fn jump_to_prompt(&mut self) -> bool {
+        self.jump_to = self.sticky;
+        self.jump_to.is_some()
+    }
+
+    /// Whether the screen's `row` holds the prompt kept at the top.
+    pub fn holds_prompt(&self, row: u16) -> bool {
+        row == 0 && self.sticky.is_some()
+    }
+
+    /// The last of your prompts that starts above `row` of `wrapped`, out of sight, so its
+    /// reply is what shows from there: where it starts, and its words.
+    fn answered_at(&self, row: usize) -> Option<(usize, &str)> {
+        self.prompts
+            .iter()
+            .filter_map(|(at, words)| Some((*self.wrapped_at.get(*at)?, words.as_str())))
+            .take_while(|(at, _)| *at < row)
+            .last()
     }
 
     /// Zero while following new output.
@@ -156,6 +202,11 @@ impl Scrollback {
             total - (rows - foot)
         };
         self.offset = self.offset.min(self.max_offset);
+        if let Some(row) = self.jump_to.take() {
+            self.offset = total
+                .saturating_sub(row + (rows - foot))
+                .min(self.max_offset);
+        }
         if self.offset == 0 {
             self.unseen = false;
         }
@@ -177,11 +228,27 @@ impl Scrollback {
             .take(end - start)
             .cloned()
             .collect();
+        // Scrolled up past a prompt, the prompt being answered sits above the view, which
+        // keeps its top row and gives up its last ones.
+        let answered = (self.offset > 0 && lines.len() > sticky::ROWS)
+            .then(|| self.answered_at(start))
+            .flatten()
+            .map(|(at, words)| (at, words.to_owned()));
+        self.sticky = answered.as_ref().map(|(at, _)| *at);
+        if let Some((_, words)) = &answered {
+            lines.truncate(lines.len() - sticky::ROWS);
+            lines.splice(0..0, [sticky::prompt_row(words, ctx), sticky::rule(ctx)]);
+        }
         if self.offset > 0 {
             if foot == 2 {
                 lines.push(Line::default());
             }
-            lines.push(self.below(ctx));
+            // While a prompt is kept at the top, the last row says how to get back to it,
+            // unless new output arrived below, which matters more.
+            lines.push(match answered {
+                Some(_) if !self.unseen => sticky::hint(ctx),
+                _ => self.below(ctx),
+            });
         }
         lines
     }
@@ -192,7 +259,9 @@ impl Scrollback {
             self.wrapped.clear();
             self.wrapped_from = 0;
         }
+        self.wrapped_at.truncate(self.wrapped_from);
         for line in &self.printed[self.wrapped_from..] {
+            self.wrapped_at.push(self.wrapped.len());
             wrap_into(&mut self.wrapped, line, width);
         }
         self.wrapped_from = self.printed.len();
@@ -316,6 +385,13 @@ impl<W: Write> Ui<W> {
         let Some(scrollback) = self.scrollback.as_mut() else {
             return false;
         };
+        // Ctrl+↑ goes to where the prompt kept at the top starts, and does nothing else then.
+        if key.code == KeyCode::Up && key.modifiers == KeyModifiers::CONTROL {
+            let jumped =
+                self.views.is_empty() && self.overlay.is_none() && scrollback.jump_to_prompt();
+            self.dirty |= jumped;
+            return jumped;
+        }
         if !key.modifiers.is_empty() {
             return false;
         }
@@ -384,6 +460,15 @@ impl<W: Write> Ui<W> {
             return Vec::new();
         };
         let at = Point::new(mouse.column, mouse.row);
+        // A click on the prompt kept at the top goes to where it starts.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.views.is_empty()
+            && self.overlay.is_none()
+            && scrollback.holds_prompt(mouse.row)
+        {
+            self.dirty |= scrollback.jump_to_prompt();
+            return Vec::new();
+        }
         // Selections are made on what the screen shows, so nothing selects before a frame.
         let screen = self.terminal.screen_buffer();
         let selecting = &mut scrollback.selecting;

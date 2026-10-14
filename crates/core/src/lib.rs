@@ -68,6 +68,7 @@ pub mod worker;
 pub mod workflow;
 pub mod workflow_page;
 
+pub use adapter::BannerAccount;
 pub use adapter::{
     Adapter, Capabilities, KNOWN_AGENT_IDS, LaunchTweak, SetupHints, StopPlan, StopSignal,
     StopStep, StreamParser, TweakEffect, extract_version,

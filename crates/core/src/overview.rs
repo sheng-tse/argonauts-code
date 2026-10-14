@@ -19,10 +19,11 @@ pub enum OverviewPeriod {
 }
 
 impl OverviewPeriod {
+    /// In the order `r` cycles them, as Claude Code's /stats does.
     pub const ALL: [OverviewPeriod; 3] = [
         OverviewPeriod::All,
-        OverviewPeriod::Month,
         OverviewPeriod::Week,
+        OverviewPeriod::Month,
     ];
 
     pub fn title(self) -> &'static str {
@@ -150,6 +151,15 @@ pub struct OverviewModel {
     pub sessions: u32,
 }
 
+/// One day of the Models chart: the tokens of each of the period's top three models that day,
+/// in the order `models` lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDay {
+    #[serde(with = "day_format")]
+    pub day: Date,
+    pub tokens: Vec<u64>,
+}
+
 /// A month's tokens by CLI, for how the share moved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverviewMonth {
@@ -225,6 +235,12 @@ pub struct OverviewData {
     pub months: Vec<OverviewMonth>,
     /// How the year of days is coloured.
     pub year_colors: YearColors,
+    /// The period's day with the most tokens.
+    #[serde(default, with = "day_format::option")]
+    pub peak_day: Option<Date>,
+    /// The period's days with work, oldest first, for the Models chart.
+    #[serde(default)]
+    pub model_days: Vec<ModelDay>,
 }
 
 impl OverviewData {
@@ -255,6 +271,8 @@ impl OverviewData {
             longest_session_secs: 0,
             months: Vec::new(),
             year_colors: YearColors::default(),
+            peak_day: None,
+            model_days: Vec::new(),
         }
     }
 

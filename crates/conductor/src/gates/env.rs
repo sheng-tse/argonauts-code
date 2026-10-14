@@ -1,7 +1,8 @@
 //! A gate's environment is an allowlist, never the supervisor's own: `PATH`, `LANG`, `TERM`,
 //! `TMPDIR`, `HOME` set to a temp directory, and `CI=1`. No vendor key, and nothing named
 //! `*_KEY`, `*_TOKEN`, `*_SECRET`, or `*_PASSWORD`, so a test an agent edited can't print a key
-//! into output that reviewers, approvers, and the journal see.
+//! into output that reviewers, approvers, and the journal see. Python writes no bytecode, so a
+//! check leaves no compiled files beside the code it ran.
 
 use std::path::Path;
 
@@ -71,6 +72,7 @@ pub fn gate_env(
         ("HOME", temp_root.join("home").display().to_string()),
         ("TMPDIR", temp_root.join("tmp").display().to_string()),
         ("CI", "1".to_owned()),
+        ("PYTHONDONTWRITEBYTECODE", "1".to_owned()),
     ] {
         env.push((name.to_owned(), value));
     }
@@ -136,7 +138,8 @@ mod tests {
                 "RUSTUP_HOME",
                 "HOME",
                 "TMPDIR",
-                "CI"
+                "CI",
+                "PYTHONDONTWRITEBYTECODE"
             ]
         );
         let get = |name: &str| {

@@ -22,6 +22,9 @@ pub struct UserMessage {
     /// The echo of a slash command you ran, whose band ends one cell past the text, as Claude
     /// Code echoes `/model`. A message's band fills the row.
     pub command: bool,
+    /// It runs one of the CLI's own commands, such as `/review` or a skill, so it never stays
+    /// at the top as the prompt being answered.
+    pub runs_a_command: bool,
     /// The keywords of the CLI the message went to that it draws in its echo too.
     pub keywords: Vec<Keyword>,
     /// The numbers of the pictures sent with it, a `⎿ [Image #N]` row each beneath, as in
@@ -36,6 +39,7 @@ impl UserMessage {
             full: None,
             pending: false,
             command: false,
+            runs_a_command: false,
             keywords: Vec::new(),
             pictures: Vec::new(),
         }
@@ -46,6 +50,11 @@ impl UserMessage {
             command: true,
             ..Self::new(text)
         }
+    }
+
+    pub fn running_a_command(mut self, runs: bool) -> Self {
+        self.runs_a_command = runs;
+        self
     }
 
     pub fn with_full(mut self, full: impl Into<String>) -> Self {

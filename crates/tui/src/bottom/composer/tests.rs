@@ -344,10 +344,10 @@ fn renders_rules_label_prompt_and_cursor() {
     );
     assert_eq!(view.cursor, (2, 1));
     let theme = theme();
-    // The name is in the rule's own grey. Purple is kept for the ultracode tag.
+    // The name is in the dim grey, over the rule's own. Purple is kept for the ultracode tag.
     assert_eq!(
         view.lines[0].spans[2].style,
-        decoration(theme.style(Role::Rule))
+        decoration(theme.style(Role::Dim))
     );
     assert_eq!(
         view.lines[1].spans[0].style,
@@ -963,7 +963,7 @@ fn the_rule_names_the_model_and_keeps_purple_for_ultracode() {
     let tag = on.spans.iter().find(|span| span.content == "ultracode");
     assert_eq!(tag.unwrap().style, theme.style(Role::Ultracode));
     let name = on.spans.iter().find(|span| span.content == "Opus 5.5");
-    assert_eq!(name.unwrap().style, decoration(theme.style(Role::Rule)));
+    assert_eq!(name.unwrap().style, decoration(theme.style(Role::Dim)));
 
     // Too narrow for both, the name goes first, then the tag.
     assert_eq!(text(&rule("Opus 5.5", true, 20)), "──────── ultracode ─");
@@ -1040,4 +1040,29 @@ fn the_workflow_word_counts_only_in_a_message() {
             .iter()
             .all(|keyword| keyword.word != argonauts_core::keywords::ULTRACODE.word)
     );
+}
+
+/// The rule above the input as the picture of names on screen draws it: the workflow named with
+/// a capital, the model, and the ultracode tag, in its colours.
+#[test]
+fn the_rule_with_a_workflow_matches_its_picture() {
+    use crate::overview::golden::{Picture, Region, assert_matches, theme};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    let shot = Picture::load("names_after");
+    let theme = theme();
+    let ctx = RenderCtx::new(117, &theme, Clock::still(Instant::now()));
+    let mut c = Composer::new();
+    c.label = Some("Council · Haiku 4.5".into());
+    c.ultracode = true;
+    let line = c.render(&ctx, true, false).lines.remove(0);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 117, 1));
+    buf.set_line(0, 0, &line, 117);
+    let rule = Region {
+        rows: 0..1,
+        columns: 0..117,
+        at: (0, 0),
+    };
+    assert_matches(&shot, &buf, &rule, &theme);
 }

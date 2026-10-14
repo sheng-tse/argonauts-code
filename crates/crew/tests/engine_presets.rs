@@ -617,9 +617,52 @@ async fn peer_crew_full_run() -> anyhow::Result<()> {
             RunEventKind::Checkpoint(CheckpointEvent::Decided(decided)) if decided.by == Party::User
         )
     });
+    let by_you = by_you.count();
     assert!(
-        by_you.count() >= 2,
+        by_you >= 2,
         "supervised: you decide the goal, the plan, and the merge"
+    );
+    // The lead is told who reviewed the work, what each said, and how often you were asked.
+    let closer = crew
+        .services
+        .workers
+        .fake(crew.settings.main_agent.to_string().as_str())
+        .expect("the main agent");
+    let told = closer
+        .specs()
+        .into_iter()
+        .find(|spec| spec.step == Some(StepName::CloseRun))
+        .expect("the lead closes the run");
+    let input: Value = told
+        .prompt
+        .iter()
+        .find(|part| part.kind == argonauts_core::events::session::InputPartKind::StepInput)
+        .map(|part| serde_json::from_str(&part.text))
+        .expect("the closing input")?;
+    // A resumed run's events repeat what came before, so the decisions are counted by id.
+    let decided_by_you: BTreeSet<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Checkpoint(CheckpointEvent::Decided(decided))
+                if decided.by == Party::User =>
+            {
+                Some(decided.id.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        input["needed_you"],
+        json!(decided_by_you.len()),
+        "{input:#}"
+    );
+    let asked = input["asked"].as_array().expect("who was asked");
+    assert!(
+        !asked.is_empty()
+            && asked.iter().all(|said| said
+                .as_str()
+                .is_some_and(|said| said.ends_with(": accepted"))),
+        "{input:#}"
     );
 
     let mut auto = crew_of_three("council")?;

@@ -5,11 +5,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::builtin_price;
 use argonauts_core::overview::{
-    CliSource, ImportStatus, OverviewData, OverviewDay, OverviewModel, OverviewMonth,
+    CliSource, ImportStatus, ModelDay, OverviewData, OverviewDay, OverviewModel, OverviewMonth,
     OverviewPeriod, OverviewWeek, ThroughArgonauts, Tokens,
 };
+use argonauts_core::pricing::PriceList;
 use argonauts_core::settings::overview::YearColors;
 use argonauts_tui::format::WallClock;
 use time::{Date, Duration, OffsetDateTime};
@@ -22,6 +22,8 @@ use crate::work_ledger::{Work, WorkLine};
 const YEAR_WEEKS: i64 = 53;
 /// Weeks the weekly bars cover.
 const BAR_WEEKS: i64 = 26;
+/// Models the Models chart draws a line for, as Claude Code's /stats does.
+const CHART_MODELS: usize = 3;
 
 /// A CLI and one of its models.
 type ModelKey<'a> = (&'a str, Option<&'a str>);
@@ -46,6 +48,8 @@ pub(crate) struct Sources<'a> {
     pub lines: &'a [LedgerLine],
     pub work: &'a [WorkLine],
     pub clock: WallClock,
+    /// Every model's list price, for its API value.
+    pub prices: &'a PriceList,
 }
 
 /// The Overview for `period` as of `today`.
@@ -118,7 +122,7 @@ pub(crate) fn overview(
         .map(|((agent, model), tokens)| OverviewModel {
             agent: agent.to_owned(),
             model: model.map(str::to_owned),
-            api_value: model.and_then(|model| api_value(agent, model, &tokens)),
+            api_value: Some(sources.prices.price(agent, model).value(&tokens)),
             tokens,
             sessions: sessions_of.get(&(agent, model)).copied().unwrap_or(0),
         })
@@ -127,6 +131,7 @@ pub(crate) fn overview(
         .sort_by_key(|model| std::cmp::Reverse(model.tokens.total()));
     data.api_value = data.models.iter().filter_map(|model| model.api_value).sum();
     data.api_partial = data.models.iter().any(|model| model.api_value.is_none());
+    (data.peak_day, data.model_days) = days_by_model(&counted, &data.models);
 
     data.sources = sources_of(&entries, &counted, &imported, &data);
     data.found = found(&entries, &imported, today, cli_name);
@@ -193,8 +198,8 @@ fn entries<'a>(sources: &'a Sources<'_>) -> Vec<Entry<'a>> {
             let local = sources.clock.to_local(record.at);
             Entry {
                 day: local.date(),
-                hour: Some(local.hour()),
-                at: Some(record.at),
+                hour: (!record.whole_day).then(|| local.hour()),
+                at: (!record.whole_day).then_some(record.at),
                 agent: &record.cli,
                 model: Some(record.model.as_str()).filter(|model| !model.is_empty()),
                 folder: &record.folder,
@@ -309,19 +314,6 @@ fn month_word(day: Date) -> String {
     name[..3].to_owned()
 }
 
-/// What `tokens` of `model` cost at list prices. Claude's cache writes cost a quarter more
-/// than its input, as Anthropic lists them.
-fn api_value(agent: &str, model: &str, tokens: &Tokens) -> Option<f64> {
-    let price = builtin_price(model)?;
-    let cached = price.cached_input_per_mtok.unwrap_or(price.input_per_mtok);
-    let write = if agent == "claude-code" { 1.25 } else { 1.0 };
-    let cost = tokens.input as f64 * price.input_per_mtok
-        + tokens.cache_write as f64 * price.input_per_mtok * write
-        + tokens.cache_read as f64 * cached
-        + tokens.output as f64 * price.output_per_mtok;
-    Some(cost / 1e6)
-}
-
 /// Days in a row with work up to today, or up to yesterday when today has none yet, and the
 /// longest such run.
 fn streaks(days: &BTreeSet<Date>, today: Date) -> (u32, u32) {
@@ -383,6 +375,43 @@ fn year(entries: &[Entry<'_>], today: Date) -> Vec<OverviewDay> {
         .collect()
 }
 
+/// The period's busiest day, and each day with work with the tokens of the top models, which
+/// `models` lists first.
+fn days_by_model(
+    entries: &[&Entry<'_>],
+    models: &[OverviewModel],
+) -> (Option<Date>, Vec<ModelDay>) {
+    let top = &models[..models.len().min(CHART_MODELS)];
+    let mut days: BTreeMap<Date, (u64, Vec<u64>)> = BTreeMap::new();
+    for entry in entries {
+        let tokens = entry.tokens.total();
+        if tokens == 0 {
+            continue;
+        }
+        let (total, by_model) = days
+            .entry(entry.day)
+            .or_insert_with(|| (0, vec![0; top.len()]));
+        *total += tokens;
+        let slot = top
+            .iter()
+            .position(|model| model.agent == entry.agent && model.model.as_deref() == entry.model);
+        if let Some(slot) = slot {
+            by_model[slot] += tokens;
+        }
+    }
+    let mut peak: Option<(Date, u64)> = None;
+    for (day, (total, _)) in &days {
+        if peak.is_none_or(|(_, most)| *total > most) {
+            peak = Some((*day, *total));
+        }
+    }
+    let chart = days
+        .into_iter()
+        .map(|(day, (_, tokens))| ModelDay { day, tokens })
+        .collect();
+    (peak.map(|(day, _)| day), chart)
+}
+
 /// The last 26 weeks, Monday first, each with its tokens by CLI.
 fn weeks(entries: &[Entry<'_>], today: Date) -> Vec<OverviewWeek> {
     let this_monday = today - Duration::days(i64::from(today.weekday().number_days_from_monday()));
@@ -427,8 +456,8 @@ fn longest_session(entries: &[&Entry<'_>]) -> u64 {
         .unwrap_or(0)
 }
 
-/// What ran through Argonauts since it was installed, from the work ledger.
-fn through_argonauts(work: &[WorkLine]) -> Option<ThroughArgonauts> {
+/// What ran through Argonauts over the work ledger's `work`.
+pub(crate) fn through_argonauts(work: &[WorkLine]) -> Option<ThroughArgonauts> {
     let mut through = ThroughArgonauts {
         since: work.iter().map(|line| line.day).min(),
         ..ThroughArgonauts::default()

@@ -576,6 +576,14 @@ pub enum AppEvent {
         lines: Vec<String>,
         more: Vec<String>,
     },
+    /// Something done or shown at your word, such as a workflow written or a workflow's plan
+    /// previewed: `◆ title · tail`, then `lines` and the dim `notes` set in under it.
+    Record {
+        title: String,
+        tail: Option<String>,
+        lines: Vec<String>,
+        notes: Vec<String>,
+    },
     /// One dim line hung under the line before it, with no row between and no `⎿` of its own,
     /// as what a switch of the main model carried over hangs under `Set model to …`.
     Continued {
@@ -794,6 +802,11 @@ pub enum ChatEvent {
     Joined {
         turn: TurnId,
         text: String,
+    },
+    /// The answer didn't fit the format the turn asked for, so its agent is asked for it again.
+    /// What it said so far is set aside, and only the answer it ends with prints.
+    AnswerRetried {
+        turn: TurnId,
     },
 }
 

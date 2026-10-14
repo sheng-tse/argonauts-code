@@ -113,9 +113,8 @@ pub fn inline_screen<'a>(args: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Pauses the run on screen at its next safe point, from its row in the list under the input:
-/// `x` asks, and `p` pauses in place of stopping. Esc leaves a run's agents going,
-/// so it no longer starts a pause. Back in the input, the working line says the run is
-/// pausing.
+/// `x` asks, and `p` pauses in place of stopping. Esc leaves a run's agents going, so it no
+/// longer starts a pause. Back in the input, the working line says the run is pausing.
 pub fn pause_run(pty: &mut Pty) -> anyhow::Result<()> {
     pty.press(Key::Down)?;
     pty.press(Key::Char('x'))?;

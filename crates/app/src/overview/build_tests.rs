@@ -22,6 +22,7 @@ fn record(at: OffsetDateTime, cli: &str, model: &str, session: u32, tokens: u64)
         cache_write: tokens / 10,
         session,
         subagent: false,
+        whole_day: false,
     }
 }
 
@@ -57,11 +58,13 @@ fn build(
     work: &[WorkLine],
     period: OverviewPeriod,
 ) -> OverviewData {
+    let prices = PriceList::default();
     let sources = Sources {
         records,
         lines,
         work,
         clock: utc(),
+        prices: &prices,
     };
     overview(
         &sources,
@@ -271,4 +274,132 @@ fn a_session_over_two_models_counts_once() {
     let column: u32 = data.models.iter().map(|row| row.sessions).sum();
     assert_eq!(column, data.sessions());
     assert_eq!(column, 2);
+}
+
+#[test]
+fn the_models_chart_gets_each_days_tokens_of_the_top_three_models() {
+    let lines = vec![
+        line(date!(2026 - 10 - 01), "codex", "gpt-5.6", 900),
+        line(date!(2026 - 10 - 01), "claude-code", "claude-opus-5-5", 400),
+        line(
+            date!(2026 - 10 - 02),
+            "claude-code",
+            "claude-opus-5-5",
+            2_000,
+        ),
+        line(
+            date!(2026 - 10 - 02),
+            "antigravity-cli",
+            "gemini-3.6-pro",
+            100,
+        ),
+        line(
+            date!(2026 - 10 - 03),
+            "antigravity-cli",
+            "gemini-3.6-flash",
+            50,
+        ),
+        line(
+            date!(2026 - 10 - 03),
+            "claude-code",
+            "claude-sonnet-5-5",
+            300,
+        ),
+    ];
+    let data = build(&[], &lines, &[], OverviewPeriod::All);
+    let top: Vec<&str> = data
+        .models
+        .iter()
+        .take(3)
+        .filter_map(|model| model.model.as_deref())
+        .collect();
+    assert_eq!(top, ["claude-opus-5-5", "gpt-5.6", "claude-sonnet-5-5"]);
+    let days: Vec<(Date, Vec<u64>)> = data
+        .model_days
+        .iter()
+        .map(|day| (day.day, day.tokens.clone()))
+        .collect();
+    assert_eq!(
+        days,
+        [
+            (date!(2026 - 10 - 01), vec![400, 900, 0]),
+            (date!(2026 - 10 - 02), vec![2_000, 0, 0]),
+            (date!(2026 - 10 - 03), vec![0, 0, 300]),
+        ]
+    );
+    assert_eq!(data.peak_day, Some(date!(2026 - 10 - 02)));
+    // The last seven days end on the 8th, so the 1st is left out.
+    let week = build(&[], &lines, &[], OverviewPeriod::Week);
+    assert_eq!(week.model_days.len(), 2);
+}
+
+#[test]
+fn every_model_has_an_api_value_even_one_no_table_names() {
+    let lines = vec![
+        line(
+            date!(2026 - 10 - 01),
+            "opencode",
+            "moonshot/kimi-k3",
+            1_000_000,
+        ),
+        line(date!(2026 - 10 - 01), "codex", "gpt-5.6", 1_000_000),
+        line(
+            date!(2026 - 10 - 02),
+            "claude-code",
+            "claude-opus-5-5",
+            1_000_000,
+        ),
+    ];
+    let data = build(&[], &lines, &[], OverviewPeriod::All);
+    assert_eq!(data.models.len(), 3);
+    for model in &data.models {
+        let value = model.api_value.unwrap_or_default();
+        assert!(value > 0.0, "{model:?}");
+    }
+    assert!(!data.api_partial);
+    let sum: f64 = data.models.iter().filter_map(|model| model.api_value).sum();
+    assert!((data.api_value - sum).abs() < 1e-9);
+}
+
+/// The Stats tab's summary counts what ran through Argonauts in its own period.
+#[test]
+fn the_stats_summary_counts_what_ran_through_argonauts_in_its_period() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = argonauts_core::Paths::new(home.path());
+    let ledger = crate::usage_ledger::UsageLedger::new(&paths);
+    let run = |day: Date| WorkLine {
+        day,
+        repo: "/work".into(),
+        run: RunId::new("r1").unwrap(),
+        what: Work::Run {
+            by: None,
+            took: 60,
+            workflow: Some("council".into()),
+            goals: 0,
+            ultracode: false,
+            answered: 1,
+        },
+    };
+    crate::work_ledger::WorkLedger::beside(&paths.usage_dir())
+        .append(&[run(date!(2026 - 09 - 01)), run(date!(2026 - 10 - 07))])
+        .unwrap();
+    let today = date!(2026 - 10 - 08);
+    let week_starts = argonauts_core::settings::periods::WeekStart::Sunday;
+    let summary = |period| {
+        crate::usage_ledger::summary(&ledger, (period, week_starts), today, &[], Vec::new())
+    };
+    let all = summary(argonauts_core::api::UsagePeriod::All)
+        .argonauts
+        .expect("all of it");
+    assert_eq!((all.workflows, all.answered), (2, 2));
+    let week = summary(argonauts_core::api::UsagePeriod::Week)
+        .argonauts
+        .expect("this week's");
+    assert_eq!(week.workflows, 1);
+    assert_eq!(week.by_workflow, [("council".to_owned(), 1)]);
+    assert!(
+        summary(argonauts_core::api::UsagePeriod::Today)
+            .argonauts
+            .is_none()
+    );
 }

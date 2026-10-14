@@ -13,7 +13,7 @@ use std::path::Path;
 use argonauts_core::limits::{QuotaAnswer, QuotaSource};
 use argonauts_core::names::VendorId;
 use argonauts_core::plan_usage::{
-    Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow, plan_name,
+    Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow, UsageReport, UsageShare, plan_name,
 };
 use argonauts_core::{CommandSpec, env_remove_except};
 use serde_json::{Value, json};
@@ -260,7 +260,37 @@ fn behaviors(body: &Value) -> Option<Behaviors> {
     Some(Behaviors {
         day: of("day"),
         week: of("week"),
+        day_report: body.get("day").map(usage_report),
+        week_report: body.get("week").map(usage_report),
     })
+}
+
+/// The rest of `/usage`'s report on a span: requests, sessions, and the share each agent,
+/// skill, plugin and MCP server took, the largest first.
+fn usage_report(span: &Value) -> UsageReport {
+    let count = |key: &str| span.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let shares = |key: &str| -> Vec<UsageShare> {
+        let mut found: Vec<UsageShare> = array_at(span, key)
+            .iter()
+            .filter_map(|item| {
+                Some(UsageShare {
+                    name: string_at(item, "name")?,
+                    share: (item.get("pct")?.as_f64()? / 100.0).clamp(0.0, 1.0),
+                })
+            })
+            .filter(|item| item.share > 0.0)
+            .collect();
+        found.sort_by(|a, b| b.share.total_cmp(&a.share));
+        found
+    };
+    UsageReport {
+        requests: count("request_count"),
+        sessions: count("session_count"),
+        agents: shares("agents"),
+        skills: shares("skills"),
+        plugins: shares("plugins"),
+        mcp_servers: shares("mcp_servers"),
+    }
 }
 
 fn time_at(value: &Value, key: &str) -> Option<OffsetDateTime> {
@@ -403,6 +433,43 @@ mod tests {
         assert_eq!(behaviors.week[0].key, "high_parallel");
         // The windows come from the first reply all the same.
         assert_eq!(live.windows.len(), 3);
+    }
+
+    #[test]
+    fn the_report_counts_requests_and_sessions_and_who_took_the_most() {
+        let body = json!({
+            "session": {}, "subscription_type": "team", "rate_limits_available": true,
+            "behaviors": {
+                "day": {"request_count": 312, "session_count": 4, "behaviors": [],
+                        "agents": [{"name": "Explore", "pct": 30}],
+                        "skills": [{"name": "test", "pct": 12}, {"name": "review", "pct": 40}],
+                        "plugins": [], "mcp_servers": [{"name": "github", "pct": 20}]},
+                "week": {"request_count": 1, "session_count": 1, "behaviors": [],
+                         "agents": [], "skills": [], "plugins": [], "mcp_servers": []},
+            },
+        });
+        let stdout = recorded() + &behaviors_line(body);
+        let behaviors = answer(&stdout, READ)
+            .unwrap()
+            .live
+            .unwrap()
+            .behaviors
+            .unwrap();
+        let day = behaviors.day_report.unwrap();
+        assert_eq!((day.requests, day.sessions), (312, 4));
+        let skills: Vec<(&str, f64)> = day
+            .skills
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.share))
+            .collect();
+        assert_eq!(
+            skills,
+            [("review", 0.4), ("test", 0.12)],
+            "the largest first"
+        );
+        assert_eq!(day.agents[0].name, "Explore");
+        assert_eq!(day.mcp_servers[0].name, "github");
+        assert_eq!(behaviors.week_report.unwrap().sessions, 1);
     }
 
     #[test]

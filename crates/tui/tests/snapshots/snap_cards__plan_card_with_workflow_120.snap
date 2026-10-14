@@ -5,7 +5,7 @@ expression: text(&lines)
 ● The plan
   Stream rows through a JSON writer behind the existing exporter trait.
 
-  Workflow  council · Peers draft plans blind and debate only where they disagree
+  Workflow  Council · Peers draft plans blind and debate only where they disagree
     A security-labeled API feature: blind drafts and cross-judging fit it.
     goal (up to 2 rounds) → plan (up to 3 rounds) → build → merge
     … +4 lines (ctrl+o to expand)

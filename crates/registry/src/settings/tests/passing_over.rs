@@ -124,9 +124,22 @@ fn a_file_that_doesnt_read_as_toml_is_skipped_and_approvals_wait_for_you() {
     repo.global("[approvals]\nautopilot = true\nmerge.mode = \"auto\n");
     repo.project("[approvals]\nautopilot = true\n");
     let resolved = resolve(&repo.forgiving()).unwrap();
-    warned(&resolved, "doesn't read as TOML at line 3, column 19");
-    warned(&resolved, "skipped until fixed");
-    warned(&resolved, "approvals stay supervised and autopilot is off");
+    // One plain line that names the place once.
+    let warning = resolved
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("doesn't read as TOML"))
+        .expect("the skipped file's warning");
+    assert!(
+        warning.contains("doesn't read as TOML at line 3 (")
+            && warning.ends_with(
+                "): merge.mode = \"auto. It is skipped until fixed, and until then approvals \
+                 wait for you and autopilot is off"
+            ),
+        "{warning}"
+    );
+    assert_eq!(warning.matches("line 3").count(), 1, "{warning}");
+    assert!(!warning.contains('\n'), "{warning}");
     let approvals = &resolved.settings.approvals;
     assert!(!approvals.autopilot);
     assert_eq!(approvals.merge.mode, ApprovalMode::Supervised);

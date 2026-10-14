@@ -123,9 +123,11 @@ async fn integrate_in_dependency_order() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Two tasks changed the same file: the merge agent, `[crew] merger`, resolves it.
 #[tokio::test(flavor = "multi_thread")]
-async fn conflict_goes_to_interface_owner() -> anyhow::Result<()> {
-    let crew = Crew::new()?;
+async fn conflict_goes_to_the_merge_agent() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    crew.settings.crew.merger = vec![worker(INTERFACE_OWNER)];
     let interface =
         crew.services
             .workers
@@ -438,9 +440,9 @@ async fn acceptance_tests_fail_until_their_build_card_is_in() -> anyhow::Result<
 }
 
 /// A file a command made, which the worker's report forgot, stays out of the task's commit.
-/// Its checks pass beside the file and fail on the run's branch without it. The worker then
-/// hears which new files its commit left out, lists the one the change needs, and the task
-/// merges with it.
+/// Its checks run on a clean copy of that commit and fail without it. The worker then hears
+/// which new files its commit left out, lists the one the change needs, and the task merges
+/// with it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_hears_what_its_commit_left_out_when_checks_fail_without_it() -> anyhow::Result<()>
 {
@@ -493,6 +495,54 @@ async fn a_worker_hears_what_its_commit_left_out_when_checks_fail_without_it() -
         files.lines().any(|file| file == "gen/schema.txt"),
         "{files}"
     );
+    Ok(())
+}
+
+/// A task's checks run on a clean copy of its commit: they never see a file a command left
+/// beside the work, and what they write stays out of the task's folder.
+#[tokio::test(flavor = "multi_thread")]
+async fn checks_run_on_a_clean_copy_and_leave_nothing_in_the_task() -> anyhow::Result<()> {
+    let mut crew = Crew::new()?;
+    crew.settings.checks.run = vec![GateCommand {
+        name: "tests".into(),
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "test -f main.txt && test ! -e stray.txt && mkdir -p __pycache__ \
+             && echo bytecode > __pycache__/main.pyc && echo cache > .check-cache"
+                .into(),
+        ],
+    }];
+    crew.services.workers.add(
+        FakeWorker::harness(OWNER_B, "codex").respond_with(move |spec| {
+            let _ = std::fs::write(spec.workdir.join("main.txt"), "main\n");
+            let _ = std::fs::write(spec.workdir.join("stray.txt"), "a command made this\n");
+            FakeSession::structured(report()).with_event(support::wrote("main.txt"))
+        }),
+    );
+    crew.services.workers.add(reviewer(REVIEWER));
+    let cards = vec![spec("task-001", CardKind::Build, &[], OWNER_B)];
+    let bench = Bench::with_gates(&crew, &cards, Some(Arc::new(Commands))).await?;
+    bench.build().await?;
+
+    let checks: Vec<bool> = bench
+        .sink
+        .events()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            RunEventKind::Gate(gate) if gate.name == "tests" => Some(gate.passed),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(checks.first(), Some(&true), "{checks:?}");
+    let task = crew.repo_context()?.worktrees.join("task-001");
+    assert!(task.join("stray.txt").exists());
+    for left in ["__pycache__", ".check-cache"] {
+        assert!(
+            !task.join(left).exists(),
+            "{left} was left in the task's folder"
+        );
+    }
     Ok(())
 }
 

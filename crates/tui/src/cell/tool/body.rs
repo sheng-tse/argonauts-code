@@ -34,6 +34,18 @@ pub(super) fn rows(call: &ToolCall, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
         .iter()
         .flat_map(|item| item_rows(item, ctx, BODY_COL, output))
         .collect();
+    if rows.is_empty()
+        && call.is_running()
+        && let Some(held) = &call.held
+    {
+        rows = text_rows(
+            &held.waiting,
+            Tone::Dim,
+            ctx,
+            vec![indent(BODY_COL)],
+            BODY_COL,
+        );
+    }
     if let Some(row) = rows.first_mut() {
         hook(row, ctx.theme);
     }
@@ -59,7 +71,8 @@ pub(in crate::cell) fn item_rows(
 ) -> Vec<Line<'static>> {
     match item {
         ToolItem::Text { text, tone } => text_rows(text, *tone, ctx, vec![indent(col)], col),
-        ToolItem::Phases(phases) => phase_rows(phases, ctx, col),
+        ToolItem::Phases(phases) => phase_rows(phases, None, ctx, col),
+        ToolItem::PhasesBeside { phases, beside } => phase_rows(phases, Some(beside), ctx, col),
         ToolItem::Command {
             command,
             output: lines,
@@ -125,10 +138,11 @@ pub(in crate::cell) fn nested_rows(
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
     let role = match call.state {
-        ToolState::Running => Role::Dim,
+        ToolState::Running | ToolState::Writing => Role::Dim,
         ToolState::Stopped => Role::Warning,
         ToolState::Failed => Role::Error,
         ToolState::Done => Role::Text,
+        ToolState::Refused => Role::Dim,
     };
     let mut head = vec![indent(col)];
     let mut content = Vec::new();
@@ -190,7 +204,15 @@ pub(in crate::cell) fn text_rows(
 /// A workflow's phases on one line in its order, as the chat's workflow row draws them:
 /// `◐ Build · Review · ★ Secrets scan · Merge`. The first is under way when the row prints.
 /// A step you require carries the mark, and a line under them says what it means.
-fn phase_rows(phases: &[PhaseLine], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line<'static>> {
+/// The gap between the phases and the note beside them.
+const BESIDE_GAP: &str = "        ";
+
+fn phase_rows(
+    phases: &[PhaseLine],
+    beside: Option<&str>,
+    ctx: &RenderCtx<'_>,
+    col: usize,
+) -> Vec<Line<'static>> {
     if phases.is_empty() {
         return Vec::new();
     }
@@ -208,7 +230,8 @@ fn phase_rows(phases: &[PhaseLine], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line
                 theme,
             ));
             spans.push(Span::raw(" "));
-            theme.style(Role::Card)
+            // The mark carries the colour, and the phase under way reads as plain text.
+            theme.style(Role::Text)
         } else {
             dim
         };
@@ -217,6 +240,9 @@ fn phase_rows(phases: &[PhaseLine], ctx: &RenderCtx<'_>, col: usize) -> Vec<Line
         }
         let title = sanitize_line(phase.title.trim()).into_owned();
         spans.push(Span::styled(title, style));
+    }
+    if let Some(beside) = beside.map(|beside| sanitize_line(beside.trim()).into_owned()) {
+        spans.push(Span::styled(format!("{BESIDE_GAP}{beside}"), dim));
     }
     let lead = [indent(col)];
     let mut rows = wrap_spans(&spans, usize::from(ctx.width), &lead, &lead);

@@ -90,12 +90,11 @@ impl UsageCard {
     }
 }
 
-/// The color a CLI keeps on every bar and legend, so its share reads the same everywhere.
+/// The color a CLI keeps on every bar and legend, the same as the bottom line's, so its share
+/// reads the same everywhere.
 pub fn cli_role(agent: &str) -> Role {
     match agent {
-        "claude-code" => Role::AgentOrange,
-        "codex" => Role::AgentBlue,
-        "antigravity-cli" => Role::AgentCyan,
+        "claude-code" | "codex" | "antigravity-cli" => Role::for_cli(agent),
         "opencode" => Role::AgentPurple,
         _ => Role::AgentPink,
     }
@@ -127,7 +126,7 @@ impl UsageCards<'_> {
         let full = form == Form::Full;
         drawn.push(self.header(kit, card, inner));
         drawn.append(match card {
-            UsageCard::PlanUsage => self.plan_rows(kit, inner, full),
+            UsageCard::PlanUsage => self.window_rows(kit, inner, full),
             UsageCard::Spend => self.spend_body(kit, inner, full),
             UsageCard::Tokens => self.tokens_body(kit, inner, full),
             UsageCard::History => self.history_body(kit, inner),
@@ -149,16 +148,12 @@ impl UsageCards<'_> {
     pub fn key_number(&self, kit: &Kit<'_>, card: UsageCard) -> Vec<Span<'static>> {
         let usage = self.usage;
         match card {
-            UsageCard::PlanUsage => match self.fullest() {
-                Some((plan, reading)) => {
-                    let level = self.level(reading);
+            UsageCard::PlanUsage => match self.fullest_window() {
+                Some((plan, row)) => {
+                    let level = self.row_level(&row);
+                    let used = self.shown(row.used.unwrap_or(0.0));
                     vec![Span::styled(
-                        format!(
-                            "{} {} {}",
-                            short_name(plan),
-                            window_label(reading),
-                            self.percent(reading)
-                        ),
+                        format!("{} {} {:.0}%", plan.name, row.words, used * 100.0),
                         kit.style(level.number_role()),
                     )]
                 }
@@ -197,14 +192,13 @@ impl UsageCards<'_> {
                     ],
                     None => vec![kit.dim("no limit set · highest ")],
                 };
-                match self.fullest() {
-                    Some((plan, reading)) => {
-                        let level = self.level(reading);
-                        let mut keep = vec![
-                            kit.strong(format!("{} {}", short_name(plan), window_label(reading))),
-                            Span::raw(" "),
-                        ];
-                        let used = reading.used.unwrap_or(1.0);
+                match self.fullest_window() {
+                    Some((plan, row)) => {
+                        let level = self.row_level(&row);
+                        // The badge keeps room for `100%` at its left, which parts it from
+                        // the name.
+                        let mut keep = vec![kit.strong(format!("{} {}", plan.name, row.words))];
+                        let used = row.used.unwrap_or(0.0);
                         keep.extend(Badge::percent(self.shown(used), level).spans(kit));
                         (limit, keep)
                     }
@@ -291,17 +285,6 @@ impl UsageCards<'_> {
         }
     }
 
-    /// The plan window nearest its end, across every CLI that still has some left. One
-    /// that's out has its own row saying so.
-    fn fullest(&self) -> Option<(&PlanUsage, &QuotaReading)> {
-        self.usage
-            .plans
-            .iter()
-            .flat_map(|plan| plan.windows.iter().map(move |reading| (plan, reading)))
-            .filter(|(_, reading)| reading.status != QuotaStatus::Rejected)
-            .max_by(|a, b| used_of(a.1).total_cmp(&used_of(b.1)))
-    }
-
     /// A share of a window as shown: what's used, or what's left of it.
     fn shown(&self, used: f64) -> f64 {
         if self.left {
@@ -311,127 +294,9 @@ impl UsageCards<'_> {
         }
     }
 
-    fn percent(&self, reading: &QuotaReading) -> String {
-        match reading.used {
-            Some(used) => format!("{:.0}%", self.shown(used).max(0.0) * 100.0),
-            None if reading.status == QuotaStatus::Rejected => "out".to_owned(),
-            None => format::UNKNOWN.to_owned(),
-        }
-    }
-
-    /// Amber near the end of a window or at your own limit, red once it's out.
-    fn level(&self, reading: &QuotaReading) -> Level {
-        let used = used_of(reading);
-        let limit = self.usage.plan_limit.unwrap_or(NEAR_LIMIT).min(NEAR_LIMIT);
-        if reading.status == QuotaStatus::Rejected || used >= 1.0 {
-            Level::Danger
-        } else if used >= limit || reading.status == QuotaStatus::Warning {
-            Level::Warn
-        } else {
-            Level::Ok
-        }
-    }
-
-    /// One row per CLI, its windows side by side. In full each CLI gets a row of its own
-    /// first, saying its plan, whether the main agent runs on it, and how old the reading is.
-    fn plan_rows(&self, kit: &Kit<'_>, width: usize, full: bool) -> Drawn {
-        let plans = &self.usage.plans;
-        let mut body = Drawn::new();
-        if plans.is_empty() {
-            body.push(vec![kit.dim("No CLI in the crew reports a plan yet")]);
-            return body;
-        }
-        let label = |plan: &PlanUsage| match &plan.plan {
-            Some(name) => format!("{} {name}", plan.name),
-            None => plan.name.clone(),
-        };
-        const WINDOWS: &str = "  5-hour and 7-day";
-        let name_slot = if full {
-            str_width(WINDOWS)
-        } else {
-            plans
-                .iter()
-                .map(|plan| str_width(&label(plan)))
-                .max()
-                .unwrap_or(0)
-        } + 2;
-        let layout = self.window_layout(width.saturating_sub(name_slot));
-        for plan in plans {
-            let name = |kit: &Kit<'_>| {
-                let mut spans = vec![kit.strong(plan.name.clone())];
-                if let Some(tier) = &plan.plan {
-                    spans.push(kit.dim(format!(" {tier}")));
-                }
-                spans
-            };
-            if let Some(mut why) = self.no_windows(kit, plan) {
-                // In full the CLI in use keeps its mark, reading or not.
-                let in_use = full && plan.in_use;
-                let mut row = Vec::new();
-                if in_use {
-                    row.push(kit.span("● ", Role::Bright));
-                }
-                row.extend(name(kit));
-                if in_use {
-                    row.push(kit.dim(" · in use · "));
-                    if let Some(first) = why.first_mut() {
-                        first.content = first.content.trim_start().to_owned().into();
-                    }
-                }
-                row.extend(why);
-                body.push(truncate_spans(&row, width));
-                continue;
-            }
-            if full {
-                let mut head = Vec::new();
-                if plan.in_use {
-                    head.push(kit.span("● ", Role::Bright));
-                }
-                head.extend(name(kit));
-                let mut notes = Vec::new();
-                if plan.in_use {
-                    notes.push("in use".to_owned());
-                }
-                if let Some(age) = self.read_ago(plan) {
-                    notes.push(age);
-                }
-                if !notes.is_empty() {
-                    head.push(kit.dim(format!(" · {}", notes.join(" · "))));
-                }
-                body.push(truncate_spans(&head, width));
-            }
-            let mut row = if full {
-                vec![kit.dim(ljust(WINDOWS, name_slot))]
-            } else {
-                let mut cell = name(kit);
-                let pad = name_slot.saturating_sub(spans_width(&cell));
-                cell.push(Span::raw(" ".repeat(pad)));
-                cell
-            };
-            let (windows, reached) = self.windows(kit, plan, &layout);
-            row.extend(windows);
-            // The words go beside the window where they fit whole, and under it where not.
-            match reached {
-                Some(words) if spans_width(&row) + WINDOW_GAP + spans_width(&words) <= width => {
-                    row.push(Span::raw(" ".repeat(WINDOW_GAP)));
-                    row.extend(words);
-                    body.push(row);
-                }
-                Some(words) => {
-                    body.push(truncate_spans(&row, width));
-                    let mut under = vec![Span::raw(" ".repeat(name_slot))];
-                    under.extend(words);
-                    body.push(truncate_spans(&under, width));
-                }
-                None => body.push(truncate_spans(&row, width)),
-            }
-        }
-        body
-    }
-
     /// Why a CLI has no meters to show, when it hasn't: out, down, billed per token, or not
     /// read yet. The words follow its name.
-    fn no_windows(&self, kit: &Kit<'_>, plan: &PlanUsage) -> Option<Vec<Span<'static>>> {
+    pub(super) fn no_windows(&self, kit: &Kit<'_>, plan: &PlanUsage) -> Option<Vec<Span<'static>>> {
         let moved = plan
             .moved_to
             .as_ref()
@@ -449,7 +314,7 @@ impl UsageCards<'_> {
             vec![kit.span(format!("  out{until}"), Role::Error)]
         } else if plan.down {
             vec![kit.span("  can't be reached", Role::Error)]
-        } else if plan.windows.is_empty() {
+        } else if super::plan_windows::window_rows(plan).is_empty() {
             return Some(vec![kit.dim("  no reading yet")]);
         } else {
             return None;
@@ -462,120 +327,6 @@ impl UsageCards<'_> {
     fn reset_time(&self, at: OffsetDateTime) -> String {
         let at = at.to_offset(self.now.offset());
         format::reset_time(at, self.now, ClockStyle::default())
-    }
-
-    /// `read 3m ago`, from the newest of the CLI's readings.
-    fn read_ago(&self, plan: &PlanUsage) -> Option<String> {
-        let newest = plan
-            .windows
-            .iter()
-            .map(|reading| reading.observed_at)
-            .max()?;
-        let ago = (self.now - newest).max(time::Duration::ZERO);
-        let words = if ago < time::Duration::minutes(1) {
-            "just now".to_owned()
-        } else {
-            format!("{} ago", format::countdown(ago))
-        };
-        Some(format!("read {words}"))
-    }
-
-    /// How every CLI's windows share `width` cells, so their meters and numbers line up from
-    /// row to row: label, meter, percent, reset time, twice over when two fit. On a narrow
-    /// card the reset times go first, then every window but each CLI's fullest.
-    fn window_layout(&self, width: usize) -> WindowLayout {
-        let readings = || self.usage.plans.iter().flat_map(|plan| &plan.windows);
-        let reset_slot = readings()
-            .filter_map(|reading| reading.resets_at)
-            .map(|at| str_width(&format!("resets {}", self.reset_time(at))))
-            .max()
-            .unwrap_or(0);
-        let most = self
-            .usage
-            .plans
-            .iter()
-            .map(|plan| plan.windows.len())
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        // The label in its four cells, then the meter, then the percent in four more.
-        let fixed = 4 + 4;
-        let meter_for = |count: usize, resets: bool| {
-            let notes = if resets && reset_slot > 0 {
-                2 + reset_slot
-            } else {
-                0
-            };
-            (width.saturating_sub(WINDOW_GAP * (count - 1)) / count).saturating_sub(fixed + notes)
-        };
-        let (count, resets) = [(most, true), (most, false), (1, true), (1, false)]
-            .into_iter()
-            .find(|(count, resets)| meter_for(*count, *resets) >= LEAST_METER)
-            .unwrap_or((1, false));
-        WindowLayout {
-            all: count == most,
-            meter: meter_for(count, resets),
-            reset_slot: if resets { reset_slot } else { 0 },
-        }
-    }
-
-    /// A CLI's windows as one row, and when one has reached your own limit, the words that
-    /// say so and who takes its tasks.
-    fn windows(
-        &self,
-        kit: &Kit<'_>,
-        plan: &PlanUsage,
-        layout: &WindowLayout,
-    ) -> (Vec<Span<'static>>, Option<Vec<Span<'static>>>) {
-        let fullest = plan
-            .windows
-            .iter()
-            .max_by(|a, b| used_of(a).total_cmp(&used_of(b)));
-        // At your own limit the window that reached it is what matters, with who takes over.
-        let reached = self
-            .usage
-            .plan_limit
-            .zip(fullest)
-            .filter(|(limit, reading)| used_of(reading) >= *limit)
-            .map(|(_, reading)| reading);
-        let shown: Vec<&QuotaReading> = if layout.all && reached.is_none() {
-            plan.windows.iter().collect()
-        } else {
-            fullest.into_iter().collect()
-        };
-        let mut row = Vec::new();
-        for (k, reading) in shown.into_iter().enumerate() {
-            if k > 0 {
-                row.push(Span::raw(" ".repeat(WINDOW_GAP)));
-            }
-            let level = self.level(reading);
-            row.push(kit.dim(ljust(&window_label(reading), 4)));
-            row.extend(bars::half_meter(
-                kit,
-                self.shown(used_of(reading)),
-                layout.meter,
-                level.fill_role(),
-                self.usage.plan_limit.filter(|_| !self.left),
-            ));
-            row.push(Span::styled(
-                format!("{:>4}", self.percent(reading)),
-                kit.bold(level.strong_role()),
-            ));
-            if layout.reset_slot > 0 {
-                let resets = reading
-                    .resets_at
-                    .map_or_else(String::new, |at| format!("resets {}", self.reset_time(at)));
-                row.push(kit.dim(format!("  {}", ljust(&resets, layout.reset_slot))));
-            }
-        }
-        let words = reached.map(|_| {
-            let taker = plan
-                .moved_to
-                .as_ref()
-                .map_or_else(String::new, |taker| format!(" · {taker} takes its tasks"));
-            vec![kit.span(format!("limit reached{taker}"), Role::Warning)]
-        });
-        (row, words)
     }
 
     fn spend_body(&self, kit: &Kit<'_>, width: usize, full: bool) -> Drawn {
@@ -865,29 +616,6 @@ pub(super) fn window_label(reading: &QuotaReading) -> String {
     } else {
         window.replace('_', "-")
     }
-}
-
-/// The CLI's name as the bottom line has it, where a header has little room.
-fn short_name(plan: &PlanUsage) -> String {
-    match plan.agent.as_str() {
-        "claude-code" => "Claude".to_owned(),
-        "codex" => "Codex".to_owned(),
-        "antigravity-cli" => "agy".to_owned(),
-        _ => plan.name.clone(),
-    }
-}
-
-/// Cells between a CLI's two windows.
-const WINDOW_GAP: usize = 4;
-
-/// How the plan usage rows lay their windows out, the same for every CLI.
-struct WindowLayout {
-    /// Every window shows, rather than each CLI's fullest alone.
-    all: bool,
-    /// Cells of each meter.
-    meter: usize,
-    /// Cells for a reset time, or 0 when they've given way.
-    reset_slot: usize,
 }
 
 fn share_of(part: f64, whole: f64) -> String {

@@ -8,6 +8,7 @@ use argonauts_core::settings::Settings;
 
 pub mod blackboard;
 pub mod card;
+pub mod change;
 pub mod checkpoints;
 pub mod claude_codes;
 pub mod closing;

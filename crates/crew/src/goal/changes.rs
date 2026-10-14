@@ -17,7 +17,6 @@ use argonauts_core::settings::approvals::GoalChanges;
 use crate::checkpoints::{self, CheckpointRequest};
 use crate::engine::host::Host;
 use crate::error::{EngineError, EngineResult};
-use crate::integrate::branch;
 use crate::state::ids::IdKind;
 
 use super::checkpoint::approve;
@@ -160,8 +159,7 @@ async fn ask_you(
     if !accepted {
         return resolve(host, id, GoalChangeResolution::Refused, None);
     }
-    let tree = branch::ensure_integration(host).await?;
-    let written = file::write(host, &tree, changed).await?;
+    let written = file::write(host, changed).await?;
     resolve(
         host,
         id,

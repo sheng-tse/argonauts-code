@@ -1,5 +1,6 @@
 //! The interface, the narrator, and notifications.
 
+mod agents_in_chat;
 mod check;
 mod look;
 mod places;
@@ -14,6 +15,7 @@ use super::Span;
 use crate::names::WorkerRef;
 use crate::{KeyScheme, Verbosity};
 
+pub use agents_in_chat::AgentsInChat;
 pub use check::{BadValue, UiProblem, drop_bad_values};
 pub use look::{
     ClockStyle, ColorText, Crossing, DurationStyle, FormatSettings, LevelSettings, Percent,
@@ -85,6 +87,8 @@ pub struct UiSettings {
     pub mod_output: ModOutput,
     /// Claude Code's You should know above the input.
     pub heads_up: HeadsUp,
+    /// When a crew agent shows in the chat: once it finishes, or as it works.
+    pub agents_in_chat: AgentsInChat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
@@ -202,6 +206,7 @@ impl Default for UiSettings {
             newer_cli_notice: true,
             mod_output: ModOutput::Show,
             heads_up: HeadsUp::WhenEnabled,
+            agents_in_chat: AgentsInChat::WhenDone,
         }
     }
 }

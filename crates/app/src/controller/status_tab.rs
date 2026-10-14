@@ -3,7 +3,9 @@
 //! nothing here writes into the chat.
 //!
 //! The CLIs' versions are the ones Doctor found as the app started, and who each one is signed
-//! in as is asked of the CLI's own login check once, off the loop. The addresses stay on this
+//! in as is asked of the CLI's own login check once, off the loop, or read from the screen it
+//! draws as it starts where it names the account nowhere else. A check that names no address
+//! is followed by a live read of the CLI's plan usage, which does. The addresses stay on this
 //! screen; nothing here sends them anywhere.
 
 use std::collections::BTreeMap;
@@ -165,6 +167,42 @@ async fn read(ctx: &mut Ctx, runs: &mut RunsState, chat: &ChatState) -> StatusTa
     }
 }
 
+/// For Doctor: each CLI the Status tab shows as signed in without its address, and why.
+pub(crate) fn unnamed_accounts(ctx: &Ctx) -> Vec<String> {
+    let Some(report) = ctx.cli_facts.report() else {
+        return Vec::new();
+    };
+    let sign_ins = ctx.cli_facts.sign_ins();
+    let main = header_agent(ctx).0.worker;
+    clis(&report, &main, &sign_ins, ctx.services.quota.as_ref())
+        .into_iter()
+        .filter(|cli| cli.installed && cli.account.is_none() && !cli.signed_out)
+        .map(|cli| {
+            format!(
+                "{} · {} · {}",
+                cli.name,
+                argonauts_core::status_tab::UNNAMED_ACCOUNT,
+                unnamed_why(&cli.id, sign_ins.contains_key(&cli.id))
+            )
+        })
+        .collect()
+}
+
+/// Why a CLI's address isn't shown: what was asked, and what it said.
+fn unnamed_why(id: &str, checked: bool) -> &'static str {
+    match (id, checked) {
+        ("codex", _) => {
+            "its login check doesn't print the address, and no read of its plan usage has named it yet"
+        }
+        ("antigravity-cli", true) => "its start-up screen showed no address",
+        ("antigravity-cli", false) => {
+            "its start-up screen is read once the Status tab opens, and hasn't been yet"
+        }
+        (_, true) => "its login check doesn't print the address",
+        (_, false) => "it has no check that names the account",
+    }
+}
+
 /// Every CLI Doctor checked, the main session's first, each with who it is signed in as.
 fn clis(
     report: &DoctorReport,
@@ -251,6 +289,7 @@ fn settings_in_effect(ctx: &Ctx, chat: &ChatState) -> SettingsInEffect {
             .iter()
             .map(|name| tool_words(name))
             .collect(),
+        tools_off: !ctx.settings().main_session.tools,
         mcp_servers: chat::mcp_servers(chat),
         keys,
     }
@@ -318,9 +357,26 @@ fn ask_sign_ins(ctx: &Ctx, mut view: StatusTabView) {
             Some((check.id.clone(), path, args))
         })
         .collect();
-    if checks.is_empty() || !ctx.cli_facts.start_asking() {
+    // A CLI that names who is signed in only as it starts has its start-up screen read.
+    let banners: Vec<(String, std::path::PathBuf, Arc<dyn argonauts_core::Adapter>)> = report
+        .agents
+        .iter()
+        .filter(|check| check.enabled && check.status != AgentStatus::NotInstalled)
+        .filter_map(|check| {
+            let path = check.path.clone()?;
+            let adapter = adapters
+                .iter()
+                .find(|adapter| adapter.id() == check.id && adapter.reads_banner())?;
+            Some((check.id.clone(), path, Arc::clone(adapter)))
+        })
+        .collect();
+    if (checks.is_empty() && banners.is_empty()) || !ctx.cli_facts.start_asking() {
         return;
     }
+    let cwd = ctx.env.repo_root.clone();
+    let readers = super::account::live_readers(ctx);
+    let workers = Arc::clone(&ctx.services.workers);
+    let internal = ctx.internal.clone();
     let facts = Arc::clone(&ctx.cli_facts);
     let quota = Arc::clone(&ctx.services.quota);
     let out = ctx.out.clone();
@@ -333,14 +389,55 @@ fn ask_sign_ins(ctx: &Ctx, mut view: StatusTabView) {
         let asked = checks
             .into_iter()
             .map(|(id, path, args)| async move { (id, sign_in(&path, &args).await) });
-        let known: BTreeMap<String, SignIn> = futures::future::join_all(asked)
-            .await
+        let read = banners.into_iter().map(|(id, path, adapter)| {
+            let cwd = cwd.clone();
+            async move { (id, banner_sign_in(path, cwd, adapter).await) }
+        });
+        let (asked, read) = futures::future::join(
+            futures::future::join_all(asked),
+            futures::future::join_all(read),
+        )
+        .await;
+        let known: BTreeMap<String, SignIn> = asked
             .into_iter()
+            .chain(read)
             .filter_map(|(id, sign_in)| Some((id, sign_in?)))
             .collect();
         facts.known(known.clone());
         view.clis = clis(&report, &main, &known, quota.as_ref());
-        send(&out, view);
+        send(&out, view.clone());
+        // A CLI whose check names no address is read live as the Usage tab reads it, which
+        // names it, and the tab is drawn again once that read is in.
+        for worker in readers {
+            let vendor = worker.vendor();
+            let unnamed = known
+                .get(&vendor.0)
+                .is_some_and(|sign_in| sign_in.account.is_none() && !sign_in.signed_out);
+            let named = quota
+                .live(&vendor)
+                .is_some_and(|live| live.account.is_some());
+            if !unnamed || named {
+                continue;
+            }
+            let (facts, again, out, report, main) = (
+                Arc::clone(&facts),
+                Arc::clone(&quota),
+                out.clone(),
+                report.clone(),
+                main.clone(),
+            );
+            let mut view = view.clone();
+            super::account::read_account_live(
+                workers.as_ref(),
+                &quota,
+                internal.clone(),
+                &worker,
+                move || {
+                    view.clis = clis(&report, &main, &facts.sign_ins(), again.as_ref());
+                    send(&out, view);
+                },
+            );
+        }
     });
 }
 
@@ -365,6 +462,25 @@ async fn sign_in(program: &Path, args: &[String]) -> Option<SignIn> {
         });
     }
     Some(sign_in_from(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Reads who a CLI's start-up screen says is signed in, off the async threads.
+async fn banner_sign_in(
+    program: std::path::PathBuf,
+    cwd: std::path::PathBuf,
+    adapter: Arc<dyn argonauts_core::Adapter>,
+) -> Option<SignIn> {
+    let read = tokio::task::spawn_blocking(move || {
+        super::banner::read_banner(&program, &cwd, super::banner::BANNER_TIMEOUT, |screen| {
+            adapter.banner_account(screen)
+        })
+    });
+    let found = read.await.ok().flatten()?;
+    Some(SignIn {
+        account: found.account,
+        plan: found.plan,
+        signed_out: found.signed_out,
+    })
 }
 
 fn sign_in_from(printed: &str) -> SignIn {

@@ -6,7 +6,8 @@ use argonauts_core::artifacts;
 use argonauts_core::steps::summary_line;
 use serde_json::{Map, Value};
 
-use crate::cell::{DiffView, Todo, TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolTitle};
+use crate::cell::{DiffView, Held, Todo, TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolTitle};
+use crate::state::AppState;
 
 /// Lines of a written file shown under its call.
 const WRITE_PREVIEW: usize = 10;
@@ -145,26 +146,55 @@ impl Tool {
 
 /// A running call's cell from its vendor, name, and input. `vendor` is the adapter id.
 pub fn start_call(vendor: &str, name: &str, input: &Value) -> ToolCall {
+    start_call_in(vendor, name, input, &Places::here())
+}
+
+/// [`start_call`] for a call made in `places.folder`, whose paths show relative to it.
+pub fn start_call_in(vendor: &str, name: &str, input: &Value, places: &Places) -> ToolCall {
     let _ = vendor;
     let mut tool = Tool::named(name);
     if normalize(name) == "filechange" {
         tool = file_change_tool(input);
     }
-    let label = match tool.label() {
-        Some(label) => label.to_owned(),
-        None if tool == Tool::Mcp => mcp_label(name),
-        None => name.trim().to_owned(),
-    };
-    let mut call = ToolCall::call(tool.kind(), label, cut(&args_of(tool, input)));
+    let args = cut(&args_of(tool, input, places));
+    let mut call = ToolCall::call(tool.kind(), label_of(tool, name), args);
     match tool {
-        Tool::Update => call.body.extend(edit_preview(input)),
-        Tool::Write => call.body.extend(write_preview(input)),
+        // The preview waits for the end, where the patch the result reports takes its place.
+        Tool::Update => {
+            call.held = held(
+                "Updating…",
+                edit_preview(input, places).into_iter().collect(),
+            );
+        }
+        Tool::Write => call.held = held("Writing…", write_preview(input, places)),
         Tool::Todos => call.body.extend(todo_list(input).map(ToolItem::Todos)),
         // Own calls never print, so this is the JSON the Ctrl+O detail shows.
         Tool::Report => call.body.push(json_block(input)),
         _ => {}
     }
     call
+}
+
+fn held(waiting: &str, items: Vec<ToolItem>) -> Option<Box<Held>> {
+    Some(Box::new(Held {
+        waiting: waiting.to_owned(),
+        items,
+    }))
+}
+
+/// The row of a call the model is still writing, by the name it will be shown with.
+pub fn writing_call(vendor: &str, name: &str) -> ToolCall {
+    let _ = vendor;
+    let tool = Tool::named(name);
+    ToolCall::writing(tool.kind(), label_of(tool, name))
+}
+
+fn label_of(tool: Tool, name: &str) -> String {
+    match tool.label() {
+        Some(label) => label.to_owned(),
+        None if tool == Tool::Mcp => mcp_label(name),
+        None => name.trim().to_owned(),
+    }
 }
 
 /// The one line the transcript shows for a report call: the report's summary.
@@ -237,6 +267,27 @@ pub fn finish_call(call: &mut ToolCall, ok: bool, output: Option<&str>) {
         other => (other.plain(), String::new()),
     };
     let tool = Tool::labelled(&label, call.kind);
+    let has_diff = call
+        .body
+        .iter()
+        .any(|item| matches!(item, ToolItem::Diff(_)));
+    if let Some(held) = call.held.take()
+        && ok
+        && !has_diff
+    {
+        call.body.splice(0..0, held.items);
+    }
+    if !ok && output.is_some_and(super::refusal::is_refusal) {
+        // Nothing ran, so nothing failed: the call says it wasn't allowed, dim.
+        call.body
+            .retain(|item| matches!(item, ToolItem::Call(_) | ToolItem::Group(_)));
+        call.push(ToolItem::Text {
+            text: super::refusal::NOT_ALLOWED.to_owned(),
+            tone: Tone::Dim,
+        });
+        call.refuse();
+        return;
+    }
     if tool == Tool::Shell {
         shell_result(call, ok, output);
     } else if ok {
@@ -264,6 +315,12 @@ const MOVED_NOTE: &str =
 /// them out and only the Ctrl+O detail shows them.
 pub fn is_own(name: &str) -> bool {
     argonauts_core::steps::is_own_tool(name)
+}
+
+/// A lookup of the tools a CLI holds back until asked for, such as Claude Code's ToolSearch.
+/// Claude Code never shows one, and neither does Argonauts.
+pub fn is_tool_lookup(name: &str) -> bool {
+    normalize(name) == "toolsearch"
 }
 
 /// The normalized kind, which decides folding into collapsed groups.
@@ -481,12 +538,14 @@ const NEW_KEYS: &[&str] = &["newstring", "newstr", "replacementcontent"];
 const CONTENT_KEYS: &[&str] = &["content", "codecontent", "filetext", "contents"];
 const EDIT_LIST_KEYS: &[&str] = &["edits", "replacementchunks", "chunks"];
 
-fn args_of(tool: Tool, input: &Value) -> String {
-    let path = || string_field(input, PATH_KEYS).map(|path| short_path(&path));
+fn args_of(tool: Tool, input: &Value, places: &Places) -> String {
+    let path = || string_field(input, PATH_KEYS).map(|path| places.show(&path));
     let text = match tool {
         Tool::Read => path(),
         Tool::List => path().or_else(|| Some(".".to_owned())),
-        Tool::Update | Tool::Write | Tool::Delete => path().or_else(|| changed_paths(input)),
+        Tool::Update | Tool::Write | Tool::Delete => {
+            path().or_else(|| changed_paths(input, places))
+        }
         Tool::Shell => command_field(input).map(|command| first_line(&unwrap_shell(&command))),
         Tool::Search => string_field(input, PATTERN_KEYS).map(|pattern| {
             let mut args = format!("pattern: \"{}\"", first_line(&pattern));
@@ -502,7 +561,7 @@ fn args_of(tool: Tool, input: &Value) -> String {
         Tool::Task => string_field(input, TASK_KEYS).map(|task| first_line(&task)),
         Tool::Report => string_field(input, &["status"]),
         Tool::Todos => None,
-        Tool::Artifact => Some(artifact_args(input)),
+        Tool::Artifact => Some(artifact_args(input, places)),
         Tool::Mcp | Tool::Other => Some(call_args(input)),
     };
     text.unwrap_or_default()
@@ -510,8 +569,8 @@ fn args_of(tool: Tool, input: &Value) -> String {
 
 /// A publish shows the file in quotes, as Claude Code's own call line does. Any other action
 /// of the tool says what it is and which artifact.
-fn artifact_args(input: &Value) -> String {
-    let file = string_field(input, &["filepath"]).map(|path| short_path(&path));
+fn artifact_args(input: &Value, places: &Places) -> String {
+    let file = string_field(input, &["filepath"]).map(|path| places.show(&path));
     if artifacts::publishes(artifacts::TOOL, input) {
         return match (file, string_field(input, &["title"])) {
             (Some(file), _) => format!("\"{file}\""),
@@ -549,11 +608,11 @@ fn changes(input: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
-fn changed_paths(input: &Value) -> Option<String> {
+fn changed_paths(input: &Value, places: &Places) -> Option<String> {
     let paths: Vec<String> = changes(input)
         .iter()
         .filter_map(|change| change.get("path").and_then(Value::as_str))
-        .map(short_path)
+        .map(|path| places.show(path))
         .collect();
     (!paths.is_empty()).then(|| paths.join(", "))
 }
@@ -593,20 +652,89 @@ fn call_args(input: &Value) -> String {
     }
 }
 
-/// Worktrees sit at `<home>/worktrees/<repo>/<run>/<card>/`, and the block's header already
-/// names the card, so a path inside one starts after it.
-pub(crate) fn short_path(path: &str) -> String {
-    let path = path.strip_prefix("file://").unwrap_or(path);
-    if let Some(at) = path.find("/worktrees/") {
-        let mut parts = path[at + "/worktrees/".len()..].splitn(4, '/');
-        if let (Some(_), Some(_), Some(_), Some(inner)) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-            && !inner.is_empty()
-        {
-            return inner.to_owned();
+/// Where a call's paths are shown from, as Claude Code shows them: relative to the folder the
+/// work happens in, `~/…` under your home, and whole only outside both.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Places {
+    pub folder: Option<String>,
+    pub home: Option<String>,
+}
+
+impl Places {
+    /// Your home alone, for a call whose folder isn't known here. A run's copy of the repo
+    /// still shows its paths from inside it.
+    pub fn here() -> Self {
+        Self {
+            folder: None,
+            home: dirs::home_dir().map(|home| home.display().to_string()),
         }
     }
-    path.to_owned()
+
+    /// The folder the conversation works in, as the startup header names it with `~` for
+    /// your home.
+    pub fn of_chat(state: &AppState) -> Self {
+        let mut places = Self::here();
+        places.folder = state.welcome.as_ref().map(|welcome| {
+            match (welcome.repo.strip_prefix('~'), &places.home) {
+                (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+                    format!("{home}{rest}")
+                }
+                _ => welcome.repo.clone(),
+            }
+        });
+        places
+    }
+
+    pub fn show(&self, path: &str) -> String {
+        let path = path.strip_prefix("file://").unwrap_or(path);
+        if let Some(inner) = in_worktree(path) {
+            return inner.to_owned();
+        }
+        if let Some(folder) = self.folder.as_deref() {
+            match under(path, folder) {
+                Some("") => return ".".to_owned(),
+                Some(rest) => return rest.to_owned(),
+                None => {}
+            }
+        }
+        if let Some(home) = self.home.as_deref() {
+            match under(path, home) {
+                Some("") => return "~".to_owned(),
+                Some(rest) => return format!("~/{rest}"),
+                None => {}
+            }
+        }
+        path.to_owned()
+    }
+}
+
+/// What follows `folder` in `path`, empty for the folder itself.
+fn under<'a>(path: &'a str, folder: &str) -> Option<&'a str> {
+    let folder = folder.trim_end_matches('/');
+    if folder.is_empty() {
+        return None;
+    }
+    let rest = path.strip_prefix(folder)?;
+    if rest.is_empty() || rest == "/" {
+        return Some("");
+    }
+    rest.strip_prefix('/')
+}
+
+/// Worktrees sit at `<home>/worktrees/<repo>/<run>/<card>/`, and the block's header already
+/// names the card, so a path inside one starts after it.
+fn in_worktree(path: &str) -> Option<&str> {
+    let at = path.find("/worktrees/")?;
+    let mut parts = path[at + "/worktrees/".len()..].splitn(4, '/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(_), Some(_), Some(_), Some(inner)) if !inner.is_empty() => Some(inner),
+        _ => None,
+    }
+}
+
+/// A path as a run's agent shows it: inside its copy of the repo, or from your home.
+pub(crate) fn short_path(path: &str) -> String {
+    Places::here().show(path)
 }
 
 /// Whether a path as a CLI named it, often absolute, and one relative to the repo name the same
@@ -621,7 +749,7 @@ pub(crate) fn same_file(named: &str, relative: &str) -> bool {
                 .is_some_and(|folder| folder.ends_with('/')))
 }
 
-fn edit_preview(input: &Value) -> Option<ToolItem> {
+fn edit_preview(input: &Value, places: &Places) -> Option<ToolItem> {
     let pairs = edit_pairs(input);
     if pairs.is_empty() {
         return None;
@@ -633,7 +761,7 @@ fn edit_preview(input: &Value) -> Option<ToolItem> {
     }
     let (added, removed) = view.stats();
     let path = string_field(input, PATH_KEYS)
-        .map(|path| short_path(&path))
+        .map(|path| places.show(&path))
         .unwrap_or_default();
     Some(ToolItem::Diff(view.updated(path, added, removed)))
 }
@@ -642,6 +770,11 @@ fn edit_preview(input: &Value) -> Option<ToolItem> {
 /// the file's line numbers and the lines around each change. An empty or unreadable patch
 /// leaves the preview.
 pub fn take_patch(call: &mut ToolCall, path: &str, hunks: &str) {
+    take_patch_in(call, path, hunks, &Places::here());
+}
+
+/// [`take_patch`] for a call [`start_call_in`] drew from the same places.
+pub fn take_patch_in(call: &mut ToolCall, path: &str, hunks: &str, places: &Places) {
     let Ok(view) = DiffView::from_unified(hunks) else {
         return;
     };
@@ -649,7 +782,7 @@ pub fn take_patch(call: &mut ToolCall, path: &str, hunks: &str) {
         return;
     }
     let (added, removed) = view.stats();
-    let path = short_path(path);
+    let path = places.show(path);
     // The preview's rows and its `… +N lines` go, and the patch takes their place. The patch
     // of another file the same call changed stays.
     let preview = |item: &ToolItem| match item {
@@ -664,12 +797,12 @@ pub fn take_patch(call: &mut ToolCall, path: &str, hunks: &str) {
     call.body.insert(at, ToolItem::Diff(view));
 }
 
-fn write_preview(input: &Value) -> Vec<ToolItem> {
+fn write_preview(input: &Value, places: &Places) -> Vec<ToolItem> {
     let Some(content) = string_field(input, CONTENT_KEYS) else {
         return Vec::new();
     };
     let path = string_field(input, PATH_KEYS)
-        .map(|path| short_path(&path))
+        .map(|path| places.show(&path))
         .unwrap_or_default();
     let all: Vec<&str> = content.lines().collect();
     let shown: String = all
@@ -788,6 +921,38 @@ fn command_field(input: &Value) -> Option<String> {
         ),
         _ => None,
     }
+}
+
+/// Whether a shell call only looks: every command in it searches, reads or lists, as
+/// Claude Code 2.1.295 decides which commands fold with the reads. Anything else, such as a
+/// test run, keeps its own row, and a call whose command isn't known yet does too.
+pub fn only_looks(call: &ToolCall) -> bool {
+    const SEARCH: &[&str] = &[
+        "find", "grep", "rg", "ag", "ack", "locate", "which", "whereis",
+    ];
+    const READ: &[&str] = &[
+        "cat", "head", "tail", "less", "more", "wc", "stat", "file", "strings", "jq", "awk", "cut",
+        "sort", "uniq", "tr",
+    ];
+    const LIST: &[&str] = &["ls", "tree", "du"];
+    const SAYS: &[&str] = &["echo", "printf", "true", "false", ":"];
+    let ToolTitle::Call { args, .. } = &call.title else {
+        return false;
+    };
+    let mut looked = false;
+    for part in args.split(['|', '&', ';', '\n']) {
+        let Some(word) = part.split_whitespace().next() else {
+            continue;
+        };
+        if SAYS.contains(&word) {
+            continue;
+        }
+        if !(SEARCH.contains(&word) || READ.contains(&word) || LIST.contains(&word)) {
+            return false;
+        }
+        looked = true;
+    }
+    looked
 }
 
 /// Shows `ls -la` for `/bin/zsh -lc 'ls -la'`, since the shell wrapper is noise.
@@ -1496,6 +1661,43 @@ mod tests {
         );
     }
 
+    /// A command its CLI turned down ran nothing: it reads dim and says so, and never counts
+    /// as failed.
+    #[test]
+    fn a_refused_command_reads_not_allowed() {
+        let mut call = start_call(
+            "claude-code",
+            "Bash",
+            &json!({"command": "python3 -B -m unittest -q && echo ok"}),
+        );
+        finish_call(
+            &mut call,
+            false,
+            Some(
+                "Permission to use Bash has been denied because Claude Code is running in \
+                 don't ask mode. IMPORTANT: You *may* attempt to accomplish this action",
+            ),
+        );
+        assert_eq!(call.state, ToolState::Refused);
+        assert_eq!(
+            rows(&call, 80),
+            "● Bash(python3 -B -m unittest -q && echo ok)\n  ⎿  Not allowed"
+        );
+        let theme = theme();
+        let lines = call.lines(&RenderCtx::new(80, &theme, Clock::still(Instant::now())));
+        let dim = theme.style(crate::theme::Role::Dim);
+        assert_eq!(lines[0].spans[0].style.fg, dim.fg, "the bullet is dim");
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .filter(|span| !span.content.trim().is_empty())
+                .all(|span| span.style.fg == dim.fg),
+            "{:?}",
+            lines[1]
+        );
+    }
+
     #[test]
     fn an_edit_takes_the_patch_its_result_reported() {
         let mut call = start_call(
@@ -1503,10 +1705,8 @@ mod tests {
             "Edit",
             &json!({"file_path": "/w/src/a.rs", "old_string": "x", "new_string": "y"}),
         );
-        assert_eq!(
-            rows(&call, 40),
-            "● Update(/w/src/a.rs)\n  ⎿  Added 1 line, removed 1 line\n        -x\n        +y"
-        );
+        // While it runs the edit says so, and its diff waits for the end, so it keeps one shape.
+        assert_eq!(rows(&call, 40), "● Update(/w/src/a.rs)\n  ⎿  Updating…");
         take_patch(
             &mut call,
             "/w/src/a.rs",

@@ -1,9 +1,11 @@
-//! What Stats draws with beyond the kit: a model's shade of its CLI's color, bars of shaded
-//! parts, a square per task, a sparkline, the days' columns stacked by CLI, and a legend that
-//! flows. Every bar here is the lower half of its cells, as on the Usage tab, so rows of
-//! them never merge.
+//! What Stats draws with beyond the kit: a model's shade of its CLI's color, thin bars of
+//! shaded parts on a faint track, ten small squares for how work fared, a sparkline, the
+//! chart's columns stacked by CLI, and a legend that flows. A bar is a thin line through the
+//! middle of its cells and a square is one cell wide in every font, so nothing touches the
+//! row above or the cell beside it; a blank cell always sits between a bar or squares and
+//! the words after them.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
 use crate::text::spans_width;
@@ -122,6 +124,165 @@ pub(in crate::overview) fn bar(
     merge(out)
 }
 
+/// A thin bar's glyph, and the track's when there's no color to tell them apart.
+const THIN: &str = "━";
+const THIN_TRACK: &str = "─";
+/// A stacked bar's parts without color, each its own line.
+const THIN_PARTS: [&str; 4] = ["━", "═", "─", "╌"];
+
+/// The cells `value` of `whole` takes of `cells`: its share in whole percents, as a legend
+/// writes it, so a bar and the numbers beside it agree.
+fn cells_for(value: u64, whole: u64, cells: usize) -> usize {
+    let percent = (value as f64 / whole.max(1) as f64 * 100.0).round();
+    (percent / 100.0 * cells as f64).round() as usize
+}
+
+/// `value` of `whole` as a thin bar `cells` wide: its share rounded, at least a cell when
+/// it has any, in `style`, the rest on the faint track.
+pub(super) fn thin(
+    kit: &Kit<'_>,
+    value: u64,
+    whole: u64,
+    cells: usize,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let mut filled = cells_for(value, whole, cells).min(cells);
+    if value > 0 && filled == 0 {
+        filled = cells.min(1);
+    }
+    let mut out = Vec::new();
+    if filled > 0 {
+        out.push(Span::styled(THIN.repeat(filled), fill_style(kit, style)));
+    }
+    if filled < cells {
+        out.push(if kit.has_color() {
+            Span::styled(THIN.repeat(cells - filled), kit.fg(Role::Faint))
+        } else {
+            Span::raw(THIN_TRACK.repeat(cells - filled))
+        });
+    }
+    out
+}
+
+/// Parts side by side in one thin bar exactly `cells` wide: each part its share rounded, at
+/// least a cell when it has any and room left for each after it that has any, and the last
+/// part what's left.
+pub(super) fn stacked(kit: &Kit<'_>, parts: &[(u64, Style)], cells: usize) -> Vec<Span<'static>> {
+    let total: u64 = parts.iter().map(|(value, _)| value).sum();
+    if total == 0 {
+        return thin(kit, 0, 1, cells, Style::new());
+    }
+    let mut out = Vec::new();
+    let mut used = 0;
+    for (k, (value, style)) in parts.iter().enumerate() {
+        // Each part after this one with any keeps a cell.
+        let later = parts[k + 1..]
+            .iter()
+            .filter(|(value, _)| *value > 0)
+            .count();
+        let room = (cells - used).saturating_sub(later);
+        let width = if k + 1 == parts.len() {
+            cells - used
+        } else {
+            cells_for(*value, total, cells)
+                .max(usize::from(*value > 0))
+                .min(room)
+        };
+        used += width;
+        if width == 0 {
+            continue;
+        }
+        out.push(if kit.has_color() {
+            Span::styled(THIN.repeat(width), fill_style(kit, *style))
+        } else {
+            Span::raw(THIN_PARTS[k % THIN_PARTS.len()].repeat(width))
+        });
+    }
+    merge(out)
+}
+
+fn fill_style(kit: &Kit<'_>, style: Style) -> Style {
+    if kit.has_color() { style } else { Style::new() }
+}
+
+/// Ten small squares, or `n`, for how work fared: green for the share that passed first
+/// time, amber for the share sent back once, and red for the rest.
+pub(super) fn tenths(kit: &Kit<'_>, fared: Fared, n: usize) -> Vec<Span<'static>> {
+    let total = f64::from(fared.total());
+    let (first, once) = if total > 0.0 {
+        let share = |count: u32| (n as f64 * f64::from(count) / total).round() as usize;
+        let first = share(fared.first).min(n);
+        (first, share(fared.once).min(n - first))
+    } else {
+        (0, 0)
+    };
+    let more = if total > 0.0 { n - first - once } else { 0 };
+    let glyph = if kit.glyphs.halves.is_some() {
+        "▪"
+    } else {
+        "#"
+    };
+    let mut out = Vec::new();
+    for (count, role, plain) in [
+        (first, Role::Success, "#"),
+        (once, Role::Warning, "!"),
+        (more, Role::Error, "x"),
+    ] {
+        if count == 0 {
+            continue;
+        }
+        out.push(if kit.has_color() {
+            Span::styled(glyph.repeat(count), kit.fg(role))
+        } else {
+            Span::raw(plain.repeat(count))
+        });
+    }
+    out
+}
+
+/// A cell of a sparkline for each value, in eighths of `top`. An idle slot is the lowest
+/// cell on the grey track, and a slot still ahead is blank.
+pub(super) fn spark(
+    kit: &Kit<'_>,
+    values: &[Option<u64>],
+    top: u64,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let top = values
+        .iter()
+        .flatten()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(top)
+        .max(1);
+    let mut out = Vec::new();
+    for value in values {
+        out.push(match value {
+            None => Span::raw(" "),
+            Some(0) => Span::styled(kit.glyphs.columns[0], kit.fg(Role::Faint)),
+            Some(value) => {
+                let level = (*value as f64 / top as f64 * 8.0).round() as usize;
+                Span::styled(
+                    kit.glyphs.columns[level.clamp(1, 8) - 1],
+                    fill_style(kit, style),
+                )
+            }
+        });
+    }
+    merge(out)
+}
+
+/// A legend's swatch: a square, then a blank cell before the name.
+pub(super) fn swatch(kit: &Kit<'_>, style: Style) -> Vec<Span<'static>> {
+    let square = if kit.glyphs.halves.is_some() {
+        "■"
+    } else {
+        "#"
+    };
+    vec![Span::styled(square, fill_style(kit, style)), Span::raw(" ")]
+}
+
 /// One part of `total`, as a meter on the track.
 pub(in crate::overview) fn meter(
     kit: &Kit<'_>,
@@ -172,8 +333,9 @@ pub(super) fn squares(kit: &Kit<'_>, fared: Fared, room: usize) -> Vec<Span<'sta
     } else {
         cells_of(&counts, total, room)
     };
+    // Side by side, a square must fit its own cell.
     let glyph = if kit.glyphs.halves.is_some() {
-        "■"
+        "▪"
     } else {
         "#"
     };
@@ -193,92 +355,53 @@ pub(super) fn squares(kit: &Kit<'_>, fared: Fared, room: usize) -> Vec<Span<'sta
     out
 }
 
-/// A sparkline, one cell for each value, in eighths. A day with nothing is the lowest cell.
-pub(super) fn sparkline(kit: &Kit<'_>, values: &[u64], style: Style) -> Span<'static> {
-    let top = values.iter().copied().max().unwrap_or(0).max(1);
-    let line: String = values
-        .iter()
-        .map(|&value| {
-            let level = (value as f64 / top as f64 * 8.0).round() as usize;
-            kit.glyphs.columns[level.clamp(1, 8) - 1]
-        })
-        .collect();
-    Span::styled(line, style)
-}
-
-/// The days' columns, stacked by part from the bottom, `rows` high and two cells wide with a
-/// cell between, over the days' letters. Each cell holds two halves, so parts end on half a
-/// row. `days` holds each day's parts in drawing order, bottom first; the last day is today,
-/// whose letter takes the accent.
-pub(super) fn day_columns(
+/// Columns `rows` high, each its parts stacked from the bottom in order, a part taking its
+/// share of the fullest column's height in whole cells. A column is `width` cells with the
+/// blank after it: two cells and a blank, or one cell. A column with no parts stays empty.
+pub(super) fn columns(
     kit: &Kit<'_>,
-    days: &[(char, Vec<(u64, Style)>)],
+    columns: &[Vec<(u64, Style)>],
     rows: usize,
+    width: usize,
 ) -> Vec<Vec<Span<'static>>> {
-    let top = days
+    let top = columns
         .iter()
-        .map(|(_, parts)| parts.iter().map(|(value, _)| value).sum::<u64>())
+        .map(|parts| parts.iter().map(|(value, _)| value).sum::<u64>())
         .max()
         .unwrap_or(0)
         .max(1);
-    // Each day's halves, bottom first, as the style of the part filling each.
-    let halves: Vec<Vec<Style>> = days
+    // Each column's cells from the bottom, as the part filling each.
+    let stacks: Vec<Vec<(usize, Style)>> = columns
         .iter()
-        .map(|(_, parts)| {
-            let values: Vec<u64> = parts.iter().map(|(value, _)| *value).collect();
-            let widths = cells_of(&values, top, rows * 2);
-            parts
-                .iter()
-                .zip(widths)
-                .flat_map(|((_, style), width)| std::iter::repeat_n(*style, width))
-                .collect()
+        .map(|parts| {
+            let mut cells = Vec::new();
+            for (k, (value, style)) in parts.iter().enumerate() {
+                let height = (*value as f64 / top as f64 * rows as f64).round() as usize;
+                cells.extend(std::iter::repeat_n((k, *style), height));
+            }
+            cells.truncate(rows);
+            cells
         })
         .collect();
+    let block = if width > 1 { "██" } else { "█" };
+    const FILLS: [&str; 4] = ["█", "▓", "▒", "░"];
     let mut out = Vec::new();
     for row in (0..rows).rev() {
         let mut line = Vec::new();
-        for (k, column) in halves.iter().enumerate() {
-            if k > 0 {
+        for (k, stack) in stacks.iter().enumerate() {
+            if k > 0 && width > 1 {
                 line.push(Span::raw(" "));
             }
-            let lower = column.get(row * 2);
-            let upper = column.get(row * 2 + 1);
-            line.push(match (lower, upper) {
-                (None, _) => Span::raw("  "),
-                _ if !kit.has_color() => Span::raw(kit.glyphs.used.repeat(2)),
-                (Some(lower), None) => {
-                    let glyph = kit.glyphs.halves.map_or(" ", |[_, whole]| whole);
-                    Span::styled(glyph.repeat(2), *lower)
-                }
-                (Some(lower), Some(upper)) if lower == upper => {
-                    Span::styled(kit.glyphs.columns[7].repeat(2), *lower)
-                }
-                (Some(lower), Some(upper)) => {
-                    let glyph = kit.glyphs.halves.map_or(" ", |[_, whole]| whole);
-                    let mut style = *lower;
-                    style.bg = upper.fg;
-                    Span::styled(glyph.repeat(2), style)
+            line.push(match stack.get(row) {
+                None => Span::raw(" ".repeat(block.chars().count())),
+                Some((_, style)) if kit.has_color() => Span::styled(block, *style),
+                Some((part, _)) => {
+                    Span::raw(FILLS[part % FILLS.len()].repeat(block.chars().count()))
                 }
             });
         }
         out.push(merge(line));
     }
-    let mut letters = Vec::new();
-    for (k, (letter, _)) in days.iter().enumerate() {
-        if k > 0 {
-            letters.push(Span::raw(" "));
-        }
-        let today = k + 1 == days.len();
-        letters.push(if today {
-            Span::styled(
-                format!("{letter} "),
-                kit.fg(Role::Accent).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            kit.dim(format!("{letter} "))
-        });
-    }
-    out.push(letters);
     out
 }
 
@@ -300,7 +423,18 @@ pub(super) fn legend(
     tail: Option<String>,
     width: usize,
 ) -> Vec<Vec<Span<'static>>> {
-    let rows = flow(kit, entries, tail.clone(), width);
+    legend_apart(kit, entries, tail, width, 3)
+}
+
+/// [`legend`] with the entries `gap` cells apart.
+pub(super) fn legend_apart(
+    kit: &Kit<'_>,
+    entries: &[Entry],
+    tail: Option<String>,
+    width: usize,
+    gap: usize,
+) -> Vec<Vec<Span<'static>>> {
+    let rows = flow(kit, entries, tail.clone(), width, gap);
     if rows.len() < 2 || entries.iter().all(|entry| entry.note.is_empty()) {
         return rows;
     }
@@ -311,7 +445,7 @@ pub(super) fn legend(
             ..entry.clone()
         })
         .collect();
-    let shorter = flow(kit, &bare, tail, width);
+    let shorter = flow(kit, &bare, tail, width, gap);
     if shorter.len() < rows.len() {
         shorter
     } else {
@@ -324,26 +458,23 @@ fn flow(
     entries: &[Entry],
     tail: Option<String>,
     width: usize,
+    gap: usize,
 ) -> Vec<Vec<Span<'static>>> {
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
     let mut row: Vec<Span<'static>> = Vec::new();
     let mut place = |spans: Vec<Span<'static>>, row: &mut Vec<Span<'static>>| {
-        let needs = spans_width(&spans) + if row.is_empty() { 0 } else { 3 };
+        let needs = spans_width(&spans) + if row.is_empty() { 0 } else { gap };
         if !row.is_empty() && spans_width(row) + needs > width {
             rows.push(std::mem::take(row));
         }
         if !row.is_empty() {
-            row.push(Span::raw("   "));
+            row.push(Span::raw(" ".repeat(gap)));
         }
         row.extend(spans);
     };
     for entry in entries {
-        let swatch = if kit.has_color() {
-            Span::styled(kit.glyphs.swatch, entry.style)
-        } else {
-            Span::raw(kit.glyphs.swatch)
-        };
-        let mut spans = vec![swatch, Span::raw(" "), Span::raw(entry.name.clone())];
+        let mut spans = swatch(kit, entry.style);
+        spans.push(Span::raw(entry.name.clone()));
         if !entry.amount.is_empty() {
             spans.push(Span::raw(" "));
             spans.push(kit.strong(entry.amount.clone()));
@@ -365,6 +496,67 @@ fn flow(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn colored() -> Theme {
+        let mut theme = Theme::dark().with_level(ColorLevel::TrueColor);
+        theme.glyphs = crate::theme::Glyphs::UNICODE;
+        theme
+    }
+
+    #[test]
+    fn an_idle_slot_is_the_grey_track_and_one_ahead_is_blank() {
+        let theme = colored();
+        let kit = Kit::new(&theme);
+        let style = kit.fg(Role::AgentBlue);
+        let line = spark(&kit, &[Some(0), Some(4), Some(8), None], 8, style);
+        let text: String = line.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "▁▄█ ");
+        assert_eq!(line[0].style, kit.fg(Role::Faint));
+        assert_eq!(line[1].style, style);
+    }
+
+    #[test]
+    fn ten_squares_never_overrun_and_say_how_work_fared() {
+        let theme = colored();
+        let kit = Kit::new(&theme);
+        let text = |fared: Fared| -> Vec<(String, Option<Color>)> {
+            tenths(&kit, fared, 10)
+                .into_iter()
+                .map(|span| (span.content.into_owned(), span.style.fg))
+                .collect()
+        };
+        let green = kit.fg(Role::Success).fg;
+        let amber = kit.fg(Role::Warning).fg;
+        let first = |first, once, more| Fared { first, once, more };
+        assert_eq!(text(first(0, 2, 0)), [("▪".repeat(10), amber)]);
+        assert_eq!(
+            text(first(7, 2, 0)),
+            [("▪".repeat(8), green), ("▪".repeat(2), amber)]
+        );
+        // Halves that both round up still make ten.
+        let squares: usize = tenths(&kit, first(1, 1, 0), 10)
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum();
+        assert_eq!(squares, 10);
+    }
+
+    #[test]
+    fn a_stacked_bar_is_exactly_its_width_and_a_part_with_any_shows() {
+        let theme = colored();
+        let kit = Kit::new(&theme);
+        let parts = [
+            (990, kit.fg(Role::Success)),
+            (9, kit.fg(Role::Warning)),
+            (1, kit.fg(Role::Error)),
+        ];
+        let bar = stacked(&kit, &parts, 20);
+        let cells: Vec<usize> = bar
+            .iter()
+            .map(|span| span.content.chars().count())
+            .collect();
+        assert_eq!(cells, [18, 1, 1]);
+    }
 
     #[test]
     fn every_part_gets_a_cell_and_the_cells_add_up() {
@@ -404,7 +596,7 @@ mod tests {
             .iter()
             .map(|s| s.content.to_string())
             .collect();
-        assert_eq!(text, "■■■■■■■");
+        assert_eq!(text, "▪▪▪▪▪▪▪");
         let many = Fared {
             first: 33,
             once: 2,

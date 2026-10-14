@@ -23,6 +23,7 @@ use crate::names::{CheckpointId, DecisionId, MessageId, SessionKey, TurnId, Work
 use crate::required::RequiredStep;
 use crate::settings::approvals::ApprovalMode;
 use crate::settings::budget::BudgetAmount;
+use crate::settings::periods::WeekStart;
 use crate::steps::intake::ChangeEstimate;
 use crate::worker::SteerSupport;
 use crate::{CardId, CommandSpec, DiffStat, RunId, Spend};
@@ -190,29 +191,34 @@ pub struct StatusSummary {
     pub waiting: Vec<String>,
 }
 
-/// The span the Usage tab adds up over. Quota is always now.
+/// The span the Usage, Limits and Stats tabs add up over. Quota is always now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsagePeriod {
     #[default]
     Today,
-    /// Today and the 6 days before.
+    /// This calendar week, from the day weeks start on.
     Week,
-    /// Today and the 29 days before.
+    /// This month, from its 1st.
     Month,
     All,
 }
 
 impl UsagePeriod {
-    /// The first local day the period counts. `None` counts every day.
-    pub fn first_day(self, today: Date) -> Option<Date> {
-        let back = match self {
-            Self::Today => 0,
-            Self::Week => 6,
-            Self::Month => 29,
-            Self::All => return None,
-        };
-        Some(today.saturating_sub(time::Duration::days(back)))
+    /// The first local day the period counts, a week starting on `week_starts`. `None`
+    /// counts every day.
+    pub fn first_day(self, today: Date, week_starts: time::Weekday) -> Option<Date> {
+        match self {
+            Self::Today => Some(today),
+            Self::Week => {
+                let back = (7 + today.weekday().number_days_from_sunday()
+                    - week_starts.number_days_from_sunday())
+                    % 7;
+                Some(today.saturating_sub(time::Duration::days(i64::from(back))))
+            }
+            Self::Month => Some(today.replace_day(1).unwrap_or(today)),
+            Self::All => None,
+        }
     }
 }
 
@@ -224,6 +230,9 @@ time::serde::format_description!(pub day_format, Date, "[year]-[month]-[day]");
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageSummary {
     pub period: UsagePeriod,
+    /// The day the period's weeks start on.
+    #[serde(default, skip_serializing_if = "WeekStart::is_sunday")]
+    pub week_starts: WeekStart,
     /// Everything the period spent. Its tokens are the tokens card: cached input, new input
     /// (input less cached), and output.
     pub total: Spend,
@@ -261,6 +270,10 @@ pub struct UsageSummary {
     /// What the crew did over the period, per CLI, model and role, for the Stats tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<crate::crew_stats::CrewStats>,
+    /// What ran through Argonauts itself over the period, from the work ledger, for the Stats
+    /// tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argonauts: Option<crate::overview::ThroughArgonauts>,
 }
 
 /// How far a run got, for the workflows card. It sits beside [`RunSummary`], which the run

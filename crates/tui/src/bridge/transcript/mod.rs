@@ -3,11 +3,20 @@
 //! condensed replay of a resumed run. Items print once, whole; only the chat answer streams.
 
 mod chat;
+#[cfg(test)]
+mod crew_start_tests;
 mod gates;
 mod handoff;
 mod items;
 mod lifecycle;
+#[cfg(test)]
+mod live_pictures_tests;
+#[cfg(test)]
+mod live_rows_tests;
 mod milestones;
+pub(crate) mod own_calls;
+#[cfg(test)]
+pub(crate) mod picture_check;
 #[cfg(test)]
 mod picture_tests;
 mod replay;
@@ -87,6 +96,20 @@ impl Transcript {
             } => replay::chat_resumed(chat, title, worker.as_ref(), earlier, turns, cx),
             AppEvent::Report { title, lines } => items::report(title, lines, cx),
             AppEvent::Folded { title, lines, more } => items::folded(title, lines, more, cx),
+            AppEvent::Record {
+                title,
+                tail,
+                lines,
+                notes,
+            } => emit(
+                cx,
+                Cell::Custom(Box::new(crate::cell::Record {
+                    title: title.clone(),
+                    tail: tail.clone(),
+                    lines: lines.clone(),
+                    notes: notes.clone(),
+                })),
+            ),
             AppEvent::Continued { text } => items::continued(text, cx),
             AppEvent::Recap { text, .. } => items::recap(text, cx),
             AppEvent::SettingChanged {

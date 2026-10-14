@@ -45,6 +45,9 @@ pub struct History {
     header_rows: Option<Range<usize>>,
     /// The header as it now reads, to print over the one on screen.
     header_redrawn: Option<Vec<Line<'static>>>,
+    /// Where the last drains printed your prompts, as ranges of the rows they returned, with
+    /// each prompt's words, so the full screen can keep the one being answered in sight.
+    prompt_rows: Vec<(Range<usize>, String)>,
 }
 
 #[derive(Debug)]
@@ -147,6 +150,12 @@ impl History {
     /// Where the rows of the last [`drain_printable`](Self::drain_printable) hold the header.
     pub fn take_header_rows(&mut self) -> Option<Range<usize>> {
         self.header_rows.take()
+    }
+
+    /// Where the rows of the last [`drain_printable`](Self::drain_printable) hold your own
+    /// prompts, never a command's echo, each with its words.
+    pub fn take_prompt_rows(&mut self) -> Vec<(Range<usize>, String)> {
+        std::mem::take(&mut self.prompt_rows)
     }
 
     /// The changed header's rows, to print over the old ones.
@@ -272,6 +281,18 @@ impl History {
         self.finish_stream(id)
     }
 
+    /// Drops the open stream when none of it printed yet, so its text never shows; the cells
+    /// held behind it go on. False once rows printed, and then it stays open.
+    pub fn drop_unprinted_stream(&mut self, id: CellId) -> bool {
+        let Some(open) = self.stream.take_if(|open| open.id == id && !open.printed) else {
+            return false;
+        };
+        for cell in open.held {
+            self.commit(cell);
+        }
+        true
+    }
+
     /// Its last rows print on the next frame, and the whole message is kept as an assistant
     /// cell.
     pub fn finish_stream(&mut self, id: CellId) -> bool {
@@ -344,8 +365,17 @@ impl History {
                 Pending::Cell(index) => {
                     let cell = &self.cells[index];
                     let header = matches!(cell, Cell::Header(_));
+                    let prompt = match cell {
+                        Cell::User(user) if !user.command && !user.runs_a_command => {
+                            Some(user.text.clone())
+                        }
+                        _ => None,
+                    };
                     let (rows, continues) = (cell.lines(ctx), cell.continues_previous());
                     let printed = self.print(&mut out, rows, continues);
+                    if let (Some(text), Some(rows)) = (prompt, printed.clone()) {
+                        self.prompt_rows.push((rows, text));
+                    }
                     if header {
                         self.header_rows = printed;
                     }
@@ -487,7 +517,7 @@ mod tests {
         let rows = history.drain_printable(&ctx);
         let at = history.take_header_rows().expect("the header's rows");
         let shown = plain_text(&rows[at.clone()]);
-        assert!(shown.contains("Claude Code · solo"), "{shown}");
+        assert!(shown.contains("Claude Code · Solo"), "{shown}");
         assert_eq!(at.start, 2, "after the first row and the blank one");
         assert_eq!(plain_text(&rows[at.end..]), "\n❯ bye");
         assert_eq!(history.take_header_redrawn(), None);
@@ -498,7 +528,7 @@ mod tests {
         assert_eq!(history.take_header_rows(), None);
         let redrawn = history.take_header_redrawn().expect("the new header");
         assert_eq!(redrawn.len(), at.len());
-        assert!(plain_text(&redrawn).contains("Codex · solo"));
+        assert!(plain_text(&redrawn).contains("Codex · Solo"));
         let headers = history
             .cells()
             .iter()

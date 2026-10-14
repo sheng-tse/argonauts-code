@@ -168,29 +168,32 @@ pub fn status_part(host: &Host, role: RoleName, label: Option<PlanLabel>) -> Inp
     part(InputPartKind::Status, "status", host.status_text(&viewer))
 }
 
-/// Notes from `.argonauts/notes/` in the run's base, cut to size: the crew's sourced notes as a
-/// quoted block of reference data, a file you wrote as it is. Drafters get them; judges never
-/// do, so no judge reads what the drafter it judges wrote down.
+/// The crew's kept notes and the ones in `.argonauts/notes/` in the run's base, cut to size:
+/// the crew's sourced notes as a quoted block of reference data, a file you wrote as it is.
+/// Drafters get them; judges never do, so no judge reads what the drafter it judges wrote down.
 pub fn notes(host: &Host) -> Vec<String> {
-    crate::retro::notes::read_files(&host.repo().base_worktree)
-        .into_iter()
-        .take(NOTES_MAX)
-        .map(|file| {
-            let text = if file.notes.is_empty() {
-                file.text
-            } else {
-                argonauts_learning::memory::quoted(&file.notes)
-            };
-            let name = file
-                .relative
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .to_owned();
-            let text: String = text.chars().take(NOTE_MAX_CHARS).collect();
-            format!("{name}: {}", text.trim())
-        })
-        .collect()
+    crate::retro::notes::read_all(
+        &host.repo().base_worktree,
+        &crate::divide::repo_state_dir(host),
+    )
+    .into_iter()
+    .take(NOTES_MAX)
+    .map(|file| {
+        let text = if file.notes.is_empty() {
+            file.text
+        } else {
+            argonauts_learning::memory::quoted(&file.notes)
+        };
+        let name = file
+            .relative
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let text: String = text.chars().take(NOTE_MAX_CHARS).collect();
+        format!("{name}: {}", text.trim())
+    })
+    .collect()
 }
 
 /// Records the planning phase starting, once, naming its lead.

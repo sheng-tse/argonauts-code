@@ -237,6 +237,18 @@ pub trait Adapter: Send + Sync {
         None
     }
 
+    /// The CLI names who is signed in only on the screen it draws as it starts, so Argonauts
+    /// may start it in a hidden terminal, send it nothing, and read that screen once.
+    fn reads_banner(&self) -> bool {
+        false
+    }
+
+    /// Who is signed in, as the start-up screen `screen` shows it, for a CLI that
+    /// [`reads_banner`](Adapter::reads_banner). `None` when the screen says neither way.
+    fn banner_account(&self, _screen: &str) -> Option<BannerAccount> {
+        None
+    }
+
     fn transport(&self) -> Transport {
         Transport::Lines
     }
@@ -326,6 +338,16 @@ pub struct SetupHints {
     /// Arguments that report login state without a model call (exit 0 when logged in), such
     /// as `["login", "status"]` for Codex. `None` when no check is verified for this CLI.
     pub login_check: Option<Vec<String>>,
+}
+
+/// Who a CLI's start-up screen says is signed in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BannerAccount {
+    pub account: Option<String>,
+    /// The plan as the CLI names it, such as `Google AI Pro`.
+    pub plan: Option<String>,
+    /// The screen says no one is signed in.
+    pub signed_out: bool,
 }
 
 /// Extra flags and environment for one launch setting, and how faithfully they apply.

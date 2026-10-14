@@ -59,8 +59,8 @@ pub(crate) fn parse_period(word: Option<&str>) -> anyhow::Result<UsagePeriod> {
 fn title(period: UsagePeriod) -> &'static str {
     match period {
         UsagePeriod::Today => "Usage, today",
-        UsagePeriod::Week => "Usage, last 7 days",
-        UsagePeriod::Month => "Usage, last 30 days",
+        UsagePeriod::Week => "Usage, this week",
+        UsagePeriod::Month => "Usage, this month",
         UsagePeriod::All => "Usage, all time",
     }
 }
@@ -94,7 +94,8 @@ pub(crate) async fn usage(
     let listed = ctx.services.conductor.list().await;
     let ledger = UsageLedger::new(&ctx.env.paths);
     let runs = listed.as_deref().unwrap_or_default();
-    let summary = usage_ledger::summary(&ledger, period, local_day(now), runs, quotas);
+    let span = (period, ctx.settings().periods.week_starts);
+    let summary = usage_ledger::summary(&ledger, span, local_day(now), runs, quotas);
     lines.push(format!(
         "Spent · {} · {} tokens",
         usd(&summary.total),
@@ -223,8 +224,12 @@ async fn usage_summary(
     let listed = ctx.services.conductor.list().await;
     let ledger = UsageLedger::new(&ctx.env.paths);
     let runs = listed.as_deref().unwrap_or_default();
-    let mut summary = usage_ledger::summary(&ledger, period, local_day(now), runs, quotas);
+    let span = (period, ctx.settings().periods.week_starts);
+    let mut summary = usage_ledger::summary(&ledger, span, local_day(now), runs, quotas);
     if let Some(stats) = &mut summary.stats {
+        let clis: Vec<String> = stats.work.iter().map(|row| row.agent.clone()).collect();
+        let defaults = super::names::cli_defaults(ctx, clis.iter().map(String::as_str));
+        crate::work_ledger::name_unnamed_models(stats, &defaults);
         let home = ctx.env.paths.home();
         let (settings, sources, problems) =
             StatsSettings::read_with_sources(home, Some(&ctx.env.repo_root));
@@ -511,6 +516,38 @@ pub(crate) fn read_plan_usage(ctx: &Ctx) {
             read_live_for(ctx, worker);
         }
     }
+}
+
+/// The crew's workers whose CLI is read live for its account, by the CLI's id: one each, for
+/// CLIs a plan read can name the account of.
+pub(crate) fn live_readers(ctx: &Ctx) -> Vec<WorkerRef> {
+    let settings = ctx.settings();
+    let mut crew = vec![settings.main_agent.clone()];
+    crew.extend(settings.crew.members());
+    let mut readers: Vec<WorkerRef> = Vec::new();
+    for worker in crew {
+        let vendor = worker.vendor();
+        let paid = settings.endpoints.contains_key(&vendor.0) || bills_api_key(settings, &vendor);
+        if !paid && !readers.iter().any(|known| known.vendor() == vendor) {
+            readers.push(worker);
+        }
+    }
+    readers
+}
+
+/// Reads `worker`'s CLI live, as the Usage tab does, then calls `then`: for a CLI whose
+/// login check doesn't name the account, which its plan read does, as Codex's.
+pub(crate) fn read_account_live(
+    workers: &dyn WorkerDirectory,
+    quota: &Arc<dyn QuotaBoard>,
+    internal: tokio::sync::mpsc::UnboundedSender<super::ctx::Internal>,
+    worker: &WorkerRef,
+    then: impl FnOnce() + Send + 'static,
+) {
+    read_live(workers, quota, worker, move || {
+        let _ = internal.send(super::ctx::Internal::PlanUsageRead);
+        then();
+    });
 }
 
 /// `/login` and `/logout` commands handed to the terminal, with the CLI each signs in or out.

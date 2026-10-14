@@ -6,6 +6,7 @@
 
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
 use argonauts_core::input::{SlashCommand, WorkflowAction};
+use argonauts_core::text::shown_name;
 use argonauts_core::views::{WorkflowFile, WorkflowOrigin};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -54,7 +55,7 @@ impl Library {
         let rows = self.rows();
         let cells = |f: &dyn Fn(&WorkflowFile) -> String| rows.iter().map(f).collect();
         let columns = vec![
-            Column::new("Workflow", cells(&|row| clean(&row.name))),
+            Column::new("Workflow", cells(&|row| shown_name(&clean(&row.name)))),
             Column::new("Notes", cells(&notes)).keep(2),
             Column::new("From", cells(&|row| clean(&row.source))).keep(1),
             Column::new("Description", cells(&|row| clean(about(row)))).flex(),
@@ -193,7 +194,7 @@ impl Library {
         let Some(row) = self.selected() else {
             return ViewOutcome::Consumed;
         };
-        let title = format!("{} · {}", clean(&row.name), clean(&row.source));
+        let title = format!("{} · {}", shown_name(&clean(&row.name)), clean(&row.source));
         let lines = row.text.lines().map(str::to_owned).collect();
         ViewOutcome::Open(Box::new(Pager::text(title, lines)))
     }
@@ -214,7 +215,7 @@ impl Library {
             return ViewOutcome::Consumed;
         };
         if row.origin == WorkflowOrigin::BuiltIn {
-            let name = clean(&row.name);
+            let name = shown_name(&clean(&row.name));
             self.said = Some(format!("{name} is built in. c copies it to edit"));
             return ViewOutcome::Consumed;
         }
@@ -232,7 +233,7 @@ impl Library {
         let Some(row) = self.selected() else {
             return ViewOutcome::Consumed;
         };
-        let name = clean(&row.name);
+        let name = shown_name(&clean(&row.name));
         let said = match (row.origin, row.edited) {
             (WorkflowOrigin::BuiltIn, _) => {
                 format!(
@@ -264,7 +265,10 @@ impl Library {
             && let Some(row) = workflows.iter().find(|row| row.name == compared)
             && row.edited == Some(false)
         {
-            self.said = Some(format!("{} matches the built-in", clean(&row.name)));
+            self.said = Some(format!(
+                "{} matches the built-in",
+                shown_name(&clean(&row.name))
+            ));
         }
         self.workflows = Some(workflows.clone());
         self.list.move_to(index, workflows.len(), self.page);
@@ -395,7 +399,7 @@ mod tests {
                 ViewOutcome::Open(pager) => {
                     let text = format!("{pager:?}");
                     assert!(text.contains("[[step]]"), "{text}");
-                    assert!(text.contains("orchestrator ·"), "{text}");
+                    assert!(text.contains("Orchestrator ·"), "{text}");
                 }
                 other => panic!("{other:?}"),
             }
@@ -420,7 +424,7 @@ mod tests {
             ViewOutcome::Consumed
         ));
         let said = view.library.said.clone().unwrap();
-        assert!(said.contains("solo is the built-in"), "{said}");
+        assert!(said.contains("Solo is the built-in"), "{said}");
         press(&mut view, KeyCode::Down);
         assert!(view.library.said.is_none());
         press(&mut view, KeyCode::Down);
@@ -459,7 +463,7 @@ mod tests {
             ViewOutcome::Consumed
         ));
         let said = view.library.said.clone().unwrap();
-        assert_eq!(said, "solo is built in. c copies it to edit");
+        assert_eq!(said, "Solo is built in. c copies it to edit");
     }
 
     #[test]

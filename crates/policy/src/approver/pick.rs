@@ -265,7 +265,10 @@ mod tests {
 
     fn crew() -> FakeDirectory {
         let workers = FakeDirectory::new();
-        workers.add(FakeWorker::harness("claude-code", "claude").with_cheapest_model("haiku"));
+        // Haiku 4.5, priced above the other two; haiku itself now runs the cheaper Haiku 5.5.
+        workers.add(
+            FakeWorker::harness("claude-code", "claude").with_cheapest_model("claude-haiku-4-5"),
+        );
         workers.add(FakeWorker::harness("codex", "gpt").with_cheapest_model("gpt-5.6-luna"));
         workers.add(
             FakeWorker::harness("antigravity-cli", "gemini")
@@ -320,7 +323,7 @@ mod tests {
     #[test]
     fn the_cheapest_agent_of_another_provider_judges() {
         let workers = crew();
-        // Of haiku, luna, and flash, luna is the cheapest; flash is the cheapest that isn't
+        // Of Haiku 4.5, luna, and flash, luna is the cheapest; flash is the cheapest that isn't
         // OpenAI's.
         assert_eq!(
             picked(&["claude-code/opus"], &workers, None),
@@ -332,7 +335,7 @@ mod tests {
         );
         assert_eq!(
             picked(&["codex/gpt-6-sol", "antigravity-cli"], &workers, None),
-            Ok(r("claude-code/haiku"))
+            Ok(r("claude-code/claude-haiku-4-5"))
         );
     }
 

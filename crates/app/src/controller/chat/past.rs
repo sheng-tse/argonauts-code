@@ -26,8 +26,21 @@ pub(super) struct PastTurn {
     pub id: TurnId,
     pub request: String,
     pub worker: WorkerRef,
+    /// The model its CLI said it ran, for a turn whose agent named none.
+    pub model: Option<String>,
     /// The answer, when the turn finished.
     pub reply: Option<TurnReply>,
+}
+
+impl PastTurn {
+    /// Its agent on the model it ran, so a resumed conversation names it as the header does.
+    fn ran(&self) -> WorkerRef {
+        let mut worker = self.worker.clone();
+        if worker.model.is_none() {
+            worker.model = self.model.clone();
+        }
+        worker
+    }
 }
 
 /// An earlier conversation as its journal holds it.
@@ -134,7 +147,8 @@ pub(super) fn load(chat_dir: &Path, chat: &ChatId) -> Option<PastChat> {
         })
         .max()
         .map_or_else(OffsetDateTime::now_utc, OffsetDateTime::from);
-    let turns = fold(events);
+    let mut turns = fold(events);
+    models_ran(&store, &mut turns);
     let title = store
         .title()
         .or_else(|| turns.first().map(|turn| title_from_request(&turn.request)))
@@ -145,7 +159,7 @@ pub(super) fn load(chat_dir: &Path, chat: &ChatId) -> Option<PastChat> {
         chat: chat.clone(),
         title,
         updated,
-        worker: turns.last().map(|turn| turn.worker.clone()),
+        worker: turns.last().map(PastTurn::ran),
         turns: count(turns.len()),
         runs: count(runs.len()),
     };
@@ -203,6 +217,7 @@ fn fold(events: Vec<ChatEvent>) -> Vec<PastTurn> {
                     id: turn,
                     request: text,
                     worker,
+                    model: None,
                     reply: None,
                 }),
             },
@@ -224,10 +239,31 @@ fn fold(events: Vec<ChatEvent>) -> Vec<PastTurn> {
             }
             ChatEvent::Agent { .. }
             | ChatEvent::TurnFailed { .. }
-            | ChatEvent::TurnCancelled { .. } => {}
+            | ChatEvent::TurnCancelled { .. }
+            | ChatEvent::AnswerRetried { .. } => {}
         }
     }
     turns
+}
+
+/// The model each turn's CLI said it ran, from the first line of each session it started; a
+/// later session of the same turn, as after a hand-off, says it again.
+fn models_ran(store: &ChatStore, turns: &mut [PastTurn]) {
+    store.each_agent_line(|line| {
+        if !line.contains(r#""type":"init""#) {
+            return;
+        }
+        let Ok(ChatEvent::Agent {
+            turn,
+            event: AgentEvent::Init { model, .. },
+        }) = serde_json::from_str(line)
+        else {
+            return;
+        };
+        if let Some(past) = turns.iter_mut().find(|past| past.id == turn) {
+            past.model = model.filter(|model| !model.trim().is_empty());
+        }
+    });
 }
 
 fn turn_number(turn: &TurnId) -> Option<u32> {
@@ -482,5 +518,62 @@ mod tests {
         assert_eq!(normalize(&ChatId::numbered(12)), ChatId::numbered(12));
         let odd = ChatId::parse("chat-x").unwrap();
         assert_eq!(normalize(&odd), odd);
+    }
+
+    /// A conversation whose agent named no model is named by the one its CLI said it ran.
+    #[test]
+    fn a_resumed_conversation_names_the_model_its_cli_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = |model: Option<&str>| ChatEvent::Agent {
+            turn: TurnId::numbered(1),
+            event: AgentEvent::Init {
+                session_id: Some("671d00cf".to_owned()),
+                model: model.map(str::to_owned),
+                tools: Vec::new(),
+                plugins: Vec::new(),
+                capabilities: Vec::new(),
+                version: None,
+            },
+        };
+        write(
+            dir.path(),
+            1,
+            &[
+                started(1, "use a workflow for this", "claude-code"),
+                init(Some("claude-haiku-5-5")),
+                finished(1, "Starting a workflow."),
+            ],
+        );
+        let past = load(dir.path(), &ChatId::numbered(1)).unwrap();
+        assert_eq!(
+            past.summary.worker,
+            Some("claude-code/claude-haiku-5-5".parse().unwrap())
+        );
+        // The turn keeps the agent it asked for, so the session still resumes by its CLI.
+        assert_eq!(past.turns[0].worker, "claude-code".parse().unwrap());
+
+        // An agent named with its model keeps that name, and a session that said nothing
+        // leaves the CLI alone.
+        write(
+            dir.path(),
+            2,
+            &[
+                started(1, "hi", "claude-code/opus"),
+                init(Some("claude-opus-5-5")),
+                finished(1, "Hi."),
+            ],
+        );
+        let past = load(dir.path(), &ChatId::numbered(2)).unwrap();
+        assert_eq!(
+            past.summary.worker,
+            Some("claude-code/opus".parse().unwrap())
+        );
+        write(
+            dir.path(),
+            3,
+            &[started(1, "hi", "codex"), init(None), finished(1, "Hi.")],
+        );
+        let past = load(dir.path(), &ChatId::numbered(3)).unwrap();
+        assert_eq!(past.summary.worker, Some("codex".parse().unwrap()));
     }
 }

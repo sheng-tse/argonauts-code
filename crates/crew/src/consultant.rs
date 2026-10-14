@@ -80,6 +80,7 @@ pub(crate) async fn session_answer(
             slot: slot(&asked.id),
             label: None,
             reviews: false,
+            fresh: false,
         })
         .await?;
     let session = running.key.clone();

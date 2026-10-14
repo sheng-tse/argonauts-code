@@ -46,9 +46,9 @@ pub(super) fn report(card: Option<&str>, gates: &[GateOutcome], label: bool, cx:
     if listed.is_empty() {
         details.push("No command checks set · /config checks.run".to_owned());
     } else if failed.is_empty() {
-        details.push(match listed.len() {
-            1 => "Passed".to_owned(),
-            n => format!("All {n} passed"),
+        details.push(match listed.as_slice() {
+            [gate] => passed_line(gate),
+            _ => format!("All {} passed", listed.len()),
         });
     }
     let state = if failed.is_empty() {
@@ -57,6 +57,31 @@ pub(super) fn report(card: Option<&str>, gates: &[GateOutcome], label: bool, cx:
         ToolState::Failed
     };
     emit(cx, step("Checks", &args, state, &details));
+}
+
+/// One check that passed, as it ran: `python3 -m unittest -q · 12 passed in 0.03s`.
+fn passed_line(gate: &GateOutcome) -> String {
+    let summary = gate.summary.trim();
+    let counted = !summary.is_empty() && summary != "passed";
+    match gate.command.as_deref() {
+        Some(command) if counted => format!(
+            "{} · {summary} in {}",
+            command.join(" "),
+            seconds(gate.duration_ms)
+        ),
+        Some(command) => format!("{} · passed", command.join(" ")),
+        None => "Passed".to_owned(),
+    }
+}
+
+/// `0.03s`, `1.5s`, `12s`: as a test runner says how long it took.
+fn seconds(ms: u64) -> String {
+    if ms >= 10_000 {
+        return format!("{}s", ms / 1000);
+    }
+    let text = format!("{:.2}", ms as f64 / 1000.0);
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text}s")
 }
 
 /// The engine's marker for an empty `gates.run`. Nothing ran, so it neither failed nor names a

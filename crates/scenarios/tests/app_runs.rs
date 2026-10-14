@@ -104,9 +104,9 @@ fn app_example_small_fix_solo() -> anyhow::Result<()> {
     assert_eq!(keys[..3], ['y', 'p', 'b'], "{keys:?}");
     assert!(keys.contains(&'x') && keys.last() == Some(&'d'), "{keys:?}");
 
-    // One gate passing reads `Passed`; several read `All 3 passed`. The card draws a moment
-    // after its checkpoint opens, so the screen is read once both are on it.
-    pty.wait_for(r"Checks\(tests\)\n.*Passed", WAIT)?;
+    // One check passing reads its command and `passed`; several read `All 3 passed`. The card
+    // draws a moment after its checkpoint opens, so the screen is read once both are on it.
+    pty.wait_for(r"Checks\(tests\)\n.*true · passed", WAIT)?;
     let screen = pty.wait_for(r"Show the diff", WAIT)?;
     let text = screen.text();
     assert!(!text.contains("Triage("), "a triage row:\n{text}");
@@ -114,7 +114,7 @@ fn app_example_small_fix_solo() -> anyhow::Result<()> {
         "2 uncommitted files left out",
         "build:",
         "Checks(",
-        "Passed",
+        "true · passed",
         "Merge",
         "Open a pull request",
         "Request changes",
@@ -899,8 +899,8 @@ fn ask_revert(scenario: &Scenario, pty: &mut Pty) -> anyhow::Result<AppChoice> {
 /// `/rewind` at the merge card: the card's branch goes back to `fallback-1`, and the run's
 /// branch drops the work after it, which stays on the replaced branch.
 #[test]
-#[ignore = "a waiting approval holds the keys and Esc keeps the branch, so \
-            /rewind can't be typed at a waiting merge card"]
+#[ignore = "a waiting approval holds the keys and Esc keeps the branch, so /rewind can't be \
+            typed at a waiting merge card"]
 fn app_checkpoints_and_revert_commands() -> anyhow::Result<()> {
     let scenario = scenario_with(&codex_config(&format!(
         "{}\n[fallback]\nmode = \"auto\"\norder = [\"codex\"]\n",

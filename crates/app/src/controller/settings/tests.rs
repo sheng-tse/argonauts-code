@@ -764,7 +764,7 @@ impl ModelRegistry for DefaultRunsSonnet {
         ModelCatalog {
             version: CATALOG_VERSION,
             models: vec![default, sonnet],
-            efforts: Vec::new(),
+            ..ModelCatalog::default()
         }
     }
 }

@@ -713,7 +713,7 @@ mod tests {
             ModelCatalog {
                 version: CATALOG_VERSION,
                 models: vec![default, opus],
-                efforts: Vec::new(),
+                ..ModelCatalog::default()
             }
         }
     }

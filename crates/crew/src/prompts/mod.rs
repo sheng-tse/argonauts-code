@@ -15,6 +15,7 @@ pub mod frame;
 pub mod goal;
 pub mod handoff;
 pub mod instructions;
+pub mod merge;
 pub mod plan;
 pub mod review;
 pub mod trust;

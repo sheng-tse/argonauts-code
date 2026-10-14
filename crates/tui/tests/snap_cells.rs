@@ -163,7 +163,7 @@ fn session_header() {
     for word in [
         "Argonauts",
         "v0.0.1",
-        "Claude Code · Opus 5.5 with xhigh effort · council",
+        "Claude Code · Opus 5.5 with xhigh effort · Council",
         "~/github/argonauts",
         // Only the agent CLI that isn't ready gets a note.
         "Antigravity CLI: not signed in",

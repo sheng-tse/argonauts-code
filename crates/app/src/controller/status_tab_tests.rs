@@ -338,3 +338,17 @@ async fn the_status_tab_lists_an_old_files_keys_under_todays_names() {
     assert_eq!(global.keys, from_the_file.len());
     harness.exit().await;
 }
+
+/// Doctor says why a CLI's address isn't shown, by what was asked of it.
+#[test]
+fn each_unnamed_account_says_why() {
+    assert!(super::unnamed_why("codex", true).starts_with("its login check doesn't print"));
+    assert_eq!(
+        super::unnamed_why("antigravity-cli", true),
+        "its start-up screen showed no address"
+    );
+    assert_eq!(
+        super::unnamed_why("opencode", false),
+        "it has no check that names the account"
+    );
+}

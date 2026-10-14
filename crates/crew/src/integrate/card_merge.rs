@@ -6,7 +6,7 @@ use std::path::Path;
 
 use argonauts_core::CardId;
 use argonauts_core::events::RunEventKind;
-use argonauts_core::events::card::{CardKind, GateKind, IntegrationEvent};
+use argonauts_core::events::card::{GateKind, IntegrationEvent};
 use argonauts_core::events::session::{EndReason, InputPartKind};
 use argonauts_core::names::{RoleName, WorkerRef};
 use argonauts_core::steps::card::{ReportStatus, ResolveConflict};
@@ -18,7 +18,7 @@ use crate::card::gates::{self, BuiltinChecks};
 use crate::card::pipeline::dependencies_done;
 use crate::card::prompt;
 use crate::card::session::report_of;
-use crate::card::support::{owner_of, part, record_of, wait_until};
+use crate::card::support::{part, record_of, wait_until};
 use crate::card::worktree::{self, CardTree};
 use crate::engine::host::{Host, Ran, SessionPlan, StandIns};
 use crate::engine::stand_in::{self, Seat};
@@ -29,7 +29,7 @@ use crate::integrate::CardMerge;
 use crate::integrate::branch::{
     card_branch, ensure_integration, integration_branch, path_lock, run_base,
 };
-use crate::integrate::conductor;
+use crate::integrate::{conductor, merger};
 use crate::lead;
 use crate::prompts;
 use crate::state::cards::CardRecord;
@@ -288,24 +288,10 @@ async fn resolve(host: &Host, card: &CardId, files: &[String]) -> EngineResult<b
     Ok(false)
 }
 
-/// The owner of the interface card, else of the integration chore, else the phase lead, else
-/// the card's own owner.
-fn conflict_owner(host: &Host, card: &CardId) -> WorkerRef {
-    host.read(|state| {
-        let owner_of_kind = |wanted: fn(&CardKind) -> bool| {
-            state
-                .cards
-                .by_id
-                .values()
-                .find(|record| wanted(&record.spec.kind))
-                .map(|record| owner_of(host, record))
-        };
-        owner_of_kind(|kind| *kind == CardKind::Interface)
-            .or_else(|| owner_of_kind(|kind| *kind == CardKind::Chore))
-            .or_else(|| lead::phase_lead(state, host.settings()))
-            .or_else(|| state.cards.get(card).map(|record| owner_of(host, record)))
-            .unwrap_or_else(|| host.settings().main_agent.clone())
-    })
+/// The merge agent, which resolves conflicts between tasks. When it can't take the session,
+/// the phase lead and then a stand-in do.
+fn conflict_owner(host: &Host, _card: &CardId) -> WorkerRef {
+    merger::seat(host.settings())
 }
 
 async fn resolve_with(
@@ -331,6 +317,7 @@ async fn resolve_with(
         slot: 0,
         label: None,
         reviews: false,
+        fresh: true,
     };
     plan.slot = host.slot_for(&plan);
     // A resolver that a pause or a crash cut off picks up its own half-done merge.

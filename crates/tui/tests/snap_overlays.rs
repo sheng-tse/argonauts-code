@@ -781,7 +781,6 @@ fn session_view_output() {
     assert!(header.ends_with("2m00s · ↓ 12.4k"), "{header}");
     for needle in [
         "Read(src/export.rs)",
-        "fn write(&self) {}",
         "test export::json ... ok",
         "Update(src/export.rs)",
         "self.write_json(out)",
@@ -794,6 +793,8 @@ fn session_view_output() {
     ] {
         assert!(text.contains(needle), "{needle}:\n{text}");
     }
+    // A read says what it read, never the file.
+    assert!(!text.contains("fn write(&self) {}"), "{text}");
     // The subagent's thread hangs under it.
     assert!(position(&text, "explorer") < position(&text, "Check the tests"));
 
@@ -989,7 +990,7 @@ fn session_view_input_side() {
     assert!(!folded.contains("line 9"));
     press(&mut view, KeyCode::Right, &long);
     assert!(screen(&mut view, 100, 32, &long).contains("line 9"));
-    // Shift+Tab goes back to Output, and Tab past Input opens the raw log.
+    // Shift+Tab goes back to Output, and Tab past Input opens the Raw tab, which reads the log.
     press(&mut view, KeyCode::BackTab, &long);
     assert!(screen(&mut view, 100, 32, &long).contains("tab input"));
     press(&mut view, KeyCode::Tab, &long);
@@ -998,7 +999,7 @@ fn session_view_input_side() {
         matches!(&raw, ViewOutcome::Request(ViewRequest::Raw { session, .. }) if session.as_str() == "s-002"),
         "{raw:?}"
     );
-    assert!(screen(&mut view, 100, 32, &long).contains("tab input"));
+    assert!(screen(&mut view, 100, 32, &long).contains("tab output"));
 }
 
 fn picker() -> ResumePicker {

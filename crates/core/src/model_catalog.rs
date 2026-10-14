@@ -9,6 +9,7 @@ use std::cmp::{Ordering, Reverse};
 use serde::{Deserialize, Serialize};
 
 use crate::names::WorkerRef;
+use crate::pricing::ListPrice;
 use crate::registry::ModelEntry;
 
 /// The catalog format this build reads. A fetched catalog with a newer one is skipped.
@@ -23,7 +24,47 @@ pub struct ModelCatalog {
     /// What each effort level means, for models whose entry doesn't say.
     #[serde(rename = "effort", skip_serializing_if = "Vec::is_empty")]
     pub efforts: Vec<EffortNote>,
+    /// List prices, so a model that ships after a release still gets an API value.
+    #[serde(rename = "price", skip_serializing_if = "Vec::is_empty")]
+    pub prices: Vec<CatalogPrice>,
 }
+
+/// One model's list price, in dollars per million tokens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogPrice {
+    /// The model's id, such as `claude-opus-5-5`, which its dated snapshots share.
+    pub model: String,
+    pub input: Dollars,
+    pub output: Dollars,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<Dollars>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<Dollars>,
+}
+
+impl CatalogPrice {
+    pub fn list_price(&self) -> ListPrice {
+        ListPrice {
+            input: self.input.0,
+            output: self.output.0,
+            cache_read: self.cache_read.map(|usd| usd.0),
+            cache_write: self.cache_write.map(|usd| usd.0),
+        }
+    }
+}
+
+/// An amount of dollars, compared exactly, so a catalog read twice compares equal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Dollars(pub f64);
+
+impl PartialEq for Dollars {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for Dollars {}
 
 /// Every field but `id` is optional, so a later layer changes only what it sets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +187,10 @@ impl ModelCatalog {
             }
         }
         overlay_notes(&mut self.efforts, later.efforts);
+        for price in later.prices {
+            self.prices.retain(|known| known.model != price.model);
+            self.prices.push(price);
+        }
     }
 
     /// The entry for `id`, or for the model a harness alias such as `claude-code/opus` names.

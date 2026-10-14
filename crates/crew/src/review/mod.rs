@@ -55,6 +55,29 @@ impl Verdict {
             Self::Escalated { reasons } => format!("Needs you: {}", reasons.join("; ")),
         }
     }
+
+    /// What the reviewers said, one finding after another on one line, for the reason a task
+    /// stops with. Empty for an approval.
+    pub fn findings(&self) -> String {
+        let said: &[String] = match self {
+            Self::Approved => &[],
+            Self::ChangesRequested { comments } => comments,
+            Self::Escalated { reasons } => reasons,
+        };
+        said.iter()
+            .map(|finding| finding.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|finding| !finding.is_empty())
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+/// `what`, then the reviewers' findings after a colon when they said any.
+pub(crate) fn with_findings(what: String, verdict: &Verdict) -> String {
+    match verdict.findings() {
+        findings if findings.is_empty() => what,
+        findings => format!("{what}: {findings}"),
+    }
 }
 
 /// `review`: a card's review inside `build`, or a review of the step's input against criteria.
@@ -664,5 +687,31 @@ mod tests {
             review(ReviewVerdict::RequestChanges, "no"),
         ];
         assert!(!agree(&split));
+    }
+
+    /// A task that stops after its review says why in the reviewers' own words.
+    #[test]
+    fn a_stop_after_review_carries_the_reviewers_findings() {
+        let asked = strictest(&[review(
+            ReviewVerdict::RequestChanges,
+            "The diff adds compiled\n  .pyc files.",
+        )]);
+        assert_eq!(
+            with_findings(
+                "review asked for changes again after 2 rounds".into(),
+                &asked
+            ),
+            "review asked for changes again after 2 rounds: The diff adds compiled .pyc files.; \
+             src/lib.rs:3: handle the error"
+        );
+        let rejected = strictest(&[review(ReviewVerdict::Reject, "Wrong approach.")]);
+        assert_eq!(
+            with_findings("the review sent it to you".into(), &rejected),
+            "the review sent it to you: Wrong approach."
+        );
+        assert_eq!(
+            with_findings("approved".into(), &Verdict::Approved),
+            "approved"
+        );
     }
 }

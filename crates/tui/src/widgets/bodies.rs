@@ -19,11 +19,15 @@ use super::{Drawn, Kit, Level, State, States, fit, ljust, rjust, spread};
 use crate::text::{str_width, truncate_spans};
 use crate::theme::Role;
 
-/// A percent and the space before it, as one right-aligned field: ` 71%`, `100%`.
-const PERCENT_FIELD: usize = 4;
+/// A percent one blank after its meter, as Claude Code's `/usage` puts it, with room for
+/// ` 100%`: so even a full window's number never touches its meter.
+const PERCENT_FIELD: usize = 5;
 
-fn percent_field(ratio: f64) -> String {
-    rjust(&format!("{:.0}%", ratio.max(0.0) * 100.0), PERCENT_FIELD)
+/// ` 71%` right after the meter, and the blanks that keep what follows in its column.
+fn percent_after(ratio: f64) -> (String, String) {
+    let percent = format!(" {:.0}%", ratio.max(0.0) * 100.0);
+    let pad = " ".repeat(PERCENT_FIELD.saturating_sub(str_width(&percent)));
+    (percent, pad)
 }
 
 /// A stacked bar, drawn `bar_rows` high, and its legend, up to `max_cols` to a row. No
@@ -121,11 +125,10 @@ pub fn windows(kit: &Kit<'_>, windows: &[Window], width: usize) -> Drawn {
                 w.level.fill_role(),
                 Role::BarTrack,
             );
-            spans.push(Span::styled(
-                percent_field(w.used),
-                kit.bold(w.level.strong_role()),
-            ));
+            let (percent, pad) = percent_after(w.used);
+            spans.push(Span::styled(percent, kit.bold(w.level.strong_role())));
             spans.push(kit.dim(" used"));
+            spans.push(Span::raw(pad));
             spans
         });
         for (i, _) in pair.iter().enumerate() {
@@ -220,11 +223,10 @@ pub fn meters(kit: &Kit<'_>, rows: &[MeterRow], width: usize, slots: MeterSlots)
                     level.fill_role(),
                     *tick,
                 ));
-                line.push(Span::styled(
-                    percent_field(*ratio),
-                    kit.bold(level.strong_role()),
-                ));
+                let (percent, pad) = percent_after(*ratio);
+                line.push(Span::styled(percent, kit.bold(level.strong_role())));
                 line.push(kit.dim(ljust(unit, unit_w)));
+                line.push(Span::raw(pad));
                 if note_w > 0 {
                     line.push(Span::raw("  "));
                     line.push(kit.dim(ljust(note, note_w)));

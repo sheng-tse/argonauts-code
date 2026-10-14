@@ -381,15 +381,20 @@ async fn plan_approve_with_edits_becomes_decision() -> anyhow::Result<()> {
         .context("no Plan::Decided")?;
     assert_eq!(decided.title, "Your edits");
     assert_eq!(decided.choice, note);
-    let integration = branch::integration_branch(&RunId::new("run-01")?);
-    let record = stage.repo.git(&[
-        "show",
-        &format!(
-            "{integration}:.argonauts/decisions/{}-your-edits.md",
-            decided.id
-        ),
-    ])?;
+    // Kept under Argonauts' home, never on the run's branch.
+    let state_dir = argonauts_crew::divide::repo_state_dir(&stage.host);
+    let file = format!("decisions/{}-your-edits.md", decided.id);
+    let record = std::fs::read_to_string(state_dir.join(&file))?;
     assert!(record.contains("Keep the store small."));
+    let touched = stage.repo.git(&[
+        "log",
+        "--all",
+        "--name-only",
+        "--format=",
+        "--",
+        ".argonauts/decisions",
+    ])?;
+    assert!(touched.trim().is_empty(), "{touched}");
 
     let store = events
         .iter()

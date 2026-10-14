@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use argonauts_core::app::{ChatEvent, TurnReply};
 use argonauts_core::events::session::VendorWorkflow;
+use argonauts_core::input::{ParsedInput, parse_input_with};
 use argonauts_core::names::{TurnId, WorkerRef};
 use argonauts_core::settings::protocol::SoloStyle;
 use argonauts_core::settings::ui::VerbTheme;
@@ -22,6 +23,7 @@ use crate::format::WallClock;
 use crate::history::CellId;
 use crate::text::sanitize_line;
 
+use super::own_calls::{self, Own};
 use super::{Cx, emit, quiet, steps};
 
 const INTERRUPTED: &str = "Interrupted · What should Argonauts do instead?";
@@ -69,6 +71,13 @@ struct OpenTurn {
     workflows: std::collections::BTreeSet<String>,
     /// Esc stopped the main agent's turn alone, its line shows, and nothing came since.
     interrupted: bool,
+    /// The answer missed its format and the agent was asked for it again. What it says from
+    /// then on repeats the answer, so only the reply it ends with prints.
+    retried: bool,
+    /// The calls drawn as a plain line of what the session asked of Argonauts, by id.
+    plain: Vec<String>,
+    /// The session's calls to start a workflow, by id, which draw a line only if refused.
+    starts: Vec<String>,
 }
 
 impl ChatTurns {
@@ -140,6 +149,11 @@ impl ChatTurns {
                     joined(open, text, cx);
                 }
             }
+            ChatEvent::AnswerRetried { turn } => {
+                if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
+                    retried(open, cx);
+                }
+            }
             ChatEvent::TurnFailed { turn, error } => {
                 if let Some(mut open) = self.take(turn) {
                     end_parts(&mut open, ToolState::Failed, cx);
@@ -176,9 +190,15 @@ impl ChatTurns {
         if let Some(mut stale) = self.open.take() {
             end_parts(&mut stale, ToolState::Stopped, cx);
         }
+        // A turn that runs one of the CLI's own commands echoes the command as you typed it.
+        let runs_a_command = matches!(
+            parse_input_with(text, cx.state.vendor_commands.as_ref()),
+            Ok(ParsedInput::Slash { .. })
+        );
         let message = UserMessage::new(text)
             .with_keywords(cx.keywords_of(worker))
-            .with_pictures(cx.model.bottom.composer.picture_numbers_in(text));
+            .with_pictures(cx.model.bottom.composer.picture_numbers_in(text))
+            .running_a_command(runs_a_command);
         let replaying = cx.replaying();
         if !continues {
             if replaying {
@@ -199,6 +219,9 @@ impl ChatTurns {
             own: Vec::new(),
             workflows: std::collections::BTreeSet::new(),
             interrupted: false,
+            retried: false,
+            plain: Vec::new(),
+            starts: Vec::new(),
         });
     }
 
@@ -307,11 +330,15 @@ fn agent_event(
         event,
         AgentEvent::TextDelta { parent: None, .. }
             | AgentEvent::Message { parent: None, .. }
+            | AgentEvent::ToolPending { parent: None, .. }
             | AgentEvent::ToolStarted { parent: None, .. }
     ) {
         open.interrupted = false;
     }
     match event {
+        // Asked again, the agent repeats its answer, which the reply brings whole.
+        AgentEvent::TextDelta { parent: None, .. } | AgentEvent::Message { parent: None, .. }
+            if open.retried => {}
         AgentEvent::TextDelta { text, parent: None } => {
             open.from_deltas = true;
             deliver(open, text, clock, cx);
@@ -325,6 +352,29 @@ fn agent_event(
             }
             deliver(open, text, clock, cx);
         }
+        // The call's row appears as the model starts writing it, with its name alone.
+        AgentEvent::ToolPending {
+            id,
+            name,
+            parent: None,
+        } => {
+            let vendor = open.worker.worker.clone();
+            if open.replaying || kept_out(&vendor, name) || Own::named(name).is_some() {
+                return;
+            }
+            end_stream(open, cx);
+            let mut call = tools::writing_call(&vendor, name).with_key(id.clone());
+            call.kind = kinds(&vendor, name);
+            // A shell call doesn't say yet whether it only looks around, so it waits in the
+            // fold line before it, and leaves it once its command shows it does more.
+            let fold = folds(&call, cx)
+                || (call.kind == ToolKind::Shell
+                    && cx.verbosity() == Verbosity::Normal
+                    && fold_is_newest(open, cx));
+            add_call_folded(open, call, fold, cx);
+            print_done(open, cx);
+        }
+        AgentEvent::ToolDropped { id, parent: None } => drop_writing(open, id, cx),
         AgentEvent::ToolStarted {
             id,
             name,
@@ -335,17 +385,44 @@ fn agent_event(
                 return;
             }
             let vendor = open.worker.worker.clone();
+            // What the session asks of Argonauts reads as a plain line of what it did.
+            let own = Own::named(name);
+            if let Some(line) = own.and_then(|own| own.line(input)) {
+                end_stream(open, cx);
+                open.plain.push(id.clone());
+                add_call_folded(open, line.with_key(id.clone()), false, cx);
+                print_done(open, cx);
+                return;
+            }
             // It doesn't end the answer streaming, so the answer stays one block. Claude
             // Code's own workflow shows as the workflow it reports, not as the script it ran.
-            if tools::is_own(name) || is_vendor_workflow(&vendor, name) {
+            if own.is_some() || kept_out(&vendor, name) {
+                if own == Some(Own::StartWorkflow) {
+                    open.starts.push(id.clone());
+                }
                 let call = tools::start_call(&vendor, name, input).with_key(id.clone());
                 open.own.push(call);
                 return;
             }
-            end_stream(open, cx);
-            let mut call = tools::start_call(&vendor, name, input).with_key(id.clone());
+            // Paths show relative to the folder the conversation works in.
+            let places = tools::Places::of_chat(cx.state);
+            let mut call = tools::start_call_in(&vendor, name, input, &places).with_key(id.clone());
             call.kind = kinds(&vendor, name);
-            add_call(open, call, cx);
+            // A shell call shows on its own while its command is being written, and joins
+            // the fold once it turns out only to look around.
+            let fold = folds(&call, cx);
+            match writing_place(open, id, cx) {
+                Some(in_fold) if in_fold == fold => {
+                    if let Some(written) = writing_mut(open, id, cx) {
+                        written.fill_in(call);
+                    }
+                    return;
+                }
+                Some(_) => drop_writing(open, id, cx),
+                None => {}
+            }
+            end_stream(open, cx);
+            add_call_folded(open, call, fold, cx);
             print_done(open, cx);
         }
         AgentEvent::ToolFinished {
@@ -357,8 +434,16 @@ fn agent_event(
             let key = Some(id.as_str());
             if let Some(call) = open.own.iter_mut().find(|call| call.key.as_deref() == key) {
                 tools::finish_call(call, *ok, output.as_deref());
+                if open.starts.contains(id)
+                    && let Some(line) = own_calls::turned_down(*ok, output.as_deref())
+                {
+                    end_stream(open, cx);
+                    print_done(open, cx);
+                    emit(cx, line);
+                }
                 return;
             }
+            let plain = open.plain.contains(id);
             let history = &mut cx.model.history;
             for cell in &open.calls {
                 let call = match history.active_mut(*cell) {
@@ -370,7 +455,12 @@ fn agent_event(
                     _ => None,
                 };
                 if let Some(call) = call {
-                    tools::finish_call(call, *ok, output.as_deref());
+                    if plain {
+                        // Its answer is the session's to read; the line already says it.
+                        call.finish(*ok);
+                    } else {
+                        tools::finish_call(call, *ok, output.as_deref());
+                    }
                     break;
                 }
             }
@@ -383,6 +473,7 @@ fn agent_event(
             parent: None,
         } => {
             let key = Some(id.as_str());
+            let places = tools::Places::of_chat(cx.state);
             let history = &mut cx.model.history;
             for cell in &open.calls {
                 let call = match history.active_mut(*cell) {
@@ -394,7 +485,7 @@ fn agent_event(
                     _ => None,
                 };
                 if let Some(call) = call {
-                    tools::take_patch(call, path, hunks);
+                    tools::take_patch_in(call, path, hunks, &places);
                     break;
                 }
             }
@@ -430,6 +521,23 @@ fn agent_event(
     }
 }
 
+/// The answer so far missed its format and the agent is asked for it again. If none of it
+/// printed yet it goes; rows that printed stay, and the reply leaves out what they said.
+fn retried(open: &mut OpenTurn, cx: &mut Cx<'_>) {
+    open.retried = true;
+    let dropped = open.replaying
+        || open
+            .stream
+            .is_some_and(|id| cx.model.history.drop_unprinted_stream(id));
+    if dropped {
+        open.stream = None;
+        open.text.clear();
+        open.from_deltas = false;
+    } else {
+        end_stream(open, cx);
+    }
+}
+
 /// Esc stopped the main agent's turn alone: what it had so far ends here with
 /// the line Esc leaves, as on Claude Code's screen. The turn stays open for the subagents it
 /// left running and for what it says once they are done.
@@ -457,6 +565,12 @@ fn interrupted(open: &mut OpenTurn, cx: &mut Cx<'_>) {
 /// Claude Code's Workflow tool, which runs a script the views mirror from its reports.
 fn is_vendor_workflow(vendor: &str, name: &str) -> bool {
     vendor == "claude-code" && name == "Workflow"
+}
+
+/// Calls the transcript leaves to Ctrl+O: how a session talks to Argonauts, the CLI's own
+/// tool lookups, and Claude Code's own workflow, which shows as the workflow it reports.
+fn kept_out(vendor: &str, name: &str) -> bool {
+    tools::is_own(name) || tools::is_tool_lookup(name) || is_vendor_workflow(vendor, name)
 }
 
 /// `Workflow(release-check) · Claude Code's own · ctrl+t to open`, as a crew run's workflow
@@ -537,14 +651,27 @@ fn keep_own(open: &mut OpenTurn, end: Option<ToolState>, cx: &mut Cx<'_>) {
     open.own = running;
 }
 
+/// Whether the newest live cell is a fold line, which a call being written may join.
+fn fold_is_newest(open: &OpenTurn, cx: &Cx<'_>) -> bool {
+    open.calls
+        .last()
+        .and_then(|cell| cx.model.history.active(*cell))
+        .is_some_and(|cell| matches!(cell, Cell::Group(_)))
+}
+
 /// At `full` each call gets its own cell, at `normal` quiet calls in a row share a fold line,
-/// and at `quiet` they all share one that goes without a trace.
-fn add_call(open: &mut OpenTurn, call: ToolCall, cx: &mut Cx<'_>) {
-    let folds = match cx.verbosity() {
+/// and at `quiet` they all share one that goes without a trace. A shell call folds at
+/// `normal` only when it just looks around, as in Claude Code.
+fn folds(call: &ToolCall, cx: &Cx<'_>) -> bool {
+    match cx.verbosity() {
         Verbosity::Full => false,
+        Verbosity::Normal if call.kind == ToolKind::Shell => tools::only_looks(call),
         Verbosity::Normal => call.kind.is_quiet(),
         Verbosity::Quiet => true,
-    };
+    }
+}
+
+fn add_call_folded(open: &mut OpenTurn, call: ToolCall, folds: bool, cx: &mut Cx<'_>) {
     let history = &mut cx.model.history;
     if !folds {
         open.calls.push(history.push_active(call));
@@ -582,13 +709,78 @@ fn print_done(open: &mut OpenTurn, cx: &mut Cx<'_>) {
     }
 }
 
+/// The call with `key` the model is still writing, among the live calls.
+fn writing_mut<'a>(open: &OpenTurn, key: &str, cx: &'a mut Cx<'_>) -> Option<&'a mut ToolCall> {
+    let cell = open
+        .calls
+        .iter()
+        .copied()
+        .find(|cell| match cx.model.history.active(*cell) {
+            Some(Cell::Tool(call)) => is_writing(call, key),
+            Some(Cell::Group(group)) => group.calls.iter().any(|call| is_writing(call, key)),
+            _ => false,
+        })?;
+    match cx.model.history.active_mut(cell)? {
+        Cell::Tool(call) => Some(call),
+        Cell::Group(group) => group.calls.iter_mut().find(|call| is_writing(call, key)),
+        _ => None,
+    }
+}
+
+/// Whether the call with `key` the model is writing sits in a fold line, or `None` when no
+/// such call is live.
+fn writing_place(open: &OpenTurn, key: &str, cx: &Cx<'_>) -> Option<bool> {
+    open.calls
+        .iter()
+        .find_map(|cell| match cx.model.history.active(*cell) {
+            Some(Cell::Tool(call)) if is_writing(call, key) => Some(false),
+            Some(Cell::Group(group)) if group.calls.iter().any(|call| is_writing(call, key)) => {
+                Some(true)
+            }
+            _ => None,
+        })
+}
+
+fn is_writing(call: &ToolCall, key: &str) -> bool {
+    call.state == ToolState::Writing && call.key.as_deref() == Some(key)
+}
+
+/// The model never finished writing the call with `key`, so its row goes.
+fn drop_writing(open: &mut OpenTurn, key: &str, cx: &mut Cx<'_>) {
+    let history = &mut cx.model.history;
+    open.calls.retain(|cell| match history.active_mut(*cell) {
+        Some(Cell::Tool(call)) if is_writing(call, key) => {
+            history.remove_active(*cell);
+            false
+        }
+        Some(Cell::Group(group)) => {
+            group.calls.retain(|call| !is_writing(call, key));
+            if group.calls.is_empty() {
+                history.remove_active(*cell);
+                return false;
+            }
+            true
+        }
+        _ => true,
+    });
+}
+
 /// Prints the calls once text follows them or the turn ends, marking any still running as
-/// `state`. At `quiet` they go without a trace.
+/// `state`. At `quiet` they go without a trace, and a call the model never finished writing
+/// goes at any verbosity.
 fn settle_tools(open: &mut OpenTurn, state: ToolState, cx: &mut Cx<'_>) {
     let quiet = quiet(cx);
     let history = &mut cx.model.history;
     for id in std::mem::take(&mut open.calls) {
-        if quiet {
+        let unwritten = match history.active_mut(id) {
+            Some(Cell::Tool(call)) => call.state == ToolState::Writing,
+            Some(Cell::Group(group)) => {
+                group.calls.retain(|call| call.state != ToolState::Writing);
+                group.calls.is_empty()
+            }
+            _ => false,
+        };
+        if quiet || unwritten {
             history.remove_active(id);
             continue;
         }

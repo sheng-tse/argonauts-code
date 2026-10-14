@@ -40,6 +40,7 @@ use super::list::{self, Nav};
 use super::panes::{self, Footer, Marks, Side};
 use super::session::{SessionView, Tab};
 use super::states;
+use super::workflow_own::{self, Own};
 use super::workflow_tries;
 use super::{View, ViewCtx, ViewOutcome};
 
@@ -612,6 +613,58 @@ impl WorkflowView {
         }
     }
 
+    /// Whether the run is one session's CLI running its own workflow, drawn as that CLI draws
+    /// it: every step in one list, with the phases beside them.
+    fn own_frame(&self) -> bool {
+        self.levels.len() == 1 && self.top().data.owner.is_some()
+    }
+
+    /// ↑↓ over every step of the workflow, across its phases. The first press picks the first
+    /// step going down, or the last going up.
+    fn pick(&mut self, nav: Nav) {
+        let level = self.top_mut();
+        let all = workflow_own::steps(&level.data);
+        if all.is_empty() {
+            return;
+        }
+        let next = match level.side {
+            Side::Left => match nav {
+                Nav::By(by) if by < 0 => all.len() - 1,
+                Nav::Bottom => all.len() - 1,
+                _ => 0,
+            },
+            Side::Right => {
+                let at = all
+                    .iter()
+                    .position(|step| *step == (level.phase, level.row))
+                    .unwrap_or(0);
+                step(at, all.len(), nav)
+            }
+        };
+        (level.phase, level.row) = all[next];
+        level.side = Side::Right;
+    }
+
+    fn render_own(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
+        let footer = match self.confirm {
+            Some(_) => self.footer(ctx),
+            None => {
+                let going = self.top().running() && !finished(ctx.state, self.run());
+                workflow_own::footer(going, paused(ctx.state, self.run()))
+            }
+        };
+        let level = self.top();
+        let own = Own {
+            data: &level.data,
+            picked: (level.side == Side::Right).then_some((level.phase, level.row)),
+            elapsed_ms: self
+                .run_elapsed(ctx.state)
+                .unwrap_or_else(|| level.data.elapsed_ms + level.ticking(ctx.now)),
+            ticking: level.ticking(ctx.now),
+        };
+        workflow_own::draw(buf, area, &own, footer, ctx);
+    }
+
     /// ← and Esc go back a level: from the agents to the phases, out of a nested workflow,
     /// and from the phases out of the view.
     fn back(&mut self) -> ViewOutcome {
@@ -656,6 +709,7 @@ impl WorkflowView {
         }
         let level = self.top();
         self.confirm = match (level.side, level.row()) {
+            _ if self.own_frame() => Some(Stop::Workflow),
             (Side::Left, _) => Some(Stop::Workflow),
             (Side::Right, Some(row @ WorkflowRow::Agent(agent)))
                 if agent.status == RowStatus::Running =>
@@ -795,6 +849,9 @@ impl View for WorkflowView {
     /// never jumps as you move.
     fn dock_height(&mut self, screen: ratatui::layout::Size, _ctx: &ViewCtx<'_>) -> Option<u16> {
         let data = &self.top().data;
+        if self.agent.is_none() && self.goal.is_none() && self.own_frame() {
+            return Some(workflow_own::rows(data).min(dock::height(screen.height)));
+        }
         if self.agent.is_some() || self.goal.is_some() || data.goals.is_empty() {
             return None;
         }
@@ -818,6 +875,10 @@ impl View for WorkflowView {
         let status = status_lines(&self.top().data);
         if let Some(agent) = self.agent.as_mut() {
             agent.render_frame(area, buf, ctx, &heading, &status);
+            return;
+        }
+        if self.own_frame() {
+            self.render_own(area, buf, ctx);
             return;
         }
         let level = self.top();
@@ -942,7 +1003,11 @@ impl View for WorkflowView {
                     KeyCode::Home => Nav::Top,
                     _ => Nav::Bottom,
                 };
-                self.move_selection(nav);
+                if self.own_frame() {
+                    self.pick(nav);
+                } else {
+                    self.move_selection(nav);
+                }
                 ViewOutcome::Consumed
             }
             KeyCode::Left if self.top().side == Side::Right && self.top_mut().fold_tries(false) => {
@@ -952,6 +1017,12 @@ impl View for WorkflowView {
                 ViewOutcome::Consumed
             }
             KeyCode::Left | KeyCode::Esc => self.back(),
+            KeyCode::Right | KeyCode::Enter if self.own_frame() => {
+                if self.top().side == Side::Left {
+                    self.pick(Nav::Top);
+                }
+                self.open_row()
+            }
             KeyCode::Right | KeyCode::Enter => {
                 let level = self.top_mut();
                 if level.side == Side::Left {
@@ -974,7 +1045,7 @@ impl View for WorkflowView {
                     super::pause(self.run(), ctx)
                 }
             }
-            KeyCode::Char('f') if plain => {
+            KeyCode::Char('f') if plain && !self.own_frame() => {
                 let level = self.top_mut();
                 level.filter = level.filter.next();
                 level.row = 0;
@@ -1838,6 +1909,7 @@ mod tests {
             notes: Vec::new(),
             required: Vec::new(),
             goals: Vec::new(),
+            owner: None,
         }
     }
 

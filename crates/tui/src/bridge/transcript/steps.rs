@@ -10,6 +10,7 @@ use argonauts_core::events::run::{
     CheckedInstruction, InstructionOutcome, Party, RunPhase, RunStarted,
 };
 use argonauts_core::log::RETRO_FAILED;
+use argonauts_core::steps::intake::InstructionKind;
 
 use crate::cell::{Notice, Tone, ToolCall, ToolItem, ToolKind, ToolState};
 
@@ -54,8 +55,21 @@ pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
 /// own row marks the start, as Claude Code's does. Only what you would otherwise never hear is
 /// said, in one quiet item: what your words asked and what of it wasn't followed, the files
 /// left out, and who else started it.
-pub(super) fn run_started(started: &RunStarted, cx: &mut Cx<'_>) {
-    let mut lines = as_you_asked(&started.instructions);
+///
+/// `reviewers_beside` is true when the workflow's row names the reviewers you asked for, so
+/// this line leaves them out.
+pub(super) fn run_started(started: &RunStarted, reviewers_beside: bool, cx: &mut Cx<'_>) {
+    let instructions: Vec<CheckedInstruction> = started
+        .instructions
+        .iter()
+        .filter(|instruction| {
+            !(reviewers_beside
+                && instruction.kind == InstructionKind::Review
+                && instruction.followed())
+        })
+        .cloned()
+        .collect();
+    let mut lines = as_you_asked(&instructions);
     if !started.uncommitted.is_empty() {
         let files = plural(
             started.uncommitted.len(),

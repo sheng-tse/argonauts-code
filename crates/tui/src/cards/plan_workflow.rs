@@ -21,7 +21,7 @@ pub(super) fn push(
 ) {
     let workflow = &shown.workflow;
     item.blank();
-    let mut name = workflow.name.clone();
+    let mut name = argonauts_core::text::shown_name(&workflow.name);
     if shown.from.is_none() {
         name.push_str(" (composed by the main agent)");
     }
@@ -34,6 +34,7 @@ pub(super) fn push(
         .as_ref()
         .filter(|from| from.as_str() != workflow.name)
     {
+        let from = argonauts_core::text::shown_name(from.as_str());
         name.push_str(&format!(" · started from {from}"));
     }
     item.labeled("Workflow", name);

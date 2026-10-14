@@ -1,6 +1,5 @@
-//! A step of Claude Code's own workflow that the crew answered through Argonauts:
-//! the agent that reviews calls the tool, and Argonauts runs the reviewer's model on the
-//! change. In the mirrored workflow that step's row shows the model that answered, says it was
+//! A step of Claude Code's own workflow that the crew answered through Argonauts: the agent
+//! that reviews calls the tool, and Argonauts runs the reviewer's model on the change. In the mirrored workflow that step's row shows the model that answered, says it was
 //! asked through Argonauts and then what it decided, with its tokens and time, and opens its
 //! session.
 

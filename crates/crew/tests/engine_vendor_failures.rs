@@ -15,12 +15,12 @@ use serde_json::{Value, json};
 
 use argonauts_core::ErrorCategory;
 use argonauts_core::engine::EngineExit;
-use argonauts_core::events::card::ReviewEvent;
+use argonauts_core::events::card::{CardEvent, ReviewEvent};
 use argonauts_core::events::checkpoint::CheckpointEvent;
 use argonauts_core::events::run::{ParkReason, Party, RunLifecycle, RunMode, RunOutcome};
 use argonauts_core::events::session::{EndReason, SessionEnd, SessionEvent};
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::HealthState;
+use argonauts_core::limits::{Candidate, CostEstimate, HealthState};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::handoff::{CrewRole, FallbackEntry};
 use argonauts_core::settings::protocol::GateCommand;
@@ -68,6 +68,10 @@ struct Agent {
     always_overloaded: bool,
     /// Every one of its sessions ends on a sign-in error.
     always_signed_out: bool,
+    /// Every one of its sessions crashes as it starts.
+    always_crashes: bool,
+    /// Its build sessions end with words but no report.
+    builds_without_report: bool,
     requests_changes: bool,
     logged_out: bool,
 }
@@ -180,6 +184,11 @@ fn agent(
         if plan.always_signed_out {
             return sign_in_error();
         }
+        if plan.always_crashes {
+            return FakeSession::ended(EndReason::Crashed {
+                message: "thread/start failed".to_owned(),
+            });
+        }
         if let Some(step) = spec.step
             && let Some((_, times)) = plan.overloaded.iter().find(|(at, _)| *at == step)
         {
@@ -191,6 +200,9 @@ fn agent(
         }
         if spec.step == Some(StepName::Build) {
             let _ = std::fs::write(spec.workdir.join(format!("{}.txt", spec.key)), "work\n");
+            if plan.builds_without_report {
+                return FakeSession::completed("Done, but the report didn't go through.");
+            }
         }
         if spec.step == Some(StepName::DesignWorkflow) {
             let after_understand = prompt(spec).contains("\"current\": ");
@@ -459,8 +471,7 @@ async fn a_refused_answer_format_goes_straight_to_another_agent() -> anyhow::Res
         .context("one line says who took over")?;
     assert_eq!(
         handed.to_string(),
-        "Haiku on Claude Code takes over as the main agent · no second try, this error repeats \
-         every time"
+        "Claude Code takes over as the main agent · no second try, this error repeats every time"
     );
     Ok(())
 }
@@ -1409,6 +1420,122 @@ async fn an_agent_whose_vendor_is_down_is_never_started() -> anyhow::Result<()> 
 
 /// A lead out of the run has its later asks in one step go to the same stand-in: they're one
 /// seat, so nobody else is brought in.
+#[tokio::test]
+async fn a_cli_that_crashed_twice_is_not_started_again_for_later_seats() -> anyhow::Result<()> {
+    let codex = Agent {
+        always_crashes: true,
+        ..Agent::default()
+    };
+    let agents = [
+        (CODEX, codex),
+        (CLAUDE, Agent::default()),
+        (GEMINI, Agent::default()),
+    ];
+    let assignment = Assignment {
+        owner: CLAUDE,
+        reviewers: vec![GEMINI],
+    };
+    let crew = crew_of(&agents, &assignment)?;
+    // In autopilot nothing waits for you, so the run never resumes and its memory holds.
+    let outcome = autopilot(&crew, RunMode::Crew).await?;
+    let said = notes(&outcome.events);
+    assert!(!asked_you(&outcome.events), "{said:?}");
+    // One try and its retry on the first seat; after that nothing waits on Codex again.
+    let retries = said
+        .iter()
+        .filter(|note| note.contains("Codex crashed · trying again"))
+        .count();
+    assert_eq!(retries, 1, "{said:?}");
+    assert_eq!(
+        finished(&outcome.events),
+        Some(RunOutcome::Merged),
+        "{said:?}"
+    );
+    Ok(())
+}
+
+/// A CLI that crashed twice in a row never stands in for another agent later in the run.
+#[tokio::test]
+async fn a_cli_that_keeps_crashing_never_stands_in() -> anyhow::Result<()> {
+    let codex = Agent {
+        always_crashes: true,
+        ..Agent::default()
+    };
+    let agents = [
+        (CODEX, codex),
+        (CLAUDE, Agent::default()),
+        (GEMINI, Agent::overloaded(StepName::Review, 2)),
+    ];
+    let assignment = Assignment {
+        owner: CLAUDE,
+        reviewers: vec![GEMINI],
+    };
+    let crew = crew_of(&agents, &assignment)?;
+    let outcome = autopilot(&crew, RunMode::Crew).await?;
+    let said = notes(&outcome.events);
+    let codex_reviews = crew.services.workers.fake(CODEX).map_or(0, |fake| {
+        fake.specs()
+            .iter()
+            .filter(|spec| spec.step == Some(StepName::Review))
+            .count()
+    });
+    assert_eq!(codex_reviews, 0, "{said:?}");
+    Ok(())
+}
+
+/// A task whose agent ended without a report is retried on another provider, but never on a
+/// CLI that crashed twice in a row earlier in the run.
+#[tokio::test]
+async fn a_retry_on_another_provider_never_starts_a_cli_that_keeps_crashing() -> anyhow::Result<()>
+{
+    let codex = Agent {
+        always_crashes: true,
+        ..Agent::default()
+    };
+    let claude = Agent {
+        builds_without_report: true,
+        ..Agent::default()
+    };
+    let agents = [(CODEX, codex), (CLAUDE, claude), (GEMINI, Agent::default())];
+    let assignment = Assignment {
+        owner: CLAUDE,
+        reviewers: vec![GEMINI],
+    };
+    let crew = crew_of(&agents, &assignment)?;
+    let offered = |name: &str| -> anyhow::Result<Candidate> {
+        Ok(Candidate {
+            worker: name.parse()?,
+            quota_left: None,
+            quota_text: String::new(),
+            track_record: None,
+            cost: CostEstimate::Unknown,
+            needs_confirm: false,
+            may_run_out: false,
+        })
+    };
+    crew.services
+        .handoff
+        .set_candidates(vec![offered(CODEX)?, offered(GEMINI)?]);
+    let outcome = autopilot(&crew, RunMode::Crew).await?;
+    let said = notes(&outcome.events);
+    let codex_builds = crew.services.workers.fake(CODEX).map_or(0, |fake| {
+        fake.specs()
+            .iter()
+            .filter(|spec| spec.step == Some(StepName::Build))
+            .count()
+    });
+    assert_eq!(codex_builds, 0, "{said:?}");
+    let escalated = outcome.events.iter().any(|event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Card(CardEvent::State { reason, .. })
+                if reason.contains("no agent of another provider can take it")
+        )
+    });
+    assert!(escalated, "{said:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_stand_in_keeps_the_seat_for_the_same_agents_later_asks() -> anyhow::Result<()> {
     let codex = Agent {

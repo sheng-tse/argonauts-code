@@ -44,7 +44,11 @@ pub async fn restate(
         return Ok(restated);
     }
 
-    let (notes, decisions) = context::read(&host.repo().base_worktree, &request);
+    let (notes, decisions) = context::read(
+        &host.repo().base_worktree,
+        &crate::divide::repo_state_dir(host),
+        &request,
+    );
     let input = RestateInput {
         request,
         notes,

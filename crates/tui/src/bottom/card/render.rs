@@ -41,6 +41,9 @@ impl CardPrompt {
         if self.dismissed {
             return CardView::default();
         }
+        if self.keys_only {
+            return self.letters_layout(ctx);
+        }
 
         let indent = [Span::raw("  ")];
         let mut lines = vec![Line::from(decorative(glyphs.rule.repeat(width), card))];
@@ -134,6 +137,44 @@ impl CardPrompt {
             cursor,
             extra,
             tail,
+        }
+    }
+
+    /// A question its letters answer, on one line under what it asks about, as
+    /// `Run it now? y / N`: each option's letter, the default's capital and bold.
+    fn letters_layout(&self, ctx: &RenderCtx<'_>) -> CardView {
+        let theme = ctx.theme;
+        let dim = theme.style(Role::Dim);
+        let mut spans = vec![
+            Span::raw("  "),
+            Span::styled(
+                sanitize_line(&self.title).trim().to_owned(),
+                theme.style(Role::Text),
+            ),
+        ];
+        let count = self.options.len();
+        for (index, option) in self.options.iter().enumerate() {
+            let Some(letter) = option.label.chars().next() else {
+                continue;
+            };
+            spans.push(Span::raw(" "));
+            if option.recommended {
+                spans.push(Span::styled(
+                    letter.to_uppercase().to_string(),
+                    theme.style(Role::Text).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(letter.to_lowercase().to_string(), dim));
+            }
+            if index + 1 < count {
+                spans.push(Span::styled(" /", dim));
+            }
+        }
+        let mut lines = vec![Line::from(spans)];
+        fit_lines(&mut lines, usize::from(ctx.width));
+        CardView {
+            lines,
+            ..CardView::default()
         }
     }
 

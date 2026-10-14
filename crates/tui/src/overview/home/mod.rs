@@ -1,52 +1,68 @@
-//! The Overview tab: every CLI's work on this computer in one picture. A row of periods with
-//! the import's note, six tiles, the year of days with the hours and each CLI's share beside
-//! it, tokens a week by CLI, the models, where the tokens went, what ran through Argonauts, a
-//! few things worth knowing, and a comparison. The first time it opens it asks once whether to
-//! import what Claude Code and Codex recorded; the import runs in the app, and the tab shows
-//! how far it got.
+//! The Overview tab: every CLI's work on this computer, laid out as Claude Code's /stats lays
+//! out its own. Two sub-tabs, Overview and Models, and a period line that `r` cycles. Overview
+//! has the year of days, label and value pairs, the tokens by CLI and kind, a fun fact, what's
+//! worth knowing and where the numbers came from; Models has the top models' tokens a day and
+//! each model with its CLI, value and sessions. No boxes. The first time it opens it asks once
+//! whether to import what Claude Code and Codex recorded; the import runs in the app, and the
+//! tab says how far it got.
 
-mod cards;
+mod chart;
+mod facts;
 mod look;
+mod models;
+mod numbers;
 mod year;
 
 use argonauts_core::api::UsagePeriod;
 use argonauts_core::app::ViewRequest;
 use argonauts_core::display_names::DisplayNames;
-use argonauts_core::overview::{ImportStatus, OverviewData, OverviewPeriod};
-use argonauts_core::settings::overview::YearColors;
+use argonauts_core::overview::{CliSource, ImportStatus, OverviewData, OverviewPeriod};
 use crossterm::event::KeyCode;
 use ratatui::text::Span;
 
-use self::cards::{Cards, header, since_word};
-use self::look::{big, cli_word, model_word, share, thousands};
-use self::year::{YEAR_WIDTH, Year, hours_and_share};
+use self::look::{cli_word, since_word};
+use self::models::{Models, last_page, page_word};
+use self::numbers::{Numbers, periods};
+use self::year::Year;
 use super::subtabs::{self, Level};
-use crate::text::{spans_width, truncate_spans};
+use crate::text::truncate_spans;
 use crate::theme::Role;
-use crate::widgets::{Drawn, Frame, Kit, side_by_side, spread};
+use crate::widgets::{Drawn, Frame, Kit};
 
-/// The note beside the tabs.
-pub const NOTE: &str = "every CLI on this computer";
-/// The least room the hours and the share take beside the year.
-const BESIDE_YEAR: usize = 26;
+/// The Overview tab's own tabs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SubTab {
+    #[default]
+    Overview,
+    Models,
+}
+
+impl SubTab {
+    const ALL: [SubTab; 2] = [SubTab::Overview, SubTab::Models];
+
+    fn title(self) -> &'static str {
+        match self {
+            SubTab::Overview => "Overview",
+            SubTab::Models => "Models",
+        }
+    }
+}
 
 /// What the Overview tab keeps while the panel is open.
 #[derive(Debug, Clone, Default)]
 pub struct HomeTab {
     pub period: OverviewPeriod,
     pub level: Level,
-    /// The model row the keys are on.
+    pub sub: SubTab,
+    /// The first model the Models sub-tab shows, a row of two at a time; 0 is the top.
     pub picked: usize,
     /// The import question's choice: yes first.
     answer: usize,
-    /// `c` turned the year's colours from what the setting says.
-    colors: Option<YearColors>,
     data: Option<OverviewData>,
     /// What the import found, said once it finishes while the tab is open.
     found: Option<String>,
-    /// How many blocks the last frame drew under the models table, each a stop for the keys
-    /// after the last model.
-    below: std::cell::Cell<usize>,
+    /// Which models the Models sub-tab shows, for the key line.
+    page: String,
 }
 
 /// What a key on the tab asks of the panel.
@@ -55,7 +71,7 @@ pub enum HomeKey {
     Moved,
     Ask(ViewRequest),
     Copy(String),
-    /// Enter on a model: Stats opens it, for the same span of days.
+    /// Enter on the models: Stats opens the first one shown, for the same span of days.
     OpenModel {
         agent: String,
         model: Option<String>,
@@ -84,6 +100,8 @@ impl HomeTab {
         }
         if data.period == self.period {
             self.data = Some(data.clone());
+            self.picked = self.picked.min(last_page(data.models.len()));
+            self.turn_page();
         }
     }
 
@@ -95,79 +113,36 @@ impl HomeTab {
         )
     }
 
-    /// The periods, the panel's sub-tabs on this tab, and the one shown.
-    pub fn periods(&self) -> (Vec<String>, usize) {
-        let titles = OverviewPeriod::ALL.map(|period| period.title().to_owned());
-        (titles.to_vec(), self.period_index())
+    /// Overview and Models, and the one shown.
+    pub fn sub_tabs(&self) -> (Vec<String>, usize) {
+        let titles = SubTab::ALL.map(|sub| sub.title().to_owned());
+        (titles.to_vec(), self.sub_index())
     }
 
-    fn period_index(&self) -> usize {
-        OverviewPeriod::ALL
+    fn sub_index(&self) -> usize {
+        SubTab::ALL
             .iter()
-            .position(|period| *period == self.period)
+            .position(|sub| *sub == self.sub)
             .unwrap_or(0)
     }
 
-    /// The periods, the one shown filled, and the import's note at the right, cut first.
-    pub fn about(&self, kit: &Kit<'_>, names: &DisplayNames, width: usize) -> Vec<Span<'static>> {
-        let titles = OverviewPeriod::ALL.map(OverviewPeriod::title);
-        let chosen = self.period_index();
-        let mut left = vec![Span::raw(" ")];
-        left.extend(subtabs::row(
-            kit,
-            &titles,
-            chosen,
-            self.level == Level::SubTabs,
-        ));
-        let note = self.note(names);
-        let room = width.saturating_sub(spans_width(&left) + 3);
-        if note.is_empty() || room < 8 {
-            return truncate_spans(&left, width);
-        }
-        let right = truncate_spans(&[kit.dim(note)], room);
-        let mut right = right;
-        right.push(Span::raw(" "));
-        spread(left, right, width)
+    /// The other sub-tab, `by` places along, wrapping.
+    pub fn step_sub_tab(&mut self, by: isize) -> HomeKey {
+        let at = (self.sub_index() as isize + by).rem_euclid(SubTab::ALL.len() as isize);
+        self.sub = SubTab::ALL[at as usize];
+        self.picked = 0;
+        self.turn_page();
+        HomeKey::Moved
     }
 
-    /// `imported · Claude Code since Oct 2025 · Codex since Feb · agy since Jun`, or how far
-    /// the import is, or what it found.
-    fn note(&self, names: &DisplayNames) -> String {
-        if let Some(found) = &self.found {
-            return format!("imported {found}");
-        }
-        let Some(data) = &self.data else {
-            return String::new();
-        };
-        let since = |source: &argonauts_core::overview::CliSource| {
-            let cli = cli_word(names, &source.agent);
-            match source.since {
-                Some(day) if source.imported => {
-                    format!("{cli} since {}", since_word(day, data.today))
-                }
-                Some(day) => format!(
-                    "{cli} through Argonauts since {}",
-                    since_word(day, data.today)
-                ),
-                None => cli,
-            }
-        };
-        let sources: Vec<String> = data.sources.iter().map(since).collect();
-        match &data.import {
-            ImportStatus::Running { of: 0, .. } => "importing your CLIs' history…".to_owned(),
-            ImportStatus::Running { done, of } => {
-                format!("importing your CLIs' history · {done} of {of} files")
-            }
-            ImportStatus::Failed { why } => format!("the import stopped: {why}"),
-            ImportStatus::Done if data.sources.iter().any(|source| source.imported) => {
-                format!("imported · {}", sources.join(" · "))
-            }
-            _ if sources.is_empty() => String::new(),
-            _ => format!("through Argonauts · {}", sources.join(" · ")),
-        }
+    /// ` Overview    Models `, the one shown filled while its row has the keys.
+    pub fn about(&self, kit: &Kit<'_>, _names: &DisplayNames, width: usize) -> Vec<Span<'static>> {
+        let titles = SubTab::ALL.map(SubTab::title);
+        let row = subtabs::row(kit, &titles, self.sub_index(), self.level == Level::SubTabs);
+        truncate_spans(&row, width)
     }
 
-    /// The tab's blocks top to bottom, and the one holding the row the keys are on.
+    /// The tab's blocks top to bottom, and the one to keep in view.
     pub fn blocks(&self, kit: &Kit<'_>, names: &DisplayNames, width: usize) -> (Vec<Drawn>, usize) {
         let Some(data) = &self.data else {
             return (vec![note(kit, "Reading every CLI's history…")], 0);
@@ -176,67 +151,96 @@ impl HomeTab {
         if data.import == ImportStatus::Unasked {
             blocks.push(self.question(kit, width));
         }
-        if data.total.total() == 0 && data.import != ImportStatus::Unasked {
-            blocks.push(note(
-                kit,
-                match data.import {
-                    ImportStatus::Running { .. } => "Importing… the cards fill in as it reads.",
-                    ImportStatus::Declined => {
-                        "Nothing in this period yet. i imports what your CLIs recorded."
-                    }
-                    _ => "Nothing in this period yet.",
-                },
-            ));
+        let empty = data.total.total() == 0 && data.import != ImportStatus::Unasked;
+        match self.sub {
+            SubTab::Overview => {
+                let year = Year {
+                    data,
+                    names,
+                    colors: data.year_colors,
+                };
+                blocks.push(year.draw(kit, width));
+                blocks.push(year.legend(kit, width));
+                blocks.push(periods(kit, self.period));
+                let numbers = Numbers { data, names };
+                if empty {
+                    blocks.push(note(kit, self.nothing_yet(data)));
+                } else {
+                    blocks.push(numbers.pairs(kit, width));
+                }
+                blocks.push(numbers.words(kit, width, self.source(data, names)));
+                (blocks, 0)
+            }
+            SubTab::Models => {
+                blocks.push(periods(kit, self.period));
+                let models = Models { data, names };
+                if empty || data.models.is_empty() {
+                    blocks.push(note(kit, self.nothing_yet(data)));
+                    let last = blocks.len() - 1;
+                    return (blocks, last);
+                }
+                blocks.extend(models.chart(kit, width));
+                blocks.extend(models.favourite(kit, width));
+                blocks.push(models.columns(kit, width, self.picked));
+                let last = blocks.len() - 1;
+                (blocks, last)
+            }
         }
-        let look = Cards { data, names };
-        blocks.extend(look.tiles(kit, width));
-        blocks.push(self.year_and_share(kit, data, names, width));
-        blocks.push(look.weeks(kit, width));
-        let table = blocks.len();
-        let models = data.models.len();
-        let in_cards = self.level == Level::Cards && !self.asking();
-        let picked = (in_cards && self.picked < models.max(1))
-            .then(|| self.picked.min(models.saturating_sub(1)));
-        blocks.push(look.models(kit, width, picked));
-        blocks.extend(look.folders_and_argonauts(kit, width));
-        blocks.extend(look.worth_knowing(kit, width));
-        blocks.extend(look.comparison(kit, width));
-        let below = blocks.len() - table - 1;
-        self.below.set(below);
-        // Past the last model, the keys stop on each block under the table in turn.
-        let focus = match self.picked.checked_sub(models.max(1)) {
-            Some(past) if in_cards => table + 1 + past.min(below.saturating_sub(1)),
-            _ => table,
-        };
-        (blocks, focus)
     }
 
-    /// The year with the hours and the share beside it where both fit, else under it.
-    fn year_and_share(
-        &self,
-        kit: &Kit<'_>,
-        data: &OverviewData,
-        names: &DisplayNames,
-        width: usize,
-    ) -> Drawn {
-        let colors = self.colors.unwrap_or(data.year_colors);
-        let year = Year {
-            data,
-            names,
-            colors,
-        };
-        let room = width.saturating_sub(2);
-        if room >= YEAR_WIDTH + 3 + BESIDE_YEAR {
-            let mut left = year.draw(kit, YEAR_WIDTH);
-            left.indent(1);
-            let right = hours_and_share(kit, data, names, room - YEAR_WIDTH - 3);
-            return side_by_side(left, right, 1 + YEAR_WIDTH + 3);
+    fn nothing_yet(&self, data: &OverviewData) -> &'static str {
+        match data.import {
+            ImportStatus::Running { .. } => "Importing… the numbers fill in as it reads.",
+            ImportStatus::Declined => {
+                "Nothing in this period yet. i imports what your CLIs recorded."
+            }
+            _ => "Nothing in this period yet.",
         }
-        let mut drawn = year.draw(kit, room);
-        drawn.push(Vec::new());
-        drawn.append(hours_and_share(kit, data, names, room));
-        drawn.indent(1);
-        drawn
+    }
+
+    /// `Stats from the last 365 days · imported: Claude Code since Oct 2025, Codex since Feb`,
+    /// or how far the import is, or what it found.
+    fn source(&self, data: &OverviewData, names: &DisplayNames) -> String {
+        let mut parts = vec![format!("Stats from the last {} days", data.span_days)];
+        let since = |source: &CliSource| {
+            let cli = cli_word(names, &source.agent);
+            match source.since {
+                Some(day) => format!("{cli} since {}", since_word(day, data.today)),
+                None => cli,
+            }
+        };
+        let (imported, through): (Vec<&CliSource>, Vec<&CliSource>) =
+            data.sources.iter().partition(|source| source.imported);
+        let listed = |sources: &[&CliSource]| {
+            sources
+                .iter()
+                .map(|source| since(source))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match (&self.found, &data.import) {
+            (Some(found), _) => parts.push(format!("imported {found}")),
+            (None, ImportStatus::Running { of: 0, .. }) => {
+                parts.push("importing your CLIs' history…".to_owned());
+            }
+            (None, ImportStatus::Running { done, of }) => {
+                parts.push(format!(
+                    "importing your CLIs' history · {done} of {of} files"
+                ));
+            }
+            (None, ImportStatus::Failed { why }) => {
+                parts.push(format!("the import stopped: {why} · i tries again"));
+            }
+            _ => {
+                if !imported.is_empty() {
+                    parts.push(format!("imported: {}", listed(&imported)));
+                }
+                if !through.is_empty() {
+                    parts.push(format!("through Argonauts: {}", listed(&through)));
+                }
+            }
+        }
+        parts.join(" · ")
     }
 
     /// The one question: whether to import what the CLIs recorded on this computer.
@@ -247,7 +251,11 @@ impl HomeTab {
         };
         let inner = frame.inner();
         let mut body = Drawn::new();
-        body.push(header(kit, "your history", "asked once", inner));
+        body.push(vec![
+            kit.span(kit.glyphs.widget, Role::Card),
+            Span::raw(" "),
+            kit.strong("your history"),
+        ]);
         let style = kit.style(Role::Text);
         for line in crate::text::wrap_text(QUESTION, style, inner, &[], &[]) {
             body.push(line.spans);
@@ -266,18 +274,29 @@ impl HomeTab {
     }
 
     /// The keys, in display order.
-    pub fn keys(&self) -> Vec<&'static str> {
+    pub fn keys(&self) -> Vec<&str> {
         if self.asking() {
             return vec!["↑↓ choose", "enter answer", "1 2 answer"];
         }
-        let mut keys = vec!["←→ tabs", "↓ periods", "↓ cards", "enter open"];
+        let mut keys = Vec::new();
+        if self.level == Level::Tabs {
+            keys.extend(["tab · ←→ tabs", "↓ Overview or Models"]);
+        } else {
+            if self.sub == SubTab::Models && !self.page.is_empty() {
+                keys.push(self.page.as_str());
+            }
+            keys.push("↑ tabs");
+            if self.sub == SubTab::Overview {
+                keys.push("tab Overview or Models");
+            }
+        }
+        keys.extend(["r to cycle dates", "ctrl+s to copy"]);
         if matches!(
             self.data.as_ref().map(|data| &data.import),
             Some(ImportStatus::Declined | ImportStatus::Failed { .. })
         ) {
             keys.push("i import");
         }
-        keys.extend(["c colours", "ctrl+s copies a summary"]);
         keys
     }
 
@@ -293,39 +312,18 @@ impl HomeTab {
             return self.question_key(code);
         }
         match code {
-            KeyCode::Left if self.level == Level::SubTabs => return Some(self.step_period(-1)),
-            KeyCode::Right if self.level == Level::SubTabs => return Some(self.step_period(1)),
-            KeyCode::Down | KeyCode::Enter if self.level != Level::Cards => {
-                self.level = self.level.down();
-                return Some(HomeKey::Moved);
-            }
-            KeyCode::Up if self.level != Level::Cards || self.picked == 0 => {
-                self.level = self.level.up();
-                return Some(HomeKey::Moved);
-            }
-            KeyCode::Char('c') => {
-                let shown = self
-                    .colors
-                    .or(self.data.as_ref().map(|data| data.year_colors))
-                    .unwrap_or_default();
-                self.colors = Some(shown.next());
-                return Some(HomeKey::Moved);
-            }
-            KeyCode::Char('i') => {
-                return Some(HomeKey::Ask(self.request(Some(true))));
-            }
+            KeyCode::Char('r') => return Some(self.step_period(1)),
+            KeyCode::Char('i') => return Some(HomeKey::Ask(self.request(Some(true)))),
             _ => {}
         }
-        if self.level != Level::Cards {
+        if self.level != Level::Cards || self.sub != SubTab::Models {
             return None;
         }
-        // The models, then each block under the table, are the stops.
         let models = self.data.as_ref().map_or(0, |data| data.models.len());
-        let last = (models.max(1) + self.below.get()).saturating_sub(1);
-        self.picked = self.picked.min(last);
+        let last = last_page(models);
         match code {
-            KeyCode::Up => self.picked = self.picked.saturating_sub(1),
-            KeyCode::Down => self.picked = (self.picked + 1).min(last),
+            KeyCode::Up => self.picked = self.picked.saturating_sub(2),
+            KeyCode::Down => self.picked = (self.picked + 2).min(last),
             KeyCode::Home => self.picked = 0,
             KeyCode::End => self.picked = last,
             KeyCode::Enter => {
@@ -342,6 +340,7 @@ impl HomeTab {
             }
             _ => return None,
         }
+        self.turn_page();
         Some(HomeKey::Moved)
     }
 
@@ -367,53 +366,62 @@ impl HomeTab {
         Some(HomeKey::Ask(self.request(Some(answer))))
     }
 
-    /// The next period, wrapping at the ends, asked for at once.
+    /// The next period, wrapping, asked for at once.
     pub fn step_period(&mut self, by: isize) -> HomeKey {
-        let at = self.period_index();
-        self.period = OverviewPeriod::ALL[subtabs::step(at, by, OverviewPeriod::ALL.len())];
+        let at = OverviewPeriod::ALL
+            .iter()
+            .position(|period| *period == self.period)
+            .unwrap_or(0);
+        let next = (at as isize + by).rem_euclid(OverviewPeriod::ALL.len() as isize);
+        self.period = OverviewPeriod::ALL[next as usize];
         self.picked = 0;
         HomeKey::Ask(self.request(None))
     }
 
-    /// Ctrl+S: the period in a few plain lines, without the folders, which stay on this
-    /// computer.
+    fn turn_page(&mut self) {
+        let models = self.data.as_ref().map_or(0, |data| data.models.len());
+        self.page = page_word(models, self.picked).unwrap_or_default();
+    }
+
+    /// Ctrl+S: what the sub-tab shows, as plain lines, without the folders, which stay on
+    /// this computer.
     pub fn summary_text(&self, names: &DisplayNames) -> Option<String> {
         let data = self.data.as_ref()?;
-        let total = data.total.total();
+        let theme = crate::theme::Theme::dark().with_level(crate::theme::ColorLevel::None);
+        let kit = Kit::new(&theme);
+        let width = 100;
         let mut lines = vec![format!(
-            "Argonauts Code · {} · every CLI on this computer",
+            "Argonauts Code · {} · {}",
+            self.sub.title(),
             data.period.title()
         )];
-        lines.push(format!(
-            "{} tokens · API value {} at list prices · {} sessions · {} active days of {} · streak {} (longest {})",
-            big(total),
-            look::dollars(data.api_value),
-            thousands(u64::from(data.sessions())),
-            data.active_days,
-            data.span_days,
-            data.streak,
-            data.longest_streak,
-        ));
-        let clis: Vec<String> = data
-            .by_cli()
-            .iter()
-            .map(|(agent, tokens)| format!("{} {}", cli_word(names, agent), share(*tokens, total)))
-            .collect();
-        if !clis.is_empty() {
-            lines.push(format!("By CLI: {}", clis.join(" · ")));
+        let mut blocks = Vec::new();
+        match self.sub {
+            SubTab::Overview => {
+                let numbers = Numbers { data, names };
+                blocks.push(numbers.pairs(&kit, width));
+                blocks.push(numbers.words(&kit, width, self.source(data, names)));
+            }
+            SubTab::Models => {
+                let models = Models { data, names };
+                blocks.extend(models.favourite(&kit, width));
+                for first in (0..data.models.len()).step_by(models::PAGE) {
+                    blocks.push(models.columns(&kit, width, first));
+                }
+            }
         }
-        for model in &data.models {
-            lines.push(format!(
-                "{} on {}: {} tokens, {}, {} sessions",
-                model_word(names, &model.agent, model.model.as_deref()),
-                cli_word(names, &model.agent),
-                big(model.tokens.total()),
-                share(model.tokens.total(), total),
-                model.sessions,
-            ));
-        }
-        if let Some(said) = cards::input_and_output(data) {
-            lines.push(said);
+        for block in blocks {
+            lines.push(String::new());
+            for line in block.lines {
+                let text: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                if !text.starts_with("Top folder:") {
+                    lines.push(text.trim_end().to_owned());
+                }
+            }
         }
         Some(lines.join("\n"))
     }
@@ -439,7 +447,7 @@ const PROMISE: &str = "What was said is skipped as each line is read and never k
 
 fn note(kit: &Kit<'_>, words: &str) -> Drawn {
     let mut block = Drawn::new();
-    block.push(vec![kit.dim(format!(" {words}"))]);
+    block.push(vec![kit.dim(words.to_owned())]);
     block
 }
 

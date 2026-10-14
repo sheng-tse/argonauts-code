@@ -254,6 +254,7 @@ async fn land(
         };
         match reached {
             Ok(Some(sha)) => {
+                in_the_way::tell_held(host, &holding)?;
                 landed(host, &target, &sha, reach.moves_your_branch())?;
                 return Ok(Landing::Done(RunOutcome::Merged));
             }
@@ -396,7 +397,7 @@ async fn first_commit(
         git.write_files(root, &scratch, main, head, &holding.all())
             .await?;
     }
-    let commit = deliver::first_commit(host, root, head).await?;
+    let commit = deliver::first_commit(host, root, main, head).await?;
     if let Err(err) = git.start_branch(root, branch, &commit).await {
         // Yours stays yours, and landing reads again how the work reaches you.
         return match git.head_commit(root).await? {

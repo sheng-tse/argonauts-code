@@ -25,9 +25,7 @@ impl CollapsedGroup {
     }
 
     pub fn is_running(&self) -> bool {
-        self.calls
-            .iter()
-            .any(|call| call.state == ToolState::Running)
+        self.calls.iter().any(ToolCall::is_running)
     }
 
     /// Like `Read 3 files, ran 2 shell commands`, or `Reading 2 files…` while a call runs.
@@ -89,11 +87,7 @@ impl CollapsedGroup {
     }
 
     fn current_target(&self) -> Option<String> {
-        let call = self
-            .calls
-            .iter()
-            .rev()
-            .find(|call| call.state == ToolState::Running)?;
+        let call = self.calls.iter().rev().find(|call| call.is_running())?;
         let target = match &call.title {
             ToolTitle::Call { name, args } if args.trim().is_empty() => name.clone(),
             ToolTitle::Call { args, .. } => args.clone(),

@@ -2265,3 +2265,73 @@ async fn a_leak_only_warns_when_set_to_and_means_nothing_outside_isolation() {
             .any(|notice| notice.contains("memory-keeper"))
     );
 }
+
+fn report_call(id: &str, started: bool) -> String {
+    event_line(&if started {
+        AgentEvent::ToolStarted {
+            id: id.into(),
+            name: "mcp__argonauts_status__argonauts_report".into(),
+            input: serde_json::json!({ "status": "done" }),
+            parent: None,
+        }
+    } else {
+        AgentEvent::ToolFinished {
+            id: id.into(),
+            ok: true,
+            output: None,
+            parent: None,
+        }
+    })
+}
+
+/// Claude Code's own workflow runs in the background past the first turn. A report sent while
+/// it runs is held back, the session waits for the workflow, and one that then ends without
+/// reporting is asked once; the report it sends after that is the one kept.
+#[tokio::test]
+async fn a_session_in_its_own_workflow_reports_once_its_work_is_done() {
+    let dirs = Dirs::new();
+    let report = dirs.session.join("report.json");
+    let report = report.display();
+    let script = format!(
+        "IFS= read -r first; {}; {}; echo '{{\"status\":\"blocked\"}}' > '{report}'; {}; {}; \
+         {}; {}; {}; IFS= read -r asked; printf '%s\\n' \"$asked\" >> got-input; {}; \
+         echo '{{\"status\":\"done\"}}' > '{report}'; {}; {}; \
+         while IFS= read -r line; do :; done; : > input-closed",
+        echo(&background(&["w1"], false)),
+        echo(&report_call("early", true)),
+        echo(&report_call("early", false)),
+        echo(&result("Workflow launched in background.")),
+        wait_for_go(),
+        echo(&background(&[], true)),
+        echo(&result("The workflow finished.")),
+        echo(&report_call("final", true)),
+        echo(&report_call("final", false)),
+        echo(&result("Reported.")),
+    );
+    let h = Harness::new(TestAdapter::new(&script).with_send_now());
+    let mut spec = dirs.spec("add due dates");
+    spec.json_schema = Some(serde_json::json!({"type": "object"}));
+    spec.cli_workflow.ultracode = true;
+    spec.limits.inactivity_min = Some(0.1);
+    let mut handle = h.worker.start(spec).await.unwrap();
+    let seen = read_until(&mut handle.events, |e| {
+        matches!(e, WorkerEvent::Agent(AgentEvent::Result { .. }))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!dirs.work.join("input-closed").exists());
+    std::fs::write(dirs.work.join("go"), "").unwrap();
+    let (events, end) = finish(seen, handle).await;
+
+    assert!(dirs.read("got-input").contains("argonauts_report"));
+    assert_eq!(end.structured, Some(serde_json::json!({"status": "done"})));
+    let reports: Vec<String> = agent_events(&events)
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolStarted { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reports, ["final"]);
+    assert!(dirs.work.join("input-closed").exists());
+}

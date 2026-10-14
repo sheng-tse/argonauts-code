@@ -80,12 +80,12 @@ fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows()
     let rows = rows(&mut usage, &state, 110, 60);
     assert!(rows[0].chars().all(|c| c == '─'), "{rows:#?}");
     assert!(
-        rows[1].starts_with("  Overview   Status  [Usage]  Context   Limits   Stats"),
+        rows[1].starts_with("  Overview    Status   [Usage]   Context    Limits    Stats"),
         "{rows:#?}"
     );
-    assert!(rows[1].ends_with("r reads again"), "{rows:#?}");
+    assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
     assert!(
-        rows[2].starts_with("  All CLIs   Claude Code   Codex   Antigravity CLI   OpenRouter"),
+        rows[2].starts_with("  All CLIs    Claude Code    Codex    Antigravity CLI    OpenRouter"),
         "{rows:#?}"
     );
     let at = |text: &str| {
@@ -113,7 +113,7 @@ fn the_usage_tab_draws_a_card_per_cli_under_the_tabs_and_takes_only_their_rows()
     assert!(
         rows.last()
             .unwrap()
-            .starts_with(" tab · ←→ tabs · ↓ CLIs · enter details · esc back"),
+            .starts_with(" tab · ←→ tabs · ↓ CLIs · 1-4 period · r reads again · esc closes"),
         "{rows:#?}"
     );
     assert!(
@@ -150,8 +150,14 @@ fn the_keys_change_tab_units_and_pin_the_card_in_focus() {
         }
     );
 
+    // In the cards ←→ do nothing; a tab without sub-tabs moves the tabs with Shift+Tab.
     assert!(matches!(
         key(&mut overview, &state, KeyCode::Left),
+        ViewOutcome::Consumed
+    ));
+    assert_eq!(overview.tab(), Tab::Limits);
+    assert!(matches!(
+        key(&mut overview, &state, KeyCode::BackTab),
         ViewOutcome::Request(ViewRequest::Context)
     ));
     assert_eq!(overview.tab(), Tab::Context);
@@ -218,7 +224,8 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     }));
     // The run's cards come under the setup's, so a tall screen shows them all.
     let shown = rows(&mut overview, &state, 110, 120);
-    assert!(shown[2].ends_with("run-03 · $1.20"), "{shown:#?}");
+    // No row under the tabs: the cards start after one blank row.
+    assert!(shown[2].is_empty(), "{shown:#?}");
     let at = |what: &str| {
         shown
             .iter()
@@ -233,7 +240,7 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     assert!(at(" Recent  ") > at("◆ needs you"), "{shown:#?}");
     let keys = shown.last().unwrap();
     assert!(
-        keys.contains("tab · ←→ tabs · ↓ into the cards · enter open"),
+        keys.contains("tab · ←→ tabs · ↓ into the cards · esc closes"),
         "{keys}"
     );
     // Your CLIs, the settings and the runs come first, then the run's own cards.
@@ -244,7 +251,7 @@ fn status_shows_its_cards_under_its_tab_once_its_answer_comes() {
     let shown = rows(&mut overview, &state, 110, 60);
     let keys = shown.last().unwrap();
     assert!(
-        keys.contains("←→ tabs · ↑↓ task · enter agent · p pin above the input"),
+        keys.contains("↑↓ task · enter agent · tab tabs · p pin above the input"),
         "{keys}"
     );
 
@@ -766,19 +773,19 @@ fn down_goes_to_the_sub_tabs_then_into_the_cards_and_up_comes_back() {
     let state = state(sample::usage_with_stats());
     let mut stats = view(Tab::Stats).with_period(UsagePeriod::Week);
     let marked = |rows: &[String]| (rows[1].contains("[Stats]"), rows[2].contains("[By"));
-    let shown = rows(&mut stats, &state, 120, 60);
+    let shown = rows(&mut stats, &state, 120, 80);
     assert_eq!(marked(&shown), (true, false), "{shown:#?}");
 
     key(&mut stats, &state, KeyCode::Down);
     assert_eq!(stats.level(), Level::SubTabs);
-    let shown = rows(&mut stats, &state, 120, 60);
+    let shown = rows(&mut stats, &state, 120, 80);
     assert_eq!(marked(&shown), (false, true), "{shown:#?}");
     assert!(shown[2].contains("[By CLI]"), "{shown:#?}");
     assert!(
         shown
             .last()
             .unwrap()
-            .starts_with(" ←→ choose · ↓ into the cards · ↑ tabs"),
+            .starts_with(" tab · ←→ By CLI, By model, By role · ↓ into the cards · ↑ tabs"),
         "{shown:#?}"
     );
 
@@ -799,7 +806,7 @@ fn down_goes_to_the_sub_tabs_then_into_the_cards_and_up_comes_back() {
 
     key(&mut stats, &state, KeyCode::Down);
     assert_eq!(stats.level(), Level::Cards);
-    let shown = rows(&mut stats, &state, 120, 60);
+    let shown = rows(&mut stats, &state, 120, 80);
     assert_eq!(marked(&shown), (false, false), "{shown:#?}");
     key(&mut stats, &state, KeyCode::Down);
     key(&mut stats, &state, KeyCode::Up);
@@ -837,7 +844,11 @@ fn vim_keys_move_through_the_panel() {
     letter(&mut overview, 'j');
     assert_eq!(overview.level(), Level::Cards);
     letter(&mut overview, 'G');
-    assert_eq!(overview.focus, Tab::Usage.cards().len() - 1);
+    let plans = state.usage.as_ref().unwrap().plans.len();
+    assert_eq!(
+        overview.focus, plans,
+        "the conversation's line, then a card per CLI"
+    );
     letter(&mut overview, 'g');
     assert_eq!(overview.focus, 0);
     letter(&mut overview, 'k');
@@ -851,4 +862,305 @@ fn vim_keys_move_through_the_panel() {
     let mut overview = view(Tab::Usage);
     key(&mut overview, &state, KeyCode::Char('l'));
     assert_eq!(overview.tab(), Tab::Usage);
+}
+
+/// The panel drawn in colour on a screen `width` by `rows`, at the height it asks for.
+fn colour_buffer(view: &mut OverviewView, state: &AppState, width: u16, rows: u16) -> Buffer {
+    let theme = crate::overview::golden::theme();
+    let ctx = ViewCtx {
+        theme: &theme,
+        state,
+        now: Instant::now(),
+    };
+    let height = view
+        .dock_height(Size::new(width, rows), &ctx)
+        .unwrap_or(rows);
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    view.render(area, &mut buf, &ctx);
+    buf
+}
+
+/// The tabs in plain text, all alike, the open one filled; under them what the tab shows and
+/// its sub-tabs flush right, two cells apart, as the Stats picture draws the panel's head. The
+/// picture is the panel one column in from each edge of a screen two columns wider.
+#[test]
+fn the_head_of_the_panel_matches_its_picture() {
+    use crate::overview::golden::{Picture, Region, assert_matches, theme};
+    let picture = Picture::load("by_cli_after");
+    let state = state(sample::usage_with_stats());
+    let mut stats = view(Tab::Stats).with_period(UsagePeriod::All);
+    let buf = colour_buffer(&mut stats, &state, 120, 80);
+    // The tabs; the periods at the right are the Stats tab's own words.
+    let tabs = Region {
+        rows: 0..1,
+        columns: 0..90,
+        at: (1, 1),
+    };
+    assert_matches(&picture, &buf, &tabs, &theme());
+    let about = Region {
+        rows: 1..2,
+        columns: 0..118,
+        at: (1, 2),
+    };
+    assert_matches(&picture, &buf, &about, &theme());
+    // The periods as Limits draws them: the one shown in the accent, flush right.
+    let mut limits = view(Tab::Limits).with_period(UsagePeriod::All);
+    let mut all = sample::usage();
+    all.period = UsagePeriod::All;
+    let state = self::state(all);
+    let buf = colour_buffer(&mut limits, &state, 120, 80);
+    let periods = Region {
+        rows: 0..1,
+        columns: 90..118,
+        at: (1, 1),
+    };
+    assert_matches(&picture, &buf, &periods, &theme());
+}
+
+/// Tab follows the row with the keys; ←→ do nothing in the cards; Enter on the tabs does
+/// nothing and on the sub-tabs goes to the first row; the key line says what Tab does.
+#[test]
+fn tab_goes_along_the_row_with_the_keys() {
+    let state = state(sample::usage_with_stats());
+    let mut stats = view(Tab::Stats).with_period(UsagePeriod::Week);
+    assert!(matches!(
+        key(&mut stats, &state, KeyCode::Enter),
+        ViewOutcome::Consumed
+    ));
+    assert_eq!(stats.level(), Level::Tabs, "enter on the tabs does nothing");
+    key(&mut stats, &state, KeyCode::Tab);
+    assert_eq!(stats.tab(), Tab::Overview, "on the tabs Tab moves the tabs");
+    key(&mut stats, &state, KeyCode::BackTab);
+    assert_eq!(stats.tab(), Tab::Stats);
+
+    key(&mut stats, &state, KeyCode::Down);
+    assert_eq!(stats.level(), Level::SubTabs);
+    key(&mut stats, &state, KeyCode::Tab);
+    assert_eq!(
+        stats.tab(),
+        Tab::Stats,
+        "on the sub-tabs Tab moves the sub-tabs"
+    );
+    assert_eq!(stats.stats.group, StatsGroup::Model);
+    key(&mut stats, &state, KeyCode::BackTab);
+    key(&mut stats, &state, KeyCode::BackTab);
+    assert_eq!(stats.stats.group, StatsGroup::Role, "and wraps");
+
+    key(&mut stats, &state, KeyCode::Enter);
+    assert_eq!(
+        stats.level(),
+        Level::Cards,
+        "enter on the sub-tabs goes to the first row"
+    );
+    let shown = rows(&mut stats, &state, 160, 80);
+    assert!(
+        shown
+            .last()
+            .unwrap()
+            .contains("tab By CLI, By model, By role"),
+        "{shown:#?}"
+    );
+    key(&mut stats, &state, KeyCode::Tab);
+    assert_eq!(
+        stats.stats.group,
+        StatsGroup::Cli,
+        "in the cards Tab moves the sub-tabs"
+    );
+    assert_eq!(
+        stats.level(),
+        Level::Cards,
+        "and the keys stay in the cards"
+    );
+    assert!(matches!(
+        key(&mut stats, &state, KeyCode::Right),
+        ViewOutcome::Consumed
+    ));
+    assert_eq!(stats.tab(), Tab::Stats, "→ in the cards does nothing");
+
+    // A tab without sub-tabs: Tab moves the tabs from any row, and the line says so.
+    let state = self::state(sample::usage());
+    let mut limits = view(Tab::Limits);
+    into_the_cards(&mut limits, &state);
+    let shown = rows(&mut limits, &state, 160, 80);
+    assert!(shown.last().unwrap().contains("tab tabs"), "{shown:#?}");
+    key(&mut limits, &state, KeyCode::Tab);
+    assert_eq!(limits.tab(), Tab::Stats);
+}
+
+/// Esc closes the panel at once from every row, with a CLI's page open too, and so does q
+/// with vim keys on.
+#[test]
+fn esc_closes_the_panel_from_any_row() {
+    let state = state(sample::usage());
+    for tab in Tab::ALL {
+        for downs in 0..4 {
+            let mut panel = view(tab);
+            for _ in 0..downs {
+                key(&mut panel, &state, KeyCode::Down);
+            }
+            assert!(
+                matches!(key(&mut panel, &state, KeyCode::Esc), ViewOutcome::Close),
+                "{tab:?} after {downs} ↓"
+            );
+        }
+    }
+    let mut usage = view(Tab::Usage);
+    into_the_cards(&mut usage, &state);
+    key(&mut usage, &state, KeyCode::Down);
+    key(&mut usage, &state, KeyCode::Enter);
+    assert_eq!(usage.cli, 1, "enter on the first card opens its CLI's page");
+    assert!(matches!(
+        key(&mut usage, &state, KeyCode::Esc),
+        ViewOutcome::Close
+    ));
+    let mut vim = state.clone();
+    vim.ui = list::keys_state(true).ui;
+    let mut usage = view(Tab::Usage);
+    into_the_cards(&mut usage, &vim);
+    assert!(matches!(
+        key(&mut usage, &vim, KeyCode::Char('q')),
+        ViewOutcome::Close
+    ));
+}
+
+/// /usage opens with the keys on the tabs; in the cards the card with the keys has its title
+/// filled, Enter opens its CLI's page and Enter there comes back to the same card.
+#[test]
+fn usage_shows_the_card_with_the_keys_and_enter_opens_and_closes_its_page() {
+    let state = state(sample::usage());
+    let mut usage = view(Tab::Usage);
+    assert_eq!(usage.level(), Level::Tabs);
+    into_the_cards(&mut usage, &state);
+    key(&mut usage, &state, KeyCode::Down);
+    key(&mut usage, &state, KeyCode::Down);
+    assert_eq!(usage.focus, 2);
+    let theme = crate::overview::golden::theme();
+    let buf = colour_buffer(&mut usage, &state, 110, 80);
+    let filled = theme.color(Role::Card);
+    let lines = crate::views::dock::lines(&buf);
+    let codex = lines
+        .iter()
+        .position(|line| line.to_string().contains("● Codex"))
+        .expect("Codex's card");
+    let column = lines[codex].to_string().find("Codex").unwrap();
+    let column = lines[codex].to_string()[..column].chars().count() as u16;
+    assert_eq!(
+        buf.cell((column, codex as u16)).map(|cell| cell.bg),
+        filled,
+        "the card with the keys has its title filled"
+    );
+    let shown = rows(&mut usage, &state, 110, 80);
+    assert!(
+        shown
+            .last()
+            .unwrap()
+            .contains("↑↓ card · enter opens its page · tab CLIs"),
+        "{shown:#?}"
+    );
+    key(&mut usage, &state, KeyCode::Enter);
+    assert_eq!(usage.cli, 2, "Codex's page");
+    assert_eq!(usage.level(), Level::Cards);
+    key(&mut usage, &state, KeyCode::Enter);
+    assert_eq!((usage.cli, usage.focus), (0, 2), "back on Codex's card");
+}
+
+/// The Overview tab's sub-tabs go by the panel's keys like every tab's: ↓ reaches them, Tab
+/// and Shift+Tab move between Overview and Models, ↑ goes back to the tabs, and Esc closes
+/// from the sub-tabs as from anywhere.
+#[test]
+fn tab_moves_the_overview_sub_tabs_as_it_does_every_tabs() {
+    let state = state(sample::usage());
+    let mut overview = view(Tab::Overview);
+    overview.accept(&ViewData::Overview {
+        overview: Box::new(crate::overview::home::sample::overview()),
+    });
+    let marked = |overview: &mut OverviewView| {
+        let shown = rows(overview, &state, 160, 80);
+        let row = shown
+            .iter()
+            .find(|row| row.contains("Overview") && row.contains("Models"))
+            .cloned()
+            .unwrap_or_default();
+        (row.contains("[Overview]"), row.contains("[Models]"))
+    };
+    key(&mut overview, &state, KeyCode::Down);
+    assert_eq!(overview.level(), Level::SubTabs);
+    assert_eq!(marked(&mut overview), (true, false));
+
+    key(&mut overview, &state, KeyCode::Tab);
+    assert_eq!(overview.tab(), Tab::Overview, "Tab moves the sub-tabs here");
+    assert_eq!(marked(&mut overview), (false, true));
+    key(&mut overview, &state, KeyCode::BackTab);
+    assert_eq!(marked(&mut overview), (true, false));
+
+    key(&mut overview, &state, KeyCode::Up);
+    assert_eq!(overview.level(), Level::Tabs);
+    let shown = rows(&mut overview, &state, 160, 80);
+    let keys = shown
+        .iter()
+        .rev()
+        .find(|row| !row.trim().is_empty())
+        .unwrap();
+    assert!(
+        keys.trim_start()
+            .starts_with("tab · ←→ tabs · ↓ Overview or Models"),
+        "on the tabs the line says what Tab does: {keys}"
+    );
+    key(&mut overview, &state, KeyCode::Down);
+    assert!(matches!(
+        key(&mut overview, &state, KeyCode::Esc),
+        ViewOutcome::Close
+    ));
+}
+
+/// Usage takes a period with 1 to 4 from any row, as Stats and Limits do, shows the four on its
+/// tab row, and says so on its key line.
+#[test]
+fn usage_takes_a_period_from_any_row() {
+    let state = state(sample::usage());
+    let mut usage = view(Tab::Usage);
+    for (row, keys) in [("tabs", vec![]), ("CLIs", vec![KeyCode::Down])] {
+        for code in &keys {
+            key(&mut usage, &state, *code);
+        }
+        let asked = key(&mut usage, &state, KeyCode::Char('1'));
+        assert!(
+            matches!(
+                asked,
+                ViewOutcome::Request(ViewRequest::Usage {
+                    period: UsagePeriod::Today
+                })
+            ),
+            "{row}: {asked:?}"
+        );
+    }
+    key(&mut usage, &state, KeyCode::Down);
+    let asked = key(&mut usage, &state, KeyCode::Char('4'));
+    assert!(
+        matches!(
+            asked,
+            ViewOutcome::Request(ViewRequest::Usage {
+                period: UsagePeriod::All
+            })
+        ),
+        "the cards: {asked:?}"
+    );
+    let shown = rows(&mut usage, &state, 140, 60);
+    assert!(shown[1].ends_with("Today  Week  Month  All"), "{shown:#?}");
+    // Its cards leave the last column blank, as every other tab's do.
+    for width in [100u16, 118, 120, 140] {
+        let shown = rows(&mut usage, &state, width, 60);
+        for row in shown.iter().skip(1) {
+            assert!(
+                row.chars().count() < usize::from(width),
+                "{width}: {row:?}\n{shown:#?}"
+            );
+        }
+    }
+    let keys = shown.iter().rev().find(|row| !row.trim().is_empty());
+    assert!(
+        keys.is_some_and(|keys| keys.contains("1-4 period")),
+        "{shown:#?}"
+    );
 }

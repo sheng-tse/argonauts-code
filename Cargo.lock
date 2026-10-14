@@ -307,6 +307,7 @@ dependencies = [
  "argonauts-tui",
  "futures",
  "nix 0.31.3",
+ "portable-pty",
  "regex",
  "reqwest",
  "schemars 1.2.2",
@@ -325,6 +326,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width 0.2.2",
  "uuid",
+ "vt100",
 ]
 
 [[package]]

@@ -10,6 +10,7 @@ use crate::error::EngineResult;
 pub mod absorb;
 pub mod branch;
 pub mod card_merge;
+pub mod commit_message;
 pub mod conductor;
 pub mod deliver;
 pub mod diff;
@@ -18,6 +19,7 @@ pub mod in_the_way;
 pub mod land;
 pub mod merge;
 pub mod merge_packet;
+pub mod merger;
 pub mod unborn;
 
 /// What merging one approved card came to.

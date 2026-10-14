@@ -314,8 +314,9 @@ fn the_wheel_and_page_keys_scroll_and_new_output_waits_below() {
     f.wheel(MouseEventKind::ScrollUp);
     f.frame();
     assert_eq!(f.ui.scroll_offset(), Some(3));
+    // The question being answered is kept at the top, and the last row says how to reach it.
     assert!(
-        f.shown().contains("3 rows below · pgdn to scroll"),
+        f.shown().contains("or press ctrl+↑, to jump"),
         "{}",
         f.shown()
     );
@@ -688,4 +689,55 @@ fn the_workflow_view_docks_under_the_conversation() {
     f.frame();
     assert_eq!(f.ui.views_open(), 0);
     assert_eq!(f.row_of("supervised mode on"), mode);
+}
+
+/// Scrolled up past a prompt, the prompt being answered stays at the top; Ctrl+↑ or a click
+/// on it goes to where it starts, and back at the bottom it goes.
+#[test]
+fn the_prompt_being_answered_stays_at_the_top_and_takes_you_back_to_it() {
+    let mut f = Fullscreen::new(80);
+    conversation(&mut f);
+    f.frame();
+    assert!(!f.rows()[0].starts_with("❯ Question"), "{}", f.shown());
+
+    f.key(KeyCode::PageUp);
+    f.frame();
+    let top = f.rows()[0].clone();
+    assert!(top.starts_with("❯ Question "), "{}", f.shown());
+    assert!(f.rows()[1].starts_with('─'), "{}", f.shown());
+    assert!(
+        f.shown().contains("or press ctrl+↑, to jump"),
+        "{}",
+        f.shown()
+    );
+
+    f.press(KeyCode::Up, KeyModifiers::CONTROL);
+    f.frame();
+    assert_eq!(f.rows()[0], top.trim_end(), "{}", f.shown());
+    assert!(
+        !f.rows()[1].starts_with('─'),
+        "the prompt starts the view:\n{}",
+        f.shown()
+    );
+
+    // A click on the row at the top does the same. That prompt then starts the view, under
+    // the one before it, which is now the prompt being answered above.
+    f.key(KeyCode::PageDown);
+    f.frame();
+    f.wheel(MouseEventKind::ScrollUp);
+    f.frame();
+    let held = f.rows()[0].clone();
+    assert!(held.starts_with("❯ Question 2"), "{}", f.shown());
+    let actions = f.click((10, 0), 1);
+    assert!(actions.is_empty(), "nothing is copied: {actions:?}");
+    assert!(f.rows()[0].starts_with("❯ Question 1"), "{}", f.shown());
+    assert_eq!(f.rows()[2], held.trim_end(), "{}", f.shown());
+
+    f.key(KeyCode::End);
+    for _ in 0..3 {
+        f.key(KeyCode::PageDown);
+    }
+    f.frame();
+    assert_eq!(f.ui.scroll_offset(), Some(0));
+    assert!(!f.rows()[1].starts_with('─'), "{}", f.shown());
 }

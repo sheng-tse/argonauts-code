@@ -1,6 +1,7 @@
 //! Antigravity CLI (`agy`) adapter for Argonauts.
 
 mod agents_file;
+mod banner;
 mod command;
 mod errors;
 mod parser;
@@ -164,6 +165,14 @@ impl Adapter for AntigravityCli {
 
     fn update_args(&self) -> Option<&'static [&'static str]> {
         Some(&["update"])
+    }
+
+    fn reads_banner(&self) -> bool {
+        true
+    }
+
+    fn banner_account(&self, screen: &str) -> Option<argonauts_core::adapter::BannerAccount> {
+        banner::account(screen)
     }
 }
 

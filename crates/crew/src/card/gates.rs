@@ -3,9 +3,13 @@
 //! are on the branch, then each `gates.run` command in the card's sandbox, then the stub check
 //! for test cards. Acceptance tests whose build card's work isn't in the tree yet are expected
 //! to fail, and so are the commands that run them.
+//!
+//! The commands run on a clean copy of the card's commit, which holds exactly its change
+//! (`crate::change`), never in the task's own folder: they see none of the leftovers beside the
+//! work, and what they write, such as caches and compiled files, stays in the copy.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argonauts_core::CardId;
@@ -60,13 +64,15 @@ pub async fn run_in(
     report: Option<&CardReport>,
 ) -> EngineResult<GateVerdict> {
     let spec = record_of(host, card)?.spec;
-    if let Some(output) = setup(host, card, &tree.path, &tree.branch).await? {
+    let git = worktree::tree_git(host, &tree.path).await?;
+    let copy = clean_copy(host, &git, tree).await?;
+    let label = format!("{} (clean copy)", tree.branch);
+    if let Some(output) = setup(host, card, &copy, &label).await? {
         return Ok(GateVerdict::Stopped {
             reason: format!("checks.setup failed in {}: {output}", tree.branch),
         });
     }
 
-    let git = worktree::tree_git(host, &tree.path).await?;
     if git.merge_in_progress(&tree.path).await? {
         let files = git.leftover_markers(&tree.path).await?;
         return Ok(GateVerdict::Failed {
@@ -101,7 +107,7 @@ pub async fn run_in(
         };
         let mut outcomes = Vec::new();
         for command in commands {
-            let request = request(host, card, command, &tree.path, false)?;
+            let request = request(host, card, command, &copy, false)?;
             let outcome = host.services().gates.run(request).await;
             let outcome = judge(outcome, expected.get(&command.name));
             host.record(Some(card), None, RunEventKind::Gate(outcome.clone()))?;
@@ -125,6 +131,71 @@ pub async fn run_in(
             output: failure_text(&failed),
         })
     }
+}
+
+/// One check's result as reviewers read it, such as `tests (node --test) passed: 9 pass`. A
+/// summary that only repeats the result is left out.
+pub(crate) fn result_line(gate: &GateOutcome) -> String {
+    let result = if gate.passed { "passed" } else { "failed" };
+    let ran = gate
+        .command
+        .as_ref()
+        .map(|command| format!(" ({})", command.join(" ")))
+        .unwrap_or_default();
+    let summary = gate.summary.trim();
+    if summary.is_empty() || summary == result {
+        format!("{}{ran} {result}", gate.name)
+    } else {
+        format!("{}{ran} {result}: {summary}", gate.name)
+    }
+}
+
+/// The clean copy of `tree`'s commit the checks run in: a detached worktree beside the run's
+/// other worktrees, made once and put back to the commit before each run of the checks. Only
+/// what git ignores survives from one run to the next, such as installed dependencies.
+async fn clean_copy(host: &Host, git: &Git, tree: &CardTree) -> EngineResult<PathBuf> {
+    let head = git.resolve(&tree.path, "HEAD").await?;
+    clean_copy_at(host, tree, &head).await
+}
+
+/// A clean copy of the task's change as it stands, committed or not, for checks asked for
+/// while its agents still work in its folder, and the label its setup commands run under.
+pub(crate) async fn clean_copy_of_change(
+    host: &Host,
+    card: &CardId,
+) -> EngineResult<(PathBuf, String)> {
+    let tree = worktree::ensure(host, card).await?;
+    let commit = crate::change::commit_of_task(host, card).await?;
+    let copy = clean_copy_at(host, &tree, &commit).await?;
+    Ok((copy, format!("{} (clean copy)", tree.branch)))
+}
+
+/// The checks' copy of `tree`, put back to `head`.
+async fn clean_copy_at(host: &Host, tree: &CardTree, head: &str) -> EngineResult<PathBuf> {
+    let name = tree
+        .path
+        .file_name()
+        .map_or_else(|| "card".into(), |name| name.to_string_lossy());
+    let copy = host.repo().worktrees.join(format!("{name}-checks"));
+    let made = match host
+        .git()
+        .worktree_git_dir(&host.repo().root, &copy)
+        .await?
+    {
+        Some(admin) if copy.is_dir() => Some(host.git().bound_to(admin, copy.clone())),
+        _ => None,
+    };
+    match made {
+        Some(copy_git) => copy_git.restore_clean(&copy, head).await?,
+        None => {
+            // A folder git no longer knows, after a crash or a cleanup, is made again.
+            let _ = std::fs::remove_dir_all(&copy);
+            host.git()
+                .add_detached_worktree(&host.repo().root, &copy, head)
+                .await?;
+        }
+    }
+    Ok(copy)
 }
 
 /// The `gates.run` commands expected to fail in the tree at `dir`, each with the build cards

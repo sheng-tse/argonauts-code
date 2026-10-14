@@ -11,10 +11,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use argonauts_core::CardId;
+use argonauts_core::display_names::DisplayNames;
 use argonauts_core::events::RunEventKind;
 use argonauts_core::events::run::RunMode;
 use argonauts_core::events::session::{EndReason, loaded_words};
-use argonauts_core::limits::HealthState;
+use argonauts_core::limits::{HealthState, TEST_TASK_SUCCEEDED, VendorHealth};
+use argonauts_core::log::NO_SECOND_TRY;
 use argonauts_core::names::{RoleName, VendorId, WorkerRef};
 use argonauts_core::registry::company_of;
 use argonauts_core::settings::Settings;
@@ -22,6 +24,7 @@ use argonauts_core::settings::handoff::{FallbackEntry, HandoffMode};
 use argonauts_core::steps::StepName;
 use argonauts_core::worker::WorkerKind;
 use argonauts_core::{ErrorCategory, Note, NoteLevel};
+use time::OffsetDateTime;
 
 use crate::engine::host::{Host, round_window};
 use crate::engine::shared::lock;
@@ -70,6 +73,30 @@ pub(crate) struct Memory {
     taken: Vec<Taken>,
     /// Handovers already said, from whom to whom, so a repeat says nothing new.
     said: BTreeSet<(WorkerRef, WorkerRef)>,
+    /// Agents whose sessions crashed twice in a row. Until the run resumes or their vendor's
+    /// health check passes, their later seats go straight to a stand-in rather than starting a
+    /// CLI that fails every time.
+    keeps_failing: BTreeMap<WorkerRef, Failing>,
+}
+
+/// How an agent's sessions keep ending, in words, the resume it happened after, and when.
+#[derive(Debug, Clone)]
+struct Failing {
+    words: String,
+    after: u64,
+    at: OffsetDateTime,
+}
+
+impl Failing {
+    /// Whether it still holds: the run hasn't resumed since, and the vendor's test task hasn't
+    /// succeeded since. A passing test means whatever broke the CLI may have been fixed; errors
+    /// that merely stopped coming back say nothing of it.
+    fn holds(&self, resumed: u64, health: &VendorHealth) -> bool {
+        let tested_since = health.state == HealthState::Healthy
+            && health.since > self.at
+            && health.reason.as_deref() == Some(TEST_TASK_SUCCEEDED);
+        self.after == resumed && !tested_since
+    }
 }
 
 /// A seat a stand-in took: where, whose it was, and who took it. A seat its own agent holds
@@ -106,6 +133,8 @@ enum Why {
     LoggedOut(Option<EndReason>),
     /// Its vendor is down or out of quota, in words.
     Unusable(&'static str),
+    /// Its sessions crashed twice in a row earlier in the run, in words.
+    KeepsFailing(String),
 }
 
 /// Before a session's first start: the agent that takes the seat at once because the asked one
@@ -120,10 +149,34 @@ pub(crate) async fn instead_of(
         Why::LoggedOut(None)
     } else if let Some(words) = unusable(host, asked) {
         Why::Unusable(words)
+    } else if let Some(words) = keeps_failing(host, asked) {
+        // With nobody to stand in, the agent goes again rather than the run parking.
+        let why = Why::KeepsFailing(words);
+        return Ok(take_over(host, seat, asked, asked, &[asked], &why).ok());
     } else {
         return Ok(None);
     };
     take_over(host, seat, asked, asked, &[asked], &why).map(Some)
+}
+
+/// How `worker`'s sessions keep ending, when they crashed twice in a row since the run last
+/// resumed and its vendor's health check last passed.
+fn keeps_failing(host: &Host, worker: &WorkerRef) -> Option<String> {
+    let since = host.read(|state| state.run.last_resumed).unwrap_or(0);
+    let failing = lock(&host.shared().stand_ins)
+        .keeps_failing
+        .get(worker)
+        .cloned()?;
+    let health = host.services().health.state(&worker.vendor());
+    failing.holds(since, &health).then_some(failing.words)
+}
+
+/// Whether the run already knows `worker` can't take a seat now, without asking its CLI: its
+/// sessions crashed twice in a row, its CLI last said it's logged out, or its vendor is down or
+/// out of quota.
+pub(crate) fn known_out(host: &Host, worker: &WorkerRef) -> bool {
+    let logged_out = lock(&host.shared().stand_ins).logged_out(worker);
+    logged_out || keeps_failing(host, worker).is_some() || unusable(host, worker).is_some()
 }
 
 /// Whether `worker` is out before a session of its own starts: its CLI says it's logged out,
@@ -222,6 +275,19 @@ pub(crate) async fn next(
     let why = if is_logged_out(host, current).await {
         Why::LoggedOut(Some(reason))
     } else if went_again(&failed, current, &reason) {
+        // A CLI that crashed twice in a row crashes the same way on its next seat, where a busy
+        // service may well have room by then.
+        if matches!(reason, EndReason::Crashed { .. }) {
+            let since = host.read(|state| state.run.last_resumed).unwrap_or(0);
+            let failing = Failing {
+                words: in_words(&reason),
+                after: since,
+                at: host.now(),
+            };
+            lock(&host.shared().stand_ins)
+                .keeps_failing
+                .insert(current.clone(), failing);
+        }
         Why::EndedAgain(reason)
     } else {
         Why::Ended(reason)
@@ -230,7 +296,8 @@ pub(crate) async fn next(
 }
 
 /// The same agent again on the session of `record`, after `supervisor.retry_wait`, when its
-/// failure may pass and it had fewer than two tries since the run last resumed. A 401 its CLI's
+/// failure may pass, it had fewer than two tries since the run last resumed, and it hasn't
+/// crashed twice in a row on an earlier seat. A 401 its CLI's
 /// own login check contradicts was passing. One line says it goes again, before the wait. After
 /// a resume, the asked agent starts over, since whatever stopped it may have been fixed
 /// meanwhile. `None` when it may not go again.
@@ -240,6 +307,9 @@ pub(crate) async fn again(host: &Host, record: &SessionRecord) -> EngineResult<O
         return Ok(Some(record.asked_worker().clone()));
     }
     let current = &record.started.worker;
+    if keeps_failing(host, current).is_some() {
+        return Ok(None);
+    }
     let reason = end_reason(record);
     let logged_in = login_check(host, current, &reason).await;
     let tries = failed.iter().filter(|worker| **worker == current).count();
@@ -489,6 +559,14 @@ fn candidates(
         (owner, seated(state, seat, asked))
     });
     let family = |worker: &WorkerRef| services.registry.family(worker);
+    let resumed = host.read(|state| state.run.last_resumed).unwrap_or(0);
+    // An agent whose sessions crashed twice in a row would only crash in this seat too.
+    let crashing = |worker: &WorkerRef| {
+        memory
+            .keeps_failing
+            .get(worker)
+            .is_some_and(|failing| failing.holds(resumed, &services.health.state(&worker.vendor())))
+    };
     let companies: Vec<String> = seat
         .independent_of
         .iter()
@@ -504,6 +582,7 @@ fn candidates(
             && !kept.contains(&worker)
             && !elsewhere
             && !memory.logged_out(&worker)
+            && !crashing(&worker)
             && !companies.contains(&company_of(&family(&worker)))
             && services.workers.get(&worker).is_ok()
             && rules::vendor_usable(host, &worker.vendor())
@@ -571,10 +650,12 @@ fn say_handover(
         Why::Unusable(words) => {
             format!("{from_name} is out ({words}), so {taker_name} takes its roles meanwhile.")
         }
-        // The failure's own line said what went wrong.
+        // The failure's own line said what went wrong, and named the model that failed, so
+        // this one names only the CLI that steps in.
         Why::Ended(reason) if repeats(reason) => format!(
-            "{taker_name} takes over as {} · no second try, this error repeats every time",
-            seat_in_words(seat),
+            "{} takes over as {} · {NO_SECOND_TRY}",
+            DisplayNames::default().harness(taker.worker.as_str()),
+            seat_as_role(seat),
         ),
         Why::Ended(reason) => format!(
             "{from_name}'s session as {} ended early ({}), so {taker_name} takes it over.",
@@ -586,6 +667,10 @@ fn say_handover(
             "{} · {taker_name} takes over as {}",
             passing_words(reason).1,
             seat_in_words(seat)
+        ),
+        Why::KeepsFailing(words) => format!(
+            "{from_name} isn't started again this run, since {words} twice in a row; \
+             {taker_name} takes its roles."
         ),
     };
     note(host, seat.card.as_ref(), text)
@@ -627,6 +712,7 @@ fn stalled(
         }
         Why::LoggedOut(None) => format!("{from_name} is logged out"),
         Why::Unusable(words) => format!("{from_name} is out ({words})"),
+        Why::KeepsFailing(words) => format!("{from_name}'s sessions keep ending ({words})"),
     };
     let (detail, line) = if mode == HandoffMode::Wait {
         (
@@ -770,6 +856,15 @@ pub(crate) fn in_words(reason: &EndReason) -> String {
 }
 
 /// The seat as the transcript says it: `the lead`, `a reviewer`, `the conflict's resolver`.
+/// The seat as what one takes over as: `reviewer` rather than `a reviewer`.
+fn seat_as_role(seat: &Seat) -> String {
+    let words = seat_in_words(seat);
+    match words.strip_prefix("a ") {
+        Some(role) => role.to_owned(),
+        None => words,
+    }
+}
+
 fn seat_in_words(seat: &Seat) -> String {
     let words = match (seat.role, seat.step) {
         (RoleName::Worker, Some(StepName::ResolveConflict)) => "the conflict's resolver",
@@ -809,6 +904,37 @@ mod tests {
 
     use super::*;
     use crate::state::RunState;
+
+    fn health(state: HealthState, since: OffsetDateTime, reason: &str) -> VendorHealth {
+        VendorHealth {
+            vendor: VendorId("codex".to_owned()),
+            state,
+            since,
+            reason: Some(reason.to_owned()),
+            next_test_at: None,
+            disabled: None,
+        }
+    }
+
+    #[test]
+    fn a_crash_memory_holds_until_a_resume_or_a_passing_test_task() {
+        let at = OffsetDateTime::UNIX_EPOCH + time::Duration::hours(1);
+        let failing = Failing {
+            words: "it crashed".to_owned(),
+            after: 0,
+            at,
+        };
+        let before = at - time::Duration::minutes(5);
+        let after = at + time::Duration::minutes(5);
+        let passed = TEST_TASK_SUCCEEDED;
+        let quiet = "the errors stopped";
+        assert!(failing.holds(0, &health(HealthState::Healthy, before, passed)));
+        assert!(!failing.holds(7, &health(HealthState::Healthy, before, passed)));
+        assert!(!failing.holds(0, &health(HealthState::Healthy, after, passed)));
+        assert!(failing.holds(0, &health(HealthState::Healthy, after, quiet)));
+        assert!(failing.holds(0, &health(HealthState::Testing, after, passed)));
+        assert!(failing.holds(0, &health(HealthState::Down, after, passed)));
+    }
 
     fn stall(logged_out: &[&str]) -> Stall {
         Stall {
@@ -950,5 +1076,21 @@ mod tests {
             RunEventKind::Session(SessionEvent::Ended(Box::new(end))),
         ));
         assert_eq!(state.run.stand_in_waits, 0);
+    }
+    /// Taking over names the role, as in `takes over as reviewer`, keeping `the` where the
+    /// seat is the only one of its kind.
+    #[test]
+    fn a_seat_reads_as_the_role_taken_over() {
+        let seat = |role| Seat {
+            at: None,
+            role,
+            step: None,
+            card: None,
+            independent_of: Vec::new(),
+            isolated: false,
+        };
+        assert_eq!(seat_as_role(&seat(RoleName::Reviewer)), "reviewer");
+        assert_eq!(seat_as_role(&seat(RoleName::PhaseLead)), "the main agent");
+        assert_eq!(seat_as_role(&seat(RoleName::Spike)), "an experiment");
     }
 }

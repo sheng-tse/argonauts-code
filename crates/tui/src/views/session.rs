@@ -28,11 +28,11 @@ use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
 use crate::bridge::{tools, vendor_workflow};
-use crate::cell::{AssistantMessage, DiffCell, DiffView, HistoryCell, ToolItem};
+use crate::cell::{AssistantMessage, DiffCell, DiffView, HistoryCell};
 use crate::format::{self, WallClock};
 use crate::render::{Clock, RenderCtx};
 use crate::state::{AppState, SessionState};
-use crate::text::{sanitize, sanitize_line, spans_width, str_width, wrap_text};
+use crate::text::{sanitize_line, spans_width, str_width, wrap_text};
 use crate::theme::{Role, Theme};
 
 use super::crew::CrewView;
@@ -43,15 +43,12 @@ use super::layout::cut;
 use super::line_edit::LineEdit;
 use super::list::{self, ListState, Nav};
 use super::panes::{self, Footer, Marks};
+use super::raw_log::{RawKey, RawLog};
 use super::states;
 use super::structured;
 use super::{Follow, View, ViewCtx, ViewOutcome};
 
-/// Result lines kept under a tool call; the raw log (`r`) has the rest.
-const RESULT_LINES: usize = 40;
-
-/// The opened agent's own tabs, in the order Tab goes through them. The raw log follows them
-/// as the last tab, in a pager of its own.
+/// The opened agent's tabs, in the order Tab goes through them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
@@ -59,6 +56,8 @@ pub enum Tab {
     Input,
     /// Only for an agent that works toward a goal.
     Goal,
+    /// Its CLI's own lines, unparsed, read again each time the tab opens.
+    Raw,
 }
 
 impl Tab {
@@ -67,12 +66,10 @@ impl Tab {
             Self::Output => "Output",
             Self::Input => "Input",
             Self::Goal => "Goal",
+            Self::Raw => "Raw",
         }
     }
 }
-
-/// The name the raw log goes by on the tab row.
-const RAW_TAB: &str = "Raw";
 
 /// The header keeps this much of the agent's name before its time and tokens give way.
 const MIN_NAME: usize = 16;
@@ -114,6 +111,9 @@ pub struct SessionView {
     input_top: usize,
     /// The first Goal row shown.
     goal_top: usize,
+    /// The raw log as last read, and whether a fresh read is on its way.
+    raw: Option<RawLog>,
+    raw_asked: bool,
     /// Keeps the goal current while this view is on top: its run's events ask for the agent
     /// again, and the answer carries the goal as it stands.
     follow: Option<Follower>,
@@ -172,6 +172,8 @@ impl SessionView {
             cache: None,
             input_top: 0,
             goal_top: 0,
+            raw: None,
+            raw_asked: false,
             follow: None,
         }
     }
@@ -273,43 +275,48 @@ impl SessionView {
         ViewOutcome::Consumed
     }
 
-    /// The tabs this agent has, in order: Goal only when it works toward one.
+    /// The tabs this agent has, in order: Goal only when it works toward one, and Raw last.
     fn tabs(&self, state: &AppState) -> Vec<Tab> {
         let mut tabs = vec![Tab::Output, Tab::Input];
         if self.goal(state).is_some() {
             tabs.push(Tab::Goal);
         }
+        tabs.push(Tab::Raw);
         tabs
     }
 
-    /// Tab goes right and Shift+Tab left. Past the last of its own tabs is the raw log, which
-    /// opens over the view and leaves it on Output, so the tabs go round.
+    /// Tab goes right and Shift+Tab left, round from the last tab to the first.
     fn next_tab(&mut self, back: bool, state: &AppState) -> ViewOutcome {
         let tabs = self.tabs(state);
+        let count = tabs.len();
         let at = tabs.iter().position(|tab| *tab == self.tab).unwrap_or(0);
-        let next = if back {
-            at.checked_sub(1)
-        } else {
-            Some(at + 1).filter(|next| *next < tabs.len())
-        };
+        let next = if back { at + count - 1 } else { at + 1 } % count;
         self.confirm_stop = false;
-        match next {
-            Some(next) => {
-                self.tab = tabs[next];
+        match tabs[next] {
+            Tab::Raw => self.raw(),
+            tab => {
+                self.tab = tab;
                 ViewOutcome::Consumed
-            }
-            None => {
-                self.tab = if back { tabs[tabs.len() - 1] } else { tabs[0] };
-                self.raw()
             }
         }
     }
 
-    fn raw(&self) -> ViewOutcome {
+    /// Opens the Raw tab and reads the log again, as it stands now.
+    fn raw(&mut self) -> ViewOutcome {
+        self.tab = Tab::Raw;
+        self.raw_asked = true;
         ViewOutcome::Request(ViewRequest::Raw {
             run: self.run.clone(),
             session: self.session.clone(),
         })
+    }
+
+    /// A key on the Raw tab that the view's own keys left: the log moves, unfolds and searches.
+    fn raw_key(&mut self, key: KeyEvent) -> ViewOutcome {
+        match self.raw.as_mut().map(|log| log.key(key)) {
+            Some(RawKey::Consumed) => ViewOutcome::Consumed,
+            Some(RawKey::Ignored) | None => ViewOutcome::Ignored,
+        }
     }
 
     /// The first row shown at `rows` long with `height` rows of room.
@@ -378,6 +385,8 @@ impl SessionView {
             return body.clone();
         }
         let body = match self.tab {
+            // The raw log draws its own rows, only those on screen.
+            Tab::Raw => Body::default(),
             Tab::Goal => Body {
                 lines: match self.goal(ctx.state) {
                     Some(goal) => goal_panel::tab(goal, usize::from(width), theme).lines,
@@ -593,8 +602,7 @@ impl SessionView {
         let names = self
             .tabs(state)
             .into_iter()
-            .map(|tab| (tab.name(), tab == self.tab))
-            .chain([(RAW_TAB, false)]);
+            .map(|tab| (tab.name(), tab == self.tab));
         let mut spans = Vec::new();
         for (name, open) in names {
             spans.push(match (open, theme.has_color()) {
@@ -641,9 +649,25 @@ impl SessionView {
         let tab = match self.tab {
             Tab::Output => "tab input",
             Tab::Input | Tab::Goal => "tab next tab",
+            Tab::Raw => "tab output",
         };
         let mut parts = Vec::new();
         match self.tab {
+            Tab::Raw => {
+                let Some(log) = &self.raw else {
+                    return Footer::hints(&[(tab, 1), (panes::ESC_BACK, 0)]);
+                };
+                if log.typing() {
+                    return Footer::Hints(log.hints());
+                }
+                let mut hints = log.hints();
+                hints.extend([
+                    (tab.to_owned(), 4),
+                    ("r read again".to_owned(), 3),
+                    (panes::ESC_BACK.to_owned(), 0),
+                ]);
+                return Footer::Hints(hints);
+            }
             Tab::Goal => {
                 parts.push(("↑↓ scroll", 1));
                 if let Some(hold) = self.goal_hold(state) {
@@ -709,6 +733,31 @@ impl SessionView {
         Footer::hints(&parts)
     }
 
+    /// The Raw tab under the header and the tab row: the log as last read, its hints, and
+    /// where it is scrolled to.
+    fn draw_raw(&mut self, body: Rect, footer: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>) {
+        let theme = ctx.theme;
+        let mark = match self.raw.as_mut() {
+            Some(log) => log.draw(buf, body, theme),
+            None => {
+                let reading = note("Reading the raw log…", Role::Dim, theme);
+                panes::put(buf, body.x, body.y, body.width, &reading);
+                String::new()
+            }
+        };
+        let room = match str_width(&mark) {
+            0 => usize::from(footer.width),
+            mark => usize::from(footer.width).saturating_sub(mark + 2),
+        };
+        panes::draw_footer(
+            buf,
+            footer,
+            self.footer(room, ctx.state, theme, false),
+            &mark,
+            theme,
+        );
+    }
+
     /// Stopping needs the agent still at work in a run that goes on.
     fn can_stop(&self, state: &AppState) -> bool {
         super::run_going(state, &self.run)
@@ -763,6 +812,9 @@ fn note(text: impl Into<String>, role: Role, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(text.into(), theme.style(role)))
 }
 
+/// The input Claude Code records for a tool call whose arguments weren't valid JSON.
+const UNPARSED: &str = "UnparsedToolInput";
+
 /// What the Output tab's rows are drawn with.
 struct OutputDraw<'a> {
     names: &'a DisplayNames,
@@ -783,6 +835,9 @@ fn output_lines(
 ) -> (Vec<Line<'static>>, bool) {
     let (width, theme) = (shown.width, shown.theme);
     let ctx = RenderCtx::new(width, theme, Clock::still(Instant::now())).with_expanded(true);
+    // A call's output folds to its first lines, as Claude Code's does, until → opens it.
+    let calls = RenderCtx::new(width, theme, Clock::still(Instant::now()))
+        .with_expanded(shown.results_open);
     let draw = structured::Draw {
         names: shown.names,
         theme,
@@ -800,12 +855,20 @@ fn output_lines(
         blocks.push(lines);
         true
     };
+    let mut folded = false;
+    let attached = diffs_of_calls(session);
     for tool in &session.tools {
+        // A lookup of held-back tools never shows, as in Claude Code.
+        if tools::is_tool_lookup(&tool.name) {
+            continue;
+        }
         if is_own_tool(&tool.name) {
+            // Claude Code keeps a report it couldn't read as `UnparsedToolInput`, which is no
+            // report to draw.
             let reports = tool
                 .input
                 .as_object()
-                .is_some_and(|input| !input.is_empty());
+                .is_some_and(|input| !input.is_empty() && !input.contains_key(UNPARSED));
             if reports {
                 result(&tool.input, &mut blocks);
             }
@@ -825,30 +888,35 @@ fn output_lines(
             blocks.push(call.lines(&ctx));
             continue;
         }
-        let mut call = tools::start_call(&session.vendor, &tool.name, &tool.input);
+        // A call its model is still writing shows by its name alone, as the chat shows it.
+        let mut call = if tool.is_pending() {
+            tools::writing_call(&session.vendor, &tool.name)
+        } else {
+            tools::start_call(&session.vendor, &tool.name, &tool.input)
+        };
         for (_, path, hunks) in session.patches.iter().filter(|(id, ..)| *id == tool.id) {
             tools::take_patch(&mut call, path, hunks);
         }
+        // A CLI whose edit reports no patch, as Codex's doesn't, gets the change Argonauts saw.
+        for at in attached.iter().filter(|(id, _)| *id == tool.id.as_str()) {
+            let diff = &session.diffs[at.1];
+            tools::take_patch(&mut call, &diff.path, &diff.hunk);
+        }
         if let Some(ok) = tool.ok {
             tools::finish_call(&mut call, ok, tool.output.as_deref());
-            let shell = tools::kind_of(&session.vendor, &tool.name) == crate::cell::ToolKind::Shell;
-            // A shell call's output is already under it; other calls say only what they did.
-            if ok
-                && !shell
-                && let Some(output) = &tool.output
-            {
-                push_result(&mut call, output);
-            }
         }
-        blocks.push(call.lines(&ctx));
+        let lines = call.lines(&calls);
+        folded |= !shown.results_open && lines.len() < call.lines(&ctx).len();
+        blocks.push(lines);
     }
     // What Argonauts saw change after the calls, for a file no call's own patch drew, such as
     // one a shell command changed.
-    for diff in &session.diffs {
+    for (at, diff) in session.diffs.iter().enumerate() {
         let drawn = session
             .patches
             .iter()
-            .any(|(_, path, _)| tools::same_file(path, &diff.path));
+            .any(|(_, path, _)| tools::same_file(path, &diff.path))
+            || attached.iter().any(|(_, taken)| *taken == at);
         if drawn {
             continue;
         }
@@ -907,19 +975,53 @@ fn output_lines(
     if lines.is_empty() {
         lines.push(note("Nothing from this agent yet", Role::Dim, theme));
     }
-    (lines, more)
+    (lines, more || folded)
 }
 
-/// The result text under a call as one block, cut at [`RESULT_LINES`] with the count left out.
-fn push_result(call: &mut crate::cell::ToolCall, output: &str) {
-    let clean = sanitize(output);
-    let lines: Vec<String> = clean.lines().map(str::to_owned).collect();
-    let hidden = lines.len().saturating_sub(RESULT_LINES);
-    call.push(ToolItem::Command {
-        command: String::new(),
-        output: lines.into_iter().take(RESULT_LINES).collect(),
-        hidden,
-    });
+/// Each change Argonauts saw that no call's own patch drew, with the last edit call that
+/// names its file: (the call's id, the change's place in `session.diffs`).
+fn diffs_of_calls(session: &SessionState) -> Vec<(&str, usize)> {
+    let edits = |tool: &&crate::state::ToolRecord| {
+        matches!(
+            tools::kind_of(&session.vendor, &tool.name),
+            crate::cell::ToolKind::Edit | crate::cell::ToolKind::Write
+        ) && tool.ok == Some(true)
+    };
+    session
+        .diffs
+        .iter()
+        .enumerate()
+        .filter(|(_, diff)| {
+            !session
+                .patches
+                .iter()
+                .any(|(_, path, _)| tools::same_file(path, &diff.path))
+        })
+        .filter_map(|(at, diff)| {
+            let tool = session.tools.iter().filter(edits).rev().find(|tool| {
+                paths_named(&tool.input)
+                    .iter()
+                    .any(|path| tools::same_file(path, &diff.path))
+            })?;
+            Some((tool.id.as_str(), at))
+        })
+        .collect()
+}
+
+/// The files an edit call names: Claude Code's `file_path`, or each of Codex's `changes`.
+fn paths_named(input: &serde_json::Value) -> Vec<&str> {
+    let mut paths: Vec<&str> = ["file_path", "path"]
+        .iter()
+        .filter_map(|key| input.get(*key).and_then(serde_json::Value::as_str))
+        .collect();
+    if let Some(changes) = input.get("changes").and_then(serde_json::Value::as_array) {
+        paths.extend(
+            changes
+                .iter()
+                .filter_map(|change| change.get("path").and_then(serde_json::Value::as_str)),
+        );
+    }
+    paths
 }
 
 /// The subagents under their parents, each with its state and latest word.
@@ -1121,6 +1223,10 @@ impl View for SessionView {
             panes::put(buf, under.x, under.y, under.width, &line);
         }
 
+        if self.tab == Tab::Raw {
+            self.draw_raw(body_area, footer, buf, ctx);
+            return;
+        }
         let Body {
             lines,
             selected_row,
@@ -1137,6 +1243,7 @@ impl View for SessionView {
                 self.input_top = input_top(self.input_top, selected_row, lines.len(), height);
                 self.input_top
             }
+            Tab::Raw => 0,
             Tab::Output => {
                 self.rows = lines.len();
                 let top = self.top(lines.len(), height);
@@ -1153,7 +1260,7 @@ impl View for SessionView {
             Tab::Output | Tab::Goal => {
                 super::pager::position_mark(top, height, lines.len(), marks.down)
             }
-            Tab::Input => String::new(),
+            Tab::Input | Tab::Raw => String::new(),
         };
         // The message line leaves room for the mark beside it.
         let room = match str_width(&mark) {
@@ -1175,6 +1282,12 @@ impl View for SessionView {
         }
         if self.lines_edit.is_some() {
             return self.lines_key(key, ctx.state);
+        }
+        if let Some(log) = self.raw.as_mut().filter(|log| log.typing())
+            && self.tab == Tab::Raw
+        {
+            log.key(key);
+            return ViewOutcome::Consumed;
         }
         let state = ctx.state;
         let session = state.session(&self.run, &self.session);
@@ -1234,6 +1347,7 @@ impl View for SessionView {
                 return ViewOutcome::Consumed;
             }
             KeyCode::Left => return self.back_to_crew(state),
+            _ if self.tab == Tab::Raw => return self.raw_key(key),
             KeyCode::Right | KeyCode::Enter if self.tab == Tab::Goal => {
                 return ViewOutcome::Consumed;
             }
@@ -1265,6 +1379,7 @@ impl View for SessionView {
                 }
             }
             Tab::Output => self.scroll(nav),
+            Tab::Raw => {}
             Tab::Goal => {
                 self.goal_top = match nav {
                     Nav::Top => 0,
@@ -1278,9 +1393,23 @@ impl View for SessionView {
 
     /// The agent's answer, asked for while this view is on top: the state has taken its goal
     /// in already, so the next frame draws it.
+    /// Its raw log, read for the Raw tab, is drawn there.
     fn accept(&mut self, data: &argonauts_core::app::ViewData) -> bool {
-        matches!(data, argonauts_core::app::ViewData::Agent { view }
-            if self.follow.is_some() && view.run == self.run && view.row.session == self.session)
+        use argonauts_core::app::ViewData;
+        match data {
+            ViewData::Agent { view } => {
+                self.follow.is_some() && view.run == self.run && view.row.session == self.session
+            }
+            ViewData::Raw { raw } if self.raw_asked && raw.session == self.session => {
+                self.raw_asked = false;
+                self.raw = Some(match self.raw.take() {
+                    Some(log) => log.reread(raw.clone()),
+                    None => RawLog::new(raw.clone()),
+                });
+                true
+            }
+            _ => false,
+        }
     }
 
     fn next_change(&self, now: Instant) -> Option<Instant> {

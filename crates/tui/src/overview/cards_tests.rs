@@ -30,54 +30,60 @@ fn rows(usage: &UsageSummary, card: UsageCard, form: Form, width: usize) -> Vec<
 }
 
 #[test]
-fn plan_usage_has_a_row_for_each_cli_with_both_windows() {
-    let rows = rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 110);
-    assert_eq!(rows.len(), 7, "{rows:#?}");
+fn plan_usage_has_a_row_for_each_window_grouped_by_cli() {
+    let rows = rows(&sample::usage(), UsageCard::PlanUsage, Form::Full, 110);
+    assert_eq!(rows.len(), 13, "{rows:#?}");
     assert!(rows[1].starts_with(" │ ◆ plan usage"), "{rows:#?}");
     assert!(
-        rows[1].ends_with("no limit set · highest Codex 5h  [92%] │"),
+        rows[1].ends_with("no limit set · highest Codex 5-hour [92%] │"),
         "{rows:#?}"
     );
-    let claude = &rows[2];
-    assert!(claude.starts_with(" │ Claude Code Max"), "{claude}");
-    for part in [
-        "5h",
-        " 71%",
-        "resets 4:40pm",
-        "7d",
-        " 38%",
-        "resets Tue 10pm",
-    ] {
-        assert!(claude.contains(part), "{part}: {claude}");
-    }
-    let codex = &rows[3];
-    for part in [
-        "Codex Plus",
-        " 92%",
-        "resets 2:15pm",
-        " 41%",
-        "resets Fri 9am",
-    ] {
-        assert!(codex.contains(part), "{part}: {codex}");
-    }
+    let claude = &rows[3];
     assert!(
-        rows[4].contains(
-            "Antigravity CLI Pro  out until Tue 3:45pm · its tasks moved to GPT 5.6 on Codex"
+        claude.starts_with(" │ Claude Code      Max    5-hour   ━"),
+        "{claude}"
+    );
+    assert!(
+        claude.contains(" 71%   resets in 3h 40m · today 4:40pm"),
+        "{claude}"
+    );
+    let week = &rows[4];
+    assert!(
+        week.starts_with(" │                         week     ━"),
+        "{week}"
+    );
+    assert!(
+        week.contains(" 38%   resets in 1d 9h · Tue Oct 6, 10:00pm"),
+        "{week}"
+    );
+    let codex = &rows[6];
+    assert!(
+        codex.starts_with(" │ Codex            Plus   5-hour"),
+        "{codex}"
+    );
+    assert!(codex.contains(" 92%   resets in 1h 15m"), "{codex}");
+    assert!(rows[7].contains(" 41%   resets in 3d 20h"), "{rows:#?}");
+    assert!(
+        rows[9].contains(
+            "│ Antigravity CLI  Pro    out until Tue 3:45pm · its tasks moved to GPT 5.6 on Codex"
         ),
         "{rows:#?}"
     );
     assert!(
-        rows[5].contains("OpenRouter pays per token, so there is no plan to track"),
+        rows[11].contains("│ OpenRouter              pays per token, so there is no plan to track"),
         "{rows:#?}"
     );
-    // Both CLIs' meters start in the same column, and so do their numbers.
+    // Every row's bar, share and reset words start in the same column.
     let at = |row: &str, what: &str| row.find(what).map(|byte| row[..byte].chars().count());
-    assert_eq!(at(claude, "5h"), at(codex, "5h"));
-    assert_eq!(at(claude, "7d"), at(codex, "7d"));
+    for row in [&rows[4], &rows[6], &rows[7]] {
+        assert_eq!(at(claude, "━"), at(row, "━"), "{rows:#?}");
+        assert_eq!(at(claude, "%"), at(row, "%"), "{rows:#?}");
+        assert_eq!(at(claude, "resets"), at(row, "resets"), "{rows:#?}");
+    }
 }
 
 #[test]
-fn in_color_a_windows_meter_is_half_blocks_and_only_its_number_warns() {
+fn in_color_a_windows_bar_is_thin_and_only_its_share_warns() {
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
     let kit = Kit::new(&theme);
@@ -89,47 +95,58 @@ fn in_color_a_windows_meter_is_half_blocks_and_only_its_number_warns() {
         left: false,
     };
     let drawn = cards.draw(&kit, UsageCard::PlanUsage, Form::Compact, Frame::view(110));
-    let codex = &drawn.lines[3].spans;
-    let text: String = codex.iter().map(|span| span.content.as_ref()).collect();
-    assert!(text.contains("▄▄▄") && !text.contains('━'), "{text}");
-    let style_of = |what: &str| {
-        let span = codex.iter().find(|span| span.content.contains(what));
+    let style_in = |row: usize, what: &str| {
+        let spans = &drawn.lines[row].spans;
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        let span = spans.iter().find(|span| span.content.contains(what));
         span.unwrap_or_else(|| panic!("{what}: {text}")).style
     };
-    // At 92% the number is amber. When the window resets stays as quiet as on any row.
-    assert_eq!(style_of(" 92%"), kit.bold(Level::Warn.strong_role()));
-    assert_eq!(style_of("resets 2:15pm"), kit.dim("").style);
-    assert_eq!(style_of("resets Fri 9am"), kit.dim("").style);
+    // Claude Code's bar in its own colour, the bottom line's.
+    assert_eq!(style_in(2, "━").fg, theme.color(Role::CliClaude));
+    // At 92% the share is amber. When the window resets stays as quiet as on any row.
+    assert_eq!(style_in(4, "92%"), kit.bold(Level::Warn.strong_role()));
+    assert_eq!(style_in(4, "resets in 1h 15m"), kit.dim("").style);
+    assert_eq!(style_in(5, "resets in 3d 20h"), kit.dim("").style);
 }
 
 #[test]
-fn in_full_each_cli_says_its_plan_whether_its_in_use_and_how_old_the_reading_is() {
-    let rows = rows(&sample::usage(), UsageCard::PlanUsage, Form::Full, 110);
-    assert!(
-        rows.iter()
-            .any(|row| row.contains("● Claude Code Max · in use · read 1m ago")),
-        "{rows:#?}"
-    );
-    assert!(
-        rows.iter()
-            .any(|row| row.contains("Codex Plus · read 3m ago")),
-        "{rows:#?}"
-    );
-    assert!(
-        rows.iter()
-            .filter(|row| row.contains("5-hour and 7-day"))
-            .count()
-            == 2,
-        "{rows:#?}"
-    );
+fn compact_the_card_draws_the_same_rows_without_blank_rows_between_clis() {
+    let full = rows(&sample::usage(), UsageCard::PlanUsage, Form::Full, 110);
+    let compact = rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 110);
+    let blank = |row: &String| row.trim_matches(|c| c == ' ' || c == '│').is_empty();
+    let full: Vec<&String> = full.iter().filter(|row| !blank(row)).collect();
+    assert_eq!(full, compact.iter().collect::<Vec<_>>());
 }
 
 #[test]
-fn a_narrow_card_keeps_each_clis_fullest_window() {
-    let rows = rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 50);
-    let codex = rows.iter().find(|row| row.contains("Codex Plus")).unwrap();
-    assert!(codex.contains("5h") && codex.contains("92%"), "{codex}");
-    assert!(!codex.contains("7d"), "{codex}");
+fn a_narrow_card_gives_up_the_reset_words_then_the_plan_and_keeps_every_window() {
+    let rows = rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 60);
+    let at = |text: &str| rows.iter().position(|row| row.contains(text));
+    let codex = at("│ Codex").expect("Codex");
+    assert!(
+        rows[codex].contains("5-hour") && rows[codex].contains("92%"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows[codex + 1].contains("week") && rows[codex + 1].contains("41%"),
+        "{rows:#?}"
+    );
+    assert!(at("resets").is_none(), "{rows:#?}");
+    let narrowest = self::rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 45);
+    assert!(
+        narrowest
+            .iter()
+            .any(|row| row.contains("│ Claude      5-hour")),
+        "then the plan goes and the names shorten: {narrowest:#?}"
+    );
+    assert!(!narrowest.iter().any(|row| row.contains("Plus")));
+    let wider = self::rows(&sample::usage(), UsageCard::PlanUsage, Form::Compact, 90);
+    assert!(
+        wider
+            .iter()
+            .any(|row| row.contains("92%   resets in 1h 15m ") && !row.contains("today")),
+        "the reset words shorten before they go: {wider:#?}"
+    );
 }
 
 #[test]
@@ -216,38 +233,25 @@ fn a_cli_at_your_plan_limit_says_so_and_who_takes_its_tasks() {
     codex.moved_to = Some("Sonnet 5.5 on Claude Code".to_owned());
     let rows = rows(&usage, UsageCard::PlanUsage, Form::Compact, 160);
     assert!(
-        rows[1].contains("your limit 80% · highest Codex 5h"),
+        rows[1].contains("your limit 80% · highest Codex 5-hour"),
         "{rows:#?}"
     );
-    // Claude Code is under the limit, so both of its windows show as ever.
+    // Claude Code is under the limit, so it says nothing more.
+    assert!(!rows[2..4].iter().any(|row| row.contains("limit reached")));
     assert!(
-        rows[2].contains(" 71%") && rows[2].contains(" 38%"),
+        rows[4].contains(" 92%") && rows[5].contains(" 41%"),
         "{rows:#?}"
     );
-    let codex = &rows[3];
-    assert!(codex.contains(" 92%"), "{codex}");
     assert!(
-        codex.contains("limit reached · Sonnet 5.5 on Claude Code takes its tasks"),
-        "{codex}"
-    );
-    assert!(
-        !codex.contains(" 41%"),
-        "the other window gives way: {codex}"
-    );
-
-    // Where the words don't fit beside the window they go under it, whole.
-    let narrow = self::rows(&usage, UsageCard::PlanUsage, Form::Compact, 100);
-    assert!(narrow[3].contains(" 92%"), "{narrow:#?}");
-    assert!(
-        narrow[4].contains("limit reached · Sonnet 5.5 on Claude Code takes its tasks"),
-        "{narrow:#?}"
+        rows[6].contains("limit reached · Sonnet 5.5 on Claude Code takes its tasks"),
+        "{rows:#?}"
     );
 
     // Nobody to take over, the limit still shows as reached.
     usage.plans[1].moved_to = None;
     let rows = self::rows(&usage, UsageCard::PlanUsage, Form::Compact, 160);
     assert!(
-        rows[3]
+        rows[6]
             .trim_end_matches('│')
             .trim_end()
             .ends_with("limit reached"),
@@ -368,7 +372,7 @@ fn every_card_keeps_inside_its_width_in_every_form() {
 }
 
 #[test]
-fn in_full_the_cli_in_use_keeps_its_mark_before_any_reading() {
+fn a_cli_with_no_reading_says_so_in_its_row() {
     let usage = UsageSummary {
         plans: vec![
             PlanUsage {
@@ -385,15 +389,15 @@ fn in_full_the_cli_in_use_keeps_its_mark_before_any_reading() {
         ],
         ..UsageSummary::default()
     };
-    let rows = rows(&usage, UsageCard::PlanUsage, Form::Full, 110);
+    let rows = rows(&usage, UsageCard::PlanUsage, Form::Compact, 110);
     assert!(
         rows.iter()
-            .any(|row| row.contains("● Claude Code · in use · no reading yet")),
+            .any(|row| row.contains("│ Claude Code  no reading yet")),
         "{rows:#?}"
     );
     assert!(
         rows.iter()
-            .any(|row| row.contains("│ Codex  no reading yet")),
+            .any(|row| row.contains("│ Codex        no reading yet")),
         "{rows:#?}"
     );
 }

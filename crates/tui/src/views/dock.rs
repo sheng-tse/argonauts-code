@@ -17,7 +17,7 @@ use crate::text::{marks, sanitize_line, spans_width, str_width, truncate_spans};
 use crate::theme::{Role, Theme};
 use crate::widgets::State;
 
-use super::layout::cut;
+use super::layout::{cut, cut_at_word};
 use super::panes::{self, Footer, Panes};
 use super::states;
 
@@ -166,10 +166,11 @@ pub fn draw_heading(buf: &mut Buffer, dock: &Dock, heading: &Heading, theme: &Th
     let width = usize::from(area.width);
     let totals = cut(&heading.totals, width / 2);
     let totals_width = str_width(&totals);
-    let gap = usize::from(totals_width > 0);
+    // Two spaces at least between the description and the counts, as Claude Code keeps.
+    let gap = if totals_width > 0 { 2 } else { 0 };
     let room = width.saturating_sub(totals_width + gap);
     let description = sanitize_line(&heading.description);
-    let mut text = cut(description.trim(), room);
+    let mut text = cut_at_word(description.trim(), room);
     let used = str_width(&text);
     text.push_str(&" ".repeat(width.saturating_sub(used + totals_width)));
     text.push_str(&totals);
@@ -613,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn the_description_ends_one_space_before_the_totals() {
+    fn the_description_ends_at_a_word_two_spaces_before_the_totals() {
         let theme = Theme::dark();
         let area = Rect::new(0, 0, 60, 14);
         let mut buf = Buffer::empty(area);
@@ -628,7 +629,11 @@ mod tests {
         let row: String = (0..area.width)
             .map(|x| buf[(x, 2)].symbol().to_owned())
             .collect();
-        assert!(row.trim_end().ends_with("… 6/8 agents · 4m31s"), "{row:?}");
+        assert!(
+            row.trim_end()
+                .ends_with("too long for…   6/8 agents · 4m31s"),
+            "{row:?}"
+        );
         // The totals end under the box's right border.
         assert_eq!(
             str_width(row.trim_end()),

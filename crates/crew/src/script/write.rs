@@ -30,6 +30,17 @@ use crate::workflow_size;
 
 pub(crate) const WRITE_SCRIPT: &str = include_str!("write_script.md");
 
+/// How often a task may go back to its worker, as `review.max_change_rounds` says. A writer
+/// sent back more often than that gets no answer.
+fn rounds_of_fixes(rounds: u32) -> String {
+    let after = "a task its reviewers don't accept comes to the user with their findings";
+    match rounds {
+        0 => format!("Never send a task back to its worker: {after}."),
+        1 => format!("Send a task back to its worker at most once. After that, {after}."),
+        n => format!("Send a task back to its worker at most {n} times. After that, {after}."),
+    }
+}
+
 /// How many times the orchestrator is asked: once, and once more with what was wrong.
 const TRIES: u32 = 2;
 
@@ -79,6 +90,12 @@ pub(super) async fn script_for(
                 workflow_size::guideline(host.settings().workflow_size, asked_size),
                 None,
             ),
+            part(
+                InputPartKind::Rules,
+                "rounds of fixes",
+                rounds_of_fixes(host.settings().review.max_change_rounds),
+                None,
+            ),
             part(InputPartKind::Goal, "the request", request, None),
         ];
         if let Some(yours) = &yours {
@@ -119,6 +136,7 @@ pub(super) async fn script_for(
             slot: 0,
             label: Some("plan:orchestrator".to_owned()),
             reviews: false,
+            fresh: false,
         };
         let end = host
             .run_session_in_turn(plan, None, StandIns::Allowed, &|_| Ok(()))

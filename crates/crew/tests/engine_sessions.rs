@@ -60,6 +60,7 @@ fn plan(worker: &WorkerRef, access: Access, host: &Host) -> SessionPlan {
         slot: 0,
         label: None,
         reviews: false,
+        fresh: false,
     }
 }
 

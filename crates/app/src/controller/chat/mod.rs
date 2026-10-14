@@ -100,7 +100,7 @@ use self::excerpt::Exchange;
 pub(crate) use self::goal::{
     Checked as GoalChecked, goal, goal_run_started, on_checked as goal_checked,
 };
-use self::lifecycle::{begin, on_done, on_event};
+use self::lifecycle::{begin, on_done, on_event, on_retried};
 use self::offer::Offer;
 use self::past::PastChat;
 use self::prefs::Prefs;
@@ -248,6 +248,8 @@ pub(crate) enum TurnUpdate {
     },
     /// A direct turn's CLI asks you something, and waits for the answer.
     Asked { turn: TurnId, asked: direct::Asked },
+    /// The answer didn't fit its format, and the step asks the agent for it again.
+    Retried { turn: TurnId },
 }
 
 impl ChatState {
@@ -1435,6 +1437,10 @@ pub(crate) async fn on_update(
         }
         TurnUpdate::Done { turn, outcome } => on_done(ctx, chat, &turn, outcome),
         TurnUpdate::Asked { turn, asked } => direct::on_asked(ctx, chat, &turn, asked),
+        TurnUpdate::Retried { turn } => {
+            on_retried(ctx, chat, &turn);
+            Ok(Vec::new())
+        }
     }
 }
 
@@ -1708,6 +1714,7 @@ fn event_turn(event: &ChatEvent) -> &TurnId {
         | ChatEvent::TurnFailed { turn, .. }
         | ChatEvent::TurnCancelled { turn }
         | ChatEvent::HandedOff { turn, .. }
-        | ChatEvent::Joined { turn, .. } => turn,
+        | ChatEvent::Joined { turn, .. }
+        | ChatEvent::AnswerRetried { turn } => turn,
     }
 }

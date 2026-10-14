@@ -177,6 +177,7 @@ pub fn usage() -> UsageSummary {
         .collect();
     UsageSummary {
         period: UsagePeriod::Today,
+        week_starts: Default::default(),
         total: Spend {
             input_tokens: 1_342_000,
             cached_tokens: 950_000,
@@ -209,6 +210,7 @@ pub fn usage() -> UsageSummary {
         task_limit: None,
         limits: limits(),
         stats: None,
+        argonauts: None,
     }
 }
 
@@ -421,6 +423,7 @@ pub fn crew_stats() -> CrewStats {
             done: 0,
             sent_back: 0,
             took_secs: 0,
+            review: Default::default(),
         };
     let did = |mut row: WorkRow, done: u32, sent_back: u32, each: u64| {
         row.done = done;
@@ -598,8 +601,10 @@ pub fn crew_stats() -> CrewStats {
                     day: now().date() - Duration::days(6 - k as i64),
                     agent: (*agent).to_owned(),
                     model: Some((*model).to_owned()),
+                    role: None,
                     tokens: tokens * 1_000,
                     cost_usd: *tokens as f64 * 0.002,
+                    done: 0,
                 })
         })
         .collect();

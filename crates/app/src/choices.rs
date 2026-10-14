@@ -28,7 +28,7 @@ pub(crate) enum OnSetAside {
     JustThisRequest,
     /// Answers No.
     No,
-    /// Closes with "Nothing ran.": a dry run was all it showed.
+    /// Closes saying nothing ran: a dry run was all it showed.
     NothingRan,
 }
 

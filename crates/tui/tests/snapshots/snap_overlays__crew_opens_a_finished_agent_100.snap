@@ -1,21 +1,19 @@
 ---
 source: crates/tui/tests/snap_overlays.rs
+assertion_line: 886
 expression: text
 ---
 ✔ GPT 5.6 on Codex · worker · task-002 (Add the JSON writer)   Output  Input  Raw    2m00s · ↓ 12.4k
 
+● Read(src/export.rs)
   ⎿  Read 2 lines
-     fn write(&self) {}
-     fn write_csv(&self) {}
 
 ● Bash(cargo test -- export)
   ⎿  test export::csv ... ok
      test export::json ... ok
 
 ● Update(src/export.rs)
-  ⎿  Added 1 line, removed 1 line
-        -self.write_csv(out)
-        +match self.format {
+  ⎿  Updating…
 
 ● Update(src/export.rs)
   ⎿  Added 2 lines, removed 1 line
@@ -33,4 +31,7 @@ expression: text
 
 ⎿ Queued use serde_json
   arrives after the current tool call
-↑↓ scroll · tab input · r raw · d diff · ← crew · esc back                                2-30 of 30
+
+
+
+↑↓ scroll · tab input · r raw · d diff · ← crew · esc back

@@ -1,5 +1,5 @@
 //! A gate's one-line summary, parsed where a known test runner prints one, such as
-//! `41 passed, 1 failed` from cargo, pytest, jest, vitest, or go test.
+//! `41 passed, 1 failed` from cargo, pytest, unittest, node --test, jest, vitest, or go test.
 
 use std::sync::LazyLock;
 
@@ -22,6 +22,12 @@ static PYTEST: LazyLock<Regex> = LazyLock::new(|| {
 });
 static PYTEST_COUNT: LazyLock<Regex> =
     LazyLock::new(|| regex(r"\d+ (?:passed|failed|errors?|skipped)|no tests ran"));
+static UNITTEST_RAN: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?m)^Ran (\d+) tests? in [\d.]+s\s*$"));
+static UNITTEST_END: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?m)^(OK|FAILED)(?: \(([^)]*)\))?\s*$"));
+static NODE_TEST: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?m)^(?:#|ℹ) (pass|fail|skipped|todo) (\d+)\s*$"));
 static GO_TEST: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^--- (PASS|FAIL): "));
 static GO_PACKAGE: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"(?m)^(ok|FAIL)\s+\S+\s+(?:[\d.]+s|\(cached\)|\[build failed\]|\[setup failed\])")
@@ -34,6 +40,8 @@ pub fn one_line_summary(output: &str) -> Option<String> {
         .or_else(|| jest(&text))
         .or_else(|| vitest(&text))
         .or_else(|| pytest(&text))
+        .or_else(|| unittest(&text))
+        .or_else(|| node_test(&text))
         .or_else(|| go_test(&text))
 }
 
@@ -88,6 +96,43 @@ fn pytest(text: &str) -> Option<String> {
     Some(found[1].to_owned())
 }
 
+/// Python's unittest: `Ran 13 tests in 0.002s`, then `OK` or `FAILED (failures=1, errors=1)`,
+/// with any skipped ones in the parentheses.
+fn unittest(text: &str) -> Option<String> {
+    let ran: u64 = UNITTEST_RAN.captures_iter(text).last()?[1].parse().ok()?;
+    let end = UNITTEST_END.captures_iter(text).last()?;
+    let mut failed = 0;
+    let mut skipped = 0;
+    for count in end.get(2).map_or("", |found| found.as_str()).split(',') {
+        let Some((what, n)) = count.trim().split_once('=') else {
+            continue;
+        };
+        let n: u64 = n.trim().parse().unwrap_or(0);
+        match what.trim() {
+            "failures" | "errors" | "unexpected successes" => failed += n,
+            "skipped" | "expected failures" => skipped += n,
+            _ => {}
+        }
+    }
+    let passed = ran.saturating_sub(failed + skipped);
+    Some(counts(passed, failed, skipped))
+}
+
+/// node --test's closing counts, from the TAP or the spec reporter: `# pass 9`, `ℹ fail 1`.
+fn node_test(text: &str) -> Option<String> {
+    let (mut passed, mut failed, mut skipped, mut seen) = (0, 0, 0, false);
+    for found in NODE_TEST.captures_iter(text) {
+        let n: u64 = found[2].parse().unwrap_or(0);
+        seen = true;
+        match &found[1] {
+            "pass" => passed = n,
+            "fail" => failed = n,
+            _ => skipped += n,
+        }
+    }
+    seen.then(|| counts(passed, failed, skipped))
+}
+
 /// Test counts with `-v`, else package counts.
 fn go_test(text: &str) -> Option<String> {
     let (mut passed, mut failed) = (0, 0);
@@ -121,6 +166,20 @@ fn packages(n: u64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unittest_and_node_test_say_their_counts() {
+        let ok = "............\n------------------------------------------------------------\n\
+                  Ran 12 tests in 0.030s\n\nOK\n";
+        assert_eq!(one_line_summary(ok).as_deref(), Some("12 passed"));
+        let failed = "F.\n----\nRan 13 tests in 0.002s\n\nFAILED (failures=1, skipped=2)\n";
+        assert_eq!(
+            one_line_summary(failed).as_deref(),
+            Some("10 passed, 1 failed, 2 ignored")
+        );
+        let node = "# tests 9\n# suites 0\n# pass 9\n# fail 0\n# cancelled 0\n# skipped 0\n";
+        assert_eq!(one_line_summary(node).as_deref(), Some("9 passed"));
+    }
 
     #[test]
     fn gate_summary_parses_known_runners() {

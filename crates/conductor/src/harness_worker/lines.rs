@@ -30,6 +30,7 @@ use super::group::Group;
 use super::launch::{input_event, prompt_text};
 use super::observe::{Action, Observer, oversized_line};
 use super::outbox::Outbox;
+use super::report_tool;
 use super::session::{Running, announce_start, end_of, not_started, or_far, tick_every};
 use super::steer::{Pending, announce, joined_parts};
 use super::stop::{Purpose, StopCause, Stopping};
@@ -106,6 +107,8 @@ pub async fn run(running: Running, launch: Launch) -> SessionEnd {
         resume_with: Vec::new(),
         failure: None,
         exit: (None, None),
+        held_reports: report_tool::Held::default(),
+        report_asked: false,
     };
     for control in early {
         session.on_control(Some(control));
@@ -185,6 +188,10 @@ struct Lines {
     /// A resume that couldn't start.
     failure: Option<EndReason>,
     exit: (Option<i32>, Option<i32>),
+    /// Reports sent through the tool while its own workflow still ran.
+    held_reports: report_tool::Held,
+    /// The session was asked once for the report it ended without.
+    report_asked: bool,
 }
 
 impl Lines {
@@ -310,6 +317,9 @@ impl Lines {
             }
             if let AgentEvent::BackgroundTasks { running, ended } = &event {
                 self.background_changed(running.len(), *ended);
+            }
+            if self.holds_report(&event) {
+                continue;
             }
             actions.extend(self.obs.event(event));
         }
@@ -879,10 +889,30 @@ impl Lines {
                 if self.live.input_open && self.live.background_until.is_none() {
                     self.live.background_until = Some(self.background_deadline());
                 }
+            } else if self.owes_report() {
+                self.report_asked = true;
+                self.write_input(vec![Pending::report_asked()]);
             } else if self.live.input_open {
                 self.live.process.close_input();
                 self.live.input_open = false;
             }
         }
+    }
+
+    fn holds_report(&mut self, event: &AgentEvent) -> bool {
+        report_tool::reports_by_tool(&self.ctx.spec)
+            && self.held_reports.holds(
+                event,
+                self.live.background,
+                &report_tool::report_file(&self.ctx.spec),
+            )
+    }
+
+    /// Its work is done and the tool has no report it could keep, which it's asked for once.
+    fn owes_report(&self) -> bool {
+        self.live.input_open
+            && !self.report_asked
+            && report_tool::reports_by_tool(&self.ctx.spec)
+            && self.obs.facts.structured.is_none()
     }
 }

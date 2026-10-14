@@ -531,18 +531,25 @@ async fn solo_goal_file_not_a_violation() -> anyhow::Result<()> {
         .rev()
         .find(|(point, _)| point.kind == CheckpointKind::Merge)
         .expect("the policy saw the merge approval");
-    // The conductor committed the goal file, so it's shown, never checked as an agent's change.
+    // The goal file is kept under Argonauts' home, so it's never part of the change.
     assert!(
-        evidence.facts.conductor_paths.contains(&goal_path),
+        evidence.facts.conductor_paths.is_empty(),
         "{:?}",
         evidence.facts.conductor_paths
     );
     assert!(!evidence.facts.agent_paths.contains(&goal_path));
+    assert!(
+        !evidence
+            .facts
+            .agent_paths
+            .iter()
+            .any(|path| path.starts_with(".argonauts/"))
+    );
     assert!(evidence.facts.protected_paths.is_empty());
-    // The card shows the goal record as Argonauts' own row, so its rows add up to its totals.
+    // The card's rows add up to its totals, with no row of Argonauts' own.
     let packet = merge_packet(&outcome.events);
     let rows: u32 = packet.rows.iter().map(|row| row.stat.files_changed).sum();
-    assert!(packet.conductor.files_changed >= 1, "{packet:?}");
+    assert_eq!(packet.conductor.files_changed, 0, "{packet:?}");
     assert_eq!(
         rows + packet.conductor.files_changed,
         packet.combined.files_changed,

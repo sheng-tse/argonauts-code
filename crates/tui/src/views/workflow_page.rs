@@ -4,6 +4,7 @@
 //! back as it reads now.
 
 use argonauts_core::app::{UiCommand, ViewData};
+use argonauts_core::text::shown_name;
 use argonauts_core::workflow_page::{PageField, PageGroup, WorkflowChange, WorkflowPage};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
@@ -365,7 +366,7 @@ impl WorkflowPageView {
         fit_columns(
             vec![
                 Column::new("step", cells(&named)),
-                Column::new("role", cells(&|group| clean(&group.role))).keep(2),
+                Column::new("role", cells(&|group| shown_name(&clean(&group.role)))).keep(2),
                 Column::new("who would take it", cells(&|group| clean(&group.who))).keep(1),
                 Column::new("how", cells(&|group| clean(&group.how))).flex(),
             ],
@@ -516,7 +517,10 @@ impl View for WorkflowPageView {
             title: Line::from(vec![
                 Span::styled("Workflows", theme.style(Role::Text)),
                 Span::styled(format!(" {} ", marks.crumb), theme.style(Role::Dim)),
-                Span::styled(clean(&self.page.name), theme.style(Role::Label)),
+                Span::styled(
+                    shown_name(&clean(&self.page.name)),
+                    theme.style(Role::Label),
+                ),
             ]),
             description: self.page.about.clone(),
             summary: clean(&self.page.path),
@@ -671,11 +675,25 @@ fn choice_spans(field: &PageField, theme: &Theme) -> Vec<Span<'static>> {
     if field.optional {
         values.push(("", UNSET));
     }
+    // A role is named on screen with a capital, and kept as typed.
+    let roles = field.key == "role";
+    let shown: Vec<String> = field
+        .choices
+        .iter()
+        .map(|choice| {
+            if roles {
+                shown_name(choice)
+            } else {
+                choice.clone()
+            }
+        })
+        .collect();
     values.extend(
         field
             .choices
             .iter()
-            .map(|choice| (choice.as_str(), choice.as_str())),
+            .zip(&shown)
+            .map(|(choice, shown)| (choice.as_str(), shown.as_str())),
     );
     let mut spans = Vec::new();
     // A value the key doesn't take, as a broken file may hold, is shown for what it is.
@@ -854,7 +872,7 @@ mod tests {
         assert_eq!(lines.len(), 9, "{lines:?}");
         assert!(lines[4].contains("    role  "), "{lines:?}");
         assert!(
-            lines[4].ends_with("orchestrator  workers  reviewers  judge"),
+            lines[4].ends_with("Orchestrator  Workers  Reviewers  Judge"),
             "{lines:?}"
         );
         assert!(

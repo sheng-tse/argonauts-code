@@ -5,7 +5,9 @@ use argonauts_core::api::{PlanUsage, UsageSummary};
 use argonauts_core::app::ViewRequest;
 use argonauts_core::limits::QuotaSource;
 use argonauts_core::names::VendorId;
-use argonauts_core::plan_usage::{Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow};
+use argonauts_core::plan_usage::{
+    Behavior, Behaviors, ExtraUsage, LiveUsage, LiveWindow, UsageReport, UsageShare,
+};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
@@ -100,6 +102,20 @@ fn summary() -> UsageSummary {
             },
         ],
         week: Vec::new(),
+        day_report: Some(UsageReport {
+            requests: 312,
+            sessions: 4,
+            skills: vec![UsageShare {
+                name: "review".into(),
+                share: 0.4,
+            }],
+            mcp_servers: vec![UsageShare {
+                name: "github".into(),
+                share: 0.2,
+            }],
+            ..UsageReport::default()
+        }),
+        week_report: None,
     });
     let codex = live(
         "codex",
@@ -288,12 +304,13 @@ fn the_edges_of_the_reset_words() {
 fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     let state = state();
     let rows = rows(&mut usage_view(), &state, 140);
+    assert!(rows[1].ends_with("Today  Week  Month  All"), "{rows:#?}");
     assert!(
-        rows[1].ends_with("read live 8:12pm · r reads again"),
+        rows[2].ends_with("read live 8:12pm · r reads again"),
         "{rows:#?}"
     );
     assert!(
-        rows[2].starts_with("  All CLIs   Claude Code   Codex   Antigravity CLI"),
+        rows[2].starts_with("  All CLIs    Claude Code    Codex    Antigravity CLI"),
         "{rows:#?}"
     );
     assert!(
@@ -308,19 +325,34 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     let session = find(&rows, "session");
     assert!(rows[session].contains("14%"), "{rows:#?}");
     assert!(rows[session].contains("Gemini 5h"));
-    assert!(rows[session + 1].contains("resets in 2h 28m · today 10:40pm"));
+    // Under each bar, in the same column on every card, broken at its ` · ` where it's long.
+    let under = |row: usize, words: &str| {
+        let at = rows[row]
+            .find(words)
+            .unwrap_or_else(|| panic!("{words}: {rows:#?}"));
+        rows[row][..at].chars().count()
+    };
+    let bar = rows[session]
+        .chars()
+        .position(|c| matches!(c, '━' | '─' | '╸'))
+        .unwrap();
+    assert_eq!(under(session + 1, "resets in 2h 28m"), bar, "{rows:#?}");
+    assert!(rows[session + 2].contains("today 10:40pm"), "{rows:#?}");
     assert!(rows[session + 1].contains("resets in 4h 3m · Fri 12:15am"));
-    assert!(rows[session + 1].contains("resets in 1h 28m · today 9:40pm"));
+    assert!(rows[session + 1].contains("resets in 1h 28m"));
+    assert!(rows[session + 2].contains("today 9:40pm"));
     let fable = find(&rows, "Fable week");
     assert!(rows[fable].contains("Claude, GPT"), "{rows:#?}");
-    assert!(rows[fable + 1].contains("5-hour · resets in 1h 28m · today 9:40pm"));
+    assert!(rows[fable + 1].contains("5-hour · resets in 1h 28m"));
+    assert!(rows[fable + 2].contains("today 9:40pm"));
     // The group's other window waits for its page.
     assert!(!rows.iter().any(|row| row.contains("Claude, GPT week")));
     let extra = find(&rows, "extra");
     assert!(
-        rows[extra + 1].contains("$0 of $100 · resets in 23d · Sun Nov 1"),
+        rows[extra + 1].contains("$0 of $100 · resets in 23d"),
         "{rows:#?}"
     );
+    assert!(rows[extra + 2].contains("Sun Nov 1"), "{rows:#?}");
     let most = find(&rows, "Most of your usage");
     assert!(
         rows[most].contains("· last 24h · 95% long context · 90% subagent-heavy · enter for more"),
@@ -329,7 +361,7 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     assert!(
         rows.last()
             .unwrap()
-            .starts_with(" tab · ←→ tabs · ↓ CLIs · enter details · esc back"),
+            .starts_with(" tab · ←→ tabs · ↓ CLIs · 1-4 period · r reads again · esc closes"),
         "{rows:#?}"
     );
 }
@@ -369,10 +401,20 @@ fn a_cli_sub_tab_lays_out_like_claude_codes_usage() {
     assert_eq!(page[week + 2], " Resets in 5d 2h · Tue Oct 13, 10:00pm");
     let credits = find(&page, "Usage credits");
     assert!(page[credits + 1].ends_with("$0 / $100 spent"), "{page:#?}");
-    find(&page, "What's contributing to your limits usage?");
-    find(&page, "Last 24h: 95% long context · 90% subagent-heavy");
+    let report = find(&page, "What's contributing to your limits usage?");
+    assert!(page[report + 1].starts_with(" Approximate, based on local sessions on this machine"));
+    let day = find(&page, " Last 24h · 312 requests · 4 sessions");
+    assert_eq!(page[day + 1], "   95% of your usage was at >150k context");
+    assert_eq!(
+        page[day + 2],
+        "   90% of your usage came from subagent-heavy sessions"
+    );
+    assert_eq!(page[day + 3], "   Top skills: /review 40%");
+    assert_eq!(page[day + 4], "   Top MCP servers: github 20%");
     assert!(
-        page.last().unwrap().starts_with(" ←→ CLIs · ↑ tabs"),
+        page.last()
+            .unwrap()
+            .starts_with(" tab · ←→ CLIs · ↓ into the cards · ↑ tabs"),
         "{page:#?}"
     );
     // ←→ wrap around the sub-tabs.
@@ -414,10 +456,11 @@ fn the_conversation_line_says_how_long_and_how_much_of_it_working() {
             std::time::Duration::from_secs(4 * 60 + 12),
         )),
         changed: (182, 21),
+        focus: None,
     };
     let theme = plain();
     let kit = Kit::new(&theme);
-    let line = tab.conversation(&kit, 120).unwrap();
+    let line = tab.conversation(&kit, 120);
     let text: String = line.lines[0]
         .spans
         .iter()
@@ -486,7 +529,8 @@ fn a_window_whose_reset_passed_reads_as_unknown() {
         cards[session].contains(crate::format::UNKNOWN),
         "{cards:#?}"
     );
-    find(&cards, "reset today 8:07pm · reading again");
+    let reset = find(&cards, "reset today 8:07pm");
+    assert!(cards[reset + 1].contains("reading again"), "{cards:#?}");
 
     key(&mut view, &state, KeyCode::Down);
     key(&mut view, &state, KeyCode::Right);
@@ -550,7 +594,7 @@ fn a_read_on_its_way_and_no_reading_say_so() {
     state.usage = Some(Arc::new(usage));
     let rows = rows(&mut usage_view(), &state, 140);
     assert!(
-        rows[1].ends_with("reading live… · r reads again"),
+        rows[2].ends_with("reading live… · r reads again"),
         "{rows:#?}"
     );
     find(&rows, "reading live…");

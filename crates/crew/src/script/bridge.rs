@@ -197,6 +197,7 @@ impl<'a> Bridge<'a> {
             slot: 0,
             label: Some(call.label.clone()),
             reviews,
+            fresh: false,
         };
         // The session this call started before the run stopped carries on.
         let known = lock(&self.sessions).get(&call.index).cloned();
@@ -382,11 +383,18 @@ pub(super) fn answer(call: &AgentCall, ran: &Ran) -> AgentEnd {
         .map(str::trim)
         .filter(|text| !text.is_empty());
     let result = if end.reason != EndReason::Completed {
-        Err(format!(
-            "{} ended early: {}",
-            call.label,
-            crate::status::folder::words(&end.reason)
-        ))
+        // The same plain cause the agent's own row gives, such as "Codex refused the answer
+        // format Argonauts asked for".
+        let cli =
+            argonauts_core::display_names::DisplayNames::default().harness(&ran.worker.worker);
+        Err(match end.reason.plain_line(&cli) {
+            Some(why) => format!("{}: {why}", call.label),
+            None => format!(
+                "{} ended early: {}",
+                call.label,
+                crate::status::folder::words(&end.reason)
+            ),
+        })
     } else if let Some(schema) = &call.schema {
         end.structured
             .clone()

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use argonauts_core::events::session::InputPart;
+use argonauts_core::events::session::{InputPart, InputPartKind};
 use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
@@ -92,7 +92,11 @@ pub fn build(settings: &Settings, input: SpecInput) -> EngineResult<SessionSpec>
         access: input.access,
         workdir: input.workdir,
         session_dir: input.session_dir,
-        prompt: separated(input.prompt),
+        // A session carried on was told when it began.
+        prompt: separated(match input.resume {
+            Some(_) => input.prompt,
+            None => with_shell_rules(input.prompt, &shell),
+        }),
         json_schema: input.json_schema,
         resume: input.resume,
         lifetime: input.lifetime,
@@ -160,6 +164,47 @@ fn reader_shell(
         }
     }
 }
+
+/// A session held to a few commands is told which, right after what it is told to do, so it
+/// never spends a call on one its CLI will refuse.
+fn with_shell_rules(mut parts: Vec<InputPart>, shell: &SessionShell) -> Vec<InputPart> {
+    let SessionShell::Only(commands) = shell else {
+        return parts;
+    };
+    if parts.iter().any(|part| part.label == SHELL_RULES) {
+        return parts;
+    }
+    let listed: Vec<String> = commands
+        .iter()
+        .map(|command| format!("- `{command}`"))
+        .collect();
+    let text = format!(
+        "Your shell runs only these commands, each on its own, with any arguments after it:\n\
+         {}\n\n\
+         Anything else is refused: another command, two joined with `&&`, `;` or `|`, a \
+         redirect, or an environment variable set in front. Read files with your read tools, \
+         not the shell. The checks' results, when they ran, are in your input, so run a check \
+         again only to see something they don't show.",
+        listed.join("\n")
+    );
+    let at = parts
+        .iter()
+        .take_while(|part| part.kind.instructs() || part.kind == InputPartKind::Rules)
+        .count();
+    parts.insert(
+        at,
+        InputPart {
+            kind: InputPartKind::Rules,
+            label: SHELL_RULES.to_owned(),
+            approx_tokens: u32::try_from(text.len() / 4).unwrap_or(u32::MAX),
+            text,
+            source: None,
+        },
+    );
+    parts
+}
+
+const SHELL_RULES: &str = "your shell";
 
 /// A command as it is typed, an argument with a space or a quote in single quotes.
 fn command_line(command: &[String]) -> String {
@@ -465,6 +510,33 @@ mod tests {
             SessionShell::None,
             "no checks, no shell"
         );
+    }
+
+    #[test]
+    fn a_reviewer_held_to_the_checks_is_told_which_commands_run() {
+        let rules = |label: &str, kind: InputPartKind| InputPart {
+            kind,
+            label: label.to_owned(),
+            text: "x".to_owned(),
+            approx_tokens: 1,
+            source: None,
+        };
+        let parts = vec![
+            rules("Frame", InputPartKind::Frame),
+            rules("Instructions", InputPartKind::Instructions),
+            rules("decide, don't ask", InputPartKind::Rules),
+            rules("the change", InputPartKind::Evidence),
+        ];
+        let shell = SessionShell::Only(vec!["python3 -m unittest -q".to_owned()]);
+        let told = with_shell_rules(parts.clone(), &shell);
+        assert_eq!(told.len(), 5);
+        assert_eq!(told[3].label, "your shell");
+        assert_eq!(told[3].kind, InputPartKind::Rules);
+        assert!(told[3].text.contains("- `python3 -m unittest -q`"));
+        assert!(told[3].text.contains("`&&`, `;` or `|`"));
+        assert_eq!(with_shell_rules(told.clone(), &shell), told, "told once");
+        assert_eq!(with_shell_rules(parts.clone(), &SessionShell::Any), parts);
+        assert_eq!(with_shell_rules(parts.clone(), &SessionShell::None), parts);
     }
 
     /// A workflow's step may give a review to a worker seat; reading a change to judge it is

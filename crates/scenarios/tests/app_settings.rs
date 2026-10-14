@@ -482,9 +482,10 @@ fn app_effort_tab_turns_ultracode_on() -> anyhow::Result<()> {
 /// there: Tab flips it and Enter saves it.
 #[test]
 fn app_effort_offers_ultracode_on_a_model_without_levels() -> anyhow::Result<()> {
+    // Haiku 4.5 takes no effort level; haiku itself now runs Haiku 5.5, which does.
     let config = GLOBAL_CONFIG.replace(
         "main_agent = \"claude-code\"",
-        "main_agent = \"claude-code/haiku\"",
+        "main_agent = \"claude-code/claude-haiku-4-5\"",
     );
     let scenario = scenario_with(&config)?;
     let mut pty = start(&scenario)?;
@@ -895,7 +896,7 @@ fn app_workflows_library_shows_copies_diffs() -> anyhow::Result<()> {
     pick_in_library(&mut pty, &rows, "solo")?;
     pty.press(Key::Enter)?;
     // The file runs past one page, and the team's line is its last.
-    pty.wait_for("solo · ", WAIT)?;
+    pty.wait_for("Solo · ", WAIT)?;
     pty.press(Key::End)?;
     pty.wait_for("# the team's change", WAIT)?;
     pty.press(Key::Esc)?;

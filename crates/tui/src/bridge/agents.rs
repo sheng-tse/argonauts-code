@@ -1,5 +1,7 @@
-//! Agent sessions in the main screen: one live block per working agent, and what goes to
-//! scrollback when their calls finish, by verbosity (`full` shows every finished call and
+//! Agent sessions in the main screen. An agent at work shows in the list under the input, and
+//! lands in scrollback once, when it finishes; with `[ui] agents_in_chat = "as_they_work"` it
+//! has a live block, and its rows print as its calls finish. What prints goes by
+//! verbosity (`full` shows every finished call and
 //! message named with its agent, `normal` folds quiet calls into groups, `quiet` shows
 //! milestones only). A finished session prints one collapsed line, except in a resumed run's
 //! history, where the condensed replay prints in its place. Argonauts' own calls, such as the
@@ -17,14 +19,14 @@ use argonauts_core::events::session::{
     VendorWorkflow, Watchdog, loaded_words,
 };
 use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{SessionKey, WorkerRef};
-use argonauts_core::settings::ui::Glyphs as GlyphChoice;
+use argonauts_core::names::{RoleName, SessionKey, WorkerRef};
+use argonauts_core::settings::ui::{AgentsInChat, Glyphs as GlyphChoice};
 use argonauts_core::steps::StepName;
 use argonauts_core::{AgentEvent, CardId, ErrorCategory, RunId, TodoItem, TodoStatus, Verbosity};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::{Cx, failure, mods, tools, vendor_workflow};
+use super::{Cx, ended, failure, mods, reviewed, tools, vendor_workflow};
 use crate::cell::{
     AgentsStarted, Cell, DiffView, StartedAgent, Todo, TodoState, Tone, ToolCall, ToolItem,
     ToolKind, ToolState, ToolStats, ToolTitle,
@@ -55,6 +57,8 @@ pub struct AgentBlocks {
     gates: BTreeMap<(RunId, CardId), bool>,
     /// The newest event time, which puts replayed sessions back on the clock.
     latest: Option<OffsetDateTime>,
+    /// Each review's rounds so far.
+    rounds: reviewed::Rounds,
 }
 
 #[derive(Debug, Default)]
@@ -97,11 +101,16 @@ struct Live {
     todos: Vec<Todo>,
     retry: Option<Retry>,
     retries: u32,
-    /// A Codex thread whose own steps don't reach us.
-    hidden_steps: bool,
     /// The last line a mod pushed here, so a mod that says the same on every tool call shows
     /// it once.
     last_push: Option<String>,
+    /// Keys of calls that started a workflow the CLI runs in the background: each row stays
+    /// live until its workflow ends, then prints once.
+    workflows_running: Vec<String>,
+    /// Its role, so a reviewer or a sign-off ends with its verdict.
+    role: Option<argonauts_core::names::RoleName>,
+    /// What it was given to judge.
+    given: reviewed::Given,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,7 +162,16 @@ impl AgentBlocks {
                 if let Some(index) = self.index(&event.run_id, key) {
                     self.remove(index, cx);
                 }
-                if writes_the_closing(started.step) {
+                let card = event.card_id.as_ref();
+                if writes_the_closing(started.step)
+                    || asked_inside_a_cli_workflow(
+                        &event.run_id,
+                        started.role,
+                        started.step,
+                        card,
+                        cx,
+                    )
+                {
                     return;
                 }
                 let live = Live::new(
@@ -176,8 +194,15 @@ impl AgentBlocks {
                     },
                     cx,
                 );
+                let mut live = live;
+                live.role = Some(started.role);
                 self.started.add(live.started_row(), event.ts);
                 self.sessions.push(live);
+            }
+            SessionEvent::Input(input) => {
+                if let Some(index) = self.index(&event.run_id, key) {
+                    self.sessions[index].given.add(&input.parts);
+                }
             }
             SessionEvent::FileDiff(diff) => {
                 if let Some(index) = self.find(event, cx) {
@@ -216,22 +241,55 @@ impl AgentBlocks {
                     set_message(call, text);
                 }
             }
+            // A call shows as the model starts writing it, and fills in where it stands.
+            AgentEvent::ToolPending { id, name, parent }
+                if !tools::is_own(name) && !tools::is_tool_lookup(name) =>
+            {
+                let call = tools::writing_call(&live.vendor, name).with_key(id.clone());
+                match parent.as_deref().and_then(|p| live.whole.child_mut(p)) {
+                    Some(owner) => owner.push_call(call),
+                    None => live.whole.push_call(call),
+                }
+            }
+            AgentEvent::ToolDropped { id, .. } => {
+                live.whole.drop_child(id);
+            }
             AgentEvent::ToolStarted {
                 id,
                 name,
                 input,
                 parent,
             } => {
-                if tools::is_own(name) {
+                // Tool lookups stay out of the block too, as Claude Code leaves them out.
+                if tools::is_own(name) || tools::is_tool_lookup(name) {
                     live.own.push(id.clone());
                 }
                 if let Some(summary) = tools::report_summary(name, input) {
                     live.reports.push((id.clone(), summary));
                 }
                 let call = tools::start_call(&live.vendor, name, input).with_key(id.clone());
-                match parent.as_deref().and_then(|p| live.whole.child_mut(p)) {
-                    Some(owner) => owner.push_call(call),
-                    None => live.whole.push_call(call),
+                // A shell call shares the fold line beside it only when it just looks around.
+                let alone = call.kind == ToolKind::Shell && !tools::only_looks(&call);
+                let written = live
+                    .whole
+                    .child_mut(id)
+                    .is_some_and(|known| known.state == ToolState::Writing);
+                let unfolded = (written && alone)
+                    .then(|| live.whole.take_from_fold(id))
+                    .flatten();
+                if let Some(mut taken) = unfolded {
+                    taken.fill_in(call);
+                    live.whole.push_alone(taken);
+                } else if written {
+                    if let Some(written) = live.whole.child_mut(id) {
+                        written.fill_in(call);
+                    }
+                } else {
+                    match parent.as_deref().and_then(|p| live.whole.child_mut(p)) {
+                        Some(owner) => owner.push_call(call),
+                        None if alone => live.whole.push_alone(call),
+                        None => live.whole.push_call(call),
+                    }
                 }
             }
             AgentEvent::ToolFinished { id, ok, output, .. } => {
@@ -256,7 +314,7 @@ impl AgentBlocks {
                 live.retry = Some(Retry { at, attempt });
             }
             AgentEvent::Subagent { update } => live.subagent(update, cx),
-            AgentEvent::Workflow { workflow } => live.vendor_workflow(workflow),
+            AgentEvent::Workflow { workflow } => live.vendor_workflow(workflow, cx),
             AgentEvent::Error {
                 category, message, ..
             } => {
@@ -319,6 +377,12 @@ impl AgentBlocks {
         let state = end_state(&end.reason);
         live.whole.stop();
         live.whole.state = state;
+        // A workflow its session outlived no longer runs: its row prints as it stopped.
+        for key in std::mem::take(&mut live.workflows_running) {
+            if let Some(call) = live.whole.child_mut(&key).map(|call| call.clone()) {
+                live.send_out(call, cx);
+            }
+        }
         let gates = live
             .card
             .as_ref()
@@ -336,6 +400,24 @@ impl AgentBlocks {
             detail.push_str(failure::RAW_ERROR_HINT);
         }
         let mut summary = live.whole.summarized(Some(&detail));
+        // A verdict says what the agent read, so what it held back stays for the overlay.
+        let verdict = raw
+            .is_none()
+            .then(|| reviewed::row(live.role, &live.given, &live.whole, end))
+            .flatten();
+        let held_back = verdict.is_some();
+        if let Some(mut row) = verdict {
+            self.rounds.count(&live.run, &mut row);
+            summary = row;
+        } else if state == ToolState::Failed {
+            let hint = (raw.is_some() && !cx.replaying()).then_some(failure::RAW_ERROR_HINT);
+            summary = ended::failed_row(
+                &live.whole,
+                reason_words(&end.reason, &cli),
+                hint,
+                Duration::from_millis(end.duration_ms),
+            );
+        }
         if cx.verbosity() == Verbosity::Quiet {
             return;
         }
@@ -346,9 +428,9 @@ impl AgentBlocks {
         if raw.is_some() {
             cx.model.raw_failure = raw;
         }
-        if state != ToolState::Stopped {
+        if state != ToolState::Stopped && !held_back {
             live.flush(cx);
-        } else if live.printed {
+        } else if live.printed && !held_back {
             // A stopped agent prints one line, and what it held back stays for the overlay.
             summary.full = (!live.outbox.body.is_empty())
                 .then(|| Box::new(live.outbox.clone().with_state(ToolState::Stopped)));
@@ -409,7 +491,11 @@ impl AgentBlocks {
         let session = cx
             .state
             .session(&event.run_id, key)
-            .filter(|session| session.is_running() && !writes_the_closing(session.step))?;
+            .filter(|session| session.is_running() && !writes_the_closing(session.step))
+            .filter(|session| {
+                let card = session.card.as_ref().or(event.card_id.as_ref());
+                !asked_inside_a_cli_workflow(&event.run_id, session.role, session.step, card, cx)
+            })?;
         let (worker, vendor) = (session.worker.clone(), session.vendor.clone());
         let card = session.card.clone().or_else(|| event.card_id.clone());
         let named = Named {
@@ -469,6 +555,25 @@ impl StartedGroup {
 /// itself ends the run.
 fn writes_the_closing(step: Option<StepName>) -> bool {
     step == Some(StepName::CloseRun)
+}
+
+/// A reviewer or judge that a CLI's own workflow asked through Argonauts while it runs: its
+/// answer belongs to the workflow's row and view, not to the chat. It is tied to no task and
+/// no step of its own.
+fn asked_inside_a_cli_workflow(
+    run: &RunId,
+    role: RoleName,
+    step: Option<StepName>,
+    card: Option<&CardId>,
+    cx: &Cx<'_>,
+) -> bool {
+    let asked = matches!(role, RoleName::Reviewer | RoleName::Judge) && step.is_none();
+    asked
+        && card.is_none()
+        && cx.state.runs.get(run).is_some_and(|run| {
+            run.sessions_in_order()
+                .any(|session| session.workflows.iter().any(|workflow| !workflow.ended()))
+        })
 }
 
 /// Agent output and a session's end go to scrollback, so the started tree goes before them.
@@ -539,6 +644,7 @@ impl Live {
             outbox: head.clone().with_state(ToolState::Done),
             whole: head.clone(),
             own: Vec::new(),
+            workflows_running: Vec::new(),
             reports: Vec::new(),
             reported: None,
             head,
@@ -555,10 +661,15 @@ impl Live {
             retry: None,
             last_push: None,
             retries: 0,
-            hidden_steps: false,
+            role: None,
+            given: reviewed::Given::default(),
         };
-        let block = live.block(cx);
-        live.cell = Some(cx.model.history.push_active(block));
+        // By default an agent at work shows in the list under the input with what it's doing
+        // now, and the chat gets it once, when it finishes.
+        if as_they_work(cx) {
+            let block = live.block(cx);
+            live.cell = Some(cx.model.history.push_active(block));
+        }
         live
     }
 
@@ -617,7 +728,9 @@ impl Live {
         self.last_message = Some(shown.clone());
         if self.prints(Verbosity::Normal, cx) {
             self.outbox.push(ToolItem::Markdown(shown));
-            self.flush(cx);
+            if as_they_work(cx) {
+                self.flush(cx);
+            }
         }
     }
 
@@ -669,6 +782,15 @@ impl Live {
         if !call.is_running() {
             return;
         }
+        let starts_a_workflow = matches!(&call.title, ToolTitle::Call { name, .. }
+            if vendor_workflow::is_call(&self.vendor, name));
+        // The call returns once the workflow is launched; the row waits for its end.
+        if ok && starts_a_workflow {
+            if !self.workflows_running.iter().any(|key| key == id) {
+                self.workflows_running.push(id.to_owned());
+            }
+            return;
+        }
         tools::finish_call(call, ok, output);
         let done = call.clone();
         if let Some(at) = self.reports.iter().position(|(key, _)| key == id) {
@@ -684,7 +806,7 @@ impl Live {
 
     /// A workflow the CLI runs itself, on the row of the call that started it: its name and
     /// steps rather than the call's answer, which only the raw log keeps.
-    fn vendor_workflow(&mut self, workflow: &VendorWorkflow) {
+    fn vendor_workflow(&mut self, workflow: &VendorWorkflow, cx: &mut Cx<'_>) {
         let Some(call) = workflow
             .call
             .as_deref()
@@ -697,6 +819,29 @@ impl Live {
         call.tail = row.tail;
         call.kind = row.kind;
         call.body = row.body;
+        if workflow.ended() {
+            self.workflow_ended(workflow, cx);
+        }
+    }
+
+    /// Its workflow ended: the row that stayed live prints once, with its final phases.
+    fn workflow_ended(&mut self, workflow: &VendorWorkflow, cx: &mut Cx<'_>) {
+        let Some(key) = workflow.call.as_deref() else {
+            return;
+        };
+        let Some(at) = self.workflows_running.iter().position(|held| held == key) else {
+            return;
+        };
+        self.workflows_running.remove(at);
+        let top = is_top_level(&self.whole, key);
+        let Some(call) = self.whole.child_mut(key) else {
+            return;
+        };
+        call.finish(!matches!(workflow.status, SubagentStatus::Failed));
+        let done = call.clone();
+        if top {
+            self.send_out(done, cx);
+        }
     }
 
     fn subagent(&mut self, update: &SubagentUpdate, cx: &mut Cx<'_>) {
@@ -729,14 +874,11 @@ impl Live {
         let drawn = update.kind == SubagentKind::Workflow
             && matches!(&call.title, ToolTitle::Call { name, .. }
                 if vendor_workflow::is_call(&self.vendor, name));
-        if drawn {
-            self.hidden_steps = true;
-        } else if update.steps_visible {
+        if !drawn && update.steps_visible {
             if let Some(message) = &update.last_message {
                 set_message(call, message);
             }
-        } else {
-            self.hidden_steps = true;
+        } else if !drawn {
             let mut row = status_word(update.status).to_owned();
             if let Some(message) = update.last_message.as_deref().map(first_line) {
                 row.push_str(" · ");
@@ -770,7 +912,7 @@ impl Live {
             Verbosity::Normal => self.outbox.push_call(call),
             Verbosity::Quiet => return,
         }
-        if self.outbox.body.len() >= OUTBOX_MAX {
+        if self.outbox.body.len() >= OUTBOX_MAX && as_they_work(cx) {
             self.flush(cx);
         }
     }
@@ -871,13 +1013,6 @@ impl Live {
         }) {
             block.body.push(ToolItem::Diff(preview.clone()));
         }
-        if self.vendor == "codex" {
-            let mut note = "Messages arrive whole".to_owned();
-            if self.hidden_steps {
-                note.push_str(" · thread steps aren't streamed");
-            }
-            block.body.push(ToolItem::text(note));
-        }
         let streaming = last_line(&self.streaming);
         if !streaming.is_empty() {
             block.body.push(ToolItem::Streaming(streaming.to_owned()));
@@ -892,6 +1027,12 @@ impl Live {
         }
         block
     }
+}
+
+/// Whether agents show in the chat as they work, in a live block that prints their rows as
+/// they finish, rather than once each is done.
+fn as_they_work(cx: &Cx<'_>) -> bool {
+    cx.settings.agents_in_chat == AgentsInChat::AsTheyWork
 }
 
 /// agy waits out a server's retry delay and `opencode run` retries, both without a word, so

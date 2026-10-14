@@ -369,6 +369,7 @@ fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
             cache_write: 0,
             session: 1,
             subagent: false,
+            whole_day: false,
         }])
         .unwrap();
 
@@ -387,6 +388,7 @@ fn the_event_counts_what_the_overviews_records_hold_and_nothing_imported() {
         lines: &lines,
         work: &work,
         clock: argonauts_tui::format::WallClock::default(),
+        prices: &argonauts_core::pricing::PriceList::default(),
     };
     let shown = crate::overview::build_overview(
         &sources,

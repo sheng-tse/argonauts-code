@@ -6,7 +6,7 @@ expression: "format!(\"{}\\n---\\n{}\", text(&lines), styled(&narrator))"
   tasks are merged.
 ✻ Rowing… (4m 12s · ↓ 48.2k tokens · Build · 2/5 tasks · 3 agents · $0.21)
 
-─────────────────────────────────────────────────────────────── council · Opus ─
+─────────────────────────────────────────────────────────────── Council · Opus ─
 ❯
 ────────────────────────────────────────────────────────────────────────────────
   ǁ supervised mode on (shift+tab to cycle) · ← 3 agents  ● Claude 5h ▄▄▖▄▄▄ 38%

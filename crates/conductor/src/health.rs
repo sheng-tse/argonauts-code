@@ -12,7 +12,9 @@ use std::time::Duration;
 use argonauts_core::Paths;
 use argonauts_core::clock::{Clock, SystemClock};
 use argonauts_core::events::VendorEvent;
-use argonauts_core::limits::{HealthBoard, HealthSignal, HealthState, QuotaStatus, VendorHealth};
+use argonauts_core::limits::{
+    HealthBoard, HealthSignal, HealthState, QuotaStatus, TEST_TASK_SUCCEEDED, VendorHealth,
+};
 use argonauts_core::names::{SessionKey, VendorId};
 use argonauts_core::settings::Span;
 use argonauts_core::settings::sessions::HealthSettings;
@@ -298,7 +300,7 @@ impl Breaker {
             self.set(
                 HealthState::Healthy,
                 now,
-                Some("the test task succeeded".to_owned()),
+                Some(TEST_TASK_SUCCEEDED.to_owned()),
             );
         } else {
             self.go_down(now, "the test task failed".to_owned());

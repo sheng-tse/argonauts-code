@@ -255,7 +255,7 @@ fn agent_panel_rows_progress() {
         .start();
     let screen = harness.wait_visible("↓ 18\\.1k tokens");
     let mode = expect_row(&screen, "↓ to manage");
-    let mut last = expect_row(&screen, "council · Add a --json flag to export ");
+    let mut last = expect_row(&screen, "Council · Add a --json flag to export ");
     assert!(last > mode, "the run's row under the mode line");
     for agent in &crew {
         // Under the run's row, a row of the list: the dot, the agent's name (its task, in a
@@ -274,7 +274,7 @@ fn agent_panel_rows_progress() {
         last = row;
     }
     // The run's row keeps the bar, and the agents' stats start in one column.
-    let run_row = &screen.visible[expect_row(&screen, "council · Add a --json flag to export ")];
+    let run_row = &screen.visible[expect_row(&screen, "Council · Add a --json flag to export ")];
     assert!(run_row.contains(['█', '░']), "{run_row}");
     let stats: Vec<Option<usize>> = crew
         .iter()
@@ -304,7 +304,10 @@ fn take_over_endpoint_refused() {
             take_over(&agent, &[], "/wt/task-002"),
         ],
     );
-    let harness = Harness::start(script);
+    // The agent's block names the endpoint it runs on.
+    let harness = Harness::launch(script)
+        .ui("agents_in_chat = \"as_they_work\"")
+        .start();
     let screen = harness
         .wait_visible(r"A direct endpoint has no UI to hand over\. /reassign the task instead\.");
     assert!(

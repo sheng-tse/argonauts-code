@@ -9,6 +9,7 @@ mod group;
 mod header;
 pub(crate) mod layout;
 mod notice;
+mod record;
 mod shell;
 mod tool;
 mod turn;
@@ -27,7 +28,9 @@ pub use diff::{DiffCell, DiffHunk, DiffKind, DiffLine, DiffParseError, DiffView}
 pub use group::CollapsedGroup;
 pub use header::{AgentReady, SessionHeader};
 pub use notice::{ExitNote, HungLine, Notice, ResultLine};
+pub use record::Record;
 pub use shell::{ShellEnd, ShellRun};
+pub use tool::Held;
 pub use tool::StepMark;
 pub use tool::{
     BLINK_PERIOD, PhaseLine, Todo, TodoState, ToolCall, ToolItem, ToolKind, ToolState, ToolStats,

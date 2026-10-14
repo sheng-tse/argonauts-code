@@ -112,6 +112,20 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
             said.extend(lines.iter().chain(more).cloned());
             said
         }
+        AppEvent::Record {
+            title,
+            tail,
+            lines,
+            notes,
+        } => {
+            let head = match tail {
+                Some(tail) => format!("{title} · {tail}"),
+                None => title.clone(),
+            };
+            let mut said = labeled("report", &head);
+            said.extend(lines.iter().chain(notes).cloned());
+            said
+        }
         AppEvent::Continued { text } => vec![text.clone()],
         AppEvent::Shell { event } => shell_lines(event),
         // A line-mode screen never gives the terminal away, so you run it yourself.
@@ -263,6 +277,11 @@ fn chat_lines(event: &ChatEvent, state: &AppState) -> Vec<String> {
         ChatEvent::TurnCancelled { .. } => vec![format!("{vendor}: stopped")],
         ChatEvent::HandedOff { from, to, why, .. } => {
             vec![format!("{} {why}, so {} continues", from.worker, to.worker)]
+        }
+        ChatEvent::AnswerRetried { .. } => {
+            vec![format!(
+                "{vendor}: that answer missed its format, so it is asked again"
+            )]
         }
     }
 }

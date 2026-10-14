@@ -385,7 +385,9 @@ impl Reader {
                         _ => None,
                     },
                     ChatEvent::TurnFinished { .. } => Some(Close::Whole { key, ends: true }),
-                    ChatEvent::HandedOff { .. } | ChatEvent::Joined { .. } => Some(Close::Tail {
+                    ChatEvent::HandedOff { .. }
+                    | ChatEvent::Joined { .. }
+                    | ChatEvent::AnswerRetried { .. } => Some(Close::Tail {
                         key,
                         who,
                         ends: false,

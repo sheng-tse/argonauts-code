@@ -301,11 +301,12 @@ async fn review(host: &Host, record: &CardRecord, back: &Returning) -> EngineRes
             pipeline::transition(host, card, Trigger::ChangesRequested, &reason)?;
             Ok(Applied::Changes { round, comments })
         }
-        Verdict::ChangesRequested { .. } => {
-            let reason = format!(
+        verdict @ Verdict::ChangesRequested { .. } => {
+            let what = format!(
                 "{}'s review asked for changes again after {change_rounds} rounds",
                 back.original
             );
+            let reason = crate::review::with_findings(what, &verdict);
             pipeline::transition(host, card, Trigger::ChangesRequestedAgain, &reason)?;
             Ok(Applied::Moved)
         }

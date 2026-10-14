@@ -282,8 +282,9 @@ pub(crate) async fn run_attempt(host: &Host, call: AttemptCall<'_>) -> EngineRes
                 let parts = vec![prompt::review_part(change_rounds, &comments)];
                 next = Next::resume(AttemptCause::ReviewChanges, parts);
             }
-            review::Verdict::ChangesRequested { .. } => {
-                let why = format!("review asked for changes again after {change_rounds} rounds");
+            verdict @ review::Verdict::ChangesRequested { .. } => {
+                let what = format!("review asked for changes again after {change_rounds} rounds");
+                let why = review::with_findings(what, &verdict);
                 return Ok(AttemptEnd::Failed { why });
             }
             review::Verdict::Escalated { reasons } => {
@@ -369,6 +370,10 @@ async fn drive_from(
             CardState::Escalated => escalated(host, card, at, &mut carry).await?,
             CardState::NeedsDecision => needs_decision(host, card, at, &mut carry).await?,
             CardState::TakenOver => taken_over(host, card, at, &mut carry).await?,
+            // An answer you gave while the run was parked goes on now.
+            CardState::Blocked if crate::blackboard::questions::answered_meanwhile(host, card)? => {
+                Step::Moved
+            }
             CardState::Blocked
             | CardState::Deferred
             | CardState::Integrated
@@ -699,7 +704,9 @@ async fn gating(
             if progress_of(host, card).gate_retries == 0 {
                 let reason = "the checks failed; the same session gets their output";
                 transition(host, card, Trigger::FirstGateFailure, reason)?;
-                let parts = vec![prompt::gate_output_part(&output)];
+                // The checks ran on the commit alone, so a file it left out may be the cause.
+                let mut parts = vec![prompt::gate_output_part(&output)];
+                parts.extend(worktree::left_out_part(host, card).await?);
                 *carry = Some(Carry::Next(Next::resume(AttemptCause::GateRetry, parts)));
             } else {
                 let reason = "the checks failed again after the resume";
@@ -734,7 +741,7 @@ async fn reviewing(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> Eng
     }
     let review::Verdict::ChangesRequested { comments } = &verdict else {
         // The reviewers rejected the approach or couldn't review: it's yours to decide.
-        let reason = format!("the review sent it to you: {verdict:?}");
+        let reason = review::with_findings("the review sent it to you".to_owned(), &verdict);
         transition(host, card, Trigger::ChangesRequestedAgain, &reason)?;
         return Ok(Step::Moved);
     };
@@ -747,10 +754,8 @@ async fn reviewing(host: &Host, card: &CardId, carry: &mut Option<Carry>) -> Eng
             parts,
         )));
     } else {
-        let reason = format!(
-            "review asked for changes again after {} rounds",
-            change_rounds
-        );
+        let what = format!("review asked for changes again after {change_rounds} rounds");
+        let reason = review::with_findings(what, &verdict);
         transition(host, card, Trigger::ChangesRequestedAgain, &reason)?;
     }
     Ok(Step::Moved)

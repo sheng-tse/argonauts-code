@@ -7,9 +7,9 @@ A repo file wins over yours in ~/.argonauts/workflows, which wins over the built
 
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │   Workflow      Notes            From                                      Description           │
-│   solo                           built in                                  How the solo workflo… │
-│ ❯ orchestrator  in use · edited  ~/.argonauts/workflows/orchestrator.toml  How the orchestrator… │
-│   release                        .argonauts/workflows/release.toml         How the release work… │
+│   Solo                           built in                                  How the solo workflo… │
+│ ❯ Orchestrator  in use · edited  ~/.argonauts/workflows/orchestrator.toml  How the orchestrator… │
+│   Release                        .argonauts/workflows/release.toml         How the release work… │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │

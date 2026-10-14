@@ -19,6 +19,9 @@ use super::sessions::{RunFacts, add_spend};
 #[cfg(test)]
 mod crew_tests;
 mod inner;
+mod own;
+#[cfg(test)]
+mod own_tests;
 mod reported;
 mod tries;
 
@@ -113,7 +116,7 @@ fn view_from(
         Some(_) => Some(argonauts_core::settings::workflows::RunStyle::Goal),
         None => log.named.as_ref().filter(|_| top).map(|named| named.style),
     };
-    Some(WorkflowView {
+    let mut view = WorkflowView {
         run: run.clone(),
         status_lines,
         style,
@@ -129,7 +132,12 @@ fn view_from(
         phases: built.phases,
         notes,
         required,
-    })
+        owner: None,
+    };
+    if top {
+        own::as_the_runs(&mut view, log, run);
+    }
+    Some(view)
 }
 
 /// The run's workflow, or the nested one named, as it is now, with the name it's saved under:
@@ -1221,6 +1229,139 @@ mod tests {
         assert_eq!(row.session, host);
         assert_eq!((view.agents_done, view.agents_total), (1, 2));
         assert_eq!(vendor_workflows(&events).len(), 1);
+    }
+
+    /// A run whose one task is a session running Claude Code's own workflow: its phases are
+    /// the run's, the session that plans first, the reviewer it asked in the row it answered,
+    /// and no second run nested under the session.
+    #[test]
+    fn claude_codes_own_workflow_is_the_runs_steps() {
+        use argonauts_core::events::session::{
+            SubagentStatus, VendorAgent, VendorAgentState, VendorPhase, VendorWorkflow,
+        };
+        let top = WorkflowId::numbered(1);
+        let script = step(&top, 0, 0);
+        let host = SessionKey::numbered(1);
+        let reviewer = SessionKey::numbered(2);
+        let card = argonauts_core::CardId::new("task-add-due-dates").unwrap();
+        let agent = |index: u32, label: &str, phase: u32, state: VendorAgentState| VendorAgent {
+            index,
+            label: label.to_owned(),
+            phase: Some(phase),
+            model: Some("claude-haiku-4-5".to_owned()),
+            state,
+            tokens: 1_000,
+            tool_calls: 0,
+            duration_ms: 1_000,
+            started_at_ms: None,
+            attempt: 1,
+            prompt: None,
+            result: None,
+        };
+        let workflow = VendorWorkflow {
+            id: "wf_1".to_owned(),
+            call: None,
+            name: "add-due-dates".to_owned(),
+            description: "Add due dates".to_owned(),
+            phases: ["Build", "Review", "Final"]
+                .iter()
+                .zip(1..)
+                .map(|(title, index)| VendorPhase {
+                    index,
+                    title: (*title).to_owned(),
+                    detail: String::new(),
+                })
+                .collect(),
+            agents: vec![
+                agent(1, "build:due-dates", 1, VendorAgentState::Done),
+                agent(2, "review:due-dates", 2, VendorAgentState::Done),
+                agent(3, "final:due-dates", 3, VendorAgentState::Running),
+            ],
+            status: SubagentStatus::Running,
+            tokens: 3_000,
+            tool_calls: 0,
+            duration_ms: 3_000,
+            summary: None,
+            started_at_ms: None,
+        };
+        let mut events = vec![
+            started(
+                0,
+                &top,
+                None,
+                definition(serde_json::json!({
+                    "name": "add-due-dates",
+                    "phases": [{"name": "Work", "standard": "do", "steps": [{"kind": "script"}]}]
+                })),
+            ),
+            step_started(1, script.clone(), StepKind::Script, StandardPhase::Do),
+            placed(
+                2,
+                &host,
+                RoleName::Worker,
+                "claude-code/haiku",
+                script.clone(),
+            ),
+            event(
+                3,
+                RunEventKind::Agent(AgentEvent::Workflow {
+                    workflow: Box::new(workflow),
+                }),
+            ),
+            placed(
+                4,
+                &reviewer,
+                RoleName::Reviewer,
+                "codex/gpt-5.6-luna",
+                script,
+            ),
+        ];
+        if let RunEventKind::Session(SessionEvent::Started(started)) = &mut events[2].kind {
+            started.label = Some("build:add-due-dates".to_owned());
+        }
+        events[2].card_id = Some(card);
+        events[3].session = Some(host.clone());
+        if let RunEventKind::Session(SessionEvent::Started(started)) = &mut events[4].kind {
+            started.label = Some("review:due-dates".to_owned());
+        }
+        let view = workflow_view(&events, &run_id(), None).unwrap();
+        let shown: Vec<(&str, Vec<String>)> = view
+            .phases
+            .iter()
+            .map(|phase| {
+                let rows = phase
+                    .rows
+                    .iter()
+                    .map(|row| match row {
+                        WorkflowRow::Agent(agent) => {
+                            format!("{} {}", agent.label, agent.worker.worker)
+                        }
+                        WorkflowRow::Workflow(nested) => format!("run {}", nested.name),
+                        WorkflowRow::Command(_) => "command".to_owned(),
+                    })
+                    .collect();
+                (phase.name.as_str(), rows)
+            })
+            .collect();
+        assert_eq!(shown.len(), 3, "{shown:?}");
+        assert_eq!(shown[0].0, "Build");
+        // The session that plans it is the box, not one of its steps.
+        assert_eq!(
+            shown[0].1,
+            ["build:due-dates claude-code/haiku"],
+            "{shown:?}"
+        );
+        assert_eq!(shown[1].1, ["review:due-dates codex/gpt-5.6-luna"]);
+        assert_eq!(shown[2].1, ["final:due-dates claude-code/haiku"]);
+        assert_eq!((view.agents_done, view.agents_total), (1, 3));
+        let counts: Vec<Option<(u32, u32)>> = view
+            .phases
+            .iter()
+            .map(|phase| phase.count.map(|count| (count.done, count.total)))
+            .collect();
+        assert_eq!(counts[0], Some((1, 1)), "{counts:?}");
+        // Whose own workflow it is: the session's CLI, which the test names with its model.
+        assert_eq!(view.owner.as_deref(), Some("claude-code/haiku"));
     }
 
     /// Before the lead picks the run's workflow, the goal's alignment runs nested under the

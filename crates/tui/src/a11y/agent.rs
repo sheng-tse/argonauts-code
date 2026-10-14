@@ -5,7 +5,8 @@ use argonauts_core::steps::summary_line;
 use argonauts_core::{AgentEvent, ErrorCategory, TodoItem, Verbosity};
 use serde_json::Value;
 
-use crate::bridge::tools::{finish_call, is_own, start_call};
+use crate::bridge::tools::{finish_call, is_own, is_tool_lookup, start_call};
+use crate::bridge::transcript::own_calls::{Own, turned_down};
 use crate::cell::{PhaseLine, ToolItem, ToolTitle};
 use crate::state::AppState;
 use crate::text::sanitize_line;
@@ -50,8 +51,15 @@ pub fn agent_lines(
             input,
             parent,
             ..
-        } if normal && (parent.is_none() || full) && !is_own(name) => {
-            let call = start_call(vendor, name, input);
+        } if normal && (parent.is_none() || full) && !is_own(name) && !is_tool_lookup(name) => {
+            // What the session asks of Argonauts reads as its plain line, as on screen.
+            let own = Own::named(name);
+            if own == Some(Own::StartWorkflow) {
+                return Vec::new();
+            }
+            let call = own
+                .and_then(|own| own.line(input))
+                .unwrap_or_else(|| start_call(vendor, name, input));
             let title = match &call.title {
                 ToolTitle::Call { name, args } if args.is_empty() => name.clone(),
                 ToolTitle::Call { name, args } => format!("{name} {args}"),
@@ -61,9 +69,24 @@ pub fn agent_lines(
         }
         AgentEvent::ToolFinished {
             ok, output, parent, ..
-        } if (parent.is_none() || full) && !call.as_ref().is_some_and(|call| is_own(call.name)) => {
+        } if (parent.is_none() || full)
+            && !call
+                .as_ref()
+                .is_some_and(|call| is_own(call.name) || is_tool_lookup(call.name)) =>
+        {
             if *ok && !normal {
                 return Vec::new();
+            }
+            // An answer to one of the session's own calls is the session's to read; only a
+            // start Argonauts turned down is said.
+            if let Some(own) = call.as_ref().and_then(|call| Own::named(call.name)) {
+                return match own {
+                    Own::StartWorkflow => turned_down(*ok, output.as_deref())
+                        .map(|line| format!("{who}: {}", line.title.plain()))
+                        .into_iter()
+                        .collect(),
+                    _ => Vec::new(),
+                };
             }
             tool_result(vendor, call, *ok, output.as_deref())
         }
@@ -138,7 +161,12 @@ fn tool_result(
     ok: bool,
     output: Option<&str>,
 ) -> Vec<String> {
-    let label = if ok { "tool" } else { "tool error" };
+    let refused = !ok && output.is_some_and(crate::bridge::refusal::is_refusal);
+    let label = match (ok, refused) {
+        (true, _) => "tool",
+        (false, true) => "tool not allowed",
+        (false, false) => "tool error",
+    };
     let said = match call {
         Some(call) => {
             let mut drawn = start_call(vendor, call.name, call.input);
@@ -176,6 +204,11 @@ fn item_lines(item: &ToolItem) -> Vec<String> {
     match item {
         ToolItem::Text { text, .. } | ToolItem::Markdown(text) => output_lines(text),
         ToolItem::Phases(phases) => phases.iter().enumerate().map(phase_line).collect(),
+        ToolItem::PhasesBeside { phases, beside } => {
+            let mut lines: Vec<String> = phases.iter().enumerate().map(phase_line).collect();
+            lines.push(sanitize_line(beside).trim().to_owned());
+            lines
+        }
         ToolItem::Command { output, hidden, .. } => {
             let mut lines = output_lines(&output.join("\n"));
             if *hidden > 0 && !lines.is_empty() {
@@ -247,5 +280,70 @@ mod tests {
         };
         let lines = agent_lines("coder", "codex", &plain, &AppState::default(), None, None);
         assert_eq!(lines, ["coder: All done."]);
+    }
+}
+
+#[cfg(test)]
+mod own_call_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn started(name: &str, input: Value) -> AgentEvent {
+        AgentEvent::ToolStarted {
+            id: "c1".into(),
+            name: name.into(),
+            input,
+            parent: None,
+        }
+    }
+
+    /// The session's own calls are said as the screen draws them, and a tool lookup not at all.
+    #[test]
+    fn own_calls_are_said_plainly_and_tool_lookups_not_at_all() {
+        let state = AppState::default();
+        let lookup = "mcp__argonauts_status__argonauts_lookup";
+        let said = agent_lines(
+            "Claude Code",
+            "claude-code",
+            &started(lookup, json!({"what": "reviews"})),
+            &state,
+            None,
+            None,
+        );
+        assert_eq!(
+            said,
+            ["Claude Code: Looked up reviews in Argonauts' records"]
+        );
+        let input = json!({"what": "reviews"});
+        let answer = AgentEvent::ToolFinished {
+            id: "c1".into(),
+            ok: true,
+            output: Some("{\"reviews\": []}".into()),
+            parent: None,
+        };
+        let call = StartedCall {
+            name: lookup,
+            input: &input,
+        };
+        let said = agent_lines(
+            "Claude Code",
+            "claude-code",
+            &answer,
+            &state,
+            Some(call),
+            None,
+        );
+        assert!(said.is_empty(), "{said:?}");
+        for quiet in [
+            started("ToolSearch", json!({"query": "select:Read"})),
+            started(
+                "mcp__argonauts_status__argonauts_start_workflow",
+                json!({"request": "x"}),
+            ),
+        ] {
+            let said = agent_lines("Claude Code", "claude-code", &quiet, &state, None, None);
+            assert!(said.is_empty(), "{said:?}");
+        }
     }
 }

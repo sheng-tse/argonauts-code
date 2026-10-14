@@ -40,16 +40,27 @@ fn schema() -> Value {
                 "type": "array",
                 "description": "Each thing the user said about how to run it, with their own \
                                 words in `says`, copied exactly: the whole phrase, two words \
-                                at least.",
+                                at least. \"Use a workflow\" or \"use the crew\" is kind \
+                                `mode` with value `crew`. \"With Codex as the reviewer\" is \
+                                kind `review` with `who` \"codex\".",
                 "items": {
                     "type": "object",
                     "properties": {
                         "says": {"type": "string"},
                         "kind": instruction_kinds(),
-                        "who": {"type": "string"},
+                        "who": {
+                            "type": "string",
+                            "description": "The CLI or model the user named for it, as they \
+                                            named it, such as \"codex\" or \"opus\". Never a \
+                                            role such as \"reviewer\": `kind` says the role."
+                        },
                         "model": {"type": "string"},
                         "effort": {"type": "string"},
-                        "value": {"type": "string"},
+                        "value": {
+                            "type": "string",
+                            "description": "For `mode`, `solo` or `crew`. For other kinds, \
+                                            what was asked, such as \"$2\"."
+                        },
                         "scope": {"type": "string"}
                     },
                     "required": ["says", "kind"]
@@ -94,6 +105,21 @@ mod tests {
 
     /// The start tool lists every kind the checks know, with what each means, so the main
     /// session can sort "all the other agents" and "the judge" as the checks read them.
+    /// `who` takes the CLI or model named, never the role, so "Codex as the reviewer" reaches
+    /// Codex.
+    #[test]
+    fn who_takes_the_agent_named_never_the_role() {
+        let schema = schema();
+        let item = &schema["properties"]["how_to_run"]["items"]["properties"];
+        let who = item["who"]["description"].as_str().unwrap();
+        assert!(who.contains("CLI or model the user named"), "{who}");
+        assert!(who.contains("Never a role"), "{who}");
+        let list = schema["properties"]["how_to_run"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(list.contains("\"Use a workflow\""), "{list}");
+    }
+
     #[test]
     fn the_start_tool_names_every_kind_of_instruction() {
         let kinds = instruction_kinds();

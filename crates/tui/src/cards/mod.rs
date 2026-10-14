@@ -148,6 +148,8 @@ impl Cards {
                 let title = self
                     .close_target(&target, cx)
                     .and_then(|held| match held.source {
+                        // A preview's outcome names what it closes; its plan stays above.
+                        Source::Choice(choice) if choice.kind == ChoiceKind::TryWorkflow => None,
                         Source::Choice(choice) => Some(choice.title),
                         _ => None,
                     });

@@ -543,6 +543,10 @@ mod tests {
                 })
             );
             assert!(env(&spec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY").is_none());
+            assert!(
+                env(&spec, "ENABLE_CLAUDEAI_MCP_SERVERS").is_none(),
+                "your connectors"
+            );
             assert!(env(&spec, "CLAUDE_CODE_ENABLE_TODO_TOOLS").is_none());
             assert!(env(&spec, "MCP_TOOL_TIMEOUT").is_none());
             assert!(env(&spec, "CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT").is_none());
@@ -1057,6 +1061,7 @@ mod tests {
         }
         assert!(!removes(&spec, "CLAUDE_CODE_EFFORT_LEVEL"));
         assert_eq!(env(&spec, "CLAUDE_CODE_DISABLE_AUTO_MEMORY"), Some("1"));
+        assert_eq!(env(&spec, "ENABLE_CLAUDEAI_MCP_SERVERS"), Some("false"));
 
         let api = command(&SessionRequest {
             auth: AuthMode::ApiKey,

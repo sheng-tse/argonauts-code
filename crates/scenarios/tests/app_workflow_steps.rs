@@ -172,13 +172,13 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
     );
 
     submit(&mut pty, "/workflow try spec-first add due dates")?;
-    let screen = pty.wait_for(r"Run it now\? y/N", WAIT)?.text();
+    let screen = pty.wait_for(r"Run it now\? y / N", WAIT)?.text();
     let order = [
         "spec-first for \"add due dates\" · a preview, nothing runs yet",
         "1 Plan",
         "2 Build",
         "3 Review",
-        "Run it now? y/N",
+        "Run it now? y / N",
     ];
     let found: Vec<Option<usize>> = order.iter().map(|needle| screen.find(needle)).collect();
     assert!(
@@ -192,7 +192,10 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
 
     // Only its own key answers it: n, or y to run it.
     pty.press(Key::Char('n'))?;
-    pty.wait_for(r"Nothing ran\.", WAIT)?;
+    pty.wait_for(
+        r"Spec-first preview for 'add due dates' · nothing ran",
+        WAIT,
+    )?;
     assert!(run_dirs(&scenario).is_empty(), "nothing ran");
 
     // `/workflow spec-first` makes it the workflow in use, and the rule above the input says so.
@@ -205,7 +208,7 @@ fn app_workflow_of_your_own_is_made_tried_and_put_in_use() -> anyhow::Result<()>
     })?;
     assert_eq!(changed.1, "\"spec-first\"");
     // The input's rule names the workflow in use first, then the main model.
-    pty.wait_for(r"─ spec-first · \S.* ─", WAIT)?;
+    pty.wait_for(r"─ Spec-first · \S.* ─", WAIT)?;
     Ok(())
 }
 
@@ -229,7 +232,7 @@ fn app_workflow_page_changes_the_file_and_refuses_what_would_not_run() -> anyhow
     submit(&mut pty, "/workflow edit spec-first")?;
     let screen = pty.wait_for(r"the file is valid", WAIT)?.text();
     let order = [
-        "Workflows › spec-first",
+        "Workflows › Spec-first",
         "who would take it",
         "the steps run exactly as written · no goal",
         "❯ 1 Plan",

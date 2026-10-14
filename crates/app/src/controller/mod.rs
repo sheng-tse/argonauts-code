@@ -9,6 +9,8 @@ mod account;
 mod agents_add;
 pub(crate) mod ask_role;
 mod attach;
+mod attempts;
+mod banner;
 pub(crate) mod chat;
 mod connect;
 mod crew_lines;

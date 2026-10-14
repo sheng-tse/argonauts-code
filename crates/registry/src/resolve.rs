@@ -9,6 +9,7 @@ use argonauts_core::app::ConfigEntry;
 use argonauts_core::events::run::OverrideRecord;
 use argonauts_core::layout::{project_files, user_files};
 use argonauts_core::names::RoleName;
+use argonauts_core::sanitize::escape_controls;
 use argonauts_core::settings::approvals::{ApprovalMode, ApprovalSettings};
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
 use argonauts_core::settings::protocol::UNDERSTAND_RENAMES;
@@ -483,16 +484,21 @@ fn read_text(path: &Path) -> Result<Option<String>, SettingsError> {
 }
 
 /// A file the TOML parser stops on is left out at start rather than stopping the app. Leaving
-/// it out could loosen what it set, so approvals stay with you until it reads again.
+/// it out could loosen what it set, so approvals stay with you until it reads again. One line
+/// names the place once, quotes it with its control characters written out, and says what
+/// follows.
 fn skipped_file(source: &str, text: &str, err: &toml::de::Error) -> String {
+    let message = escape_controls(err.message().trim());
     let place = match plain::syntax_place(text, err) {
-        Some((line, column)) => format!(" at line {line}, column {column}"),
-        None => String::new(),
+        Some((line, _)) => {
+            let written = text.lines().nth(line - 1).unwrap_or_default().trim();
+            format!(" at line {line} ({message}): {}", escape_controls(written))
+        }
+        None => format!(" ({message})"),
     };
-    let detail = plain::syntax_message(text, err);
     format!(
-        "{source} doesn't read as TOML{place}, so it is skipped until fixed ({detail}); until \
-         then approvals stay supervised and autopilot is off"
+        "{source} doesn't read as TOML{place}. It is skipped until fixed, and until then \
+         approvals wait for you and autopilot is off"
     )
 }
 

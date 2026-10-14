@@ -44,6 +44,8 @@ judge = [\"claude-code\", \"codex\", \"antigravity-cli\"]
 
 [ui]
 keys = \"default\"
+# These scenarios wait for an agent's words while it works, which its live block shows.
+agents_in_chat = \"as_they_work\"
 
 # The fake CLIs write files directly, with none of their edit tools' events, so every new file
 # counts as their work.
@@ -498,9 +500,13 @@ pub fn sessions_of(scenario: &Scenario, program: &str) -> anyhow::Result<Vec<Inv
                     .map(String::as_str)
                     .eq(CLAUDE_USAGE_PROBE.iter().copied());
             let login_check = args == &["auth", "status"];
+            // agy started with nothing to do shows its start-up screen, which names the
+            // account; nothing is sent.
+            let account_read = program == "agy" && args.is_empty();
             !model_list
                 && !quota_read
                 && !login_check
+                && !account_read
                 && !args
                     .iter()
                     .any(|arg| matches!(arg.as_str(), "--version" | "--help" | "login"))

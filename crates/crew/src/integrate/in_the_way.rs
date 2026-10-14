@@ -312,7 +312,7 @@ fn request(
         card: None,
         packet: CheckpointPacket::Merge(packet),
         facts: EvidenceFacts::default(),
-        agent_outputs: Vec::new(),
+        agent_outputs: plainly(target, blocked).into_iter().collect(),
         documents,
         options: Some(options),
         free_text: FreeText::None,
@@ -437,6 +437,51 @@ pub(crate) fn is_inside(path: &str) -> bool {
             .all(|part| matches!(part, Component::Normal(_)))
 }
 
+/// Which of your files are in the way and why, file by file, and that none of them changed.
+fn plainly(target: &str, blocked: &Blocked) -> Option<String> {
+    let each: Vec<String> = blocked
+        .edited
+        .iter()
+        .map(|file| format!("{file} (your uncommitted edit, where the run changes it too)"))
+        .chain(blocked.untracked.iter().map(|file| {
+            let what = if file.ends_with('/') {
+                "files"
+            } else {
+                "a file"
+            };
+            format!("{file} (not committed, where the run adds {what})")
+        }))
+        .collect();
+    let count = match each.len() {
+        0 => return None,
+        1 => "1 file of yours is".to_owned(),
+        n => format!("{n} files of yours are"),
+    };
+    Some(format!(
+        "{count} in the way of {target}: {}. Nothing of yours was changed.",
+        named(&each)
+    ))
+}
+
+/// Says which of your files landing took as they were, since they already held what the run
+/// brings there. Nothing when there were none.
+pub fn tell_held(host: &Host, holding: &Holding) -> EngineResult<()> {
+    let held = holding.all();
+    let text = match held.as_slice() {
+        [] => return Ok(()),
+        [one] => {
+            format!("Your {one} already held what the run brings, so it stayed as you left it")
+        }
+        many => format!(
+            "{} files of yours already held what the run brings, so they stayed as you left \
+             them: {}",
+            many.len(),
+            named(many)
+        ),
+    };
+    note(host, NoteLevel::Info, text)
+}
+
 fn named(files: &[String]) -> String {
     let shown = files.len().min(NAMED);
     let mut text = files[..shown].join(", ");
@@ -483,6 +528,26 @@ mod tests {
         assert_eq!(std::fs::read_to_string(to.join("deep/a.txt")).unwrap(), "a");
         move_path(&from.join("deep/a.txt"), &dir.path().join("b.txt")).unwrap();
         assert!(!from.join("deep/a.txt").exists());
+    }
+
+    #[test]
+    fn the_card_says_which_files_are_in_the_way_and_why() {
+        let blocked = Blocked {
+            untracked: vec!["notes.txt".into(), "build/".into()],
+            edited: vec!["README.md".into()],
+            ..Blocked::default()
+        };
+        assert_eq!(
+            plainly("main", &blocked).unwrap(),
+            "3 files of yours are in the way of main: README.md (your uncommitted edit, where \
+             the run changes it too), notes.txt (not committed, where the run adds a file), \
+             build/ (not committed, where the run adds files). Nothing of yours was changed."
+        );
+        let refused = Blocked {
+            refused: Some("git said no".into()),
+            ..Blocked::default()
+        };
+        assert_eq!(plainly("main", &refused), None);
     }
 
     #[test]

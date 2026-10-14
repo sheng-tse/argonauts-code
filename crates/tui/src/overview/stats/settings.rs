@@ -41,8 +41,8 @@ const LABEL: usize = 14;
 
 const PERIODS: [(StatsPeriod, &str); 4] = [
     (StatsPeriod::Today, "today"),
-    (StatsPeriod::Week, "7 days"),
-    (StatsPeriod::Month, "30 days"),
+    (StatsPeriod::Week, "week"),
+    (StatsPeriod::Month, "month"),
     (StatsPeriod::All, "all"),
 ];
 const GROUPS: [(StatsGroup, &str); 3] = [

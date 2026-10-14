@@ -2,6 +2,8 @@
 source: crates/tui/tests/vt100_fullscreen.rs
 expression: f.shown()
 ---
+❯ Question 1: what does the export do?
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   - It reads the store
   - It writes each row
   - It flushes
@@ -16,9 +18,7 @@ expression: f.shown()
 
 ❯ Question 3: what does the export do?
 
-● Answer 3. The export writes JSON to stdout, one object per line, and --pretty indents it.
-
-  ↓ 15 rows below · pgdn to scroll
+  click the line at the top, or press ctrl+↑, to jump to where that prompt starts
 
 ∙ Rowing…
 

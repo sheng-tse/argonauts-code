@@ -454,8 +454,13 @@ fn destination(run: &RunState, message: &QueuedMessage, names: &DisplayNames) ->
 fn composer_label(state: &AppState) -> Option<String> {
     let workflow = workflow_label(state).filter(|workflow| workflow != SOLO);
     match (workflow, main_model(state)) {
-        (Some(workflow), Some(model)) => Some(format!("{workflow} · {model}")),
-        (workflow, model) => workflow.or(model),
+        (Some(workflow), Some(model)) => Some(format!(
+            "{} · {model}",
+            argonauts_core::text::shown_name(&workflow)
+        )),
+        (workflow, model) => workflow
+            .map(|workflow| argonauts_core::text::shown_name(&workflow))
+            .or(model),
     }
 }
 
@@ -711,13 +716,13 @@ mod tests {
         state.mode = Some(AppMode::Working { run: id.clone() });
         assert_eq!(
             composer_label(&state).as_deref(),
-            Some("council · Claude Code")
+            Some("Council · Claude Code")
         );
 
         state.runs.get_mut(&id).unwrap().mode = Some(RunMode::Solo);
         assert_eq!(
             composer_label(&state).as_deref(),
-            Some("council · Claude Code")
+            Some("Council · Claude Code")
         );
     }
 
@@ -746,7 +751,7 @@ mod tests {
         state.status = Some(status("council", "claude-code/claude-opus-5-5"));
         assert_eq!(
             composer_label(&state).as_deref(),
-            Some("council · Opus 5.5")
+            Some("Council · Opus 5.5")
         );
         // After /model the rule names the new model, and nothing else says which CLI.
         state.status = Some(status("solo", "codex/gpt-6.1-sol"));

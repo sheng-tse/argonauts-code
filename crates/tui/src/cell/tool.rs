@@ -45,6 +45,20 @@ pub struct ToolCall {
     /// Dim words after the title, such as ` · orchestrator · ctrl+t to open`. The first thing
     /// to go when the header has no room.
     pub tail: Option<String>,
+    /// A failed agent's row, marked `✗` rather than a red bullet, as one that gave up says so.
+    pub crossed: bool,
+    /// What an edit shows only once it ends, and its words until then.
+    pub held: Option<Box<Held>>,
+}
+
+/// An edit's preview drawn from its input waits for the end, where the patch its result
+/// reports takes its place, so the diff keeps one shape from start to finish.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Held {
+    /// Under the title while the call runs and has nothing else to show, such as `Updating…`.
+    pub waiting: String,
+    /// Shown once the call ends well, unless its result brought its own.
+    pub items: Vec<ToolItem>,
 }
 
 /// Worked out at each frame, so a countdown counts and a quiet spell grows.
@@ -89,6 +103,11 @@ pub enum ToolState {
     Failed,
     /// By Esc or a stop, before it finished. Its work so far stays.
     Stopped,
+    /// Its CLI's permission rules turned it down, so nothing ran. Not a failure: it reads dim.
+    Refused,
+    /// The model is still writing the call: its name shows with a steady dim bullet, and the
+    /// rest fills in once the call is whole and runs.
+    Writing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
@@ -127,6 +146,11 @@ pub enum ToolItem {
     /// reviewers scan the change`. The details line up and wrap under their own column, a step
     /// you require carries the mark, and a list with one ends by saying what the mark means.
     Phases(Vec<PhaseLine>),
+    /// The phases on their line, then a dim note beside them, such as who reviews.
+    PhasesBeside {
+        phases: Vec<PhaseLine>,
+        beside: String,
+    },
     /// `hidden` counts output lines left out, shown as `… +N lines`.
     Command {
         command: String,
@@ -263,6 +287,8 @@ impl ToolCall {
             note: None,
             wrap_at: None,
             tail: None,
+            crossed: false,
+            held: None,
         }
     }
 
@@ -284,6 +310,11 @@ impl ToolCall {
     pub fn with_key(mut self, key: impl Into<String>) -> Self {
         self.key = Some(key.into());
         self
+    }
+
+    /// A call the model is still writing, known only by its name so far.
+    pub fn writing(kind: ToolKind, name: impl Into<String>) -> Self {
+        Self::call(kind, name, String::new()).with_state(ToolState::Writing)
     }
 
     pub fn with_state(mut self, state: ToolState) -> Self {
@@ -336,6 +367,36 @@ impl ToolCall {
         }
     }
 
+    /// A call on a row of its own, never folded with the quiet calls beside it.
+    pub fn push_alone(&mut self, call: ToolCall) {
+        self.body.push(ToolItem::Call(call));
+    }
+
+    /// Takes the call with `key` out of the fold line it sits in, leaving the line when it
+    /// holds others. `None` when no fold line holds it.
+    pub fn take_from_fold(&mut self, key: &str) -> Option<ToolCall> {
+        let (at, index) = self
+            .body
+            .iter()
+            .enumerate()
+            .find_map(|(at, item)| match item {
+                ToolItem::Group(group) => group
+                    .calls
+                    .iter()
+                    .position(|call| call.key.as_deref() == Some(key))
+                    .map(|index| (at, index)),
+                _ => None,
+            })?;
+        let ToolItem::Group(group) = &mut self.body[at] else {
+            return None;
+        };
+        let call = group.calls.remove(index);
+        if group.calls.is_empty() {
+            self.body.remove(at);
+        }
+        Some(call)
+    }
+
     /// Searches nested calls at every depth, inside collapsed groups too.
     pub fn child_mut(&mut self, key: &str) -> Option<&mut ToolCall> {
         for item in &mut self.body {
@@ -356,6 +417,36 @@ impl ToolCall {
         None
     }
 
+    /// Takes out the call under it with `key`, at any depth, when the model never finished
+    /// writing it. A collapsed group left empty goes too. True when one went.
+    pub fn drop_child(&mut self, key: &str) -> bool {
+        let mut dropped = false;
+        self.body.retain_mut(|item| {
+            if dropped {
+                return true;
+            }
+            match item {
+                ToolItem::Call(call) if call.key.as_deref() == Some(key) => {
+                    dropped = true;
+                    false
+                }
+                ToolItem::Call(call) => {
+                    dropped = call.drop_child(key);
+                    true
+                }
+                ToolItem::Group(group) => {
+                    let before = group.calls.len();
+                    group.calls.retain(|call| call.key.as_deref() != Some(key));
+                    dropped = group.calls.len() < before
+                        || group.calls.iter_mut().any(|call| call.drop_child(key));
+                    !group.calls.is_empty()
+                }
+                _ => true,
+            }
+        });
+        dropped
+    }
+
     pub fn finish(&mut self, ok: bool) {
         self.end(if ok {
             ToolState::Done
@@ -364,9 +455,14 @@ impl ToolCall {
         });
     }
 
+    /// Its CLI turned it down before it ran.
+    pub fn refuse(&mut self) {
+        self.end(ToolState::Refused);
+    }
+
     /// Stops every call still running inside it too.
     pub fn stop(&mut self) {
-        if self.state == ToolState::Running {
+        if self.is_running() {
             self.end(ToolState::Stopped);
         }
         for item in &mut self.body {
@@ -385,18 +481,27 @@ impl ToolCall {
             .retain(|item| !matches!(item, ToolItem::Running { .. }));
     }
 
+    /// Running, or still being written.
     pub fn is_running(&self) -> bool {
-        self.state == ToolState::Running
+        matches!(self.state, ToolState::Running | ToolState::Writing)
+    }
+
+    /// The call as the model finished writing it takes this one's place, which keeps its key
+    /// and where it stands. Its row is already on screen, so nothing moves.
+    pub fn fill_in(&mut self, whole: ToolCall) {
+        let key = self.key.take();
+        *self = ToolCall { key, ..whole };
     }
 
     /// Folds a finished agent session's body into one line, `Done · 12 tool uses · {detail}`.
     /// The live stats go, since `detail` says them. The whole call stays for the overlay.
     pub fn summarized(&self, detail: Option<&str>) -> ToolCall {
         let outcome = match self.state {
-            ToolState::Running => "Running",
+            ToolState::Running | ToolState::Writing => "Running",
             ToolState::Done => "Done",
             ToolState::Failed => "Failed",
             ToolState::Stopped => "Stopped",
+            ToolState::Refused => "Not allowed",
         };
         let uses = self.tool_uses();
         let unit = if uses == 1 { "tool use" } else { "tool uses" };
@@ -417,6 +522,8 @@ impl ToolCall {
             note: None,
             wrap_at: self.wrap_at,
             tail: self.tail.clone(),
+            crossed: false,
+            held: None,
         }
     }
 
@@ -435,12 +542,21 @@ impl ToolCall {
     fn bullet(&self, ctx: &RenderCtx<'_>) -> Span<'static> {
         let theme = ctx.theme;
         match self.state {
-            ToolState::Running => running_bullet(ctx),
+            // An agent's block keeps the quiet bullet; a call's own row blinks in color.
+            ToolState::Running if matches!(self.title, ToolTitle::Agent { .. }) => {
+                running_bullet(ctx)
+            }
+            ToolState::Running => working_bullet(ctx),
+            ToolState::Writing => marks::decorative(theme.glyphs.bullet, theme.style(Role::Dim)),
             ToolState::Stopped => {
                 marks::decorative(theme.glyphs.bullet, theme.style(Role::Warning))
             }
             ToolState::Done => marks::decorative(theme.glyphs.bullet, theme.style(Role::Success)),
+            ToolState::Failed if self.crossed => {
+                marks::decorative(theme.glyphs.not_ready, theme.style(Role::Error))
+            }
             ToolState::Failed => marks::decorative(theme.glyphs.bullet, theme.style(Role::Error)),
+            ToolState::Refused => marks::decorative(theme.glyphs.bullet, theme.style(Role::Dim)),
         }
     }
 
@@ -453,7 +569,7 @@ impl ToolCall {
         match self.state {
             ToolState::Failed => Some(Span::styled(" failed", ctx.theme.style(Role::Error))),
             ToolState::Stopped => Some(Span::styled(" stopped", ctx.theme.style(Role::Warning))),
-            ToolState::Running | ToolState::Done => None,
+            ToolState::Running | ToolState::Writing | ToolState::Done | ToolState::Refused => None,
         }
     }
 
@@ -593,18 +709,21 @@ impl ToolCall {
             }
             ToolTitle::Agent {
                 name,
-                color,
+                color: _,
                 role,
                 task,
             } => {
-                let name_style = color.map_or(text, |color| theme.style(color.role()));
+                // The label reads bold and who runs it dim, as Claude Code heads an agent's row.
                 fixed.push(Span::styled(
                     sanitize_line(name).trim().to_owned(),
-                    name_style,
+                    text.add_modifier(Modifier::BOLD),
                 ));
                 let role = sanitize_line(role);
                 if !role.trim().is_empty() {
-                    fixed.push(Span::styled(format!(" · {}", role.trim()), text));
+                    fixed.push(Span::styled(
+                        format!(" · {}", role.trim()),
+                        theme.style(Role::Dim),
+                    ));
                 }
                 (sanitize_line(task).trim().to_owned(), " (", ")")
             }
@@ -658,10 +777,19 @@ const MIN_CUT_COLUMNS: usize = 4;
 const AGENT_TASK_MIN_WIDTH: usize = 64;
 
 pub(crate) fn running_bullet(ctx: &RenderCtx<'_>) -> Span<'static> {
+    blinking_bullet(ctx, Role::Dim)
+}
+
+/// A call's own row while it runs: the bullet blinks in the working line's color.
+fn working_bullet(ctx: &RenderCtx<'_>) -> Span<'static> {
+    blinking_bullet(ctx, Role::Accent)
+}
+
+fn blinking_bullet(ctx: &RenderCtx<'_>, role: Role) -> Span<'static> {
     let theme = ctx.theme;
     let hidden = !theme.reduced_motion && ctx.clock.frame(BLINK_PERIOD, 2) == 1;
     let glyph = if hidden { " " } else { theme.glyphs.bullet };
-    marks::decorative(glyph, theme.style(Role::Dim))
+    marks::decorative(glyph, theme.style(role))
 }
 
 impl HistoryCell for ToolCall {

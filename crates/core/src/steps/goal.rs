@@ -17,7 +17,7 @@ impl Step for Restate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RestateInput {
     pub request: String,
-    /// Relevant `.argonauts/notes` excerpts.
+    /// Relevant excerpts of the crew's notes and the repository's `.argonauts/notes`.
     pub notes: Vec<String>,
     /// Relevant earlier decisions, `D-003: ...`.
     pub decisions: Vec<String>,

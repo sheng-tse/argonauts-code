@@ -50,6 +50,10 @@ pub struct WorkflowView {
     /// Each agent that works toward a goal, found by its session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub goals: Vec<AgentGoal>,
+    /// The CLI whose own workflow runs the steps, such as `claude-code`, when one session's
+    /// CLI runs the whole run for the crew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,8 +153,9 @@ pub struct AgentRow {
     /// takes the tokens' place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered: Option<String>,
-    /// The step's earlier tries, oldest first: each one that failed, and the agent this one
-    /// took over from. The row is the step, and these fold beneath it.
+    /// The step's earlier tries, oldest first: each one that failed, the agent this one took
+    /// over from, and each earlier round of a review. The row is the step, and these fold
+    /// beneath it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tries: Vec<StepTry>,
 }
@@ -166,6 +171,10 @@ pub struct StepTry {
     /// uses, such as `Codex refused the answer format Argonauts asked for`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<EndReason>,
+    /// The round it was, from 1, when it is a review or a sign-off that finished and sent the
+    /// work back, so the step was asked again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -319,6 +328,7 @@ impl WorkflowView {
             notes: Vec::new(),
             required: Vec::new(),
             goals: Vec::new(),
+            owner: None,
         }
     }
 

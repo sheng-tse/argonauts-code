@@ -198,6 +198,9 @@ impl WorkflowFile {
         let text = |key: &str| match table.get(key) {
             None => Ok(None),
             Some(Value::String(text)) => Ok(Some(text.clone())),
+            // A `[goal]` table holds the goal's settings, which a workflow file written from a
+            // built-in carries, and the settings read; it sets no goal of the workflow's own.
+            Some(Value::Table(_)) if key == "goal" => Ok(None),
             Some(other) => Err(Problem::file(format!(
                 "{key} can't be {other}; it takes text in quotes"
             ))),
@@ -435,6 +438,22 @@ mod tests {
             Err(err) => err.to_string(),
             Ok(_) => panic!("the file read without a problem"),
         }
+    }
+
+    /// A file written from a built-in carries the goal's settings as a `[goal]` table, empty
+    /// when every key in it is commented out; that sets no goal of the workflow's own.
+    #[test]
+    fn a_goal_settings_table_is_no_goal_text() {
+        for table in ["[goal]\n", "[goal]\ncheck = \"auto\"\n"] {
+            let read = file(&format!(
+                "name = \"mine\"\n\n[[step]]\nname = \"Plan\"\nrole = \"orchestrator\"\n\n{table}"
+            ));
+            assert_eq!(read.goal, None, "{table}");
+        }
+        assert!(
+            WorkflowFile::parse("goal = 3\n[[step]]\nname = \"Plan\"\nrole = \"orchestrator\"\n")
+                .is_err()
+        );
     }
 
     #[test]
